@@ -118,7 +118,7 @@ function MockClipCard({
 // ─── Page ─────────────────────────────────────────────────────────
 export default function HomePage() {
   return (
-    <div className="overflow-x-hidden">
+    <div>
 
       {/* ── A: Scrolling ticker ─────────────────────────────────── */}
       <div className="-mx-8 overflow-hidden border-b border-border/40">
