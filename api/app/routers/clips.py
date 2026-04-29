@@ -42,14 +42,20 @@ async def _get_owned_clip(clip_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSessi
 
 
 def _rewrite_urls(clip: Clip) -> dict[str, str | None]:
-    """Generate short-lived presigned R2 URLs so the browser can fetch directly."""
+    """Return public R2 URLs directly (bucket has public dev URL enabled).
+    Fall back to presigned URLs if R2 credentials are configured."""
+    if storage.r2_configured():
+        return {
+            "clip_url": storage.presign_from_stored_url(clip.clip_url, expires_in=3600),
+            "thumbnail_url": (
+                storage.presign_from_stored_url(clip.thumbnail_url, expires_in=3600)
+                if clip.thumbnail_url
+                else None
+            ),
+        }
     return {
-        "clip_url": storage.presign_from_stored_url(clip.clip_url, expires_in=3600),
-        "thumbnail_url": (
-            storage.presign_from_stored_url(clip.thumbnail_url, expires_in=3600)
-            if clip.thumbnail_url
-            else None
-        ),
+        "clip_url": clip.clip_url,
+        "thumbnail_url": clip.thumbnail_url,
     }
 
 

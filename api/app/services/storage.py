@@ -8,6 +8,17 @@ from botocore.config import Config
 from app.config import settings
 
 
+def r2_configured() -> bool:
+    """True only when real R2 credentials are present (not placeholder values)."""
+    return bool(
+        settings.r2_account_id
+        and settings.r2_access_key_id
+        and settings.r2_secret_access_key
+        and not settings.r2_account_id.startswith("your-")
+        and not settings.r2_access_key_id.startswith("your-")
+    )
+
+
 def _client():
     endpoint = f"https://{settings.r2_account_id}.r2.cloudflarestorage.com"
     return boto3.client(
