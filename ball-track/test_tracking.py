@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 from ml.pipeline.ball import track_ball, find_contacts, contacts_to_rallies
 import cv2
 
-VIDEO = "test_spike.mp4"
+VIDEO = sys.argv[1] if len(sys.argv) > 1 else "test_spike.mp4"
 API_KEY = os.getenv("ROBOFLOW_API_KEY")
 
 # Get video metadata
