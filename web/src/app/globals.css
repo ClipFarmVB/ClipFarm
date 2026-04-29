@@ -137,16 +137,16 @@ input[type="range"]::-webkit-slider-thumb:hover {
 }
 
 /* ── E: Dot grid ────────────────────────────────────────────────── */
-@keyframes grid-pulse {
-  0%, 100% { opacity: 0.55; }
-  50%       { opacity: 0.9;  }
+@keyframes grid-drift {
+  0%   { background-position: 0 0; }
+  100% { background-position: 24px 24px; }
 }
 .dot-grid {
   background-image: radial-gradient(
     circle,
-    rgba(255, 255, 255, 0.06) 1px,
+    rgba(255, 255, 255, 0.18) 1px,
     transparent 1px
   );
   background-size: 24px 24px;
-  animation: grid-pulse 5s ease-in-out infinite;
+  animation: grid-drift 6s linear infinite;
 }

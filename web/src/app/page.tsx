@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { StatCounter } from "@/components/StatCounter";
 
 // ─── A: Ticker data ───────────────────────────────────────────────
 const ACTIONS = [
@@ -142,22 +143,14 @@ export default function HomePage() {
 
       {/* ── Hero: B + C + E ─────────────────────────────────────── */}
       <div className="-mx-8 relative overflow-hidden">
-        {/* E: Dot grid */}
+        {/* E: Dot grid — drifts diagonally */}
         <div className="dot-grid absolute inset-0 pointer-events-none" />
-        {/* Bottom fade to page background */}
+        {/* Fade only at the very bottom so the grid stays visible */}
         <div
           className="absolute inset-0 pointer-events-none"
           style={{
             background:
-              "linear-gradient(to bottom, transparent 35%, #0c0c0e 100%)",
-          }}
-        />
-        {/* Side vignette */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            background:
-              "radial-gradient(ellipse 100% 100% at 50% 0%, transparent 40%, #0c0c0e 100%)",
+              "linear-gradient(to bottom, transparent 55%, #0c0c0e 100%)",
           }}
         />
 
@@ -241,6 +234,12 @@ export default function HomePage() {
           </div>
         </div>
       </div>
+
+      {/* ── Divider ─────────────────────────────────────────────── */}
+      <div className="h-px bg-border" />
+
+      {/* ── D: Stat counters ────────────────────────────────────── */}
+      <StatCounter />
 
       {/* ── Divider ─────────────────────────────────────────────── */}
       <div className="h-px bg-border" />
