@@ -35,13 +35,11 @@ services:
     env_file:
       - .env.docker
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-clipfarm}
+      # DATABASE_URL comes from .env.docker (Supabase) — do not override here
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
     command: >
@@ -60,13 +58,11 @@ services:
     env_file:
       - .env.docker
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-clipfarm}
+      # DATABASE_URL comes from .env.docker (Supabase) — do not override here
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
       api:
