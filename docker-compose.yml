@@ -83,6 +83,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env.docker
+      - web/.env.local          # real NEXT_PUBLIC_SUPABASE_* + NEXT_PUBLIC_API_URL
+    environment:
+      # Browsers on the host reach the api container through its mapped port.
+      NEXT_PUBLIC_API_URL: http://localhost:8000
     depends_on:
       api:
         condition: service_started

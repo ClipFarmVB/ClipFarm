@@ -114,7 +114,7 @@ export default function DeadTimePage() {
                 <Link
                   key={run.id}
                   href={`/deadtime/${run.id}`}
-                  className="flex items-center justify-between rounded-xl border border-border bg-surface px-4 py-3 hover:border-border-light"
+                  className="flex items-center justify-between rounded-xl border border-border bg-surface px-4 py-3 hover:border-border-strong"
                 >
                   <div>
                     <p className="font-medium text-foreground">{run.title}</p>
