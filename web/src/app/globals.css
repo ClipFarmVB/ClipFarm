@@ -1,32 +1,81 @@
 @import "tailwindcss";
 
-@theme inline {
+@theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 
+  /*
+   * All color tokens reference CSS custom-properties so they can be
+   * overridden by the .dark class on <html>.
+   */
+
   /* Background layers */
-  --color-background:    #0c0c0e;
-  --color-surface:       #111114;
-  --color-surface-high:  #18181c;
-  --color-surface-hover: #1e1e24;
+  --color-background:    var(--cf-bg);
+  --color-surface:       var(--cf-surface);
+  --color-surface-high:  var(--cf-surface-high);
+  --color-surface-hover: var(--cf-surface-hover);
 
   /* Borders */
-  --color-border:        #222226;
-  --color-border-strong: #333338;
+  --color-border:        var(--cf-border);
+  --color-border-strong: var(--cf-border-strong);
 
   /* Text */
-  --color-foreground:    #f0f0f2;
-  --color-muted:         #6e6e7a;
-  --color-subtle:        #44444e;
+  --color-foreground:    var(--cf-fg);
+  --color-muted:         var(--cf-muted);
+  --color-subtle:        var(--cf-subtle);
 
   /* Accent */
-  --color-brand:         #f59e0b;
-  --color-brand-light:   #fbbf24;
-  --color-brand-dim:     rgba(245, 158, 11, 0.12);
+  --color-brand:         var(--cf-brand);
+  --color-brand-light:   var(--cf-brand-light);
+  --color-brand-dim:     var(--cf-brand-dim);
+}
+
+/* ── Light mode (default) — white / off-white / blue ───────────────── */
+:root {
+  --cf-bg:            #ffffff;
+  --cf-surface:       #f6f6f9;
+  --cf-surface-high:  #ededf2;
+  --cf-surface-hover: #e4e4eb;
+  --cf-border:        #e2e2ea;
+  --cf-border-strong: #ccccd8;
+
+  --cf-fg:            #111116;
+  --cf-muted:         #62627a;
+  --cf-subtle:        #9898b4;
+
+  --cf-brand:         #2563eb;
+  --cf-brand-light:   #3b82f6;
+  --cf-brand-dim:     rgba(37, 99, 235, 0.09);
+
+  --cf-dot:           rgba(0, 0, 0, 0.10);
+  --cf-scrollbar:     #d4d4e0;
+  --cf-scrollbar-hover: #b8b8cc;
+}
+
+/* ── Dark mode — charcoal / amber ──────────────────────────────────── */
+.dark {
+  --cf-bg:            #0c0c0e;
+  --cf-surface:       #111114;
+  --cf-surface-high:  #18181c;
+  --cf-surface-hover: #1e1e24;
+  --cf-border:        #222226;
+  --cf-border-strong: #333338;
+
+  --cf-fg:            #f0f0f2;
+  --cf-muted:         #6e6e7a;
+  --cf-subtle:        #44444e;
+
+  --cf-brand:         #f59e0b;
+  --cf-brand-light:   #fbbf24;
+  --cf-brand-dim:     rgba(245, 158, 11, 0.12);
+
+  --cf-dot:           rgba(255, 255, 255, 0.18);
+  --cf-scrollbar:     #2a2a2e;
+  --cf-scrollbar-hover: #3a3a40;
 }
 
 body {
-  background: var(--color-background);
-  color: var(--color-foreground);
+  background: var(--cf-bg);
+  color: var(--cf-fg);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -34,18 +83,18 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* ── Scrollbar ─────────────────────────────────────────────────── */
+/* ── Scrollbar ─────────────────────────────────────────────────────── */
 ::-webkit-scrollbar           { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track     { background: transparent; }
-::-webkit-scrollbar-thumb     { background: #2a2a2e; border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover { background: #3a3a40; }
+::-webkit-scrollbar-thumb     { background: var(--cf-scrollbar); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--cf-scrollbar-hover); }
 
-/* ── Range input ────────────────────────────────────────────────── */
+/* ── Range input ────────────────────────────────────────────────────── */
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
   height: 3px;
-  background: #222226;
+  background: var(--cf-border);
   border-radius: 99px;
   outline: none;
 }
@@ -55,16 +104,16 @@ input[type="range"]::-webkit-slider-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: var(--color-brand);
+  background: var(--cf-brand);
   cursor: pointer;
-  border: 2px solid var(--color-background);
+  border: 2px solid var(--cf-bg);
   transition: transform 0.12s ease;
 }
 input[type="range"]::-webkit-slider-thumb:hover {
   transform: scale(1.25);
 }
 
-/* ── Skeleton loader ────────────────────────────────────────────── */
+/* ── Skeleton loader ────────────────────────────────────────────────── */
 @keyframes skeleton-sweep {
   0%   { background-position: -600px 0; }
   100% { background-position:  600px 0; }
@@ -72,23 +121,23 @@ input[type="range"]::-webkit-slider-thumb:hover {
 .skeleton {
   background: linear-gradient(
     90deg,
-    var(--color-surface)      25%,
-    var(--color-surface-high) 50%,
-    var(--color-surface)      75%
+    var(--cf-surface)      25%,
+    var(--cf-surface-high) 50%,
+    var(--cf-surface)      75%
   );
   background-size: 1200px 100%;
   animation: skeleton-sweep 2s ease-in-out infinite;
   border-radius: 6px;
 }
 
-/* ── Fade-up reveal ─────────────────────────────────────────────── */
+/* ── Fade-up reveal ─────────────────────────────────────────────────── */
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 .fade-up { animation: fade-up 0.22s cubic-bezier(0.16, 1, 0.3, 1) both; }
 
-/* ── Staggered list children ────────────────────────────────────── */
+/* ── Staggered list children ────────────────────────────────────────── */
 .stagger > * { animation: fade-up 0.22s cubic-bezier(0.16, 1, 0.3, 1) both; }
 .stagger > *:nth-child(1)  { animation-delay:   0ms; }
 .stagger > *:nth-child(2)  { animation-delay:  40ms; }
@@ -101,28 +150,28 @@ input[type="range"]::-webkit-slider-thumb:hover {
 .stagger > *:nth-child(9)  { animation-delay: 320ms; }
 .stagger > *:nth-child(10) { animation-delay: 360ms; }
 
-/* ── Scale-press feedback ───────────────────────────────────────── */
+/* ── Scale-press feedback ───────────────────────────────────────────── */
 .press:active { transform: scale(0.97); }
 
-/* ── Focus ring ─────────────────────────────────────────────────── */
+/* ── Focus ring ─────────────────────────────────────────────────────── */
 .focus-ring:focus-visible {
-  outline: 2px solid var(--color-brand);
+  outline: 2px solid var(--cf-brand);
   outline-offset: 2px;
 }
 
-/* ── A: Infinite ticker ─────────────────────────────────────────── */
+/* ── A: Infinite ticker ─────────────────────────────────────────────── */
 @keyframes ticker {
   from { transform: translateX(0); }
   to   { transform: translateX(-50%); }
 }
 
-/* ── B: Word-by-word headline reveal ────────────────────────────── */
+/* ── B: Word-by-word headline reveal ────────────────────────────────── */
 @keyframes word-up {
   from { transform: translateY(110%); opacity: 0; }
   to   { transform: translateY(0%);   opacity: 1; }
 }
 
-/* ── C: Floating card animations (rotation baked in) ────────────── */
+/* ── C: Floating card animations (rotation baked in) ────────────────── */
 @keyframes float-a {
   0%, 100% { transform: translateY(0px)    rotate(-2deg);   }
   50%       { transform: translateY(-14px)  rotate(-2deg);   }
@@ -136,7 +185,7 @@ input[type="range"]::-webkit-slider-thumb:hover {
   50%       { transform: translateY(-13px)  rotate(-4deg);   }
 }
 
-/* ── E: Dot grid ────────────────────────────────────────────────── */
+/* ── E: Dot grid ────────────────────────────────────────────────────── */
 @keyframes grid-drift {
   0%   { background-position: 0 0; }
   100% { background-position: 24px 24px; }
@@ -144,7 +193,7 @@ input[type="range"]::-webkit-slider-thumb:hover {
 .dot-grid {
   background-image: radial-gradient(
     circle,
-    rgba(255, 255, 255, 0.18) 1px,
+    var(--cf-dot) 1px,
     transparent 1px
   );
   background-size: 24px 24px;

@@ -150,7 +150,7 @@ export default function HomePage() {
           className="absolute inset-0 pointer-events-none"
           style={{
             background:
-              "linear-gradient(to bottom, transparent 55%, #0c0c0e 100%)",
+              "linear-gradient(to bottom, transparent 55%, var(--cf-bg) 100%)",
           }}
         />
 

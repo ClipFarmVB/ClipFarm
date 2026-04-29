@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Clapperboard, Upload, LayoutGrid, Timer, LogOut } from "lucide-react";
+import { Clapperboard, Upload, LayoutGrid, Timer, LogOut, Sun, Moon } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useTheme } from "@/contexts/ThemeContext";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
@@ -15,6 +16,7 @@ const NAV_ITEMS = [
 export function Sidebar() {
   const pathname = usePathname();
   const { user, loading, signOut } = useAuth();
+  const { theme, toggle } = useTheme();
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
@@ -90,9 +92,24 @@ export function Sidebar() {
         )}
       </nav>
 
-      {/* User footer */}
-      {user && (
-        <div className="shrink-0 border-t border-border px-2 py-2">
+      {/* Footer — theme toggle + user */}
+      <div className="shrink-0 border-t border-border px-2 py-2 space-y-1">
+        {/* Theme toggle row */}
+        <button
+          onClick={toggle}
+          className="flex w-full items-center gap-2.5 rounded-md px-3 py-[7px] text-[13px] text-muted hover:bg-surface hover:text-foreground transition-all duration-150"
+          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {theme === "dark" ? (
+            <Sun size={14} strokeWidth={2} className="shrink-0 text-subtle" />
+          ) : (
+            <Moon size={14} strokeWidth={2} className="shrink-0 text-subtle" />
+          )}
+          {theme === "dark" ? "Light mode" : "Dark mode"}
+        </button>
+
+        {/* User row */}
+        {user && (
           <div className="flex items-center gap-2.5 rounded-md px-2 py-2">
             {/* Avatar */}
             <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-surface-high border border-border text-[10px] font-bold uppercase text-muted">
@@ -112,8 +129,8 @@ export function Sidebar() {
               <LogOut size={12} />
             </button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </aside>
   );
 }
