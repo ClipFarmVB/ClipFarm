@@ -40,14 +40,14 @@ const MOCK_CLIPS: MockClipData[] = [
     action: "serve", confidence: 79, time: "02:11", duration: "0:08",
     thumbFrom: "from-sky-950",
     dotClass: "bg-sky-400", confClass: "text-amber-400",
-    pos: { position: "absolute", top: 14, left: 9, zIndex: 10 },
+    pos: { position: "absolute", top: 48, left: 32, zIndex: 10 },
     anim: "float-c 4.7s ease-in-out infinite 1.4s",
   },
   {
     action: "dig", confidence: 87, time: "08:45", duration: "0:05",
     thumbFrom: "from-emerald-950",
     dotClass: "bg-emerald-400", confClass: "text-amber-400",
-    pos: { position: "absolute", top: 7, left: 5, zIndex: 20 },
+    pos: { position: "absolute", top: 24, left: 16, zIndex: 20 },
     anim: "float-b 5.1s ease-in-out infinite 0.7s",
   },
   {
@@ -219,8 +219,8 @@ export default function HomePage() {
             <div
               className="relative hidden lg:block shrink-0"
               style={{
-                width: 230,
-                height: 200,
+                width: 250,
+                height: 260,
                 animation: "fade-up 0.8s cubic-bezier(0.16,1,0.3,1) 0.4s both",
               }}
             >
