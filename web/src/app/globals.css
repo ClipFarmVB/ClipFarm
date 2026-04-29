@@ -109,3 +109,44 @@ input[type="range"]::-webkit-slider-thumb:hover {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
 }
+
+/* ── A: Infinite ticker ─────────────────────────────────────────── */
+@keyframes ticker {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+/* ── B: Word-by-word headline reveal ────────────────────────────── */
+@keyframes word-up {
+  from { transform: translateY(110%); opacity: 0; }
+  to   { transform: translateY(0%);   opacity: 1; }
+}
+
+/* ── C: Floating card animations (rotation baked in) ────────────── */
+@keyframes float-a {
+  0%, 100% { transform: translateY(0px)    rotate(-2deg);   }
+  50%       { transform: translateY(-14px)  rotate(-2deg);   }
+}
+@keyframes float-b {
+  0%, 100% { transform: translateY(-3px)   rotate(3.5deg);  }
+  50%       { transform: translateY(-17px)  rotate(3.5deg);  }
+}
+@keyframes float-c {
+  0%, 100% { transform: translateY(-1px)   rotate(-4deg);   }
+  50%       { transform: translateY(-13px)  rotate(-4deg);   }
+}
+
+/* ── E: Dot grid ────────────────────────────────────────────────── */
+@keyframes grid-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%       { opacity: 0.9;  }
+}
+.dot-grid {
+  background-image: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.06) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+  animation: grid-pulse 5s ease-in-out infinite;
+}
