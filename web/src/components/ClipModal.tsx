@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { X, ChevronLeft, ChevronRight, Link2 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { type Clip, getClipShareUrl } from "@/lib/api";
@@ -54,7 +55,7 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
     }
   }
 
-  return (
+  return createPortal(
     <div
       ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
@@ -136,7 +137,8 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
