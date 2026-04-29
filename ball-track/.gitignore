@@ -1,0 +1,10 @@
+# Virtual environments
+cfenv/
+venv/
+.venv/
+
+# Test clips and output videos
+*.mp4
+
+# Local env
+.env
