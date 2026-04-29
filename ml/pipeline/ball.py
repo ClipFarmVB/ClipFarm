@@ -38,9 +38,16 @@ MAX_JUMP_PX  = 300        # max pixels a ball can move between sampled frames
 MAX_MISS     = 5          # max consecutive missed frames before track is reset
 
 # ── Contact detection config ──────────────────────────────────────────────────
-CONTACT_ANGLE_DEG  = 25.0   # minimum direction change (degrees) to flag contact
+CONTACT_ANGLE_DEG   = 25.0  # minimum direction change (degrees) to flag contact
 CONTACT_SPEED_RATIO = 0.35  # OR speed change of this fraction of previous speed
-MIN_SPEED_PX       = 4.0    # ignore near-stationary ball (rolling / held)
+MIN_SPEED_PX        = 4.0   # ignore near-stationary ball (rolling / held)
+
+# ── Rally clipping config ─────────────────────────────────────────────────────
+RALLY_GAP_SECONDS    = 8.0   # gap between contacts that splits two rallies
+PRE_RALLY_PAD        = 2.0   # seconds before first contact (capture approach)
+POST_PLAY_PAD        = 2.5   # seconds after ball leaves play (celebration, flight)
+FLOOR_BOUNCE_ANGLE   = 130.0 # direction change >= this = ball hit the floor
+FLOOR_BOUNCE_Y_FRAC  = 0.55  # ball must also be in lower N% of frame
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -275,6 +282,87 @@ def find_contacts(tracker: TrackedBall) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 4. Rally clipping
+# ─────────────────────────────────────────────────────────────────────────────
+
+def contacts_to_rallies(
+    contacts: list[dict],
+    video_duration: float,
+    frame_height: int,
+) -> list[dict]:
+    """
+    Convert a contact list into rally clip boundaries.
+
+    Algorithm:
+      1. Group contacts separated by <= RALLY_GAP_SECONDS into one rally.
+      2. Within each rally find the termination contact — the first contact
+         where the ball hits the floor (high angle reversal in lower frame).
+         If none is found the last contact is used as the termination.
+      3. rally_start = first_contact.time - PRE_RALLY_PAD  (>= 0)
+         rally_end   = termination.time   + POST_PLAY_PAD  (<= video_duration)
+
+    Returns list of dicts compatible with generate_clips():
+      {start, end, action, confidence, labels}
+    """
+    if not contacts:
+        return []
+
+    # ── 1. Group contacts into rallies ────────────────────────────────────────
+    sorted_contacts = sorted(contacts, key=lambda c: c["time"])
+
+    groups: list[list[dict]] = []
+    current: list[dict] = [sorted_contacts[0]]
+    for c in sorted_contacts[1:]:
+        if c["time"] - current[-1]["time"] <= RALLY_GAP_SECONDS:
+            current.append(c)
+        else:
+            groups.append(current)
+            current = [c]
+    groups.append(current)
+
+    # ── 2 & 3. Find termination contact and build clip boundaries ─────────────
+    floor_y_threshold = frame_height * FLOOR_BOUNCE_Y_FRAC
+    rallies: list[dict] = []
+
+    for group in groups:
+        first = group[0]
+        rally_start = max(0.0, first["time"] - PRE_RALLY_PAD)
+
+        # Find the first floor bounce in this rally
+        termination = None
+        for c in group:
+            is_floor_angle = c["angle_change"] >= FLOOR_BOUNCE_ANGLE
+            is_low_in_frame = c["y"] >= floor_y_threshold
+            if is_floor_angle and is_low_in_frame:
+                termination = c
+                break
+
+        # Fallback: use the last contact if no floor bounce found
+        if termination is None:
+            termination = group[-1]
+
+        rally_end = min(video_duration, termination["time"] + POST_PLAY_PAD)
+
+        # Skip degenerate clips (can happen if contacts are at the very end)
+        if rally_end <= rally_start:
+            continue
+
+        rallies.append({
+            "start":      rally_start,
+            "end":        rally_end,
+            "action":     "unknown",   # pose classifier can label later
+            "confidence": 1.0,
+            "labels":     [],
+        })
+
+    logger.info(
+        "contacts_to_rallies: %d contacts -> %d rallies",
+        len(contacts), len(rallies),
+    )
+    return rallies
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -294,3 +382,28 @@ def detect_contacts(video_path: str, api_key: str | None = None) -> list[dict]:
     tracker  = track_ball(video_path, key)
     contacts = find_contacts(tracker)
     return contacts
+
+
+def detect_rallies(video_path: str, api_key: str | None = None) -> list[dict]:
+    """
+    Full pipeline: detect ball -> track -> contacts -> rally clip boundaries.
+
+    Returns list of rally dicts ready for generate_clips():
+      {start, end, action, confidence, labels}
+    """
+    key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
+    if not key:
+        raise ValueError("ROBOFLOW_API_KEY not set and api_key not provided")
+
+    cap = cv2.VideoCapture(video_path)
+    fps          = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+
+    video_duration = total_frames / fps
+
+    tracker  = track_ball(video_path, key)
+    contacts = find_contacts(tracker)
+    rallies  = contacts_to_rallies(contacts, video_duration, frame_height)
+    return rallies
