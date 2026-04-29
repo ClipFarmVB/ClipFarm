@@ -142,7 +142,9 @@ export default function HomePage() {
       </div>
 
       {/* ── Hero: B + C + E ─────────────────────────────────────── */}
-      <div className="-mx-8 relative overflow-hidden">
+      {/* No overflow-hidden here — it would clip the card stack shadows. */}
+      {/* Horizontal scroll is already suppressed by the page root overflow-x-hidden. */}
+      <div className="-mx-8 relative">
         {/* E: Dot grid — drifts diagonally */}
         <div className="dot-grid absolute inset-0 pointer-events-none" />
         {/* Fade only at the very bottom so the grid stays visible */}
