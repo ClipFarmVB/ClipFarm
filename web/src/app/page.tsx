@@ -1,93 +1,101 @@
 import Link from "next/link";
-import { Upload, Play, SlidersHorizontal, Users, ArrowRight, Zap } from "lucide-react";
+import { ArrowRight, Clapperboard, SlidersHorizontal, Users, Zap } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 
-const FEATURES = [
+const STEPS = [
   {
-    icon: Upload,
-    title: "Drop your footage",
-    body: "Upload any MP4, MOV, or AVI up to 15 GB. Processing starts immediately.",
+    step: "01",
+    title: "Upload footage",
+    body: "Drop any MP4, MOV, or AVI up to 15 GB. Processing starts immediately in the background.",
   },
   {
-    icon: Play,
-    title: "AI-powered detection",
-    body: "Pose estimation identifies spikes, serves, digs, sets, and blocks in real time.",
+    step: "02",
+    title: "AI detects actions",
+    body: "YOLOv8 pose estimation identifies spikes, serves, digs, sets, and blocks frame-by-frame.",
   },
   {
-    icon: SlidersHorizontal,
-    title: "Filter everything",
-    body: "Slice your clip feed by action type, player, or confidence threshold.",
+    step: "03",
+    title: "Browse your clips",
+    body: "Filter by action type, player, or confidence. Every clip is trimmed and ready to share.",
   },
-  {
-    icon: Users,
-    title: "Player tagging",
-    body: "Jersey-number OCR auto-links clips to player profiles. Manual tag as fallback.",
-  },
+];
+
+const CAPABILITIES = [
+  { icon: Clapperboard, label: "Auto clip cutting" },
+  { icon: Zap,          label: "Pose estimation" },
+  { icon: SlidersHorizontal, label: "Filter by action" },
+  { icon: Users,        label: "Player tagging" },
 ];
 
 export default function HomePage() {
   return (
-    <div className="flex flex-col items-center">
+    <div className="fade-up">
       {/* Hero */}
-      <div className="relative mt-20 max-w-2xl text-center">
-        {/* Background glow */}
-        <div className="absolute -top-32 left-1/2 -translate-x-1/2 h-64 w-96 bg-brand/8 blur-[100px] rounded-full pointer-events-none" />
-
-        <div className="relative">
-          <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-brand/20 bg-brand/5 px-4 py-1.5 text-xs font-medium text-brand">
-            <Zap size={12} />
-            Powered by YOLOv8 pose estimation
-          </div>
-
-          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight leading-[1.1] text-foreground">
-            Your game footage,
-            <br />
-            <span className="bg-gradient-to-r from-brand to-orange-300 bg-clip-text text-transparent">
-              instant highlights
-            </span>
-          </h1>
-
-          <p className="mx-auto mt-5 max-w-md text-base text-muted leading-relaxed">
-            Upload a full volleyball game. Get a filterable feed of every spike,
-            serve, dig, set, and block — automatically tagged by player.
-          </p>
-
-          <div className="mt-8 flex justify-center gap-3">
-            <Link href="/upload">
-              <Button size="lg">
-                Upload a game
-                <ArrowRight size={14} />
-              </Button>
-            </Link>
-            <Link href="/games">
-              <Button size="lg" variant="secondary">
-                View my games
-              </Button>
-            </Link>
-          </div>
+      <div className="pt-8 pb-16 max-w-xl">
+        <p className="mb-4 text-[11px] font-semibold uppercase tracking-widest text-muted">
+          Volleyball highlights
+        </p>
+        <h1 className="text-3xl font-semibold tracking-tight text-foreground leading-[1.2]">
+          From full game to
+          <br />
+          highlight reel automatically
+        </h1>
+        <p className="mt-4 text-[14px] text-muted leading-relaxed max-w-sm">
+          Upload game footage and get a filterable feed of every spike, serve,
+          dig, set, and block — tagged by player.
+        </p>
+        <div className="mt-7 flex items-center gap-3">
+          <Link href="/upload">
+            <Button size="lg">
+              Upload a game
+              <ArrowRight size={13} />
+            </Button>
+          </Link>
+          <Link href="/games">
+            <Button size="lg" variant="ghost">
+              View library
+            </Button>
+          </Link>
         </div>
       </div>
 
-      {/* Features */}
-      <div className="mt-28 grid w-full max-w-3xl grid-cols-1 gap-3 sm:grid-cols-2">
-        {FEATURES.map(({ icon: Icon, title, body }) => (
-          <div
-            key={title}
-            className="card-noise group rounded-xl border border-border bg-surface p-5 transition-colors hover:border-border-light"
-          >
-            <div className="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 text-brand group-hover:bg-brand/15 transition-colors">
-              <Icon size={18} strokeWidth={2} />
+      {/* Divider */}
+      <div className="h-px bg-border" />
+
+      {/* How it works */}
+      <div className="py-12">
+        <p className="mb-8 text-[11px] font-semibold uppercase tracking-widest text-subtle">
+          How it works
+        </p>
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-3 stagger">
+          {STEPS.map(({ step, title, body }) => (
+            <div key={step}>
+              <p className="mb-3 text-[11px] font-semibold tabular-nums text-brand/70">{step}</p>
+              <h3 className="text-[13px] font-semibold text-foreground">{title}</h3>
+              <p className="mt-1.5 text-[13px] text-muted leading-relaxed">{body}</p>
             </div>
-            <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-            <p className="mt-1 text-sm leading-relaxed text-muted">{body}</p>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
 
-      {/* Footer hint */}
-      <p className="mt-20 mb-8 text-xs text-zinc-600">
-        Built for volleyball coaches, analysts, and players.
-      </p>
+      {/* Divider */}
+      <div className="h-px bg-border" />
+
+      {/* Capabilities pill row */}
+      <div className="py-10 flex flex-wrap gap-2">
+        {CAPABILITIES.map(({ icon: Icon, label }) => (
+          <div
+            key={label}
+            className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] text-muted"
+          >
+            <Icon size={12} className="text-subtle" />
+            {label}
+          </div>
+        ))}
+        <div className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] text-muted">
+          + more
+        </div>
+      </div>
     </div>
   );
 }

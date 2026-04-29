@@ -3,7 +3,6 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase";
-import { Volleyball } from "@/components/ui/Volleyball";
 
 export default function AuthCallbackPage() {
   const router = useRouter();
@@ -11,28 +10,22 @@ export default function AuthCallbackPage() {
   useEffect(() => {
     const supabase = createClient();
 
-    // Supabase puts tokens in the URL hash after OAuth redirect.
-    // The client library picks them up automatically via onAuthStateChange,
-    // but we need to wait for the session to be established.
     supabase.auth.onAuthStateChange((event: string) => {
       if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") {
         router.replace("/games");
       }
     });
 
-    // Fallback: if already signed in (hash already consumed)
     supabase.auth.getSession().then(({ data }: { data: { session: unknown } }) => {
-      if (data.session) {
-        router.replace("/games");
-      }
+      if (data.session) router.replace("/games");
     });
   }, [router]);
 
   return (
     <div className="flex min-h-[70vh] items-center justify-center">
       <div className="text-center">
-        <Volleyball size={32} className="mx-auto mb-3" />
-        <p className="text-sm text-zinc-400">Signing you in…</p>
+        <div className="mx-auto mb-3 h-6 w-6 rounded-full border-2 border-border-strong border-t-brand animate-spin" />
+        <p className="text-[13px] text-muted">Signing you in…</p>
       </div>
     </div>
   );

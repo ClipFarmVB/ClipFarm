@@ -2,24 +2,26 @@
 
 @theme inline {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --color-background: #0a0a0b;
-  --color-foreground: #fafaf9;
-  --color-brand: #f59e0b;
-  --color-brand-light: #fbbf24;
-  --color-brand-dim: #f59e0b33;
-  --color-surface: #141416;
-  --color-surface-light: #1c1c20;
-  --color-border: #27272a;
-  --color-border-light: #3f3f46;
-  --color-muted: #71717a;
-}
 
-@font-face {
-  font-family: "Inter";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap");
+  /* Background layers */
+  --color-background:    #0c0c0e;
+  --color-surface:       #111114;
+  --color-surface-high:  #18181c;
+  --color-surface-hover: #1e1e24;
+
+  /* Borders */
+  --color-border:        #222226;
+  --color-border-strong: #333338;
+
+  /* Text */
+  --color-foreground:    #f0f0f2;
+  --color-muted:         #6e6e7a;
+  --color-subtle:        #44444e;
+
+  /* Accent */
+  --color-brand:         #f59e0b;
+  --color-brand-light:   #fbbf24;
+  --color-brand-dim:     rgba(245, 158, 11, 0.12);
 }
 
 body {
@@ -27,21 +29,24 @@ body {
   color: var(--color-foreground);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  text-rendering: optimizeLegibility;
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+/* ── Scrollbar ─────────────────────────────────────────────────── */
+::-webkit-scrollbar           { width: 5px; height: 5px; }
+::-webkit-scrollbar-track     { background: transparent; }
+::-webkit-scrollbar-thumb     { background: #2a2a2e; border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3a40; }
 
-/* Range slider */
+/* ── Range input ────────────────────────────────────────────────── */
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
-  height: 4px;
-  background: #27272a;
-  border-radius: 2px;
+  height: 3px;
+  background: #222226;
+  border-radius: 99px;
   outline: none;
 }
 input[type="range"]::-webkit-slider-thumb {
@@ -50,37 +55,57 @@ input[type="range"]::-webkit-slider-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #f59e0b;
+  background: var(--color-brand);
   cursor: pointer;
-  border: 2px solid #0a0a0b;
+  border: 2px solid var(--color-background);
+  transition: transform 0.12s ease;
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
 }
 
-/* Subtle noise texture on cards */
-.card-noise {
-  position: relative;
+/* ── Skeleton loader ────────────────────────────────────────────── */
+@keyframes skeleton-sweep {
+  0%   { background-position: -600px 0; }
+  100% { background-position:  600px 0; }
 }
-.card-noise::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  opacity: 0.02;
-  pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-}
-
-/* Glow effect for brand elements */
-.glow-brand {
-  box-shadow: 0 0 20px rgba(245, 158, 11, 0.15), 0 0 60px rgba(245, 158, 11, 0.05);
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-surface)      25%,
+    var(--color-surface-high) 50%,
+    var(--color-surface)      75%
+  );
+  background-size: 1200px 100%;
+  animation: skeleton-sweep 2s ease-in-out infinite;
+  border-radius: 6px;
 }
 
-/* Loading shimmer */
-@keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+/* ── Fade-up reveal ─────────────────────────────────────────────── */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
-.shimmer {
-  background: linear-gradient(90deg, #141416 25%, #1c1c20 50%, #141416 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s ease-in-out infinite;
+.fade-up { animation: fade-up 0.22s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* ── Staggered list children ────────────────────────────────────── */
+.stagger > * { animation: fade-up 0.22s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.stagger > *:nth-child(1)  { animation-delay:   0ms; }
+.stagger > *:nth-child(2)  { animation-delay:  40ms; }
+.stagger > *:nth-child(3)  { animation-delay:  80ms; }
+.stagger > *:nth-child(4)  { animation-delay: 120ms; }
+.stagger > *:nth-child(5)  { animation-delay: 160ms; }
+.stagger > *:nth-child(6)  { animation-delay: 200ms; }
+.stagger > *:nth-child(7)  { animation-delay: 240ms; }
+.stagger > *:nth-child(8)  { animation-delay: 280ms; }
+.stagger > *:nth-child(9)  { animation-delay: 320ms; }
+.stagger > *:nth-child(10) { animation-delay: 360ms; }
+
+/* ── Scale-press feedback ───────────────────────────────────────── */
+.press:active { transform: scale(0.97); }
+
+/* ── Focus ring ─────────────────────────────────────────────────── */
+.focus-ring:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
 }
