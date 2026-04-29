@@ -13,21 +13,37 @@ interface ClipModalProps {
 }
 
 export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoRef  = useRef<HTMLVideoElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
 
+  // Auto-play when clip changes
   useEffect(() => {
     videoRef.current?.play();
   }, [clip.id]);
 
+  // Lock body scroll while modal is open — prevents background page from
+  // jumping when the modal is opened or closed
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  // Keyboard navigation
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape")      onClose();
-      if (e.key === "ArrowLeft")   onPrev?.();
-      if (e.key === "ArrowRight")  onNext?.();
+      if (e.key === "Escape")     onClose();
+      if (e.key === "ArrowLeft")  onPrev?.();
+      if (e.key === "ArrowRight") onNext?.();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, onPrev, onNext]);
+
+  // Click-outside: close only when clicking the overlay itself, not the modal card
+  function handleOverlayClick(e: React.MouseEvent<HTMLDivElement>) {
+    if (e.target === overlayRef.current) onClose();
+  }
 
   async function handleShare() {
     try {
@@ -40,8 +56,9 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
 
   return (
     <div
+      ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
+      onClick={handleOverlayClick}
     >
       <div className="relative w-full max-w-4xl rounded-xl border border-border bg-surface overflow-hidden shadow-2xl shadow-black/60">
         {/* Header */}
