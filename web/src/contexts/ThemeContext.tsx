@@ -3,7 +3,6 @@
 import {
   createContext,
   useContext,
-  useEffect,
   useState,
   type ReactNode,
 } from "react";
@@ -23,17 +22,14 @@ function applyTheme(t: Theme) {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  // Start with dark — the anti-flash script in layout.tsx already set the
-  // correct class on <html> before hydration, so no visible flash occurs.
-  const [theme, setTheme] = useState<Theme>("dark");
-
-  useEffect(() => {
-    // Sync React state with whatever the anti-flash script applied.
+  // Lazy initializer reads localStorage once on mount (client only).
+  // The anti-flash script in layout.tsx already applied the correct class
+  // before hydration, so there is no visible flash.
+  const [theme, setTheme] = useState<Theme>(() => {
+    if (typeof window === "undefined") return "dark";
     const stored = localStorage.getItem("cf-theme") as Theme | null;
-    const resolved: Theme = stored === "light" ? "light" : "dark";
-    setTheme(resolved);
-    applyTheme(resolved);
-  }, []);
+    return stored === "light" ? "light" : "dark";
+  });
 
   function toggle() {
     const next: Theme = theme === "dark" ? "light" : "dark";

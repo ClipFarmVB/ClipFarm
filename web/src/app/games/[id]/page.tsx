@@ -170,7 +170,7 @@ export default function GamePage() {
             {game.status === "queued" ? "Queued for processing" : "Analyzing footage"}
           </p>
           <p className="mt-1.5 text-[12px] text-muted max-w-xs">
-            Detecting actions and cutting clips. You can leave this page — we'll keep working.
+            Detecting actions and cutting clips. You can leave this page — we&apos;ll keep working.
           </p>
         </div>
       )}
