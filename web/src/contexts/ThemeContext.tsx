@@ -3,6 +3,7 @@
 import {
   createContext,
   useContext,
+  useEffect,
   useState,
   type ReactNode,
 } from "react";
@@ -17,19 +18,23 @@ interface ThemeCtx {
 const Ctx = createContext<ThemeCtx>({ theme: "dark", toggle: () => {} });
 
 function applyTheme(t: Theme) {
-  const root = document.documentElement;
-  root.classList.toggle("dark", t === "dark");
+  document.documentElement.classList.toggle("dark", t === "dark");
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  // Lazy initializer reads localStorage once on mount (client only).
-  // The anti-flash script in layout.tsx already applied the correct class
-  // before hydration, so there is no visible flash.
-  const [theme, setTheme] = useState<Theme>(() => {
-    if (typeof window === "undefined") return "dark";
+  // Start with "dark" to match the server render — the anti-flash script in
+  // layout.tsx already applied the correct class to <html> before hydration,
+  // so there is no visible flash. After hydration the effect syncs React state
+  // to whatever localStorage says.
+  const [theme, setTheme] = useState<Theme>("dark");
+
+  useEffect(() => {
     const stored = localStorage.getItem("cf-theme") as Theme | null;
-    return stored === "light" ? "light" : "dark";
-  });
+    const resolved: Theme = stored === "light" ? "light" : "dark";
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: syncing SSR default to localStorage after hydration
+    setTheme(resolved);
+    applyTheme(resolved);
+  }, []);
 
   function toggle() {
     const next: Theme = theme === "dark" ? "light" : "dark";
