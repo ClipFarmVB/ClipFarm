@@ -39,6 +39,9 @@ PAD_BEFORE = 2.0   # seconds
 PAD_AFTER = 3.0    # seconds
 MIN_CLIP_GAP = 1.5  # Merge detections closer than this (seconds)
 
+# ── Rally grouping config ─────────────────────────────────────────────────────
+RALLY_GAP_SECONDS = 8.0  # Max gap between consecutive clips to consider same rally
+
 # ── Quality filters ──────────────────────────────────────────────────────────
 MIN_GROUP_FRAMES = 3       # Minimum frame-level detections to form a clip
 MIN_CONFIDENCE = 0.50      # Discard detections below this confidence
@@ -280,6 +283,81 @@ def _merge_detections(
         detections.append(d)
 
     return detections
+
+
+def group_into_rallies(detections: list[dict], video_duration: float) -> list[dict]:
+    """
+    Merge per-action detections that belong to the same rally into single clips.
+
+    Two detections are part of the same rally when the gap between one clip's
+    end and the next clip's start is <= RALLY_GAP_SECONDS.  The resulting rally
+    clip spans from the earliest start to the latest end (individual per-action
+    padding is already baked in, so no additional padding is applied).
+
+    Extra fields added to each output dict:
+      labels   — ordered list of unique non-unknown action types in the rally
+                 (e.g. ["spike", "dig", "set"])
+      action   — dominant action by summed confidence
+      confidence — mean confidence across all constituent detections
+    """
+    if not detections:
+        return []
+
+    sorted_dets = sorted(detections, key=lambda d: d["start"])
+
+    # Group consecutive detections into rallies
+    rallies: list[list[dict]] = []
+    current: list[dict] = [sorted_dets[0]]
+
+    for det in sorted_dets[1:]:
+        gap = det["start"] - current[-1]["end"]
+        if gap <= RALLY_GAP_SECONDS:
+            current.append(det)
+        else:
+            rallies.append(current)
+            current = [det]
+    rallies.append(current)
+
+    result: list[dict] = []
+    for rally in rallies:
+        rally_start = min(d["start"] for d in rally)
+        rally_end = min(max(d["end"] for d in rally), video_duration)
+
+        # Preserve insertion order of first-seen action types (skip unknown)
+        seen: dict[str, None] = {}
+        for d in rally:
+            if d["action"] != "unknown":
+                seen[d["action"]] = None
+        labels = list(seen.keys())
+
+        # Dominant action by summed confidence
+        action_scores: dict[str, float] = {}
+        for d in rally:
+            if d["action"] != "unknown":
+                action_scores[d["action"]] = action_scores.get(d["action"], 0.0) + d["confidence"]
+
+        if action_scores:
+            dominant = max(action_scores, key=action_scores.__getitem__)  # type: ignore[arg-type]
+        else:
+            dominant = "unknown"
+
+        avg_conf = round(sum(d["confidence"] for d in rally) / len(rally), 4)
+
+        result.append({
+            "start": rally_start,
+            "end": rally_end,
+            "action": dominant,
+            "confidence": avg_conf,
+            "labels": labels,
+        })
+
+    logger.info(
+        "Rally grouping: %d detections → %d rallies (avg %.1f actions/rally)",
+        len(detections),
+        len(result),
+        len(detections) / max(len(result), 1),
+    )
+    return result
 
 
 def _stub_detections(video_path: str) -> list[dict]:

@@ -115,6 +115,27 @@ def process_game_task(self, game_id: str, raw_video_url: str):
             logger.info("Downloading key=%s from R2 for clip generation", r2_key)
             s3.download_file(r2_key, local_video)
 
+            # Rally grouping — merge per-action detections that belong to the
+            # same rally into single longer clips, eliminating dead time between
+            # consecutive actions.
+            try:
+                import cv2 as _cv2
+                from ml.pipeline.detect import group_into_rallies
+                _cap = _cv2.VideoCapture(str(local_video))
+                _fps = _cap.get(_cv2.CAP_PROP_FPS) or 30.0
+                _frames = int(_cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+                _cap.release()
+                video_duration = _frames / _fps
+                before_rally = len(detections)
+                detections = group_into_rallies(detections, video_duration)
+                logger.info(
+                    "Rally grouping: %d detections → %d rally clips",
+                    before_rally,
+                    len(detections),
+                )
+            except Exception as rally_err:
+                logger.warning("Rally grouping failed (%s) — using per-action clips", rally_err)
+
             # Audio energy weighting — boost detections near loud moments,
             # penalize detections during silence, then drop low-confidence ones
             try:
@@ -168,6 +189,7 @@ def process_game_task(self, game_id: str, raw_video_url: str):
                     "end_time": cd["end"],
                     "clip_url": clip_url,
                     "thumbnail_url": thumb_url,
+                    "labels": cd.get("labels", []),
                 })
 
             sync_save_clips(rows)

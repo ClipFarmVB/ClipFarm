@@ -65,6 +65,7 @@ def sync_save_clips(rows: list[dict]):
                 end_time=row["end_time"],
                 clip_url=row["clip_url"],
                 thumbnail_url=row.get("thumbnail_url"),
+                labels=row.get("labels", []),
             )
             s.add(clip)
         s.commit()
