@@ -1,17 +1,14 @@
 "use client";
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
-export function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
-  const router = useRouter();
 
-  useEffect(() => {
-    if (!loading && !user) {
-      router.replace("/login");
-    }
-  }, [user, loading, router]);
+/**
+ * Shows a loading spinner while the Supabase session is resolving.
+ * Route protection itself is handled by src/middleware.ts — this component
+ * just prevents a flash of unauthenticated content on the client.
+ */
+export function RequireAuth({ children }: { children: React.ReactNode }) {
+  const { loading } = useAuth();
 
   if (loading) {
     return (
@@ -20,8 +17,6 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-
-  if (!user) return null;
 
   return <>{children}</>;
 }
