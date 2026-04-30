@@ -19,8 +19,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    # No host port mapping — only reachable by other containers in this network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -43,7 +42,7 @@ services:
       redis:
         condition: service_healthy
     command: >
-      sh -lc "alembic upgrade head && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
+      sh -lc "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
     volumes:

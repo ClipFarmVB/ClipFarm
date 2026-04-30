@@ -76,7 +76,7 @@ async def create_game(
             detail=f"Unsupported file type. Allowed: {sorted(settings.allowed_content_types_set)}",
         )
 
-    # Validate size (Content-Length header is advisory; enforce hard limit during upload too)
+    # Reject early if Content-Length header is present and already too large
     if file.size is not None and file.size > settings.max_upload_bytes:
         raise HTTPException(
             status_code=413,
@@ -90,7 +90,12 @@ async def create_game(
     key = storage.game_raw_key(game_id, safe_filename)
 
     try:
-        raw_url = storage.upload_fileobj(file.file, key, content_type=content_type)
+        # LimitedReader enforces the hard cap during streaming even when
+        # Content-Length is absent (file.size is None)
+        limited = storage.LimitedReader(file.file, settings.max_upload_bytes)
+        raw_url = storage.upload_fileobj(limited, key, content_type=content_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc))
     except Exception:
         logger.exception("Storage upload failed for game %s", game_id)
         raise HTTPException(status_code=500, detail="Storage upload failed")

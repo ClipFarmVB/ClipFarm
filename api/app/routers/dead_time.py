@@ -99,7 +99,10 @@ async def create_dead_time_run(
     key = storage.dead_time_raw_key(run_id, safe_filename)
 
     try:
-        raw_url = storage.upload_fileobj(file.file, key, content_type=content_type)
+        limited = storage.LimitedReader(file.file, settings.max_upload_bytes)
+        raw_url = storage.upload_fileobj(limited, key, content_type=content_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc))
     except Exception:
         logger.exception("Storage upload failed for dead-time run %s", run_id)
         raise HTTPException(status_code=500, detail="Storage upload failed")

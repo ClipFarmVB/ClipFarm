@@ -8,6 +8,28 @@ from botocore.config import Config
 from app.config import settings
 
 
+class LimitedReader:
+    """
+    Wraps a file-like object and raises ValueError if more than `limit` bytes
+    are read. Passed directly to upload_fileobj to enforce size limits even
+    when the client omits a Content-Length header.
+    """
+
+    def __init__(self, fileobj, limit: int) -> None:
+        self._f = fileobj
+        self._limit = limit
+        self._total = 0
+
+    def read(self, n: int = -1) -> bytes:
+        chunk = self._f.read(n)
+        self._total += len(chunk)
+        if self._total > self._limit:
+            raise ValueError(
+                f"Upload exceeds maximum size of {self._limit // (1024 * 1024)} MB"
+            )
+        return chunk
+
+
 def r2_configured() -> bool:
     """True only when real R2 credentials are present (not placeholder values)."""
     return bool(
