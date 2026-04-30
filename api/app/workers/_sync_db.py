@@ -103,37 +103,3 @@ def sync_save_dead_time_clips(rows: list[dict]):
             )
             s.add(clip)
         s.commit()
-
-
-def sync_set_dead_time_run_status(
-    run_id: uuid.UUID,
-    status: str,
-    processed_at: datetime | None = None,
-    error_message: str | None = None,
-):
-    with Session(_engine) as s:
-        run = s.get(DeadTimeRun, run_id)
-        if not run:
-            return
-        run.status = DeadTimeRunStatus(status)
-        if processed_at:
-            run.processed_at = processed_at
-        if error_message:
-            run.error_message = error_message
-        s.commit()
-
-
-def sync_save_dead_time_clips(rows: list[dict]):
-    with Session(_engine) as s:
-        for row in rows:
-            clip = DeadTimeClip(
-                id=row["id"],
-                run_id=row["run_id"],
-                start_time=row["start_time"],
-                end_time=row["end_time"],
-                score=row["score"],
-                clip_url=row["clip_url"],
-                thumbnail_url=row.get("thumbnail_url"),
-            )
-            s.add(clip)
-        s.commit()
