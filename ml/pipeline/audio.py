@@ -28,7 +28,6 @@ QUIET_PERCENTILE = 25        # Below this = "quiet moment"
 # Confidence adjustments
 LOUD_BOOST = 1.25            # Multiply confidence by this if near a loud moment
 QUIET_PENALTY = 0.70         # Multiply confidence by this if in a quiet moment
-SEARCH_WINDOW = 2.0          # Seconds around detection peak to search for audio energy
 
 
 def _extract_audio_pcm(video_path: str) -> np.ndarray | None:
@@ -92,14 +91,20 @@ def _compute_rms_energy(samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return times, energy
 
 
-def _energy_at_time(
+def _peak_energy_in_window(
     times: np.ndarray,
     energy: np.ndarray,
-    t: float,
-    search_window: float = SEARCH_WINDOW,
+    start: float,
+    end: float,
 ) -> float:
-    """Get the maximum energy within search_window seconds of time t."""
-    mask = np.abs(times - t) <= search_window
+    """
+    Return the maximum RMS energy within [start, end] seconds.
+
+    We scan the full clip window rather than sampling around a midpoint so
+    that rally clips (which can be 30–60 s long) are evaluated correctly.
+    For single-action clips the window is just a few seconds, same effect.
+    """
+    mask = (times >= start) & (times <= end)
     if not np.any(mask):
         return 0.0
     return float(np.max(energy[mask]))
@@ -148,8 +153,10 @@ def weight_detections_by_audio(
 
     for det in detections:
         det = {**det}  # shallow copy
-        peak_time = (det["start"] + det["end"]) / 2
-        local_energy = _energy_at_time(times, energy, peak_time)
+        # Scan the full clip window for the loudest moment.  The audio spike
+        # (ball hit + crowd) lags the visible action by ~0.3–1 s, so it will
+        # naturally fall inside the clip's PAD_AFTER tail — no offset needed.
+        local_energy = _peak_energy_in_window(times, energy, det["start"], det["end"])
 
         if local_energy >= loud_threshold:
             det["confidence"] = min(det["confidence"] * LOUD_BOOST, 0.95)
