@@ -23,6 +23,11 @@ RUN pip install --upgrade pip \
 COPY api /app/api
 COPY ml /app/ml
 
+# Run as a non-root user so Celery doesn't warn about superuser privileges.
+RUN useradd -m -u 1000 -s /bin/bash appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 ENV PYTHONPATH=/app
 WORKDIR /app/api
 
