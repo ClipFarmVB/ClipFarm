@@ -7,6 +7,7 @@ import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
 import { getGames, deleteGame, type Game } from "@/lib/api";
+import { getCachedGames, getInflightGames, updateGamesCache, invalidateGamesCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
 
 const STATUS_DOT: Record<Game["status"], string> = {
@@ -24,8 +25,9 @@ const STATUS_LABEL: Record<Game["status"], string> = {
 };
 
 function GamesContent() {
-  const [games, setGames] = useState<Game[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Initialise from cache for an instant render — no spinner if data is ready.
+  const [games, setGames] = useState<Game[]>(() => getCachedGames() ?? []);
+  const [loading, setLoading] = useState(() => getCachedGames() === null);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [hovering, setHovering] = useState<string | null>(null);
@@ -35,7 +37,11 @@ function GamesContent() {
     setDeleting(gameId);
     try {
       await deleteGame(gameId);
-      setGames((prev) => prev.filter((g) => g.id !== gameId));
+      setGames((prev) => {
+        const next = prev.filter((g) => g.id !== gameId);
+        updateGamesCache(next);
+        return next;
+      });
     } catch (e) {
       alert(e instanceof Error ? e.message : "Delete failed");
     } finally {
@@ -44,18 +50,35 @@ function GamesContent() {
   }
 
   useEffect(() => {
-    getGames()
-      .then(setGames)
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+    const cached = getCachedGames();
+    const hasActive = (list: Game[]) =>
+      list.some((g) => g.status === "processing" || g.status === "queued");
+
+    // If we have fresh data with no active jobs there's nothing to fetch.
+    if (cached && !hasActive(cached)) return;
+
+    // Re-use the in-flight prefetch started by AuthContext, or start a new one.
+    const p = getInflightGames() ?? getGames();
+    p.then((data) => {
+      updateGamesCache(data);
+      setGames(data);
+      setLoading(false);
+    }).catch((e: Error) => {
+      setError(e.message);
+      setLoading(false);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Poll while any game is active
+  // Poll while any game is actively processing
   useEffect(() => {
     const hasActive = games.some((g) => g.status === "processing" || g.status === "queued");
     if (!hasActive) return;
     const interval = setInterval(() => {
-      getGames().then(setGames).catch(() => {});
+      getGames().then((data) => {
+        updateGamesCache(data);
+        setGames(data);
+      }).catch(() => {});
     }, 10_000);
     return () => clearInterval(interval);
   }, [games]);

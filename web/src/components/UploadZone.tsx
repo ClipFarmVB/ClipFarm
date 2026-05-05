@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Upload, Film, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { uploadGame } from "@/lib/api";
+import { invalidateGamesCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
 
 const ACCEPTED = ["video/mp4", "video/quicktime", "video/x-msvideo", "video/webm"];
@@ -50,6 +51,7 @@ export function UploadZone() {
     setError(null);
     try {
       const game = await uploadGame(file, title || file.name, (pct) => setProgress(pct));
+      invalidateGamesCache(); // new game was created — force a fresh fetch on next visit
       router.push(`/games/${game.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed.");

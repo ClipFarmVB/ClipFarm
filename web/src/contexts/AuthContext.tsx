@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef, type ReactNode } from "react";
 import { type Session, type User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase";
+import { prefetchGames } from "@/lib/gamesCache";
 
 interface AuthState {
   user: User | null;
@@ -26,17 +27,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const supabase = supabaseRef.current;
 
   useEffect(() => {
-    // Get initial session
+    // Get initial session — kick off the games prefetch immediately so the
+    // library page has data ready before the user even navigates there.
     supabase.auth.getSession().then(({ data }: { data: { session: Session | null } }) => {
       setSession(data.session);
       setLoading(false);
+      if (data.session) prefetchGames();
     });
 
-    // Listen for auth changes
+    // Listen for auth changes (sign-in, token refresh, sign-out)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event: string, session: Session | null) => {
         setSession(session);
         setLoading(false);
+        if (session) prefetchGames();
       }
     );
 
