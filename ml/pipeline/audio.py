@@ -159,7 +159,7 @@ def weight_detections_by_audio(
         local_energy = _peak_energy_in_window(times, energy, det["start"], det["end"])
 
         if local_energy >= loud_threshold:
-            det["confidence"] = min(det["confidence"] * LOUD_BOOST, 0.95)
+            det["confidence"] = min(det["confidence"] * LOUD_BOOST, 0.93)
             boosted += 1
         elif local_energy <= quiet_threshold:
             det["confidence"] = det["confidence"] * QUIET_PENALTY

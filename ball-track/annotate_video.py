@@ -45,9 +45,18 @@ print(f"Sampling every {SAMPLE_EVERY} frames -> ~{total_frames // SAMPLE_EVERY} 
 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 out    = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, native_fps, (width, height))
 
+# Max distance (px) the ball can travel between sampled frames.
+# Detections further than this from the last known position are treated
+# as a different object (spare ball, player, crowd artifact).
+MAX_JUMP_PX = 300
+
 frame_idx  = 0
 written    = 0
 detected   = 0
+misses     = 0
+MAX_MISS   = 5           # reset track after this many consecutive missed frames
+last_x: float | None = None
+last_y: float | None = None
 t_start    = time.time()
 
 while True:
@@ -62,22 +71,40 @@ while True:
         preds = []
         if results and hasattr(results[0], "predictions"):
             preds = results[0].predictions
+        # Sort by confidence descending so we fall back to best if no track yet
+        preds = sorted(preds, key=lambda p: p.confidence, reverse=True)
 
+        # ── Trajectory filter ──────────────────────────────────────────────
+        # When multiple balls are detected, pick the one closest to where
+        # the tracked ball was last seen.  Reject anything beyond MAX_JUMP_PX
+        # (spare balls sitting at the edge of the frame, crowd artifacts).
+        best = None
         if preds:
+            if last_x is None:
+                best = preds[0]          # no track yet — highest confidence wins
+            else:
+                closest = min(preds, key=lambda p: np.hypot(p.x - last_x, p.y - last_y))
+                if np.hypot(closest.x - last_x, closest.y - last_y) <= MAX_JUMP_PX:
+                    best = closest
+
+        if best:
             detected += 1
-            # Draw bounding boxes directly with OpenCV (no cloud round-trip)
-            for pred in preds:
-                x1 = int(pred.x - pred.width / 2)
-                y1 = int(pred.y - pred.height / 2)
-                x2 = int(pred.x + pred.width / 2)
-                y2 = int(pred.y + pred.height / 2)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                label = f"{pred.confidence:.2f}"
-                cv2.putText(frame, label, (x1, y1 - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                print(f"  Frame {frame_idx:5d} | ball at ({pred.x:.0f}, {pred.y:.0f}) "
-                      f"| conf {pred.confidence:.2f}")
+            misses = 0
+            last_x, last_y = best.x, best.y
+            x1 = int(best.x - best.width / 2)
+            y1 = int(best.y - best.height / 2)
+            x2 = int(best.x + best.width / 2)
+            y2 = int(best.y + best.height / 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, f"{best.confidence:.2f}", (x1, y1 - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            print(f"  Frame {frame_idx:5d} | ball at ({best.x:.0f}, {best.y:.0f}) "
+                  f"| conf {best.confidence:.2f}")
         else:
+            misses += 1
+            if misses >= MAX_MISS:
+                last_x = last_y = None   # reset track — ball left frame or hidden
+                misses = 0
             print(f"  Frame {frame_idx:5d} | no detection")
 
     out.write(frame)

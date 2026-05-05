@@ -195,7 +195,7 @@ async def update_clip_labels(
         clip.confidence = 0.0
     else:
         clip.action_type = ActionType(clean_labels[0])
-        clip.confidence = 1.0
+        clip.confidence = 0.93
 
     await db.commit()
     await db.refresh(clip)
