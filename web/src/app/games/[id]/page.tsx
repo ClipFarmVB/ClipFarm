@@ -7,6 +7,7 @@ import { AlertCircle, ArrowLeft, CheckSquare, Square, Trash2, X } from "lucide-r
 import { ClipCardSkeleton } from "@/components/ui/Skeleton";
 import { ClipCard } from "@/components/ClipCard";
 import { ClipModal } from "@/components/ClipModal";
+import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type Player, type ActionType, type ClipFilters } from "@/lib/api";
@@ -33,6 +34,7 @@ export default function GamePage() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [savingClipId, setSavingClipId] = useState<string | null>(null);
 
   const toggleSelect = useCallback((clipId: string) => {
     setSelectedIds((prev) => {
@@ -307,6 +309,7 @@ export default function GamePage() {
                   }
                   selected={selectedIds.has(clip.id)}
                   onToggleSelect={selectMode ? toggleSelect : undefined}
+                  onSave={selectMode ? undefined : (id) => setSavingClipId(id)}
                 />
               ))}
             </div>
@@ -314,7 +317,15 @@ export default function GamePage() {
         </>
       )}
 
-      {/* Modal */}
+      {/* Collection picker */}
+      {savingClipId && (
+        <CollectionPickerModal
+          clipId={savingClipId}
+          onClose={() => setSavingClipId(null)}
+        />
+      )}
+
+      {/* Clip modal */}
       {activeClipIndex !== null && clips[activeClipIndex] && (
         <ClipModal
           clip={clips[activeClipIndex]}

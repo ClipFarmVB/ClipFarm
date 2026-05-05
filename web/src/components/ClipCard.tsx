@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Play, User, ChevronLeft, ChevronRight, Tag, Check } from "lucide-react";
+import { Play, User, ChevronLeft, ChevronRight, Tag, Check, Bookmark } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { type Clip, type Player, type ActionType, tagClip, updateClipLabels, trimClip } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -15,9 +15,10 @@ interface ClipCardProps {
   onUpdate?: (clip: Clip) => void;
   selected?: boolean;
   onToggleSelect?: (clipId: string) => void;
+  onSave?: (clipId: string) => void;
 }
 
-export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSelect }: ClipCardProps) {
+export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSelect, onSave }: ClipCardProps) {
   const [tagging, setTagging] = useState(false);
   const [labeling, setLabeling] = useState(false);
   const [trimming, setTrimming] = useState(false);
@@ -198,6 +199,17 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
               <Tag size={9} />
               Label
             </button>
+
+            {onSave && (
+              <button
+                onClick={() => onSave(clip.id)}
+                className="flex items-center gap-1 rounded px-1.5 py-1 text-[10px] text-subtle hover:text-muted hover:bg-surface-hover transition-colors"
+                title="Save to collection"
+              >
+                <Bookmark size={9} />
+                Save
+              </button>
+            )}
 
             <button
               onClick={() => { setTrimming(!trimming); setLabeling(false); }}

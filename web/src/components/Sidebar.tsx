@@ -2,15 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Clapperboard, Upload, LayoutGrid, Timer, LogOut, Sun, Moon } from "lucide-react";
+import { Clapperboard, Upload, LayoutGrid, Timer, LogOut, Sun, Moon, FolderOpen } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
-  { href: "/games",    label: "Library",    icon: LayoutGrid },
-  { href: "/upload",   label: "Upload",     icon: Upload },
-  { href: "/deadtime", label: "Dead Time",  icon: Timer },
+  { href: "/games",       label: "Library",     icon: LayoutGrid },
+  { href: "/collections", label: "Collections", icon: FolderOpen },
+  { href: "/upload",      label: "Upload",      icon: Upload },
+  { href: "/deadtime",    label: "Dead Time",   icon: Timer },
 ] as const;
 
 export function Sidebar() {

@@ -191,6 +191,52 @@ export function trimClip(clipId: string, startDelta: number, endDelta: number): 
   });
 }
 
+// ─── Collections ─────────────────────────────────────────────────────────────
+
+export interface Collection {
+  id: string;
+  name: string;
+  clip_count: number;
+  created_at: string;
+}
+
+export function getCollections(): Promise<Collection[]> {
+  return request<Collection[]>("/collections");
+}
+
+export function createCollection(name: string): Promise<Collection> {
+  return request<Collection>("/collections", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function renameCollection(id: string, name: string): Promise<Collection> {
+  return request<Collection>(`/collections/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteCollection(id: string): Promise<void> {
+  return request<void>(`/collections/${id}`, { method: "DELETE" });
+}
+
+export function getCollectionClips(id: string): Promise<Clip[]> {
+  return request<Clip[]>(`/collections/${id}/clips`);
+}
+
+export function addClipToCollection(collectionId: string, clipId: string): Promise<void> {
+  return request<void>(`/collections/${collectionId}/clips`, {
+    method: "POST",
+    body: JSON.stringify({ clip_id: clipId }),
+  });
+}
+
+export function removeClipFromCollection(collectionId: string, clipId: string): Promise<void> {
+  return request<void>(`/collections/${collectionId}/clips/${clipId}`, { method: "DELETE" });
+}
+
 // ─── Dead Time (temporary) ───────────────────────────────────────────────────
 
 export interface DeadTimeRun {
