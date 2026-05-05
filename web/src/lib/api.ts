@@ -50,6 +50,13 @@ export function getGame(id: string): Promise<Game> {
   return request<Game>(`/games/${id}`);
 }
 
+export function renameGame(id: string, title: string): Promise<Game> {
+  return request<Game>(`/games/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  });
+}
+
 export async function deleteGame(id: string): Promise<void> {
   const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_URL}/games/${id}`, {

@@ -12,7 +12,7 @@ from app.config import settings
 from app.database import get_db
 from app.models.game import Game, GameStatus
 from app.models.clip import Clip
-from app.schemas.game import GameOut
+from app.schemas.game import GameOut, GameRename
 from app.services import storage
 from app.workers.tasks import process_game_task
 
@@ -114,6 +114,17 @@ async def create_game(
     # Enqueue processing job
     process_game_task.delay(str(game_id), raw_url)
 
+    return GameOut.model_validate(game)
+
+
+@router.patch("/{game_id}", response_model=GameOut)
+async def rename_game(game_id: uuid.UUID, body: GameRename, user_id: UserId, db: DB):
+    game = await db.get(Game, game_id)
+    if not game or game.owner_id != user_id:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game.title = body.title
+    await db.commit()
+    await db.refresh(game)
     return GameOut.model_validate(game)
 
 

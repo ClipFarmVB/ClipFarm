@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { AlertCircle, ArrowRight, Plus, Trash2 } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
-import { getGames, deleteGame, type Game } from "@/lib/api";
+import { getGames, deleteGame, renameGame, type Game } from "@/lib/api";
 import { getCachedGames, getInflightGames, updateGamesCache, invalidateGamesCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
 
@@ -31,6 +31,33 @@ function GamesContent() {
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [hovering, setHovering] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  function startRename(game: Game) {
+    setRenaming(game.id);
+    setRenameValue(game.title);
+    setTimeout(() => renameInputRef.current?.select(), 0);
+  }
+
+  async function commitRename(gameId: string) {
+    const trimmed = renameValue.trim();
+    setRenaming(null);
+    if (!trimmed) return;
+    const original = games.find((g) => g.id === gameId)?.title ?? "";
+    if (trimmed === original) return;
+    try {
+      const updated = await renameGame(gameId, trimmed);
+      setGames((prev) => {
+        const next = prev.map((g) => (g.id === gameId ? { ...g, title: updated.title } : g));
+        updateGamesCache(next);
+        return next;
+      });
+    } catch {
+      // silently revert — title stays as original in state since we didn't optimistically update
+    }
+  }
 
   async function handleDelete(gameId: string, title: string) {
     if (!confirm(`Delete "${title}" and all its clips? This cannot be undone.`)) return;
@@ -163,11 +190,30 @@ function GamesContent() {
                   : "border-border bg-surface"
               )}
             >
-              <Link href={`/games/${game.id}`} className="min-w-0">
-                <span className="block truncate text-[13px] font-medium text-foreground group-hover:text-brand transition-colors">
-                  {game.title}
-                </span>
-              </Link>
+              {renaming === game.id ? (
+                <input
+                  ref={renameInputRef}
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={() => commitRename(game.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.currentTarget.blur(); }
+                    if (e.key === "Escape") { setRenaming(null); }
+                  }}
+                  className="w-full truncate rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[13px] font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-brand"
+                  maxLength={255}
+                />
+              ) : (
+                <button
+                  onClick={() => startRename(game)}
+                  className="min-w-0 w-full text-left"
+                  title="Click to rename"
+                >
+                  <span className="block truncate text-[13px] font-medium text-foreground group-hover:text-brand transition-colors">
+                    {game.title}
+                  </span>
+                </button>
+              )}
 
               <span className="text-right text-[11px] text-muted tabular-nums">
                 {new Date(game.created_at).toLocaleDateString(undefined, {
