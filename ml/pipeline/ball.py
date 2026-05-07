@@ -225,7 +225,68 @@ def _angle_between(v1: tuple[float, float], v2: tuple[float, float]) -> float:
     return float(np.degrees(np.arccos(cos_theta)))
 
 
-def find_contacts(tracker: TrackedBall) -> list[dict]:
+def classify_contact_action(
+    positions: list[BallPosition],
+    i: int,
+    frame_height: int,
+) -> tuple[str, float]:
+    """
+    Classify a volleyball action from ball trajectory at contact index i.
+
+    Uses the velocity vectors immediately before and after the contact point,
+    plus the ball's height in the frame, to determine what kind of hit occurred.
+
+    In image coordinates Y increases downward:
+      vy > 0  = ball falling
+      vy < 0  = ball rising
+
+    Returns (action_type, confidence).
+    """
+    pos    = positions[i]
+    y_frac = pos.y / max(frame_height, 1)   # 0 = top of frame, 1 = bottom
+
+    # Stable velocity: average over up to 2 positions either side of contact
+    pre  = max(0, i - 2)
+    post = min(len(positions) - 1, i + 2)
+
+    a, b = positions[pre], pos
+    dt = b.frame - a.frame
+    v_before = ((b.x - a.x) / dt, (b.y - a.y) / dt) if dt > 0 else (0.0, 0.0)
+
+    a, b = pos, positions[post]
+    dt = b.frame - a.frame
+    v_after = ((b.x - a.x) / dt, (b.y - a.y) / dt) if dt > 0 else (0.0, 0.0)
+
+    sp_before = np.hypot(*v_before)
+    sp_after  = np.hypot(*v_after)
+    vy_before = v_before[1]
+    vy_after  = v_after[1]
+
+    # SPIKE: high contact in frame, ball driven hard downward
+    if y_frac < 0.45 and vy_after > 2.0 and sp_after > 6.0:
+        conf = min(0.88, 0.65 + sp_after / 50.0)
+        return "spike", round(conf, 2)
+
+    # BLOCK: high contact, ball reversed from falling to rising (spike blocked back)
+    if y_frac < 0.45 and vy_before > 1.0 and vy_after < -1.0:
+        return "block", 0.72
+
+    # DIG: low contact, ball was falling, now rising (floor save)
+    if y_frac > 0.58 and vy_before > 1.0 and vy_after < -1.0:
+        return "dig", 0.75 if sp_after > 3.0 else 0.60
+
+    # SERVE: ball nearly stationary before contact (toss), then driven fast
+    if sp_before < 3.0 and sp_after > 6.0:
+        return "serve", 0.68
+
+    # SET: controlled mid-height redirect at moderate speed
+    if 0.20 < y_frac < 0.65 and 1.5 < sp_after < 8.0:
+        return "set", 0.58
+
+    return "unknown", 0.42
+
+
+def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
     """
     Scan the tracked trajectory for sharp velocity changes.
 
@@ -234,7 +295,9 @@ def find_contacts(tracker: TrackedBall) -> list[dict]:
       - OR speed changes by >= CONTACT_SPEED_RATIO of previous speed (ball accelerated/killed)
       AND the ball is actually moving (speed >= MIN_SPEED_PX)
 
-    Returns list of {time, frame, x, y, angle_change, speed_change} dicts.
+    Pass frame_height > 0 to get trajectory-based action classification on each contact.
+
+    Returns list of {time, frame, x, y, angle_change, speed_change, action, action_confidence}.
     """
     positions = tracker.positions
     contacts  = []
@@ -256,7 +319,6 @@ def find_contacts(tracker: TrackedBall) -> list[dict]:
         speed_before = np.hypot(*v_before)
         speed_after  = np.hypot(*v_after)
 
-        # Skip near-stationary ball (rolling, held, bouncing slowly on floor)
         if speed_before < MIN_SPEED_PX and speed_after < MIN_SPEED_PX:
             continue
 
@@ -264,17 +326,24 @@ def find_contacts(tracker: TrackedBall) -> list[dict]:
         speed_change = abs(speed_after - speed_before) / max(speed_before, 1e-6)
 
         if angle_change >= CONTACT_ANGLE_DEG or speed_change >= CONTACT_SPEED_RATIO:
+            action, action_conf = (
+                classify_contact_action(positions, i, frame_height)
+                if frame_height > 0
+                else ("unknown", 0.42)
+            )
             contacts.append({
-                "time":         curr.time,
-                "frame":        curr.frame,
-                "x":            curr.x,
-                "y":            curr.y,
-                "angle_change": round(angle_change, 1),
-                "speed_change": round(speed_change, 3),
+                "time":             curr.time,
+                "frame":            curr.frame,
+                "x":                curr.x,
+                "y":                curr.y,
+                "angle_change":     round(angle_change, 1),
+                "speed_change":     round(speed_change, 3),
+                "action":           action,
+                "action_confidence": action_conf,
             })
             logger.debug(
-                "Contact at t=%.2fs  angle=%.1f deg  speed_change=%.2f",
-                curr.time, angle_change, speed_change,
+                "Contact at t=%.2fs  angle=%.1f°  speed_Δ=%.2f  action=%s(%.2f)",
+                curr.time, angle_change, speed_change, action, action_conf,
             )
 
     logger.info("Found %d contacts in trajectory of %d positions", len(contacts), len(positions))
@@ -347,12 +416,31 @@ def contacts_to_rallies(
         if rally_end <= rally_start:
             continue
 
+        # Derive action label from constituent contacts via trajectory classification
+        action_scores: dict[str, float] = {}
+        for c in group:
+            a = c.get("action", "unknown")
+            if a != "unknown":
+                action_scores[a] = action_scores.get(a, 0.0) + c.get("action_confidence", 0.0)
+
+        if action_scores:
+            dominant = max(action_scores, key=action_scores.__getitem__)
+            avg_conf = round(action_scores[dominant] / len(group), 3)
+            seen: dict[str, None] = {}
+            for c in group:
+                a = c.get("action", "unknown")
+                if a != "unknown":
+                    seen[a] = None
+            labels = list(seen.keys())
+        else:
+            dominant, avg_conf, labels = "unknown", 0.50, []
+
         rallies.append({
             "start":      rally_start,
             "end":        rally_end,
-            "action":     "unknown",   # pose classifier can label later
-            "confidence": 1.0,
-            "labels":     [],
+            "action":     dominant,
+            "confidence": avg_conf,
+            "labels":     labels,
         })
 
     logger.info(

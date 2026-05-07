@@ -375,6 +375,132 @@ def group_into_rallies(detections: list[dict], video_duration: float) -> list[di
     return result
 
 
+def classify_within_windows(
+    video_path: str,
+    windows: list[dict],
+) -> list[dict]:
+    """
+    Run pose classification only inside the given time windows (rally clips).
+
+    Much faster than full-video scan because it seeks past all dead time.
+    For each window, accumulates per-action confidence scores across frames,
+    then picks the dominant action and merges it back into the window dict.
+
+    If pose produces a higher-confidence label than the ball-trajectory label
+    already in the window, the pose label wins. Otherwise the ball label is kept.
+
+    Returns the same list with 'action', 'confidence', and 'labels' updated.
+    """
+    if not windows:
+        return windows
+
+    try:
+        from ultralytics import YOLO
+        model = YOLO("yolov8s-pose.pt")
+    except ImportError:
+        logger.warning("ultralytics not installed — skipping pose refinement")
+        return windows
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        logger.warning("classify_within_windows: cannot open %s", video_path)
+        return windows
+
+    fps      = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    frame_w  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
+    frame_h  = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
+
+    court_x_left  = frame_w * SPECTATOR_ZONE
+    court_x_right = frame_w * (1.0 - SPECTATOR_ZONE)
+    motion_px     = MOTION_THRESHOLD * frame_h
+
+    refined: list[dict] = []
+
+    for window in windows:
+        w_start = window["start"]
+        w_end   = window["end"]
+
+        cap.set(cv2.CAP_PROP_POS_MSEC, w_start * 1000)
+
+        action_scores: dict[str, float] = {}
+        prev_kps: dict[int, np.ndarray] = {}
+        frame_idx = int(w_start * fps)
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            pos_sec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+            if pos_sec > w_end:
+                break
+            frame_idx += 1
+            if frame_idx % SKIP_FRAMES != 0:
+                continue
+
+            results = model(frame, imgsz=1280, verbose=False)
+            for result in results:
+                if result.keypoints is None:
+                    continue
+                kps_all  = result.keypoints.xy.cpu().numpy()
+                conf_all = (result.keypoints.conf.cpu().numpy()
+                            if result.keypoints.conf is not None else None)
+                boxes    = result.boxes.xyxy.cpu().numpy() if result.boxes is not None else None
+
+                for pi in range(len(kps_all)):
+                    person_kps  = kps_all[pi]
+                    person_conf = conf_all[pi] if conf_all is not None else None
+
+                    if boxes is not None and pi < len(boxes):
+                        x1, y1, x2, y2 = boxes[pi]
+                        if (y2 - y1) < frame_h * 0.07:
+                            continue
+                        box_cx = (x1 + x2) / 2
+                        if box_cx < court_x_left or box_cx > court_x_right:
+                            continue
+
+                    if pi in prev_kps:
+                        prev = prev_kps[pi]
+                        vel = max(
+                            np.hypot(person_kps[L_WRIST][0] - prev[L_WRIST][0],
+                                     person_kps[L_WRIST][1] - prev[L_WRIST][1]),
+                            np.hypot(person_kps[R_WRIST][0] - prev[R_WRIST][0],
+                                     person_kps[R_WRIST][1] - prev[R_WRIST][1]),
+                        )
+                        if vel < motion_px:
+                            prev_kps[pi] = person_kps
+                            continue
+                    prev_kps[pi] = person_kps
+
+                    action, conf = classify_action(person_kps, person_conf)
+                    if action != "unknown" and conf >= MIN_CONFIDENCE:
+                        action_scores[action] = action_scores.get(action, 0.0) + conf
+
+        out = dict(window)
+        if action_scores:
+            best_pose_action = max(action_scores, key=action_scores.__getitem__)
+            total            = sum(action_scores.values())
+            pose_conf        = round(min(action_scores[best_pose_action] / max(total, 1) * 0.92, 0.92), 3)
+
+            ball_conf = window.get("confidence", 0.0)
+            if pose_conf > ball_conf or window.get("action") == "unknown":
+                out["action"]     = best_pose_action
+                out["confidence"] = pose_conf
+                seen: dict[str, None] = {}
+                for a in sorted(action_scores, key=action_scores.__getitem__, reverse=True):
+                    seen[a] = None
+                out["labels"] = list(seen.keys())
+                logger.debug(
+                    "Window %.1f-%.1fs: pose overrides ball — %s (%.2f > %.2f)",
+                    w_start, w_end, best_pose_action, pose_conf, ball_conf,
+                )
+
+        refined.append(out)
+
+    cap.release()
+    logger.info("classify_within_windows: refined %d windows", len(refined))
+    return refined
+
+
 def fuse_with_ball_contacts(
     pose_detections: list[dict],
     ball_contacts: list[dict],

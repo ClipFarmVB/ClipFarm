@@ -78,14 +78,18 @@ def _run_dead_time_detection_local(video_path: str) -> list[dict]:
 def process_game_task(self, game_id: str, raw_video_url: str):
     """
     Main processing pipeline:
-    1. Run ML detection via Modal GPU (or local fallback)
-    2. Download video + generate clips with FFmpeg
-    3. Upload clips to R2
-    4. Persist clips to DB
-    5. Update game status
+    1. Download video
+    2. Ball tracking → contacts with trajectory-based action labels → rally windows
+    3. Pose classification within rally windows only (fast — skips dead time)
+    4. Audio energy weighting
+    5. Generate + upload clips, persist to DB
+
+    Falls back to pose-first pipeline if ROBOFLOW_API_KEY is not set.
     """
     from app.workers._sync_db import sync_set_game_status, sync_save_clips
     from app.services import storage as s3
+    import cv2 as _cv2
+    import os as _os
 
     gid = uuid.UUID(game_id)
     r2_key = urlparse(raw_video_url).path.lstrip("/")
@@ -94,72 +98,66 @@ def process_game_task(self, game_id: str, raw_video_url: str):
     try:
         sync_set_game_status(gid, "processing")
 
-        # ── 1. Run ML detection ───────────────────────────────────────────
-        # Try Modal GPU first, fall back to local
-        try:
-            logger.info("Running detection via Modal GPU...")
-            detections = _run_detection_modal(r2_key)
-            logger.info("Modal returned %d detections", len(detections))
-        except Exception as modal_err:
-            logger.warning("Modal failed (%s), falling back to local detection", modal_err)
-            # Need to download video for local detection
-            with tempfile.TemporaryDirectory() as tmpdir:
-                local_video = Path(tmpdir) / "game.mp4"
-                s3.download_file(r2_key, local_video)
-                detections = _run_detection_local(str(local_video))
-
-        # ── 2. Download video, verify with CLIP, generate clips ─────────
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             local_video = tmp / "game.mp4"
-            logger.info("Downloading key=%s from R2 for clip generation", r2_key)
+            logger.info("Downloading key=%s from R2", r2_key)
             s3.download_file(r2_key, local_video)
 
-            # Compute video metadata once — reused by fusion, rally grouping, etc.
-            import cv2 as _cv2
+            # Video metadata — used by all stages below
             _cap = _cv2.VideoCapture(str(local_video))
-            _fps = _cap.get(_cv2.CAP_PROP_FPS) or 30.0
-            _frames = int(_cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+            _fps         = _cap.get(_cv2.CAP_PROP_FPS) or 30.0
+            _frames      = int(_cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+            _frame_h     = int(_cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
             _cap.release()
             video_duration = _frames / _fps
 
-            # ── Ball-contact fusion ───────────────────────────────────────
-            # Run Roboflow ball tracking at a lower sample rate (every 10th
-            # frame ≈ 3 fps from 30 fps) to keep cost manageable on long games.
-            # Contacts anchor clip timing precisely and validate pose detections:
-            #   - ball contact + nearby pose  → boosted confidence, better timing
-            #   - strong contact, no pose     → create unknown clip (no false neg)
-            #   - pose detection, no contact  → penalised (possible false pos)
-            try:
-                from ml.pipeline.ball import detect_contacts
-                from ml.pipeline.detect import fuse_with_ball_contacts
-                before_fusion = len(detections)
-                ball_contacts = detect_contacts(str(local_video), sample_every=10)
-                detections = fuse_with_ball_contacts(detections, ball_contacts, video_duration)
-                logger.info(
-                    "Ball fusion: %d contacts + %d pose → %d fused detections",
-                    len(ball_contacts), before_fusion, len(detections),
-                )
-            except Exception as ball_err:
-                logger.warning("Ball tracking/fusion failed (%s) — using pose-only", ball_err)
+            # ── Stage 1: Ball tracking → rally windows ────────────────────
+            # Primary pipeline: Roboflow ball model detects every contact,
+            # trajectory physics classify the action, contacts are grouped
+            # into rally windows. Fast, occlusion-proof, no GPU needed.
+            detections: list[dict] = []
+            ball_ok = False
+            if _os.environ.get("ROBOFLOW_API_KEY"):
+                try:
+                    from ml.pipeline.ball import track_ball, find_contacts, contacts_to_rallies
+                    tracker   = track_ball(str(local_video), _os.environ["ROBOFLOW_API_KEY"], sample_every=10)
+                    contacts  = find_contacts(tracker, frame_height=_frame_h)
+                    detections = contacts_to_rallies(contacts, video_duration, _frame_h)
+                    ball_ok   = True
+                    logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
+                except Exception as ball_err:
+                    logger.warning("Ball pipeline failed (%s) — falling back to pose-first", ball_err)
 
-            # Rally grouping — merge per-action detections that belong to the
-            # same rally into single longer clips, eliminating dead time between
-            # consecutive actions.
-            try:
-                from ml.pipeline.detect import group_into_rallies
-                before_rally = len(detections)
-                detections = group_into_rallies(detections, video_duration)
-                logger.info(
-                    "Rally grouping: %d detections → %d rally clips",
-                    before_rally,
-                    len(detections),
-                )
-            except Exception as rally_err:
-                logger.warning("Rally grouping failed (%s) — using per-action clips", rally_err)
+            if not ball_ok:
+                # Fallback: pose-first pipeline (Modal GPU or local CPU)
+                try:
+                    logger.info("Running detection via Modal GPU...")
+                    detections = _run_detection_modal(r2_key)
+                    logger.info("Modal returned %d detections", len(detections))
+                except Exception as modal_err:
+                    logger.warning("Modal failed (%s), running local pose detection", modal_err)
+                    detections = _run_detection_local(str(local_video))
 
-            # Audio energy weighting — boost detections near loud moments,
-            # penalize detections during silence, then drop low-confidence ones
+                try:
+                    from ml.pipeline.detect import group_into_rallies
+                    before = len(detections)
+                    detections = group_into_rallies(detections, video_duration)
+                    logger.info("Rally grouping: %d → %d clips", before, len(detections))
+                except Exception as rally_err:
+                    logger.warning("Rally grouping failed (%s)", rally_err)
+
+            # ── Stage 2: Pose within windows — refine action labels ───────
+            # Runs YOLOv8s-pose only inside rally windows (skips dead time).
+            # Overrides the ball-trajectory label when pose is more confident.
+            try:
+                from ml.pipeline.detect import classify_within_windows
+                detections = classify_within_windows(str(local_video), detections)
+                logger.info("Pose refinement complete (%d windows)", len(detections))
+            except Exception as pose_err:
+                logger.warning("Pose refinement failed (%s) — keeping trajectory labels", pose_err)
+
+            # ── Stage 3: Audio energy weighting ──────────────────────────
             try:
                 from ml.pipeline.audio import weight_detections_by_audio
                 detections = weight_detections_by_audio(str(local_video), detections)
