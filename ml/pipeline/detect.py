@@ -76,7 +76,7 @@ def run_detection(video_path: str) -> list[dict]:
     """
     try:
         from ultralytics import YOLO
-        model = YOLO("yolov8n-pose.pt")  # Downloads automatically on first run
+        model = YOLO("yolov8s-pose.pt")  # small model — detects far-side players at imgsz=1280
     except ImportError:
         logger.warning("ultralytics not installed — returning stub detections")
         return _stub_detections(video_path)
@@ -87,11 +87,13 @@ def run_detection(video_path: str) -> list[dict]:
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
-    logger.info("Video: %.1f fps, %d frames (%.0f s), %dpx tall", fps, total_frames, total_frames / fps, frame_h)
+    logger.info("Video: %.1f fps, %d frames (%.0f s), %dx%dpx", fps, total_frames, total_frames / fps, frame_w, frame_h)
 
-    spectator_cutoff = frame_h * SPECTATOR_ZONE  # Y below this = crowd zone
-    motion_px = MOTION_THRESHOLD * frame_h  # Convert fraction to pixels
+    motion_px      = MOTION_THRESHOLD * frame_h
+    court_x_left   = frame_w * SPECTATOR_ZONE         # skip boxes centred left of this
+    court_x_right  = frame_w * (1.0 - SPECTATOR_ZONE) # skip boxes centred right of this
 
     frame_detections: list[tuple[float, ActionType, float]] = []  # (time, action, conf)
     prev_keypoints: dict[int, np.ndarray] = {}  # person_idx → previous frame's keypoints
@@ -107,7 +109,7 @@ def run_detection(video_path: str) -> list[dict]:
             continue
 
         t = frame_idx / fps
-        results = model(frame, verbose=False)
+        results = model(frame, imgsz=1280, verbose=False)
 
         curr_keypoints: dict[int, np.ndarray] = {}
 
@@ -116,15 +118,21 @@ def run_detection(video_path: str) -> list[dict]:
                 continue
             kps = result.keypoints.xy.cpu().numpy()  # (N, 17, 2)
             confs = result.keypoints.conf.cpu().numpy() if result.keypoints.conf is not None else None
+            boxes = result.boxes.xyxy.cpu().numpy() if result.boxes is not None else None
 
             for person_idx in range(len(kps)):
                 person_kps = kps[person_idx]  # (17, 2)
                 person_conf = confs[person_idx] if confs is not None else None
 
-                # Filter 1: Spectator zone — skip poses with shoulders in the top portion
-                shoulder_y = (person_kps[L_SHOULDER][1] + person_kps[R_SHOULDER][1]) / 2
-                if shoulder_y < spectator_cutoff:
-                    continue
+                # Filter 1: bounding box guards — skip tiny detections (seated crowd)
+                # and people at the lateral frame edges (line judges, refs)
+                if boxes is not None and person_idx < len(boxes):
+                    x1, y1, x2, y2 = boxes[person_idx]
+                    if (y2 - y1) < frame_h * 0.07:          # shorter than 7% of frame = crowd
+                        continue
+                    box_cx = (x1 + x2) / 2
+                    if box_cx < court_x_left or box_cx > court_x_right:  # sideline official
+                        continue
 
                 # Filter 2: Motion gate — require wrist movement between frames
                 curr_keypoints[person_idx] = person_kps
