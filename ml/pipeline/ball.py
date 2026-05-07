@@ -157,9 +157,9 @@ def _pick_active(
     return best
 
 
-def track_ball(video_path: str, api_key: str) -> TrackedBall:
+def track_ball(video_path: str, api_key: str, sample_every: int = SAMPLE_EVERY) -> TrackedBall:
     """
-    Run detection on every SAMPLE_EVERY frame and build a trajectory for
+    Run detection on every sample_every frame and build a trajectory for
     the active ball, ignoring stationary spare balls.
 
     Returns a TrackedBall with all confirmed positions.
@@ -172,7 +172,7 @@ def track_ball(video_path: str, api_key: str) -> TrackedBall:
 
     fps          = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    logger.info("Tracking ball: %d frames @ %.1f fps", total_frames, fps)
+    logger.info("Tracking ball: %d frames @ %.1f fps (sample_every=%d)", total_frames, fps, sample_every)
 
     tracker   = TrackedBall()
     frame_idx = 0
@@ -182,7 +182,7 @@ def track_ball(video_path: str, api_key: str) -> TrackedBall:
         if not ret:
             break
 
-        if frame_idx % SAMPLE_EVERY == 0:
+        if frame_idx % sample_every == 0:
             detections = _detect_frame(model, frame)
             active = _pick_active(detections, tracker, frame_idx)
 
@@ -366,7 +366,11 @@ def contacts_to_rallies(
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def detect_contacts(video_path: str, api_key: str | None = None) -> list[dict]:
+def detect_contacts(
+    video_path: str,
+    api_key: str | None = None,
+    sample_every: int = SAMPLE_EVERY,
+) -> list[dict]:
     """
     Full pipeline: detect ball -> track trajectory -> find contacts.
 
@@ -374,17 +378,22 @@ def detect_contacts(video_path: str, api_key: str | None = None) -> list[dict]:
       time, frame, x, y, angle_change, speed_change
 
     api_key defaults to the ROBOFLOW_API_KEY environment variable.
+    sample_every: run inference every N frames (higher = faster, less precise).
     """
     key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
     if not key:
         raise ValueError("ROBOFLOW_API_KEY not set and api_key not provided")
 
-    tracker  = track_ball(video_path, key)
+    tracker  = track_ball(video_path, key, sample_every=sample_every)
     contacts = find_contacts(tracker)
     return contacts
 
 
-def detect_rallies(video_path: str, api_key: str | None = None) -> list[dict]:
+def detect_rallies(
+    video_path: str,
+    api_key: str | None = None,
+    sample_every: int = SAMPLE_EVERY,
+) -> list[dict]:
     """
     Full pipeline: detect ball -> track -> contacts -> rally clip boundaries.
 
@@ -403,7 +412,7 @@ def detect_rallies(video_path: str, api_key: str | None = None) -> list[dict]:
 
     video_duration = total_frames / fps
 
-    tracker  = track_ball(video_path, key)
+    tracker  = track_ball(video_path, key, sample_every=sample_every)
     contacts = find_contacts(tracker)
     rallies  = contacts_to_rallies(contacts, video_duration, frame_height)
     return rallies

@@ -29,6 +29,13 @@ L_HIP, R_HIP = 11, 12
 L_KNEE, R_KNEE = 13, 14
 L_ANKLE, R_ANKLE = 15, 16
 
+# ── Ball fusion config ────────────────────────────────────────────────────────
+BALL_POSE_WINDOW   = 2.5   # seconds: max gap between ball contact time and pose peak to link
+BALL_STRONG_ANGLE  = 60.0  # degrees: unmatched contacts above this create a clip anyway
+BALL_STRONG_SPEED  = 0.50  # speed ratio: unmatched contacts above this create a clip anyway
+BALL_ONLY_CONF     = 0.62  # confidence for ball-confirmed but pose-unlabeled clips
+NO_BALL_PENALTY    = 0.45  # factor applied to pose confidence when no ball contact found nearby
+
 # ── Sliding window config ─────────────────────────────────────────────────────
 WINDOW_FRAMES = 30   # 1 s @ 30 fps
 STRIDE_FRAMES = 10   # 10-frame stride (3× overlap)
@@ -358,6 +365,100 @@ def group_into_rallies(detections: list[dict], video_duration: float) -> list[di
         len(detections) / max(len(result), 1),
     )
     return result
+
+
+def fuse_with_ball_contacts(
+    pose_detections: list[dict],
+    ball_contacts: list[dict],
+    video_duration: float,
+) -> list[dict]:
+    """
+    Merge pose detections with ball contact timestamps to improve timing and
+    reduce both false positives and false negatives.
+
+    Ball contacts are ground truth for "a hit happened here."
+    Pose detections provide action labels (spike / dig / set / ...).
+
+    Rules:
+    - Ball contact + nearby pose → confirmed clip anchored to contact time,
+      pose label kept, confidence boosted.
+    - Ball contact alone (no pose match) → clip created only if the contact
+      is "strong" (high angle/speed change = powerful hit like spike or serve).
+    - Pose alone (no ball contact nearby) → confidence penalised by
+      NO_BALL_PENALTY; dropped if the result falls below MIN_CONFIDENCE.
+    """
+    contacts = sorted(ball_contacts, key=lambda c: c["time"])
+    poses    = sorted(pose_detections, key=lambda d: d["start"])
+
+    def _pose_peak(d: dict) -> float:
+        return d["start"] + PAD_BEFORE
+
+    used_pose_indices: set[int] = set()
+    fused: list[dict] = []
+
+    # ── Match each ball contact to the nearest pose detection ─────────────────
+    for contact in contacts:
+        tc = contact["time"]
+        best_pi   = None
+        best_dist = float("inf")
+        for pi, pose in enumerate(poses):
+            if pi in used_pose_indices:
+                continue
+            dist = abs(_pose_peak(pose) - tc)
+            if dist < BALL_POSE_WINDOW and dist < best_dist:
+                best_dist = dist
+                best_pi   = pi
+
+        if best_pi is not None:
+            pose = poses[best_pi]
+            used_pose_indices.add(best_pi)
+            # Re-anchor clip window to the ball contact time for precision
+            start = max(0.0, tc - PAD_BEFORE)
+            end   = min(video_duration, tc + PAD_AFTER)
+            fused.append({
+                "start":      start,
+                "end":        end,
+                "action":     pose["action"],
+                "confidence": round(min(pose["confidence"] + 0.15, 0.95), 4),
+                "labels":     pose.get("labels", []),
+            })
+        else:
+            # No pose match — only create a clip for strong contacts (powerful hits)
+            is_strong = (
+                contact.get("angle_change", 0) >= BALL_STRONG_ANGLE
+                or contact.get("speed_change", 0) >= BALL_STRONG_SPEED
+            )
+            if is_strong:
+                start = max(0.0, tc - PAD_BEFORE)
+                end   = min(video_duration, tc + PAD_AFTER)
+                fused.append({
+                    "start":      start,
+                    "end":        end,
+                    "action":     "unknown",
+                    "confidence": BALL_ONLY_CONF,
+                    "labels":     [],
+                })
+
+    # ── Penalise pose detections that had no supporting ball contact ──────────
+    for pi, pose in enumerate(poses):
+        if pi in used_pose_indices:
+            continue
+        penalised_conf = round(pose["confidence"] * NO_BALL_PENALTY, 4)
+        if penalised_conf >= MIN_CONFIDENCE:
+            fused.append({
+                "start":      pose["start"],
+                "end":        pose["end"],
+                "action":     pose["action"],
+                "confidence": penalised_conf,
+                "labels":     pose.get("labels", []),
+            })
+
+    fused.sort(key=lambda d: d["start"])
+    logger.info(
+        "Ball fusion: %d contacts + %d pose → %d fused detections",
+        len(contacts), len(poses), len(fused),
+    )
+    return fused
 
 
 def _stub_detections(video_path: str) -> list[dict]:

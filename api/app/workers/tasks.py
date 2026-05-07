@@ -115,17 +115,39 @@ def process_game_task(self, game_id: str, raw_video_url: str):
             logger.info("Downloading key=%s from R2 for clip generation", r2_key)
             s3.download_file(r2_key, local_video)
 
+            # Compute video metadata once — reused by fusion, rally grouping, etc.
+            import cv2 as _cv2
+            _cap = _cv2.VideoCapture(str(local_video))
+            _fps = _cap.get(_cv2.CAP_PROP_FPS) or 30.0
+            _frames = int(_cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+            _cap.release()
+            video_duration = _frames / _fps
+
+            # ── Ball-contact fusion ───────────────────────────────────────
+            # Run Roboflow ball tracking at a lower sample rate (every 10th
+            # frame ≈ 3 fps from 30 fps) to keep cost manageable on long games.
+            # Contacts anchor clip timing precisely and validate pose detections:
+            #   - ball contact + nearby pose  → boosted confidence, better timing
+            #   - strong contact, no pose     → create unknown clip (no false neg)
+            #   - pose detection, no contact  → penalised (possible false pos)
+            try:
+                from ml.pipeline.ball import detect_contacts
+                from ml.pipeline.detect import fuse_with_ball_contacts
+                before_fusion = len(detections)
+                ball_contacts = detect_contacts(str(local_video), sample_every=10)
+                detections = fuse_with_ball_contacts(detections, ball_contacts, video_duration)
+                logger.info(
+                    "Ball fusion: %d contacts + %d pose → %d fused detections",
+                    len(ball_contacts), before_fusion, len(detections),
+                )
+            except Exception as ball_err:
+                logger.warning("Ball tracking/fusion failed (%s) — using pose-only", ball_err)
+
             # Rally grouping — merge per-action detections that belong to the
             # same rally into single longer clips, eliminating dead time between
             # consecutive actions.
             try:
-                import cv2 as _cv2
                 from ml.pipeline.detect import group_into_rallies
-                _cap = _cv2.VideoCapture(str(local_video))
-                _fps = _cap.get(_cv2.CAP_PROP_FPS) or 30.0
-                _frames = int(_cap.get(_cv2.CAP_PROP_FRAME_COUNT))
-                _cap.release()
-                video_duration = _frames / _fps
                 before_rally = len(detections)
                 detections = group_into_rallies(detections, video_duration)
                 logger.info(
