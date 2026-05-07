@@ -27,7 +27,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # ── Detection config ──────────────────────────────────────────────────────────
-MODEL_ID     = "volleyball-ball-tracking-0eo7r/2"
+MODEL_ID     = "volleyball-ball-tracking-0eo7r/3"
 SAMPLE_EVERY = 3          # run inference every Nth frame (10 fps from 30 fps source)
 MIN_CONF     = 0.40       # minimum detection confidence to consider
 

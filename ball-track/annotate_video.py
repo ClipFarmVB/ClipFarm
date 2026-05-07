@@ -16,7 +16,7 @@ load_dotenv()
 INPUT_VIDEO  = "test_spike.mp4"
 OUTPUT_VIDEO = "annotated_spike.mp4"
 API_KEY      = os.getenv("ROBOFLOW_API_KEY")
-MODEL_ID     = "volleyball-ball-tracking-0eo7r/2"   # version 2 = 95% mAP
+MODEL_ID     = "volleyball-ball-tracking-0eo7r/3"
 
 # Run inference on every Nth frame (3 = 10 fps from a 30 fps source)
 SAMPLE_EVERY = 3
