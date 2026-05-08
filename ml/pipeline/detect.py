@@ -378,6 +378,9 @@ def group_into_rallies(detections: list[dict], video_duration: float) -> list[di
 def classify_within_windows(
     video_path: str,
     windows: list[dict],
+    model_name: str = "yolov8s-pose.pt",
+    imgsz: int = 1280,
+    skip_frames: int = SKIP_FRAMES,
 ) -> list[dict]:
     """
     Run pose classification only inside the given time windows (rally clips).
@@ -390,13 +393,19 @@ def classify_within_windows(
     already in the window, the pose label wins. Otherwise the ball label is kept.
 
     Returns the same list with 'action', 'confidence', and 'labels' updated.
+
+    Args:
+        model_name:  YOLO pose model to use (default: yolov8s-pose.pt for quality;
+                     use yolov8n-pose.pt for faster CPU testing).
+        imgsz:       Inference resolution (default: 1280; use 640 for CPU testing).
+        skip_frames: Process every Nth frame (default: SKIP_FRAMES=4; raise for speed).
     """
     if not windows:
         return windows
 
     try:
         from ultralytics import YOLO
-        model = YOLO("yolov8s-pose.pt")
+        model = YOLO(model_name)
     except ImportError:
         logger.warning("ultralytics not installed — skipping pose refinement")
         return windows
@@ -434,10 +443,10 @@ def classify_within_windows(
             if pos_sec > w_end:
                 break
             frame_idx += 1
-            if frame_idx % SKIP_FRAMES != 0:
+            if frame_idx % skip_frames != 0:
                 continue
 
-            results = model(frame, imgsz=1280, verbose=False)
+            results = model(frame, imgsz=imgsz, verbose=False)
             for result in results:
                 if result.keypoints is None:
                     continue

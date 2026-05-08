@@ -43,11 +43,13 @@ CONTACT_SPEED_RATIO = 0.35  # OR speed change of this fraction of previous speed
 MIN_SPEED_PX        = 4.0   # ignore near-stationary ball (rolling / held)
 
 # ── Rally clipping config ─────────────────────────────────────────────────────
-RALLY_GAP_SECONDS    = 8.0   # gap between contacts that splits two rallies
+RALLY_GAP_SECONDS    = 5.0   # gap between contacts that splits two rallies
 PRE_RALLY_PAD        = 2.0   # seconds before first contact (capture approach)
 POST_PLAY_PAD        = 2.5   # seconds after ball leaves play (celebration, flight)
-FLOOR_BOUNCE_ANGLE   = 130.0 # direction change >= this = ball hit the floor
+FLOOR_BOUNCE_ANGLE   = 130.0 # direction change >= this = ball hit the floor (unused for splitting, kept for scoring)
 FLOOR_BOUNCE_Y_FRAC  = 0.55  # ball must also be in lower N% of frame
+MIN_RALLY_DURATION   = 2.0   # skip clips shorter than this (noise/false contacts)
+MAX_CLIP_DURATION    = 30.0  # split long groups into sub-clips of at most this length
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -128,18 +130,31 @@ def _pick_active(
     detections: list[dict],
     tracker: TrackedBall,
     frame: int,
+    max_jump: float = MAX_JUMP_PX,
+    max_age_frames: int = 0,
 ) -> Optional[dict]:
     """
     Given multiple detections in a frame, return the one most likely to be
     the active ball by proximity to the predicted trajectory position.
-    Falls back to highest-confidence detection if no track exists yet.
+
+    If the track is stale (last detection older than max_age_frames) the
+    prediction is discarded and the highest-confidence detection is accepted
+    directly — this prevents stale extrapolation from poisoning new tracks.
     """
     if not detections:
         return None
 
-    predicted = tracker.predict_next(frame)
+    # Check if the existing track is too old to trust
+    track_stale = (
+        max_age_frames > 0
+        and tracker.last is not None
+        and (frame - tracker.last.frame) > max_age_frames
+    )
+
+    predicted = None if track_stale else tracker.predict_next(frame)
+
     if predicted is None:
-        # No track yet — start with the highest-confidence detection
+        # No track or stale track — accept the highest-confidence detection
         return detections[0]
 
     px, py = predicted
@@ -151,9 +166,9 @@ def _pick_active(
             best_dist = dist
             best = d
 
-    # Reject if even the closest detection is too far (likely a different ball)
-    if best_dist > MAX_JUMP_PX:
-        return None
+    if best_dist > max_jump:
+        # Too far from predicted position — treat as new track segment
+        return detections[0]
     return best
 
 
@@ -174,6 +189,13 @@ def track_ball(video_path: str, api_key: str, sample_every: int = SAMPLE_EVERY) 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     logger.info("Tracking ball: %d frames @ %.1f fps (sample_every=%d)", total_frames, fps, sample_every)
 
+    # Scale the jump threshold by the sampling interval so fast-moving balls
+    # aren't rejected when sample_every is large (e.g. 10 vs the default 3).
+    max_jump      = MAX_JUMP_PX * (sample_every / SAMPLE_EVERY)
+    # After this many frames without a detection, treat the track as lost:
+    # predict_next returns None and the next detection starts a fresh segment.
+    max_age_frames = MAX_MISS * sample_every
+
     tracker   = TrackedBall()
     frame_idx = 0
 
@@ -184,7 +206,8 @@ def track_ball(video_path: str, api_key: str, sample_every: int = SAMPLE_EVERY) 
 
         if frame_idx % sample_every == 0:
             detections = _detect_frame(model, frame)
-            active = _pick_active(detections, tracker, frame_idx)
+            active = _pick_active(detections, tracker, frame_idx,
+                                  max_jump=max_jump, max_age_frames=max_age_frames)
 
             if active:
                 tracker.misses = 0
@@ -197,11 +220,6 @@ def track_ball(video_path: str, api_key: str, sample_every: int = SAMPLE_EVERY) 
                 ))
             else:
                 tracker.misses += 1
-                if tracker.misses >= MAX_MISS:
-                    # Track lost for too long — reset so next detection
-                    # starts fresh rather than snapping across the frame
-                    logger.debug("Track reset at frame %d (too many misses)", frame_idx)
-                    tracker.misses = 0
 
         frame_idx += 1
 
@@ -354,6 +372,38 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
 # 4. Rally clipping
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _make_rally(seg: list[dict], video_duration: float) -> dict:
+    """Build a rally clip dict from a list of contacts."""
+    action_scores: dict[str, float] = {}
+    action_counts: dict[str, int] = {}
+    for c in seg:
+        a = c.get("action", "unknown")
+        if a != "unknown":
+            action_scores[a] = action_scores.get(a, 0.0) + c.get("action_confidence", 0.0)
+            action_counts[a] = action_counts.get(a, 0) + 1
+
+    if action_scores:
+        dominant = max(action_scores, key=action_scores.__getitem__)
+        # Divide by contacts that contributed to dominant action (not total contacts)
+        avg_conf = round(action_scores[dominant] / max(action_counts[dominant], 1), 3)
+        seen: dict[str, None] = {}
+        for c in seg:
+            a = c.get("action", "unknown")
+            if a != "unknown":
+                seen[a] = None
+        labels = list(seen.keys())
+    else:
+        dominant, avg_conf, labels = "unknown", 0.50, []
+
+    return {
+        "start":      max(0.0, seg[0]["time"] - PRE_RALLY_PAD),
+        "end":        min(video_duration, seg[-1]["time"] + POST_PLAY_PAD),
+        "action":     dominant,
+        "confidence": avg_conf,
+        "labels":     labels,
+    }
+
+
 def contacts_to_rallies(
     contacts: list[dict],
     video_duration: float,
@@ -363,12 +413,14 @@ def contacts_to_rallies(
     Convert a contact list into rally clip boundaries.
 
     Algorithm:
-      1. Group contacts separated by <= RALLY_GAP_SECONDS into one rally.
-      2. Within each rally find the termination contact — the first contact
-         where the ball hits the floor (high angle reversal in lower frame).
-         If none is found the last contact is used as the termination.
-      3. rally_start = first_contact.time - PRE_RALLY_PAD  (>= 0)
-         rally_end   = termination.time   + POST_PLAY_PAD  (<= video_duration)
+      1. Group contacts by time gap: a new segment starts when the gap to the
+         previous contact exceeds RALLY_GAP_SECONDS.
+      2. Segments longer than MAX_CLIP_DURATION are subdivided on their largest
+         internal gaps so each sub-clip stays under the cap.
+      3. Each segment becomes one clip:
+           rally_start = first_contact.time - PRE_RALLY_PAD  (>= 0)
+           rally_end   = last_contact.time  + POST_PLAY_PAD  (<= video_duration)
+      4. Clips shorter than MIN_RALLY_DURATION are discarded as noise.
 
     Returns list of dicts compatible with generate_clips():
       {start, end, action, confidence, labels}
@@ -376,72 +428,52 @@ def contacts_to_rallies(
     if not contacts:
         return []
 
-    # ── 1. Group contacts into rallies ────────────────────────────────────────
     sorted_contacts = sorted(contacts, key=lambda c: c["time"])
 
+    # ── 1. Group by large time gaps ───────────────────────────────────────────
     groups: list[list[dict]] = []
     current: list[dict] = [sorted_contacts[0]]
     for c in sorted_contacts[1:]:
-        if c["time"] - current[-1]["time"] <= RALLY_GAP_SECONDS:
-            current.append(c)
-        else:
+        if c["time"] - current[-1]["time"] > RALLY_GAP_SECONDS:
             groups.append(current)
             current = [c]
+        else:
+            current.append(c)
     groups.append(current)
 
-    # ── 2 & 3. Find termination contact and build clip boundaries ─────────────
-    floor_y_threshold = frame_height * FLOOR_BOUNCE_Y_FRAC
-    rallies: list[dict] = []
-
-    for group in groups:
-        first = group[0]
-        rally_start = max(0.0, first["time"] - PRE_RALLY_PAD)
-
-        # Find the first floor bounce in this rally
-        termination = None
-        for c in group:
-            is_floor_angle = c["angle_change"] >= FLOOR_BOUNCE_ANGLE
-            is_low_in_frame = c["y"] >= floor_y_threshold
-            if is_floor_angle and is_low_in_frame:
-                termination = c
-                break
-
-        # Fallback: use the last contact if no floor bounce found
-        if termination is None:
-            termination = group[-1]
-
-        rally_end = min(video_duration, termination["time"] + POST_PLAY_PAD)
-
-        # Skip degenerate clips (can happen if contacts are at the very end)
-        if rally_end <= rally_start:
+    # ── 2. Sub-divide groups that are too long ────────────────────────────────
+    final_segments: list[list[dict]] = []
+    for grp in groups:
+        span = grp[-1]["time"] - grp[0]["time"]
+        if span <= MAX_CLIP_DURATION or len(grp) < 4:
+            final_segments.append(grp)
             continue
 
-        # Derive action label from constituent contacts via trajectory classification
-        action_scores: dict[str, float] = {}
-        for c in group:
-            a = c.get("action", "unknown")
-            if a != "unknown":
-                action_scores[a] = action_scores.get(a, 0.0) + c.get("action_confidence", 0.0)
+        # Repeatedly split on the largest internal gap until all sub-groups fit
+        pending = [grp]
+        while pending:
+            seg = pending.pop()
+            span = seg[-1]["time"] - seg[0]["time"]
+            if span <= MAX_CLIP_DURATION or len(seg) < 4:
+                final_segments.append(seg)
+                continue
+            # Find largest gap between consecutive contacts in this segment
+            max_gap = 0.0
+            split_idx = 1
+            for i in range(1, len(seg)):
+                g = seg[i]["time"] - seg[i - 1]["time"]
+                if g > max_gap:
+                    max_gap = g
+                    split_idx = i
+            pending.append(seg[:split_idx])
+            pending.append(seg[split_idx:])
 
-        if action_scores:
-            dominant = max(action_scores, key=action_scores.__getitem__)
-            avg_conf = round(action_scores[dominant] / len(group), 3)
-            seen: dict[str, None] = {}
-            for c in group:
-                a = c.get("action", "unknown")
-                if a != "unknown":
-                    seen[a] = None
-            labels = list(seen.keys())
-        else:
-            dominant, avg_conf, labels = "unknown", 0.50, []
-
-        rallies.append({
-            "start":      rally_start,
-            "end":        rally_end,
-            "action":     dominant,
-            "confidence": avg_conf,
-            "labels":     labels,
-        })
+    # ── 3 & 4. Build rally windows, discard noise ─────────────────────────────
+    rallies: list[dict] = []
+    for seg in sorted(final_segments, key=lambda s: s[0]["time"]):
+        r = _make_rally(seg, video_duration)
+        if r["end"] - r["start"] >= MIN_RALLY_DURATION:
+            rallies.append(r)
 
     logger.info(
         "contacts_to_rallies: %d contacts -> %d rallies",
