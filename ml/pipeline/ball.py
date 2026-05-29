@@ -318,7 +318,7 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
     Returns list of {time, frame, x, y, angle_change, speed_change, action, action_confidence}.
     """
     positions = tracker.positions
-    contacts  = []
+    contacts: list[dict] = []
 
     if len(positions) < 3:
         return contacts

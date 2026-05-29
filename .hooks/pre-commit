@@ -1,0 +1,36 @@
+#!/bin/sh
+# ClipFarm pre-commit hook
+# Mirrors exactly what GitHub Actions CI runs so failures are caught locally.
+#
+# Install for your clone:
+#   git config core.hooksPath .hooks
+#
+# Requirements: ruff, mypy, and npm must be on PATH.
+# In the api/ virtualenv: pip install ruff mypy
+# For npm: it should already be available.
+
+set -e
+
+echo "pre-commit: running CI checks..."
+
+# ── API: ruff lint ────────────────────────────────────────────────────────────
+printf "  ruff check api/ ... "
+python -m ruff check api/
+echo "ok"
+
+# ── API: mypy type-check ──────────────────────────────────────────────────────
+printf "  mypy api/app ...     "
+python -m mypy api/app --ignore-missing-imports
+echo "ok"
+
+# ── Web: ESLint ───────────────────────────────────────────────────────────────
+printf "  eslint (web) ...     "
+npm run lint --workspace=web --silent
+echo "ok"
+
+# ── Web: TypeScript ───────────────────────────────────────────────────────────
+printf "  tsc (web) ...        "
+npm run typecheck --workspace=web --silent
+echo "ok"
+
+echo "pre-commit: all checks passed."
