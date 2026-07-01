@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     allowed_upload_content_types: str = "video/mp4,video/quicktime,video/x-matroska,video/webm"
 
     # ML pipeline
-    clip_verify_enabled: bool = False  # CLIP verification gate (slow on CPU, enable for GPU)
+    clip_verify_enabled: bool = False  # Use CLIP frames in highlight scoring (slow on CPU, enable for GPU)
+    highlight_score_threshold: float = 0.25  # Rallies scoring below this are dropped before pose/cutting
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"

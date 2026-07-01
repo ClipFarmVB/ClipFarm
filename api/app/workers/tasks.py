@@ -78,11 +78,13 @@ def _run_dead_time_detection_local(video_path: str) -> list[dict]:
 def process_game_task(self, game_id: str, raw_video_url: str):
     """
     Main processing pipeline:
-    1. Download video
-    2. Ball tracking → contacts with trajectory-based action labels → rally windows
-    3. Pose classification within rally windows only (fast — skips dead time)
-    4. Audio energy weighting
-    5. Generate + upload clips, persist to DB
+    1. Download video, extract audio energy envelope (cheap, used by 3 stages)
+    2. Ball tracking → contacts with trajectory-based action labels → rally
+       windows with shape features (contact count, speed, floor bounce, ...)
+    3. Highlight scoring: post-rally cheer + rally shape (+ CLIP frames when
+       enabled) → highlight_score per rally; low scorers dropped here
+    4. Pose classification — only on rallies that survived scoring
+    5. Audio confidence weighting, generate + upload clips, persist to DB
 
     Falls back to pose-first pipeline if ROBOFLOW_API_KEY is not set.
     """
@@ -111,6 +113,18 @@ def process_game_task(self, game_id: str, raw_video_url: str):
             _frame_h     = int(_cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
             _cap.release()
             video_duration = _frames / _fps
+
+            # ── Stage 0: Audio energy envelope ────────────────────────────
+            # Extracted once (seconds, even for a full game) and reused by
+            # cheer scoring and confidence weighting below.
+            audio_energy = None
+            try:
+                from ml.pipeline.audio import compute_audio_energy
+                audio_energy = compute_audio_energy(str(local_video))
+                if audio_energy is None:
+                    logger.warning("No usable audio track — cheer scoring disabled")
+            except Exception as audio_err:
+                logger.warning("Audio extraction failed (%s)", audio_err)
 
             # ── Stage 1: Ball tracking → rally windows ────────────────────
             # Primary pipeline: Roboflow ball model detects every contact,
@@ -147,9 +161,34 @@ def process_game_task(self, game_id: str, raw_video_url: str):
                 except Exception as rally_err:
                     logger.warning("Rally grouping failed (%s)", rally_err)
 
-            # ── Stage 2: Pose within windows — refine action labels ───────
-            # Runs YOLOv8s-pose only inside rally windows (skips dead time).
-            # Overrides the ball-trajectory label when pose is more confident.
+            # ── Stage 2: Highlight scoring → drop low scorers ─────────────
+            # Cheer reaction after the rally + rally shape features (+ CLIP
+            # frames when enabled) → highlight_score. This is the precision
+            # gate: only rallies worth watching go on to pose and cutting.
+            from app.config import settings as app_settings
+            try:
+                if audio_energy is not None:
+                    from ml.pipeline.audio import score_cheers
+                    detections = score_cheers(detections, *audio_energy)
+                from ml.pipeline.score import score_highlights
+                detections = score_highlights(
+                    str(local_video), detections,
+                    use_clip=app_settings.clip_verify_enabled,
+                )
+                before = len(detections)
+                threshold = app_settings.highlight_score_threshold
+                detections = [d for d in detections if d["highlight_score"] >= threshold]
+                logger.info(
+                    "Highlight gate (>= %.2f): %d → %d rallies",
+                    threshold, before, len(detections),
+                )
+            except Exception as score_err:
+                logger.warning("Highlight scoring failed (%s) — keeping all rallies", score_err)
+
+            # ── Stage 3: Pose within surviving windows — refine labels ────
+            # Runs YOLOv8s-pose only inside rallies that passed the highlight
+            # gate. Overrides the ball-trajectory label when pose is more
+            # confident.
             try:
                 from ml.pipeline.detect import classify_within_windows
                 detections = classify_within_windows(str(local_video), detections)
@@ -157,29 +196,16 @@ def process_game_task(self, game_id: str, raw_video_url: str):
             except Exception as pose_err:
                 logger.warning("Pose refinement failed (%s) — keeping trajectory labels", pose_err)
 
-            # ── Stage 3: Audio energy weighting ──────────────────────────
+            # ── Stage 4: Audio confidence weighting ──────────────────────
+            # Adjusts label confidence only — precision filtering now happens
+            # at the highlight gate above, so no hard confidence cut here.
             try:
                 from ml.pipeline.audio import weight_detections_by_audio
-                detections = weight_detections_by_audio(str(local_video), detections)
-                before = len(detections)
-                detections = [d for d in detections if d["confidence"] >= 0.40]
-                if len(detections) < before:
-                    logger.info("Audio filter dropped %d quiet detections", before - len(detections))
+                detections = weight_detections_by_audio(
+                    str(local_video), detections, precomputed=audio_energy,
+                )
             except Exception as audio_err:
                 logger.warning("Audio weighting failed (%s) — using unweighted", audio_err)
-
-            # CLIP verification gate — filter out false-positive detections
-            from app.config import settings as app_settings
-            if app_settings.clip_verify_enabled:
-                try:
-                    from ml.pipeline.verify import verify_detections
-                    before = len(detections)
-                    detections = verify_detections(str(local_video), detections)
-                    logger.info("CLIP filter: %d → %d detections", before, len(detections))
-                except Exception as clip_err:
-                    logger.warning("CLIP verification failed (%s) — using unfiltered", clip_err)
-            else:
-                logger.info("CLIP verification disabled — skipping")
 
             from ml.pipeline.clip import generate_clips
             clips_data = generate_clips(str(local_video), detections, tmp)
@@ -205,6 +231,7 @@ def process_game_task(self, game_id: str, raw_video_url: str):
                     "game_id": gid,
                     "action_type": cd["action"],
                     "confidence": cd["confidence"],
+                    "highlight_score": cd.get("highlight_score"),
                     "start_time": cd["start"],
                     "end_time": cd["end"],
                     "clip_url": clip_url,

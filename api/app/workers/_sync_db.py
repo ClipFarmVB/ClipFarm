@@ -61,6 +61,7 @@ def sync_save_clips(rows: list[dict]):
                 game_id=row["game_id"],
                 action_type=ActionType(row["action_type"]),
                 confidence=row["confidence"],
+                highlight_score=row.get("highlight_score"),
                 start_time=row["start_time"],
                 end_time=row["end_time"],
                 clip_url=row["clip_url"],
