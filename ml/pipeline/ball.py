@@ -356,6 +356,8 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
                 "y":                curr.y,
                 "angle_change":     round(angle_change, 1),
                 "speed_change":     round(speed_change, 3),
+                "speed_before":     round(float(speed_before), 2),
+                "speed_after":      round(float(speed_after), 2),
                 "action":           action,
                 "action_confidence": action_conf,
             })
@@ -372,7 +374,7 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
 # 4. Rally clipping
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_rally(seg: list[dict], video_duration: float) -> dict:
+def _make_rally(seg: list[dict], video_duration: float, frame_height: int = 0) -> dict:
     """Build a rally clip dict from a list of contacts."""
     action_scores: dict[str, float] = {}
     action_counts: dict[str, int] = {}
@@ -395,12 +397,42 @@ def _make_rally(seg: list[dict], video_duration: float) -> dict:
     else:
         dominant, avg_conf, labels = "unknown", 0.50, []
 
+    first_contact = seg[0]["time"]
+    last_contact  = seg[-1]["time"]
+
+    # Rally features for downstream highlight scoring (ml/pipeline/score.py).
+    # Speeds are normalized to fractions of frame height per frame so they are
+    # comparable across resolutions.
+    speed_div = float(frame_height) if frame_height > 0 else 1.0
+    max_speed = max(
+        (max(c.get("speed_before", 0.0), c.get("speed_after", 0.0)) for c in seg),
+        default=0.0,
+    ) / speed_div
+    sharp_changes = sum(1 for c in seg if c.get("angle_change", 0.0) >= 60.0)
+    floor_bounce = any(
+        c.get("angle_change", 0.0) >= FLOOR_BOUNCE_ANGLE
+        and frame_height > 0
+        and c.get("y", 0.0) / frame_height >= FLOOR_BOUNCE_Y_FRAC
+        for c in seg
+    )
+    contact_span = max(last_contact - first_contact, 1e-6)
+
     return {
-        "start":      max(0.0, seg[0]["time"] - PRE_RALLY_PAD),
-        "end":        min(video_duration, seg[-1]["time"] + POST_PLAY_PAD),
+        "start":      max(0.0, first_contact - PRE_RALLY_PAD),
+        "end":        min(video_duration, last_contact + POST_PLAY_PAD),
         "action":     dominant,
         "confidence": avg_conf,
         "labels":     labels,
+        "features": {
+            "contact_count":  len(seg),
+            "first_contact":  round(first_contact, 2),
+            "last_contact":   round(last_contact, 2),
+            "duration":       round(contact_span, 2),
+            "max_speed":      round(max_speed, 4),
+            "sharp_changes":  sharp_changes,
+            "floor_bounce":   floor_bounce,
+            "contact_rate":   round(len(seg) / contact_span, 3),
+        },
     }
 
 
@@ -471,7 +503,7 @@ def contacts_to_rallies(
     # ── 3 & 4. Build rally windows, discard noise ─────────────────────────────
     rallies: list[dict] = []
     for seg in sorted(final_segments, key=lambda s: s[0]["time"]):
-        r = _make_rally(seg, video_duration)
+        r = _make_rally(seg, video_duration, frame_height)
         if r["end"] - r["start"] >= MIN_RALLY_DURATION:
             rallies.append(r)
 
