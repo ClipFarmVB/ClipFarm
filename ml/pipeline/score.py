@@ -134,4 +134,18 @@ def score_highlights(
         "Highlight scoring: %d rallies, min=%.2f median=%.2f max=%.2f",
         len(scores), min(scores), float(np.median(scores)), max(scores),
     )
+
+    # Breakdown of the top rallies so score behaviour can be inspected in logs
+    top = sorted(result, key=lambda d: d["highlight_score"], reverse=True)[:10]
+    for d in top:
+        f = d.get("features", {})
+        logger.info(
+            "  %.1f-%.1fs score=%.2f (cheer=%.2f shape=%.2f) contacts=%d dur=%.1fs "
+            "max_speed=%.3f sharp=%d bounce=%s",
+            d["start"], d["end"], d["highlight_score"],
+            float(f.get("cheer_score", 0.0)), _shape_score(f),
+            f.get("contact_count", 0), f.get("duration", 0.0),
+            f.get("max_speed", 0.0), f.get("sharp_changes", 0),
+            f.get("floor_bounce", False),
+        )
     return result
