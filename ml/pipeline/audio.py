@@ -31,7 +31,9 @@ QUIET_PENALTY = 0.70         # Multiply confidence by this if in a quiet moment
 
 # ── Cheer detection (post-rally crowd reaction) ──────────────────────────────
 CHEER_WINDOW_SEC = 4.0       # How long after the final contact to listen for a reaction
-CHEER_REF_PERCENTILE = 95    # Energy at this percentile maps to cheer_score = 1.0
+# p99 (not p95): in a loud gym p95 saturates — a third of rallies scored a
+# perfect 1.0 on real footage. p99 keeps the top of the scale discriminating.
+CHEER_REF_PERCENTILE = 99    # Energy at this percentile maps to cheer_score = 1.0
 
 
 def _extract_audio_pcm(video_path: str) -> np.ndarray | None:

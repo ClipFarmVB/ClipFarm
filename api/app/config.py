@@ -15,7 +15,9 @@ class Settings(BaseSettings):
 
     # ML pipeline
     clip_verify_enabled: bool = False  # Use CLIP frames in highlight scoring (slow on CPU, enable for GPU)
-    highlight_score_threshold: float = 0.25  # Rallies scoring below this are dropped before pose/cutting
+    # Tuned on real footage: 0.50 turns a 22-min VOD into ~5 min of clips
+    # while keeping verified highlights. Override via env without rebuild.
+    highlight_score_threshold: float = 0.50  # Rallies scoring below this are dropped before pose/cutting
 
     # Pose refinement (classify_within_windows). Production defaults; the
     # Docker dev stack overrides these to lighter values for CPU speed.
