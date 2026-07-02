@@ -191,7 +191,12 @@ def process_game_task(self, game_id: str, raw_video_url: str):
             # confident.
             try:
                 from ml.pipeline.detect import classify_within_windows
-                detections = classify_within_windows(str(local_video), detections)
+                detections = classify_within_windows(
+                    str(local_video), detections,
+                    model_name=app_settings.pose_model,
+                    imgsz=app_settings.pose_imgsz,
+                    skip_frames=app_settings.pose_skip_frames,
+                )
                 logger.info("Pose refinement complete (%d windows)", len(detections))
             except Exception as pose_err:
                 logger.warning("Pose refinement failed (%s) — keeping trajectory labels", pose_err)

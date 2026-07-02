@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     clip_verify_enabled: bool = False  # Use CLIP frames in highlight scoring (slow on CPU, enable for GPU)
     highlight_score_threshold: float = 0.25  # Rallies scoring below this are dropped before pose/cutting
 
+    # Pose refinement (classify_within_windows). Production defaults; the
+    # Docker dev stack overrides these to lighter values for CPU speed.
+    pose_model: str = "yolov8s-pose.pt"
+    pose_imgsz: int = 1280
+    pose_skip_frames: int = 4
+
     # Database
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
 
