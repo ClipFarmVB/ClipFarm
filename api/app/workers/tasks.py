@@ -1,7 +1,10 @@
 """Celery tasks for async video processing."""
+import hashlib
+import json
 import logging
 import tempfile
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -9,6 +12,53 @@ from urllib.parse import urlparse
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+
+def _file_md5(path: Path) -> str:
+    """Content hash of a file (streamed, constant memory)."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _track_ball_cached(local_video: Path, tmp: Path, sample_every: int):
+    """
+    Ball tracking with an R2-backed cache keyed by video content hash.
+
+    Tracking a 22-min video takes ~30 min on CPU; the positions only depend
+    on the video bytes, the model version, and the sample rate — so re-runs
+    of the same footage (re-uploads, pipeline tuning) load cached positions
+    in seconds instead. Cache failures fall through to normal tracking.
+    """
+    import os
+    from app.services import storage as s3
+    from ml.pipeline.ball import track_ball, TrackedBall, BallPosition, MODEL_ID
+
+    model_slug = MODEL_ID.replace("/", "-")
+    cache_key = f"ball-cache/{_file_md5(local_video)}-{model_slug}-s{sample_every}.json"
+    cache_path = tmp / "ball_cache.json"
+
+    try:
+        s3.download_file(cache_key, cache_path)
+        data = json.loads(cache_path.read_text())
+        tracker = TrackedBall(positions=[BallPosition(**p) for p in data["positions"]])
+        logger.info("Ball cache hit (%s): %d positions", cache_key, len(tracker.positions))
+        return tracker
+    except Exception:
+        logger.info("Ball cache miss (%s) — running tracking", cache_key)
+
+    tracker = track_ball(str(local_video), os.environ["ROBOFLOW_API_KEY"], sample_every=sample_every)
+
+    try:
+        cache_path.write_text(json.dumps({"positions": [asdict(p) for p in tracker.positions]}))
+        s3.upload_file(cache_path, cache_key, "application/json")
+        logger.info("Ball positions cached to %s", cache_key)
+    except Exception as cache_err:
+        logger.warning("Failed to write ball cache (%s)", cache_err)
+
+    return tracker
 
 
 @celery_app.task(bind=True, name="recut_clip", max_retries=2, default_retry_delay=30)
@@ -134,8 +184,8 @@ def process_game_task(self, game_id: str, raw_video_url: str):
             ball_ok = False
             if _os.environ.get("ROBOFLOW_API_KEY"):
                 try:
-                    from ml.pipeline.ball import track_ball, find_contacts, contacts_to_rallies
-                    tracker   = track_ball(str(local_video), _os.environ["ROBOFLOW_API_KEY"], sample_every=10)
+                    from ml.pipeline.ball import find_contacts, contacts_to_rallies
+                    tracker   = _track_ball_cached(local_video, tmp, sample_every=10)
                     contacts  = find_contacts(tracker, frame_height=_frame_h)
                     detections = contacts_to_rallies(contacts, video_duration, _frame_h)
                     ball_ok   = True

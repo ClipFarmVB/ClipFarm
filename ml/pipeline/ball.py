@@ -38,9 +38,19 @@ MAX_JUMP_PX  = 300        # max pixels a ball can move between sampled frames
 MAX_MISS     = 5          # max consecutive missed frames before track is reset
 
 # ── Contact detection config ──────────────────────────────────────────────────
-CONTACT_ANGLE_DEG   = 25.0  # minimum direction change (degrees) to flag contact
-CONTACT_SPEED_RATIO = 0.35  # OR speed change of this fraction of previous speed
-MIN_SPEED_PX        = 4.0   # ignore near-stationary ball (rolling / held)
+# A contact is a deviation from ballistic (free-fall) flight. Raw angle/speed
+# thresholds misfire badly at coarse sampling: gravity alone bends the
+# trajectory >25° between samples 0.33s apart, flagging normal flight as hits.
+# Gravity is estimated per-video from the trajectory (median vertical
+# acceleration — free flight dominates, so the median is robust to hits).
+CONTACT_RESIDUAL_RATIO  = 0.50  # residual must exceed this fraction of ball speed
+CONTACT_RESIDUAL_MIN_PX = 3.0   # ...and this absolute floor (px/frame)
+MIN_CONTACT_SPACING     = 0.6   # seconds: debounce — one hit can't fire twice
+MAX_SEGMENT_GAP_FRAMES  = 30    # skip triples spanning a track reset (velocities unreliable)
+MIN_SPEED_PX            = 4.0   # ignore near-stationary ball (rolling / held)
+# Legacy thresholds — still used by fuse_with_ball_contacts "strong contact" check
+CONTACT_ANGLE_DEG   = 25.0  # minimum direction change (degrees)
+CONTACT_SPEED_RATIO = 0.35  # speed change fraction
 
 # ── Rally clipping config ─────────────────────────────────────────────────────
 RALLY_GAP_SECONDS    = 5.0   # gap between contacts that splits two rallies
@@ -304,18 +314,48 @@ def classify_contact_action(
     return "unknown", 0.42
 
 
+def _estimate_gravity(positions: list[BallPosition]) -> float:
+    """
+    Estimate gravity in px/frame² from the trajectory itself.
+
+    Takes the median vertical acceleration across all consecutive triples.
+    Free flight dominates the samples (contacts are rare), so the median is
+    a robust estimate regardless of camera distance/zoom. Clamped to >= 0
+    (image Y grows downward, so gravity is positive).
+    """
+    accels = []
+    for i in range(1, len(positions) - 1):
+        prev, curr, nxt = positions[i - 1], positions[i], positions[i + 1]
+        dt_b = curr.frame - prev.frame
+        dt_a = nxt.frame - curr.frame
+        if dt_b == 0 or dt_a == 0 or dt_b > MAX_SEGMENT_GAP_FRAMES or dt_a > MAX_SEGMENT_GAP_FRAMES:
+            continue
+        vy_b = (curr.y - prev.y) / dt_b
+        vy_a = (nxt.y - curr.y) / dt_a
+        accels.append((vy_a - vy_b) / ((dt_b + dt_a) / 2))
+    if not accels:
+        return 0.0
+    return max(float(np.median(accels)), 0.0)
+
+
 def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
     """
-    Scan the tracked trajectory for sharp velocity changes.
+    Scan the tracked trajectory for deviations from ballistic flight.
 
-    A contact is flagged when:
-      - direction changes by >= CONTACT_ANGLE_DEG  (ball deflected)
-      - OR speed changes by >= CONTACT_SPEED_RATIO of previous speed (ball accelerated/killed)
-      AND the ball is actually moving (speed >= MIN_SPEED_PX)
+    For each position, the expected velocity after the sample is the incoming
+    velocity plus gravity. A contact is flagged when the actual velocity
+    deviates from that prediction by more than CONTACT_RESIDUAL_RATIO of the
+    ball's speed (with a CONTACT_RESIDUAL_MIN_PX floor). Consecutive triggers
+    within MIN_CONTACT_SPACING seconds are debounced to a single contact.
 
-    Pass frame_height > 0 to get trajectory-based action classification on each contact.
+    This is robust to coarse sampling: a raw direction-change threshold fires
+    on gravity's curvature alone at 0.33s sample spacing, whereas the
+    ballistic residual stays near zero in free flight.
 
-    Returns list of {time, frame, x, y, angle_change, speed_change, action, action_confidence}.
+    Pass frame_height > 0 to get trajectory-based action classification.
+
+    Returns list of {time, frame, x, y, angle_change, speed_change,
+    speed_before, speed_after, residual, action, action_confidence}.
     """
     positions = tracker.positions
     contacts: list[dict] = []
@@ -323,12 +363,20 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
     if len(positions) < 3:
         return contacts
 
+    g_px = _estimate_gravity(positions)
+    logger.info("Estimated gravity: %.3f px/frame²", g_px)
+
+    last_contact_time = float("-inf")
+
     for i in range(1, len(positions) - 1):
         prev, curr, nxt = positions[i - 1], positions[i], positions[i + 1]
 
         dt_before = curr.frame - prev.frame
         dt_after  = nxt.frame  - curr.frame
         if dt_before == 0 or dt_after == 0:
+            continue
+        # Track reset gap — velocities on either side aren't comparable
+        if dt_before > MAX_SEGMENT_GAP_FRAMES or dt_after > MAX_SEGMENT_GAP_FRAMES:
             continue
 
         v_before = ((curr.x - prev.x) / dt_before, (curr.y - prev.y) / dt_before)
@@ -340,31 +388,45 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
         if speed_before < MIN_SPEED_PX and speed_after < MIN_SPEED_PX:
             continue
 
+        # Ballistic prediction: horizontal velocity persists, vertical gains gravity
+        dt_mid = (dt_before + dt_after) / 2
+        predicted_vy = v_before[1] + g_px * dt_mid
+        residual = float(np.hypot(v_after[0] - v_before[0], v_after[1] - predicted_vy))
+
+        threshold = max(CONTACT_RESIDUAL_MIN_PX, CONTACT_RESIDUAL_RATIO * speed_before)
+        if residual < threshold:
+            continue
+
+        # Debounce: a single hit disturbs velocity at adjacent samples too
+        if curr.time - last_contact_time < MIN_CONTACT_SPACING:
+            continue
+        last_contact_time = curr.time
+
         angle_change = _angle_between(v_before, v_after)
         speed_change = abs(speed_after - speed_before) / max(speed_before, 1e-6)
 
-        if angle_change >= CONTACT_ANGLE_DEG or speed_change >= CONTACT_SPEED_RATIO:
-            action, action_conf = (
-                classify_contact_action(positions, i, frame_height)
-                if frame_height > 0
-                else ("unknown", 0.42)
-            )
-            contacts.append({
-                "time":             curr.time,
-                "frame":            curr.frame,
-                "x":                curr.x,
-                "y":                curr.y,
-                "angle_change":     round(angle_change, 1),
-                "speed_change":     round(speed_change, 3),
-                "speed_before":     round(float(speed_before), 2),
-                "speed_after":      round(float(speed_after), 2),
-                "action":           action,
-                "action_confidence": action_conf,
-            })
-            logger.debug(
-                "Contact at t=%.2fs  angle=%.1f°  speed_Δ=%.2f  action=%s(%.2f)",
-                curr.time, angle_change, speed_change, action, action_conf,
-            )
+        action, action_conf = (
+            classify_contact_action(positions, i, frame_height)
+            if frame_height > 0
+            else ("unknown", 0.42)
+        )
+        contacts.append({
+            "time":             curr.time,
+            "frame":            curr.frame,
+            "x":                curr.x,
+            "y":                curr.y,
+            "angle_change":     round(angle_change, 1),
+            "speed_change":     round(speed_change, 3),
+            "speed_before":     round(float(speed_before), 2),
+            "speed_after":      round(float(speed_after), 2),
+            "residual":         round(residual, 2),
+            "action":           action,
+            "action_confidence": action_conf,
+        })
+        logger.debug(
+            "Contact at t=%.2fs  residual=%.1f (thr %.1f)  action=%s(%.2f)",
+            curr.time, residual, threshold, action, action_conf,
+        )
 
     logger.info("Found %d contacts in trajectory of %d positions", len(contacts), len(positions))
     return contacts
