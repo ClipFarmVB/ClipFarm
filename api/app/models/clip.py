@@ -31,6 +31,7 @@ class Clip(Base):
         SAEnum(ActionType), nullable=False, default=ActionType.unknown
     )
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    highlight_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     start_time: Mapped[float] = mapped_column(Float, nullable=False)
     end_time: Mapped[float] = mapped_column(Float, nullable=False)
     clip_url: Mapped[str] = mapped_column(String(2048), nullable=False)

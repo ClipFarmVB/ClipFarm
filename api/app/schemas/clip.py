@@ -15,6 +15,7 @@ class ClipOut(BaseModel):
     player_name: str | None = None
     action_type: ActionType
     confidence: float
+    highlight_score: float | None = None
     start_time: float
     end_time: float
     clip_url: str

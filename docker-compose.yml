@@ -61,6 +61,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # Lighter pose settings for CPU dev — production (GPU) uses the
+      # defaults in app/config.py (yolov8s-pose @ 1280, every 4th frame).
+      POSE_MODEL: yolov8n-pose.pt
+      POSE_IMGSZ: "640"
+      POSE_SKIP_FRAMES: "8"
     depends_on:
       redis:
         condition: service_healthy

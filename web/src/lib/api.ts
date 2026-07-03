@@ -118,6 +118,7 @@ export interface Clip {
   player_name: string | null;
   action_type: ActionType;
   confidence: number;
+  highlight_score: number | null;
   start_time: number;
   end_time: number;
   clip_url: string;
@@ -130,6 +131,8 @@ export interface ClipFilters {
   action_type?: ActionType[];
   player_id?: string;
   min_confidence?: number;
+  min_score?: number;
+  sort?: "time" | "score";
   page?: number;
   page_size?: number;
 }
@@ -139,6 +142,8 @@ export function getClips(gameId: string, filters: ClipFilters = {}): Promise<Cli
   if (filters.action_type?.length) params.set("action_type", filters.action_type.join(","));
   if (filters.player_id) params.set("player_id", filters.player_id);
   if (filters.min_confidence != null) params.set("min_confidence", String(filters.min_confidence));
+  if (filters.min_score != null && filters.min_score > 0) params.set("min_score", String(filters.min_score));
+  if (filters.sort) params.set("sort", filters.sort);
   if (filters.page) params.set("page", String(filters.page));
   if (filters.page_size) params.set("page_size", String(filters.page_size));
   const qs = params.toString();

@@ -14,7 +14,16 @@ class Settings(BaseSettings):
     allowed_upload_content_types: str = "video/mp4,video/quicktime,video/x-matroska,video/webm"
 
     # ML pipeline
-    clip_verify_enabled: bool = False  # CLIP verification gate (slow on CPU, enable for GPU)
+    clip_verify_enabled: bool = False  # Use CLIP frames in highlight scoring (slow on CPU, enable for GPU)
+    # Tuned on real footage: 0.50 turns a 22-min VOD into ~5 min of clips
+    # while keeping verified highlights. Override via env without rebuild.
+    highlight_score_threshold: float = 0.50  # Rallies scoring below this are dropped before pose/cutting
+
+    # Pose refinement (classify_within_windows). Production defaults; the
+    # Docker dev stack overrides these to lighter values for CPU speed.
+    pose_model: str = "yolov8s-pose.pt"
+    pose_imgsz: int = 1280
+    pose_skip_frames: int = 4
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"

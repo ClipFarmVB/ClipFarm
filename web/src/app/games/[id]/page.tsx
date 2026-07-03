@@ -30,7 +30,7 @@ export default function GamePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeClipIndex, setActiveClipIndex] = useState<number | null>(null);
-  const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0 });
+  const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0, min_score: 0, sort: "time" });
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
@@ -206,6 +206,39 @@ export default function GamePage() {
             })}
 
             <div className="ml-auto flex items-center gap-3">
+              {/* Sort toggle: chronological vs highlight score */}
+              <button
+                onClick={() =>
+                  setFilters((f) => ({ ...f, sort: f.sort === "score" ? "time" : "score" }))
+                }
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-all duration-150",
+                  filters.sort === "score"
+                    ? "border-brand/30 bg-brand/5 text-brand"
+                    : "border-border text-muted hover:border-border-strong hover:text-foreground"
+                )}
+              >
+                {filters.sort === "score" ? "Top plays" : "Timeline"}
+              </button>
+
+              {/* Highlight score slider */}
+              <div className="hidden sm:flex items-center gap-2">
+                <span className="text-[10px] text-muted">Highlights</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={(filters.min_score ?? 0) * 100}
+                  onChange={(e) =>
+                    setFilters((f) => ({ ...f, min_score: Number(e.target.value) / 100 }))
+                  }
+                  className="w-20"
+                />
+                <span className="text-[10px] text-muted tabular-nums w-6 text-right">
+                  {Math.round((filters.min_score ?? 0) * 100)}%
+                </span>
+              </div>
+
               {/* Confidence slider */}
               <div className="hidden sm:flex items-center gap-2">
                 <span className="text-[10px] text-muted">Confidence</span>
