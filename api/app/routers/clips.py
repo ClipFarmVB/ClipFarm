@@ -67,6 +67,8 @@ async def list_clips(
     action_type: Annotated[str | None, Query()] = None,
     player_id: Annotated[uuid.UUID | None, Query()] = None,
     min_confidence: Annotated[float, Query(ge=0, le=1)] = 0.0,
+    min_score: Annotated[float, Query(ge=0, le=1)] = 0.0,
+    sort: Annotated[str, Query(pattern="^(time|score)$")] = "time",
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 50,
 ):
@@ -88,7 +90,15 @@ async def list_clips(
     if min_confidence > 0:
         q = q.where(Clip.confidence >= min_confidence)
 
-    q = q.order_by(Clip.start_time).offset((page - 1) * page_size).limit(page_size)
+    if min_score > 0:
+        # Clips from before scoring existed have NULL scores — keep them visible
+        q = q.where((Clip.highlight_score >= min_score) | (Clip.highlight_score.is_(None)))
+
+    if sort == "score":
+        q = q.order_by(Clip.highlight_score.desc().nulls_last(), Clip.start_time)
+    else:
+        q = q.order_by(Clip.start_time)
+    q = q.offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(q)
     clips = result.scalars().all()
 

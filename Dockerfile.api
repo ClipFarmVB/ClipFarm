@@ -19,6 +19,13 @@ RUN pip install --upgrade pip \
     && pip install -r /tmp/api-requirements.txt \
     && pip install ffmpeg-python opencv-python-headless numpy greenlet
 
+# ── ML dependencies (lean CPU build) ─────────────────────────────────────────
+# CPU-only torch keeps the image several GB smaller than the CUDA build.
+# paddle/paddleocr (jersey OCR) intentionally excluded — not wired into the
+# pipeline yet. Roboflow `inference` runs the ball model locally (no API).
+RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+    && pip install ultralytics==8.3.55 "transformers>=4.40.0" "Pillow>=10.0.0" inference
+
 # Copy code after dependencies.
 COPY api /app/api
 COPY ml /app/ml

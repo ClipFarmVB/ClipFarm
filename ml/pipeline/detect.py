@@ -122,6 +122,8 @@ def run_detection(video_path: str) -> list[dict]:
 
             for person_idx in range(len(kps)):
                 person_kps = kps[person_idx]  # (17, 2)
+                if person_kps.shape[0] < 17:  # model can emit boxes with empty keypoints
+                    continue
                 person_conf = confs[person_idx] if confs is not None else None
 
                 # Filter 1: bounding box guards — skip tiny detections (seated crowd)
@@ -457,6 +459,8 @@ def classify_within_windows(
 
                 for pi in range(len(kps_all)):
                     person_kps  = kps_all[pi]
+                    if person_kps.shape[0] < 17:  # model can emit boxes with empty keypoints
+                        continue
                     person_conf = conf_all[pi] if conf_all is not None else None
 
                     if boxes is not None and pi < len(boxes):
