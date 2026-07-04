@@ -41,6 +41,18 @@ def r2_configured() -> bool:
     )
 
 
+# Socket timeouts so a dead connection fails and retries instead of hanging
+# the worker forever (solo pool = one hung transfer blocks the whole queue).
+# read_timeout is per-read inactivity, not total transfer time — large video
+# uploads/downloads are unaffected as long as bytes keep flowing.
+_BOTO_CONFIG = Config(
+    signature_version="s3v4",
+    connect_timeout=30,
+    read_timeout=120,
+    retries={"max_attempts": 3, "mode": "standard"},
+)
+
+
 def _client():
     endpoint = f"https://{settings.r2_account_id}.r2.cloudflarestorage.com"
     return boto3.client(
@@ -48,7 +60,7 @@ def _client():
         endpoint_url=endpoint,
         aws_access_key_id=settings.r2_access_key_id,
         aws_secret_access_key=settings.r2_secret_access_key,
-        config=Config(signature_version="s3v4"),
+        config=_BOTO_CONFIG,
         region_name="auto",
     )
 
