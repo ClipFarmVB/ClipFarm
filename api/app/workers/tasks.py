@@ -185,7 +185,11 @@ def process_game_task(self, game_id: str, raw_video_url: str):
             if _os.environ.get("ROBOFLOW_API_KEY"):
                 try:
                     from ml.pipeline.ball import find_contacts, contacts_to_rallies
-                    tracker   = _track_ball_cached(local_video, tmp, sample_every=10)
+                    # fps-aware sampling: ~3 ball detections per second of video
+                    # regardless of source frame rate (tuned at 30fps/every-10th;
+                    # a 60fps video would otherwise double inference cost).
+                    sample_every = max(1, round(_fps / 3.0))
+                    tracker   = _track_ball_cached(local_video, tmp, sample_every=sample_every)
                     contacts  = find_contacts(tracker, frame_height=_frame_h)
                     detections = contacts_to_rallies(contacts, video_duration, _frame_h)
                     ball_ok   = True
