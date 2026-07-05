@@ -70,12 +70,13 @@ CONTACT_SPEED_RATIO = 0.35  # speed change fraction
 
 # ── Rally clipping config ─────────────────────────────────────────────────────
 RALLY_GAP_SECONDS    = 5.0   # gap between contacts that splits two rallies
-# Pads sized against 69 hand-labeled clips (CF-38): the point-ending spike is
-# the fastest ball and often escapes the tracker, so the final real hit can be
-# ~1-2s after the last *detected* contact — POST covers it. PRE catches the
-# serve toss when the first detected contact is the receive.
-PRE_RALLY_PAD        = 3.0   # seconds before first contact (capture approach)
-POST_PLAY_PAD        = 4.0   # seconds after last contact (final hit, celebration)
+# NOTE (CF-38 review): labeled data shows ~5 clips/game cut off just before the
+# point-ending hit (fastest ball escapes the tracker, so the window anchors to
+# the previous contact). Larger pads fix that but add slack to every clip while
+# dead-time contacts still inflate windows — revisit after CF-22/CF-5 remove
+# dead time, when bigger pads become nearly free.
+PRE_RALLY_PAD        = 2.0   # seconds before first contact (capture approach)
+POST_PLAY_PAD        = 2.5   # seconds after ball leaves play (celebration, flight)
 # Rally contacts arrive every 1-2s; ball-shagging tosses and pre-serve bounces
 # trail/lead sparsely. An edge contact separated from the rally body by more
 # than this is dead time, not play (labeled cost: 5-10s dead tails/leads).
@@ -83,7 +84,7 @@ EDGE_CONTACT_GAP     = 3.0   # seconds: trim rally-edge contacts beyond this gap
 # When a long rally is split on an internal contact gap, the gap often IS the
 # highlight (fast spike = tracker miss). Bridge small windows between adjacent
 # clips so that moment lands in at least one of them.
-MAX_HOLE_TO_BRIDGE   = 3.5   # seconds: close gaps between consecutive clip windows
+MAX_HOLE_TO_BRIDGE   = 4.0   # seconds: close gaps between consecutive clip windows
 HOLE_OVERLAP         = 0.75  # seconds each side reaches past the hole midpoint
 FLOOR_BOUNCE_ANGLE   = 130.0 # direction change >= this = ball hit the floor (unused for splitting, kept for scoring)
 FLOOR_BOUNCE_Y_FRAC  = 0.55  # ball must also be in lower N% of frame
