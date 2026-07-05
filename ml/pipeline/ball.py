@@ -70,8 +70,21 @@ CONTACT_SPEED_RATIO = 0.35  # speed change fraction
 
 # ── Rally clipping config ─────────────────────────────────────────────────────
 RALLY_GAP_SECONDS    = 5.0   # gap between contacts that splits two rallies
-PRE_RALLY_PAD        = 2.0   # seconds before first contact (capture approach)
-POST_PLAY_PAD        = 2.5   # seconds after ball leaves play (celebration, flight)
+# Pads sized against 69 hand-labeled clips (CF-38): the point-ending spike is
+# the fastest ball and often escapes the tracker, so the final real hit can be
+# ~1-2s after the last *detected* contact — POST covers it. PRE catches the
+# serve toss when the first detected contact is the receive.
+PRE_RALLY_PAD        = 3.0   # seconds before first contact (capture approach)
+POST_PLAY_PAD        = 4.0   # seconds after last contact (final hit, celebration)
+# Rally contacts arrive every 1-2s; ball-shagging tosses and pre-serve bounces
+# trail/lead sparsely. An edge contact separated from the rally body by more
+# than this is dead time, not play (labeled cost: 5-10s dead tails/leads).
+EDGE_CONTACT_GAP     = 3.0   # seconds: trim rally-edge contacts beyond this gap
+# When a long rally is split on an internal contact gap, the gap often IS the
+# highlight (fast spike = tracker miss). Bridge small windows between adjacent
+# clips so that moment lands in at least one of them.
+MAX_HOLE_TO_BRIDGE   = 3.5   # seconds: close gaps between consecutive clip windows
+HOLE_OVERLAP         = 0.75  # seconds each side reaches past the hole midpoint
 FLOOR_BOUNCE_ANGLE   = 130.0 # direction change >= this = ball hit the floor (unused for splitting, kept for scoring)
 FLOOR_BOUNCE_Y_FRAC  = 0.55  # ball must also be in lower N% of frame
 MIN_RALLY_DURATION   = 2.0   # skip clips shorter than this (noise/false contacts)
@@ -565,6 +578,43 @@ def _make_rally(seg: list[dict], video_duration: float, frame_height: int = 0) -
     }
 
 
+def _trim_edge_contacts(seg: list[dict]) -> list[dict]:
+    """
+    Drop sparse leading/trailing contacts from a rally group.
+
+    Rally play produces contacts every 1-2s; pre-serve ball bounces and
+    post-point shagging tosses attach to the group's edges with larger gaps.
+    Peel contacts off both ends while the edge gap exceeds EDGE_CONTACT_GAP,
+    keeping at least MIN_RALLY_CONTACTS. (CF-38: labeled clips carried 5-10s
+    of dead time caused by exactly these edge contacts.)
+    """
+    seg = list(seg)
+    while len(seg) > MIN_RALLY_CONTACTS and seg[1]["time"] - seg[0]["time"] > EDGE_CONTACT_GAP:
+        seg.pop(0)
+    while len(seg) > MIN_RALLY_CONTACTS and seg[-1]["time"] - seg[-2]["time"] > EDGE_CONTACT_GAP:
+        seg.pop()
+    return seg
+
+
+def _bridge_small_holes(rallies: list[dict], video_duration: float) -> list[dict]:
+    """
+    Close small windows between consecutive clips so nothing falls in the crack.
+
+    When a long rally is subdivided on its largest internal contact gap, that
+    gap is frequently the point-ending spike (fastest ball = detector miss) —
+    labeled example: a spike that appeared in neither of the two adjacent
+    clips. Extend both windows past the hole midpoint so the moment lands in
+    each. Holes wider than MAX_HOLE_TO_BRIDGE are genuine between-rally time.
+    """
+    for a, b in zip(rallies, rallies[1:]):
+        hole = b["start"] - a["end"]
+        if 0 < hole <= MAX_HOLE_TO_BRIDGE:
+            mid = (a["end"] + b["start"]) / 2
+            a["end"]   = min(video_duration, mid + HOLE_OVERLAP)
+            b["start"] = max(0.0, mid - HOLE_OVERLAP)
+    return rallies
+
+
 def contacts_to_rallies(
     contacts: list[dict],
     video_duration: float,
@@ -578,10 +628,14 @@ def contacts_to_rallies(
          previous contact exceeds RALLY_GAP_SECONDS.
       2. Segments longer than MAX_CLIP_DURATION are subdivided on their largest
          internal gaps so each sub-clip stays under the cap.
-      3. Each segment becomes one clip:
+      3. Sparse edge contacts (pre-serve bounces, shag tosses) are trimmed so
+         windows hug actual play (_trim_edge_contacts).
+      4. Each segment becomes one clip:
            rally_start = first_contact.time - PRE_RALLY_PAD  (>= 0)
            rally_end   = last_contact.time  + POST_PLAY_PAD  (<= video_duration)
-      4. Clips shorter than MIN_RALLY_DURATION are discarded as noise.
+      5. Clips shorter than MIN_RALLY_DURATION are discarded as noise.
+      6. Small holes between consecutive windows are bridged so split-point
+         moments appear in at least one clip (_bridge_small_holes).
 
     Returns list of dicts compatible with generate_clips():
       {start, end, action, confidence, labels}
@@ -629,14 +683,18 @@ def contacts_to_rallies(
             pending.append(seg[:split_idx])
             pending.append(seg[split_idx:])
 
-    # ── 3 & 4. Build rally windows, discard noise ─────────────────────────────
+    # ── 3-5. Trim edges, build rally windows, discard noise ──────────────────
     rallies: list[dict] = []
     for seg in sorted(final_segments, key=lambda s: s[0]["time"]):
+        seg = _trim_edge_contacts(seg)
         if len(seg) < MIN_RALLY_CONTACTS:
             continue  # 1-2 isolated contacts = noise, not a rally
         r = _make_rally(seg, video_duration, frame_height)
         if r["end"] - r["start"] >= MIN_RALLY_DURATION:
             rallies.append(r)
+
+    # ── 6. Bridge small holes so split-point moments aren't lost ─────────────
+    rallies = _bridge_small_holes(rallies, video_duration)
 
     logger.info(
         "contacts_to_rallies: %d contacts -> %d rallies",
