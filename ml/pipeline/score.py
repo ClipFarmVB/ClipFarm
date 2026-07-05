@@ -28,7 +28,7 @@ WEIGHT_CLIP  = 0.20
 
 # ── Rally shape normalization ────────────────────────────────────────────────
 CONTACTS_SATURATION = 8      # contact_count at which the sub-score maxes out
-SPEED_SATURATION    = 0.04   # max_speed (frame-heights/frame) for full score
+SPEED_SATURATION    = 1.2    # max_speed (frame-heights/SECOND) for full score
 SHARP_SATURATION    = 4      # sharp direction changes for full score
 DURATION_MIN  = 4.0          # rallies shorter than this score 0 on duration
 DURATION_LOW  = 8.0          # full duration score from here...
