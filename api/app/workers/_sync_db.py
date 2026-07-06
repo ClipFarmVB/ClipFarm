@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.game import Game, GameStatus
 from app.models.clip import Clip, ActionType
-from app.models.dead_time import DeadTimeClip, DeadTimeRun, DeadTimeRunStatus
 
 # Sync engine (Celery workers don't run in an asyncio loop)
 _sync_url = settings.database_url.replace("+asyncpg", "")
@@ -35,6 +34,23 @@ def sync_set_game_status(
             game.processed_at = processed_at
         if error_message:
             game.error_message = error_message
+        s.commit()
+
+
+def sync_set_condensed_result(
+    game_id: uuid.UUID,
+    *,
+    condensed_video_url: str,
+    original_duration: float,
+    condensed_duration: float,
+):
+    with Session(_engine) as s:
+        game = s.get(Game, game_id)
+        if not game:
+            return
+        game.condensed_video_url = condensed_video_url
+        game.original_duration = original_duration
+        game.condensed_duration = condensed_duration
         s.commit()
 
 

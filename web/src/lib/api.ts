@@ -40,6 +40,10 @@ export interface Game {
   status: "queued" | "processing" | "ready" | "failed";
   created_at: string;
   clip_count?: number;
+  condense_requested?: boolean;
+  condensed_video_url?: string | null;
+  original_duration?: number | null;
+  condensed_duration?: number | null;
 }
 
 export function getGames(): Promise<Game[]> {
@@ -72,11 +76,13 @@ export async function deleteGame(id: string): Promise<void> {
 export async function uploadGame(
   file: File,
   title: string,
+  condense: boolean = false,
   onProgress?: (pct: number) => void
 ): Promise<Game> {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("title", title);
+  formData.append("condense", String(condense));
 
   const authHeaders = await getAuthHeaders();
 
@@ -240,78 +246,4 @@ export function addClipToCollection(collectionId: string, clipId: string): Promi
 
 export function removeClipFromCollection(collectionId: string, clipId: string): Promise<void> {
   return request<void>(`/collections/${collectionId}/clips/${clipId}`, { method: "DELETE" });
-}
-
-// ─── Dead Time (temporary) ───────────────────────────────────────────────────
-
-export interface DeadTimeRun {
-  id: string;
-  title: string;
-  status: "queued" | "processing" | "ready" | "failed";
-  created_at: string;
-  clip_count?: number;
-}
-
-export interface DeadTimeClip {
-  id: string;
-  run_id: string;
-  start_time: number;
-  end_time: number;
-  score: number;
-  clip_url: string;
-  thumbnail_url: string | null;
-  created_at: string;
-}
-
-export function getDeadTimeRuns(): Promise<DeadTimeRun[]> {
-  return request<DeadTimeRun[]>("/deadtime/runs");
-}
-
-export function getDeadTimeRun(runId: string): Promise<DeadTimeRun> {
-  return request<DeadTimeRun>(`/deadtime/runs/${runId}`);
-}
-
-export function getDeadTimeClips(
-  runId: string,
-  page: number = 1,
-  pageSize: number = 50
-): Promise<DeadTimeClip[]> {
-  return request<DeadTimeClip[]>(`/deadtime/runs/${runId}/clips?page=${page}&page_size=${pageSize}`);
-}
-
-export async function uploadDeadTimeRun(
-  file: File,
-  title: string,
-  onProgress?: (pct: number) => void
-): Promise<DeadTimeRun> {
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("title", title);
-
-  const authHeaders = await getAuthHeaders();
-
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_URL}/deadtime/runs`);
-
-    for (const [key, value] of Object.entries(authHeaders)) {
-      xhr.setRequestHeader(key, value);
-    }
-
-    if (onProgress) {
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
-      };
-    }
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
-      } else {
-        reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
-      }
-    };
-    xhr.onerror = () => reject(new Error("Network error during upload"));
-    xhr.send(formData);
-  });
 }

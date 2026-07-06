@@ -42,9 +42,13 @@ MAX_MISS     = 5          # max consecutive missed frames before track is reset
 # balls, and false detections (measured: 23% of consecutive positions jump
 # >200px). Contacts must only be detected within coherent single-ball
 # segments, so the track is split wherever motion is implausible for one ball.
-SEG_MAX_SPEED_PXPF   = 40.0  # px/frame: faster displacement = track hop, split here
-SEG_MIN_POSITIONS    = 4     # segments shorter than this are junk (hops/flicker)
-SEG_MIN_MEDIAN_SPEED = 2.0   # px/frame: near-stationary segments are held/spare balls
+#
+# ALL speeds are px/SECOND so thresholds hold at any source frame rate
+# (tuned on 30fps footage; a 60fps video halves px/frame velocities but
+# leaves px/second untouched).
+SEG_MAX_SPEED_PXPS        = 1200.0  # px/s: faster displacement = track hop, split here
+SEG_MIN_POSITIONS         = 4       # segments shorter than this are junk (hops/flicker)
+SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/spare balls
 
 # ── Contact detection config ──────────────────────────────────────────────────
 # A contact is a deviation from ballistic (free-fall) flight. Raw angle/speed
@@ -52,14 +56,14 @@ SEG_MIN_MEDIAN_SPEED = 2.0   # px/frame: near-stationary segments are held/spare
 # trajectory >25° between samples 0.33s apart, flagging normal flight as hits.
 # Gravity is estimated per-video from coherent segments (median vertical
 # acceleration — free flight dominates, so the median is robust to hits).
-# Thresholds were tuned against a real cached trajectory: detector centroid
-# wobble puts the residual noise floor at ~p75=15 px/frame.
-CONTACT_RESIDUAL_RATIO  = 0.50  # residual must exceed this fraction of ball speed
-CONTACT_RESIDUAL_MIN_PX = 16.0  # ...and this absolute floor (px/frame, above noise)
-CONTACT_HIT_SPEED_PX    = 8.0   # a real hit has speed on at least one side
-MIN_CONTACT_SPACING     = 0.6   # seconds: debounce — one hit can't fire twice
-MAX_SEGMENT_GAP_FRAMES  = 30    # skip triples spanning a detection gap
-MIN_SPEED_PX            = 4.0   # ignore near-stationary ball (rolling / held)
+# Thresholds tuned against a real cached trajectory: detector centroid wobble
+# puts the residual noise floor at ~p75 = 450 px/s (15 px/frame @ 30fps).
+CONTACT_RESIDUAL_RATIO    = 0.50    # residual must exceed this fraction of ball speed
+CONTACT_RESIDUAL_MIN_PXPS = 480.0   # ...and this absolute floor (px/s, above noise)
+CONTACT_HIT_SPEED_PXPS    = 240.0   # px/s: a real hit has speed on at least one side
+MIN_CONTACT_SPACING       = 0.6     # seconds: debounce — one hit can't fire twice
+MAX_SAMPLE_GAP_SEC        = 1.0     # skip triples spanning a detection gap
+MIN_SPEED_PXPS            = 120.0   # px/s: ignore near-stationary ball (rolling / held)
 # Legacy thresholds — still used by fuse_with_ball_contacts "strong contact" check
 CONTACT_ANGLE_DEG   = 25.0  # minimum direction change (degrees)
 CONTACT_SPEED_RATIO = 0.35  # speed change fraction
@@ -286,16 +290,16 @@ def classify_contact_action(
     pos    = positions[i]
     y_frac = pos.y / max(frame_height, 1)   # 0 = top of frame, 1 = bottom
 
-    # Stable velocity: average over up to 2 positions either side of contact
+    # Stable velocity (px/s): average over up to 2 positions either side
     pre  = max(0, i - 2)
     post = min(len(positions) - 1, i + 2)
 
     a, b = positions[pre], pos
-    dt = b.frame - a.frame
+    dt = b.time - a.time
     v_before = ((b.x - a.x) / dt, (b.y - a.y) / dt) if dt > 0 else (0.0, 0.0)
 
     a, b = pos, positions[post]
-    dt = b.frame - a.frame
+    dt = b.time - a.time
     v_after = ((b.x - a.x) / dt, (b.y - a.y) / dt) if dt > 0 else (0.0, 0.0)
 
     sp_before = np.hypot(*v_before)
@@ -303,25 +307,26 @@ def classify_contact_action(
     vy_before = v_before[1]
     vy_after  = v_after[1]
 
+    # Thresholds in px/s (tuned values × 30 from the original 30fps px/frame)
     # SPIKE: high contact in frame, ball driven hard downward
-    if y_frac < 0.45 and vy_after > 2.0 and sp_after > 6.0:
-        conf = min(0.88, 0.65 + sp_after / 50.0)
+    if y_frac < 0.45 and vy_after > 60.0 and sp_after > 180.0:
+        conf = min(0.88, 0.65 + sp_after / 1500.0)
         return "spike", round(conf, 2)
 
     # BLOCK: high contact, ball reversed from falling to rising (spike blocked back)
-    if y_frac < 0.45 and vy_before > 1.0 and vy_after < -1.0:
+    if y_frac < 0.45 and vy_before > 30.0 and vy_after < -30.0:
         return "block", 0.72
 
     # DIG: low contact, ball was falling, now rising (floor save)
-    if y_frac > 0.58 and vy_before > 1.0 and vy_after < -1.0:
-        return "dig", 0.75 if sp_after > 3.0 else 0.60
+    if y_frac > 0.58 and vy_before > 30.0 and vy_after < -30.0:
+        return "dig", 0.75 if sp_after > 90.0 else 0.60
 
     # SERVE: ball nearly stationary before contact (toss), then driven fast
-    if sp_before < 3.0 and sp_after > 6.0:
+    if sp_before < 90.0 and sp_after > 180.0:
         return "serve", 0.68
 
     # SET: controlled mid-height redirect at moderate speed
-    if 0.20 < y_frac < 0.65 and 1.5 < sp_after < 8.0:
+    if 0.20 < y_frac < 0.65 and 45.0 < sp_after < 240.0:
         return "set", 0.58
 
     return "unknown", 0.42
@@ -343,9 +348,11 @@ def _segment_track(positions: list[BallPosition]) -> list[list[BallPosition]]:
     raw: list[list[BallPosition]] = []
     cur = [positions[0]]
     for a, b in zip(positions, positions[1:]):
-        dt = b.frame - a.frame
-        speed = np.hypot(b.x - a.x, b.y - a.y) / max(dt, 1)
-        if dt > MAX_SEGMENT_GAP_FRAMES or speed > SEG_MAX_SPEED_PXPF:
+        dt = b.time - a.time
+        if dt <= 0:
+            continue
+        speed = np.hypot(b.x - a.x, b.y - a.y) / dt  # px/s
+        if dt > MAX_SAMPLE_GAP_SEC or speed > SEG_MAX_SPEED_PXPS:
             raw.append(cur)
             cur = [b]
         else:
@@ -357,10 +364,10 @@ def _segment_track(positions: list[BallPosition]) -> list[list[BallPosition]]:
         if len(seg) < SEG_MIN_POSITIONS:
             continue
         speeds = [
-            np.hypot(b.x - a.x, b.y - a.y) / max(b.frame - a.frame, 1)
+            np.hypot(b.x - a.x, b.y - a.y) / max(b.time - a.time, 1e-6)
             for a, b in zip(seg, seg[1:])
         ]
-        if np.median(speeds) < SEG_MIN_MEDIAN_SPEED:
+        if np.median(speeds) < SEG_MIN_MEDIAN_SPEED_PXPS:
             continue
         kept.append(seg)
 
@@ -373,7 +380,7 @@ def _segment_track(positions: list[BallPosition]) -> list[list[BallPosition]]:
 
 def _estimate_gravity(segments: list[list[BallPosition]]) -> float:
     """
-    Estimate gravity in px/frame² from coherent flight segments.
+    Estimate gravity in px/s² from coherent flight segments.
 
     Median vertical acceleration across all within-segment triples. Free
     flight dominates (contacts are rare), so the median is robust regardless
@@ -382,9 +389,9 @@ def _estimate_gravity(segments: list[list[BallPosition]]) -> float:
     accels = []
     for seg in segments:
         for i in range(1, len(seg) - 1):
-            dt_b = seg[i].frame - seg[i - 1].frame
-            dt_a = seg[i + 1].frame - seg[i].frame
-            if dt_b == 0 or dt_a == 0:
+            dt_b = seg[i].time - seg[i - 1].time
+            dt_a = seg[i + 1].time - seg[i].time
+            if dt_b <= 0 or dt_a <= 0:
                 continue
             vy_b = (seg[i].y - seg[i - 1].y) / dt_b
             vy_a = (seg[i + 1].y - seg[i].y) / dt_a
@@ -402,9 +409,10 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
     Pipeline: segment the raw track (drop hops/junk) → estimate gravity from
     the segments → within each segment, flag samples whose post-velocity
     deviates from the ballistic prediction by more than the noise floor
-    (CONTACT_RESIDUAL_MIN_PX, or CONTACT_RESIDUAL_RATIO × speed if higher)
+    (CONTACT_RESIDUAL_MIN_PXPS, or CONTACT_RESIDUAL_RATIO × speed if higher)
     with plausible hit speed on at least one side → global time-sorted
-    debounce (MIN_CONTACT_SPACING).
+    debounce (MIN_CONTACT_SPACING). All velocities are px/s, so behaviour is
+    identical across source frame rates.
 
     Thresholds are tuned against real footage; see constants at module top.
 
@@ -418,7 +426,7 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
         return []
 
     g_px = _estimate_gravity(segments)
-    logger.info("Estimated gravity: %.3f px/frame²", g_px)
+    logger.info("Estimated gravity: %.3f px/s²", g_px)
 
     candidates: list[dict] = []
 
@@ -426,9 +434,9 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
         for i in range(1, len(seg) - 1):
             prev, curr, nxt = seg[i - 1], seg[i], seg[i + 1]
 
-            dt_before = curr.frame - prev.frame
-            dt_after  = nxt.frame  - curr.frame
-            if dt_before == 0 or dt_after == 0:
+            dt_before = curr.time - prev.time
+            dt_after  = nxt.time  - curr.time
+            if dt_before <= 0 or dt_after <= 0:
                 continue
 
             v_before = ((curr.x - prev.x) / dt_before, (curr.y - prev.y) / dt_before)
@@ -437,10 +445,10 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
             speed_before = np.hypot(*v_before)
             speed_after  = np.hypot(*v_after)
 
-            if speed_before < MIN_SPEED_PX and speed_after < MIN_SPEED_PX:
+            if speed_before < MIN_SPEED_PXPS and speed_after < MIN_SPEED_PXPS:
                 continue
             # A real hit imparts speed — both sides slow = detector wobble
-            if max(speed_before, speed_after) < CONTACT_HIT_SPEED_PX:
+            if max(speed_before, speed_after) < CONTACT_HIT_SPEED_PXPS:
                 continue
 
             # Ballistic prediction: horizontal velocity persists, vertical gains gravity
@@ -448,7 +456,7 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
             predicted_vy = v_before[1] + g_px * dt_mid
             residual = float(np.hypot(v_after[0] - v_before[0], v_after[1] - predicted_vy))
 
-            threshold = max(CONTACT_RESIDUAL_MIN_PX, CONTACT_RESIDUAL_RATIO * speed_before)
+            threshold = max(CONTACT_RESIDUAL_MIN_PXPS, CONTACT_RESIDUAL_RATIO * speed_before)
             if residual < threshold:
                 continue
 
@@ -522,8 +530,8 @@ def _make_rally(seg: list[dict], video_duration: float, frame_height: int = 0) -
     last_contact  = seg[-1]["time"]
 
     # Rally features for downstream highlight scoring (ml/pipeline/score.py).
-    # Speeds are normalized to fractions of frame height per frame so they are
-    # comparable across resolutions.
+    # Speeds are normalized to frame-heights per SECOND so they are comparable
+    # across both resolutions and frame rates.
     speed_div = float(frame_height) if frame_height > 0 else 1.0
     max_speed = max(
         (max(c.get("speed_before", 0.0), c.get("speed_after", 0.0)) for c in seg),

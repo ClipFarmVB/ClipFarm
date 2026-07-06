@@ -23,8 +23,18 @@ RUN pip install --upgrade pip \
 # CPU-only torch keeps the image several GB smaller than the CUDA build.
 # paddle/paddleocr (jersey OCR) intentionally excluded — not wired into the
 # pipeline yet. Roboflow `inference` runs the ball model locally (no API).
-RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu \
-    && pip install ultralytics==8.3.55 "transformers>=4.40.0" "Pillow>=10.0.0" inference
+# inference MUST be pinned: unpinned, pip's resolver backtracked to 0.28.1,
+# which predates RF-DETR support and broke the ball model
+# (KeyError ('object-detection', 'rfdetr-small')).
+# build-essential/cmake are needed transiently: zxing-cpp (pulled in by
+# inference) ships no arm64 wheel, so pip compiles it from source on Apple
+# Silicon. Install and purge in the same layer to keep the image lean.
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake \
+    && pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+    && pip install ultralytics==8.3.55 "transformers>=4.40.0" "Pillow>=10.0.0" "inference==1.3.3" \
+    && apt-get purge -y build-essential cmake \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy code after dependencies.
 COPY api /app/api
