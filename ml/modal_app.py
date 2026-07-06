@@ -27,8 +27,10 @@ app = modal.App(APP_NAME)
 # container re-downloads the RF-DETR weights (~114MB) from Roboflow's CDN.
 model_cache = modal.Volume.from_name("clipfarm-model-cache", create_if_missing=True)
 
+# CUDA devel base (not debian_slim): inference's GPU ONNX path needs pycuda,
+# which compiles against CUDA headers at install time.
 image = (
-    modal.Image.debian_slim(python_version="3.11")
+    modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
     .apt_install("libgl1", "libglib2.0-0", "ffmpeg")
     .pip_install(
         "torch",
@@ -40,6 +42,14 @@ image = (
         # RF-DETR support and the ball model silently fails to load.
         "inference==1.3.3",
     )
+    # Separate layer: inference==1.3.3 pins CPU-only ONNX extras; the GPU
+    # execution path requires the cu12 extras (onnxruntime-gpu + pycuda).
+    # pycuda compiles from source, so keep it isolated for cache-friendly
+    # iteration. Same ~=0.29.7 constraint inference itself uses.
+    # CC/CXX: Modal's standalone python defaults to clang, which the nvidia
+    # image doesn't ship — point the pycuda build at gcc/g++ instead.
+    .env({"CC": "gcc", "CXX": "g++"})
+    .pip_install("inference-models[onnx-cu12]~=0.29.7")
     .add_local_python_source("ml")
 )
 
