@@ -14,6 +14,10 @@ class GameOut(BaseModel):
     status: GameStatus
     created_at: datetime
     clip_count: int | None = None
+    condense_requested: bool = False
+    condensed_video_url: str | None = None
+    original_duration: float | None = None
+    condensed_duration: float | None = None
 
 
 class GameCreate(BaseModel):

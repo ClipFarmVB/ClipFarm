@@ -107,25 +107,8 @@ def _run_detection_local(video_path: str) -> list[dict]:
     return run_detection(video_path)
 
 
-def _run_dead_time_detection_local(video_path: str) -> list[dict]:
-    """Run standalone dead-time prototype and convert to clip-style detections."""
-    from ml.dead_time_prototype import analyze_video
-
-    result = analyze_video(video_path, sample_stride=4)
-    detections: list[dict] = []
-    for segment in result.get("segments", []):
-        detections.append({
-            "start": float(segment["start"]),
-            "end": float(segment["end"]),
-            "action": "unknown",
-            "confidence": float(segment.get("score", 0.0)),
-            "score": float(segment.get("score", 0.0)),
-        })
-    return detections
-
-
 @celery_app.task(bind=True, name="process_game", max_retries=2, default_retry_delay=60)
-def process_game_task(self, game_id: str, raw_video_url: str):
+def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = False):
     """
     Main processing pipeline:
     1. Download video, extract audio energy envelope (cheap, used by 3 stages)
@@ -135,6 +118,8 @@ def process_game_task(self, game_id: str, raw_video_url: str):
        enabled) → highlight_score per rally; low scorers dropped here
     4. Pose classification — only on rallies that survived scoring
     5. Audio confidence weighting, generate + upload clips, persist to DB
+    6. Optional (condense=True): stitch a dead-time-removed video from the
+       pre-gate rally signal — all rallies, not just highlights
 
     Falls back to pose-first pipeline if ROBOFLOW_API_KEY is not set.
     """
@@ -182,6 +167,7 @@ def process_game_task(self, game_id: str, raw_video_url: str):
             # into rally windows. Fast, occlusion-proof, no GPU needed.
             detections: list[dict] = []
             ball_ok = False
+            ball_contacts: list[dict] = []
             if _os.environ.get("ROBOFLOW_API_KEY"):
                 try:
                     from ml.pipeline.ball import find_contacts, contacts_to_rallies
@@ -193,6 +179,7 @@ def process_game_task(self, game_id: str, raw_video_url: str):
                     contacts  = find_contacts(tracker, frame_height=_frame_h)
                     detections = contacts_to_rallies(contacts, video_duration, _frame_h)
                     ball_ok   = True
+                    ball_contacts = contacts
                     logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
                 except Exception as ball_err:
                     logger.warning("Ball pipeline failed (%s) — falling back to pose-first", ball_err)
@@ -214,6 +201,10 @@ def process_game_task(self, game_id: str, raw_video_url: str):
                     logger.info("Rally grouping: %d → %d clips", before, len(detections))
                 except Exception as rally_err:
                     logger.warning("Rally grouping failed (%s)", rally_err)
+
+            # Snapshot the pre-gate rally windows: the condense stage must
+            # keep every rally, not just the ones the highlight gate favors.
+            pre_gate_rallies = [dict(d) for d in detections]
 
             # ── Stage 2: Highlight scoring → drop low scorers ─────────────
             # Cheer reaction after the rally + rally shape features (+ CLIP
@@ -299,77 +290,64 @@ def process_game_task(self, game_id: str, raw_video_url: str):
                 })
 
             sync_save_clips(rows)
+
+            # ── Stage 5 (opt-in): condensed dead-time-removed video ───────
+            # Derived from the pre-gate rally signal, cut + stitched with
+            # ffmpeg. Never fatal: highlight clips are already saved, so a
+            # condense failure only means the game page shows no condensed
+            # video.
+            if condense:
+                try:
+                    from app.workers._sync_db import sync_set_condensed_result
+                    from ml.pipeline.dead_time import (
+                        active_windows_from_contacts,
+                        active_windows_from_detections,
+                    )
+                    from ml.pipeline.clip import generate_condensed_video
+
+                    if ball_ok:
+                        windows = active_windows_from_contacts(
+                            ball_contacts, video_duration,
+                            gap_seconds=app_settings.condense_gap_seconds,
+                            pad_before=app_settings.condense_pad_before,
+                            pad_after=app_settings.condense_pad_after,
+                            min_contacts=app_settings.condense_min_contacts,
+                            merge_gap_seconds=app_settings.condense_merge_gap_seconds,
+                        )
+                    else:
+                        windows = active_windows_from_detections(
+                            pre_gate_rallies, video_duration,
+                            pad_before=app_settings.condense_pad_before,
+                            pad_after=app_settings.condense_pad_after,
+                            merge_gap_seconds=app_settings.condense_merge_gap_seconds,
+                        )
+
+                    if windows:
+                        condensed_path, condensed_duration = generate_condensed_video(
+                            str(local_video), windows, tmp,
+                        )
+                        condensed_url = s3.upload_file(
+                            condensed_path, s3.condensed_key(gid), "video/mp4",
+                        )
+                        sync_set_condensed_result(
+                            gid,
+                            condensed_video_url=condensed_url,
+                            original_duration=video_duration,
+                            condensed_duration=condensed_duration,
+                        )
+                        logger.info(
+                            "Condensed video: %.0fs → %.0fs (%d windows)",
+                            video_duration, condensed_duration, len(windows),
+                        )
+                    else:
+                        logger.warning("Condense requested but no active windows detected — skipping")
+                except Exception as condense_err:
+                    logger.exception("Condense stage failed (%s) — game proceeds without it", condense_err)
+
             sync_set_game_status(gid, "ready", processed_at=datetime.now(timezone.utc))
             logger.info("Done: %d clips for game %s", len(rows), game_id)
 
     except Exception as exc:
         logger.exception("Processing failed for game %s", game_id)
         sync_set_game_status(gid, "failed", error_message=str(exc))
-        raise self.retry(exc=exc)
-
-
-@celery_app.task(bind=True, name="process_dead_time", max_retries=2, default_retry_delay=60)
-def process_dead_time_task(self, run_id: str, raw_video_url: str):
-    """
-    Separate dead-time processing pipeline:
-    1. Run dead-time detection locally
-    2. Download source + cut dead-time clips with FFmpeg
-    3. Upload dead-time clips to R2
-    4. Persist dead-time clip rows
-    """
-    from app.workers._sync_db import sync_set_dead_time_run_status, sync_save_dead_time_clips
-    from app.services import storage as s3
-
-    rid = uuid.UUID(run_id)
-    r2_key = urlparse(raw_video_url).path.lstrip("/")
-    logger.info("Starting dead-time processing for run %s", run_id)
-
-    try:
-        sync_set_dead_time_run_status(rid, "processing")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            local_video = tmp / "game.mp4"
-            logger.info("Downloading key=%s from R2 for dead-time processing", r2_key)
-            s3.download_file(r2_key, local_video)
-
-            detections = _run_dead_time_detection_local(str(local_video))
-            logger.info("Dead-time detections: %d", len(detections))
-
-            from ml.pipeline.clip import generate_clips
-            clips_data = generate_clips(str(local_video), detections, tmp)
-
-            rows = []
-            for cd in clips_data:
-                clip_id = uuid.uuid4()
-                clip_url = s3.upload_file(
-                    cd["clip_path"],
-                    s3.dead_time_clip_key(rid, clip_id),
-                    "video/mp4",
-                )
-                thumb_url = None
-                if cd.get("thumb_path"):
-                    thumb_url = s3.upload_file(
-                        cd["thumb_path"],
-                        s3.dead_time_thumbnail_key(rid, clip_id),
-                        "image/jpeg",
-                    )
-
-                rows.append({
-                    "id": clip_id,
-                    "run_id": rid,
-                    "start_time": cd["start"],
-                    "end_time": cd["end"],
-                    "score": float(cd.get("score", cd.get("confidence", 0.0))),
-                    "clip_url": clip_url,
-                    "thumbnail_url": thumb_url,
-                })
-
-            sync_save_dead_time_clips(rows)
-            sync_set_dead_time_run_status(rid, "ready", processed_at=datetime.now(timezone.utc))
-            logger.info("Dead-time done: %d clips for run %s", len(rows), run_id)
-
-    except Exception as exc:
-        logger.exception("Dead-time processing failed for run %s", run_id)
-        sync_set_dead_time_run_status(rid, "failed", error_message=str(exc))
         raise self.retry(exc=exc)

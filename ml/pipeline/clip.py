@@ -86,6 +86,95 @@ def generate_clips(
     return results
 
 
+def generate_condensed_video(
+    video_path: str,
+    windows: list[tuple[float, float]],
+    output_dir: Path,
+) -> tuple[Path, float]:
+    """
+    Cut each keep-window and stitch them into one condensed video.
+
+    Two-step on purpose: each window is re-encoded with identical stream
+    parameters, then joined with the concat demuxer in stream-copy mode.
+    A single filter_complex trim/concat would decode the dead time being
+    discarded and fail atomically on any bad edge; per-part encoding only
+    touches kept footage and lets one bad window be skipped.
+
+    Returns (condensed_path, condensed_duration).
+    Raises RuntimeError if no window could be cut.
+    """
+    import ffmpeg
+
+    parts_dir = output_dir / "parts"
+    parts_dir.mkdir(exist_ok=True)
+    part_paths: list[Path] = []
+
+    for i, (start, end) in enumerate(windows):
+        part_path = parts_dir / f"part_{i:04d}.mp4"
+        try:
+            (
+                ffmpeg
+                .input(video_path, ss=start, t=end - start)
+                .output(
+                    str(part_path),
+                    vcodec="libx264",
+                    preset="fast",
+                    crf=23,
+                    acodec="aac",
+                    # Copy-concat needs identical streams across parts: pin the
+                    # audio sample rate and regenerate timestamps per part so
+                    # joins don't glitch or drift.
+                    ar=48000,
+                    avoid_negative_ts="make_zero",
+                    movflags="+faststart",
+                    pix_fmt="yuv420p",
+                    loglevel="error",
+                )
+                .overwrite_output()
+                .run()
+            )
+            part_paths.append(part_path)
+        except Exception:
+            logger.exception("Failed to cut condense window %.1f–%.1f", start, end)
+
+    if not part_paths:
+        raise RuntimeError("All condense windows failed to cut")
+
+    list_file = parts_dir / "concat.txt"
+    list_file.write_text("".join(f"file '{p.resolve()}'\n" for p in part_paths))
+
+    condensed_path = output_dir / "condensed.mp4"
+    (
+        ffmpeg
+        .input(str(list_file), format="concat", safe=0)
+        .output(
+            str(condensed_path),
+            c="copy",
+            movflags="+faststart",
+            fflags="+genpts",
+            loglevel="error",
+        )
+        .overwrite_output()
+        .run()
+    )
+
+    # Parts can add up to GBs — drop them as soon as the stitch lands.
+    for p in part_paths:
+        p.unlink(missing_ok=True)
+
+    try:
+        probe = ffmpeg.probe(str(condensed_path))
+        condensed_duration = float(probe["format"]["duration"])
+    except Exception:
+        condensed_duration = sum(end - start for start, end in windows)
+
+    logger.info(
+        "Condensed video: %d/%d windows stitched, %.1fs total",
+        len(part_paths), len(windows), condensed_duration,
+    )
+    return condensed_path, condensed_duration
+
+
 def recut_single(
     video_path: str,
     start: float,
