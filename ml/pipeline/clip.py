@@ -90,7 +90,7 @@ def generate_condensed_video(
     video_path: str,
     windows: list[tuple[float, float]],
     output_dir: Path,
-) -> tuple[Path, Path | None, float]:
+) -> tuple[Path, float]:
     """
     Cut each keep-window and stitch them into one condensed video.
 
@@ -100,7 +100,7 @@ def generate_condensed_video(
     discarded and fail atomically on any bad edge; per-part encoding only
     touches kept footage and lets one bad window be skipped.
 
-    Returns (condensed_path, thumb_path or None, condensed_duration).
+    Returns (condensed_path, condensed_duration).
     Raises RuntimeError if no window could be cut.
     """
     import ffmpeg
@@ -168,26 +168,11 @@ def generate_condensed_video(
     except Exception:
         condensed_duration = sum(end - start for start, end in windows)
 
-    thumb_path = output_dir / "condensed.jpg"
-    thumb_ok = False
-    try:
-        first_start, first_end = windows[0]
-        (
-            ffmpeg
-            .input(video_path, ss=(first_start + first_end) / 2)
-            .output(str(thumb_path), vframes=1, loglevel="error")
-            .overwrite_output()
-            .run()
-        )
-        thumb_ok = True
-    except Exception:
-        logger.warning("Thumbnail extraction failed for condensed video")
-
     logger.info(
         "Condensed video: %d/%d windows stitched, %.1fs total",
         len(part_paths), len(windows), condensed_duration,
     )
-    return condensed_path, thumb_path if thumb_ok else None, condensed_duration
+    return condensed_path, condensed_duration
 
 
 def recut_single(

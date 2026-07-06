@@ -205,16 +205,17 @@ export default function GamePage() {
                   <h2 className="text-[13px] font-semibold text-foreground">Dead time removed</h2>
                 </div>
                 <div className="flex items-center gap-3">
-                  {game.original_duration != null && game.condensed_duration != null && (
+                  {game.original_duration != null && game.original_duration > 0 && game.condensed_duration != null && (
                     <span className="text-[11px] text-muted tabular-nums">
                       {fmtDuration(game.original_duration)} → {fmtDuration(game.condensed_duration)}
                       {" · "}
                       {Math.round((1 - game.condensed_duration / game.original_duration) * 100)}% removed
                     </span>
                   )}
+                  {/* Filename comes from the presigned URL's Content-Disposition;
+                      the download attribute is ignored cross-origin. */}
                   <a
                     href={game.condensed_video_url}
-                    download={`${game.title} (condensed).mp4`}
                     className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted hover:border-border-strong hover:text-foreground transition-all duration-150"
                   >
                     <Download size={11} />

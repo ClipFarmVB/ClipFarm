@@ -323,7 +323,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         )
 
                     if windows:
-                        condensed_path, _thumb, condensed_duration = generate_condensed_video(
+                        condensed_path, condensed_duration = generate_condensed_video(
                             str(local_video), windows, tmp,
                         )
                         condensed_url = s3.upload_file(

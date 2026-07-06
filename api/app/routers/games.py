@@ -59,7 +59,10 @@ async def get_game(game_id: uuid.UUID, user_id: UserId, db: DB):
     out = GameOut.model_validate(game)
     out.clip_count = count
     if out.condensed_video_url:
-        out.condensed_video_url = storage.presign_from_stored_url(out.condensed_video_url)
+        out.condensed_video_url = storage.presign_from_stored_url(
+            out.condensed_video_url,
+            download_filename=f"{game.title} (condensed).mp4",
+        )
     return out
 
 

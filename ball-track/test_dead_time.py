@@ -81,8 +81,8 @@ print(f"\n  {len(windows)} windows, {kept:.1f}s kept of {duration:.1f}s "
 # ── Stage 3: Stitch ──────────────────────────────────────────────────────────
 print("Stage 3: Condensed video...")
 OUTPUT_DIR.mkdir(exist_ok=True)
-condensed_path, thumb_path, condensed_duration = generate_condensed_video(
+condensed_path, condensed_duration = generate_condensed_video(
     VIDEO, windows, OUTPUT_DIR,
 )
-print(f"  {condensed_path}  ({condensed_duration:.1f}s, thumb: {thumb_path})")
+print(f"  {condensed_path}  ({condensed_duration:.1f}s)")
 print(f"\n  Original {duration/60:.1f} min → condensed {condensed_duration/60:.1f} min")
