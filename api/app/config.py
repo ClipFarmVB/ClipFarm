@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     pose_imgsz: int = 1280
     pose_skip_frames: int = 4
 
+    # Dead-time removal (opt-in condense stage). Windows come from the same
+    # ball/pose signals as highlight clips — these only shape the keep-windows.
+    condense_gap_seconds: float = 5.0        # contact gap that counts as dead time
+    condense_pad_before: float = 2.0         # seconds kept before a window
+    condense_pad_after: float = 2.5          # seconds kept after a window
+    condense_min_contacts: int = 2           # fewer contacts in a group = noise, not play
+    condense_merge_gap_seconds: float = 1.5  # merge windows closer than this
+
     # Database
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
 

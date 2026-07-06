@@ -130,14 +130,10 @@ def thumbnail_key(game_id: uuid.UUID, clip_id: uuid.UUID) -> str:
     return f"thumbs/{game_id}/{clip_id}.jpg"
 
 
-def dead_time_raw_key(run_id: uuid.UUID, filename: str) -> str:
-    ext = Path(filename).suffix
-    return f"deadtime/raw/{run_id}{ext}"
+def condensed_key(game_id: uuid.UUID) -> str:
+    # Deterministic per game so task retries overwrite instead of orphaning.
+    return f"condensed/{game_id}.mp4"
 
 
-def dead_time_clip_key(run_id: uuid.UUID, clip_id: uuid.UUID) -> str:
-    return f"deadtime/clips/{run_id}/{clip_id}.mp4"
-
-
-def dead_time_thumbnail_key(run_id: uuid.UUID, clip_id: uuid.UUID) -> str:
-    return f"deadtime/thumbs/{run_id}/{clip_id}.jpg"
+def condensed_thumbnail_key(game_id: uuid.UUID) -> str:
+    return f"condensed/{game_id}.jpg"

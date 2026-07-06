@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { AlertCircle, ArrowLeft, CheckSquare, Square, Trash2, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, CheckSquare, Download, Scissors, Square, Trash2, X } from "lucide-react";
 import { ClipCardSkeleton } from "@/components/ui/Skeleton";
 import { ClipCard } from "@/components/ClipCard";
 import { ClipModal } from "@/components/ClipModal";
@@ -14,6 +14,16 @@ import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type 
 import { cn } from "@/lib/utils";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];
+
+function fmtDuration(seconds: number): string {
+  const s = Math.round(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+    : `${m}:${String(sec).padStart(2, "0")}`;
+}
 
 const STATUS_STYLES: Record<Game["status"], string> = {
   queued:     "text-zinc-500 bg-zinc-500/8 border-zinc-500/20",
@@ -186,6 +196,46 @@ export default function GamePage() {
 
       {game.status === "ready" && (
         <>
+          {/* Condensed (dead-time-removed) video */}
+          {game.condensed_video_url && (
+            <div className="mb-5 rounded-lg border border-border bg-surface p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Scissors size={13} className="text-brand" />
+                  <h2 className="text-[13px] font-semibold text-foreground">Dead time removed</h2>
+                </div>
+                <div className="flex items-center gap-3">
+                  {game.original_duration != null && game.condensed_duration != null && (
+                    <span className="text-[11px] text-muted tabular-nums">
+                      {fmtDuration(game.original_duration)} → {fmtDuration(game.condensed_duration)}
+                      {" · "}
+                      {Math.round((1 - game.condensed_duration / game.original_duration) * 100)}% removed
+                    </span>
+                  )}
+                  <a
+                    href={game.condensed_video_url}
+                    download={`${game.title} (condensed).mp4`}
+                    className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted hover:border-border-strong hover:text-foreground transition-all duration-150"
+                  >
+                    <Download size={11} />
+                    Download
+                  </a>
+                </div>
+              </div>
+              <video
+                controls
+                preload="metadata"
+                src={game.condensed_video_url}
+                className="w-full rounded-md bg-black"
+              />
+            </div>
+          )}
+          {game.condense_requested && !game.condensed_video_url && (
+            <p className="mb-5 rounded-md border border-border bg-surface px-3 py-2.5 text-[12px] text-muted">
+              A condensed video was requested but couldn&apos;t be generated for this game.
+            </p>
+          )}
+
           {/* Filter bar */}
           <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2.5">
             <span className="text-[10px] font-semibold uppercase tracking-widest text-subtle mr-1">Filter</span>

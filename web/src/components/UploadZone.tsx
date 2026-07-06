@@ -16,6 +16,7 @@ export function UploadZone() {
   const [dragging, setDragging] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
+  const [condense, setCondense] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,7 +51,7 @@ export function UploadZone() {
     if (!file) return;
     setError(null);
     try {
-      const game = await uploadGame(file, title || file.name, (pct) => setProgress(pct));
+      const game = await uploadGame(file, title || file.name, condense, (pct) => setProgress(pct));
       invalidateGamesCache(); // new game was created — force a fresh fetch on next visit
       router.push(`/games/${game.id}`);
     } catch (e) {
@@ -127,6 +128,24 @@ export function UploadZone() {
             className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-foreground placeholder:text-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-border-strong transition-colors"
           />
         </div>
+      )}
+
+      {/* Dead-time removal opt-in */}
+      {file && (
+        <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-md border border-border bg-surface px-3 py-2.5 hover:border-border-strong transition-colors">
+          <input
+            type="checkbox"
+            checked={condense}
+            onChange={(e) => setCondense(e.target.checked)}
+            className="mt-0.5 accent-[var(--brand,#6366f1)]"
+          />
+          <span>
+            <span className="block text-[13px] font-medium text-foreground">Remove dead time</span>
+            <span className="mt-0.5 block text-[11px] text-muted">
+              Also creates one condensed video with the waiting between rallies cut out. Adds processing time.
+            </span>
+          </span>
+        </label>
       )}
 
       {/* Error */}
