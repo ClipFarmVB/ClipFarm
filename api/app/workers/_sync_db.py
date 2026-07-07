@@ -86,3 +86,25 @@ def sync_save_clips(rows: list[dict]):
             )
             s.add(clip)
         s.commit()
+
+
+def sync_delete_game_clips(game_id: uuid.UUID) -> list[str]:
+    """
+    Delete every Clip row for a game and return the R2 URLs (clip + thumbnail)
+    that were referenced, so the caller can purge storage too.
+
+    Makes process_game idempotent: a redelivered or re-enqueued task refreshes
+    the game's clips instead of appending a duplicate set. Clip ids are fresh
+    uuids each run, so old objects would otherwise orphan in R2. (CF-37)
+    """
+    urls: list[str] = []
+    with Session(_engine) as s:
+        clips = s.query(Clip).filter(Clip.game_id == game_id).all()
+        for clip in clips:
+            if clip.clip_url:
+                urls.append(clip.clip_url)
+            if clip.thumbnail_url:
+                urls.append(clip.thumbnail_url)
+            s.delete(clip)
+        s.commit()
+    return urls

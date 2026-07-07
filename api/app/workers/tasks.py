@@ -123,7 +123,11 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
 
     Falls back to pose-first pipeline if ROBOFLOW_API_KEY is not set.
     """
-    from app.workers._sync_db import sync_set_game_status, sync_save_clips
+    from app.workers._sync_db import (
+        sync_set_game_status,
+        sync_save_clips,
+        sync_delete_game_clips,
+    )
     from app.services import storage as s3
     import cv2 as _cv2
     import os as _os
@@ -288,6 +292,20 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     "thumbnail_url": thumb_url,
                     "labels": cd.get("labels", []),
                 })
+
+            # Idempotency (CF-37): a redelivered or re-enqueued task must
+            # refresh this game's clips, not append a duplicate set. Clear the
+            # previous run's clips now that the new ones are ready — doing it
+            # here rather than at task start means a mid-pipeline failure leaves
+            # the old clips intact instead of wiping them for nothing.
+            stale_urls = sync_delete_game_clips(gid)
+            for url in stale_urls:
+                try:
+                    s3.delete_file(urlparse(url).path.lstrip("/"))
+                except Exception as del_err:
+                    logger.warning("Stale clip cleanup failed for %s (%s)", url, del_err)
+            if stale_urls:
+                logger.info("Replaced %d stale clip artifacts from a prior run", len(stale_urls))
 
             sync_save_clips(rows)
 
