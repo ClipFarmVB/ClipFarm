@@ -66,6 +66,13 @@ services:
       POSE_MODEL: yolov8n-pose.pt
       POSE_IMGSZ: "640"
       POSE_SKIP_FRAMES: "8"
+      # Persistent model-weight cache (CF-40): without these, every container
+      # recreate re-downloads the ball model (114MB, Roboflow CDN) and the
+      # YOLO pose weights (GitHub) before processing can start.
+      MODEL_CACHE_DIR: /models/roboflow   # inference: model metadata cache
+      INFERENCE_HOME: /models/roboflow    # inference 1.x: shared-blobs weight store (the 114MB)
+      MODELS_DIR: /models                 # ultralytics weights (see ml/pipeline/detect.py)
+      YOLO_CONFIG_DIR: /models/ultralytics  # ultralytics settings.json
     depends_on:
       redis:
         condition: service_healthy
@@ -75,6 +82,7 @@ services:
     volumes:
       - ./api:/app/api
       - ./ml:/app/ml
+      - model_cache:/models
 
   web:
     build:
@@ -102,3 +110,4 @@ services:
 volumes:
   postgres_data:
   node_modules:
+  model_cache:

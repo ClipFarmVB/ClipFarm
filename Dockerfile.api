@@ -41,8 +41,12 @@ COPY api /app/api
 COPY ml /app/ml
 
 # Run as a non-root user so Celery doesn't warn about superuser privileges.
+# /models seeds the model_cache volume's ownership: a named volume inherits
+# the image directory's owner on first creation, and appuser must be able to
+# write downloaded model weights there (CF-40).
 RUN useradd -m -u 1000 -s /bin/bash appuser \
-    && chown -R appuser:appuser /app
+    && mkdir -p /models \
+    && chown -R appuser:appuser /app /models
 USER appuser
 
 ENV PYTHONPATH=/app
