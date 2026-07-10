@@ -213,9 +213,10 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     ball_ok   = True
                     ball_contacts = contacts
                     # Kept for the condense stage's motion bridge (CF-46).
-                    ball_positions = [
-                        {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
-                    ]
+                    if condense:
+                        ball_positions = [
+                            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+                        ]
                     logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
                 except Exception as ball_err:
                     logger.warning("Ball pipeline failed (%s) — falling back to pose-first", ball_err)
