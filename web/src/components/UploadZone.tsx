@@ -71,7 +71,7 @@ export function UploadZone() {
         onDragOver={(e) => { e.preventDefault(); if (!uploading) setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { e.preventDefault(); if (!uploading) onDrop(e); else setDragging(false); }}
-        onClick={() => !file && !uploading && document.getElementById("file-input")?.click()}
+        onClick={() => !file && document.getElementById("file-input")?.click()}
         className={cn(
           "relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-12 text-center transition-all duration-200",
           dragging
