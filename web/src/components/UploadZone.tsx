@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Upload, Film, AlertCircle } from "lucide-react";
+import { Upload, Film, AlertCircle, Loader } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { uploadGame } from "@/lib/api";
 import { invalidateGamesCache } from "@/lib/gamesCache";
@@ -37,7 +37,7 @@ export function UploadZone() {
   }, [title]);
 
   const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
+    // preventDefault already called by the inline onDrop wrapper below
     setDragging(false);
     const f = e.dataTransfer.files[0];
     if (f) pickFile(f);
@@ -87,6 +87,7 @@ export function UploadZone() {
           accept={ACCEPTED.join(",")}
           className="hidden"
           onChange={onFileInput}
+          disabled={uploading}
         />
 
         {file ? (
@@ -189,7 +190,7 @@ export function UploadZone() {
           slow network can't leave a clickable button (double-submit, CF-35) */}
       {file && (
         <Button className="mt-4 w-full" size="lg" onClick={handleUpload} disabled={uploading}>
-          {uploading ? "Uploading…" : "Upload & process"}
+          {uploading ? <Loader size={16} className="animate-spin" /> : "Upload & process"}
         </Button>
       )}
     </div>
