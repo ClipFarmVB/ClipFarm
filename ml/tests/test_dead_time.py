@@ -7,12 +7,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ml.pipeline.dead_time import (
     active_windows_from_contacts,
     active_windows_from_detections,
+    bridge_windows_by_motion,
     merge_intervals,
 )
 
 
 def contacts_at(*times: float) -> list[dict]:
     return [{"time": t} for t in times]
+
+
+def ball_path(t_start: float, t_end: float, speed_pxps: float, step: float = 0.33) -> list[dict]:
+    """Tracked positions moving in a straight line at speed_pxps."""
+    out, t = [], t_start
+    while t <= t_end:
+        out.append({"time": t, "x": (t - t_start) * speed_pxps, "y": 0.0})
+        t += step
+    return out
 
 
 class TestMergeIntervals:
@@ -55,7 +65,8 @@ class TestActiveWindowsFromContacts:
 
     def test_min_contacts_drops_isolated_contact(self):
         windows = active_windows_from_contacts(
-            contacts_at(10, 12, 50), 100.0, min_contacts=2,
+            contacts_at(10, 12, 50), 100.0,
+            min_contacts=2, pad_before=2.0, pad_after=2.5,
         )
         assert len(windows) == 1
         assert windows[0][0] == 8.0
@@ -91,6 +102,88 @@ class TestActiveWindowsFromContacts:
             contacts_at(14, 10, 12), 100.0, pad_before=2.0, pad_after=2.5,
         )
         assert windows == [(8.0, 16.5)]
+
+    # CF-46 default behavior: the loosened thresholds must not drop play.
+
+    def test_default_keeps_single_contact_group(self):
+        # An ace / tracking-starved rally surfaces as one contact — kept.
+        windows = active_windows_from_contacts(contacts_at(10, 12, 50), 100.0)
+        assert len(windows) == 2
+        assert windows[1] == (45.0, 54.0)
+
+    def test_default_survives_mid_rally_tracking_dropout(self):
+        # A 9s detection gap inside one rally stays a single window
+        # (gap_seconds=10.0; the CF-24 5.0 split it into fragments).
+        windows = active_windows_from_contacts(
+            contacts_at(10, 12, 21, 23), 100.0,
+        )
+        assert windows == [(5.0, 27.0)]
+
+    def test_default_merges_near_adjacent_windows(self):
+        # Contacts 14s apart split into two groups, but the padded windows
+        # (5, 16) and (21, 32) sit 5.0s apart — merge_gap_seconds=5.0 joins
+        # them, keeping the short dead gap instead of jump-cutting.
+        windows = active_windows_from_contacts(
+            contacts_at(10, 12, 26, 28), 100.0,
+        )
+        assert windows == [(5.0, 32.0)]
+
+    def test_default_lead_in_covers_serve(self):
+        # Tracking often misses the serve contact; the first detection is the
+        # receive. The default lead-in must reach back to the serve ritual.
+        windows = active_windows_from_contacts(contacts_at(30, 32), 100.0)
+        assert windows[0][0] <= 25.0
+
+
+class TestBridgeWindowsByMotion:
+    def test_bridges_fast_gap(self):
+        # Ball flying fast through the gap = contact-silent play — one rally.
+        positions = ball_path(10.0, 20.0, speed_pxps=300.0)
+        windows = bridge_windows_by_motion([(0.0, 10.0), (20.0, 30.0)], positions)
+        assert windows == [(0.0, 30.0)]
+
+    def test_slow_gap_stays_cut(self):
+        # Ball carried/tossed slowly between rallies — still dead time.
+        positions = ball_path(10.0, 20.0, speed_pxps=50.0)
+        windows = bridge_windows_by_motion([(0.0, 10.0), (20.0, 30.0)], positions)
+        assert windows == [(0.0, 10.0), (20.0, 30.0)]
+
+    def test_long_gap_never_bridges(self):
+        # Fast shag throws inside a between-games break must not join it.
+        positions = ball_path(10.0, 40.0, speed_pxps=300.0)
+        windows = bridge_windows_by_motion(
+            [(0.0, 10.0), (40.0, 50.0)], positions, max_bridge_seconds=20.0,
+        )
+        assert windows == [(0.0, 10.0), (40.0, 50.0)]
+
+    def test_untracked_gap_is_no_evidence(self):
+        # No positions inside the gap — nothing to justify bridging.
+        positions = ball_path(0.0, 10.0, speed_pxps=300.0)
+        windows = bridge_windows_by_motion([(0.0, 10.0), (20.0, 30.0)], positions)
+        assert windows == [(0.0, 10.0), (20.0, 30.0)]
+
+    def test_tracking_dropout_inside_gap_adds_no_fake_speed(self):
+        # Two distant samples across a dropout must not register as one
+        # huge-speed sample (max_sample_spacing guards this).
+        positions = [
+            {"time": 10.0, "x": 0.0, "y": 0.0},
+            {"time": 19.0, "x": 5000.0, "y": 0.0},
+        ]
+        windows = bridge_windows_by_motion([(0.0, 10.0), (20.0, 30.0)], positions)
+        assert windows == [(0.0, 10.0), (20.0, 30.0)]
+
+    def test_chains_across_multiple_gaps(self):
+        positions = ball_path(8.0, 42.0, speed_pxps=300.0)
+        windows = bridge_windows_by_motion(
+            [(0.0, 10.0), (15.0, 25.0), (30.0, 40.0)], positions,
+        )
+        assert windows == [(0.0, 40.0)]
+
+    def test_single_window_unchanged(self):
+        assert bridge_windows_by_motion([(0.0, 10.0)], ball_path(0, 10, 300)) == [(0.0, 10.0)]
+
+    def test_empty_windows(self):
+        assert bridge_windows_by_motion([], ball_path(0, 10, 300)) == []
 
 
 class TestActiveWindowsFromDetections:

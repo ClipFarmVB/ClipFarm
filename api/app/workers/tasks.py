@@ -199,6 +199,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             detections: list[dict] = []
             ball_ok = False
             ball_contacts: list[dict] = []
+            ball_positions: list[dict] = []
             if _os.environ.get("ROBOFLOW_API_KEY"):
                 try:
                     from ml.pipeline.ball import find_contacts, contacts_to_rallies
@@ -211,6 +212,11 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     detections = contacts_to_rallies(contacts, video_duration, _frame_h)
                     ball_ok   = True
                     ball_contacts = contacts
+                    # Kept for the condense stage's motion bridge (CF-46).
+                    if condense:
+                        ball_positions = [
+                            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+                        ]
                     logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
                 except Exception as ball_err:
                     logger.warning("Ball pipeline failed (%s) — falling back to pose-first", ball_err)
@@ -342,6 +348,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     from ml.pipeline.dead_time import (
                         active_windows_from_contacts,
                         active_windows_from_detections,
+                        bridge_windows_by_motion,
                     )
                     from ml.pipeline.clip import generate_condensed_video
 
@@ -353,6 +360,12 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                             pad_after=app_settings.condense_pad_after,
                             min_contacts=app_settings.condense_min_contacts,
                             merge_gap_seconds=app_settings.condense_merge_gap_seconds,
+                        )
+                        windows = bridge_windows_by_motion(
+                            windows, ball_positions,
+                            speed_pxps=app_settings.condense_bridge_speed_pxps,
+                            fast_fraction=app_settings.condense_bridge_fast_fraction,
+                            max_bridge_seconds=app_settings.condense_bridge_max_seconds,
                         )
                     else:
                         windows = active_windows_from_detections(

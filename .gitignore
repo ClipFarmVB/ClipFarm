@@ -36,6 +36,9 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# Local scratch / manual tuning workspace (never commit)
+ball-track/
+
 # ML / data
 *.pt
 *.pth

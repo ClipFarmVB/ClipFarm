@@ -15,6 +15,7 @@ Pure functions, no models, no I/O — tunables arrive as kwargs from the task.
 from __future__ import annotations
 
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -52,17 +53,23 @@ def active_windows_from_contacts(
     contacts: list[dict],
     duration: float,
     *,
-    gap_seconds: float = 5.0,
-    pad_before: float = 2.0,
-    pad_after: float = 2.5,
-    min_contacts: int = 2,
-    merge_gap_seconds: float = 1.5,
+    gap_seconds: float = 10.0,
+    pad_before: float = 5.0,
+    pad_after: float = 4.0,
+    min_contacts: int = 1,
+    merge_gap_seconds: float = 5.0,
 ) -> list[Interval]:
     """
     Group ball contacts (find_contacts() output, each with a "time" key) into
     active windows: a new window starts when the gap to the previous contact
     exceeds gap_seconds. Groups with fewer than min_contacts contacts are
-    noise (a stray detection between rallies), not play.
+    dropped; the default keeps every group, because at ~3fps sampling a real
+    rally routinely surfaces as a single contact and losing it costs footage.
+
+    Defaults are tuned loose on purpose (CF-46): keeping some dead time beats
+    cutting play. pad_before must cover the full serve ritual — tracking often
+    misses the serve contact itself, so the first detected contact is the
+    receive, ~4-6s after the toss starts.
     """
     if not contacts:
         return []
@@ -86,13 +93,76 @@ def active_windows_from_contacts(
     return merged
 
 
+def bridge_windows_by_motion(
+    windows: list[Interval],
+    positions: list[dict],
+    *,
+    speed_pxps: float = 150.0,
+    fast_fraction: float = 0.35,
+    max_bridge_seconds: float = 20.0,
+    max_sample_spacing: float = 1.5,
+    min_samples: int = 3,
+) -> list[Interval]:
+    """
+    Merge adjacent windows when the tracked ball keeps moving fast through
+    the gap between them (CF-46: fixes mid-rally cuts).
+
+    Contact detection goes silent for long stretches of real play (far-court
+    possessions, occlusions, smooth trajectories), splitting one rally into
+    two windows. The ball track itself usually survives those stretches, and
+    in-play flight is fast while between-rally handling (carrying, tossing a
+    ball back) is mostly slow. So: bridge a gap only when at least
+    fast_fraction of the speed samples inside it exceed speed_pxps.
+
+    Guards against re-admitting dead time:
+      - gaps longer than max_bridge_seconds never bridge (a between-games
+        break with a few fast shag throws stays cut)
+      - fewer than min_samples speed samples is no evidence — no bridge
+      - presence alone never *creates* a window; this only joins windows
+        already anchored by contacts
+
+    positions are dicts with "time", "x", "y" (ball-track samples). Speeds
+    are taken between consecutive samples closer than max_sample_spacing,
+    so a tracking dropout contributes no samples rather than a huge jump.
+    """
+    if len(windows) < 2 or not positions:
+        return list(windows)
+
+    pts = sorted((p["time"], p["x"], p["y"]) for p in positions)
+    speeds: list[tuple[float, float]] = []  # (midpoint time, px/s)
+    for (t0, x0, y0), (t1, x1, y1) in zip(pts, pts[1:]):
+        dt = t1 - t0
+        if 0 < dt <= max_sample_spacing:
+            speeds.append(((t0 + t1) / 2, math.hypot(x1 - x0, y1 - y0) / dt))
+
+    bridged: list[Interval] = [windows[0]]
+    for start, end in windows[1:]:
+        last_start, last_end = bridged[-1]
+        in_gap = [v for t, v in speeds if last_end < t < start]
+        if (
+            start - last_end <= max_bridge_seconds
+            and len(in_gap) >= min_samples
+            and sum(v >= speed_pxps for v in in_gap) / len(in_gap) >= fast_fraction
+        ):
+            bridged[-1] = (last_start, max(last_end, end))
+        else:
+            bridged.append((start, end))
+
+    if len(bridged) < len(windows):
+        logger.info(
+            "Motion bridge: %d windows → %d (%d gaps bridged)",
+            len(windows), len(bridged), len(windows) - len(bridged),
+        )
+    return bridged
+
+
 def active_windows_from_detections(
     detections: list[dict],
     duration: float,
     *,
-    pad_before: float = 2.0,
-    pad_after: float = 2.5,
-    merge_gap_seconds: float = 1.5,
+    pad_before: float = 5.0,
+    pad_after: float = 4.0,
+    merge_gap_seconds: float = 5.0,
 ) -> list[Interval]:
     """
     Fallback when the ball pipeline didn't run: derive windows from the
