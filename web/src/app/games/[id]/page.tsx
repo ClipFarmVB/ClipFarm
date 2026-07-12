@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, ArrowLeft, CheckSquare, Download, Scissors, Square, Trash2, X } from "lucide-react";
@@ -11,6 +11,7 @@ import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type Player, type ActionType, type ClipFilters } from "@/lib/api";
+import { estimateEtaSeconds, formatEta } from "@/lib/eta";
 import { cn } from "@/lib/utils";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];
@@ -32,6 +33,18 @@ const STATUS_STYLES: Record<Game["status"], string> = {
   failed:     "text-red-400 bg-red-500/8 border-red-500/20",
 };
 
+// Worker-reported stage slugs → display text. Unknown slugs (e.g. from a
+// newer backend) fall back to the generic label.
+const STAGE_LABELS: Record<string, string> = {
+  downloading:        "Preparing video",
+  analyzing_audio:    "Analyzing audio",
+  tracking_ball:      "Tracking the ball",
+  scoring_highlights: "Scoring highlights",
+  refining_actions:   "Classifying actions",
+  cutting_clips:      "Cutting clips",
+  condensing:         "Building condensed video",
+};
+
 export default function GamePage() {
   const { id } = useParams<{ id: string }>();
   const [game, setGame] = useState<Game | null>(null);
@@ -43,6 +56,26 @@ export default function GamePage() {
   const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0, min_score: 0, sort: "time" });
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Smoothed ETA carried across polls (ref holds seconds for the EMA;
+  // state holds the display string).
+  const etaSecondsRef = useRef<number | null>(null);
+  const [etaText, setEtaText] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!game || game.status !== "processing") {
+      etaSecondsRef.current = null;
+      setEtaText(null);
+      return;
+    }
+    const eta = estimateEtaSeconds(
+      game.progress ?? 0,
+      game.processing_started_at,
+      Date.now(),
+      etaSecondsRef.current,
+    );
+    etaSecondsRef.current = eta;
+    setEtaText(eta === null ? null : formatEta(eta));
+  }, [game]);
   const [deleting, setDeleting] = useState(false);
   const [savingClipId, setSavingClipId] = useState<string | null>(null);
 
@@ -179,9 +212,25 @@ export default function GamePage() {
         <div className="flex flex-col items-center justify-center rounded-lg border border-border bg-surface py-20 text-center">
           <div className="mb-4 h-8 w-8 rounded-full border-2 border-border-strong border-t-brand animate-spin" />
           <p className="text-[13px] font-medium text-foreground">
-            {game.status === "queued" ? "Queued for processing" : "Analyzing footage"}
+            {game.status === "queued"
+              ? "Queued for processing"
+              : STAGE_LABELS[game.progress_stage ?? ""] ?? "Processing"}
           </p>
-          <p className="mt-1.5 text-[12px] text-muted max-w-xs">
+          {game.status === "processing" && (
+            <div className="mt-4 w-full max-w-xs px-4">
+              <div className="flex justify-between text-[11px] text-muted mb-1.5">
+                <span>{etaText ?? "Estimating time…"}</span>
+                <span className="tabular-nums">{Math.round((game.progress ?? 0) * 100)}%</span>
+              </div>
+              <div className="h-0.5 rounded-full bg-surface-high overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-brand transition-all duration-500 ease-out"
+                  style={{ width: `${Math.round((game.progress ?? 0) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+          <p className="mt-4 text-[12px] text-muted max-w-xs">
             Detecting actions and cutting clips. You can leave this page — we&apos;ll keep working.
           </p>
         </div>

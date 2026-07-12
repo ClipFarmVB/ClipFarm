@@ -92,6 +92,15 @@ def download_file(key: str, local_path: str | Path) -> None:
     _client().download_file(settings.r2_bucket_name, key, str(local_path))
 
 
+def object_exists(key: str) -> bool:
+    """HEAD an object; False on missing or any error (probe, never raises)."""
+    try:
+        _client().head_object(Bucket=settings.r2_bucket_name, Key=key)
+        return True
+    except Exception:
+        return False
+
+
 def presign_url(key: str, expires_in: int = 3600, download_filename: str | None = None) -> str:
     """
     Generate a presigned URL for reading a file from R2 (default 1 hour).

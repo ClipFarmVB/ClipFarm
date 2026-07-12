@@ -44,7 +44,20 @@ def _track_ball_modal(local_video: Path, r2_key: str, sample_every: int):
     return TrackedBall(positions=[BallPosition(**p) for p in positions])
 
 
-def _track_ball_cached(local_video: Path, tmp: Path, sample_every: int, r2_key: str = ""):
+def _ball_cache_key(video_md5: str, sample_every: int) -> str:
+    from ml.pipeline.ball import MODEL_ID
+    model_slug = MODEL_ID.replace("/", "-")
+    return f"ball-cache/{video_md5}-{model_slug}-s{sample_every}.json"
+
+
+def _track_ball_cached(
+    local_video: Path,
+    tmp: Path,
+    sample_every: int,
+    r2_key: str = "",
+    video_md5: str | None = None,
+    on_progress=None,
+):
     """
     Ball tracking with an R2-backed cache keyed by video content hash.
 
@@ -59,10 +72,9 @@ def _track_ball_cached(local_video: Path, tmp: Path, sample_every: int, r2_key: 
     """
     import os
     from app.services import storage as s3
-    from ml.pipeline.ball import track_ball, TrackedBall, BallPosition, MODEL_ID
+    from ml.pipeline.ball import track_ball, TrackedBall, BallPosition
 
-    model_slug = MODEL_ID.replace("/", "-")
-    cache_key = f"ball-cache/{_file_md5(local_video)}-{model_slug}-s{sample_every}.json"
+    cache_key = _ball_cache_key(video_md5 or _file_md5(local_video), sample_every)
     cache_path = tmp / "ball_cache.json"
 
     try:
@@ -83,7 +95,10 @@ def _track_ball_cached(local_video: Path, tmp: Path, sample_every: int, r2_key: 
             logger.warning("Modal ball tracking failed (%s) — falling back to local CPU", modal_err)
 
     if tracker is None:
-        tracker = track_ball(str(local_video), os.environ["ROBOFLOW_API_KEY"], sample_every=sample_every)
+        tracker = track_ball(
+            str(local_video), os.environ["ROBOFLOW_API_KEY"],
+            sample_every=sample_every, on_progress=on_progress,
+        )
 
     try:
         cache_path.write_text(json.dumps({"positions": [asdict(p) for p in tracker.positions]}))
@@ -152,9 +167,11 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
     """
     from app.workers._sync_db import (
         sync_set_game_status,
+        sync_set_game_progress,
         sync_save_clips,
         sync_delete_game_clips,
     )
+    from app.workers.progress import GameProgress, compute_stage_spans
     from app.services import storage as s3
     import cv2 as _cv2
     import os as _os
@@ -165,6 +182,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
 
     try:
         sync_set_game_status(gid, "processing")
+        sync_set_game_progress(gid, 0.0, "downloading")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -180,9 +198,32 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             _cap.release()
             video_duration = _frames / _fps
 
+            # fps-aware sampling: ~3 ball detections per second of video
+            # regardless of source frame rate (tuned at 30fps/every-10th;
+            # a 60fps video would otherwise double inference cost).
+            sample_every = max(1, round(_fps / 3.0))
+
+            # Progress bar stage budget: a ball-cache hit collapses ~30 min
+            # of tracking into seconds, so probe the cache now and give the
+            # tracking stage a realistic slice of the bar either way.
+            video_md5 = _file_md5(local_video)
+            ball_cache_hit = bool(
+                _os.environ.get("ROBOFLOW_API_KEY")
+                and s3.object_exists(_ball_cache_key(video_md5, sample_every))
+            )
+            progress = GameProgress(
+                compute_stage_spans(
+                    condense, ball_cache_hit,
+                    # Mirrors _track_ball_cached's condition for attempting Modal.
+                    modal=_modal_configured() and bool(r2_key),
+                ),
+                write=lambda p, stage: sync_set_game_progress(gid, p, stage),
+            )
+
             # ── Stage 0: Audio energy envelope ────────────────────────────
             # Extracted once (seconds, even for a full game) and reused by
             # cheer scoring and confidence weighting below.
+            progress.stage("analyzing_audio")
             audio_energy = None
             try:
                 from ml.pipeline.audio import compute_audio_energy
@@ -196,6 +237,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             # Primary pipeline: Roboflow ball model detects every contact,
             # trajectory physics classify the action, contacts are grouped
             # into rally windows. Fast, occlusion-proof, no GPU needed.
+            progress.stage("tracking_ball")
             detections: list[dict] = []
             ball_ok = False
             ball_contacts: list[dict] = []
@@ -203,11 +245,10 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             if _os.environ.get("ROBOFLOW_API_KEY"):
                 try:
                     from ml.pipeline.ball import find_contacts, contacts_to_rallies
-                    # fps-aware sampling: ~3 ball detections per second of video
-                    # regardless of source frame rate (tuned at 30fps/every-10th;
-                    # a 60fps video would otherwise double inference cost).
-                    sample_every = max(1, round(_fps / 3.0))
-                    tracker   = _track_ball_cached(local_video, tmp, sample_every=sample_every, r2_key=r2_key)
+                    tracker   = _track_ball_cached(
+                        local_video, tmp, sample_every=sample_every, r2_key=r2_key,
+                        video_md5=video_md5, on_progress=progress.update,
+                    )
                     contacts  = find_contacts(tracker, frame_height=_frame_h)
                     detections = contacts_to_rallies(contacts, video_duration, _frame_h)
                     ball_ok   = True
@@ -243,6 +284,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             # frames when enabled) → highlight_score. This is the precision
             # gate: only rallies worth watching go on to pose and cutting.
             from app.config import settings as app_settings
+            progress.stage("scoring_highlights")
             try:
                 if audio_energy is not None:
                     from ml.pipeline.audio import score_cheers
@@ -266,6 +308,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             # Runs YOLOv8s-pose only inside rallies that passed the highlight
             # gate. Overrides the ball-trajectory label when pose is more
             # confident.
+            progress.stage("refining_actions")
             try:
                 from ml.pipeline.detect import classify_within_windows
                 detections = classify_within_windows(
@@ -290,11 +333,17 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 logger.warning("Audio weighting failed (%s) — using unweighted", audio_err)
 
             from ml.pipeline.clip import generate_clips
-            clips_data = generate_clips(str(local_video), detections, tmp)
+            progress.stage("cutting_clips")
+            # Cutting and uploading share this stage's span: ffmpeg cuts are
+            # the bulk of it, uploads the tail.
+            clips_data = generate_clips(
+                str(local_video), detections, tmp,
+                on_progress=lambda f: progress.update(f * 0.7),
+            )
 
             # ── 3. Upload clips and thumbnails, save to DB ────────────────
             rows = []
-            for cd in clips_data:
+            for upload_idx, cd in enumerate(clips_data):
                 clip_id = uuid.uuid4()
                 clip_url = s3.upload_file(
                     cd["clip_path"],
@@ -320,6 +369,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     "thumbnail_url": thumb_url,
                     "labels": cd.get("labels", []),
                 })
+                progress.update(0.7 + 0.3 * (upload_idx + 1) / len(clips_data))
 
             # Idempotency (CF-37): a redelivered or re-enqueued task must
             # refresh this game's clips, not append a duplicate set. Clear the
@@ -343,6 +393,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             # condense failure only means the game page shows no condensed
             # video.
             if condense:
+                progress.stage("condensing")
                 try:
                     from app.workers._sync_db import sync_set_condensed_result
                     from ml.pipeline.dead_time import (
@@ -378,6 +429,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     if windows:
                         condensed_path, condensed_duration = generate_condensed_video(
                             str(local_video), windows, tmp,
+                            on_progress=progress.update,
                         )
                         condensed_url = s3.upload_file(
                             condensed_path, s3.condensed_key(gid), "video/mp4",

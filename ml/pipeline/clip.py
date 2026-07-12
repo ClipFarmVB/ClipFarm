@@ -14,13 +14,27 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _report(on_progress, fraction: float) -> None:
+    """Invoke a progress callback; reporting must never break the cut."""
+    if on_progress is None:
+        return
+    try:
+        on_progress(fraction)
+    except Exception:
+        logger.warning("Progress callback failed", exc_info=True)
+
+
 def generate_clips(
     video_path: str,
     detections: list[dict],
     output_dir: Path,
+    on_progress=None,
 ) -> list[dict]:
     """
     Cut clips and extract thumbnails for each detection.
+
+    on_progress, when given, is called with the fraction of detections
+    processed (0-1) after each one; callback errors are swallowed.
 
     Returns extended detection dicts with keys:
       clip_path, thumb_path (may be None on failure)
@@ -32,7 +46,7 @@ def generate_clips(
         return []
 
     results = []
-    for det in detections:
+    for det_idx, det in enumerate(detections):
         clip_id = uuid.uuid4()
         clip_path = output_dir / f"{clip_id}.mp4"
         thumb_path = output_dir / f"{clip_id}.jpg"
@@ -61,6 +75,7 @@ def generate_clips(
             )
         except Exception:
             logger.exception("Failed to cut clip for detection at %.1f", start)
+            _report(on_progress, (det_idx + 1) / len(detections))
             continue
 
         # ── Extract thumbnail ─────────────────────────────────────────────────
@@ -82,6 +97,7 @@ def generate_clips(
             "clip_path": clip_path,
             "thumb_path": thumb_path if thumb_ok else None,
         })
+        _report(on_progress, (det_idx + 1) / len(detections))
 
     return results
 
@@ -90,6 +106,7 @@ def generate_condensed_video(
     video_path: str,
     windows: list[tuple[float, float]],
     output_dir: Path,
+    on_progress=None,
 ) -> tuple[Path, float]:
     """
     Cut each keep-window and stitch them into one condensed video.
@@ -99,6 +116,10 @@ def generate_condensed_video(
     A single filter_complex trim/concat would decode the dead time being
     discarded and fail atomically on any bad edge; per-part encoding only
     touches kept footage and lets one bad window be skipped.
+
+    on_progress, when given, is called with the fraction of windows encoded
+    (0-1) after each part; the final stream-copy stitch is near-free and
+    not reported. Callback errors are swallowed.
 
     Returns (condensed_path, condensed_duration).
     Raises RuntimeError if no window could be cut.
@@ -136,6 +157,7 @@ def generate_condensed_video(
             part_paths.append(part_path)
         except Exception:
             logger.exception("Failed to cut condense window %.1f–%.1f", start, end)
+        _report(on_progress, (i + 1) / len(windows))
 
     if not part_paths:
         raise RuntimeError("All condense windows failed to cut")

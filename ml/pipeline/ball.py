@@ -199,10 +199,19 @@ def _pick_active(
     return best
 
 
-def track_ball(video_path: str, api_key: str, sample_every: int = SAMPLE_EVERY) -> TrackedBall:
+def track_ball(
+    video_path: str,
+    api_key: str,
+    sample_every: int = SAMPLE_EVERY,
+    on_progress=None,
+) -> TrackedBall:
     """
     Run detection on every sample_every frame and build a trajectory for
     the active ball, ignoring stationary spare balls.
+
+    on_progress, when given, is called with the fraction of frames processed
+    (0-1) roughly every 1% of the video. Callback errors are swallowed —
+    reporting must never break tracking.
 
     Returns a TrackedBall with all confirmed positions.
     """
@@ -225,6 +234,8 @@ def track_ball(video_path: str, api_key: str, sample_every: int = SAMPLE_EVERY) 
 
     tracker   = TrackedBall()
     frame_idx = 0
+    # Report at most ~100 times per video, only from sampled frames.
+    report_every = max(sample_every, (total_frames // 100 // sample_every or 1) * sample_every)
 
     # We only run inference on every sample_every-th frame, so only those need
     # to be decoded. cap.read() = grab()+retrieve() decodes every frame; for
@@ -251,6 +262,12 @@ def track_ball(video_path: str, api_key: str, sample_every: int = SAMPLE_EVERY) 
                 ))
             else:
                 tracker.misses += 1
+
+            if on_progress and total_frames > 0 and frame_idx % report_every == 0:
+                try:
+                    on_progress(frame_idx / total_frames)
+                except Exception:
+                    logger.warning("Progress callback failed", exc_info=True)
         else:
             if not cap.grab():
                 break
