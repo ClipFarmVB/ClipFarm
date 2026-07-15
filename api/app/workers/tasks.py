@@ -154,6 +154,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         sync_set_game_status,
         sync_save_clips,
         sync_delete_game_clips,
+        sync_game_exists,
     )
     from app.services import storage as s3
     import cv2 as _cv2
@@ -162,6 +163,26 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
     gid = uuid.UUID(game_id)
     r2_key = urlparse(raw_video_url).path.lstrip("/")
     logger.info("Starting processing for game %s", game_id)
+
+    def _abandoned() -> bool:
+        """True if the game was deleted, meaning all remaining work is wasted.
+
+        Checked at each stage boundary so a delete landing during a long stage
+        (ball tracking can run for minutes) stops the pipeline at the next
+        checkpoint instead of running to completion, FK-failing on save, and
+        retrying. It can't interrupt a single in-flight stage — only the gaps
+        between them (see the Level-2 hard-stop follow-up for true cancellation).
+        """
+        if sync_game_exists(gid):
+            return False
+        logger.info("Game %s no longer exists — abandoning processing", game_id)
+        return True
+
+    # The game may already be gone: deleted before the worker picked this up, or
+    # this is a retry scheduled after a delete. Its DB row and raw video are gone,
+    # so there's nothing to do — abandon rather than 404 on download and retry.
+    if _abandoned():
+        return
 
     try:
         sync_set_game_status(gid, "processing")
@@ -321,6 +342,22 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     "labels": cd.get("labels", []),
                 })
 
+            # The game can be deleted during this long-running job. If it's gone,
+            # persisting clips would violate the FK; abandon and purge the clip
+            # artifacts we just uploaded so they don't orphan in R2.
+            if not sync_game_exists(gid):
+                logger.info(
+                    "Game %s deleted during processing — discarding %d clips", game_id, len(rows)
+                )
+                for row in rows:
+                    for url in (row.get("clip_url"), row.get("thumbnail_url")):
+                        if url:
+                            try:
+                                s3.delete_file(urlparse(url).path.lstrip("/"))
+                            except Exception as del_err:
+                                logger.warning("Orphan clip cleanup failed for %s (%s)", url, del_err)
+                return
+
             # Idempotency (CF-37): a redelivered or re-enqueued task must
             # refresh this game's clips, not append a duplicate set. Clear the
             # previous run's clips now that the new ones are ready — doing it
@@ -401,6 +438,12 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             logger.info("Done: %d clips for game %s", len(rows), game_id)
 
     except Exception as exc:
+        # A game deleted mid-flight is the cause of the failure (missing video on
+        # retry, FK violation on save), not a transient error — abandon, don't
+        # retry. This is the safety net for a deletion at any un-checked point.
+        if not sync_game_exists(gid):
+            logger.info("Game %s no longer exists — abandoning (no retry)", game_id)
+            return
         logger.exception("Processing failed for game %s", game_id)
         sync_set_game_status(gid, "failed", error_message=str(exc))
         raise self.retry(exc=exc)
