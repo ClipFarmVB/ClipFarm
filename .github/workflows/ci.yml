@@ -20,7 +20,7 @@ jobs:
       - run: npm run typecheck --workspace=web
 
   api:
-    name: API (ruff + mypy)
+    name: API + ML-eval (ruff + mypy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,3 +31,6 @@ jobs:
       - run: pip install ruff mypy
       - run: ruff check api/
       - run: mypy api/app --ignore-missing-imports
+      # ml/eval is pure, unit-tested logic — lint it too (rest of ml/ is not yet covered).
+      - run: ruff check ml/eval
+      - run: mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
