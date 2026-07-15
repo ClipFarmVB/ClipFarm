@@ -7,7 +7,7 @@ import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
 import { getGames, deleteGame, renameGame, type Game } from "@/lib/api";
-import { getCachedGames, getInflightGames, updateGamesCache, invalidateGamesCache } from "@/lib/gamesCache";
+import { getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
 
 const STATUS_DOT: Record<Game["status"], string> = {
