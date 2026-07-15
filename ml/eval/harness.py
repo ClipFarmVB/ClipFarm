@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -134,7 +135,7 @@ def _seconds_to_ts(seconds: float) -> str:
 
 def _git_commit() -> str | None:
     # Env override lets an in-container run (no .git mounted) record the host commit.
-    env = __import__("os").environ.get("GIT_COMMIT")
+    env = os.environ.get("GIT_COMMIT")
     if env:
         return env
     try:
@@ -148,7 +149,7 @@ def _git_commit() -> str | None:
 
 def config_snapshot() -> dict:
     """Best-effort snapshot of the numeric constants that shape a run."""
-    snap: dict[str, dict[str, float]] = {}
+    snap: dict[str, dict] = {}
     for name in _SNAPSHOT_MODULES:
         try:
             mod = importlib.import_module(name)
@@ -159,6 +160,17 @@ def config_snapshot() -> dict:
             for attr in dir(mod)
             if attr.isupper() and isinstance(getattr(mod, attr), (int, float)) and not isinstance(getattr(mod, attr), bool)
         }
+    # App-level knobs — the gate threshold is the single most load-bearing value
+    # a run depends on. Lazy + best-effort: --clips-json runs on hosts without
+    # the app installed still work (the key is just absent there).
+    try:
+        from app.config import settings
+        snap["app.config"] = {
+            "highlight_score_threshold": settings.highlight_score_threshold,
+            "clip_verify_enabled": settings.clip_verify_enabled,
+        }
+    except Exception:
+        pass
     return snap
 
 
