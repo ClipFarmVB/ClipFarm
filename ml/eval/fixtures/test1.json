@@ -6,7 +6,7 @@
   "source_video_url": "https://www.youtube.com/watch?v=rMQRxjKLkns",
   "source_note": "Labeled against the first 0:00:00-1:01:00 of the 2:01:38 original; the uploaded ClipFarm file is that first-hour cut, so timestamps map 1:1 (no offset).",
   "source_video_md5": "ed2897148f8f59d48fccff83905bbdc3",
-  "source_r2_key": "raw/TODO-game-id.mp4",
+  "source_r2_key": "raw/f25cf0f2-9865-4f70-8793-92f72b79b8b6.mp4",
   "video_duration_sec": 3660.0,
   "ground_truth_tiers": ["M", "C"],
   "tier_legend": {"M": "must clip", "C": "can clip", "N": "no clip (excluded)", "B": "break (excluded)", "O": "outlier (excluded)"},
