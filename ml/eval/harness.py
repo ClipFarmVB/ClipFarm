@@ -133,6 +133,10 @@ def _seconds_to_ts(seconds: float) -> str:
 # ── results log ────────────────────────────────────────────────────────────
 
 def _git_commit() -> str | None:
+    # Env override lets an in-container run (no .git mounted) record the host commit.
+    env = __import__("os").environ.get("GIT_COMMIT")
+    if env:
+        return env
     try:
         out = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"], cwd=str(EVAL_DIR), stderr=subprocess.DEVNULL,
@@ -230,11 +234,63 @@ def run(
 
 
 def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
-    raise NotImplementedError(
-        "--offline lands next: it re-runs find_contacts -> contacts_to_rallies -> "
-        "score_cheers -> score_highlights via the R2 ball-cache. Wired once the "
-        "Test1 game has processed and populated the cache. Use --clips-json for now."
-    )
+    """
+    Re-run the detection + scoring stages against the fixture's source video,
+    mirroring process_game_task stages 0-2. Ball positions load from the R2
+    cache (free unless model/sample-rate changed), so no re-tracking. Returns
+    (pre_gate = all scored rallies, post_gate = those above the gate).
+
+    Runs impure edges (R2, ffmpeg, cv2, app config) behind lazy imports — must
+    be invoked where those deps live (the worker container).
+    """
+    import tempfile
+
+    import cv2
+
+    from app.config import settings
+    from app.services import storage as s3
+    from app.workers.tasks import _track_ball_cached
+    from ml.pipeline.audio import compute_audio_energy, score_cheers
+    from ml.pipeline.ball import contacts_to_rallies, find_contacts
+    from ml.pipeline.score import score_highlights
+
+    fixture = load_fixture(test_id)
+    r2_key = fixture.raw["source_r2_key"]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        local = tmp / "game.mp4"
+        print(f"Downloading {r2_key} from R2...")
+        s3.download_file(r2_key, local)
+
+        cap = cv2.VideoCapture(str(local))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        duration = n_frames / fps
+
+        audio = compute_audio_energy(str(local))
+
+        sample_every = max(1, round(fps / 3.0))  # matches process_game_task
+        tracker = _track_ball_cached(local, tmp, sample_every=sample_every)
+        contacts = find_contacts(tracker, frame_height=frame_h)
+        detections = contacts_to_rallies(contacts, duration, frame_h)
+        if audio is not None:
+            detections = score_cheers(detections, *audio)
+        detections = score_highlights(str(local), detections, use_clip=settings.clip_verify_enabled)
+
+        threshold = settings.highlight_score_threshold
+        pre = [
+            ModelWindow(float(d["start"]), float(d["end"]), d.get("highlight_score"))
+            for d in detections
+        ]
+        post = [w for w in pre if (w.score or 0.0) >= threshold]
+        print(
+            f"Offline: {len(detections)} rallies scored; "
+            f"{len(post)} above gate ({threshold:.2f})"
+        )
+        return pre, post
 
 
 def main() -> None:
@@ -243,7 +299,7 @@ def main() -> None:
     ap.add_argument("--version", required=True, help="free-text version tag for this run")
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--clips-json", type=Path, help="dumped {pre_gate, post_gate} windows")
-    src.add_argument("--offline", action="store_true", help="re-run pipeline stages (coming soon)")
+    src.add_argument("--offline", action="store_true", help="re-run pipeline stages via the R2 ball-cache")
     ap.add_argument("--no-record", action="store_true", help="print only; don't append to results log")
     args = ap.parse_args()
 
