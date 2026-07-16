@@ -56,14 +56,16 @@ export default function GamePage() {
   const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0, min_score: 0, sort: "time" });
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  // Smoothed ETA carried across polls (ref holds seconds for the EMA;
-  // state holds the display string).
+  // Smoothed ETA carried across polls (refs hold the EMA seconds and the
+  // last seen progress for the flat-progress hold; state holds the string).
   const etaSecondsRef = useRef<number | null>(null);
+  const prevProgressRef = useRef<number | null>(null);
   const [etaText, setEtaText] = useState<string | null>(null);
 
   useEffect(() => {
     if (!game || game.status !== "processing") {
       etaSecondsRef.current = null;
+      prevProgressRef.current = null;
       setEtaText(null);
       return;
     }
@@ -72,8 +74,10 @@ export default function GamePage() {
       game.processing_started_at,
       Date.now(),
       etaSecondsRef.current,
+      prevProgressRef.current,
     );
     etaSecondsRef.current = eta;
+    prevProgressRef.current = game.progress ?? 0;
     setEtaText(eta === null ? null : formatEta(eta));
   }, [game]);
   const [deleting, setDeleting] = useState(false);

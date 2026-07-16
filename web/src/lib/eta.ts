@@ -21,6 +21,7 @@ export function estimateEtaSeconds(
   startedAtIso: string | null,
   nowMs: number,
   prevEtaSeconds: number | null,
+  prevProgress: number | null = null,
 ): number | null {
   if (!startedAtIso || progress < MIN_PROGRESS || progress >= 1) return null;
   const startedMs = Date.parse(startedAtIso);
@@ -28,6 +29,13 @@ export function estimateEtaSeconds(
 
   const elapsed = (nowMs - startedMs) / 1000;
   if (elapsed < MIN_ELAPSED_SECONDS) return null;
+
+  // Flat progress (an opaque remote stage, a stall): hold the previous
+  // estimate rather than letting elapsed-time extrapolation inflate it —
+  // a user should never watch "6 min left" climb to "11 min left".
+  if (prevEtaSeconds !== null && prevProgress !== null && progress <= prevProgress) {
+    return prevEtaSeconds;
+  }
 
   const raw = (elapsed * (1 - progress)) / progress;
   if (prevEtaSeconds === null) return raw;

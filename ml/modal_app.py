@@ -67,6 +67,10 @@ def track_ball_remote(video_url: str, api_key: str, sample_every: int) -> list[d
 
     Mirrors `_track_ball_cached`'s local path exactly so the caller can treat
     this as a drop-in replacement for `track_ball()`.
+
+    Kept blocking (no progress) for callers on the old worker code; new
+    workers use `track_ball_stream` below. Remove once the CF-47 worker is
+    everywhere.
     """
     import os
     import tempfile
@@ -90,3 +94,72 @@ def track_ball_remote(video_url: str, api_key: str, sample_every: int) -> list[d
 
         tracker = track_ball(local_path, api_key, sample_every=sample_every)
         return [asdict(p) for p in tracker.positions]
+
+
+@app.function(
+    image=image,
+    gpu="T4",
+    volumes={"/models": model_cache},
+    timeout=1800,
+)
+def track_ball_stream(video_url: str, api_key: str, sample_every: int):
+    """
+    Same tracking as `track_ball_remote`, but a generator: yields
+    {"progress": 0-1} events while the GPU run is in flight (Modal streams
+    them to the caller via `remote_gen`) and finally {"positions": [...]}.
+
+    Gives the worker live progress for the bar/ETA (CF-47) — a blocking
+    `.remote()` call has no channel for progress until it returns.
+
+    track_ball's callback fires from the tracking thread; a Queue bridges
+    it to this generator (yield can't cross threads). The callback is
+    already throttled to ~100 events per video.
+    """
+    import os
+    import queue
+    import tempfile
+    import threading
+    from dataclasses import asdict
+
+    import requests
+
+    from ml.pipeline.ball import track_ball
+
+    os.environ.setdefault("INFERENCE_HOME", "/models/roboflow")
+    os.environ.setdefault("MODEL_CACHE_DIR", "/models/roboflow")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_path = os.path.join(tmpdir, "video.mp4")
+        with requests.get(video_url, stream=True, timeout=120) as r:
+            r.raise_for_status()
+            with open(local_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    f.write(chunk)
+
+        events: queue.Queue = queue.Queue()
+        result: dict = {}
+
+        def run() -> None:
+            try:
+                tracker = track_ball(
+                    local_path, api_key, sample_every=sample_every,
+                    on_progress=events.put,
+                )
+                result["positions"] = [asdict(p) for p in tracker.positions]
+            except BaseException as exc:  # re-raised in the generator below
+                result["error"] = exc
+            finally:
+                events.put(None)  # sentinel: tracking finished either way
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        while True:
+            item = events.get()
+            if item is None:
+                break
+            yield {"progress": float(item)}
+        worker.join()
+
+        if "error" in result:
+            raise result["error"]
+        yield {"positions": result["positions"]}

@@ -28,10 +28,14 @@ def _modal_configured() -> bool:
     return bool(settings.modal_token_id and settings.modal_token_secret)
 
 
-def _track_ball_modal(local_video: Path, r2_key: str, sample_every: int):
+def _track_ball_modal(local_video: Path, r2_key: str, sample_every: int, on_progress=None):
     """
     Run ball tracking on Modal GPU (CF-11): ~27-42 min CPU -> low single-digit
     minutes on a T4. Raises on any failure; caller falls back to local CPU.
+
+    Prefers the streaming function (track_ball_stream) so the progress bar
+    moves during the GPU run; falls back to the blocking call when only the
+    older deployment exists.
     """
     import os
     import modal as modal_sdk
@@ -39,8 +43,27 @@ def _track_ball_modal(local_video: Path, r2_key: str, sample_every: int):
     from app.services import storage as s3
 
     video_url = s3.presign_url(r2_key, expires_in=3600)
+    api_key = os.environ["ROBOFLOW_API_KEY"]
+
+    try:
+        fn = modal_sdk.Function.from_name("clipfarm-ball-tracking", "track_ball_stream")
+        positions = None
+        for event in fn.remote_gen(video_url, api_key, sample_every):
+            if "progress" in event and on_progress:
+                try:
+                    on_progress(event["progress"])
+                except Exception:
+                    logger.warning("Progress callback failed", exc_info=True)
+            elif "positions" in event:
+                positions = event["positions"]
+        if positions is None:
+            raise RuntimeError("Modal stream ended without a positions event")
+        return TrackedBall(positions=[BallPosition(**p) for p in positions])
+    except modal_sdk.exception.NotFoundError:
+        logger.info("track_ball_stream not deployed yet — using blocking Modal call")
+
     fn = modal_sdk.Function.from_name("clipfarm-ball-tracking", "track_ball_remote")
-    positions = fn.remote(video_url, os.environ["ROBOFLOW_API_KEY"], sample_every)
+    positions = fn.remote(video_url, api_key, sample_every)
     return TrackedBall(positions=[BallPosition(**p) for p in positions])
 
 
@@ -89,7 +112,7 @@ def _track_ball_cached(
     tracker: TrackedBall | None = None
     if _modal_configured() and r2_key:
         try:
-            tracker = _track_ball_modal(local_video, r2_key, sample_every)
+            tracker = _track_ball_modal(local_video, r2_key, sample_every, on_progress=on_progress)
             logger.info("Ball tracking ran on Modal GPU: %d positions", len(tracker.positions))
         except Exception as modal_err:
             logger.warning("Modal ball tracking failed (%s) — falling back to local CPU", modal_err)
