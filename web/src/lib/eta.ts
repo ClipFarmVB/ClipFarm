@@ -1,43 +1,59 @@
 /**
  * Time-remaining estimation for game processing.
  *
- * Pure extrapolation from overall progress: the worker's stage spans are
- * weighted to approximate wall-clock shares, so
- *   eta = elapsed * (1 - p) / p
- * self-corrects as the run advances. EMA smoothing keeps the number from
- * yo-yoing between polls; coarse formatting absorbs the remaining error
- * (and any client/server clock skew).
+ * Estimates from *recent progress velocity*: the remaining fraction divided
+ * by how fast progress moved over the last ~minute of polls. A global
+ * average rate (elapsed * (1-p)/p) systematically climbs during any stage
+ * that is slower than its share of the bar — the user watches "5 min left"
+ * become "9 min left". Recent velocity is stable within a stage: slow
+ * stages show a larger but steady number that shrinks when faster stages
+ * arrive. EMA smoothing absorbs poll jitter; coarse formatting absorbs the
+ * rest.
  */
 
-// Below these, the extrapolation is dominated by noise — show nothing.
-const MIN_PROGRESS = 0.05;
-const MIN_ELAPSED_SECONDS = 20;
+export interface ProgressSample {
+  tMs: number;
+  progress: number;
+}
+
+// Need at least this much observation before showing a number.
+const MIN_WINDOW_SECONDS = 15;
+const MIN_PROGRESS = 0.03;
+
+// Velocity window: samples older than this are dropped (stale stages).
+const WINDOW_MS = 90_000;
 
 // Weight of the newest raw estimate in the smoothed value.
 const EMA_ALPHA = 0.3;
 
+/** Append a sample and drop ones outside the velocity window. */
+export function pushSample(
+  samples: ProgressSample[], tMs: number, progress: number,
+): ProgressSample[] {
+  const kept = samples.filter((s) => tMs - s.tMs <= WINDOW_MS);
+  kept.push({ tMs, progress });
+  return kept;
+}
+
 export function estimateEtaSeconds(
-  progress: number,
-  startedAtIso: string | null,
-  nowMs: number,
+  samples: ProgressSample[],
   prevEtaSeconds: number | null,
-  prevProgress: number | null = null,
 ): number | null {
-  if (!startedAtIso || progress < MIN_PROGRESS || progress >= 1) return null;
-  const startedMs = Date.parse(startedAtIso);
-  if (Number.isNaN(startedMs)) return null;
+  if (samples.length < 2) return prevEtaSeconds;
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  if (last.progress < MIN_PROGRESS || last.progress >= 1) return null;
 
-  const elapsed = (nowMs - startedMs) / 1000;
-  if (elapsed < MIN_ELAPSED_SECONDS) return null;
+  const windowSeconds = (last.tMs - first.tMs) / 1000;
+  if (windowSeconds < MIN_WINDOW_SECONDS) return prevEtaSeconds;
 
-  // Flat progress (an opaque remote stage, a stall): hold the previous
-  // estimate rather than letting elapsed-time extrapolation inflate it —
-  // a user should never watch "6 min left" climb to "11 min left".
-  if (prevEtaSeconds !== null && prevProgress !== null && progress <= prevProgress) {
+  const velocity = (last.progress - first.progress) / windowSeconds; // fraction/sec
+  if (velocity <= 0) {
+    // Flat or opaque stage: hold the previous estimate — never climb.
     return prevEtaSeconds;
   }
 
-  const raw = (elapsed * (1 - progress)) / progress;
+  const raw = (1 - last.progress) / velocity;
   if (prevEtaSeconds === null) return raw;
   return EMA_ALPHA * raw + (1 - EMA_ALPHA) * prevEtaSeconds;
 }

@@ -11,7 +11,7 @@ import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type Player, type ActionType, type ClipFilters } from "@/lib/api";
-import { estimateEtaSeconds, formatEta } from "@/lib/eta";
+import { estimateEtaSeconds, formatEta, pushSample, type ProgressSample } from "@/lib/eta";
 import { cn } from "@/lib/utils";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];
@@ -56,28 +56,22 @@ export default function GamePage() {
   const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0, min_score: 0, sort: "time" });
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  // Smoothed ETA carried across polls (refs hold the EMA seconds and the
-  // last seen progress for the flat-progress hold; state holds the string).
+  // ETA from recent progress velocity: refs hold the sample window and the
+  // EMA-smoothed seconds across polls; state holds the display string.
+  const etaSamplesRef = useRef<ProgressSample[]>([]);
   const etaSecondsRef = useRef<number | null>(null);
-  const prevProgressRef = useRef<number | null>(null);
   const [etaText, setEtaText] = useState<string | null>(null);
 
   useEffect(() => {
     if (!game || game.status !== "processing") {
+      etaSamplesRef.current = [];
       etaSecondsRef.current = null;
-      prevProgressRef.current = null;
       setEtaText(null);
       return;
     }
-    const eta = estimateEtaSeconds(
-      game.progress ?? 0,
-      game.processing_started_at,
-      Date.now(),
-      etaSecondsRef.current,
-      prevProgressRef.current,
-    );
+    etaSamplesRef.current = pushSample(etaSamplesRef.current, Date.now(), game.progress ?? 0);
+    const eta = estimateEtaSeconds(etaSamplesRef.current, etaSecondsRef.current);
     etaSecondsRef.current = eta;
-    prevProgressRef.current = game.progress ?? 0;
     setEtaText(eta === null ? null : formatEta(eta));
   }, [game]);
   const [deleting, setDeleting] = useState(false);
