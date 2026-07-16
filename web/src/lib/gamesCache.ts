@@ -21,19 +21,31 @@ let _fetchedAt = 0;
 let _promise: Promise<Game[]> | null = null;
 let _generation = 0;
 
+/**
+ * Fetch the games list with stale-response protection: the result is only
+ * written back if no deliberate cache write (update / add / invalidate)
+ * happened while the request was in flight.  On a lost race the promise
+ * resolves with the cache's newer view instead of the stale response, so
+ * callers can always render what it returns.
+ */
+export function fetchGames(): Promise<Game[]> {
+  const gen = _generation;
+  return getGames().then((games) => {
+    if (gen === _generation) {
+      _data = games;
+      _fetchedAt = Date.now();
+      return games;
+    }
+    return _data ?? games;
+  });
+}
+
 /** Start a background fetch if the cache is cold or stale. No-op if already in-flight. */
 export function prefetchGames(): void {
   if (_promise) return;
   if (_data && Date.now() - _fetchedAt < STALE_MS) return;
-  const gen = _generation;
-  const p = getGames()
+  const p = fetchGames()
     .then((games) => {
-      // Only write back if nothing invalidated/mutated the cache while we
-      // were in flight — otherwise this response is stale.
-      if (gen === _generation) {
-        _data = games;
-        _fetchedAt = Date.now();
-      }
       if (_promise === p) _promise = null;
       return games;
     })

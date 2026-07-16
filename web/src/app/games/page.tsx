@@ -6,8 +6,8 @@ import { AlertCircle, ArrowRight, Plus, Trash2 } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
-import { getGames, deleteGame, renameGame, type Game } from "@/lib/api";
-import { getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
+import { deleteGame, renameGame, type Game } from "@/lib/api";
+import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
 
 const STATUS_DOT: Record<Game["status"], string> = {
@@ -85,9 +85,12 @@ function GamesContent() {
     if (cached && !hasActive(cached)) return;
 
     // Re-use the in-flight prefetch started by AuthContext, or start a new one.
-    const p = getInflightGames() ?? getGames();
+    // fetchGames writes through the cache itself, guarded against a mutation
+    // (e.g. upload success) landing while the request is in flight — an
+    // unconditional updateGamesCache here would stamp the pre-upload list
+    // fresh and hide the new game again (CF-63).
+    const p = getInflightGames() ?? fetchGames();
     p.then((data) => {
-      updateGamesCache(data);
       setGames(data);
       setLoading(false);
     }).catch((e: Error) => {
@@ -102,8 +105,7 @@ function GamesContent() {
     const hasActive = games.some((g) => g.status === "processing" || g.status === "queued");
     if (!hasActive) return;
     const interval = setInterval(() => {
-      getGames().then((data) => {
-        updateGamesCache(data);
+      fetchGames().then((data) => {
         setGames(data);
       }).catch(() => {});
     }, 10_000);
