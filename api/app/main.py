@@ -9,7 +9,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.observability import init_sentry
-from app.routers import games, clips, players, collections
+from app.routers import games, clips, players, collections, corrections
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ app.include_router(games.router)
 app.include_router(clips.router)
 app.include_router(players.router)
 app.include_router(collections.router)
+app.include_router(corrections.router)
 
 
 async def _check_db() -> bool:
