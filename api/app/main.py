@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import games, clips, players, dead_time, collections
+from app.routers import games, clips, players, collections
 
 app = FastAPI(title="ClipFarm API", version="0.1.0")
 
@@ -17,7 +17,6 @@ app.add_middleware(
 app.include_router(games.router)
 app.include_router(clips.router)
 app.include_router(players.router)
-app.include_router(dead_time.router)
 app.include_router(collections.router)
 
 

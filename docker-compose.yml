@@ -34,12 +34,19 @@ services:
     env_file:
       - .env.docker
     environment:
-      # DATABASE_URL comes from .env.docker (Supabase) — do not override here
+      # DATABASE_URL comes from .env.docker (shared Supabase by default,
+      # local db container when doing schema/migration work) — do not
+      # override here
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
     depends_on:
       redis:
+        condition: service_healthy
+      # api runs `alembic upgrade head` on boot — wait for Postgres to be ready
+      # so the migration doesn't race a still-starting db (harmless when
+      # DATABASE_URL points at Supabase, required when it points at the db container)
+      db:
         condition: service_healthy
     command: >
       sh -lc "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
@@ -57,7 +64,9 @@ services:
     env_file:
       - .env.docker
     environment:
-      # DATABASE_URL comes from .env.docker (Supabase) — do not override here
+      # DATABASE_URL comes from .env.docker (shared Supabase by default,
+      # local db container when doing schema/migration work) — do not
+      # override here
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -66,8 +75,17 @@ services:
       POSE_MODEL: yolov8n-pose.pt
       POSE_IMGSZ: "640"
       POSE_SKIP_FRAMES: "8"
+      # Persistent model-weight cache (CF-40): without these, every container
+      # recreate re-downloads the ball model (114MB, Roboflow CDN) and the
+      # YOLO pose weights (GitHub) before processing can start.
+      MODEL_CACHE_DIR: /models/roboflow   # inference: model metadata cache
+      INFERENCE_HOME: /models/roboflow    # inference 1.x: shared-blobs weight store (the 114MB)
+      MODELS_DIR: /models                 # ultralytics weights (see ml/pipeline/detect.py)
+      YOLO_CONFIG_DIR: /models/ultralytics  # ultralytics settings.json
     depends_on:
       redis:
+        condition: service_healthy
+      db:
         condition: service_healthy
       api:
         condition: service_started
@@ -75,6 +93,7 @@ services:
     volumes:
       - ./api:/app/api
       - ./ml:/app/ml
+      - model_cache:/models
 
   web:
     build:
@@ -102,3 +121,4 @@ services:
 volumes:
   postgres_data:
   node_modules:
+  model_cache:

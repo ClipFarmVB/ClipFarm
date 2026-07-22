@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Upload, Film, AlertCircle } from "lucide-react";
+import { Upload, Film, AlertCircle, Loader } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { uploadGame } from "@/lib/api";
 import { invalidateGamesCache } from "@/lib/gamesCache";
@@ -16,6 +16,8 @@ export function UploadZone() {
   const [dragging, setDragging] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
+  const [condense, setCondense] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,7 +37,7 @@ export function UploadZone() {
   }, [title]);
 
   const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
+    // preventDefault already called by the inline onDrop wrapper below
     setDragging(false);
     const f = e.dataTransfer.files[0];
     if (f) pickFile(f);
@@ -47,15 +49,18 @@ export function UploadZone() {
   };
 
   const handleUpload = async () => {
-    if (!file) return;
+    if (!file || uploading) return; // re-entry guard — a second click is a no-op
     setError(null);
+    setUploading(true);
+    setProgress(0); // show the progress bar immediately, not on the first onprogress event
     try {
-      const game = await uploadGame(file, title || file.name, (pct) => setProgress(pct));
+      const game = await uploadGame(file, title || file.name, condense, (pct) => setProgress(pct));
       invalidateGamesCache(); // new game was created — force a fresh fetch on next visit
       router.push(`/games/${game.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed.");
       setProgress(null);
+      setUploading(false); // re-enable so the user can retry after a failure
     }
   };
 
@@ -63,9 +68,9 @@ export function UploadZone() {
     <div className="w-full max-w-lg">
       {/* Drop zone */}
       <div
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragOver={(e) => { e.preventDefault(); if (!uploading) setDragging(true); }}
         onDragLeave={() => setDragging(false)}
-        onDrop={onDrop}
+        onDrop={(e) => { e.preventDefault(); if (!uploading) onDrop(e); else setDragging(false); }}
         onClick={() => !file && document.getElementById("file-input")?.click()}
         className={cn(
           "relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-12 text-center transition-all duration-200",
@@ -82,6 +87,7 @@ export function UploadZone() {
           accept={ACCEPTED.join(",")}
           className="hidden"
           onChange={onFileInput}
+          disabled={uploading}
         />
 
         {file ? (
@@ -91,12 +97,14 @@ export function UploadZone() {
             </div>
             <p className="text-[14px] font-medium text-foreground">{file.name}</p>
             <p className="mt-1 text-[12px] text-muted">{formatBytes(file.size)}</p>
-            <button
-              onClick={() => document.getElementById("file-input")?.click()}
-              className="mt-3 text-[11px] text-subtle hover:text-muted transition-colors"
-            >
-              Click to change file
-            </button>
+            {!uploading && (
+              <button
+                onClick={() => document.getElementById("file-input")?.click()}
+                className="mt-3 text-[11px] text-subtle hover:text-muted transition-colors"
+              >
+                Click to change file
+              </button>
+            )}
           </>
         ) : (
           <>
@@ -123,10 +131,35 @@ export function UploadZone() {
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
+            disabled={uploading}
             placeholder="e.g. Varsity vs Lincoln — March 25"
-            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-foreground placeholder:text-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-border-strong transition-colors"
+            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-foreground placeholder:text-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-border-strong transition-colors disabled:opacity-50"
           />
         </div>
+      )}
+
+      {/* Dead-time removal opt-in */}
+      {file && (
+        <label
+          className={cn(
+            "mt-3 flex items-start gap-2.5 rounded-md border border-border bg-surface px-3 py-2.5 transition-colors",
+            uploading ? "opacity-50" : "cursor-pointer hover:border-border-strong"
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={condense}
+            onChange={(e) => setCondense(e.target.checked)}
+            disabled={uploading}
+            className="mt-0.5 accent-[var(--brand,#6366f1)]"
+          />
+          <span>
+            <span className="block text-[13px] font-medium text-foreground">Remove dead time</span>
+            <span className="mt-0.5 block text-[11px] text-muted">
+              Also creates one condensed video with the waiting between rallies cut out. Adds processing time.
+            </span>
+          </span>
+        </label>
       )}
 
       {/* Error */}
@@ -153,10 +186,11 @@ export function UploadZone() {
         </div>
       )}
 
-      {/* Upload button */}
-      {file && progress === null && (
-        <Button className="mt-4 w-full" size="lg" onClick={handleUpload}>
-          Upload &amp; process
+      {/* Upload button — stays mounted but disabled while uploading so a
+          slow network can't leave a clickable button (double-submit, CF-35) */}
+      {file && (
+        <Button className="mt-4 w-full" size="lg" onClick={handleUpload} disabled={uploading}>
+          {uploading ? <Loader size={16} className="animate-spin" /> : "Upload & process"}
         </Button>
       )}
     </div>

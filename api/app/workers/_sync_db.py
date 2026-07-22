@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.game import Game, GameStatus
 from app.models.clip import Clip, ActionType
-from app.models.dead_time import DeadTimeClip, DeadTimeRun, DeadTimeRunStatus
 
 # Sync engine (Celery workers don't run in an asyncio loop)
 _sync_url = settings.database_url.replace("+asyncpg", "")
@@ -35,6 +34,23 @@ def sync_set_game_status(
             game.processed_at = processed_at
         if error_message:
             game.error_message = error_message
+        s.commit()
+
+
+def sync_set_condensed_result(
+    game_id: uuid.UUID,
+    *,
+    condensed_video_url: str,
+    original_duration: float,
+    condensed_duration: float,
+):
+    with Session(_engine) as s:
+        game = s.get(Game, game_id)
+        if not game:
+            return
+        game.condensed_video_url = condensed_video_url
+        game.original_duration = original_duration
+        game.condensed_duration = condensed_duration
         s.commit()
 
 
@@ -72,35 +88,23 @@ def sync_save_clips(rows: list[dict]):
         s.commit()
 
 
-def sync_set_dead_time_run_status(
-    run_id: uuid.UUID,
-    status: str,
-    processed_at: datetime | None = None,
-    error_message: str | None = None,
-):
-    with Session(_engine) as s:
-        run = s.get(DeadTimeRun, run_id)
-        if not run:
-            return
-        run.status = DeadTimeRunStatus(status)
-        if processed_at:
-            run.processed_at = processed_at
-        if error_message:
-            run.error_message = error_message
-        s.commit()
+def sync_delete_game_clips(game_id: uuid.UUID) -> list[str]:
+    """
+    Delete every Clip row for a game and return the R2 URLs (clip + thumbnail)
+    that were referenced, so the caller can purge storage too.
 
-
-def sync_save_dead_time_clips(rows: list[dict]):
+    Makes process_game idempotent: a redelivered or re-enqueued task refreshes
+    the game's clips instead of appending a duplicate set. Clip ids are fresh
+    uuids each run, so old objects would otherwise orphan in R2. (CF-37)
+    """
+    urls: list[str] = []
     with Session(_engine) as s:
-        for row in rows:
-            clip = DeadTimeClip(
-                id=row["id"],
-                run_id=row["run_id"],
-                start_time=row["start_time"],
-                end_time=row["end_time"],
-                score=row["score"],
-                clip_url=row["clip_url"],
-                thumbnail_url=row.get("thumbnail_url"),
-            )
-            s.add(clip)
+        clips = s.query(Clip).filter(Clip.game_id == game_id).all()
+        for clip in clips:
+            if clip.clip_url:
+                urls.append(clip.clip_url)
+            if clip.thumbnail_url:
+                urls.append(clip.thumbnail_url)
+            s.delete(clip)
         s.commit()
+    return urls

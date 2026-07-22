@@ -58,6 +58,11 @@ async def get_game(game_id: uuid.UUID, user_id: UserId, db: DB):
     count = clip_count_q.scalar_one()
     out = GameOut.model_validate(game)
     out.clip_count = count
+    if out.condensed_video_url:
+        out.condensed_video_url = storage.presign_from_stored_url(
+            out.condensed_video_url,
+            download_filename=f"{game.title} (condensed).mp4",
+        )
     return out
 
 
@@ -67,6 +72,7 @@ async def create_game(
     file: Annotated[UploadFile, File(description="Game video file")],
     title: Annotated[str, Form(max_length=255)],
     db: DB,
+    condense: Annotated[bool, Form(description="Also generate a dead-time-removed video")] = False,
 ):
     # Validate content type
     content_type = (file.content_type or "").lower()
@@ -106,13 +112,14 @@ async def create_game(
         title=title,
         status=GameStatus.queued,
         raw_video_url=raw_url,
+        condense_requested=condense,
     )
     db.add(game)
     await db.commit()
     await db.refresh(game)
 
     # Enqueue processing job
-    process_game_task.delay(str(game_id), raw_url)
+    process_game_task.delay(str(game_id), raw_url, condense=condense)
 
     return GameOut.model_validate(game)
 
@@ -144,8 +151,9 @@ async def delete_game(game_id: uuid.UUID, user_id: UserId, db: DB):
         for url in (clip.clip_url, clip.thumbnail_url):
             if url:
                 r2_keys.append(urlparse(url).path.lstrip("/"))
-    if game.raw_video_url:
-        r2_keys.append(urlparse(game.raw_video_url).path.lstrip("/"))
+    for url in (game.raw_video_url, game.condensed_video_url):
+        if url:
+            r2_keys.append(urlparse(url).path.lstrip("/"))
 
     # Delete from DB (cascades to clips via relationship)
     await db.delete(game)
