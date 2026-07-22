@@ -92,16 +92,34 @@ def download_file(key: str, local_path: str | Path) -> None:
     _client().download_file(settings.r2_bucket_name, key, str(local_path))
 
 
-def presign_url(key: str, expires_in: int = 3600) -> str:
-    """Generate a presigned URL for reading a file from R2 (default 1 hour)."""
+def presign_url(key: str, expires_in: int = 3600, download_filename: str | None = None) -> str:
+    """
+    Generate a presigned URL for reading a file from R2 (default 1 hour).
+
+    download_filename, when set, makes R2 serve Content-Disposition:
+    attachment so a plain link click downloads the file under that name —
+    the <a download> attribute is ignored for cross-origin URLs. Media
+    elements ignore the header, so the same URL still plays inline.
+    """
+    params: dict[str, str] = {"Bucket": settings.r2_bucket_name, "Key": key}
+    if download_filename:
+        # R2 reflects this into a response header — keep it printable ASCII
+        # and quote-free so it can't escape the quoted-string.
+        safe = "".join(
+            c for c in download_filename
+            if c.isascii() and c.isprintable() and c not in '";\\'
+        ).strip() or "download"
+        params["ResponseContentDisposition"] = f'attachment; filename="{safe}"'
     return _client().generate_presigned_url(
         "get_object",
-        Params={"Bucket": settings.r2_bucket_name, "Key": key},
+        Params=params,
         ExpiresIn=expires_in,
     )
 
 
-def presign_from_stored_url(stored_url: str, expires_in: int = 3600) -> str:
+def presign_from_stored_url(
+    stored_url: str, expires_in: int = 3600, download_filename: str | None = None
+) -> str:
     """Convert a stored public URL back to a presigned URL."""
     prefix = f"{settings.r2_public_url}/"
     if stored_url.startswith(prefix):
@@ -110,7 +128,7 @@ def presign_from_stored_url(stored_url: str, expires_in: int = 3600) -> str:
         # Fallback: extract path from URL
         from urllib.parse import urlparse
         key = urlparse(stored_url).path.lstrip("/")
-    return presign_url(key, expires_in)
+    return presign_url(key, expires_in, download_filename=download_filename)
 
 
 def delete_file(key: str) -> None:
@@ -130,14 +148,6 @@ def thumbnail_key(game_id: uuid.UUID, clip_id: uuid.UUID) -> str:
     return f"thumbs/{game_id}/{clip_id}.jpg"
 
 
-def dead_time_raw_key(run_id: uuid.UUID, filename: str) -> str:
-    ext = Path(filename).suffix
-    return f"deadtime/raw/{run_id}{ext}"
-
-
-def dead_time_clip_key(run_id: uuid.UUID, clip_id: uuid.UUID) -> str:
-    return f"deadtime/clips/{run_id}/{clip_id}.mp4"
-
-
-def dead_time_thumbnail_key(run_id: uuid.UUID, clip_id: uuid.UUID) -> str:
-    return f"deadtime/thumbs/{run_id}/{clip_id}.jpg"
+def condensed_key(game_id: uuid.UUID) -> str:
+    # Deterministic per game so task retries overwrite instead of orphaning.
+    return f"condensed/{game_id}.mp4"

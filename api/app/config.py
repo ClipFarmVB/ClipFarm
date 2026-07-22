@@ -25,6 +25,25 @@ class Settings(BaseSettings):
     pose_imgsz: int = 1280
     pose_skip_frames: int = 4
 
+    # Dead-time removal (opt-in condense stage). Windows come from the same
+    # ball/pose signals as highlight clips — these only shape the keep-windows.
+    # Loosened in CF-46: the CF-24 values (gap 5.0, pad 2.0/2.5, min_contacts 2)
+    # trimmed real rallies. Tuned loose on purpose — keeping some dead time
+    # beats cutting play. pad_before covers the serve ritual when tracking
+    # missed the serve contact and the first detection is the receive.
+    condense_gap_seconds: float = 10.0       # contact gap that counts as dead time
+    condense_pad_before: float = 5.0         # seconds kept before a window
+    condense_pad_after: float = 4.0          # seconds kept after a window
+    condense_min_contacts: int = 1           # keep even single-contact groups — dropping play is worse
+    condense_merge_gap_seconds: float = 5.0  # merge windows closer than this
+    # Motion bridge: re-join windows split by contact-silent stretches of real
+    # play (far-court possessions, occlusions). Bridges a gap when enough of
+    # the tracked ball's speed samples inside it are fast — in-play flight is
+    # fast, between-rally ball handling is mostly slow.
+    condense_bridge_speed_pxps: float = 150.0   # a speed sample this fast counts as in-play
+    condense_bridge_fast_fraction: float = 0.35  # bridge when ≥ this fraction of samples are fast
+    condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
+
     # Database
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
 
