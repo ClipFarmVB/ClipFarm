@@ -4,6 +4,7 @@ from typing import Annotated
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -99,7 +100,13 @@ async def create_game(
         # LimitedReader enforces the hard cap during streaming even when
         # Content-Length is absent (file.size is None)
         limited = storage.LimitedReader(file.file, settings.max_upload_bytes)
-        raw_url = storage.upload_fileobj(limited, key, content_type=content_type)
+        # Offload the blocking boto3 upload to a worker thread. The API runs a
+        # single uvicorn worker, so calling this synchronously on the event loop
+        # freezes every other request (Library, Collections, ...) for the whole
+        # upload — the ~1-min "all tabs blank until it reappears" delay (CF-63).
+        raw_url = await run_in_threadpool(
+            storage.upload_fileobj, limited, key, content_type=content_type
+        )
     except ValueError as exc:
         raise HTTPException(status_code=413, detail=str(exc))
     except Exception:
