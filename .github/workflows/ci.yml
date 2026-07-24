@@ -28,6 +28,11 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install ruff mypy
+      - run: pip install ruff mypy pytest
       - run: ruff check api/
       - run: mypy api/app --ignore-missing-imports
+      # ml/eval is pure, unit-tested logic — lint it too (rest of ml/ is not yet covered).
+      - run: ruff check ml/eval
+      - run: mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
+      # ml unit tests (eval metrics + dead-time) — stdlib-only, runs in seconds.
+      - run: python -m pytest ml/tests/

@@ -5,8 +5,8 @@
 # Install for your clone:
 #   git config core.hooksPath .hooks
 #
-# Requirements: ruff, mypy, and npm must be on PATH.
-# In the api/ virtualenv: pip install ruff mypy
+# Requirements: ruff, mypy, pytest, and npm must be on PATH.
+# In the api/ virtualenv: pip install ruff mypy pytest
 # For npm: it should already be available.
 
 set -e
@@ -21,6 +21,23 @@ echo "ok"
 # ── API: mypy type-check ──────────────────────────────────────────────────────
 printf "  mypy api/app ...     "
 python -m mypy api/app --ignore-missing-imports
+echo "ok"
+
+# ── ML eval: ruff + mypy ──────────────────────────────────────────────────────
+printf "  ruff check ml/eval . "
+python -m ruff check ml/eval
+echo "ok"
+printf "  mypy ml/eval ...     "
+python -m mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
+echo "ok"
+
+# ── ML: unit tests (eval metrics + dead-time) ─────────────────────────────────
+printf "  pytest ml/tests ...  "
+if ! _pytest_out=$(python -m pytest ml/tests/ -q --no-header 2>&1); then
+  echo "FAIL"
+  echo "$_pytest_out"
+  exit 1
+fi
 echo "ok"
 
 # ── Web: ESLint ───────────────────────────────────────────────────────────────
