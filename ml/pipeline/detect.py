@@ -10,6 +10,7 @@ Outputs a list of detections:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -17,6 +18,21 @@ import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+def _model_path(name: str) -> str:
+    """
+    Resolve a bare YOLO weight filename against MODELS_DIR when set.
+
+    ultralytics downloads named weights to the given path; without a stable
+    directory that means a fresh download into the (ephemeral) working dir on
+    every container recreate. MODELS_DIR points at a persistent volume so the
+    download happens once (CF-40). Absolute/relative paths pass through.
+    """
+    models_dir = os.environ.get("MODELS_DIR", "")
+    if models_dir and os.sep not in name and "/" not in name:
+        return os.path.join(models_dir, name)
+    return name
 
 ActionType = Literal["spike", "serve", "dig", "set", "block", "unknown"]
 
@@ -76,7 +92,7 @@ def run_detection(video_path: str) -> list[dict]:
     """
     try:
         from ultralytics import YOLO
-        model = YOLO("yolov8s-pose.pt")  # small model — detects far-side players at imgsz=1280
+        model = YOLO(_model_path("yolov8s-pose.pt"))  # small model — detects far-side players at imgsz=1280
     except ImportError:
         logger.warning("ultralytics not installed — returning stub detections")
         return _stub_detections(video_path)
@@ -407,7 +423,7 @@ def classify_within_windows(
 
     try:
         from ultralytics import YOLO
-        model = YOLO(model_name)
+        model = YOLO(_model_path(model_name))
     except ImportError:
         logger.warning("ultralytics not installed — skipping pose refinement")
         return windows

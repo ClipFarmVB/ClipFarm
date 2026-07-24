@@ -26,7 +26,7 @@ Cloudflare R2 (S3 API): raw videos, clips, thumbs, condensed videos, ball cache
 ```
 
 - **Monorepo**: `api/` (FastAPI + Celery), `ml/` (pure pipeline code), `web/` (Next.js
-  app-router), `ball-track/` (local experiment harness, not deployed).
+  app-router).
 - **Docker Compose dev stack**: `db` (unused local PG), `redis`, `api`, `worker`
   (same image as api), `web`. Code is volume-mounted so containers hot-reload without
   rebuilds; only dependency changes need `--build`.
@@ -145,8 +145,8 @@ separate motion pass.
 
 - **Pure logic gets unit tests** (`ml/tests/test_dead_time.py`): interval math,
   grouping, padding/clamping — fast, no video, no models.
-- **ffmpeg/cv2 behavior gets harness scripts** (`ball-track/*.py`): run against real
-  or synthetic footage locally; assertions on durations/streams, human eyeballs on
-  output. Model behavior isn't unit-testable; cached fixtures
-  (`test_long_cache.json`) keep iterations fast and free.
+- **ffmpeg/cv2 behavior gets harness scripts**: run against real or synthetic
+  footage locally in a personal scratch dir (git-ignored `ball-track/`);
+  assertions on durations/streams, human eyeballs on output. Model behavior
+  isn't unit-testable; cached tracking fixtures keep iterations fast and free.
 - **End-to-end**: docker compose stack + real upload through the UI.

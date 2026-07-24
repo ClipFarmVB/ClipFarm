@@ -26,3 +26,7 @@ pydantic-settings==2.7.0
 
 # Utilities
 httpx==0.28.1
+
+# Modal GPU offload (CF-11) — client needed to invoke the deployed function;
+# `modal deploy ml/modal_app.py` (run separately, needs `modal setup` auth)
+modal==1.5.1

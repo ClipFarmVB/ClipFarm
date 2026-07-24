@@ -23,7 +23,28 @@ def _file_md5(path: Path) -> str:
     return h.hexdigest()
 
 
-def _track_ball_cached(local_video: Path, tmp: Path, sample_every: int):
+def _modal_configured() -> bool:
+    from app.config import settings
+    return bool(settings.modal_token_id and settings.modal_token_secret)
+
+
+def _track_ball_modal(local_video: Path, r2_key: str, sample_every: int):
+    """
+    Run ball tracking on Modal GPU (CF-11): ~27-42 min CPU -> low single-digit
+    minutes on a T4. Raises on any failure; caller falls back to local CPU.
+    """
+    import os
+    import modal as modal_sdk
+    from ml.pipeline.ball import TrackedBall, BallPosition
+    from app.services import storage as s3
+
+    video_url = s3.presign_url(r2_key, expires_in=3600)
+    fn = modal_sdk.Function.from_name("clipfarm-ball-tracking", "track_ball_remote")
+    positions = fn.remote(video_url, os.environ["ROBOFLOW_API_KEY"], sample_every)
+    return TrackedBall(positions=[BallPosition(**p) for p in positions])
+
+
+def _track_ball_cached(local_video: Path, tmp: Path, sample_every: int, r2_key: str = ""):
     """
     Ball tracking with an R2-backed cache keyed by video content hash.
 
@@ -31,6 +52,10 @@ def _track_ball_cached(local_video: Path, tmp: Path, sample_every: int):
     on the video bytes, the model version, and the sample rate — so re-runs
     of the same footage (re-uploads, pipeline tuning) load cached positions
     in seconds instead. Cache failures fall through to normal tracking.
+
+    When Modal is configured, tracking itself runs on a GPU worker (CF-11)
+    instead of locally on CPU; Modal failures fall back to local CPU tracking
+    so a Modal outage never blocks processing.
     """
     import os
     from app.services import storage as s3
@@ -43,13 +68,22 @@ def _track_ball_cached(local_video: Path, tmp: Path, sample_every: int):
     try:
         s3.download_file(cache_key, cache_path)
         data = json.loads(cache_path.read_text())
-        tracker = TrackedBall(positions=[BallPosition(**p) for p in data["positions"]])
-        logger.info("Ball cache hit (%s): %d positions", cache_key, len(tracker.positions))
-        return tracker
+        cached = TrackedBall(positions=[BallPosition(**p) for p in data["positions"]])
+        logger.info("Ball cache hit (%s): %d positions", cache_key, len(cached.positions))
+        return cached
     except Exception:
         logger.info("Ball cache miss (%s) — running tracking", cache_key)
 
-    tracker = track_ball(str(local_video), os.environ["ROBOFLOW_API_KEY"], sample_every=sample_every)
+    tracker: TrackedBall | None = None
+    if _modal_configured() and r2_key:
+        try:
+            tracker = _track_ball_modal(local_video, r2_key, sample_every)
+            logger.info("Ball tracking ran on Modal GPU: %d positions", len(tracker.positions))
+        except Exception as modal_err:
+            logger.warning("Modal ball tracking failed (%s) — falling back to local CPU", modal_err)
+
+    if tracker is None:
+        tracker = track_ball(str(local_video), os.environ["ROBOFLOW_API_KEY"], sample_every=sample_every)
 
     try:
         cache_path.write_text(json.dumps({"positions": [asdict(p) for p in tracker.positions]}))
@@ -92,13 +126,6 @@ def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start:
     except Exception as exc:
         logger.exception("Recut failed for clip %s", clip_id)
         raise self.retry(exc=exc)
-
-
-def _run_detection_modal(r2_key: str) -> list[dict]:
-    """Call the Modal GPU function and return detections."""
-    import modal
-    detect_fn = modal.Function.from_name("clipfarm-detect", "detect_actions")
-    return detect_fn.remote(r2_key)
 
 
 def _run_detection_local(video_path: str) -> list[dict]:
@@ -172,6 +199,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             detections: list[dict] = []
             ball_ok = False
             ball_contacts: list[dict] = []
+            ball_positions: list[dict] = []
             if _os.environ.get("ROBOFLOW_API_KEY"):
                 try:
                     from ml.pipeline.ball import find_contacts, contacts_to_rallies
@@ -179,24 +207,24 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     # regardless of source frame rate (tuned at 30fps/every-10th;
                     # a 60fps video would otherwise double inference cost).
                     sample_every = max(1, round(_fps / 3.0))
-                    tracker   = _track_ball_cached(local_video, tmp, sample_every=sample_every)
+                    tracker   = _track_ball_cached(local_video, tmp, sample_every=sample_every, r2_key=r2_key)
                     contacts  = find_contacts(tracker, frame_height=_frame_h)
                     detections = contacts_to_rallies(contacts, video_duration, _frame_h)
                     ball_ok   = True
                     ball_contacts = contacts
+                    # Kept for the condense stage's motion bridge (CF-46).
+                    if condense:
+                        ball_positions = [
+                            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+                        ]
                     logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
                 except Exception as ball_err:
                     logger.warning("Ball pipeline failed (%s) — falling back to pose-first", ball_err)
 
             if not ball_ok:
-                # Fallback: pose-first pipeline (Modal GPU or local CPU)
-                try:
-                    logger.info("Running detection via Modal GPU...")
-                    detections = _run_detection_modal(r2_key)
-                    logger.info("Modal returned %d detections", len(detections))
-                except Exception as modal_err:
-                    logger.warning("Modal failed (%s), running local pose detection", modal_err)
-                    detections = _run_detection_local(str(local_video))
+                # Fallback: pose-first local CPU scan (Ball tracking failed
+                # entirely or ROBOFLOW_API_KEY unset — rare path)
+                detections = _run_detection_local(str(local_video))
 
                 try:
                     from ml.pipeline.detect import group_into_rallies
@@ -320,6 +348,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     from ml.pipeline.dead_time import (
                         active_windows_from_contacts,
                         active_windows_from_detections,
+                        bridge_windows_by_motion,
                     )
                     from ml.pipeline.clip import generate_condensed_video
 
@@ -331,6 +360,12 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                             pad_after=app_settings.condense_pad_after,
                             min_contacts=app_settings.condense_min_contacts,
                             merge_gap_seconds=app_settings.condense_merge_gap_seconds,
+                        )
+                        windows = bridge_windows_by_motion(
+                            windows, ball_positions,
+                            speed_pxps=app_settings.condense_bridge_speed_pxps,
+                            fast_fraction=app_settings.condense_bridge_fast_fraction,
+                            max_bridge_seconds=app_settings.condense_bridge_max_seconds,
                         )
                     else:
                         windows = active_windows_from_detections(
