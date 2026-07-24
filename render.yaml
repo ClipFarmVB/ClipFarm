@@ -1,0 +1,154 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ClipFarm — Render Blueprint (CF-68 · Production deployment)
+#
+# Defines the whole production stack as code: web + api + worker + Redis.
+# Supabase (Postgres/Auth), Cloudflare R2 (storage) and Modal (GPU) stay as
+# external managed services — their credentials are supplied as secrets below.
+#
+# First-time setup: Render Dashboard → New → Blueprint → connect
+# ClipFarmVB/ClipFarm → branch `main`. Render reads this file and creates every
+# service. Then fill the secrets (any env var shown as `sync: false`, plus the
+# `clipfarm-shared` group). See DEPLOY.md for the full checklist.
+#
+# After the first apply, pushes to `main` auto-deploy (autoDeploy defaults on).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Server secrets shared by api + worker. Filled once in the dashboard; both
+# services reference this group via `fromGroup`.
+envVarGroups:
+  - name: clipfarm-shared
+    envVars:
+      - key: DATABASE_URL              # Supabase pooler URL, postgresql+asyncpg://…  (Pro tier — see CF-18)
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY # server-only secret
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        value: clipfarm
+      - key: R2_PUBLIC_URL             # https://<bucket>.r2.dev or your R2 custom domain
+        sync: false
+
+services:
+  # ── Redis (Celery broker + result backend) ─────────────────────────────────
+  # noeviction so a full instance never silently drops queued tasks.
+  # `plan: free` (25 MB) can work at low volume; `starter` is the safe default.
+  - type: keyvalue
+    name: clipfarm-redis
+    region: oregon
+    plan: starter
+    maxmemoryPolicy: noeviction
+    ipAllowList: []        # internal-only; no public access
+
+  # ── API (FastAPI) ──────────────────────────────────────────────────────────
+  - type: web
+    name: clipfarm-api
+    runtime: docker
+    repo: https://github.com/ClipFarmVB/ClipFarm
+    branch: main
+    region: oregon
+    plan: starter
+    dockerfilePath: ./Dockerfile.api
+    dockerContext: .
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    healthCheckPath: /health
+    # Migrations run ONCE per deploy here — not on every container boot — so
+    # replicas never race the schema and a shared DB isn't advanced by a stray
+    # boot. Fixes the per-boot `alembic upgrade head` the dev compose file uses.
+    preDeployCommand: "sh -lc 'cd /app/api && alembic upgrade head'"
+    envVars:
+      - fromGroup: clipfarm-shared
+      - key: DEBUG
+        value: "false"
+      - key: JWT_SECRET               # legacy; Supabase JWKS is source of truth. Auto-generated.
+        generateValue: true
+      - key: API_BASE_URL             # this service's own public URL (custom domain or *.onrender.com)
+        sync: false
+      - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.app
+        sync: false
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+      - key: CELERY_BROKER_URL
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+      - key: CELERY_RESULT_BACKEND
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+
+  # ── Worker (Celery) ────────────────────────────────────────────────────────
+  # `standard` (2 GB) fits local pose (yolov8s @1280). To run on `starter`
+  # (512 MB) instead, set the POSE_* overrides below to the lighter dev values.
+  # A disk pins the model cache (~114 MB ball model + pose weights) across
+  # deploys; a disk means a single instance — horizontal scaling is CF-65.
+  - type: worker
+    name: clipfarm-worker
+    runtime: docker
+    repo: https://github.com/ClipFarmVB/ClipFarm
+    branch: main
+    region: oregon
+    plan: standard
+    numInstances: 1
+    dockerfilePath: ./Dockerfile.api
+    dockerContext: .
+    dockerCommand: celery -A app.workers.celery_app worker --loglevel=info --pool=solo
+    disk:
+      name: model-cache
+      mountPath: /models
+      sizeGB: 1
+    envVars:
+      - fromGroup: clipfarm-shared
+      - key: ROBOFLOW_API_KEY
+        sync: false
+      - key: MODAL_TOKEN_ID           # blank = run inference locally (slow); set to offload to Modal GPU
+        sync: false
+      - key: MODAL_TOKEN_SECRET
+        sync: false
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+      - key: CELERY_BROKER_URL
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+      - key: CELERY_RESULT_BACKEND
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+      # Persistent model-weight cache (CF-40) — all under the mounted disk.
+      - key: MODEL_CACHE_DIR
+        value: /models/roboflow
+      - key: INFERENCE_HOME
+        value: /models/roboflow
+      - key: MODELS_DIR
+        value: /models
+      - key: YOLO_CONFIG_DIR
+        value: /models/ultralytics
+      # ── To fit the cheaper `starter` (512 MB) plan, switch plan above and
+      #    uncomment these to use the lighter pose model: ──
+      # - key: POSE_MODEL
+      #   value: yolov8n-pose.pt
+      # - key: POSE_IMGSZ
+      #   value: "640"
+      # - key: POSE_SKIP_FRAMES
+      #   value: "8"
+
+  # ── Web (Next.js) ──────────────────────────────────────────────────────────
+  # Native Node runtime (not Docker) — Render runs `next start` and injects PORT.
+  # NEXT_PUBLIC_* are inlined at BUILD time, so they must be set before deploy.
+  - type: web
+    name: clipfarm-web
+    runtime: node
+    repo: https://github.com/ClipFarmVB/ClipFarm
+    branch: main
+    region: oregon
+    plan: starter
+    buildCommand: npm ci && npm run build --workspace=web
+    startCommand: npm run start --workspace=web
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: NEXT_PUBLIC_API_URL      # the API's public URL, e.g. https://api.clipfarm.app
+        sync: false
