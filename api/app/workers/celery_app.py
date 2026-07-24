@@ -38,8 +38,11 @@ def _init_worker_monitoring(**_kwargs):
     init_sentry("worker")
 
 
-@celery_app.task(name="debug.trigger_error")
-def debug_trigger_error():
-    """Deliberately raises to verify worker exceptions reach Sentry.
-    Trigger with: celery_app.send_task("debug.trigger_error")."""
-    raise RuntimeError("CF-89 test error from the Celery worker (debug only)")
+if settings.debug:
+
+    @celery_app.task(name="debug.trigger_error")
+    def debug_trigger_error():
+        """Deliberately raises to verify worker exceptions reach Sentry.
+        Registered only when debug is enabled (mirrors /debug/sentry-error).
+        Trigger with: celery_app.send_task("debug.trigger_error")."""
+        raise RuntimeError("CF-89 test error from the Celery worker (debug only)")

@@ -35,6 +35,13 @@ def _secret_values() -> list[str]:
         settings.modal_token_secret,
         settings.jwt_secret,
         os.environ.get("ROBOFLOW_API_KEY", ""),
+        # Connection URLs embed passwords (Supabase DB password, Render Redis
+        # password) and routinely appear verbatim in asyncpg/SQLAlchemy/redis
+        # connection errors — the most common thing an error tracker sees.
+        settings.database_url,
+        settings.redis_url,
+        settings.celery_broker_url,
+        settings.celery_result_backend,
     ]
     return [c for c in candidates if c and len(c) >= 6]
 
