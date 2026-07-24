@@ -245,3 +245,121 @@ def evaluate(
         per_clip=per_clip,
         per_window=per_window,
     )
+
+
+# ── dead-time metrics (CF-98) ──────────────────────────────────────────────
+#
+# The condense flow (ml/pipeline/dead_time.py) derives *keep-windows* (rallies);
+# everything between them is cut as dead time. Ground truth is human-labeled
+# *keep* (rally) regions; dead time is their complement within [0, duration].
+# Same interval arithmetic as above — we just need the actual overlap/subtract
+# spans (not only their totals) so the audit can name every divergence.
+
+
+def intersect(a: list[Interval], b: list[Interval]) -> list[Interval]:
+    """Overlap of two interval sets as concrete spans. Each side unioned first."""
+    ua, ub = union(a), union(b)
+    i = j = 0
+    out: list[Interval] = []
+    while i < len(ua) and j < len(ub):
+        lo = max(ua[i][0], ub[j][0])
+        hi = min(ua[i][1], ub[j][1])
+        if hi > lo:
+            out.append((lo, hi))
+        if ua[i][1] < ub[j][1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def subtract(a: list[Interval], b: list[Interval]) -> list[Interval]:
+    """a minus b — the parts of a not covered by any interval in b."""
+    ua, ub = union(a), union(b)
+    out: list[Interval] = []
+    for s, e in ua:
+        cur = s
+        for bs, be in ub:
+            if be <= cur:
+                continue
+            if bs >= e:
+                break
+            if bs > cur:
+                out.append((cur, bs))
+            cur = max(cur, be)
+            if cur >= e:
+                break
+        if cur < e:
+            out.append((cur, e))
+    return out
+
+
+@dataclass
+class DeadTimeSignals:
+    """Dead-time / condense quality for one run (CF-98).
+
+    Two headline numbers that trade off against each other, plus the itemized
+    audit of *where* the run diverged from the human labels.
+    """
+    # Aggressiveness: of the true dead time, how much did we cut? Higher = tighter.
+    dead_removed_pct: float | None
+    # Harm (the one that matters): real play we cut, in seconds and as % of play.
+    live_removed_sec: float
+    live_removed_pct: float | None
+    kept_play_pct: float | None          # recall = 1 - live_removed_pct
+    condense_ratio: float | None         # |model_keep| / duration
+    human_keep_sec: float
+    human_dead_sec: float
+    model_keep_sec: float
+    duration: float
+    # Audit spans, each sorted longest-first:
+    missed_dead: list[Interval]          # dead time kept when it should've been cut
+    over_cut_live: list[Interval]        # real play removed when it should've been kept
+
+
+def evaluate_deadtime(
+    human_keep: list[Interval],
+    model_keep: list[Interval],
+    duration: float,
+) -> DeadTimeSignals:
+    """Score one condense run's keep-windows against human rally regions.
+
+    human_keep / model_keep are *keep* (in-play) spans; dead time is the
+    complement within [0, duration]. Inputs are clamped to that span so a stray
+    label past the video end can't skew the totals.
+    """
+    span: list[Interval] = [(0.0, float(duration))]
+    hk = intersect(human_keep, span)          # clamp to [0, duration]
+    mk = intersect(model_keep, span)
+    human_dead = subtract(span, hk)
+    model_cut = subtract(span, mk)
+
+    human_keep_sec = total_length(hk)
+    human_dead_sec = total_length(human_dead)
+    model_keep_sec = total_length(mk)
+
+    # dead time we kept (shortfall from 100% removal) and play we cut (the harm)
+    missed_dead = intersect(human_dead, mk)
+    over_cut_live = intersect(hk, model_cut)
+
+    dead_removed = total_length(intersect(model_cut, human_dead))
+    dead_removed_pct = (dead_removed / human_dead_sec) if human_dead_sec > 0.0 else None
+    live_removed_sec = total_length(over_cut_live)
+    live_removed_pct = (live_removed_sec / human_keep_sec) if human_keep_sec > 0.0 else None
+    kept_play_pct = (1.0 - live_removed_pct) if live_removed_pct is not None else None
+    condense_ratio = (model_keep_sec / duration) if duration > 0.0 else None
+
+    by_len = lambda iv: iv[0] - iv[1]  # noqa: E731 — sort longest-first
+    return DeadTimeSignals(
+        dead_removed_pct=dead_removed_pct,
+        live_removed_sec=live_removed_sec,
+        live_removed_pct=live_removed_pct,
+        kept_play_pct=kept_play_pct,
+        condense_ratio=condense_ratio,
+        human_keep_sec=human_keep_sec,
+        human_dead_sec=human_dead_sec,
+        model_keep_sec=model_keep_sec,
+        duration=float(duration),
+        missed_dead=sorted(missed_dead, key=by_len),
+        over_cut_live=sorted(over_cut_live, key=by_len),
+    )

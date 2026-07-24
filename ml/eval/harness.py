@@ -28,7 +28,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ml.eval.metrics import EvalSignals, Interval, ModelWindow, evaluate
+from ml.eval.metrics import (
+    DeadTimeSignals,
+    EvalSignals,
+    Interval,
+    ModelWindow,
+    evaluate,
+    evaluate_deadtime,
+)
 
 EVAL_DIR = Path(__file__).resolve().parent
 FIXTURES_DIR = EVAL_DIR / "fixtures"
@@ -319,16 +326,133 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         return pre, post
 
 
+# ── dead-time mode (CF-98) ─────────────────────────────────────────────────
+
+@dataclass
+class DeadFixture:
+    test_id: str
+    keep: list[Interval]        # human-labeled rally / in-play spans
+    duration: float
+    raw: dict
+
+
+def load_deadtime_fixture(test_id: str) -> DeadFixture:
+    """Load a dead-time fixture: keep = rally spans; dead time is the complement."""
+    path = FIXTURES_DIR / f"{test_id}_deadtime.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    keep: list[Interval] = [
+        (parse_timestamp(k["start"]), parse_timestamp(k["end"])) for k in data["keep"]
+    ]
+    duration = data.get("video_duration_sec")
+    if duration is None:  # permissive: fall back to the last labeled rally end
+        duration = max((e for _, e in keep), default=0.0)
+    return DeadFixture(test_id=data.get("test_id", test_id), keep=keep, duration=float(duration), raw=data)
+
+
+def load_windows_json(path: Path) -> list[Interval]:
+    """Load model keep-windows from {"keep": [{start, end}, ...]} (or a bare list)."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    items = data.get("keep", data) if isinstance(data, dict) else data
+    return [(parse_timestamp(w["start"]), parse_timestamp(w["end"])) for w in items]
+
+
+def format_deadtime(s: DeadTimeSignals) -> str:
+    return "\n".join([
+        "== DEAD-TIME / CONDENSE ==",
+        f"  Dead-time removed:    {_fmt_pct(s.dead_removed_pct)}   "
+        f"(of {s.human_dead_sec:.0f}s dead)   [aggressiveness]",
+        f"  Live wrongly removed: {s.live_removed_sec:.0f}s = {_fmt_pct(s.live_removed_pct)} "
+        f"of {s.human_keep_sec:.0f}s play   [the harm]",
+        f"  Kept-play (recall):   {_fmt_pct(s.kept_play_pct)}",
+        f"  Condense ratio:       {_fmt_pct(s.condense_ratio)}   "
+        f"({s.model_keep_sec:.0f}s kept / {s.duration:.0f}s)",
+    ])
+
+
+def format_deadtime_audit(s: DeadTimeSignals) -> str:
+    def block(spans: list[Interval], header: str) -> list[str]:
+        if not spans:
+            return [f"  {header}: none"]
+        rows = [f"  {header} ({len(spans)}, longest first):"]
+        rows += [f"    {_seconds_to_ts(a)}-{_seconds_to_ts(b)}  ({b - a:.0f}s)" for a, b in spans]
+        return rows
+
+    lines = block(s.over_cut_live, "OVER-CUT LIVE (real play removed - act on these)")
+    lines.append("")
+    lines += block(s.missed_dead, "MISSED DEAD (dead time kept)")
+    return "\n".join(lines)
+
+
+def _deadtime_to_dict(s: DeadTimeSignals) -> dict:
+    return {
+        "dead_removed_pct": s.dead_removed_pct,
+        "live_removed_sec": s.live_removed_sec,
+        "live_removed_pct": s.live_removed_pct,
+        "kept_play_pct": s.kept_play_pct,
+        "condense_ratio": s.condense_ratio,
+        "human_keep_sec": s.human_keep_sec,
+        "human_dead_sec": s.human_dead_sec,
+        "model_keep_sec": s.model_keep_sec,
+        "duration": s.duration,
+        "over_cut_live": [[round(a, 3), round(b, 3)] for a, b in s.over_cut_live],
+        "missed_dead": [[round(a, 3), round(b, 3)] for a, b in s.missed_dead],
+    }
+
+
+def append_deadtime_result(test_id: str, version: str, s: DeadTimeSignals) -> Path:
+    RESULTS_DIR.mkdir(exist_ok=True)
+    row = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version_tag": version,
+        "git_commit": _git_commit(),
+        "config_snapshot": config_snapshot(),
+        "deadtime": _deadtime_to_dict(s),
+    }
+    path = RESULTS_DIR / f"{test_id}_deadtime.jsonl"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+    return path
+
+
+def run_deadtime(test_id: str, version: str, model_keep: list[Interval], *, record: bool = True) -> DeadTimeSignals:
+    fx = load_deadtime_fixture(test_id)
+    s = evaluate_deadtime(fx.keep, model_keep, fx.duration)
+    print(f"\nDead-time eval - test={test_id}  version={version}")
+    print(f"Ground truth: {len(fx.keep)} rally regions over {fx.duration:.0f}s\n")
+    print(format_deadtime(s))
+    print()
+    print(format_deadtime_audit(s))
+    if record:
+        path = append_deadtime_result(test_id, version, s)
+        print(f"\nAppended result -> {path}")
+    return s
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Score a model run against a ground-truth fixture.")
     ap.add_argument("--test", required=True, help="fixture id, e.g. test1")
     ap.add_argument("--version", required=True, help="free-text version tag for this run")
+    ap.add_argument("--mode", choices=["highlight", "deadtime"], default="highlight",
+                    help="highlight = clip quality (CF-55); deadtime = condense quality (CF-98)")
     src = ap.add_mutually_exclusive_group(required=True)
-    src.add_argument("--clips-json", type=Path, help="dumped {pre_gate, post_gate} windows")
+    src.add_argument("--clips-json", type=Path, help="highlight: dumped {pre_gate, post_gate} windows")
+    src.add_argument("--windows-json", type=Path, help="deadtime: dumped {keep: [{start, end}]} keep-windows")
     src.add_argument("--offline", action="store_true", help="re-run pipeline stages via the R2 ball-cache")
     ap.add_argument("--no-record", action="store_true", help="print only; don't append to results log")
     args = ap.parse_args()
 
+    if args.mode == "deadtime":
+        if args.windows_json:
+            model_keep = load_windows_json(args.windows_json)
+        elif args.offline:
+            raise SystemExit("--mode deadtime --offline is not wired yet; use --windows-json for now")
+        else:
+            ap.error("--mode deadtime needs --windows-json")
+        run_deadtime(args.test, args.version, model_keep, record=not args.no_record)
+        return
+
+    if args.windows_json:
+        ap.error("--windows-json is for --mode deadtime; highlight mode uses --clips-json")
     if args.offline:
         pre_windows, post_windows = _run_offline(args.test)
     else:
