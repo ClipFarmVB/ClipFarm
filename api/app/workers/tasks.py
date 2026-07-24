@@ -419,6 +419,17 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         condensed_url = s3.upload_file(
                             condensed_path, s3.condensed_key(gid), "video/mp4",
                         )
+                        # Condensing runs after the clip-save checkpoint and takes
+                        # minutes of its own, so re-check: sync_set_condensed_result
+                        # would no-op on a deleted game and strand this upload in R2.
+                        if _abandoned():
+                            try:
+                                s3.delete_file(s3.condensed_key(gid))
+                            except Exception as del_err:
+                                logger.warning(
+                                    "Orphan condensed-video cleanup failed (%s)", del_err
+                                )
+                            return
                         sync_set_condensed_result(
                             gid,
                             condensed_video_url=condensed_url,
@@ -442,7 +453,12 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         # retry, FK violation on save), not a transient error — abandon, don't
         # retry. This is the safety net for a deletion at any un-checked point.
         if not sync_game_exists(gid):
-            logger.info("Game %s no longer exists — abandoning (no retry)", game_id)
+            # Keep the traceback: the deletion is the *likely* cause, but a genuine
+            # unrelated bug that happens to coincide with one would otherwise vanish
+            # without a trace. Info, not error — an abandoned job isn't a failure.
+            logger.info(
+                "Game %s no longer exists — abandoning (no retry)", game_id, exc_info=True
+            )
             return
         logger.exception("Processing failed for game %s", game_id)
         sync_set_game_status(gid, "failed", error_message=str(exc))
