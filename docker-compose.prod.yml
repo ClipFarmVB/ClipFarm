@@ -1,0 +1,54 @@
+# docker-compose.prod.yml — CF-41: run the ClipFarm backend off a dev laptop.
+#
+# Production override for running redis + api + worker on an always-on VPS so
+# video processing no longer stops when a laptop sleeps. Layered on top of the
+# dev docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build redis api worker
+#
+# What this override changes vs the dev stack:
+#   - No local Postgres. DATABASE_URL in .env.docker points at Supabase. The
+#     `!override` on depends_on below drops the db dependency so the api/worker
+#     don't wait on a container that isn't started (omit `db` from the `up`
+#     service list above and nothing references it).
+#   - No source bind-mounts and no --reload. Services run the code baked into
+#     the image at build time, not whatever happens to be on the box's disk.
+#   - Redis stays port-less: reachable only inside the compose network, never
+#     exposed to the internet (an open redis is a well-known RCE vector).
+#
+# NOTE ON `!override` / `!reset`: Compose *merges* list/map fields (depends_on,
+# volumes) across -f files by default — a plain narrower list would UNION with
+# the base, not replace it, leaving db + bind-mounts in place. The `!override`
+# and `!reset` tags force replacement. Requires Docker Compose v2.24+.
+#
+# PREREQUISITE — MODAL_TOKEN_ID / MODAL_TOKEN_SECRET must be set in .env.docker.
+# With Modal configured, the ~30-minute ball-tracking stage runs on Modal's T4
+# GPU and this box only needs CPU. WITHOUT Modal, tracking falls back to local
+# CPU (~28–42 min/game) and a small VPS will be slower than your laptop — the
+# whole point of a *small* box depends on Modal doing the heavy stage.
+
+services:
+  redis:
+    # Inherits the base definition (no host port, healthcheck, restart policy).
+    # Declared here only to document that redis is part of the prod backend.
+    restart: unless-stopped
+
+  api:
+    # Supabase via .env.docker DATABASE_URL — drop the local-db dependency, the
+    # source bind-mounts, and reload. `alembic upgrade head` still runs on boot
+    # (see the migration note in DEPLOY.md).
+    depends_on: !override
+      redis:
+        condition: service_healthy
+    volumes: !override []
+    restart: unless-stopped
+
+  worker:
+    depends_on: !override
+      redis:
+        condition: service_healthy
+    # Keep only the persistent model-weight cache (CF-40); drop ./api and ./ml
+    # bind-mounts so the worker runs image code.
+    volumes: !override
+      - model_cache:/models
+    restart: unless-stopped
