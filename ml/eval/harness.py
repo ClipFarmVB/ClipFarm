@@ -11,8 +11,8 @@ ml.eval.metrics` never drags in the app.
 Model-window acquisition modes:
   --clips-json PATH   read pre-gate and post-gate windows from a dumped JSON
                       {"pre_gate": [{start,end,highlight_score}], "post_gate": [...]}
-  --offline           (coming next) re-run the pipeline stages against the
-                      fixture's source video via the R2 ball-cache
+  --offline           re-run the pipeline stages against the fixture's source
+                      video, loading ball positions from the R2 ball-cache
 
 Usage:
   python -m ml.eval.harness --test test1 --version <label> --clips-json dump.json
@@ -285,7 +285,10 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         audio = compute_audio_energy(str(local))
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
-        tracker = _track_ball_cached(local, tmp, sample_every=sample_every)
+        # Pass r2_key: without it the ball-cache lookup and the Modal GPU path are
+        # both skipped, so a mode documented as "no re-tracking" would silently
+        # fall through to a ~30-minute local CPU re-track.
+        tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
         contacts = find_contacts(tracker, frame_height=frame_h)
         detections = contacts_to_rallies(contacts, duration, frame_h)
         if audio is not None:
