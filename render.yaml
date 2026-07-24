@@ -60,7 +60,12 @@ services:
     # var expands (a bare exec form wouldn't). EXPOSE 8000 in the image is only
     # documentation; the health check hits $PORT/health.
     dockerCommand: sh -c "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
-    healthCheckPath: /health
+    # Point the platform health check at the SHALLOW liveness route, not the
+    # deep /health readiness check (CF-89 makes /health return 503 when Postgres
+    # or Redis is down). Coupling deploy gating / instance health to a dependency
+    # blip would cycle a perfectly healthy API. The deep /health is for the
+    # external uptime monitor instead.
+    healthCheckPath: /healthz
     # Migrations run ONCE per deploy here — not on every container boot — so
     # replicas never race the schema and a shared DB isn't advanced by a stray
     # boot. Fixes the per-boot `alembic upgrade head` the dev compose file uses.
