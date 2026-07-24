@@ -7,7 +7,9 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from celery import Celery
+from celery.signals import celeryd_init
 from app.config import settings
+from app.observability import init_sentry
 
 celery_app = Celery(
     "clipfarm",
@@ -26,3 +28,21 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,  # Process one job at a time (GPU workloads)
     broker_connection_retry_on_startup=True,
 )
+
+
+@celeryd_init.connect
+def _init_worker_monitoring(**_kwargs):
+    """Initialize Sentry when a worker boots. Using the signal (not module
+    import) keeps the worker's CeleryIntegration out of the api process, which
+    imports celery_app only to enqueue tasks."""
+    init_sentry("worker")
+
+
+if settings.debug:
+
+    @celery_app.task(name="debug.trigger_error")
+    def debug_trigger_error():
+        """Deliberately raises to verify worker exceptions reach Sentry.
+        Registered only when debug is enabled (mirrors /debug/sentry-error).
+        Trigger with: celery_app.send_task("debug.trigger_error")."""
+        raise RuntimeError("CF-89 test error from the Celery worker (debug only)")
