@@ -105,7 +105,8 @@ def format_signals(title: str, s: EvalSignals) -> str:
     b, inc = s.buckets, s.incorrect
     return "\n".join([
         f"== {title} ==",
-        f"  Captured %:     {_fmt_pct(s.captured_pct)}   ({s.human_seconds:.0f}s labeled, {s.model_seconds:.0f}s clipped)",
+        f"  Captured %:     {_fmt_pct(s.captured_pct)}   "
+        f"({s.human_seconds:.0f}s labeled, {s.model_seconds:.0f}s clipped)",
         f"  Play buckets:   {b.well_captured} well / {b.butchered} butchered / {b.missed} missed   (of {b.total})",
         f"  Incorrect time: junk {inc.junk:.1f}s | lead {inc.lead_slop:.1f}s | "
         f"tail {inc.tail_slop:.1f}s | bridge {inc.bridge:.1f}s   (total {inc.total:.1f}s)",
@@ -158,7 +159,9 @@ def config_snapshot() -> dict:
         snap[name] = {
             attr: getattr(mod, attr)
             for attr in dir(mod)
-            if attr.isupper() and isinstance(getattr(mod, attr), (int, float)) and not isinstance(getattr(mod, attr), bool)
+            if attr.isupper()
+            and isinstance(getattr(mod, attr), (int, float))
+            and not isinstance(getattr(mod, attr), bool)
         }
     # App-level knobs — the gate threshold is the single most load-bearing value
     # a run depends on. Lazy + best-effort: --clips-json runs on hosts without
