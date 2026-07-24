@@ -237,7 +237,7 @@ Postgres via SQLAlchemy (`api/app/models/`), RLS enabled on all tables.
 | `Game` | An uploaded VOD + processing status (`processing` → `ready`/`failed`). |
 | `Clip` | A cut highlight: time window, `action_type`, `confidence`, `highlight_score`, R2 URLs, `player_id`. |
 | `Collection` | User-curated groupings of clips. |
-| `Correction` | User relabel events (written on relabel; a read/export endpoint is a backlog item — training signal). |
+| `Correction` | User relabel events (written on relabel; readable via `GET /corrections` + CSV `/corrections/export` — training signal). |
 | `DeadTimeRun` / `DeadTimeClip` | Separate experimental dead-time detection flow. |
 
 ---
