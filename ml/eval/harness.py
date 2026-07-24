@@ -66,8 +66,16 @@ class Fixture:
 def load_fixture(test_id: str) -> Fixture:
     path = FIXTURES_DIR / f"{test_id}.json"
     data = json.loads(path.read_text(encoding="utf-8"))
+    # Score only the tiers the fixture declares as ground truth. A clip tagged
+    # with an excluded tier (no-clip / break / outlier) stays in the file for the
+    # labelling record but must not count against the model. Absent key, or a
+    # clip with no tier, scores everything — being permissive beats silently
+    # dropping labelled data.
+    tiers = data.get("ground_truth_tiers")
     clips: list[Interval] = [
-        (parse_timestamp(c["start"]), parse_timestamp(c["end"])) for c in data["clips"]
+        (parse_timestamp(c["start"]), parse_timestamp(c["end"]))
+        for c in data["clips"]
+        if tiers is None or c.get("tier") is None or c["tier"] in tiers
     ]
     return Fixture(
         test_id=data["test_id"],
