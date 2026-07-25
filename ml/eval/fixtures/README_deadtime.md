@@ -59,8 +59,17 @@ and reports two headline numbers plus two timestamped audit lists:
 # laptop-friendly: score a dumped keep-window list against the fixture
 python -m ml.eval.harness --mode deadtime --test test1 --version my-change \
   --windows-json keep_dump.json
+
+# in the worker container: derive keep-windows from the real video (R2 ball-cache)
+python -m ml.eval.harness --mode deadtime --test test1 --version my-change --offline
 ```
 
 `keep_dump.json` is `{"keep": [{"start": "...", "end": "..."}, ...]}` — the
-model's keep-windows. (The `--offline` mode that derives these from the real
-video via `dead_time.py` is a follow-up; `--windows-json` needs no video.)
+model's keep-windows; `--windows-json` needs no video, so it runs on a laptop.
+
+`--offline` derives the windows from the fixture's `source_r2_key` video via
+`dead_time.py`, exactly as the condense stage does (ball-cache → contacts →
+`active_windows_from_contacts` → `bridge_windows_by_motion`). It scores the
+shipping post-bridge windows (and records that row), then prints the pre-bridge
+windows unrecorded so you can see what CF-46's motion bridging changed. It needs
+the worker deps (R2, cv2, app config) and a ball-cache hit for the video.
