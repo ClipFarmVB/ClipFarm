@@ -107,12 +107,13 @@ def test_monotonic_never_decreases(harness):
     clock.tick(10)
     gp.update(0.9)
     high = writes[-1][0]
+    high_idx = len(writes) - 1
     # Modal fallback restarting local tracking reports low fractions again.
     clock.tick(10)
     gp.update(0.1)
     clock.tick(10)
     gp.update(0.2)
-    assert all(p >= high for p, _ in writes[writes.index((high, "tracking_ball")):])
+    assert all(p >= high for p, _ in writes[high_idx:])
 
 
 def test_throttle_swallows_rapid_small_updates(harness):
@@ -161,3 +162,30 @@ def test_update_clamps_out_of_range_fractions(harness):
     clock.tick(10)
     gp.update(-3.0)           # clamped to 0, monotonic keeps the high value
     assert writes[-1][0] == pytest.approx(round(spans["tracking_ball"][1], 4))
+
+
+def test_rebudget_shrinks_overreserved_final_stage(harness):
+    gp, writes, clock, spans = harness
+    gp.stage("condensing")               # bar now at condensing's static start
+    static_start = spans["condensing"][0]
+    clock.tick(300)                      # 300s of pipeline elapsed
+    # Condensing will only take ~30s → it should occupy ~30/(300+30) ≈ 9% of
+    # the bar, so its start jumps forward well past the static boundary.
+    gp.rebudget_final_stage("condensing", est_seconds=30.0)
+    new_start = writes[-1][0]
+    assert new_start > static_start
+    assert new_start == pytest.approx(round(300 / 330, 4), abs=1e-3)
+    assert gp._spans["condensing"][1] == pytest.approx(1.0)
+
+
+def test_rebudget_never_rewinds(harness):
+    gp, writes, clock, spans = harness
+    gp.stage("condensing")
+    clock.tick(100)
+    gp.update(0.5)                       # advance into the condensing span
+    high = gp._value
+    # A huge estimate would imply a start earlier than where we already are;
+    # forward-only must keep the bar put rather than rewind.
+    gp.rebudget_final_stage("condensing", est_seconds=10_000.0)
+    assert gp._value >= high
+    assert gp._spans["condensing"][0] >= high

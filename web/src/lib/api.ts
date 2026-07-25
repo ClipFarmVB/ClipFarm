@@ -76,11 +76,18 @@ export async function deleteGame(id: string): Promise<void> {
   }
 }
 
+// Upload happens in two legs: the browser sends the file to the API
+// ("sending", observable via XHR), then the API streams it up to R2 before
+// responding ("finalizing", invisible to the browser — no progress events).
+export type UploadProgress =
+  | { phase: "sending"; loaded: number; total: number }
+  | { phase: "finalizing"; total: number };
+
 export async function uploadGame(
   file: File,
   title: string,
   condense: boolean = false,
-  onProgress?: (pct: number) => void
+  onProgress?: (p: UploadProgress) => void
 ): Promise<Game> {
   const formData = new FormData();
   formData.append("file", file);
@@ -100,8 +107,10 @@ export async function uploadGame(
 
     if (onProgress) {
       xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+        if (e.lengthComputable) onProgress({ phase: "sending", loaded: e.loaded, total: e.total });
       };
+      // Body fully sent → the server is now uploading to R2 (the invisible leg).
+      xhr.upload.onload = () => onProgress({ phase: "finalizing", total: file.size });
     }
 
     xhr.onload = () => {

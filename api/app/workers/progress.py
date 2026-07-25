@@ -14,26 +14,46 @@ from typing import Callable
 logger = logging.getLogger(__name__)
 
 # Relative cost of each pipeline stage (arbitrary units, normalized into
-# cumulative 0-1 spans below). Tracking dominates a cache-miss run; condense
-# re-encodes kept footage at roughly realtime.
+# cumulative 0-1 spans below). Calibrated from measured per-stage wall-clock
+# across three games (8/10/41 min) in the Modal-tracking, CLIP-off regime.
+# The per-unit rates behind these numbers:
+#   tracking (Modal)  ~16-19 s / video-minute
+#   refining (pose)   ~5.6 s / rally
+#   cutting           ~8-12 s / clip
+#   condensing        ~0.4-0.6 s / kept-second
+# This base table is the LOCAL-CPU regime (tracking_ball is the slow path);
+# cache-hit and Modal override tracking_ball below.
 _BASE_WEIGHTS: dict[str, float] = {
-    "downloading": 4.0,
-    "analyzing_audio": 2.0,
-    "tracking_ball": 60.0,
-    "scoring_highlights": 6.0,
-    "refining_actions": 8.0,
-    "cutting_clips": 8.0,
-    "condensing": 25.0,
+    "downloading": 3.0,
+    # 2-4 s regardless of video length (~0.1% of a run).
+    "analyzing_audio": 1.0,
+    # Local-CPU tracking (~1.4x realtime, CF-11) — roughly 5x the Modal cost
+    # below. Extrapolated from the Modal measurement, not measured directly.
+    "tracking_ball": 135.0,
+    # ~0 with CLIP off (the deployment default). If clip_verify_enabled is
+    # turned on, this stage runs CLIP per rally and must be re-measured/re-weighted.
+    "scoring_highlights": 1.0,
+    "refining_actions": 12.0,
+    "cutting_clips": 21.0,
+    # HIGHLY variable (29-43% across the sample games): condensing tracks
+    # kept-seconds, not video duration, so any static weight mis-sizes games
+    # with lots or little dead time. Proper fix: size this span from
+    # sum(window durations) at runtime once the keep-windows are known.
+    "condensing": 35.0,
 }
 
-# A cache hit turns ~30 min of tracking into a download of cached positions;
-# leaving it 60 units would park the bar at ~80% while the genuinely slow
-# stages (pose, cutting) share the sliver that remains.
+# A cache hit turns tracking into a seconds-long download of cached positions;
+# a couple of units keeps it a sliver of the bar.
 _CACHE_HIT_TRACKING_WEIGHT = 2.0
 
-# Modal GPU tracking (CF-11) runs in low single-digit minutes vs ~1.4x video
-# duration on local CPU — still the longest stage, but nowhere near 60 units.
-_MODAL_TRACKING_WEIGHT = 12.0
+# Modal GPU tracking (CF-11): measured ~16-19 s per minute of video, i.e.
+# ~27-30% of a condense-on run — far more than the old guess of 12.
+_MODAL_TRACKING_WEIGHT = 27.0
+
+# Condensing re-encodes only the kept footage; measured ~0.41-0.61 s of encode
+# per second kept. Used to re-price the condensing span once the keep-windows
+# (and thus kept-seconds) are known at runtime — see rebudget_final_stage.
+CONDENSE_SECS_PER_KEPT_SEC = 0.5
 
 # Only report on a meaningful change: the frontend polls every ~5s, so
 # sub-percent or sub-2s writes are pure DB churn.
@@ -82,6 +102,7 @@ class GameProgress:
         self._spans = spans
         self._write = write
         self._clock = clock
+        self._start = clock()  # for runtime span re-pricing (rebudget_final_stage)
         self._stage: str | None = None
         self._value = 0.0
         self._last_written = -1.0
@@ -102,6 +123,29 @@ class GameProgress:
         start, end = self._spans[self._stage]
         fraction = min(max(fraction, 0.0), 1.0)
         self._advance(start + fraction * (end - start))
+
+    def rebudget_final_stage(self, name: str, est_seconds: float) -> None:
+        """Re-price the final stage's span from a runtime cost estimate.
+
+        The static weights guess each stage's share up front, but condensing's
+        cost only becomes knowable mid-run — once the keep-windows exist, its
+        time is ~kept_seconds * CONDENSE_SECS_PER_KEPT_SEC. Call this on entering
+        that stage to re-tile [position, 1.0] so it occupies a share matching
+        `est_seconds` against the wall-clock already elapsed.
+
+        Forward-only: it can shrink an over-reserved final stage (jumping the
+        bar ahead to the true boundary) but never rewinds, so an under-reserved
+        stage just fills whatever bar remains. Because it uses elapsed time, it
+        needs `name` to be the last, still-unfinished stage.
+        """
+        if name not in self._spans:
+            return
+        elapsed = max(self._clock() - self._start, 1e-6)
+        ideal_start = elapsed / (elapsed + max(est_seconds, 0.0))
+        _, end = self._spans[name]
+        new_start = min(max(ideal_start, self._value), end)
+        self._spans[name] = (new_start, end)
+        self._advance(new_start, force=True)
 
     def _advance(self, value: float, force: bool = False) -> None:
         self._value = max(self._value, value)

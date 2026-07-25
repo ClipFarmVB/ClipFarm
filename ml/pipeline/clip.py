@@ -130,6 +130,13 @@ def generate_condensed_video(
     parts_dir.mkdir(exist_ok=True)
     part_paths: list[Path] = []
 
+    # Report progress by kept-seconds encoded, not window count: windows vary
+    # widely in length, so count-based progress lurches on a long window. Each
+    # part's encode time is ~proportional to its duration, so this tracks the
+    # real work and keeps the bar (and its ETA) smooth.
+    total_kept = sum(end - start for start, end in windows) or 1.0
+    encoded = 0.0
+
     for i, (start, end) in enumerate(windows):
         part_path = parts_dir / f"part_{i:04d}.mp4"
         try:
@@ -157,7 +164,8 @@ def generate_condensed_video(
             part_paths.append(part_path)
         except Exception:
             logger.exception("Failed to cut condense window %.1f–%.1f", start, end)
-        _report(on_progress, (i + 1) / len(windows))
+        encoded += end - start
+        _report(on_progress, encoded / total_kept)
 
     if not part_paths:
         raise RuntimeError("All condense windows failed to cut")

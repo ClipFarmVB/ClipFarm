@@ -28,6 +28,16 @@ def _modal_configured() -> bool:
     return bool(settings.modal_token_id and settings.modal_token_secret)
 
 
+def _will_attempt_modal(r2_key: str) -> bool:
+    """Whether ball tracking will try Modal GPU for this run.
+
+    Single source of truth for the condition below and in `_track_ball_cached`
+    so the progress bar's tracking span can't be mis-sized against the path the
+    pipeline actually takes.
+    """
+    return _modal_configured() and bool(r2_key)
+
+
 def _track_ball_modal(local_video: Path, r2_key: str, sample_every: int, on_progress=None):
     """
     Run ball tracking on Modal GPU (CF-11): ~27-42 min CPU -> low single-digit
@@ -110,7 +120,7 @@ def _track_ball_cached(
         logger.info("Ball cache miss (%s) — running tracking", cache_key)
 
     tracker: TrackedBall | None = None
-    if _modal_configured() and r2_key:
+    if _will_attempt_modal(r2_key):
         try:
             tracker = _track_ball_modal(local_video, r2_key, sample_every, on_progress=on_progress)
             logger.info("Ball tracking ran on Modal GPU: %d positions", len(tracker.positions))
@@ -194,7 +204,9 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         sync_save_clips,
         sync_delete_game_clips,
     )
-    from app.workers.progress import GameProgress, compute_stage_spans
+    from app.workers.progress import (
+        GameProgress, compute_stage_spans, CONDENSE_SECS_PER_KEPT_SEC,
+    )
     from app.services import storage as s3
     import cv2 as _cv2
     import os as _os
@@ -205,13 +217,29 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
 
     try:
         sync_set_game_status(gid, "processing")
+        # Written directly rather than through GameProgress: the stage spans
+        # need the downloaded file's MD5 (cache probe below), which isn't
+        # available until the download this bar is reporting has finished.
         sync_set_game_progress(gid, 0.0, "downloading")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             local_video = tmp / "game.mp4"
+            # Per-stage wall-clock timing. Each _lap(name) logs a greppable
+            # "STAGE_TIMING stage=<name> seconds=<n>" line; grep the worker log
+            # to profile a run or re-calibrate the progress-bar weights in
+            # progress.py. Cheap (one log line per stage) so it stays on always.
+            import time as _timing
+            _clock = {"t": _timing.perf_counter()}
+            _run_t0 = _clock["t"]
+            def _lap(_stage):
+                _now = _timing.perf_counter()
+                logger.info("STAGE_TIMING stage=%s seconds=%.2f", _stage, _now - _clock["t"])
+                _clock["t"] = _now
+            _clock["t"] = _timing.perf_counter()
             logger.info("Downloading key=%s from R2", r2_key)
             s3.download_file(r2_key, local_video)
+            _lap("downloading")
 
             # Video metadata — used by all stages below
             _cap = _cv2.VideoCapture(str(local_video))
@@ -237,11 +265,11 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             progress = GameProgress(
                 compute_stage_spans(
                     condense, ball_cache_hit,
-                    # Mirrors _track_ball_cached's condition for attempting Modal.
-                    modal=_modal_configured() and bool(r2_key),
+                    modal=_will_attempt_modal(r2_key),
                 ),
                 write=lambda p, stage: sync_set_game_progress(gid, p, stage),
             )
+            _lap("setup")  # metadata probe + md5 + cache probe
 
             # ── Stage 0: Audio energy envelope ────────────────────────────
             # Extracted once (seconds, even for a full game) and reused by
@@ -255,6 +283,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     logger.warning("No usable audio track — cheer scoring disabled")
             except Exception as audio_err:
                 logger.warning("Audio extraction failed (%s)", audio_err)
+            _lap("analyzing_audio")
 
             # ── Stage 1: Ball tracking → rally windows ────────────────────
             # Primary pipeline: Roboflow ball model detects every contact,
@@ -301,6 +330,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             # Snapshot the pre-gate rally windows: the condense stage must
             # keep every rally, not just the ones the highlight gate favors.
             pre_gate_rallies = [dict(d) for d in detections]
+            _lap("tracking_ball")
 
             # ── Stage 2: Highlight scoring → drop low scorers ─────────────
             # Cheer reaction after the rally + rally shape features (+ CLIP
@@ -326,6 +356,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 )
             except Exception as score_err:
                 logger.warning("Highlight scoring failed (%s) — keeping all rallies", score_err)
+            _lap("scoring_highlights")
 
             # ── Stage 3: Pose within surviving windows — refine labels ────
             # Runs YOLOv8s-pose only inside rallies that passed the highlight
@@ -343,6 +374,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 logger.info("Pose refinement complete (%d windows)", len(detections))
             except Exception as pose_err:
                 logger.warning("Pose refinement failed (%s) — keeping trajectory labels", pose_err)
+            _lap("refining_actions")
 
             # ── Stage 4: Audio confidence weighting ──────────────────────
             # Adjusts label confidence only — precision filtering now happens
@@ -393,6 +425,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     "labels": cd.get("labels", []),
                 })
                 progress.update(0.7 + 0.3 * (upload_idx + 1) / len(clips_data))
+            _lap("cutting_clips")  # incl audio_weighting (~0) + clip uploads
 
             # Idempotency (CF-37): a redelivered or re-enqueued task must
             # refresh this game's clips, not append a duplicate set. Clear the
@@ -450,6 +483,13 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         )
 
                     if windows:
+                        # Re-price the condensing span now that kept-seconds is
+                        # known: its cost tracks kept footage, not video length,
+                        # so the static weight can be well off (29-43% observed).
+                        kept_seconds = sum(end - start for start, end in windows)
+                        progress.rebudget_final_stage(
+                            "condensing", kept_seconds * CONDENSE_SECS_PER_KEPT_SEC,
+                        )
                         condensed_path, condensed_duration = generate_condensed_video(
                             str(local_video), windows, tmp,
                             on_progress=progress.update,
@@ -471,9 +511,11 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         logger.warning("Condense requested but no active windows detected — skipping")
                 except Exception as condense_err:
                     logger.exception("Condense stage failed (%s) — game proceeds without it", condense_err)
+                _lap("condensing")
 
             sync_set_game_status(gid, "ready", processed_at=datetime.now(timezone.utc))
             logger.info("Done: %d clips for game %s", len(rows), game_id)
+            logger.info("STAGE_TIMING stage=TOTAL seconds=%.2f", _timing.perf_counter() - _run_t0)
 
     except Exception as exc:
         logger.exception("Processing failed for game %s", game_id)

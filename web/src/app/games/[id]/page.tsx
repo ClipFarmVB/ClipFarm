@@ -56,6 +56,8 @@ export default function GamePage() {
   const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0, min_score: 0, sort: "time" });
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
+  const [savingClipId, setSavingClipId] = useState<string | null>(null);
   // ETA from recent progress velocity: refs hold the sample window and the
   // EMA-smoothed seconds across polls; state holds the display string.
   const etaSamplesRef = useRef<ProgressSample[]>([]);
@@ -74,8 +76,6 @@ export default function GamePage() {
     etaSecondsRef.current = eta;
     setEtaText(eta === null ? null : formatEta(eta));
   }, [game]);
-  const [deleting, setDeleting] = useState(false);
-  const [savingClipId, setSavingClipId] = useState<string | null>(null);
 
   const toggleSelect = useCallback((clipId: string) => {
     setSelectedIds((prev) => {
@@ -217,7 +217,7 @@ export default function GamePage() {
           {game.status === "processing" && (
             <div className="mt-4 w-full max-w-xs px-4">
               <div className="flex justify-between text-[11px] text-muted mb-1.5">
-                <span>{etaText ?? "Estimating time…"}</span>
+                <span>{etaText ?? ((game.progress ?? 0) >= 0.99 ? "Finishing up…" : "Estimating time…")}</span>
                 <span className="tabular-nums">{Math.round((game.progress ?? 0) * 100)}%</span>
               </div>
               <div className="h-0.5 rounded-full bg-surface-high overflow-hidden">
