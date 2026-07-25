@@ -12,6 +12,9 @@ if (dsn) {
     tracesSampleRate: Number(
       process.env.NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE ?? 0,
     ),
+    // Ties each event to a commit and matches it to the uploaded source maps,
+    // so prod stack traces resolve to real files instead of minified bundles.
+    release: process.env.NEXT_PUBLIC_SENTRY_RELEASE || undefined,
     sendDefaultPii: false,
   });
 }
