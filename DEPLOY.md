@@ -47,6 +47,17 @@ sudo usermod -aG docker "$USER"    # log out/in so this applies
 docker compose version             # sanity check the plugin is present
 ```
 
+> **⚠ Compose v2.24+ is required — verify before deploying.** `docker-compose.prod.yml`
+> relies on the `!override` merge tag. On older Compose the tag is **not applied
+> and the file still parses**, so the local `db` dependency and the source
+> bind-mounts silently leak back into the production stack. Gate on it explicitly:
+>
+> ```bash
+> docker compose version --short | awk -F. '{ if ($1 < 2 || ($1 == 2 && $2 < 24)) { print "FAIL: Compose " $0 " < 2.24 — !override unsupported, prod overrides would silently not apply"; exit 1 } else print "OK: Compose " $0 }'
+> ```
+>
+> If this fails, upgrade the Compose plugin before continuing.
+
 Docker's systemd service is enabled on boot by default, so the stack (with
 `restart: unless-stopped`) comes back after a reboot.
 
@@ -160,6 +171,21 @@ Wiring a domain + TLS + a proper edge is **CF-68**, not CF-41.
 ---
 
 ## Known limitations & related tickets
+
+- **Pose runs at CPU-tuned quality on this box (deliberate).** The worker uses
+  `yolov8n-pose @ 640, every 8th frame` rather than the `app/config.py` defaults
+  (`yolov8s-pose @ 1280, every 4th frame`). This box is CPU-only by design —
+  Modal owns the GPU stage (ball tracking), and pose is the only model still
+  running locally, so the heavier settings would be badly slow here.
+
+  **What it costs:** pose only *refines action labels* within rally windows that
+  already passed the highlight gate. It does **not** decide which clips get made
+  — that's ball tracking + scoring, both unaffected. So the tradeoff is somewhat
+  less accurate action labels, **not** missed highlights.
+
+  The values are set explicitly in `docker-compose.prod.yml` so they're a visible
+  choice. To run full-quality pose, remove that block **and** size the box up (or
+  move pose to GPU) — doing one without the other just makes processing slow.
 
 - **One game at a time.** Celery runs `--pool=solo` / `prefetch=1`; a second
   upload queues behind the first. Concurrency + horizontal scaling is **CF-65**.
