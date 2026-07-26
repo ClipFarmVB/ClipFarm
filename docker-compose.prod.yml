@@ -1,0 +1,73 @@
+# docker-compose.prod.yml — CF-41: run the ClipFarm backend off a dev laptop.
+#
+# Production override for running redis + api + worker on an always-on VPS so
+# video processing no longer stops when a laptop sleeps. Layered on top of the
+# dev docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build redis api worker
+#
+# What this override changes vs the dev stack:
+#   - No local Postgres. DATABASE_URL in .env.docker points at Supabase. The
+#     `!override` on depends_on below drops the db dependency so the api/worker
+#     don't wait on a container that isn't started (omit `db` from the `up`
+#     service list above and nothing references it).
+#   - No source bind-mounts and no --reload. Services run the code baked into
+#     the image at build time, not whatever happens to be on the box's disk.
+#   - Redis stays port-less: reachable only inside the compose network, never
+#     exposed to the internet (an open redis is a well-known RCE vector).
+#
+# NOTE ON `!override` / `!reset`: Compose *merges* list/map fields (depends_on,
+# volumes) across -f files by default — a plain narrower list would UNION with
+# the base, not replace it, leaving db + bind-mounts in place. The `!override`
+# and `!reset` tags force replacement. Requires Docker Compose v2.24+.
+#
+# PREREQUISITE — MODAL_TOKEN_ID / MODAL_TOKEN_SECRET must be set in .env.docker.
+# With Modal configured, the ~30-minute ball-tracking stage runs on Modal's T4
+# GPU and this box only needs CPU. WITHOUT Modal, tracking falls back to local
+# CPU (~28–42 min/game) and a small VPS will be slower than your laptop — the
+# whole point of a *small* box depends on Modal doing the heavy stage.
+
+services:
+  api:
+    # Supabase via .env.docker DATABASE_URL — drop the local-db dependency, the
+    # source bind-mounts, and reload. `alembic upgrade head` still runs on boot
+    # (see the migration note in DEPLOY.md).
+    depends_on: !override
+      redis:
+        condition: service_healthy
+    volumes: !override []
+    restart: unless-stopped
+
+  worker:
+    depends_on: !override
+      redis:
+        condition: service_healthy
+    # Keep only the persistent model-weight cache (CF-40); drop ./api and ./ml
+    # bind-mounts so the worker runs image code.
+    volumes: !override
+      - model_cache:/models
+    environment:
+      # Pose settings are a DELIBERATE CHOICE here, not an inheritance accident.
+      #
+      # The base compose file sets CPU-friendly pose values for laptop dev and
+      # comments that "production (GPU) uses the defaults in app/config.py"
+      # (yolov8s-pose @ 1280, every 4th frame). That assumed a GPU production
+      # box. This box is CPU-only by design — Modal owns the GPU stage (ball
+      # tracking), and pose is the only model that still runs locally — so the
+      # config.py defaults would be badly slow here.
+      #
+      # We therefore keep the lighter pose settings and state them explicitly,
+      # so the value is visible in the prod file rather than silently inherited.
+      #
+      # What this costs: pose only *refines action labels* inside rally windows
+      # that already survived the highlight gate. It does not decide which
+      # clips get made (that's ball tracking + scoring, both unaffected). So
+      # lighter pose means somewhat less accurate action labels, not missed
+      # highlights.
+      #
+      # To run full-quality pose, remove this block AND size the box up (or
+      # move pose to GPU) — don't do one without the other.
+      POSE_MODEL: yolov8n-pose.pt
+      POSE_IMGSZ: "640"
+      POSE_SKIP_FRAMES: "8"
+    restart: unless-stopped
