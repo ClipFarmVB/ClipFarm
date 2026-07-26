@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Upload, Film, AlertCircle, Loader } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { uploadGame } from "@/lib/api";
-import { invalidateGamesCache } from "@/lib/gamesCache";
+import { addGameToCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
 
 const ACCEPTED = ["video/mp4", "video/quicktime", "video/x-msvideo", "video/webm"];
@@ -122,7 +122,11 @@ export function UploadZone() {
       });
       if (finalizeTimer.current) clearInterval(finalizeTimer.current);
       setProgress(100); // server confirmed — snap the bar to done
-      invalidateGamesCache(); // new game was created — force a fresh fetch on next visit
+      // Write the new game straight into the cache so the Library shows it
+      // immediately — invalidating alone let a prefetch that started during
+      // the (long) upload resolve afterwards and repopulate the cache with a
+      // stale list that omitted this game (CF-63).
+      addGameToCache(game);
       router.push(`/games/${game.id}`);
     } catch (e) {
       if (finalizeTimer.current) clearInterval(finalizeTimer.current);

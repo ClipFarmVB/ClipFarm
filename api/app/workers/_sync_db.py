@@ -19,6 +19,17 @@ def sync_get_game(game_id: uuid.UUID) -> Game | None:
         return s.get(Game, game_id)
 
 
+def sync_game_exists(game_id: uuid.UUID) -> bool:
+    """True if the game row still exists.
+
+    process_game uses this to abandon cleanly when a game is deleted mid-flight:
+    the delete purges the game row and its raw video, so continuing would only
+    download a missing file, violate the clips FK, and retry forever.
+    """
+    with Session(_engine) as s:
+        return s.get(Game, game_id) is not None
+
+
 def sync_set_game_status(
     game_id: uuid.UUID,
     status: str,

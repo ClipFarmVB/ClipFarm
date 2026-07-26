@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     modal_token_id: str = ""
     modal_token_secret: str = ""
 
+    # Error monitoring (Sentry — CF-89). Empty DSN = disabled (local/dev default).
+    # The same DSN is shared by the api and worker processes; the web app uses
+    # NEXT_PUBLIC_SENTRY_DSN separately.
+    sentry_dsn: str = ""
+    sentry_environment: str = "development"
+    sentry_release: str = ""
+    sentry_traces_sample_rate: float = 0.0  # 0 = errors only, no perf tracing (avoids overhead/cost)
+
     # Delete raw uploads after N days (0 = keep forever)
     raw_upload_retention_days: int = 7
 

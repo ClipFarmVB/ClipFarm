@@ -30,3 +30,6 @@ httpx==0.28.1
 # Modal GPU offload (CF-11) — client needed to invoke the deployed function;
 # `modal deploy ml/modal_app.py` (run separately, needs `modal setup` auth)
 modal==1.5.1
+
+# Error monitoring (CF-89) — shared by the api and worker; no-op without SENTRY_DSN
+sentry-sdk[fastapi,celery]==2.19.2
