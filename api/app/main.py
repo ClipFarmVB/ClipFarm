@@ -2,13 +2,12 @@ import asyncio
 import logging
 
 import redis.asyncio as aioredis
-from fastapi import Depends, FastAPI, Response
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database import AsyncSessionLocal, get_db
+from app.database import AsyncSessionLocal
 from app.observability import init_sentry
 from app.routers import games, clips, players, collections
 
@@ -70,15 +69,6 @@ async def health(response: Response):
             "redis": "ok" if redis_ok else "down",
         },
     }
-
-
-@app.get("/health/db")
-async def health_db(db: AsyncSession = Depends(get_db)):
-    """Touches the database (SELECT 1) so uptime pingers can keep Supabase from
-    auto-pausing. Unlike /health, this checks Postgres only and ignores Redis,
-    so a Redis outage won't mask the DB ping or turn it into a 503."""
-    await db.execute(text("SELECT 1"))
-    return {"status": "ok", "database": "ok"}
 
 
 if settings.debug:
