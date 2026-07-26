@@ -34,6 +34,12 @@ envVarGroups:
         value: clipfarm
       - key: R2_PUBLIC_URL             # https://<bucket>.r2.dev or your R2 custom domain
         sync: false
+      # Error monitoring (CF-89). api + worker share one DSN — worker events are
+      # tagged service:worker. Blank DSN = Sentry disabled (no-op).
+      - key: SENTRY_DSN                # Sentry → clipfarm-api → Settings → Client Keys (DSN)
+        sync: false
+      - key: SENTRY_ENVIRONMENT        # without this it defaults to "development"
+        value: production
 
 services:
   # ── Redis (Celery broker + result backend) ─────────────────────────────────
@@ -57,9 +63,11 @@ services:
     dockerfilePath: ./Dockerfile.api
     dockerContext: .
     # Render assigns the port via $PORT — bind it, don't hardcode. sh -c so the
-    # var expands (a bare exec form wouldn't). EXPOSE 8000 in the image is only
-    # documentation; the health check hits $PORT/health.
-    dockerCommand: sh -c "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    # vars expand (a bare exec form wouldn't). EXPOSE 8000 in the image is only
+    # documentation; the health check hits $PORT/healthz.
+    # SENTRY_RELEASE ties events to the deployed commit ($RENDER_GIT_COMMIT is
+    # injected by Render) so a regression can be traced to a specific deploy.
+    dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     # Point the platform health check at the SHALLOW liveness route, not the
     # deep /health readiness check (CF-89 makes /health return 503 when Postgres
     # or Redis is down). Coupling deploy gating / instance health to a dependency
@@ -102,7 +110,8 @@ services:
     numInstances: 1
     dockerfilePath: ./Dockerfile.api
     dockerContext: .
-    dockerCommand: celery -A app.workers.celery_app worker --loglevel=info --pool=solo
+    # sh -c so $RENDER_GIT_COMMIT expands into SENTRY_RELEASE (see api above).
+    dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT celery -A app.workers.celery_app worker --loglevel=info --pool=solo"
     # NOTE: the image runs as non-root `appuser` (uid 1000). A Render disk can
     # mount root-owned, which would mask the Dockerfile's build-time chown of
     # /models and make weight writes fail. Verify on first deploy (see DEPLOY.md
@@ -154,7 +163,10 @@ services:
     branch: main
     region: oregon
     plan: starter
-    buildCommand: npm ci && npm run build --workspace=web
+    # NEXT_PUBLIC_SENTRY_RELEASE is inlined at build time, so it's set here (not
+    # in envVars) from Render's $RENDER_GIT_COMMIT — it must match the release
+    # the source maps are uploaded under for prod stack traces to de-minify.
+    buildCommand: npm ci && NEXT_PUBLIC_SENTRY_RELEASE=$RENDER_GIT_COMMIT npm run build --workspace=web
     startCommand: npm run start --workspace=web
     envVars:
       - key: NODE_VERSION
@@ -164,4 +176,18 @@ services:
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false
       - key: NEXT_PUBLIC_API_URL      # the API's public URL, e.g. https://api.clipfarm.app
+        sync: false
+      # Error monitoring (CF-89) — separate DSN from the api/worker project.
+      - key: NEXT_PUBLIC_SENTRY_DSN   # Sentry → clipfarm-web → Settings → Client Keys (DSN)
+        sync: false
+      - key: NEXT_PUBLIC_SENTRY_ENVIRONMENT
+        value: production
+      # Source-map upload at build time. Without these, prod web stack traces
+      # point at minified bundles. The auth token is a secret — set it in the
+      # dashboard, never in this file.
+      - key: SENTRY_ORG
+        sync: false
+      - key: SENTRY_PROJECT
+        sync: false
+      - key: SENTRY_AUTH_TOKEN
         sync: false
