@@ -4,10 +4,29 @@ Run from api/: pytest tests/test_progress.py
 """
 import pytest
 
-from app.workers.progress import GameProgress, compute_stage_spans
+from app.workers.progress import _BASE_WEIGHTS, GameProgress, compute_stage_spans
+
+
+# The exact sequence process_game_task calls stage() in. compute_stage_spans
+# tiles spans in _BASE_WEIGHTS key order, so the two MUST agree — otherwise every
+# stage maps to the wrong slice while the spans still tile 0-1 (so the other
+# tests keep passing). This test is the guard against reordering the dict.
+_PIPELINE_STAGE_ORDER = [
+    "downloading",
+    "analyzing_audio",
+    "tracking_ball",
+    "scoring_highlights",
+    "refining_actions",
+    "cutting_clips",
+    "condensing",
+]
 
 
 # ── compute_stage_spans ──────────────────────────────────────────────────────
+
+
+def test_base_weights_match_pipeline_call_order():
+    assert list(_BASE_WEIGHTS.keys()) == _PIPELINE_STAGE_ORDER
 
 @pytest.mark.parametrize("condense", [False, True])
 @pytest.mark.parametrize("cache_hit", [False, True])
@@ -143,6 +162,31 @@ def test_failing_writer_does_not_raise():
     gp = GameProgress(spans, write=boom, clock=FakeClock())
     gp.stage("tracking_ball")  # must not raise
     gp.update(0.5)
+
+
+def test_failed_write_is_retried_not_bookkept():
+    # A write that raised never reached the DB, so its value must not be
+    # recorded as written — the next update has to retry it rather than throttle
+    # it away as "no change since last write".
+    calls = []
+    fail = {"on": True}
+
+    def writer(p, s):
+        calls.append((p, s))
+        if fail["on"]:
+            raise RuntimeError("db down")
+
+    clock = FakeClock()
+    spans = compute_stage_spans(condense=False, ball_cache_hit=False)
+    gp = GameProgress(spans, write=writer, clock=clock)
+    gp.stage("tracking_ball")            # forced write raises → not bookkept
+    fail["on"] = False
+    clock.tick(3)
+    gp.update(0.0)                        # sits at the stage start, ~unchanged
+    # Without the fix _last_written would already equal this value and the
+    # update would be throttled away; the retry proves it wasn't bookkept.
+    assert len(calls) == 2
+    assert calls[-1][0] == pytest.approx(round(gp._value, 4))
 
 
 def test_unknown_stage_is_ignored(harness):

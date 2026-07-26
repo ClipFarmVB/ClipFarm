@@ -40,7 +40,6 @@ export interface Game {
   status: "queued" | "processing" | "ready" | "failed";
   progress: number;
   progress_stage: string | null;
-  processing_started_at: string | null;
   created_at: string;
   clip_count?: number;
   condense_requested?: boolean;

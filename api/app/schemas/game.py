@@ -14,7 +14,6 @@ class GameOut(BaseModel):
     status: GameStatus
     progress: float = 0.0
     progress_stage: str | None = None
-    processing_started_at: datetime | None = None
     created_at: datetime
     clip_count: int | None = None
     condense_requested: bool = False

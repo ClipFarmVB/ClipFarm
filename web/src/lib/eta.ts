@@ -23,6 +23,12 @@ const MIN_PROGRESS = 0.03;
 // Velocity window: samples older than this are dropped (stale stages).
 const WINDOW_MS = 90_000;
 
+// If progress hasn't advanced across at least this much of the window, the run
+// is genuinely stalled (e.g. Modal died and local-CPU tracking is climbing back
+// to the frozen high-water mark) rather than just between polls. Past this we
+// drop the held estimate instead of showing a number that's now fiction.
+const STALE_SECONDS = 45;
+
 // Weight of the newest raw estimate in the smoothed value.
 const EMA_ALPHA = 0.3;
 
@@ -49,8 +55,11 @@ export function estimateEtaSeconds(
 
   const velocity = (last.progress - first.progress) / windowSeconds; // fraction/sec
   if (velocity <= 0) {
-    // Flat or opaque stage: hold the previous estimate — never climb.
-    return prevEtaSeconds;
+    // Flat or opaque stage. Progress moves in ~5s server steps, so hold the
+    // previous estimate to ride out the gaps between polls — but once it's been
+    // flat across most of the window it's stalled, not paused: drop to null so
+    // the UI shows the stage label instead of a frozen "about 4 min left".
+    return windowSeconds >= STALE_SECONDS ? null : prevEtaSeconds;
   }
 
   const raw = (1 - last.progress) / velocity;

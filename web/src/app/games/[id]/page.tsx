@@ -62,16 +62,28 @@ export default function GamePage() {
   // EMA-smoothed seconds across polls; state holds the display string.
   const etaSamplesRef = useRef<ProgressSample[]>([]);
   const etaSecondsRef = useRef<number | null>(null);
+  const etaStageRef = useRef<string | null>(null);
   const [etaText, setEtaText] = useState<string | null>(null);
 
   useEffect(() => {
     if (!game || game.status !== "processing") {
       etaSamplesRef.current = [];
       etaSecondsRef.current = null;
+      etaStageRef.current = null;
       setEtaText(null);
       return;
     }
-    etaSamplesRef.current = pushSample(etaSamplesRef.current, Date.now(), game.progress ?? 0);
+    const progress = game.progress ?? 0;
+    const prev = etaSamplesRef.current[etaSamplesRef.current.length - 1];
+    // A stage change or a backwards jump (a retry re-entering "processing"
+    // zeroes progress) invalidates the velocity window — the stale samples
+    // would read as a huge fake spike or a negative velocity. Start over.
+    if ((game.progress_stage ?? null) !== etaStageRef.current || (prev && progress < prev.progress)) {
+      etaSamplesRef.current = [];
+      etaSecondsRef.current = null;
+    }
+    etaStageRef.current = game.progress_stage ?? null;
+    etaSamplesRef.current = pushSample(etaSamplesRef.current, Date.now(), progress);
     const eta = estimateEtaSeconds(etaSamplesRef.current, etaSecondsRef.current);
     etaSecondsRef.current = eta;
     setEtaText(eta === null ? null : formatEta(eta));

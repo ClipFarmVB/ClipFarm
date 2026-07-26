@@ -55,10 +55,12 @@ def _track_ball_modal(local_video: Path, r2_key: str, sample_every: int, on_prog
     video_url = s3.presign_url(r2_key, expires_in=3600)
     api_key = os.environ["ROBOFLOW_API_KEY"]
 
+    streaming_started = False
     try:
         fn = modal_sdk.Function.from_name("clipfarm-ball-tracking", "track_ball_stream")
         positions = None
         for event in fn.remote_gen(video_url, api_key, sample_every):
+            streaming_started = True
             if "progress" in event and on_progress:
                 try:
                     on_progress(event["progress"])
@@ -70,6 +72,13 @@ def _track_ball_modal(local_video: Path, r2_key: str, sample_every: int, on_prog
             raise RuntimeError("Modal stream ended without a positions event")
         return TrackedBall(positions=[BallPosition(**p) for p in positions])
     except modal_sdk.exception.NotFoundError:
+        # from_name is lazy, so a missing deploy can surface on the first
+        # remote_gen pull — hence the try spans the loop. But once the stream
+        # has produced events, a NotFound is a mid-run failure, not a missing
+        # function: re-raise so the caller falls back to local CPU instead of
+        # silently re-running the whole GPU job on the blocking function.
+        if streaming_started:
+            raise
         logger.info("track_ball_stream not deployed yet — using blocking Modal call")
 
     fn = modal_sdk.Function.from_name("clipfarm-ball-tracking", "track_ball_remote")

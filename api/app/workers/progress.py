@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 #   condensing        ~0.4-0.6 s / kept-second
 # This base table is the LOCAL-CPU regime (tracking_ball is the slow path);
 # cache-hit and Modal override tracking_ball below.
+#
+# ORDER IS LOAD-BEARING: compute_stage_spans tiles cumulative spans by iterating
+# this dict, so the key order must match the pipeline's stage() call sequence in
+# process_game_task. Reordering keys silently mis-maps every stage — do not sort.
+# test_base_weights_match_pipeline_order pins this.
 _BASE_WEIGHTS: dict[str, float] = {
     "downloading": 3.0,
     # 2-4 s regardless of video length (~0.1% of a run).
@@ -89,7 +94,8 @@ class GameProgress:
     Guarantees the pipeline can rely on:
     - monotonic: the reported value never decreases (the Modal -> local-CPU
       tracking fallback restarts work; the bar must not rewind)
-    - throttled: writes only on >=1pp change or >=2s elapsed
+    - throttled: writes only on >=1pp change AND >=2s elapsed (forced writes
+      at stage boundaries and re-budgets bypass both)
     - non-fatal: a failing writer logs and is otherwise ignored
     """
 
@@ -157,6 +163,9 @@ class GameProgress:
         try:
             self._write(round(self._value, 4), self._stage)
         except Exception:
+            # Leave the bookkeeping untouched so the next significant move
+            # retries the write instead of recording a value that never landed.
             logger.warning("Progress write failed — continuing", exc_info=True)
+            return
         self._last_written = self._value
         self._last_write_at = now

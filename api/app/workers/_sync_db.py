@@ -1,6 +1,6 @@
 """Synchronous DB helpers for use inside Celery tasks (no asyncio event loop)."""
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -46,9 +46,6 @@ def sync_set_game_status(
         if status == "processing":
             game.progress = 0.0
             game.progress_stage = None
-            # Anchor for the frontend ETA; retries re-anchor together with
-            # the progress reset so elapsed/progress stay consistent.
-            game.processing_started_at = datetime.now(timezone.utc)
         elif status == "ready":
             game.progress = 1.0
             game.progress_stage = None

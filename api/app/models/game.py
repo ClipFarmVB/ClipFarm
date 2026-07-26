@@ -30,8 +30,6 @@ class Game(Base):
     # machine-readable stage slug (e.g. "tracking_ball") for the frontend bar.
     progress: Mapped[float] = mapped_column(Float, default=0.0, server_default="0", nullable=False)
     progress_stage: Mapped[str | None] = mapped_column(String(64))
-    # Set each time status enters processing; anchors the frontend's ETA.
-    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Opt-in dead-time removal: one condensed video with only the rally
     # windows kept, produced alongside the highlight clips.
     condense_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
