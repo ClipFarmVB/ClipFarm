@@ -189,6 +189,31 @@ def test_failed_write_is_retried_not_bookkept():
     assert calls[-1][0] == pytest.approx(round(gp._value, 4))
 
 
+def test_sustained_write_outage_stays_throttled():
+    # A failing writer must not defeat the 2s throttle: the failure path leaves
+    # _last_written alone (so the move is retried) but still records the attempt
+    # time, so rapid within-stage updates during an outage don't hammer the DB
+    # with a connection attempt (and a full traceback) on every call.
+    calls = []
+
+    def writer(p, s):
+        calls.append((p, s))
+        raise RuntimeError("db down")
+
+    clock = FakeClock()
+    spans = compute_stage_spans(condense=False, ball_cache_hit=False)
+    gp = GameProgress(spans, write=writer, clock=clock)
+    gp.stage("tracking_ball")  # forced write attempts once (and fails)
+    n = len(calls)
+    # 50 non-forced updates spread across 5s: without the throttle bookkeeping
+    # on the failure path every one re-attempts; with it, only ticks past the
+    # 2s bar do.
+    for i in range(50):
+        clock.tick(0.1)
+        gp.update(i / 50)
+    assert len(calls) - n <= 3
+
+
 def test_unknown_stage_is_ignored(harness):
     gp, writes, clock, spans = harness
     gp.stage("not_a_stage")   # must not raise

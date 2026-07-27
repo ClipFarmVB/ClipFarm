@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # ORDER IS LOAD-BEARING: compute_stage_spans tiles cumulative spans by iterating
 # this dict, so the key order must match the pipeline's stage() call sequence in
 # process_game_task. Reordering keys silently mis-maps every stage — do not sort.
-# test_base_weights_match_pipeline_order pins this.
+# test_base_weights_match_pipeline_call_order pins this.
 _BASE_WEIGHTS: dict[str, float] = {
     "downloading": 3.0,
     # 2-4 s regardless of video length (~0.1% of a run).
@@ -163,9 +163,12 @@ class GameProgress:
         try:
             self._write(round(self._value, 4), self._stage)
         except Exception:
-            # Leave the bookkeeping untouched so the next significant move
-            # retries the write instead of recording a value that never landed.
+            # Leave _last_written untouched so the next significant move retries
+            # the write instead of recording a value that never landed — but do
+            # bookkeep the attempt time, so a sustained outage stays throttled
+            # rather than re-attempting (and logging) on every update().
             logger.warning("Progress write failed — continuing", exc_info=True)
+            self._last_write_at = now
             return
         self._last_written = self._value
         self._last_write_at = now
