@@ -275,8 +275,10 @@ We work like a small company: **branches + PRs only, never commit to `main`.**
   found" and all processing fails. Unpausing takes ~2 min to propagate. Mitigated by the
   `Supabase keepalive` workflow (`.github/workflows/keepalive.yml`, CF-18), which runs
   `SELECT 1` every 2 days to keep the project active — it needs the `SUPABASE_DB_URL`
-  repo secret and only fires from `main`. The permanent fix is upgrading to Supabase Pro
-  (no auto-pause; see CF-68).
+  repo secret and only fires from `main`. Note the keepalive only *prevents* a pause; it
+  can't *cure* one — if the project is already paused the run just fails red, so unpause
+  it manually (Supabase dashboard) and the next scheduled run goes green. The permanent
+  fix is upgrading to Supabase Pro (no auto-pause; see CF-68).
 - **Multi-court false positives**: footage with several simultaneous games produces junk
   clips from neighboring courts (ball *and* audio). Court-ROI filtering is the top open
   detection task.

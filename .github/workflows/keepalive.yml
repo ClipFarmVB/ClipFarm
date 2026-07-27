@@ -27,6 +27,8 @@ jobs:
   ping:
     name: Ping Supabase
     runs-on: ubuntu-latest
+    # A hung psql connect would otherwise idle against the 6-hour default.
+    timeout-minutes: 5
     steps:
       - name: SELECT 1
         env:
