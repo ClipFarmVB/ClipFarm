@@ -261,7 +261,7 @@ We work like a small company: **branches + PRs only, never commit to `main`.**
 
 | Service | Role |
 |---|---|
-| **Supabase** | Postgres (data) + Auth (JWKS JWT). Free tier **auto-pauses after ~7 days idle** (see gotchas). |
+| **Supabase** | Postgres (data) + Auth (JWKS JWT). Free tier **auto-pauses after ~7 days idle** (kept alive by the keepalive workflow — see gotchas). |
 | **Cloudflare R2** | Object storage; zero egress cost (important — this is a video app). `ball-cache/` holds cached trajectories. |
 | **Roboflow `inference`** | Local RF-DETR ball model `volleyball-ball-tracking-0eo7r/3`. Pinned to `inference==1.3.3`. |
 | **Modal** | Serverless T4 GPU for ball tracking. App `clipfarm-ball-tracking`; deploy `modal deploy ml/modal_app.py`. |
@@ -272,7 +272,13 @@ We work like a small company: **branches + PRs only, never commit to `main`.**
 ## Known Limitations / Gotchas
 
 - **Supabase free-tier auto-pause**: after ~7 days idle the pooler returns "tenant not
-  found" and all processing fails. Unpausing takes ~2 min to propagate.
+  found" and all processing fails. Unpausing takes ~2 min to propagate. Mitigated by the
+  `Supabase keepalive` workflow (`.github/workflows/keepalive.yml`, CF-18), which runs
+  `SELECT 1` every 2 days to keep the project active — it needs the `SUPABASE_DB_URL`
+  repo secret and only fires from `main`. Note the keepalive only *prevents* a pause; it
+  can't *cure* one — if the project is already paused the run just fails red, so unpause
+  it manually (Supabase dashboard) and the next scheduled run goes green. The permanent
+  fix is upgrading to Supabase Pro (no auto-pause; see CF-68).
 - **Multi-court false positives**: footage with several simultaneous games produces junk
   clips from neighboring courts (ball *and* audio). Court-ROI filtering is the top open
   detection task.
