@@ -12,6 +12,8 @@ class GameOut(BaseModel):
     id: uuid.UUID
     title: str
     status: GameStatus
+    progress: float = 0.0
+    progress_stage: str | None = None
     created_at: datetime
     clip_count: int | None = None
     condense_requested: bool = False

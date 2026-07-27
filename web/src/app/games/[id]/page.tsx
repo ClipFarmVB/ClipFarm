@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, ArrowLeft, CheckSquare, Download, Scissors, Square, Trash2, X } from "lucide-react";
@@ -11,6 +11,7 @@ import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type Player, type ActionType, type ClipFilters } from "@/lib/api";
+import { estimateEtaSeconds, formatEta, pushSample, type ProgressSample } from "@/lib/eta";
 import { cn } from "@/lib/utils";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];
@@ -32,6 +33,18 @@ const STATUS_STYLES: Record<Game["status"], string> = {
   failed:     "text-red-400 bg-red-500/8 border-red-500/20",
 };
 
+// Worker-reported stage slugs → display text. Unknown slugs (e.g. from a
+// newer backend) fall back to the generic label.
+const STAGE_LABELS: Record<string, string> = {
+  downloading:        "Preparing video",
+  analyzing_audio:    "Analyzing audio",
+  tracking_ball:      "Tracking the ball",
+  scoring_highlights: "Scoring highlights",
+  refining_actions:   "Classifying actions",
+  cutting_clips:      "Cutting clips",
+  condensing:         "Building condensed video",
+};
+
 export default function GamePage() {
   const { id } = useParams<{ id: string }>();
   const [game, setGame] = useState<Game | null>(null);
@@ -45,6 +58,36 @@ export default function GamePage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
   const [savingClipId, setSavingClipId] = useState<string | null>(null);
+  // ETA from recent progress velocity: refs hold the sample window and the
+  // EMA-smoothed seconds across polls; state holds the display string.
+  const etaSamplesRef = useRef<ProgressSample[]>([]);
+  const etaSecondsRef = useRef<number | null>(null);
+  const etaStageRef = useRef<string | null>(null);
+  const [etaText, setEtaText] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!game || game.status !== "processing") {
+      etaSamplesRef.current = [];
+      etaSecondsRef.current = null;
+      etaStageRef.current = null;
+      setEtaText(null);
+      return;
+    }
+    const progress = game.progress ?? 0;
+    const prev = etaSamplesRef.current[etaSamplesRef.current.length - 1];
+    // A stage change or a backwards jump (a retry re-entering "processing"
+    // zeroes progress) invalidates the velocity window — the stale samples
+    // would read as a huge fake spike or a negative velocity. Start over.
+    if ((game.progress_stage ?? null) !== etaStageRef.current || (prev && progress < prev.progress)) {
+      etaSamplesRef.current = [];
+      etaSecondsRef.current = null;
+    }
+    etaStageRef.current = game.progress_stage ?? null;
+    etaSamplesRef.current = pushSample(etaSamplesRef.current, Date.now(), progress);
+    const eta = estimateEtaSeconds(etaSamplesRef.current, etaSecondsRef.current);
+    etaSecondsRef.current = eta;
+    setEtaText(eta === null ? null : formatEta(eta));
+  }, [game]);
 
   const toggleSelect = useCallback((clipId: string) => {
     setSelectedIds((prev) => {
@@ -179,9 +222,25 @@ export default function GamePage() {
         <div className="flex flex-col items-center justify-center rounded-lg border border-border bg-surface py-20 text-center">
           <div className="mb-4 h-8 w-8 rounded-full border-2 border-border-strong border-t-brand animate-spin" />
           <p className="text-[13px] font-medium text-foreground">
-            {game.status === "queued" ? "Queued for processing" : "Analyzing footage"}
+            {game.status === "queued"
+              ? "Queued for processing"
+              : STAGE_LABELS[game.progress_stage ?? ""] ?? "Processing"}
           </p>
-          <p className="mt-1.5 text-[12px] text-muted max-w-xs">
+          {game.status === "processing" && (
+            <div className="mt-4 w-full max-w-xs px-4">
+              <div className="flex justify-between text-[11px] text-muted mb-1.5">
+                <span>{etaText ?? ((game.progress ?? 0) >= 0.99 ? "Finishing up…" : "Estimating time…")}</span>
+                <span className="tabular-nums">{Math.round((game.progress ?? 0) * 100)}%</span>
+              </div>
+              <div className="h-0.5 rounded-full bg-surface-high overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-brand transition-all duration-500 ease-out"
+                  style={{ width: `${Math.round((game.progress ?? 0) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+          <p className="mt-4 text-[12px] text-muted max-w-xs">
             Detecting actions and cutting clips. You can leave this page — we&apos;ll keep working.
           </p>
         </div>

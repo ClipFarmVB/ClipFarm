@@ -80,8 +80,14 @@ services:
       # YOLO pose weights (GitHub) before processing can start.
       MODEL_CACHE_DIR: /models/roboflow   # inference: model metadata cache
       INFERENCE_HOME: /models/roboflow    # inference 1.x: shared-blobs weight store (the 114MB)
-      MODELS_DIR: /models                 # ultralytics weights (see ml/pipeline/detect.py)
-      YOLO_CONFIG_DIR: /models/ultralytics  # ultralytics settings.json
+      # Pose weights: the /models volume is empty, the container has no tool to
+      # download into it, and appuser can't write it (root-owned) — so pose
+      # refinement was silently failing on every game. Point at the model
+      # bundled in the image instead (api/yolov8n-pose.pt). NOTE: this resolves
+      # the bundled yolov8n only; a non-bundled prod model (e.g. yolov8s-pose)
+      # must be added to the image or seeded into a writable models dir.
+      MODELS_DIR: /app/api
+      YOLO_CONFIG_DIR: /tmp/ultralytics   # writable by appuser (unlike /models)
     depends_on:
       redis:
         condition: service_healthy
