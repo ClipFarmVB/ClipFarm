@@ -56,10 +56,18 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 # trajectory >25° between samples 0.33s apart, flagging normal flight as hits.
 # Gravity is estimated per-video from coherent segments (median vertical
 # acceleration — free flight dominates, so the median is robust to hits).
-# Thresholds tuned against a real cached trajectory: detector centroid wobble
-# puts the residual noise floor at ~p75 = 450 px/s (15 px/frame @ 30fps).
+# The residual floor was originally 480 px/s, from a p75 noise estimate read off
+# a single cached trajectory by inspection. Scored against hand-labeled rallies
+# (CF-98 harness, #116) that proved ~2x too high: it rejected every contact in
+# 60 of 126 labeled rallies, and since keep-windows are anchored on contacts,
+# the condense stage then cut those rallies as dead time.
+#
+# 240 is the knee measured on test1 — below it the contact count keeps climbing
+# while rallies-hit plateaus (101 -> 102 of 126), i.e. only false positives are
+# being added. Re-tune it by scoring, not by inspecting a trajectory:
+#   docker compose run --rm --no-deps worker python -m ml.eval.tune_contacts
 CONTACT_RESIDUAL_RATIO    = 0.50    # residual must exceed this fraction of ball speed
-CONTACT_RESIDUAL_MIN_PXPS = 480.0   # ...and this absolute floor (px/s, above noise)
+CONTACT_RESIDUAL_MIN_PXPS = 240.0   # ...and this absolute floor (px/s, above noise)
 CONTACT_HIT_SPEED_PXPS    = 240.0   # px/s: a real hit has speed on at least one side
 MIN_CONTACT_SPACING       = 0.6     # seconds: debounce — one hit can't fire twice
 MAX_SAMPLE_GAP_SEC        = 1.0     # skip triples spanning a detection gap
