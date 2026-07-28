@@ -147,7 +147,11 @@ def format_clip_audit(fixture: Fixture, s: EvalSignals) -> str:
 
 
 def _seconds_to_ts(seconds: float) -> str:
+    """mm:ss, rolling over to h:mm:ss past an hour — the format the labels use,
+    and what a video player's seek bar shows (60:16 is findable nowhere)."""
     total = int(round(seconds))
+    if total >= 3600:
+        return f"{total // 3600}:{total % 3600 // 60:02d}:{total % 60:02d}"
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
@@ -182,15 +186,23 @@ def config_snapshot() -> dict:
             and isinstance(getattr(mod, attr), (int, float))
             and not isinstance(getattr(mod, attr), bool)
         }
-    # App-level knobs — the gate threshold is the single most load-bearing value
-    # a run depends on. Lazy + best-effort: --clips-json runs on hosts without
-    # the app installed still work (the key is just absent there).
+    # App-level knobs — the gate threshold decides every highlight number, and
+    # the condense_* tunables decide every dead-time number (CF-98), so a row
+    # without them can't be compared across tuning changes. Collected by prefix
+    # off the settings fields, which also keeps credentials out of the log.
+    # Lazy + best-effort: --clips-json/--windows-json runs on hosts without the
+    # app installed still work (the key is just absent there).
     try:
         from app.config import settings
-        snap["app.config"] = {
+        app_snap = {
             "highlight_score_threshold": settings.highlight_score_threshold,
             "clip_verify_enabled": settings.clip_verify_enabled,
         }
+        fields = getattr(type(settings), "model_fields", None) or getattr(type(settings), "__fields__", {})
+        app_snap.update({
+            name: getattr(settings, name) for name in fields if name.startswith("condense_")
+        })
+        snap["app.config"] = app_snap
     except Exception:
         pass
     return snap
@@ -341,11 +353,29 @@ class DeadFixture:
 
 
 def load_deadtime_fixture(test_id: str) -> DeadFixture:
-    """Load a dead-time fixture: keep = rally spans; dead time is the complement."""
+    """
+    Load a dead-time fixture: the in-play spans; dead time is the complement.
+
+    The span list may carry a `tier` per span (the labeling pass tags every
+    labeled span, in-play or not). `keep_tiers` selects which tiers count as
+    ball-in-play — everything else falls through to dead time via the
+    complement. Mirrors load_fixture()'s ground_truth_tiers filter, and is
+    equally permissive: absent key, or a span with no tier, counts as in-play.
+    That distinction is load-bearing here — a non-highlight rally (failed serve,
+    "average play") is still live ball the condense stage must keep, while a
+    BREAK or a camera outlier is genuinely dead.
+
+    `spans` is the current key; `keep` is accepted as the original name from
+    fixtures written before tiers existed (they list in-play spans only).
+    """
     path = FIXTURES_DIR / f"{test_id}_deadtime.json"
     data = json.loads(path.read_text(encoding="utf-8"))
+    tiers = data.get("keep_tiers")
+    spans = data.get("spans", data.get("keep", []))
     keep: list[Interval] = [
-        (parse_timestamp(k["start"]), parse_timestamp(k["end"])) for k in data["keep"]
+        (parse_timestamp(s["start"]), parse_timestamp(s["end"]))
+        for s in spans
+        if tiers is None or s.get("tier") is None or s["tier"] in tiers
     ]
     duration = data.get("video_duration_sec")
     if duration is None:  # permissive: fall back to the last labeled rally end
@@ -356,7 +386,11 @@ def load_deadtime_fixture(test_id: str) -> DeadFixture:
 def load_windows_json(path: Path) -> list[Interval]:
     """Load model keep-windows from {"keep": [{start, end}, ...]} (or a bare list)."""
     data = json.loads(path.read_text(encoding="utf-8"))
-    items = data.get("keep", data) if isinstance(data, dict) else data
+    items = data.get("keep") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        raise SystemExit(
+            f'{path}: expected {{"keep": [{{"start", "end"}}, ...]}} or a bare list of spans'
+        )
     return [(parse_timestamp(w["start"]), parse_timestamp(w["end"])) for w in items]
 
 
@@ -459,18 +493,64 @@ def format_deadtime(s: DeadTimeSignals) -> str:
     ])
 
 
-def format_deadtime_audit(s: DeadTimeSignals) -> str:
+DEFAULT_AUDIT_LIMIT = 12
+
+
+def format_deadtime_audit(s: DeadTimeSignals, *, limit: int = DEFAULT_AUDIT_LIMIT) -> str:
+    """
+    Render the two divergence lists, longest span first.
+
+    A real run produces hundreds of spans; printing all of them buries the few
+    that matter. Since the lists are sorted longest-first and the long spans
+    hold most of the seconds, showing the worst `limit` and summarizing the rest
+    loses nothing actionable. The complete lists always go to the results log,
+    so nothing is lost for later analysis. limit <= 0 prints everything.
+    """
     def block(spans: list[Interval], header: str) -> list[str]:
         if not spans:
             return [f"  {header}: none"]
-        rows = [f"  {header} ({len(spans)}, longest first):"]
-        rows += [f"    {_seconds_to_ts(a)}-{_seconds_to_ts(b)}  ({b - a:.0f}s)" for a, b in spans]
+        total = sum(b - a for a, b in spans)
+        rows = [f"  {header}: {len(spans)} spans, {total:.0f}s total"]
+        shown = spans if limit <= 0 else spans[:limit]
+        rows += [f"    {_seconds_to_ts(a)}-{_seconds_to_ts(b)}  {b - a:5.0f}s" for a, b in shown]
+        hidden = spans[len(shown):]
+        if hidden:
+            rows.append(
+                f"    + {len(hidden)} shorter, {sum(b - a for a, b in hidden):.0f}s total "
+                f"(all {len(spans)} in the results log)"
+            )
         return rows
 
     lines = block(s.over_cut_live, "OVER-CUT LIVE (real play removed - act on these)")
     lines.append("")
     lines += block(s.missed_dead, "MISSED DEAD (dead time kept)")
     return "\n".join(lines)
+
+
+def format_deadtime_comparison(
+    title: str, left_label: str, left: DeadTimeSignals, right_label: str, right: DeadTimeSignals,
+) -> str:
+    """
+    Compact side-by-side of two configurations' headline numbers.
+
+    Beats re-printing a whole second report: when comparing two runs over the
+    same fixture the only question is what moved, and a full duplicate report
+    forces the reader to diff hundreds of lines by eye.
+    """
+    def pct_row(label: str, a: float | None, b: float | None) -> str:
+        delta = "n/a" if a is None or b is None else f"{(b - a) * 100:+.1f}pp"
+        return f"  {label:<24}{_fmt_pct(a):>10}{_fmt_pct(b):>12}{delta:>10}"
+
+    live_delta = right.live_removed_sec - left.live_removed_sec
+    return "\n".join([
+        f"== {title} ==",
+        f"  {'':<24}{left_label:>10}{right_label:>12}{'delta':>10}",
+        pct_row("Dead-time removed:", left.dead_removed_pct, right.dead_removed_pct),
+        f"  {'Live wrongly removed:':<24}{left.live_removed_sec:>9.0f}s"
+        f"{right.live_removed_sec:>11.0f}s{live_delta:>+9.0f}s",
+        pct_row("Kept-play (recall):", left.kept_play_pct, right.kept_play_pct),
+        pct_row("Condense ratio:", left.condense_ratio, right.condense_ratio),
+    ])
 
 
 def _deadtime_to_dict(s: DeadTimeSignals) -> dict:
@@ -504,14 +584,24 @@ def append_deadtime_result(test_id: str, version: str, s: DeadTimeSignals) -> Pa
     return path
 
 
-def run_deadtime(test_id: str, version: str, model_keep: list[Interval], *, record: bool = True) -> DeadTimeSignals:
+def run_deadtime(
+    test_id: str,
+    version: str,
+    model_keep: list[Interval],
+    *,
+    record: bool = True,
+    audit_limit: int = DEFAULT_AUDIT_LIMIT,
+    report: bool = True,
+) -> DeadTimeSignals:
+    """Score model_keep against the fixture. report=False computes silently."""
     fx = load_deadtime_fixture(test_id)
     s = evaluate_deadtime(fx.keep, model_keep, fx.duration)
-    print(f"\nDead-time eval - test={test_id}  version={version}")
-    print(f"Ground truth: {len(fx.keep)} rally regions over {fx.duration:.0f}s\n")
-    print(format_deadtime(s))
-    print()
-    print(format_deadtime_audit(s))
+    if report:
+        print(f"\nDead-time eval - test={test_id}  version={version}")
+        print(f"Ground truth: {len(fx.keep)} rally regions over {fx.duration:.0f}s\n")
+        print(format_deadtime(s))
+        print()
+        print(format_deadtime_audit(s, limit=audit_limit))
     if record:
         path = append_deadtime_result(test_id, version, s)
         print(f"\nAppended result -> {path}")
@@ -529,21 +619,60 @@ def main() -> None:
     src.add_argument("--windows-json", type=Path, help="deadtime: dumped {keep: [{start, end}]} keep-windows")
     src.add_argument("--offline", action="store_true", help="re-run pipeline stages via the R2 ball-cache")
     ap.add_argument("--no-record", action="store_true", help="print only; don't append to results log")
+    ap.add_argument("--audit-limit", type=int, default=DEFAULT_AUDIT_LIMIT,
+                    help=f"deadtime: max spans per audit list (default {DEFAULT_AUDIT_LIMIT}; 0 = all). "
+                         "The full lists always go to the results log.")
+    ap.add_argument("--dump-windows", type=Path,
+                    help="deadtime --offline: also write the derived keep-windows to this JSON, "
+                         "so later runs can re-score them anywhere via --windows-json "
+                         "(no Docker, no video download)")
     args = ap.parse_args()
+
+    if args.dump_windows and not (args.mode == "deadtime" and args.offline):
+        ap.error("--dump-windows only applies to --mode deadtime --offline")
 
     if args.mode == "deadtime":
         if args.windows_json:
             model_keep = load_windows_json(args.windows_json)
-            run_deadtime(args.test, args.version, model_keep, record=not args.no_record)
+            run_deadtime(
+                args.test, args.version, model_keep,
+                record=not args.no_record, audit_limit=args.audit_limit,
+            )
         elif args.offline:
             pre_bridge, post_bridge = _run_offline_deadtime(args.test)
-            # Score the shipping (post-bridge) windows and record that row. Then
-            # score pre-bridge without recording, to isolate the CF-46 motion
-            # bridge's effect on the same run.
-            run_deadtime(args.test, args.version, post_bridge, record=not args.no_record)
+            if args.dump_windows:
+                # keep = shipping windows, the ones --windows-json reads back.
+                # pre_bridge rides along under a key the loader ignores, so the
+                # CF-46 comparison can be reconstructed from the dump too.
+                spans_of = lambda ws: [  # noqa: E731
+                    {"start": round(a, 3), "end": round(b, 3)} for a, b in ws
+                ]
+                args.dump_windows.write_text(
+                    json.dumps(
+                        {"keep": spans_of(post_bridge), "keep_pre_bridge": spans_of(pre_bridge)},
+                        indent=2,
+                    ) + "\n",
+                    encoding="utf-8",
+                )
+                print(f"Dumped keep-windows -> {args.dump_windows}")
+            # Report + record the shipping (post-bridge) windows — that's the
+            # configuration under test. Then score pre-bridge silently and show
+            # only what CF-46's motion bridge moved: a second full report would
+            # double an already long audit to say very little.
+            post = run_deadtime(
+                args.test, args.version, post_bridge,
+                record=not args.no_record, audit_limit=args.audit_limit,
+            )
             if pre_bridge != post_bridge:
-                print("\n--- pre-bridge (CF-46 isolation, not recorded) ---")
-                run_deadtime(args.test, f"{args.version}-nobridge", pre_bridge, record=False)
+                pre = run_deadtime(
+                    args.test, f"{args.version}-nobridge", pre_bridge,
+                    record=False, report=False,
+                )
+                print()
+                print(format_deadtime_comparison(
+                    "MOTION BRIDGE (CF-46) - not recorded",
+                    "bridge off", pre, "shipping", post,
+                ))
             else:
                 print("\n(motion bridge changed nothing this run)")
         else:
