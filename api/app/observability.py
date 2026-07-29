@@ -13,6 +13,7 @@ user PII and request bodies out of events entirely.
 import logging
 import os
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from app.config import settings
 
@@ -24,9 +25,53 @@ _REDACTED = "[redacted]"
 _SENSITIVE_HEADERS = {"authorization", "cookie", "set-cookie", "x-api-key", "apikey"}
 
 
+_CONNECTION_URL_SETTINGS = (
+    "database_url",
+    "redis_url",
+    "celery_broker_url",
+    "celery_result_backend",
+)
+
+
+def _url_passwords(urls: list[str]) -> list[str]:
+    """Password components extracted from connection URLs.
+
+    The full URLs are already scrubbed, but that only matches a DSN rendered
+    *exactly* as configured. The same password re-rendered in another form
+    slips through — a DSN rebuilt without the ``+asyncpg`` suffix, a different
+    query string, a libpq keyword string, or a driver that logs host and
+    password separately. Scrubbing the password component itself covers those.
+
+    Both the raw and percent-decoded forms are returned: a password containing
+    reserved characters is encoded inside the URL but usually appears decoded
+    when a driver reports it on its own.
+    """
+    found: list[str] = []
+    for url in urls:
+        try:
+            password = urlsplit(url).password
+        except ValueError:
+            # Malformed URL (bad IPv6 literal, stray brackets) — nothing to
+            # extract, and this must never raise inside before_send.
+            continue
+        if not password:
+            continue
+        found.append(password)
+        decoded = unquote(password)
+        if decoded != password:
+            found.append(decoded)
+    return found
+
+
 def _secret_values() -> list[str]:
     """Concrete secret strings to strip from any outgoing event text. The
-    minimum length guard avoids redacting short/empty config values."""
+    minimum length guard avoids redacting short/empty config values.
+
+    Note the guard applies to bare passwords too. A password shorter than the
+    threshold is left unscrubbed rather than risk redacting ordinary words out
+    of every error message — short passwords are a credential-hygiene problem,
+    not something to fix by making error reports unreadable."""
+    connection_urls = [getattr(settings, name, "") or "" for name in _CONNECTION_URL_SETTINGS]
     candidates = [
         settings.supabase_service_role_key,
         settings.r2_access_key_id,
@@ -38,10 +83,9 @@ def _secret_values() -> list[str]:
         # Connection URLs embed passwords (Supabase DB password, Render Redis
         # password) and routinely appear verbatim in asyncpg/SQLAlchemy/redis
         # connection errors — the most common thing an error tracker sees.
-        settings.database_url,
-        settings.redis_url,
-        settings.celery_broker_url,
-        settings.celery_result_backend,
+        *connection_urls,
+        # ...and the password on its own, for the re-rendered forms above.
+        *_url_passwords(connection_urls),
     ]
     return [c for c in candidates if c and len(c) >= 6]
 
