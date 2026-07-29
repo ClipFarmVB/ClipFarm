@@ -60,6 +60,19 @@ jobs:
     # A wedged review would otherwise idle against the 6-hour default.
     timeout-minutes: 20
     steps:
+      # Without this the runner has no working tree: the action logs "fatal: not
+      # in a git directory" and the review has no code to read. The first two
+      # runs burned 38 turns each and posted nothing because of it.
+      #
+      # The ref differs by trigger: a pull_request event carries the head SHA,
+      # while a dispatch only knows the PR number, so build the pull ref from it.
+      # fetch-depth: 0 so diffs against the base branch resolve.
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', inputs.pr_number) }}
+          fetch-depth: 0
+
       - name: Review
         uses: anthropics/claude-code-action@v1
         with:
@@ -67,3 +80,12 @@ jobs:
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr_number }}"
+          # TEMPORARY, REVERT AFTER DIAGNOSIS. The action hides Claude's output
+          # by default "for security"; without it a failing run is undebuggable.
+          # This repo is PUBLIC, so Actions logs are world-readable — anything
+          # Claude prints becomes public while this is on. Remove once the
+          # review is confirmed working.
+          show_full_output: true
+          # Backstop on cost, not a target: a healthy review took 18 turns, the
+          # runaway one hit 38 ($2.14 of subscription usage for zero output).
+          claude_args: "--max-turns 30"
