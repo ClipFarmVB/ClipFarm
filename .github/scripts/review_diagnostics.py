@@ -81,6 +81,38 @@ def walk(node: object):
             yield from walk(v)
 
 
+_DENIAL_RE = re.compile(
+    r"permission|denied|not allowed|requested permissions|granted", re.IGNORECASE
+)
+
+
+def text_of(value: object) -> str:
+    """Flatten a `content` field to plain text.
+
+    The SDK writes it as a bare string, a block dict, or a list of blocks
+    depending on the tool, so all three shapes have to work.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return str(value.get("text") or value.get("content") or "")
+    if isinstance(value, list):
+        return " ".join(text_of(v) for v in value)
+    return ""
+
+
+def first_line(raw: str, limit: int = 200) -> str:
+    """First line only, capped and redacted.
+
+    Errors are short and diagnostic; a tool_result body can be arbitrarily
+    large and may echo file contents, so never take more than the first line.
+    """
+    stripped = raw.strip()
+    if not stripped:
+        return "unspecified"
+    return redact(stripped.splitlines()[0], limit)
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("review-diagnostics: no log path given")
@@ -102,34 +134,38 @@ def main() -> int:
     tool_calls: Counter[str] = Counter()
     result: dict = {}
 
+    # Pass 1: the result block, and a tool_use_id -> tool name map. Errors arrive
+    # on tool_result blocks, which name only the id — without this map every
+    # denial is attributed to "unknown".
+    tool_names: dict[str, str] = {}
     for node in walk(entries):
         if node.get("type") == "result":
             result = node
+        if node.get("type") in {"tool_use", "server_tool_use"}:
+            name = node.get("name") or node.get("tool_name")
+            if isinstance(name, str):
+                tool_calls[name] += 1
+                tid = node.get("id")
+                if isinstance(tid, str):
+                    tool_names[tid] = name
 
-        name = node.get("name") or node.get("tool_name")
-        if isinstance(name, str) and node.get("type") in {"tool_use", "server_tool_use"}:
-            tool_calls[name] += 1
-
-        blob = " ".join(
-            str(node.get(k, "")) for k in ("permission_denial", "denial_reason", "subtype", "error")
-        ).lower()
-        looks_denied = (
-            node.get("permission_denied") is True
-            or "permission" in blob and "deni" in blob
-            or node.get("subtype") == "permission_denial"
-        )
-        if looks_denied:
-            tool = name if isinstance(name, str) else str(node.get("tool", "unknown"))
-            denied_by_tool[tool] += 1
-            # One short example per tool — enough to identify the pattern.
-            if tool not in denial_examples:
-                sample = node.get("input") or node.get("command") or node.get("message") or ""
-                if sample:
-                    denial_examples[tool] = redact(sample)
-
-        if node.get("is_error") is True:
-            msg = node.get("error") or node.get("message") or node.get("subtype") or "unspecified"
-            error_texts[redact(msg, 160)] += 1
+    # Pass 2: walk top-level entries, because the error text often sits in a
+    # `tool_use_result` field on the *envelope* rather than inside the
+    # tool_result block itself. Missing that is why everything previously came
+    # back as "unspecified".
+    for entry in entries:
+        sibling = entry.get("tool_use_result") if isinstance(entry, dict) else None
+        for node in walk(entry):
+            if node.get("type") != "tool_result" or node.get("is_error") is not True:
+                continue
+            tool = tool_names.get(str(node.get("tool_use_id")), "unknown")
+            raw = text_of(node.get("content")) or text_of(sibling)
+            msg = first_line(raw)
+            if _DENIAL_RE.search(raw):
+                denied_by_tool[tool] += 1
+                denial_examples.setdefault(tool, msg)
+            else:
+                error_texts[f"{tool}: {msg}"] += 1
 
     # ASCII only: this has to survive a cp1252 console as well as a UTF-8 runner.
     print("--- review diagnostics (redacted) ---")
