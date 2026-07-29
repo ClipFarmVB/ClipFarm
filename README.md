@@ -253,7 +253,11 @@ We work like a small company: **branches + PRs only, never commit to `main`.**
 - **CI** (`.github/workflows/ci.yml`) runs on every PR and is **required to pass** before
   merge (branch protection on `main`): `Web (lint + typecheck)` and `API (ruff + mypy)`.
   The `.hooks/pre-commit` hook runs the exact same checks locally (ruff, mypy, eslint, tsc).
-- **Backlog** lives on a Google Docs kanban as `CF-##` cards.
+- **Backlog** lives on the `ClipFarmVB` GitHub Project (#1) as `CF-##` cards, each
+  backed by an issue titled `CF-## · Description`. Link one from a PR with a bare
+  `Closes #<issue>` — `**Board:** CF-##` alone is not parsed by GitHub, so the
+  issue stays open and the card never moves.
+- **Agent conventions** live in `CLAUDE.md` at the repo root.
 
 ---
 
