@@ -159,6 +159,50 @@ jobs:
               > "$GITHUB_WORKSPACE/.backlog-card.md"
           fi
 
+      # The code-review skill refuses to review a PR it has already commented on
+      # — "PRs already reviewed (automatically skipped)", per the plugin README,
+      # with no flag to override. That makes an explicit re-review request a
+      # silent no-op: the run succeeds, costs money, and posts nothing.
+      #
+      # So on an explicit re-review (dispatch or an @claude comment) the previous
+      # review is removed first, and the new one supersedes it. Not done on
+      # `opened`: there is nothing to supersede, and deleting on the automatic
+      # path would be a surprising thing for the workflow to do by itself.
+      #
+      # Consequence worth knowing: review history is not kept. The PR carries one
+      # review reflecting the current code rather than a thread over time. That
+      # matches how approvals now work — they are dismissed on push, so a review
+      # of superseded code has no standing anyway.
+      #
+      # Never fails the job. If deletion does not work the skill simply skips, an
+      # outcome no worse than before this step existed.
+      - name: Supersede the previous review
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+        run: |
+          set -uo pipefail
+          # Matches on the review's own heading rather than every claude-authored
+          # comment, so an unrelated @claude exchange on the PR is left alone.
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.user.login == "claude" or .user.login == "claude[bot]")
+                      | select(.body | startswith("## Code review")) | .id' 2>/dev/null || true)
+
+          if [ -z "${ids:-}" ]; then
+            echo "No previous Claude review to supersede."
+            exit 0
+          fi
+
+          for id in $ids; do
+            if gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$id" >/dev/null 2>&1; then
+              echo "Removed superseded review comment $id"
+            else
+              echo "Could not remove comment $id — the skill will likely skip this run."
+            fi
+          done
+
       - name: Review
         uses: anthropics/claude-code-action@v1
         with:
