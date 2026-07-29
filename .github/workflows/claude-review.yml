@@ -16,11 +16,18 @@ on:
   pull_request:
     types: [opened]
 
-# Least privilege: read the code, write the review. No `contents: write` (this
-# job never pushes) and no `id-token` (that is only for Bedrock/Vertex OIDC).
+# Least privilege: read the code, write the review. No `contents: write` — this
+# job never pushes.
+#
+# `id-token: write` is required even though this is not Bedrock/Vertex: the
+# action exchanges a GitHub OIDC token for its own GitHub App token, so reviews
+# post as the Claude app rather than a generic bot. Without it the run dies in
+# setupGitHubToken with "Could not fetch an OIDC token" before Claude is ever
+# reached. It only permits minting an OIDC identity token, not repo writes.
 permissions:
   contents: read
   pull-requests: write
+  id-token: write
 
 concurrency:
   group: claude-review-pr-${{ github.event.pull_request.number }}
