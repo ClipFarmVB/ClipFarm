@@ -141,7 +141,11 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
-          prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr_number }}"
+          # --comment is what actually posts to GitHub. Without it the skill
+          # runs a full review and reports only to the job log, ending with
+          # "Since --comment was not passed, no comments were posted to GitHub"
+          # — which reads exactly like a silent failure from the outside.
+          prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr_number }} --comment"
           # TEMPORARY, REVERT AFTER DIAGNOSIS. The action hides Claude's output
           # by default "for security"; without it a failing run is undebuggable.
           # This repo is PUBLIC, so Actions logs are world-readable — anything
