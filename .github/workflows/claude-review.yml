@@ -146,12 +146,12 @@ jobs:
           # "Since --comment was not passed, no comments were posted to GitHub"
           # — which reads exactly like a silent failure from the outside.
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr_number }} --comment"
-          # TEMPORARY, REVERT AFTER DIAGNOSIS. The action hides Claude's output
-          # by default "for security"; without it a failing run is undebuggable.
-          # This repo is PUBLIC, so Actions logs are world-readable — anything
-          # Claude prints becomes public while this is on. Remove once the
-          # review is confirmed working.
-          show_full_output: true
+          # NOTE: `show_full_output: true` was set here temporarily to diagnose
+          # reviews that ran but posted nothing. It is deliberately NOT set now —
+          # this repo is public, so Actions logs are world-readable and the flag
+          # publishes everything Claude prints. If a future run needs debugging,
+          # turn it on, diagnose, and take it back out in the same sitting.
+          #
           # `prompt` stays a bare skill invocation — wrapping prose around a
           # slash command risks it not being recognised as one. Extra guidance
           # goes through --append-system-prompt, the documented channel for it.
