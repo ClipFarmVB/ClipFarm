@@ -22,7 +22,10 @@ changes that break rally boundaries.
 - **Branches + PRs only, never commit to `main`.** Squash on merge; linear history.
 - **Branch name:** `category/CF-##-short-description`. Categories in use: `devops`,
   `ball-detection`, `deadtime`, `eval`, `docs`, `fix`, `ci`, `chore`.
-- **PR title:** `type(scope): CF-## description` — every open PR follows this.
+- **PR title:** `type(scope): CF-## description` for new work. Most recent PRs
+  follow it, but not all — some older ones open with the card id instead
+  (`CF-65a · …`), and the scope is sometimes omitted (`docs: …`). Match the
+  documented form rather than the nearest example.
 - **PR body must contain a bare `Closes #<issue-number>`.** The template's
   `**Board:** CF-##` line is for humans; GitHub does not parse it, so without a
   real `Closes #N` the issue stays open after merge and its board card never
