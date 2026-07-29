@@ -33,7 +33,20 @@ _CONNECTION_URL_SETTINGS = (
 )
 
 
-def _url_passwords(urls: list[str]) -> list[str]:
+def _is_shipped_default(setting_name: str, value: str) -> bool:
+    """True when a setting still holds the default committed in config.py.
+
+    A value published in the repository is not a secret, and its password
+    component is often an ordinary word — the default `database_url` uses
+    literally ``password``. Turning that into a scrub pattern would redact the
+    word out of every event, mangling exactly the messages this module exists
+    to capture (``password authentication failed for user "postgres"``).
+    """
+    field = type(settings).model_fields.get(setting_name)
+    return field is not None and value == field.default
+
+
+def _url_passwords(named_urls: list[tuple[str, str]]) -> list[str]:
     """Password components extracted from connection URLs.
 
     The full URLs are already scrubbed, but that only matches a DSN rendered
@@ -45,9 +58,16 @@ def _url_passwords(urls: list[str]) -> list[str]:
     Both the raw and percent-decoded forms are returned: a password containing
     reserved characters is encoded inside the URL but usually appears decoded
     when a driver reports it on its own.
+
+    Settings left at their shipped default contribute nothing — see
+    ``_is_shipped_default``. The full default URL is still scrubbed, which is
+    harmless; it is only the bare password component that is dangerous to
+    treat as a secret.
     """
     found: list[str] = []
-    for url in urls:
+    for name, url in named_urls:
+        if _is_shipped_default(name, url):
+            continue
         try:
             password = urlsplit(url).password
         except ValueError:
@@ -71,7 +91,8 @@ def _secret_values() -> list[str]:
     threshold is left unscrubbed rather than risk redacting ordinary words out
     of every error message — short passwords are a credential-hygiene problem,
     not something to fix by making error reports unreadable."""
-    connection_urls = [getattr(settings, name, "") or "" for name in _CONNECTION_URL_SETTINGS]
+    named_urls = [(name, getattr(settings, name, "") or "") for name in _CONNECTION_URL_SETTINGS]
+    connection_urls = [url for _, url in named_urls]
     candidates = [
         settings.supabase_service_role_key,
         settings.r2_access_key_id,
@@ -85,7 +106,8 @@ def _secret_values() -> list[str]:
         # connection errors — the most common thing an error tracker sees.
         *connection_urls,
         # ...and the password on its own, for the re-rendered forms above.
-        *_url_passwords(connection_urls),
+        # Settings still at their shipped default are skipped there.
+        *_url_passwords(named_urls),
     ]
     return [c for c in candidates if c and len(c) >= 6]
 
