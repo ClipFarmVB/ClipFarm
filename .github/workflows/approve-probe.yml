@@ -2,21 +2,25 @@ name: Approve probe (TEMPORARY)
 
 # TEMPORARY — DELETE AFTER CF-105 (#128) RESOLVES.
 #
-# Answers one question and nothing else: does an approving review submitted by
-# the Claude GitHub App satisfy `required_approving_review_count: 1` on the
-# main-protection ruleset?
+# Answers one question and nothing else: does an approving review submitted by a
+# workflow satisfy `required_approving_review_count: 1` on the main-protection
+# ruleset?
 #
-# Why a probe at all: CF-105's whole design rests on that being true, and every
-# other path is blocked or expensive.
-#   - GITHUB_TOKEN / github-actions[bot] cannot approve here at all — the repo
-#     reports `can_approve_pull_request_reviews: false`, and both controls are
-#     greyed out because the org policy pins them. Loosening that would let every
-#     workflow in every ClipFarmVB repo approve PRs, which is far too broad a
-#     change for this feature.
-#   - claude[bot] is a third-party App, so that Actions policy does not apply to
-#     it. This probe tests exactly that path and nothing else.
+# CF-105's whole design rests on that being true, so it is worth proving before
+# building a verdict pipeline on top of it.
 #
-# Run it against a throwaway PR, read the result, then delete this file.
+# Uses GITHUB_TOKEN rather than driving Claude to run the command. Once the org
+# enabled "Allow GitHub Actions to create and approve pull requests"
+# (can_approve_pull_request_reviews: true), a plain shell step can approve — which
+# is deterministic, costs no subscription usage, and is the exact mechanism
+# CF-105 would ship. Having the model run `gh pr review` would work too, but tool
+# calls have been denied non-deterministically all through this epic, and a merge
+# gate should not depend on that.
+#
+# Note the org default token permission is still `read`, so `pull-requests: write`
+# below is doing real work — without it the approve call is rejected.
+#
+# Run against a throwaway PR, read the result, then delete this file.
 
 on:
   workflow_dispatch:
@@ -28,44 +32,47 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  id-token: write
 
 jobs:
   probe:
     name: Approve probe
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      # Needed only so the diagnostics script below exists on disk. The probe
-      # deliberately does NOT check out the PR under test — it must not read the
-      # diff, only approve.
-      - uses: actions/checkout@v4
-
-      - name: Approve as claude[bot]
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # No skill, no review — a single deterministic action so the result is
-          # unambiguous. If the approval does not appear, the cause is the
-          # mechanism rather than the model deciding the code was unworthy.
-          prompt: |
-            Submit an approving review on pull request ${{ github.repository }}#${{ inputs.pr_number }}
-            by running exactly:
-
-              gh pr review ${{ inputs.pr_number }} --repo ${{ github.repository }} --approve --body "Approval mechanism probe (CF-105). Not a code review."
-
-            Do not review the code. Do not read the diff. Do not do anything else.
-            Report the command's exit status and any error text verbatim.
-          claude_args: "--max-turns 6"
-
-      - name: Probe result (redacted)
-        if: always()
-        continue-on-error: true
+      - name: Submit approving review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr_number }}
         run: |
-          log="${RUNNER_TEMP}/claude-execution-output.json"
-          script=".github/scripts/review_diagnostics.py"
-          if [ -f "$log" ] && [ -f "$script" ]; then
-            python3 "$script" "$log" || true
+          set -uo pipefail
+          echo "Approving #$PR as the workflow token..."
+          if gh pr review "$PR" --repo "$GITHUB_REPOSITORY" --approve \
+               --body "Approval mechanism probe (CF-105). Not a code review."; then
+            echo "approve call: SUCCEEDED"
           else
-            echo "probe: no execution log or diagnostics script available"
+            echo "approve call: FAILED (see error above)"
+            echo "'not permitted to approve' -> the org setting has not propagated."
+            echo "'Resource not accessible' -> the token lacks pull-requests: write."
+            exit 1
           fi
+
+      # The call succeeding is not the same as the approval counting — the
+      # ruleset could still decline to honour it. This step is what actually
+      # answers the question.
+      - name: Did it satisfy the gate?
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr_number }}
+        run: |
+          set -uo pipefail
+          echo "--- reviews on #$PR ---"
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json reviews \
+            --jq '.reviews[] | "  \(.author.login) [\(.state)]"' || true
+          echo "--- gate state ---"
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+            --json reviewDecision,mergeStateStatus,mergeable \
+            --jq '"  reviewDecision=\(.reviewDecision // "none")  mergeStateStatus=\(.mergeStateStatus)  mergeable=\(.mergeable)"' || true
+          echo
+          echo "PASS: reviewDecision=APPROVED and mergeStateStatus no longer BLOCKED"
+          echo "FAIL: a review is listed but reviewDecision stays REVIEW_REQUIRED"
