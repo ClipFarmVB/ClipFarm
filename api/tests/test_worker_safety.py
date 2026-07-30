@@ -1,0 +1,81 @@
+"""CF-65a: worker redelivery/concurrency safety — broker config + per-game lock.
+
+Guarded with importorskip like the other api tests: the api CI job installs only
+ruff/mypy/pytest today, so these light up locally (and in CI once CF-102 installs
+api deps). Run from the api/ dir: `cd api && pytest tests/test_worker_safety.py`.
+"""
+import pytest
+
+pytest.importorskip("celery")
+
+
+def test_celery_redelivery_config():
+    """The broker settings that prevent the CF-45 redelivery class must be set."""
+    from app.workers.celery_app import celery_app
+
+    conf = celery_app.conf
+    assert conf.task_acks_late is True
+    assert conf.task_reject_on_worker_lost is True
+    vt = conf.broker_transport_options.get("visibility_timeout")
+    assert vt and vt > 3600, "visibility_timeout must exceed Redis' 3600s default"
+
+
+def test_lock_ttl_exceeds_visibility_timeout():
+    """The lock must outlive the visibility timeout, or a redelivery during an
+    over-running task acquires it and runs concurrently (CF-65a review #2)."""
+    from app.config import settings
+
+    assert settings.process_lock_ttl_seconds > settings.celery_visibility_timeout
+
+
+def _fake_redis_or_skip():
+    """A FakeStrictRedis with Lua support, or skip (release() uses a Lua CAS)."""
+    fakeredis = pytest.importorskip("fakeredis")
+    fake = fakeredis.FakeStrictRedis()
+    try:
+        fake.eval("return 1", 0)
+    except Exception:
+        pytest.skip("fakeredis without Lua support (install fakeredis[lua])")
+    return fake
+
+
+def _patch_lock_client(monkeypatch, fake):
+    pytest.importorskip("redis")
+    from app.workers import locks
+
+    monkeypatch.setattr(locks, "_client", fake)
+    monkeypatch.setattr(
+        locks,
+        "_RELEASE",
+        fake.register_script(
+            "if redis.call('get', KEYS[1]) == ARGV[1] "
+            "then return redis.call('del', KEYS[1]) else return 0 end"
+        ),
+    )
+    return locks
+
+
+def test_lock_is_mutually_exclusive(monkeypatch):
+    fake = _fake_redis_or_skip()
+    locks = _patch_lock_client(monkeypatch, fake)
+
+    a = locks.GameLock("game-1", ttl_seconds=60)
+    b = locks.GameLock("game-1", ttl_seconds=60)
+    assert a.acquire() is True
+    assert b.acquire() is False        # a holds it
+    a.release()
+    assert b.acquire() is True         # freed
+
+
+def test_release_is_token_scoped(monkeypatch):
+    """A stale holder must not delete a lock another worker re-acquired."""
+    fake = _fake_redis_or_skip()
+    locks = _patch_lock_client(monkeypatch, fake)
+
+    a = locks.GameLock("game-2", ttl_seconds=60)
+    assert a.acquire()
+    fake.delete(a.key)                 # simulate a's lock expiring
+    b = locks.GameLock("game-2", ttl_seconds=60)
+    assert b.acquire()                 # b now owns it
+    a.release()                        # a's stale release must be a no-op
+    assert fake.get(b.key) == b.token.encode()

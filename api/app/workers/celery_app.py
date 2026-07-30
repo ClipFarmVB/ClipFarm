@@ -27,6 +27,15 @@ celery_app.conf.update(
     task_track_started=True,
     worker_prefetch_multiplier=1,  # Process one job at a time (GPU workloads)
     broker_connection_retry_on_startup=True,
+    # ── CF-65a: redelivery safety ─────────────────────────────────────────────
+    # Ack a task only after it finishes, and requeue it if the worker is killed
+    # mid-task. Combined with the per-game lock (app/workers/locks.py) and the
+    # idempotent clip refresh (CF-37), a redelivered or duplicated task is safe.
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    # Redis default is 3600s: a task longer than that is redelivered while it's
+    # still running (CF-45). Raise it above worst-case task time.
+    broker_transport_options={"visibility_timeout": settings.celery_visibility_timeout},
 )
 
 
