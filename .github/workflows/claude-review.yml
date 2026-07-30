@@ -231,11 +231,14 @@ jobs:
           # "Since --comment was not passed, no comments were posted to GitHub"
           # — which reads exactly like a silent failure from the outside.
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }} --comment"
-          # NOTE: `show_full_output: true` was set here temporarily to diagnose
-          # reviews that ran but posted nothing. It is deliberately NOT set now —
-          # this repo is public, so Actions logs are world-readable and the flag
-          # publishes everything Claude prints. If a future run needs debugging,
-          # turn it on, diagnose, and take it back out in the same sitting.
+          # TEMPORARY — turned back on to diagnose the "Bash exists but is not
+          # enabled in this context" failure on #131 (Agent x1, Bash x1, denied).
+          # Suspected cause: a subagent spawned via the Agent/Task tool does not
+          # inherit the main thread's --allowedTools scoping and gets no Bash at
+          # all. This repo is public, so Actions logs are world-readable while
+          # this is on — remove it again in the same sitting once the transcript
+          # is read. Tracked in the PR body, not just here.
+          show_full_output: true
           #
           # `prompt` stays a bare skill invocation — wrapping prose around a
           # slash command risks it not being recognised as one. Extra guidance
