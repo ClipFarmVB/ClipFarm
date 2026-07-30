@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  web:
+    name: Web (lint + typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --workspace=web
+      - run: npm run lint --workspace=web
+      - run: npm run typecheck --workspace=web
+
+  api:
+    name: API (ruff + mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install ruff mypy pytest
+      - run: ruff check api/
+      - run: mypy api/app --ignore-missing-imports
+      # ml/eval is pure, unit-tested logic — lint it too (rest of ml/ is not yet covered).
+      - run: ruff check ml/eval
+      - run: mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
+      # ml unit tests (eval metrics + dead-time) — stdlib-only, runs in seconds.
+      - run: python -m pytest ml/tests/
+      # api unit tests. Like ml/tests these need no application dependencies —
+      # api/app/workers/progress.py imports only stdlib — so the `pip install
+      # ruff mypy pytest` above is enough and api/requirements.txt is not.
+      #
+      # working-directory is api/ so `from app.workers.progress import ...`
+      # resolves. The first api test that imports SQLAlchemy/FastAPI/boto3 will
+      # need requirements installed here; add it then rather than paying the
+      # install cost on every run now.
+      #
+      # NOTE: do not rename this job to match what it actually runs. "API (ruff
+      # + mypy)" is a required status check by exact name in the main-protection
+      # ruleset — renaming stops that context reporting and blocks every PR
+      # until the ruleset is updated to match.
+      - run: python -m pytest tests/
+        working-directory: api

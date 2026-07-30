@@ -1,0 +1,10 @@
+.git
+.gitignore
+node_modules
+web/node_modules
+api/.venv
+.venv
+web/.next
+__pycache__
+*.pyc
+.DS_Store

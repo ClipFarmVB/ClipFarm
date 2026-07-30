@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+*.egg
+
+# Build outputs
+.next/
+out/
+build/
+
+# Environment files
+.env
+.env.docker
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local scratch / manual tuning workspace (never commit)
+ball-track/
+
+# ML / data
+*.pt
+*.pth
+*.onnx
+*.mp4
+data/
+runs/
+
+# Misc
+.turbo/
+.claude/

@@ -1,0 +1,44 @@
+name: Supabase keepalive
+
+# Prevents the Supabase free tier from auto-pausing after ~7 days idle (CF-18).
+# Opens a real Postgres connection and runs SELECT 1 so the project stays active.
+# A plain HTTP ping to /health is NOT enough — it never touches the DB.
+#
+# NOTE: scheduled workflows only run from the default branch (main), so this
+# starts firing only once merged. Trigger it manually via "Run workflow" to test.
+#
+# Requires repo secret SUPABASE_DB_URL: a plain libpq connection string to the
+# Supabase session pooler (port 5432), e.g.
+#   postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+# Do NOT include the "+asyncpg" driver suffix that app config uses.
+
+on:
+  schedule:
+    # Every 2 days at 06:00 UTC — well inside the ~7-day idle window, with
+    # margin in case GitHub drops a scheduled run under load.
+    - cron: "0 6 */2 * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: supabase-keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    name: Ping Supabase
+    runs-on: ubuntu-latest
+    # A hung psql connect would otherwise idle against the 6-hour default.
+    timeout-minutes: 5
+    steps:
+      - name: SELECT 1
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::error::SUPABASE_DB_URL secret is not set."
+            exit 1
+          fi
+          # psql ships on ubuntu-latest runners. -q + ON_ERROR_STOP so a
+          # connection failure fails the job; the URL is never echoed.
+          psql "$SUPABASE_DB_URL" -qtAX -v ON_ERROR_STOP=1 -c "SELECT 1;"
+          echo "Keepalive query succeeded."

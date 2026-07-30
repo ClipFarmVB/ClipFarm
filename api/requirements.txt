@@ -1,0 +1,35 @@
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# Database
+sqlalchemy==2.0.36
+alembic==1.14.0
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+
+# Auth / JWT
+PyJWT[crypto]==2.10.1
+
+# Storage (S3/R2 via boto3)
+boto3==1.35.90
+
+# Job queue
+celery==5.4.0
+redis==5.2.1
+
+# Env / config
+python-dotenv==1.0.1
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# Utilities
+httpx==0.28.1
+
+# Modal GPU offload (CF-11) — client needed to invoke the deployed function;
+# `modal deploy ml/modal_app.py` (run separately, needs `modal setup` auth)
+modal==1.5.1
+
+# Error monitoring (CF-89) — shared by the api and worker; no-op without SENTRY_DSN
+sentry-sdk[fastapi,celery]==2.19.2

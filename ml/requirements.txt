@@ -1,0 +1,25 @@
+# ML / vision
+ultralytics==8.3.55       # YOLOv8 (includes pose estimation)
+torch>=2.1.0
+torchvision>=0.16.0
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+scikit-learn==1.6.0
+
+# CLIP verification (zero-shot action filtering)
+transformers>=4.40.0
+Pillow>=10.0.0
+
+# Video / media
+ffmpeg-python==0.2.0
+
+# OCR (jersey numbers)
+paddlepaddle==2.6.2
+paddleocr==2.9.1
+
+# Roboflow inference (ball detection)
+inference-sdk>=0.9.0
+python-dotenv>=1.0.0
+
+# Utilities
+tqdm==4.67.1

@@ -1,0 +1,9 @@
+line-length = 120
+
+[lint]
+select = ["E", "F", "W"]
+
+[lint.per-file-ignores]
+"app/models/*.py" = ["F821"]       # forward references in SQLAlchemy relationships
+"app/workers/celery_app.py" = ["E402"]  # imports after sys.path setup
+"alembic/versions/*.py" = ["F401"]      # unused imports in migrations
