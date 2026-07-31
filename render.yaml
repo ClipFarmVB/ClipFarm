@@ -8,7 +8,7 @@
 # First-time setup: Render Dashboard → New → Blueprint → connect
 # ClipFarmVB/ClipFarm → branch `main`. Render reads this file and creates every
 # service. Then fill the secrets (any env var shown as `sync: false`, plus the
-# `clipfarm-shared` group). See DEPLOY.md for the full checklist.
+# `clipfarm-shared` group). See DEPLOY_RENDER.md for the full checklist.
 #
 # Auto-deploy is deliberately OFF on all three services (see the note on
 # clipfarm-api): the api's preDeployCommand runs Alembic migrations, and
@@ -93,7 +93,7 @@ services:
     # a migration as a coordinated step; this keeps prod consistent with that.
     # Deploy from the Render dashboard (or via a deploy hook) when a batch is
     # ready. Revisit once there's a staging environment to catch migrations
-    # first. See DEPLOY.md § Deploying a change.
+    # first. See DEPLOY_RENDER.md § Deploying a change.
     autoDeploy: false
     envVars:
       - fromGroup: clipfarm-shared
@@ -132,7 +132,7 @@ services:
     dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT celery -A app.workers.celery_app worker --loglevel=info --pool=solo"
     # NOTE: the image runs as non-root `appuser` (uid 1000). A Render disk can
     # mount root-owned, which would mask the Dockerfile's build-time chown of
-    # /models and make weight writes fail. Verify on first deploy (see DEPLOY.md
+    # /models and make weight writes fail. Verify on first deploy (see DEPLOY_RENDER.md
     # "model cache" check); if writes fail, the cache is an optimization only —
     # point the MODEL_* vars off the disk to fall back to per-deploy re-download.
     disk:
