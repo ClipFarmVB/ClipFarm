@@ -217,6 +217,8 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
     from app.workers.progress import (
         GameProgress, compute_stage_spans, CONDENSE_SECS_PER_KEPT_SEC,
     )
+    from app.workers.locks import GameLock
+    from app.config import settings as _cfg
     from app.services import storage as s3
     import cv2 as _cv2
     import os as _os
@@ -243,6 +245,13 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
     # this is a retry scheduled after a delete. Its DB row and raw video are gone,
     # so there's nothing to do — abandon rather than 404 on download and retry.
     if _abandoned():
+        return
+
+    # CF-65a: never process one game on two workers at once. A redelivered or
+    # duplicated task whose game is already in flight is a harmless no-op.
+    lock = GameLock(gid, ttl_seconds=_cfg.process_lock_ttl_seconds)
+    if not lock.acquire():
+        logger.warning("Game %s already being processed elsewhere — skipping duplicate delivery", gid)
         return
 
     try:
@@ -589,3 +598,5 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         logger.exception("Processing failed for game %s", game_id)
         sync_set_game_status(gid, "failed", error_message=str(exc))
         raise self.retry(exc=exc)
+    finally:
+        lock.release()
