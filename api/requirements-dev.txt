@@ -1,0 +1,7 @@
+# Test-only dependencies (not installed into the runtime image).
+#   pip install -r api/requirements-dev.txt && cd api && pytest tests
+# CI wiring to actually gate on api/tests lands in CF-102 (#113); today the
+# api CI job installs only ruff/mypy/pytest, so these tests skip there.
+-r requirements.txt
+pytest==8.3.4
+fakeredis[lua]==2.26.2
