@@ -10,7 +10,10 @@
 # service. Then fill the secrets (any env var shown as `sync: false`, plus the
 # `clipfarm-shared` group). See DEPLOY.md for the full checklist.
 #
-# After the first apply, pushes to `main` auto-deploy (autoDeploy defaults on).
+# Auto-deploy is deliberately OFF on all three services (see the note on
+# clipfarm-api): the api's preDeployCommand runs Alembic migrations, and
+# unattended schema changes on every merge to `main` is a failure mode this repo
+# has already lived through. Deploy from the dashboard when a batch is ready.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Server secrets shared by api + worker. Filled once in the dashboard; both
@@ -42,9 +45,14 @@ envVarGroups:
         value: production
 
 services:
-  # ── Redis (Celery broker + result backend) ─────────────────────────────────
+  # ── Redis / Key Value (Celery broker + result backend) ─────────────────────
   # noeviction so a full instance never silently drops queued tasks.
-  # `plan: free` (25 MB) can work at low volume; `starter` is the safe default.
+  #
+  # Do NOT drop this to `plan: free`: free Key Value instances have no data
+  # persistence, so a restart loses every queued job (and once CF-65a's
+  # acks_late lands, in-flight ones too). Paid plans persist by default
+  # (journal + snapshot — up to ~1s of writes lost on restart), which is what
+  # makes the queue survivable.
   - type: keyvalue
     name: clipfarm-redis
     region: oregon
@@ -78,6 +86,15 @@ services:
     # replicas never race the schema and a shared DB isn't advanced by a stray
     # boot. Fixes the per-boot `alembic upgrade head` the dev compose file uses.
     preDeployCommand: "sh -lc 'cd /app/api && alembic upgrade head'"
+    # Deliberately OFF. With autoDeploy on, this preDeployCommand would run a
+    # migration against the production database on every merge to main, with
+    # nobody watching — the same unattended-schema-change class of failure as
+    # the 007→008 crash-loop, one environment over. CONTRIBUTING treats landing
+    # a migration as a coordinated step; this keeps prod consistent with that.
+    # Deploy from the Render dashboard (or via a deploy hook) when a batch is
+    # ready. Revisit once there's a staging environment to catch migrations
+    # first. See DEPLOY.md § Deploying a change.
+    autoDeploy: false
     envVars:
       - fromGroup: clipfarm-shared
       - key: DEBUG
@@ -89,15 +106,16 @@ services:
       - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.app
         sync: false
       - key: REDIS_URL
-        fromDatabase: { name: clipfarm-redis, property: connectionString }
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
       - key: CELERY_BROKER_URL
-        fromDatabase: { name: clipfarm-redis, property: connectionString }
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
       - key: CELERY_RESULT_BACKEND
-        fromDatabase: { name: clipfarm-redis, property: connectionString }
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
 
   # ── Worker (Celery) ────────────────────────────────────────────────────────
-  # `standard` (2 GB) fits local pose (yolov8s @1280). To run on `starter`
-  # (512 MB) instead, set the POSE_* overrides below to the lighter dev values.
+  # `standard` (2 GB) — torch + opencv + ffmpeg in one process makes `starter`
+  # (512 MB) tight regardless of pose settings. Ships with the light POSE_*
+  # config below (see note there) so the box has real headroom on day one.
   # A disk pins the model cache (~114 MB ball model + pose weights) across
   # deploys; a disk means a single instance — horizontal scaling is CF-65.
   - type: worker
@@ -121,6 +139,11 @@ services:
       name: model-cache
       mountPath: /models
       sizeGB: 1
+    # Off for the same reason as the api, plus one of its own: the worker shares
+    # the api's models, so auto-deploying it while the api waits for a manual
+    # deploy would run new task code against the old schema. Deploy the two
+    # together.
+    autoDeploy: false
     envVars:
       - fromGroup: clipfarm-shared
       - key: ROBOFLOW_API_KEY
@@ -130,11 +153,11 @@ services:
       - key: MODAL_TOKEN_SECRET
         sync: false
       - key: REDIS_URL
-        fromDatabase: { name: clipfarm-redis, property: connectionString }
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
       - key: CELERY_BROKER_URL
-        fromDatabase: { name: clipfarm-redis, property: connectionString }
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
       - key: CELERY_RESULT_BACKEND
-        fromDatabase: { name: clipfarm-redis, property: connectionString }
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
       # Persistent model-weight cache (CF-40) — all under the mounted disk.
       - key: MODEL_CACHE_DIR
         value: /models/roboflow
@@ -144,14 +167,18 @@ services:
         value: /models
       - key: YOLO_CONFIG_DIR
         value: /models/ultralytics
-      # ── To fit the cheaper `starter` (512 MB) plan, switch plan above and
-      #    uncomment these to use the lighter pose model: ──
-      # - key: POSE_MODEL
-      #   value: yolov8n-pose.pt
-      # - key: POSE_IMGSZ
-      #   value: "640"
-      # - key: POSE_SKIP_FRAMES
-      #   value: "8"
+      # Pose settings: start on the LIGHT config — the same one the dev stack has
+      # actually exercised. app/config.py's defaults (yolov8s-pose @ 1280, every
+      # 4th frame) are higher quality but have never run on a 2 GB box, and the
+      # first production deploy is a bad place to discover an OOM. Raise these
+      # once the worker's real memory headroom has been measured; it's a config
+      # change + redeploy, no rebuild.
+      - key: POSE_MODEL
+        value: yolov8n-pose.pt
+      - key: POSE_IMGSZ
+        value: "640"
+      - key: POSE_SKIP_FRAMES
+        value: "8"
 
   # ── Web (Next.js) ──────────────────────────────────────────────────────────
   # Native Node runtime (not Docker) — Render runs `next start` and injects PORT.
@@ -168,6 +195,11 @@ services:
     # the source maps are uploaded under for prod stack traces to de-minify.
     buildCommand: npm ci && NEXT_PUBLIC_SENTRY_RELEASE=$RENDER_GIT_COMMIT npm run build --workspace=web
     startCommand: npm run start --workspace=web
+    # Off so the three services deploy as a set — a UI auto-shipped ahead of the
+    # manually-deployed api can call endpoints that aren't live yet. This is the
+    # safest starting point, not a permanent stance: web is the least risky to
+    # flip back on once the deploy flow is proven.
+    autoDeploy: false
     envVars:
       - key: NODE_VERSION
         value: "20"
