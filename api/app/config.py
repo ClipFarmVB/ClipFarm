@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     # this prevents. Keeping the lock longer means the redelivered copy always
     # finds the lock still held and no-ops. (Trade-off: a hard-killed worker
     # orphans the lock until this TTL; a stale-"processing" reaper is the fix —
-    # see follow-up.)
+    # see #149, which gates the Render cutover in #98.)
     process_lock_ttl_seconds: int = 10800    # 3h — deliberately > visibility_timeout
 
     # Modal
