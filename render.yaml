@@ -190,10 +190,14 @@ services:
     branch: main
     region: oregon
     plan: starter
-    # NEXT_PUBLIC_SENTRY_RELEASE is inlined at build time, so it's set here (not
-    # in envVars) from Render's $RENDER_GIT_COMMIT — it must match the release
-    # the source maps are uploaded under for prod stack traces to de-minify.
-    buildCommand: npm ci && NEXT_PUBLIC_SENTRY_RELEASE=$RENDER_GIT_COMMIT npm run build --workspace=web
+    # Both release vars are set here (not in envVars) because NEXT_PUBLIC_* is
+    # inlined at build time. They must carry the SAME value:
+    #   NEXT_PUBLIC_SENTRY_RELEASE — what the browser SDK tags events with
+    #   SENTRY_RELEASE            — what sentry-cli uploads the source maps under
+    # Left unset, sentry-cli auto-detects from git, which on a CI-style checkout
+    # can differ or resolve to nothing. The maps then upload "successfully" and
+    # simply never join the events, so prod traces stay minified with no error.
+    buildCommand: npm ci && SENTRY_RELEASE=$RENDER_GIT_COMMIT NEXT_PUBLIC_SENTRY_RELEASE=$RENDER_GIT_COMMIT npm run build --workspace=web
     startCommand: npm run start --workspace=web
     # Off so the three services deploy as a set — a UI auto-shipped ahead of the
     # manually-deployed api can call endpoints that aren't live yet. This is the
