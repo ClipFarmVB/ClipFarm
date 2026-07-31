@@ -9,15 +9,19 @@ This file covers the steps a person must do — the Blueprint handles everything
 else. Tracked as **CF-68**; related: CF-18 (Supabase Pro), CF-89 (monitoring),
 CF-90 (secret management).
 
-> **Two deploy docs exist — read this one for production.**
+> **Two deploy docs exist — this one is the production path.**
 > [`DEPLOY.md`](./DEPLOY.md) (CF-41) stands the **backend** up on a self-managed
-> VPS with `docker compose`, as the get-off-the-laptop stepping stone. This file
-> deploys the **full stack** (web + api + worker + broker) on Render as managed
-> infrastructure. They are alternative hosting strategies, not sequential steps —
-> CF-41's runbook describes itself as feeding CF-68's backend tier, which is no
-> longer accurate now that CF-68 targets Render rather than a VPS. **The team
-> should pick one as the production path** and retire or relabel the other;
-> running both invites configuration drift over which is authoritative.
+> VPS with `docker compose`. It is an **alternative self-hosted option**, not a
+> stepping stone to this file and not a staging environment — nothing in it is
+> reused here. Keep it as a Render escape hatch and a cheap box for long-running
+> batch work (reprocessing, the CF-55 eval harness); treat this file as
+> authoritative for anything user-facing.
+>
+> **Why Render is production:** the VPS path keeps secrets as a plaintext
+> `.env.docker` on disk, which is exactly what CF-90 (a launch blocker) exists to
+> eliminate; it has no managed TLS, is a single point of failure, and runs
+> `alembic upgrade head` on **every boot** — the hazard this Blueprint removes by
+> moving migrations to `preDeployCommand`.
 
 ---
 
@@ -125,8 +129,15 @@ to production — you deploy deliberately:
 auto-deploy on, any merge to `main` would apply a migration to the production
 database unattended — the same class of failure as the 007→008 crash-loop, one
 environment over, and at odds with `CONTRIBUTING.md` treating migrations as a
-coordinated step. Worth revisiting once there's a staging environment to catch
-migrations first; `clipfarm-web` is the safest one to flip back on.
+coordinated step.
+
+**This is deliberately the substitute for a staging environment.** There isn't
+one yet, and manual deploys buy the same protection for migrations at zero cost:
+a human is the gate. Note the kanban's "Staging" column is a *workflow state*
+("merged, awaiting deploy"), not an environment — it keeps working as-is. A real
+staging environment is **CF-152**, to be added as a second service group in this
+same Blueprint when there are real users; that's also what would let
+`autoDeploy` come back on (`clipfarm-web` first, it's the safest).
 
 ---
 
