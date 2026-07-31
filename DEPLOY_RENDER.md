@@ -119,13 +119,36 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 to production — you deploy deliberately:
 
 1. Merge the batch to `main`.
-2. Render Dashboard → the service → **Manual Deploy → Deploy latest commit**.
-3. Deploy **`clipfarm-api` first** (its `preDeployCommand` applies migrations),
+2. ⚠️ **Check nothing is mid-processing before deploying the worker** — see
+   "Deploying kills in-flight jobs" below. Until **#149 (CF-65g)** lands, a game
+   killed mid-flight stays stuck in `processing`.
+3. Render Dashboard → the service → **Manual Deploy → Deploy latest commit**.
+4. Deploy **`clipfarm-api` first** (its `preDeployCommand` applies migrations),
    then `clipfarm-worker`, then `clipfarm-web`. The worker shares the api's
    models, so shipping it against an un-migrated schema is the thing this
    ordering avoids.
 
-**Why it's off:** the api runs `alembic upgrade head` on every deploy. With
+### ⚠️ Deploying kills in-flight jobs (dependency: #149)
+
+Every Render deploy hard-kills the running worker. CF-65a made that *mostly*
+safe — `task_acks_late` + `task_reject_on_worker_lost` requeue the task — but
+there's a gap it can't close alone:
+
+- the dead worker's per-game lock (`process_lock_ttl_seconds`, **3h**)
+  deliberately outlives the visibility timeout (**2h**), so
+- the requeued copy finds the lock still held and **no-ops**, and
+- the game sits in `processing` with nothing working on it.
+
+`api/app/config.py` names this explicitly: *"a stale-'processing' reaper is the
+fix — see #149, which gates the Render cutover."* **#149 is still open**, so
+until it merges, treat "is anything processing?" as a manual pre-deploy check
+and expect to recover a stranded game by hand (its lock clears after ~3h).
+
+This doesn't block *merging* the Blueprint — nothing deploys until someone
+clicks deploy — but it is a real dependency for the **first production cutover**
+and for any deploy under load.
+
+**Why auto-deploy is off:** the api runs `alembic upgrade head` on every deploy. With
 auto-deploy on, any merge to `main` would apply a migration to the production
 database unattended — the same class of failure as the 007→008 crash-loop, one
 environment over, and at odds with `CONTRIBUTING.md` treating migrations as a
