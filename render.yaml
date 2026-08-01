@@ -1,0 +1,230 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ClipFarm — Render Blueprint (CF-68 · Production deployment)
+#
+# Defines the whole production stack as code: web + api + worker + Redis.
+# Supabase (Postgres/Auth), Cloudflare R2 (storage) and Modal (GPU) stay as
+# external managed services — their credentials are supplied as secrets below.
+#
+# First-time setup: Render Dashboard → New → Blueprint → connect
+# ClipFarmVB/ClipFarm → branch `main`. Render reads this file and creates every
+# service. Then fill the secrets (any env var shown as `sync: false`, plus the
+# `clipfarm-shared` group). See DEPLOY_RENDER.md for the full checklist.
+#
+# Auto-deploy is deliberately OFF on all three services (see the note on
+# clipfarm-api): the api's preDeployCommand runs Alembic migrations, and
+# unattended schema changes on every merge to `main` is a failure mode this repo
+# has already lived through. Deploy from the dashboard when a batch is ready.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Server secrets shared by api + worker. Filled once in the dashboard; both
+# services reference this group via `fromGroup`.
+envVarGroups:
+  - name: clipfarm-shared
+    envVars:
+      - key: DATABASE_URL              # Supabase pooler URL, postgresql+asyncpg://…  (Pro tier — see CF-18)
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY # server-only secret
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        value: clipfarm
+      - key: R2_PUBLIC_URL             # https://<bucket>.r2.dev or your R2 custom domain
+        sync: false
+      # Error monitoring (CF-89). api + worker share one DSN — worker events are
+      # tagged service:worker. Blank DSN = Sentry disabled (no-op).
+      - key: SENTRY_DSN                # Sentry → clipfarm-api → Settings → Client Keys (DSN)
+        sync: false
+      - key: SENTRY_ENVIRONMENT        # without this it defaults to "development"
+        value: production
+
+services:
+  # ── Redis / Key Value (Celery broker + result backend) ─────────────────────
+  # noeviction so a full instance never silently drops queued tasks.
+  #
+  # Do NOT drop this to `plan: free`: free Key Value instances have no data
+  # persistence, so a restart loses every queued job — and since CF-65a landed,
+  # in-flight ones too (acks_late keeps a task on the broker until it finishes,
+  # so an unpersisted restart drops it). Paid plans persist by default
+  # (journal + snapshot — up to ~1s of writes lost on restart), which is what
+  # makes the queue survivable.
+  - type: keyvalue
+    name: clipfarm-redis
+    region: oregon
+    plan: starter
+    maxmemoryPolicy: noeviction
+    ipAllowList: []        # internal-only; no public access
+
+  # ── API (FastAPI) ──────────────────────────────────────────────────────────
+  - type: web
+    name: clipfarm-api
+    runtime: docker
+    repo: https://github.com/ClipFarmVB/ClipFarm
+    branch: main
+    region: oregon
+    plan: starter
+    dockerfilePath: ./Dockerfile.api
+    dockerContext: .
+    # Render assigns the port via $PORT — bind it, don't hardcode. sh -c so the
+    # vars expand (a bare exec form wouldn't). EXPOSE 8000 in the image is only
+    # documentation; the health check hits $PORT/healthz.
+    # SENTRY_RELEASE ties events to the deployed commit ($RENDER_GIT_COMMIT is
+    # injected by Render) so a regression can be traced to a specific deploy.
+    dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    # Point the platform health check at the SHALLOW liveness route, not the
+    # deep /health readiness check (CF-89 makes /health return 503 when Postgres
+    # or Redis is down). Coupling deploy gating / instance health to a dependency
+    # blip would cycle a perfectly healthy API. The deep /health is for the
+    # external uptime monitor instead.
+    healthCheckPath: /healthz
+    # Migrations run ONCE per deploy here — not on every container boot — so
+    # replicas never race the schema and a shared DB isn't advanced by a stray
+    # boot. Fixes the per-boot `alembic upgrade head` the dev compose file uses.
+    preDeployCommand: "sh -lc 'cd /app/api && alembic upgrade head'"
+    # Deliberately OFF. With autoDeploy on, this preDeployCommand would run a
+    # migration against the production database on every merge to main, with
+    # nobody watching — the same unattended-schema-change class of failure as
+    # the 007→008 crash-loop, one environment over. CONTRIBUTING treats landing
+    # a migration as a coordinated step; this keeps prod consistent with that.
+    # Deploy from the Render dashboard (or via a deploy hook) when a batch is
+    # ready. Revisit once there's a staging environment to catch migrations
+    # first. See DEPLOY_RENDER.md § Deploying a change.
+    autoDeploy: false
+    envVars:
+      - fromGroup: clipfarm-shared
+      - key: DEBUG
+        value: "false"
+      - key: JWT_SECRET               # legacy; Supabase JWKS is source of truth. Auto-generated.
+        generateValue: true
+      - key: API_BASE_URL             # this service's own public URL (custom domain or *.onrender.com)
+        sync: false
+      - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.app
+        sync: false
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+      - key: CELERY_BROKER_URL
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+      - key: CELERY_RESULT_BACKEND
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+
+  # ── Worker (Celery) ────────────────────────────────────────────────────────
+  # `standard` (2 GB) — torch + opencv + ffmpeg in one process makes `starter`
+  # (512 MB) tight regardless of pose settings. Ships with the light POSE_*
+  # config below (see note there) so the box has real headroom on day one.
+  # A disk pins the model cache (~114 MB ball model + pose weights) across
+  # deploys; a disk means a single instance — horizontal scaling is CF-65.
+  - type: worker
+    name: clipfarm-worker
+    runtime: docker
+    repo: https://github.com/ClipFarmVB/ClipFarm
+    branch: main
+    region: oregon
+    plan: standard
+    numInstances: 1
+    dockerfilePath: ./Dockerfile.api
+    dockerContext: .
+    # sh -c so $RENDER_GIT_COMMIT expands into SENTRY_RELEASE (see api above).
+    dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT celery -A app.workers.celery_app worker --loglevel=info --pool=solo"
+    # NOTE: the image runs as non-root `appuser` (uid 1000). A Render disk can
+    # mount root-owned, which would mask the Dockerfile's build-time chown of
+    # /models and make weight writes fail. Verify on first deploy (see DEPLOY_RENDER.md
+    # "model cache" check); if writes fail, the cache is an optimization only —
+    # point the MODEL_* vars off the disk to fall back to per-deploy re-download.
+    disk:
+      name: model-cache
+      mountPath: /models
+      sizeGB: 1
+    # Off for the same reason as the api, plus one of its own: the worker shares
+    # the api's models, so auto-deploying it while the api waits for a manual
+    # deploy would run new task code against the old schema. Deploy the two
+    # together.
+    autoDeploy: false
+    envVars:
+      - fromGroup: clipfarm-shared
+      - key: ROBOFLOW_API_KEY
+        sync: false
+      - key: MODAL_TOKEN_ID           # blank = run inference locally (slow); set to offload to Modal GPU
+        sync: false
+      - key: MODAL_TOKEN_SECRET
+        sync: false
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+      - key: CELERY_BROKER_URL
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+      - key: CELERY_RESULT_BACKEND
+        fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
+      # Persistent model-weight cache (CF-40) — all under the mounted disk.
+      - key: MODEL_CACHE_DIR
+        value: /models/roboflow
+      - key: INFERENCE_HOME
+        value: /models/roboflow
+      - key: MODELS_DIR
+        value: /models
+      - key: YOLO_CONFIG_DIR
+        value: /models/ultralytics
+      # Pose settings: start on the LIGHT config — the same one the dev stack has
+      # actually exercised. app/config.py's defaults (yolov8s-pose @ 1280, every
+      # 4th frame) are higher quality but have never run on a 2 GB box, and the
+      # first production deploy is a bad place to discover an OOM. Raise these
+      # once the worker's real memory headroom has been measured; it's a config
+      # change + redeploy, no rebuild.
+      - key: POSE_MODEL
+        value: yolov8n-pose.pt
+      - key: POSE_IMGSZ
+        value: "640"
+      - key: POSE_SKIP_FRAMES
+        value: "8"
+
+  # ── Web (Next.js) ──────────────────────────────────────────────────────────
+  # Native Node runtime (not Docker) — Render runs `next start` and injects PORT.
+  # NEXT_PUBLIC_* are inlined at BUILD time, so they must be set before deploy.
+  - type: web
+    name: clipfarm-web
+    runtime: node
+    repo: https://github.com/ClipFarmVB/ClipFarm
+    branch: main
+    region: oregon
+    plan: starter
+    # Both release vars are set here (not in envVars) because NEXT_PUBLIC_* is
+    # inlined at build time. They must carry the SAME value:
+    #   NEXT_PUBLIC_SENTRY_RELEASE — what the browser SDK tags events with
+    #   SENTRY_RELEASE            — what sentry-cli uploads the source maps under
+    # Left unset, sentry-cli auto-detects from git, which on a CI-style checkout
+    # can differ or resolve to nothing. The maps then upload "successfully" and
+    # simply never join the events, so prod traces stay minified with no error.
+    buildCommand: npm ci && SENTRY_RELEASE=$RENDER_GIT_COMMIT NEXT_PUBLIC_SENTRY_RELEASE=$RENDER_GIT_COMMIT npm run build --workspace=web
+    startCommand: npm run start --workspace=web
+    # Off so the three services deploy as a set — a UI auto-shipped ahead of the
+    # manually-deployed api can call endpoints that aren't live yet. This is the
+    # safest starting point, not a permanent stance: web is the least risky to
+    # flip back on once the deploy flow is proven.
+    autoDeploy: false
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: NEXT_PUBLIC_API_URL      # the API's public URL, e.g. https://api.clipfarm.app
+        sync: false
+      # Error monitoring (CF-89) — separate DSN from the api/worker project.
+      - key: NEXT_PUBLIC_SENTRY_DSN   # Sentry → clipfarm-web → Settings → Client Keys (DSN)
+        sync: false
+      - key: NEXT_PUBLIC_SENTRY_ENVIRONMENT
+        value: production
+      # Source-map upload at build time. Without these, prod web stack traces
+      # point at minified bundles. The auth token is a secret — set it in the
+      # dashboard, never in this file.
+      - key: SENTRY_ORG
+        sync: false
+      - key: SENTRY_PROJECT
+        sync: false
+      - key: SENTRY_AUTH_TOKEN
+        sync: false

@@ -8,3 +8,8 @@ web/.next
 __pycache__
 *.pyc
 .DS_Store
+# Never ship env files (secrets) into the build context — the image doesn't
+# COPY them, but they'd otherwise be uploaded to the builder.
+.env
+.env.*
+!.env.docker.example
