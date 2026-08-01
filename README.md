@@ -270,6 +270,12 @@ We work like a small company: **branches + PRs only, never commit to `main`.**
 | **Roboflow `inference`** | Local RF-DETR ball model `volleyball-ball-tracking-0eo7r/3`. Pinned to `inference==1.3.3`. |
 | **Modal** | Serverless T4 GPU for ball tracking. App `clipfarm-ball-tracking`; deploy `modal deploy ml/modal_app.py`. |
 | **Redis** | Celery broker + result backend. |
+| **Render** | Production hosting for web + api + worker + the Key Value broker, defined as code in `render.yaml`. |
+
+**Deploying:** production is Render — see **[`DEPLOY_RENDER.md`](./DEPLOY_RENDER.md)**
+(CF-68) for the Blueprint setup, secrets, domains and the deploy procedure.
+[`DEPLOY.md`](./DEPLOY.md) (CF-41) is a separate, optional runbook for self-hosting
+the backend on a VPS — an alternative, not the production path.
 
 ---
 

@@ -49,8 +49,9 @@ services:
   # noeviction so a full instance never silently drops queued tasks.
   #
   # Do NOT drop this to `plan: free`: free Key Value instances have no data
-  # persistence, so a restart loses every queued job (and once CF-65a's
-  # acks_late lands, in-flight ones too). Paid plans persist by default
+  # persistence, so a restart loses every queued job — and since CF-65a landed,
+  # in-flight ones too (acks_late keeps a task on the broker until it finishes,
+  # so an unpersisted restart drops it). Paid plans persist by default
   # (journal + snapshot — up to ~1s of writes lost on restart), which is what
   # makes the queue survivable.
   - type: keyvalue

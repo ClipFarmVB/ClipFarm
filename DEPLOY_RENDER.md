@@ -130,9 +130,10 @@ to production — you deploy deliberately:
 
 ### ⚠️ Deploying kills in-flight jobs (dependency: #149)
 
-Every Render deploy hard-kills the running worker. CF-65a made that *mostly*
-safe — `task_acks_late` + `task_reject_on_worker_lost` requeue the task — but
-there's a gap it can't close alone:
+Every Render deploy hard-kills the running worker. **This behaviour is live on
+`main` today**, not something to watch for later: CF-65a merged and made it
+*mostly* safe — `task_acks_late` + `task_reject_on_worker_lost` requeue the task
+— but there's a gap it can't close alone:
 
 - the dead worker's per-game lock (`process_lock_ttl_seconds`, **3h**)
   deliberately outlives the visibility timeout (**2h**), so
@@ -201,7 +202,8 @@ same Blueprint when there are real users; that's also what would let
   are pure overhead. Tracked separately — see the `task_ignore_result` follow-up.
 - **Queued jobs survive a broker restart — but only on a paid plan.** Free Key
   Value instances have **no persistence**, so a restart would silently drop every
-  queued game (and, once CF-65a's `acks_late` lands, in-flight ones too). Paid
+  queued game — and since CF-65a landed, in-flight ones too (`acks_late` keeps a
+  task on the broker until it finishes, so an unpersisted restart drops it). Paid
   plans persist by default (journal + snapshot, ~1s of writes at risk). This is
   why `render.yaml` pins `plan: starter` and not `free`. Note that *upgrading*
   the instance type requires a restart and can itself lose data depending on the
