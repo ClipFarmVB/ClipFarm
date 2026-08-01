@@ -13,7 +13,6 @@ user PII and request bodies out of events entirely.
 import functools
 import logging
 import os
-from collections.abc import Sequence
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -133,8 +132,14 @@ def _secret_values() -> tuple[str, ...]:
     return tuple(c for c in candidates if c and len(c) >= 6)
 
 
-def _scrub(obj: Any, secrets: Sequence[str]) -> Any:
-    """Recursively redact sensitive headers and secret substrings."""
+def _scrub(obj: Any, secrets: tuple[str, ...] | list[str]) -> Any:
+    """Recursively redact sensitive headers and secret substrings.
+
+    Deliberately not ``Sequence[str]``: ``str`` satisfies that, so a caller
+    passing one secret as a bare string would type-check and then be iterated
+    character by character, redacting every letter it contains out of the whole
+    event. Spelling out tuple|list keeps that mistake a type error.
+    """
     if isinstance(obj, dict):
         result: dict[Any, Any] = {}
         for key, value in obj.items():
