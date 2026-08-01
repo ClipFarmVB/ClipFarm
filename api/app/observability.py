@@ -10,8 +10,10 @@ key, Roboflow key, R2 keys, Modal tokens, JWT secret) is redacted wherever it
 appears. ``send_default_pii=False`` and ``max_request_body_size="never"`` keep
 user PII and request bodies out of events entirely.
 """
+import functools
 import logging
 import os
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -41,6 +43,13 @@ def _is_shipped_default(setting_name: str, value: str) -> bool:
     literally ``password``. Turning that into a scrub pattern would redact the
     word out of every event, mangling exactly the messages this module exists
     to capture (``password authentication failed for user "postgres"``).
+
+    This guard is about the *committed* default specifically, not about weak
+    passwords in general. A real credential that happens to be a common word
+    (``dragon``, ``letmein``) clears the length guard, becomes a global
+    redaction pattern, and mangles messages the same way — no check here can
+    tell it apart from a secret. That is a credential-hygiene problem; CF-90
+    (#90, production secret management) is where it belongs.
     """
     field = type(settings).model_fields.get(setting_name)
     return field is not None and value == field.default
@@ -83,14 +92,26 @@ def _url_passwords(named_urls: list[tuple[str, str]]) -> list[str]:
     return found
 
 
-def _secret_values() -> list[str]:
+@functools.lru_cache(maxsize=1)
+def _secret_values() -> tuple[str, ...]:
     """Concrete secret strings to strip from any outgoing event text. The
     minimum length guard avoids redacting short/empty config values.
 
     Note the guard applies to bare passwords too. A password shorter than the
     threshold is left unscrubbed rather than risk redacting ordinary words out
     of every error message — short passwords are a credential-hygiene problem,
-    not something to fix by making error reports unreadable."""
+    not something to fix by making error reports unreadable.
+
+    Computed once. ``_before_send`` and ``_before_breadcrumb`` both call this on
+    every invocation, and breadcrumbs are high-frequency — with the framework
+    integrations on, roughly every log record, outbound request, and DB query.
+    Since this now parses four URLs and percent-decodes their passwords rather
+    than reading four strings, recomputing per breadcrumb is real overhead.
+    Settings are immutable after startup and the environment is fixed well
+    before the first event ships, so a single evaluation is correct.
+
+    Returns a tuple so a caller can't mutate the cached value. A test that
+    changes settings mid-run must call ``_secret_values.cache_clear()``."""
     named_urls = [(name, getattr(settings, name, "") or "") for name in _CONNECTION_URL_SETTINGS]
     connection_urls = [url for _, url in named_urls]
     candidates = [
@@ -109,10 +130,10 @@ def _secret_values() -> list[str]:
         # Settings still at their shipped default are skipped there.
         *_url_passwords(named_urls),
     ]
-    return [c for c in candidates if c and len(c) >= 6]
+    return tuple(c for c in candidates if c and len(c) >= 6)
 
 
-def _scrub(obj: Any, secrets: list[str]) -> Any:
+def _scrub(obj: Any, secrets: Sequence[str]) -> Any:
     """Recursively redact sensitive headers and secret substrings."""
     if isinstance(obj, dict):
         result: dict[Any, Any] = {}

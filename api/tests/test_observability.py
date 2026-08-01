@@ -78,6 +78,33 @@ def test_secret_values_applies_the_minimum_length_guard():
     assert all(len(value) >= 6 for value in observability._secret_values())
 
 
+# --- caching (raised on #131 review) -----------------------------------------
+# before_send AND before_breadcrumb call _secret_values() on every invocation,
+# and breadcrumbs are high-frequency — with the framework integrations on,
+# roughly every log record, outbound request, and DB query. The work is now four
+# URL parses plus percent-decoding, so it must not run per breadcrumb.
+
+
+def test_secret_values_is_cached_and_returns_a_tuple():
+    first = observability._secret_values()
+
+    assert isinstance(first, tuple), "must be immutable — the value is shared across calls"
+    assert observability._secret_values() is first, "expected one evaluation, not one per event"
+
+
+def test_secret_values_cache_can_be_cleared():
+    """The escape hatch for a test that needs to change settings mid-run.
+
+    cache_clear() resets the counters, so asserting a single miss straight after
+    is independent of whatever ran before this test.
+    """
+    observability._secret_values()
+    observability._secret_values.cache_clear()
+
+    observability._secret_values()
+    assert observability._secret_values.cache_info().misses == 1
+
+
 # --- regression: a shipped default must not become a scrub pattern -----------
 # Reported on #131. The default `database_url` in config.py carries the literal
 # password `password`, which clears the >= 6 length guard. Treating it as a
