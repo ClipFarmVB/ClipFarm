@@ -7,13 +7,14 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from celery import Celery
-from celery.signals import celeryd_init
+from celery.signals import celeryd_init, worker_process_init
 from app.config import (
     REQUIRED_IN_PRODUCTION_WORKER,
     production_config_error,
     settings,
 )
 from app.observability import init_sentry
+from app.workers.forksafe import reset_after_fork
 
 celery_app = Celery(
     "clipfarm",
@@ -65,6 +66,19 @@ celery_app.conf.update(
     # safety is unaffected. (task_track_started is inert while this is on; kept
     # so re-enabling results restores the previous behaviour.)
     task_ignore_result=True,
+    # ── CF-65b: vertical concurrency ──────────────────────────────────────────
+    # N forked children process N games in parallel. Set here rather than only
+    # as a CLI flag so it's env-tunable per environment (a CLI --concurrency
+    # still overrides). Default 1 keeps the previous solo-pool throughput until
+    # a box's memory headroom has actually been measured — see config.py.
+    #
+    # Safe only because CF-65a made concurrent processing of the *same* game
+    # impossible (per-game lock); this ticket makes concurrent processing of
+    # *different* games possible.
+    worker_concurrency=settings.celery_worker_concurrency,
+    # Recycle children periodically so large per-job buffers are returned to the
+    # OS instead of accumulating over a long uptime.
+    worker_max_tasks_per_child=settings.celery_max_tasks_per_child or None,
 )
 
 
@@ -108,6 +122,21 @@ def _check_worker_production_config(**_kwargs):
     missing = settings.missing_in_production(REQUIRED_IN_PRODUCTION_WORKER)
     if missing:
         raise SystemExit(production_config_error(missing))
+
+
+@worker_process_init.connect
+def _init_pool_child(**_kwargs):
+    """Re-establish per-process state inside each forked prefork child (CF-65b).
+
+    Fires once per child at startup — and again for a replacement child after
+    `worker_max_tasks_per_child` recycling. Never fires under `--pool=solo`,
+    where no fork happens and the parent's own state is already correct.
+    """
+    reset_after_fork(
+        concurrency=settings.celery_worker_concurrency,
+        thread_limit=settings.celery_child_thread_limit,
+        init_monitoring=lambda: init_sentry("worker"),
+    )
 
 
 if settings.debug:
