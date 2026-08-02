@@ -1,0 +1,91 @@
+"""
+Per-child process setup for the prefork worker pool (CF-65b).
+
+`--pool=prefork` forks the worker parent into N children *after* the parent has
+imported the application. Anything the parent created at import time is inherited
+by every child, and three kinds of inherited state are actively unsafe to share:
+
+* **Sockets** — a DB connection or Redis connection used from two processes
+  interleaves bytes on one TCP stream. Symptoms are not clean errors; they are
+  responses arriving on the wrong side.
+* **Threads** — `fork()` clones only the calling thread. A background thread
+  started before the fork (Sentry's event transport) simply does not exist in the
+  child, so anything it was responsible for silently stops happening.
+* **Thread pools** — torch and OpenCV size their pools to the whole machine, so
+  N children each spawn machine-wide pools and oversubscribe the CPU N-fold.
+
+`reset_after_fork()` runs in each child via Celery's `worker_process_init`
+signal and puts all three back into a known state. It is a no-op for the solo
+pool (no fork happens), so the same code path is correct at any concurrency.
+"""
+import logging
+import os
+
+logger = logging.getLogger(__name__)
+
+
+def _reset_db_pool() -> None:
+    """Drop connections inherited from the parent.
+
+    `_sync_db` uses NullPool, so there is normally nothing pooled to inherit —
+    this is belt-and-braces in case the pool class is ever changed back. dispose()
+    detaches without closing the parent's sockets, which is what we want: closing
+    them would take the connection out from under the parent too.
+    """
+    try:
+        from app.workers._sync_db import _engine
+
+        _engine.dispose(close=False)
+    except Exception:
+        logger.exception("post-fork: failed to dispose the sync DB engine")
+
+
+def _reset_redis_client() -> None:
+    """Force the per-game lock's Redis client to be rebuilt in this process."""
+    try:
+        from app.workers import locks
+
+        locks.reset_client()
+    except Exception:
+        logger.exception("post-fork: failed to reset the lock Redis client")
+
+
+def _limit_native_threads(concurrency: int, explicit_limit: int) -> None:
+    """Stop N children from each grabbing the whole CPU.
+
+    Set before torch/cv2 are imported in the child where possible; the env vars
+    are read at import time by the BLAS backends, and cv2's setter works after.
+    """
+    if explicit_limit > 0:
+        threads = explicit_limit
+    elif concurrency > 1:
+        threads = max(1, (os.cpu_count() or 1) // concurrency)
+    else:
+        return  # solo/1-way: let the libraries use the machine as before
+
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ[var] = str(threads)
+    try:
+        import cv2
+
+        cv2.setNumThreads(threads)
+    except Exception:
+        pass  # cv2 not importable here is fine — the env vars still apply
+    try:
+        import torch
+
+        torch.set_num_threads(threads)
+    except Exception:
+        pass
+    logger.info("post-fork: capped native thread pools at %d", threads)
+
+
+def reset_after_fork(concurrency: int, thread_limit: int, init_monitoring) -> None:
+    """Re-establish per-process state in a freshly forked pool child."""
+    _reset_db_pool()
+    _reset_redis_client()
+    _limit_native_threads(concurrency, thread_limit)
+    # Sentry's transport runs on a background thread, which fork() does not
+    # clone — without re-initialising here, a child's captured events would be
+    # queued to a worker that no longer exists and never leave the process.
+    init_monitoring()

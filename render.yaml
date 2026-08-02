@@ -130,7 +130,11 @@ services:
     dockerfilePath: ./Dockerfile.api
     dockerContext: .
     # sh -c so $RENDER_GIT_COMMIT expands into SENTRY_RELEASE (see api above).
-    dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT celery -A app.workers.celery_app worker --loglevel=info --pool=solo"
+    # Prefork pool (CF-65b). Concurrency is NOT set here: it comes from
+    # CELERY_WORKER_CONCURRENCY, which defaults to 1 — same throughput as the
+    # old solo pool. Raise it in the dashboard only after watching this box's
+    # memory under a real job; each child loads its own pose model.
+    dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT celery -A app.workers.celery_app worker --loglevel=info --pool=prefork"
     # NOTE: the image runs as non-root `appuser` (uid 1000). A Render disk can
     # mount root-owned, which would mask the Dockerfile's build-time chown of
     # /models and make weight writes fail. Verify on first deploy (see DEPLOY_RENDER.md

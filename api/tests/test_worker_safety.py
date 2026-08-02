@@ -62,18 +62,17 @@ def _fake_redis_or_skip():
 
 
 def _patch_lock_client(monkeypatch, fake):
+    """Point the lock's per-process client factory at a fake.
+
+    CF-65b replaced the module-level `_client` with a pid-keyed factory (so a
+    prefork child never shares the parent's socket), so the fake is injected at
+    the constructor instead and the cache is cleared to force a rebuild.
+    """
     pytest.importorskip("redis")
     from app.workers import locks
 
-    monkeypatch.setattr(locks, "_client", fake)
-    monkeypatch.setattr(
-        locks,
-        "_RELEASE",
-        fake.register_script(
-            "if redis.call('get', KEYS[1]) == ARGV[1] "
-            "then return redis.call('del', KEYS[1]) else return 0 end"
-        ),
-    )
+    monkeypatch.setattr(locks.redis.Redis, "from_url", staticmethod(lambda *a, **k: fake))
+    locks.reset_client()  # drop any cached client so the fake is picked up
     return locks
 
 

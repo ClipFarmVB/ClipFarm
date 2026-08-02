@@ -90,6 +90,22 @@ class Settings(BaseSettings):
     # see #149, which gates the Render cutover in #98.)
     process_lock_ttl_seconds: int = 10800    # 3h — deliberately > visibility_timeout
 
+    # Worker concurrency (CF-65b). The prefork pool runs N games in parallel in
+    # N forked child processes. Size N by MEMORY, not cores: each child loads its
+    # own pose model and decodes its own video, so peak RSS is roughly N × a
+    # single job. Default 1 — identical throughput to the old solo pool — so
+    # nothing changes until someone has measured real headroom on the target box
+    # and raised CELERY_WORKER_CONCURRENCY deliberately.
+    celery_worker_concurrency: int = 1
+    # Recycle a child after this many tasks. The pipeline holds large numpy/cv2
+    # buffers and ultralytics caches; recycling returns that memory to the OS and
+    # bounds slow growth over long uptimes. 0 disables recycling.
+    celery_max_tasks_per_child: int = 8
+    # Cap the BLAS/OpenCV thread pools inside each child. Left alone, torch and
+    # cv2 each size their pools to the whole machine, so N children oversubscribe
+    # the CPU N-fold and run slower than serial. 0 = auto (cpu_count // N).
+    celery_child_thread_limit: int = 0
+
     # Modal
     modal_token_id: str = ""
     modal_token_secret: str = ""

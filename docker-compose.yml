@@ -75,6 +75,9 @@ services:
       POSE_MODEL: yolov8n-pose.pt
       POSE_IMGSZ: "640"
       POSE_SKIP_FRAMES: "8"
+      # Two games in parallel (CF-65b). Each child loads its own pose model, so
+      # this is bounded by RAM, not cores — raise only after watching memory.
+      CELERY_WORKER_CONCURRENCY: "2"
       # Persistent model-weight cache (CF-40): without these, every container
       # recreate re-downloads the ball model (114MB, Roboflow CDN) and the
       # YOLO pose weights (GitHub) before processing can start.
@@ -95,7 +98,11 @@ services:
         condition: service_healthy
       api:
         condition: service_started
-    command: celery -A app.workers.celery_app worker --loglevel=info --pool=solo
+    # Prefork pool (CF-65b): concurrency comes from CELERY_WORKER_CONCURRENCY
+    # (app/config.py), so raising parallelism is an env change, not a command
+    # edit. Dev runs 2 so the forked-child path is actually exercised locally —
+    # fork-safety bugs are invisible under --pool=solo.
+    command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork
     volumes:
       - ./api:/app/api
       - ./ml:/app/ml
