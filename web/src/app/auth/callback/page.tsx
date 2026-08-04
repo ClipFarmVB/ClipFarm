@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useState, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle } from "lucide-react";
@@ -11,24 +11,41 @@ import { createClient } from "@/lib/supabase";
 const EXCHANGE_TIMEOUT_MS = 10_000;
 
 /**
- * Only same-origin paths are honoured, so a crafted `next` cannot bounce a
- * freshly signed-in user off to another site.
+ * Where a confirmed link lands. Hardcoded rather than taken from the URL: a
+ * caller-supplied destination is an open-redirect surface, and it would have to
+ * ride along in `emailRedirectTo`, which Supabase glob-matches in full against
+ * its Redirect URLs allowlist.
  */
-function safeNext(next: string | null): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//")) return "/games";
-  return next;
+const DESTINATION = "/games";
+
+function subscribeToHash(onChange: () => void) {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
+}
+
+/** First source that carries an `error` wins; its description is the useful part. */
+function readError(...sources: { get(name: string): string | null }[]): string | null {
+  for (const source of sources) {
+    const error = source.get("error");
+    if (error) return source.get("error_description") ?? error;
+  }
+  return null;
 }
 
 function AuthCallback() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = safeNext(searchParams.get("next"));
 
-  // Supabase bounces failures (expired or already-used links) back here as
-  // query params rather than a code.
-  const linkError = searchParams.get("error")
-    ? (searchParams.get("error_description") ?? searchParams.get("error"))
-    : null;
+  // GoTrue reports a bad link in the query string on PKCE links and in the
+  // fragment on the older ones, so both have to be read. The fragment never
+  // reaches the server, hence the external store rather than plain state.
+  const hash = useSyncExternalStore(
+    subscribeToHash,
+    () => window.location.hash,
+    () => ""
+  );
+  const linkError = readError(searchParams, new URLSearchParams(hash.replace(/^#/, "")));
+
   const [timedOut, setTimedOut] = useState(false);
   const error = linkError ?? (timedOut ? "That link has expired or was already used." : null);
 
@@ -37,27 +54,33 @@ function AuthCallback() {
 
     const supabase = createClient();
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event: string) => {
-      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") {
-        router.replace(next);
-      }
-    });
-
-    supabase.auth.getSession().then(({ data }: { data: { session: unknown } }) => {
-      if (data.session) router.replace(next);
-    });
-
     // The client exchanges the link for a session on its own; if that never
     // lands, say so rather than spinning forever.
     const timer = setTimeout(() => setTimedOut(true), EXCHANGE_TIMEOUT_MS);
+
+    // Stop the clock as the redirect starts: the transition to a guarded route
+    // can outlast the timeout on a cold instance, and an error over a session
+    // that worked is worse than a slow spinner.
+    function leave() {
+      clearTimeout(timer);
+      router.replace(DESTINATION);
+    }
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event: string) => {
+      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") leave();
+    });
+
+    supabase.auth.getSession().then(({ data }: { data: { session: unknown } }) => {
+      if (data.session) leave();
+    });
 
     return () => {
       clearTimeout(timer);
       subscription.unsubscribe();
     };
-  }, [router, next, linkError]);
+  }, [router, linkError]);
 
   if (error) {
     return (
