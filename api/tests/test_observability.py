@@ -126,6 +126,46 @@ def test_a_real_password_is_still_extracted_for_the_same_setting():
     assert "aA9-real-db-secret" in observability._url_passwords([("database_url", custom)])
 
 
+# --- _is_shipped_default's own contract --------------------------------------
+# Raised on #131: the frozenset subsumes every case this function currently
+# catches, so nothing exercised it and deleting it left the suite green. Of the
+# four connection settings only `database_url` has a default with a password,
+# and that password (`password`) is a frozenset member; the other three exit at
+# the `if not password` guard. It's kept as insurance for a future default whose
+# password isn't listed, so these pin that path directly.
+
+
+def test_is_shipped_default_recognises_the_committed_value():
+    default_dsn = type(observability.settings).model_fields["database_url"].default
+    assert observability._is_shipped_default("database_url", default_dsn) is True
+    assert (
+        observability._is_shipped_default("database_url", "postgresql://u:pw@host/db")
+        is False
+    )
+    # Unknown setting names must not raise, and must not be treated as defaults.
+    assert observability._is_shipped_default("not_a_setting", "anything") is False
+
+
+def test_shipped_default_is_exempt_even_when_its_password_is_not_published(monkeypatch):
+    """The insurance path the frozenset can't cover.
+
+    Simulates a future config.py default whose password is a real-looking string
+    rather than one of the published local-dev words. Only `_is_shipped_default`
+    can exempt that, so this fails if the function is removed.
+    """
+    field = type(observability.settings).model_fields["redis_url"]
+    future_default = "redis://:n0t-a-published-word@localhost:6379/0"
+    monkeypatch.setattr(field, "default", future_default)
+
+    password = "n0t-a-published-word"
+    assert password not in observability._PUBLISHED_LOCAL_PASSWORDS
+    assert observability._url_passwords([("redis_url", future_default)]) == []
+
+    # Same setting, a value that is NOT the default: still extracted.
+    other = "redis://:n0t-a-published-word@prod.example.com:6379/0"
+    assert password in observability._url_passwords([("redis_url", other)])
+
+
 def test_postgres_auth_error_survives_scrubbing_under_defaults():
     """The user-visible symptom of the bug.
 
