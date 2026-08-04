@@ -34,6 +34,22 @@ _CONNECTION_URL_SETTINGS = (
 )
 
 
+# Passwords this repository publishes for local development. ``password`` is the
+# ``database_url`` default in config.py; ``postgres`` is the local compose stack
+# (docker-compose.yml's ``POSTGRES_PASSWORD:-postgres``, and the Option B DSN in
+# .env.docker.example that developers are told to use for schema work).
+#
+# A value printed in the repo is not a secret, and both are ordinary words that
+# wreck event text as global scrub patterns: ``password`` mangles the very
+# message this module exists to capture, and ``postgres`` is a substring of
+# ``postgresql``, so any event naming the dialect renders as ``[redacted]ql``.
+#
+# Matched against the extracted password rather than the whole URL: the compose
+# DSN is not config.py's default, so the URL comparison in
+# ``_is_shipped_default`` does not catch it.
+_PUBLISHED_LOCAL_PASSWORDS = frozenset({"password", "postgres"})
+
+
 def _is_shipped_default(setting_name: str, value: str) -> bool:
     """True when a setting still holds the default committed in config.py.
 
@@ -68,9 +84,11 @@ def _url_passwords(named_urls: list[tuple[str, str]]) -> list[str]:
     when a driver reports it on its own.
 
     Settings left at their shipped default contribute nothing — see
-    ``_is_shipped_default``. The full default URL is still scrubbed, which is
-    harmless; it is only the bare password component that is dangerous to
-    treat as a secret.
+    ``_is_shipped_default`` — and neither do the local-dev passwords this repo
+    publishes (``_PUBLISHED_LOCAL_PASSWORDS``), which the URL comparison alone
+    misses because the compose DSN differs from config.py's default. The full
+    URL is still scrubbed in both cases, which is harmless; it is only the bare
+    password component that is dangerous to treat as a secret.
     """
     found: list[str] = []
     for name, url in named_urls:
@@ -83,6 +101,11 @@ def _url_passwords(named_urls: list[tuple[str, str]]) -> list[str]:
             # extract, and this must never raise inside before_send.
             continue
         if not password:
+            continue
+        if password in _PUBLISHED_LOCAL_PASSWORDS:
+            # Published in this repo for local dev — not a secret, and toxic as a
+            # scrub pattern. The full URL is still scrubbed above; only the bare
+            # component is skipped.
             continue
         found.append(password)
         decoded = unquote(password)

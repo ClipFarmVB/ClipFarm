@@ -131,6 +131,34 @@ def test_postgres_auth_error_survives_scrubbing_under_defaults():
 
     With the default DSN in play, `password authentication failed ...` must come
     through intact rather than as `[redacted] authentication failed ...`.
+
+    Secrets are derived from the committed defaults rather than from
+    `_secret_values()`, which reflects whatever the ambient environment produced.
+    config.py sets `env_file=".env"` and CLAUDE.md tells developers to run these
+    from `api/`, so a developer with an `api/.env` would otherwise hit a spurious
+    failure here — this passed in CI only because the runner has no `.env`.
     """
+    fields = type(observability.settings).model_fields
+    defaults = [
+        (name, fields[name].default)
+        for name in observability._CONNECTION_URL_SETTINGS
+    ]
+    secrets = tuple(observability._url_passwords(defaults))
     message = 'password authentication failed for user "postgres"'
-    assert observability._scrub(message, observability._secret_values()) == message
+    assert observability._scrub(message, secrets) == message
+
+
+def test_local_compose_password_is_not_treated_as_a_secret():
+    """The Option B DSN in .env.docker.example is published, so its password is
+    not a secret — and `postgres` is a substring of `postgresql`, so scrubbing it
+    would render every mention of the dialect as `[redacted]ql`.
+
+    Distinct from the config.py default (`postgres:password@localhost`), so the
+    whole-URL comparison in `_is_shipped_default` does not catch this one.
+    """
+    compose_dsn = "postgresql+asyncpg://postgres:postgres@db:5432/clipfarm"
+    found = observability._url_passwords([("database_url", compose_dsn)])
+    assert found == [], "a password published in .env.docker.example is not a secret"
+
+    message = 'relation "games" does not exist (postgresql 16)'
+    assert observability._scrub(message, tuple(found)) == message

@@ -47,7 +47,14 @@ jobs:
       # --ignore-missing-imports resolves stubs it previously skipped and
       # reports a different, larger error set — worth doing deliberately, not as
       # a side effect of this fix.
-      - run: pip install -r api/requirements.txt
+      #
+      # requirements-DEV.txt, not requirements.txt: it pulls the runtime deps in
+      # via `-r requirements.txt` and adds the test-only ones. fakeredis is the
+      # reason — without it the CF-65a Redis-lock tests skip, which is the same
+      # passing-without-executing failure this step exists to end. The test
+      # double must not move into requirements.txt; that ships it into the
+      # production image.
+      - run: pip install -r api/requirements-dev.txt
       # working-directory is api/ so `from app... import ...` resolves.
       #
       # NOTE: do not rename this job to match what it actually runs. "API (ruff
