@@ -20,25 +20,18 @@ def test_celery_redelivery_config():
     assert vt and vt > 3600, "visibility_timeout must exceed Redis' 3600s default"
 
 
-def test_task_results_are_not_stored():
+def test_results_are_ignored_without_weakening_redelivery_safety():
     """CF-150: results are never read, so storing them only fills the broker.
 
     In production the broker and result backend are the same Key Value instance
     (#98) under `noeviction`, so unread results accumulate in the store whose
     fullness blocks job submission.
-    """
-    from app.workers.celery_app import celery_app
 
-    assert celery_app.conf.task_ignore_result is True
-
-
-def test_ignoring_results_leaves_redelivery_safety_intact():
-    """CF-150 and CF-65a write to the same config block — assert they coexist.
-
+    Asserted together with the CF-65a settings on purpose. The two changes append
+    to the same config block and met as a textual conflict, which is exactly the
+    merge that silently drops one side — and they are independent, since
     `acks_late` and the retry path re-publish to the *broker* and never touch the
-    result backend, so ignoring results must not weaken redelivery safety. Pinned
-    because the two changes met as a textual conflict, which is exactly the kind
-    of merge that silently drops one side.
+    result backend.
     """
     from app.workers.celery_app import celery_app
 
