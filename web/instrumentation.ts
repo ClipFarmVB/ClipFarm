@@ -13,6 +13,12 @@ export async function register() {
       dsn,
       environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV,
       tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0),
+      // Same release identifier as the browser side, so server and client
+      // events for one deploy group together.
+      release:
+        process.env.SENTRY_RELEASE ||
+        process.env.NEXT_PUBLIC_SENTRY_RELEASE ||
+        undefined,
       sendDefaultPii: false,
     });
   }
