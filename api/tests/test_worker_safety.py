@@ -20,6 +20,35 @@ def test_celery_redelivery_config():
     assert vt and vt > 3600, "visibility_timeout must exceed Redis' 3600s default"
 
 
+def test_task_results_are_not_stored():
+    """CF-150: results are never read, so storing them only fills the broker.
+
+    In production the broker and result backend are the same Key Value instance
+    (#98) under `noeviction`, so unread results accumulate in the store whose
+    fullness blocks job submission.
+    """
+    from app.workers.celery_app import celery_app
+
+    assert celery_app.conf.task_ignore_result is True
+
+
+def test_ignoring_results_leaves_redelivery_safety_intact():
+    """CF-150 and CF-65a write to the same config block — assert they coexist.
+
+    `acks_late` and the retry path re-publish to the *broker* and never touch the
+    result backend, so ignoring results must not weaken redelivery safety. Pinned
+    because the two changes met as a textual conflict, which is exactly the kind
+    of merge that silently drops one side.
+    """
+    from app.workers.celery_app import celery_app
+
+    conf = celery_app.conf
+    assert conf.task_ignore_result is True
+    assert conf.task_acks_late is True
+    assert conf.task_reject_on_worker_lost is True
+    assert conf.broker_transport_options.get("visibility_timeout")
+
+
 def test_lock_ttl_exceeds_visibility_timeout():
     """The lock must outlive the visibility timeout, or a redelivery during an
     over-running task acquires it and runs concurrently (CF-65a review #2)."""
