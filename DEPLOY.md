@@ -214,8 +214,11 @@ Domains, TLS and a proper edge are handled for you on the production path
   **CF-90 (#90)** — still open, and the main reason this path isn't production.
 - **Observability — already solved.** CF-89 (#89) shipped Sentry across api,
   worker and web; it is wired by env var (`SENTRY_DSN`), so it applies to this
-  box too. Set the DSN in `.env.docker` and worker errors report like anywhere
-  else.
+  box too. Set the DSN in `.env.docker` — and set `SENTRY_ENVIRONMENT` to
+  something distinct (e.g. `self-hosted`), because the template ships
+  `development` and this box would otherwise report into the same bucket as
+  every teammate's compose stack, which is the one place you actually want to
+  filter on. Then worker errors report like anywhere else.
 - **Supabase auto-pause.** The worker depends on Supabase; the keepalive from
   **CF-18** already guards against the free-tier idle pause.
 - **This is not CF-68's backend tier.** It was written expecting to be, but CF-68
