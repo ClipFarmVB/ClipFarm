@@ -82,11 +82,23 @@ celery_app.conf.update(
 )
 
 
+# Effective pool size, captured in the parent before it forks (CF-65b review #1).
+# `--concurrency` on the command line reaches neither `settings` (env-driven) nor
+# `conf.worker_concurrency` — it lands only on the worker instance — so a child
+# reading the setting would see 1 and skip thread capping entirely, which is the
+# configuration that needs it most. celeryd_init runs pre-fork, so children
+# inherit whatever is stored here.
+_effective_concurrency: int | None = None
+
+
 @celeryd_init.connect
-def _init_worker_monitoring(**_kwargs):
+def _init_worker_monitoring(options=None, **_kwargs):
     """Initialize Sentry when a worker boots. Using the signal (not module
     import) keeps the worker's CeleryIntegration out of the api process, which
     imports celery_app only to enqueue tasks."""
+    global _effective_concurrency
+    if options:
+        _effective_concurrency = options.get("concurrency") or None
     init_sentry("worker")
 
 
@@ -133,7 +145,9 @@ def _init_pool_child(**_kwargs):
     where no fork happens and the parent's own state is already correct.
     """
     reset_after_fork(
-        concurrency=settings.celery_worker_concurrency,
+        # Prefer the value the pool actually forked with; fall back to the
+        # setting when the signal carried no options (e.g. an embedded worker).
+        concurrency=_effective_concurrency or settings.celery_worker_concurrency,
         thread_limit=settings.celery_child_thread_limit,
         init_monitoring=lambda: init_sentry("worker"),
     )
