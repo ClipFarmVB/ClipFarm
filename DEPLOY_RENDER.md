@@ -92,6 +92,10 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
   **clipfarm-api** (e.g. `api.clipfarm.app`) in each service's Settings.
 - Point the DNS records at Render (via Cloudflare). Render provisions HTTPS
   automatically.
+- Supabase → Authentication → **URL Configuration**: set Site URL to the web
+  domain and add `https://<web-domain>/auth/callback` to **Redirect URLs**. Email
+  confirmation and Google sign-in both land there; a link back to any other path
+  is rejected by Supabase and the user gets "requested path is invalid".
 
 ---
 
