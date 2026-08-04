@@ -202,3 +202,27 @@ def test_local_compose_password_is_not_treated_as_a_secret():
 
     message = 'relation "games" does not exist (postgresql 16)'
     assert observability._scrub(message, tuple(found)) == message
+
+
+def test_published_password_is_exempt_when_percent_encoded():
+    """The exemption matches the decoded form too.
+
+    `%70assword` decodes to `password`. Checking only the raw value let the
+    decoded form through as a "secret", which then redacted the word out of every
+    event — the mangling the exemption exists to prevent, reached by writing the
+    same published password a different way.
+    """
+    encoded_dsn = "postgresql+asyncpg://postgres:%70assword@localhost:5432/clipfarm"
+    found = observability._url_passwords([("database_url", encoded_dsn)])
+    assert found == [], "an encoding of a published password is still that password"
+
+    message = 'password authentication failed for user "postgres"'
+    assert observability._scrub(message, tuple(found)) == message
+
+
+def test_encoding_a_real_password_still_yields_both_forms():
+    # The encoded-form exemption must not swallow genuine secrets.
+    encoded_dsn = "postgresql+asyncpg://postgres:s3cr3t%2Dvalue@db.example.com:5432/x"
+    found = observability._url_passwords([("database_url", encoded_dsn)])
+    assert "s3cr3t%2Dvalue" in found, "raw (still-encoded) form missing"
+    assert "s3cr3t-value" in found, "decoded form missing"

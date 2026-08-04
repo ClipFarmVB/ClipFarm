@@ -102,13 +102,21 @@ def _url_passwords(named_urls: list[tuple[str, str]]) -> list[str]:
             continue
         if not password:
             continue
-        if password in _PUBLISHED_LOCAL_PASSWORDS:
+        decoded = unquote(password)
+        # Both forms are checked. A DSN written as `%70assword` leaves the raw
+        # value unequal to any member, but it decodes to `password`, which would
+        # be appended below and redact that word out of every event — the exact
+        # mangling this exemption exists to prevent. Skipping the raw form too is
+        # correct: an encoding of a published password is still that password.
+        if (
+            password in _PUBLISHED_LOCAL_PASSWORDS
+            or decoded in _PUBLISHED_LOCAL_PASSWORDS
+        ):
             # Published in this repo for local dev — not a secret, and toxic as a
             # scrub pattern. The full URL is still scrubbed above; only the bare
             # component is skipped.
             continue
         found.append(password)
-        decoded = unquote(password)
         if decoded != password:
             found.append(decoded)
     return found
