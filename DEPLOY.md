@@ -118,8 +118,8 @@ Must be set for this deploy:
 - **`MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`** — the prerequisite from §0.
 
 > Secrets-on-disk is the minimum for CF-41. Productionizing secret handling
-> (no plaintext `.env` files) is tracked separately in **CF-77** and supersedes
-> this step once done.
+> (no plaintext `.env` files) is tracked separately in **CF-90 (#90)** and
+> supersedes this step once done.
 
 ## 5. Bring up the backend
 
@@ -135,8 +135,12 @@ worker (`--pool=solo`, one job at a time).
 > Supabase on every boot. Supabase is the shared database — booting this box
 > can advance the shared schema. Make sure the branch you deploy is at the
 > intended migration head and coordinate with the team, per the "shared DB"
-> warning in the README. (CF-68 will turn migrations into a deliberate deploy
-> step rather than a boot side effect.)
+> warning in the README.
+>
+> CF-68 (#98) made migrations a deliberate deploy step — but **only on the Render
+> path**, via `preDeployCommand`. This box still migrates on every boot and
+> always will; that is one of the standing parity gaps listed at the top of this
+> file, not a temporary state waiting on a fix. Coordinate every time.
 
 ## 6. Verify end-to-end
 
@@ -207,9 +211,11 @@ Domains, TLS and a proper edge are handled for you on the production path
 - **One game at a time.** Celery runs `--pool=solo` / `prefetch=1`; a second
   upload queues behind the first. Concurrency + horizontal scaling is **CF-65**.
 - **Secrets live in `.env.docker` on the box.** Hardened secret management is
-  **CF-77**.
-- **Observability.** Worker error tracking + uptime alerting lands via **CF-76**
-  and slots straight into this box.
+  **CF-90 (#90)** — still open, and the main reason this path isn't production.
+- **Observability — already solved.** CF-89 (#89) shipped Sentry across api,
+  worker and web; it is wired by env var (`SENTRY_DSN`), so it applies to this
+  box too. Set the DSN in `.env.docker` and worker errors report like anywhere
+  else.
 - **Supabase auto-pause.** The worker depends on Supabase; the keepalive from
   **CF-18** already guards against the free-tier idle pause.
 - **This is not CF-68's backend tier.** It was written expecting to be, but CF-68
