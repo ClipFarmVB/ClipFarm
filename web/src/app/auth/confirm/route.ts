@@ -20,17 +20,24 @@ import { AUTH_ERROR_PARAM, type AuthErrorCode } from "@/lib/authError";
 /** Where a confirmed link lands. Not caller-supplied — see `lib/redirect.ts`. */
 const DESTINATION = "/games";
 
-const EMAIL_OTP_TYPES: readonly EmailOtpType[] = [
-  "signup",
-  "invite",
-  "magiclink",
-  "recovery",
-  "email_change",
-  "email",
-];
+/**
+ * Deliberately narrower than auth-js's `EmailOtpType`.
+ *
+ * Every type accepted here ends the same way: session established, user sent to
+ * `DESTINATION`. A type whose link should land somewhere else must not be
+ * accepted until that somewhere exists. `recovery` is the live example — it
+ * would verify, sign the user in and drop them on `/games` with the password
+ * they forgot still set, and the link is single-use, so nothing tells them it
+ * went wrong. Unwired types fail closed as `link_invalid` instead.
+ *
+ * Add a type here when the template that emits it is wired up.
+ */
+const ACCEPTED_OTP_TYPES = ["signup"] as const satisfies readonly EmailOtpType[];
 
-function isEmailOtpType(value: string | null): value is EmailOtpType {
-  return value !== null && (EMAIL_OTP_TYPES as readonly string[]).includes(value);
+type AcceptedOtpType = (typeof ACCEPTED_OTP_TYPES)[number];
+
+function isAcceptedOtpType(value: string | null): value is AcceptedOtpType {
+  return value !== null && (ACCEPTED_OTP_TYPES as readonly string[]).includes(value);
 }
 
 /** Built from `nextUrl` rather than `request.url` so it keeps the proxied host. */
@@ -50,7 +57,7 @@ export async function GET(request: NextRequest) {
   const tokenHash = request.nextUrl.searchParams.get("token_hash");
   const type = request.nextUrl.searchParams.get("type");
 
-  if (!tokenHash || !isEmailOtpType(type)) return failure(request, "link_invalid");
+  if (!tokenHash || !isAcceptedOtpType(type)) return failure(request, "link_invalid");
 
   // The session cookies have to ride out on the response we return, so it
   // exists before the client that writes to it.

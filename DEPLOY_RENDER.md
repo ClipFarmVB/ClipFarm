@@ -112,6 +112,13 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
   The link is built from **Site URL**, so it must point at the web domain — a
   preview or staging deploy on another host needs its own Supabase project.
 
+  Keep `type=signup` exactly as written. `/auth/confirm` only accepts the types
+  it has a destination for and rejects the rest, so Supabase's generic
+  `type=email` example bounces to the login page instead of confirming. Wiring
+  another template (password reset, email change) means adding its type to the
+  route *and* deciding where that link should land — reset in particular must
+  not drop the user on `/games` still needing a new password.
+
 ---
 
 ## Verify the deploy

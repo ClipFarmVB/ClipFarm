@@ -16,8 +16,17 @@ const AUTH_ERRORS = {
 
 export type AuthErrorCode = keyof typeof AUTH_ERRORS;
 
-/** Unknown codes fall back to the generic message rather than rendering nothing. */
+/**
+ * Unknown codes fall back to the generic message rather than rendering nothing.
+ *
+ * The own-property check is load-bearing: a plain index would inherit from
+ * `Object.prototype`, so `?auth_error=__proto__` returns an object that React
+ * refuses to render — a crafted link takes the whole login page down — and
+ * `constructor` and friends return functions, which React drops silently.
+ */
 export function authErrorMessage(code: string | null | undefined): string | null {
   if (!code) return null;
-  return AUTH_ERRORS[code as AuthErrorCode] ?? AUTH_ERRORS.verification_failed;
+  return Object.hasOwn(AUTH_ERRORS, code)
+    ? AUTH_ERRORS[code as AuthErrorCode]
+    : AUTH_ERRORS.verification_failed;
 }
