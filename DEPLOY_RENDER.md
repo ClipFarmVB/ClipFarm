@@ -93,9 +93,31 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 - Point the DNS records at Render (via Cloudflare). Render provisions HTTPS
   automatically.
 - Supabase → Authentication → **URL Configuration**: set Site URL to the web
-  domain and add `https://<web-domain>/auth/callback` to **Redirect URLs**. Email
-  confirmation and Google sign-in both land there; a link back to any other path
-  is rejected by Supabase and the user gets "requested path is invalid".
+  domain and add `https://<web-domain>/auth/callback` to **Redirect URLs**.
+  Google sign-in lands there; a link back to any other path is rejected by
+  Supabase and the user gets "requested path is invalid".
+- Supabase → Authentication → **Email Templates** → *Confirm signup*: replace the
+  default `{{ .ConfirmationURL }}` link with
+
+  ```html
+  <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup">Confirm your email</a>
+  ```
+
+  **This is required, not optional.** The default template sends a PKCE link that
+  only works in the browser that started signup — sign up on a laptop, tap the
+  link on a phone, and it fails with `bad_code_verifier`. `/auth/confirm` verifies
+  the token server-side, so any browser works. Until the template is changed the
+  route is never reached and nothing improves (CF-16).
+
+  The link is built from **Site URL**, so it must point at the web domain — a
+  preview or staging deploy on another host needs its own Supabase project.
+
+  Keep `type=signup` exactly as written. `/auth/confirm` only accepts the types
+  it has a destination for and rejects the rest, so Supabase's generic
+  `type=email` example bounces to the login page instead of confirming. Wiring
+  another template (password reset, email change) means adding its type to the
+  route *and* deciding where that link should land — reset in particular must
+  not drop the user on `/games` still needing a new password.
 
 ---
 
@@ -106,6 +128,9 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
    when Postgres/Redis is down, so it can alert.
 2. Load the web domain, sign up (confirm the verification email arrives — needs
    CF-17 custom SMTP for volume; Supabase's built-in sender is rate-limited).
+   **Open that link in a different browser than you signed up in** — that is the
+   case the token_hash template exists for, and the one that silently regresses
+   if the template is ever reset to the default.
 3. Upload a short video → confirm the worker picks it up (worker logs) and clips
    appear. This exercises api → Redis → worker → R2 → Modal end to end.
 4. **Model cache disk** — check the worker logs on first job: it should download
