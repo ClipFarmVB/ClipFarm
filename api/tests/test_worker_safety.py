@@ -1,8 +1,8 @@
 """CF-65a: worker redelivery/concurrency safety — broker config + per-game lock.
 
-Guarded with importorskip like the other api tests: the api CI job installs only
-ruff/mypy/pytest today, so these light up locally (and in CI once CF-102 installs
-api deps). Run from the api/ dir: `cd api && pytest tests/test_worker_safety.py`.
+The `importorskip` guard is now belt-and-braces: the api CI job installs
+api/requirements-dev.txt (including fakeredis), so these execute in CI as well as
+locally. Run from the api/ dir: `cd api && pytest tests/test_worker_safety.py`.
 """
 import pytest
 
