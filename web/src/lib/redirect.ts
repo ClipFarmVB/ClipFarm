@@ -17,11 +17,15 @@ const RESOLUTION_BASE = "https://redirect.invalid";
  * hands the browser an off-site hard navigation. Resolving first and comparing
  * origins is the check that survives that normalization.
  *
- * Both resolutions are load-bearing. Matching the origin once only clears the
- * authority we parsed; the surviving pathname can start with `//` of its own
+ * Matching the origin is not enough on its own: it clears the authority that was
+ * parsed, but the surviving pathname can start with `//` in its own right
  * (`//host//evil.com` resolves to pathname `//evil.com`), which becomes an
- * authority again the moment Next resolves it. So the assembled path has to be
- * put back through the parser and re-checked.
+ * authority again the moment Next resolves it. Hence the second check.
+ *
+ * That one is a prefix check and, unlike on the raw input, a prefix check is
+ * enough here: `pathname` always starts with `/` and never contains a backslash,
+ * because the parser folds `\` into `/` for special schemes. Re-resolving
+ * instead would strip only one authority level and let nesting through.
  */
 export function safeNextPath(next: string | null | undefined): string {
   if (!next) return DEFAULT_NEXT;
@@ -34,10 +38,6 @@ export function safeNextPath(next: string | null | undefined): string {
   if (url.origin !== RESOLUTION_BASE) return DEFAULT_NEXT;
 
   const path = url.pathname + url.search + url.hash;
-  try {
-    if (new URL(path, RESOLUTION_BASE).origin !== RESOLUTION_BASE) return DEFAULT_NEXT;
-  } catch {
-    return DEFAULT_NEXT;
-  }
+  if (path.startsWith("//")) return DEFAULT_NEXT;
   return path;
 }
