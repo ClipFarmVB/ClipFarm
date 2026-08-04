@@ -1,8 +1,8 @@
 """CF-10: corrections export — user scoping and CSV safety.
 
-Guarded with `importorskip` because the api CI job installs only ruff/mypy/pytest
-today; these run locally and light up in CI once api/requirements.txt is
-installed there (see the note in .github/workflows/ci.yml).
+The `importorskip` guard is now belt-and-braces: the api CI job installs
+api/requirements-dev.txt, so these execute in CI as well as locally. It stays so
+the file still runs in a bare environment rather than erroring at import.
 """
 import asyncio
 import uuid
