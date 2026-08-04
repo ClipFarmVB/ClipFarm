@@ -45,6 +45,19 @@ celery_app.conf.update(
     # Redis default is 3600s: a task longer than that is redelivered while it's
     # still running (CF-45). Raise it above worst-case task time.
     broker_transport_options={"visibility_timeout": settings.celery_visibility_timeout},
+    # ── CF-150: don't store task results ──────────────────────────────────────
+    # Nothing reads them: progress and terminal state are polled from Postgres
+    # (Game.status), and there is no AsyncResult/.get() anywhere in api/. Storing
+    # them is pure write amplification — and in production the broker and result
+    # backend are the SAME Render Key Value instance (#98), so unread results
+    # accumulate in the store whose fullness `noeviction` is meant to surface
+    # loudly. Dropping them removes that failure mode instead of managing it.
+    #
+    # Independent of the CF-65a settings above: acks_late and the retry path
+    # re-publish to the BROKER and never touch the result backend, so redelivery
+    # safety is unaffected. (task_track_started is inert while this is on; kept
+    # so re-enabling results restores the previous behaviour.)
+    task_ignore_result=True,
 )
 
 
