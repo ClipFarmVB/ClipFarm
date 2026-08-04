@@ -16,6 +16,12 @@ const RESOLUTION_BASE = "https://redirect.invalid";
  * before deciding a navigation is external — so a `startsWith("/")` guard still
  * hands the browser an off-site hard navigation. Resolving first and comparing
  * origins is the check that survives that normalization.
+ *
+ * Both resolutions are load-bearing. Matching the origin once only clears the
+ * authority we parsed; the surviving pathname can start with `//` of its own
+ * (`//host//evil.com` resolves to pathname `//evil.com`), which becomes an
+ * authority again the moment Next resolves it. So the assembled path has to be
+ * put back through the parser and re-checked.
  */
 export function safeNextPath(next: string | null | undefined): string {
   if (!next) return DEFAULT_NEXT;
@@ -26,5 +32,12 @@ export function safeNextPath(next: string | null | undefined): string {
     return DEFAULT_NEXT;
   }
   if (url.origin !== RESOLUTION_BASE) return DEFAULT_NEXT;
-  return url.pathname + url.search + url.hash;
+
+  const path = url.pathname + url.search + url.hash;
+  try {
+    if (new URL(path, RESOLUTION_BASE).origin !== RESOLUTION_BASE) return DEFAULT_NEXT;
+  } catch {
+    return DEFAULT_NEXT;
+  }
+  return path;
 }
