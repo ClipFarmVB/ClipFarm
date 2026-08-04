@@ -228,3 +228,13 @@ services:
         sync: false
       - key: SENTRY_AUTH_TOKEN
         sync: false
+      # Debug routes stay OFF in production — absent means /debug/sentry 404s,
+      # which is what prod wants (the flag fails closed). A staging service group
+      # (CF-152) sets it to "true" so Sentry can be verified end-to-end before
+      # prod. It's inlined at BUILD time, so it has to be a service env var here
+      # rather than a runtime toggle, and flipping it needs a redeploy. Listed
+      # commented-out because this is the file a staging deploy is configured
+      # from — the compose .env is dev-only, where `next dev` serves the route
+      # regardless and the flag does nothing.
+      # - key: NEXT_PUBLIC_ENABLE_DEBUG_ROUTES
+      #   value: "true"
