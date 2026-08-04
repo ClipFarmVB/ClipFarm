@@ -20,6 +20,7 @@ pool (no fork happens), so the same code path is correct at any concurrency.
 """
 import logging
 import os
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +72,17 @@ def _limit_native_threads(concurrency: int, explicit_limit: int) -> None:
         cv2.setNumThreads(threads)
     except Exception:
         pass  # cv2 not importable here is fine — the env vars still apply
-    try:
-        import torch
-
-        torch.set_num_threads(threads)
-    except Exception:
-        pass
+    # Only adjust torch if something already imported it. The env vars above are
+    # read by torch at import time and do the same job, so importing it here just
+    # to call the setter would front-load a multi-second import and its RSS into
+    # every child at startup — repeated on each max_tasks_per_child recycle —
+    # when `tasks.py` otherwise keeps that import lazy until the first pose job.
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            torch.set_num_threads(threads)
+        except Exception:
+            pass
     logger.info("post-fork: capped native thread pools at %d", threads)
 
 
