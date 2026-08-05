@@ -1,5 +1,10 @@
 """
-Time-based evaluation metrics for clip quality (CF-55).
+Time-based evaluation metrics for clip quality (CF-55) and dead-time removal (CF-98).
+
+Both modes share the interval arithmetic below and differ only in what the two
+sides mean: highlight clips against labeled highlights for CF-55, condense keep
+windows against labeled ball-in-play spans for CF-98. See the dead-time section
+further down for that half.
 
 Pure interval arithmetic. Given a human's ground-truth highlight intervals and
 the model's clip windows for the *same* video, compute a small set of
