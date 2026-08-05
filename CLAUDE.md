@@ -35,7 +35,7 @@ changes that break rally boundaries.
 
 ## Before you commit
 
-`.hooks/pre-commit` runs the same checks as CI: `ruff check api/`,
+`.hooks/pre-commit` runs most of what CI runs: `ruff check api/`,
 `mypy api/app`, `ruff check ml/eval`, `mypy ml/eval`, `pytest ml/tests`,
 plus eslint, tsc and vitest for `web/`.
 
