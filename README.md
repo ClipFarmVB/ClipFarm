@@ -181,12 +181,22 @@ git config core.hooksPath .hooks
 Tests:
 
 ```bash
-npm ci                              # once per worktree, at the repo root
-npm run test --workspace=web        # vitest, ~1s
-npm run test:watch --workspace=web  # same suite, watch mode
-python -m pytest ml/tests/          # ml eval metrics + dead-time
-cd api && python -m pytest tests/   # api (CI runs this; the hook does not)
+npm ci                                   # once per worktree, at the repo root
+npm run test --workspace=web             # vitest, ~1s
+npm run test:watch --workspace=web       # same suite, watch mode
+python -m pytest ml/tests/               # ml eval metrics + dead-time
+
+pip install -r api/requirements-dev.txt  # once: runtime deps + test-only deps
+cd api && python -m pytest tests/        # api (CI runs this; the hook does not)
 ```
+
+The api suite needs `requirements-dev.txt`, not just `requirements.txt`. Several
+tests guard their imports with `pytest.importorskip`, so without the test-only
+deps (`fakeredis[lua]` and friends) they **skip silently** — the run still reports
+green while covering less than you think. `requirements-dev.txt` pulls the runtime
+deps in via `-r requirements.txt`, so it is the only install you need. Test-only
+packages deliberately stay out of `requirements.txt`, which builds the production
+image via `Dockerfile.api`.
 
 Notes:
 - **Default `DATABASE_URL` is shared Supabase** (`.env.docker.example` Option A).
