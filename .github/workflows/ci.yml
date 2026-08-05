@@ -7,6 +7,10 @@ on:
 
 jobs:
   web:
+    # NOTE: this job also runs vitest now. Do not rename it to match — the name
+    # is a required status check by exact string in the main-protection ruleset,
+    # so renaming stops that context reporting and blocks every PR until the
+    # ruleset is updated to match. Same trap as the api job below.
     name: Web (lint + typecheck)
     runs-on: ubuntu-latest
     steps:
@@ -18,6 +22,8 @@ jobs:
       - run: npm ci --workspace=web
       - run: npm run lint --workspace=web
       - run: npm run typecheck --workspace=web
+      # Unit tests for web/ (CF-96). Pure logic, no browser — runs in ~1s.
+      - run: npm run test --workspace=web
 
   api:
     name: API (ruff + mypy)
@@ -36,3 +42,30 @@ jobs:
       - run: mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
       # ml unit tests (eval metrics + dead-time) — stdlib-only, runs in seconds.
       - run: python -m pytest ml/tests/
+      # api unit tests now need the application's own dependencies:
+      # app.observability imports app.config, which imports pydantic-settings.
+      # CF-102 anticipated this and deliberately deferred the install until
+      # something actually required it; test_observability.py is that moment.
+      #
+      # Installed HERE rather than beside `pip install ruff mypy pytest` above,
+      # so ruff and mypy keep running in the dependency-free environment they
+      # were tuned against. With the real packages present, mypy
+      # --ignore-missing-imports resolves stubs it previously skipped and
+      # reports a different, larger error set — worth doing deliberately, not as
+      # a side effect of this fix.
+      #
+      # requirements-DEV.txt, not requirements.txt: it pulls the runtime deps in
+      # via `-r requirements.txt` and adds the test-only ones. fakeredis is the
+      # reason — without it the CF-65a Redis-lock tests skip, which is the same
+      # passing-without-executing failure this step exists to end. The test
+      # double must not move into requirements.txt; that ships it into the
+      # production image.
+      - run: pip install -r api/requirements-dev.txt
+      # working-directory is api/ so `from app... import ...` resolves.
+      #
+      # NOTE: do not rename this job to match what it actually runs. "API (ruff
+      # + mypy)" is a required status check by exact name in the main-protection
+      # ruleset — renaming stops that context reporting and blocks every PR
+      # until the ruleset is updated to match.
+      - run: python -m pytest tests/
+        working-directory: api

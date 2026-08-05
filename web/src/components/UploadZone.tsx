@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Upload, Film, AlertCircle, Loader } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -11,6 +11,24 @@ import { cn } from "@/lib/utils";
 const ACCEPTED = ["video/mp4", "video/quicktime", "video/x-msvideo", "video/webm"];
 const MAX_SIZE_GB = 15;
 
+// Assumed throughput of the server's upload to R2 — the "finalizing" leg the
+// browser can't observe. Used only to *estimate* that leg's duration so the
+// bar keeps moving instead of freezing. The real rate depends on the server's
+// uplink, so it's configurable via NEXT_PUBLIC_FINALIZE_MBPS (defaulting to
+// the ~3.4 MB/s measured in dev). A wrong value only affects pacing, never
+// correctness — the bar always snaps to 100% when the server actually responds.
+const _finalizeMbps = Number(process.env.NEXT_PUBLIC_FINALIZE_MBPS);
+const FINALIZE_BYTES_PER_SEC =
+  (Number.isFinite(_finalizeMbps) && _finalizeMbps > 0 ? _finalizeMbps : 3.4) * 1024 * 1024;
+
+// Countdown shown while the server is still uploading to R2 (the estimated
+// leg). "Finalizing…" is deliberately NOT used here — it's reserved for when
+// the estimate elapses and we're only waiting on the server's confirmation.
+function fmtRemaining(remainingSec: number): string {
+  if (remainingSec < 60) return "Uploading — less than a minute left";
+  return `Uploading — about ${Math.round(remainingSec / 60)} min left`;
+}
+
 export function UploadZone() {
   const router = useRouter();
   const [dragging, setDragging] = useState(false);
@@ -19,7 +37,15 @@ export function UploadZone() {
   const [condense, setCondense] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
+  const [statusText, setStatusText] = useState("Uploading…");
   const [error, setError] = useState<string | null>(null);
+  // Bar spans both upload legs; refs survive re-renders during a single upload.
+  const pctRef = useRef(0);                                    // monotonic — never rewind
+  const finalizeTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => () => {  // stop the finalize animation if we unmount mid-upload
+    if (finalizeTimer.current) clearInterval(finalizeTimer.current);
+  }, []);
 
   const validate = (f: File) => {
     if (!ACCEPTED.includes(f.type)) return "Unsupported file type. Upload an MP4, MOV, AVI, or WebM.";
@@ -52,9 +78,50 @@ export function UploadZone() {
     if (!file || uploading) return; // re-entry guard — a second click is a no-op
     setError(null);
     setUploading(true);
+    pctRef.current = 0;
     setProgress(0); // show the progress bar immediately, not on the first onprogress event
+    setStatusText("Uploading…");
+
+    const sendStart = Date.now();
+    // Estimated duration of the invisible server→R2 leg (see constant above).
+    const estFinalizeSec = file.size / FINALIZE_BYTES_PER_SEC;
+    // Advance the bar but never let it rewind or hit 100% before the server
+    // actually confirms — the estimate is a guide, the response is the truth.
+    const advance = (pct: number) => {
+      pctRef.current = Math.max(pctRef.current, Math.min(pct, 99));
+      setProgress(pctRef.current);
+    };
+
     try {
-      const game = await uploadGame(file, title || file.name, condense, (pct) => setProgress(pct));
+      const game = await uploadGame(file, title || file.name, condense, (p) => {
+        if (p.phase === "sending") {
+          // Weight the two legs by their estimated time: leg 1 (send) is
+          // measured live from throughput, leg 2 (finalize) from the estimate.
+          const elapsed = (Date.now() - sendStart) / 1000;
+          // Guard loaded>0: a 0-byte progress event would make this Infinity →
+          // NaN, and NaN sticks through Math.max, freezing the bar permanently.
+          const estSendSec = elapsed > 0.2 && p.loaded > 0 ? p.total / (p.loaded / elapsed) : 0;
+          const sendShare = estSendSec / (estSendSec + estFinalizeSec || 1);
+          advance((p.loaded / p.total) * sendShare * 100);
+        } else {
+          // Finalizing: animate across the estimate with a live countdown.
+          const actualSendSec = Math.max((Date.now() - sendStart) / 1000, 0.001);
+          const finalizeStart = Date.now();
+          const total = actualSendSec + estFinalizeSec;
+          if (finalizeTimer.current) clearInterval(finalizeTimer.current);
+          finalizeTimer.current = setInterval(() => {
+            const finElapsed = (Date.now() - finalizeStart) / 1000;
+            const finFrac = Math.min(finElapsed / estFinalizeSec, 0.99);
+            advance(((actualSendSec + finFrac * estFinalizeSec) / total) * 100);
+            const remaining = estFinalizeSec - finElapsed;
+            // Only call it "Finalizing…" once the estimated R2 upload has run
+            // its full course — until then it's still uploading, with a countdown.
+            setStatusText(remaining > 0 ? fmtRemaining(remaining) : "Finalizing…");
+          }, 500);
+        }
+      });
+      if (finalizeTimer.current) clearInterval(finalizeTimer.current);
+      setProgress(100); // server confirmed — snap the bar to done
       // Write the new game straight into the cache so the Library shows it
       // immediately — invalidating alone let a prefetch that started during
       // the (long) upload resolve afterwards and repopulate the cache with a
@@ -62,6 +129,7 @@ export function UploadZone() {
       addGameToCache(game);
       router.push(`/games/${game.id}`);
     } catch (e) {
+      if (finalizeTimer.current) clearInterval(finalizeTimer.current);
       setError(e instanceof Error ? e.message : "Upload failed.");
       setProgress(null);
       setUploading(false); // re-enable so the user can retry after a failure
@@ -178,8 +246,8 @@ export function UploadZone() {
       {progress !== null && (
         <div className="mt-4">
           <div className="flex justify-between text-[11px] text-muted mb-1.5">
-            <span>Uploading…</span>
-            <span className="tabular-nums">{progress}%</span>
+            <span>{statusText}</span>
+            <span className="tabular-nums">{Math.round(progress)}%</span>
           </div>
           <div className="h-0.5 rounded-full bg-surface-high overflow-hidden">
             <div

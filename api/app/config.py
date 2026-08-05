@@ -75,10 +75,32 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
+    # Worker redelivery safety (CF-65a). Redis' default visibility timeout is
+    # 3600s, so a task longer than that is silently redelivered — the CF-45
+    # duplicate-processing root cause. Set it above worst-case task time. Note
+    # the local-CPU fallback is slow (~1.3–2x realtime tracking), so a long match
+    # with Modal unavailable can run for hours; size for your slowest path.
+    celery_visibility_timeout: int = 7200    # 2h
+    # The per-game lock MUST outlive the visibility timeout, not equal it: a
+    # redelivery fires at ~visibility_timeout, and if the lock lapses at the same
+    # instant a second worker acquires it and runs concurrently — the exact bug
+    # this prevents. Keeping the lock longer means the redelivered copy always
+    # finds the lock still held and no-ops. (Trade-off: a hard-killed worker
+    # orphans the lock until this TTL; a stale-"processing" reaper is the fix —
+    # see #149, which gates the Render cutover in #98.)
+    process_lock_ttl_seconds: int = 10800    # 3h — deliberately > visibility_timeout
 
     # Modal
     modal_token_id: str = ""
     modal_token_secret: str = ""
+
+    # Error monitoring (Sentry — CF-89). Empty DSN = disabled (local/dev default).
+    # The same DSN is shared by the api and worker processes; the web app uses
+    # NEXT_PUBLIC_SENTRY_DSN separately.
+    sentry_dsn: str = ""
+    sentry_environment: str = "development"
+    sentry_release: str = ""
+    sentry_traces_sample_rate: float = 0.0  # 0 = errors only, no perf tracing (avoids overhead/cost)
 
     # Delete raw uploads after N days (0 = keep forever)
     raw_upload_retention_days: int = 7

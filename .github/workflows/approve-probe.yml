@@ -1,0 +1,78 @@
+name: Approve probe (TEMPORARY)
+
+# TEMPORARY — DELETE AFTER CF-105 (#128) RESOLVES.
+#
+# Answers one question and nothing else: does an approving review submitted by a
+# workflow satisfy `required_approving_review_count: 1` on the main-protection
+# ruleset?
+#
+# CF-105's whole design rests on that being true, so it is worth proving before
+# building a verdict pipeline on top of it.
+#
+# Uses GITHUB_TOKEN rather than driving Claude to run the command. Once the org
+# enabled "Allow GitHub Actions to create and approve pull requests"
+# (can_approve_pull_request_reviews: true), a plain shell step can approve — which
+# is deterministic, costs no subscription usage, and is the exact mechanism
+# CF-105 would ship. Having the model run `gh pr review` would work too, but tool
+# calls have been denied non-deterministically all through this epic, and a merge
+# gate should not depend on that.
+#
+# Note the org default token permission is still `read`, so `pull-requests: write`
+# below is doing real work — without it the approve call is rejected.
+#
+# Run against a throwaway PR, read the result, then delete this file.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to approve (use a throwaway PR)"
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  probe:
+    name: Approve probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Submit approving review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr_number }}
+        run: |
+          set -uo pipefail
+          echo "Approving #$PR as the workflow token..."
+          if gh pr review "$PR" --repo "$GITHUB_REPOSITORY" --approve \
+               --body "Approval mechanism probe (CF-105). Not a code review."; then
+            echo "approve call: SUCCEEDED"
+          else
+            echo "approve call: FAILED (see error above)"
+            echo "'not permitted to approve' -> the org setting has not propagated."
+            echo "'Resource not accessible' -> the token lacks pull-requests: write."
+            exit 1
+          fi
+
+      # The call succeeding is not the same as the approval counting — the
+      # ruleset could still decline to honour it. This step is what actually
+      # answers the question.
+      - name: Did it satisfy the gate?
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr_number }}
+        run: |
+          set -uo pipefail
+          echo "--- reviews on #$PR ---"
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json reviews \
+            --jq '.reviews[] | "  \(.author.login) [\(.state)]"' || true
+          echo "--- gate state ---"
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+            --json reviewDecision,mergeStateStatus,mergeable \
+            --jq '"  reviewDecision=\(.reviewDecision // "none")  mergeStateStatus=\(.mergeStateStatus)  mergeable=\(.mergeable)"' || true
+          echo
+          echo "PASS: reviewDecision=APPROVED and mergeStateStatus no longer BLOCKED"
+          echo "FAIL: a review is listed but reviewDecision stays REVIEW_REQUIRED"

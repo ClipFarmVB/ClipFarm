@@ -48,8 +48,10 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Run on all routes except Next.js internals and static files
+  // Run on all routes except Next.js internals, static files, and the Sentry
+  // tunnel (/monitoring) — every browser error event POSTs there and must not
+  // trigger a Supabase auth check.
   matcher: [
-    "/((?!_next/static|_next/image|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon\\.ico|monitoring|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

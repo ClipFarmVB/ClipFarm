@@ -178,6 +178,16 @@ docker compose --env-file .env.docker up --build
 git config core.hooksPath .hooks
 ```
 
+Tests:
+
+```bash
+npm ci                              # once per worktree, at the repo root
+npm run test --workspace=web        # vitest, ~1s
+npm run test:watch --workspace=web  # same suite, watch mode
+python -m pytest ml/tests/          # ml eval metrics + dead-time
+cd api && python -m pytest tests/   # api (CI runs this; the hook does not)
+```
+
 Notes:
 - **Default `DATABASE_URL` is shared Supabase** (`.env.docker.example` Option A).
   This is intentional, not an oversight: the team logs into the frontend with a
@@ -237,7 +247,7 @@ Postgres via SQLAlchemy (`api/app/models/`), RLS enabled on all tables.
 | `Game` | An uploaded VOD + processing status (`processing` → `ready`/`failed`). |
 | `Clip` | A cut highlight: time window, `action_type`, `confidence`, `highlight_score`, R2 URLs, `player_id`. |
 | `Collection` | User-curated groupings of clips. |
-| `Correction` | User relabel events (written on relabel; a read/export endpoint is a backlog item — training signal). |
+| `Correction` | User relabel events (written on relabel; readable via `GET /corrections` + CSV `/corrections/export` — training signal). |
 | `DeadTimeRun` / `DeadTimeClip` | Separate experimental dead-time detection flow. |
 
 ---
@@ -253,7 +263,11 @@ We work like a small company: **branches + PRs only, never commit to `main`.**
 - **CI** (`.github/workflows/ci.yml`) runs on every PR and is **required to pass** before
   merge (branch protection on `main`): `Web (lint + typecheck)` and `API (ruff + mypy)`.
   The `.hooks/pre-commit` hook runs the exact same checks locally (ruff, mypy, eslint, tsc).
-- **Backlog** lives on a Google Docs kanban as `CF-##` cards.
+- **Backlog** lives on the `ClipFarmVB` GitHub Project (#1) as `CF-##` cards, each
+  backed by an issue titled `CF-## · Description`. Link one from a PR with a bare
+  `Closes #<issue>` — `**Board:** CF-##` alone is not parsed by GitHub, so the
+  issue stays open and the card never moves.
+- **Agent conventions** live in `CLAUDE.md` at the repo root.
 
 ---
 
@@ -261,18 +275,30 @@ We work like a small company: **branches + PRs only, never commit to `main`.**
 
 | Service | Role |
 |---|---|
-| **Supabase** | Postgres (data) + Auth (JWKS JWT). Free tier **auto-pauses after ~7 days idle** (see gotchas). |
+| **Supabase** | Postgres (data) + Auth (JWKS JWT). Free tier **auto-pauses after ~7 days idle** (kept alive by the keepalive workflow — see gotchas). |
 | **Cloudflare R2** | Object storage; zero egress cost (important — this is a video app). `ball-cache/` holds cached trajectories. |
 | **Roboflow `inference`** | Local RF-DETR ball model `volleyball-ball-tracking-0eo7r/3`. Pinned to `inference==1.3.3`. |
 | **Modal** | Serverless T4 GPU for ball tracking. App `clipfarm-ball-tracking`; deploy `modal deploy ml/modal_app.py`. |
 | **Redis** | Celery broker + result backend. |
+| **Render** | Production hosting for web + api + worker + the Key Value broker, defined as code in `render.yaml`. |
+
+**Deploying:** production is Render — see **[`DEPLOY_RENDER.md`](./DEPLOY_RENDER.md)**
+(CF-68) for the Blueprint setup, secrets, domains and the deploy procedure.
+[`DEPLOY.md`](./DEPLOY.md) (CF-41) is a separate, optional runbook for self-hosting
+the backend on a VPS — an alternative, not the production path.
 
 ---
 
 ## Known Limitations / Gotchas
 
 - **Supabase free-tier auto-pause**: after ~7 days idle the pooler returns "tenant not
-  found" and all processing fails. Unpausing takes ~2 min to propagate.
+  found" and all processing fails. Unpausing takes ~2 min to propagate. Mitigated by the
+  `Supabase keepalive` workflow (`.github/workflows/keepalive.yml`, CF-18), which runs
+  `SELECT 1` every 2 days to keep the project active — it needs the `SUPABASE_DB_URL`
+  repo secret and only fires from `main`. Note the keepalive only *prevents* a pause; it
+  can't *cure* one — if the project is already paused the run just fails red, so unpause
+  it manually (Supabase dashboard) and the next scheduled run goes green. The permanent
+  fix is upgrading to Supabase Pro (no auto-pause; see CF-68).
 - **Multi-court false positives**: footage with several simultaneous games produces junk
   clips from neighboring courts (ball *and* audio). Court-ROI filtering is the top open
   detection task.
