@@ -7,6 +7,10 @@ on:
 
 jobs:
   web:
+    # NOTE: this job also runs vitest now. Do not rename it to match — the name
+    # is a required status check by exact string in the main-protection ruleset,
+    # so renaming stops that context reporting and blocks every PR until the
+    # ruleset is updated to match. Same trap as the api job below.
     name: Web (lint + typecheck)
     runs-on: ubuntu-latest
     steps:
@@ -18,6 +22,8 @@ jobs:
       - run: npm ci --workspace=web
       - run: npm run lint --workspace=web
       - run: npm run typecheck --workspace=web
+      # Unit tests for web/ (CF-96). Pure logic, no browser — runs in ~1s.
+      - run: npm run test --workspace=web
 
   api:
     name: API (ruff + mypy)

@@ -178,6 +178,16 @@ docker compose --env-file .env.docker up --build
 git config core.hooksPath .hooks
 ```
 
+Tests:
+
+```bash
+npm ci                              # once per worktree, at the repo root
+npm run test --workspace=web        # vitest, ~1s
+npm run test:watch --workspace=web  # same suite, watch mode
+python -m pytest ml/tests/          # ml eval metrics + dead-time
+cd api && python -m pytest tests/   # api (CI runs this; the hook does not)
+```
+
 Notes:
 - **Default `DATABASE_URL` is shared Supabase** (`.env.docker.example` Option A).
   This is intentional, not an oversight: the team logs into the frontend with a

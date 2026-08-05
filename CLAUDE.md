@@ -37,14 +37,15 @@ changes that break rally boundaries.
 
 `.hooks/pre-commit` runs the same checks as CI: `ruff check api/`,
 `mypy api/app`, `ruff check ml/eval`, `mypy ml/eval`, `pytest ml/tests`,
-plus eslint and tsc for `web/`.
+plus eslint, tsc and vitest for `web/`.
 
 - **A fresh worktree needs `npm ci` at the repo root first.** Without
-  `node_modules`, the hook's eslint/tsc steps fail or hang, and the failure looks
-  like a code problem rather than a missing install. This bites every new worktree.
-- **`api/tests/` is run by neither the hook nor CI** — a known gap (CF-102), not a
-  signal that those tests are optional. Run `cd api && python -m pytest tests/`
-  by hand when touching anything it covers.
+  `node_modules`, the hook's eslint/tsc/vitest steps fail or hang, and the failure
+  looks like a code problem rather than a missing install. This bites every new
+  worktree.
+- **`api/tests/` runs in CI but not in the hook.** CF-102 closed the CI half of
+  the gap; the hook still skips it, so run `cd api && python -m pytest tests/` by
+  hand when touching anything it covers rather than finding out on the PR.
 
 ## Migrations
 
