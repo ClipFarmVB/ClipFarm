@@ -50,4 +50,13 @@ printf "  tsc (web) ...        "
 npm run typecheck --workspace=web --silent
 echo "ok"
 
+# ── Web: unit tests (vitest) ──────────────────────────────────────────────────
+printf "  vitest (web) ...     "
+if ! _vitest_out=$(npm run test --workspace=web --silent 2>&1); then
+  echo "FAIL"
+  echo "$_vitest_out"
+  exit 1
+fi
+echo "ok"
+
 echo "pre-commit: all checks passed."
