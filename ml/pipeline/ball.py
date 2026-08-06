@@ -62,9 +62,21 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 # 60 of 126 labeled rallies, and since keep-windows are anchored on contacts,
 # the condense stage then cut those rallies as dead time.
 #
-# 240 is the knee measured on test1 — below it the contact count keeps climbing
-# while rallies-hit plateaus (101 -> 102 of 126), i.e. only false positives are
-# being added. Re-tune it by scoring, not by inspecting a trajectory:
+# 240 is a recall-vs-condense tradeoff, not a strict optimum. On test1, 180
+# scores marginally better on both recall numbers (102 vs 101 of 126 rallies
+# hit, 167s vs 176s of live play lost) but removes less dead time; 240 was
+# picked because below it the recall gains are marginal while the condensed
+# video keeps growing. Further down the contact count still climbs with
+# rallies-hit flat, i.e. only false positives are being added.
+#
+# Measured on the dead-time metric only. find_contacts feeds a second consumer:
+# tasks.py runs it through contacts_to_rallies for highlight clips, where
+# MIN_RALLY_CONTACTS gates at 3 — so the extra contacts can lift marginal 1-2
+# contact segments over that line and emit junk clips. That side is unmeasured;
+# score it with the CF-55 highlight mode against results/test1.jsonl before
+# tuning this further.
+#
+# Re-tune by scoring, not by inspecting a trajectory:
 #   docker compose run --rm --no-deps worker python -m ml.eval.tune_contacts
 CONTACT_RESIDUAL_RATIO    = 0.50    # residual must exceed this fraction of ball speed
 CONTACT_RESIDUAL_MIN_PXPS = 240.0   # ...and this absolute floor (px/s, above noise)
