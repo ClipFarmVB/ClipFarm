@@ -496,7 +496,9 @@ def format_deadtime(s: DeadTimeSignals) -> str:
 DEFAULT_AUDIT_LIMIT = 12
 
 
-def format_deadtime_audit(s: DeadTimeSignals, *, limit: int = DEFAULT_AUDIT_LIMIT) -> str:
+def format_deadtime_audit(
+    s: DeadTimeSignals, *, limit: int = DEFAULT_AUDIT_LIMIT, recorded: bool = True
+) -> str:
     """
     Render the two divergence lists, longest span first.
 
@@ -515,9 +517,15 @@ def format_deadtime_audit(s: DeadTimeSignals, *, limit: int = DEFAULT_AUDIT_LIMI
         rows += [f"    {_seconds_to_ts(a)}-{_seconds_to_ts(b)}  {b - a:5.0f}s" for a, b in shown]
         hidden = spans[len(shown):]
         if hidden:
+            # Under --no-record there is no log to point at, so don't send the
+            # reader looking for one.
+            where = (
+                f" (all {len(spans)} in the results log)" if recorded
+                else f" (all {len(spans)} shown with --audit-limit 0)"
+            )
             rows.append(
-                f"    + {len(hidden)} shorter, {sum(b - a for a, b in hidden):.0f}s total "
-                f"(all {len(spans)} in the results log)"
+                f"    + {len(hidden)} shorter, {sum(b - a for a, b in hidden):.0f}s total"
+                f"{where}"
             )
         return rows
 
@@ -601,7 +609,7 @@ def run_deadtime(
         print(f"Ground truth: {len(fx.keep)} rally regions over {fx.duration:.0f}s\n")
         print(format_deadtime(s))
         print()
-        print(format_deadtime_audit(s, limit=audit_limit))
+        print(format_deadtime_audit(s, limit=audit_limit, recorded=record))
     if record:
         path = append_deadtime_result(test_id, version, s)
         print(f"\nAppended result -> {path}")
@@ -621,7 +629,7 @@ def main() -> None:
     ap.add_argument("--no-record", action="store_true", help="print only; don't append to results log")
     ap.add_argument("--audit-limit", type=int, default=DEFAULT_AUDIT_LIMIT,
                     help=f"deadtime: max spans per audit list (default {DEFAULT_AUDIT_LIMIT}; 0 = all). "
-                         "The full lists always go to the results log.")
+                         "The full lists go to the results log unless --no-record.")
     ap.add_argument("--dump-windows", type=Path,
                     help="deadtime --offline: also write the derived keep-windows to this JSON, "
                          "so later runs can re-score them anywhere via --windows-json "

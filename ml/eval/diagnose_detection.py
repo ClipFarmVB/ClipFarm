@@ -111,7 +111,9 @@ def main() -> None:
     in_rally_pos = sum(pos_in)
     in_rally_con = sum(con_in)
 
-    print(f"\n{'':<12}{'rallies':>9}{'% of 126':>10}   what it means")
+    # Denominator interpolated, not hardcoded: --test selects the fixture, so
+    # this table is read against whatever rally count that fixture has.
+    print(f"\n{'':<12}{'rallies':>9}{f'% of {len(rallies)}':>10}   what it means")
     print(f"  {'BLIND':<10}{len(blind):>9}{100 * len(blind) / len(rallies):>9.1f}%"
           "   no ball positions at all — model never saw it")
     print(f"  {'REJECTED':<10}{len(rejected):>9}{100 * len(rejected) / len(rallies):>9.1f}%"
@@ -138,7 +140,9 @@ def main() -> None:
               f"{pos_in[i]:3d} positions, 0 contacts")
 
     dump = args.dump or (RESULTS_DIR / f"{args.test}_ball_track.json")
-    dump.parent.mkdir(exist_ok=True)
+    # parents=True: an explicit --dump into a nested path would otherwise raise
+    # here, after the R2 download and the tracking pass have already been paid for.
+    dump.parent.mkdir(parents=True, exist_ok=True)
     dump.write_text(json.dumps({
         "test_id": args.test,
         "source_r2_key": r2_key,
