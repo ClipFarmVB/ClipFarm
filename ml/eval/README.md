@@ -1,7 +1,19 @@
-# Model evaluation harness (CF-55 / CF-56)
+# Model evaluation harness (CF-55 / CF-56 / CF-98)
 
 A fixed benchmark for answering one question objectively: **is the clip model
 getting better or worse across versions?**
+
+Two modes, two different questions, two separate fixtures:
+
+| Mode | Question | Fixture | Docs |
+|---|---|---|---|
+| default | are the **highlights** it clips the right ones? | `fixtures/{test_id}.json` | this file |
+| `--mode deadtime` | does **condense** cut dead time without cutting play? | `fixtures/{test_id}_deadtime.json` | [`fixtures/README_deadtime.md`](fixtures/README_deadtime.md) |
+
+**Working on condense / dead-time?** Read
+[`fixtures/README_deadtime.md`](fixtures/README_deadtime.md) first — the tier
+semantics differ from the highlight fixture in a way that silently inverts the
+metric if you get it wrong (see [Adding a new test case](#adding-a-new-test-case)).
 
 It is *not* a clipper. It takes a video the pipeline has already processed, plus
 a human's hand-labeled highlights for that same video, and scores how closely
@@ -59,13 +71,28 @@ docker compose exec -e GIT_COMMIT=$(git rev-parse --short HEAD) worker \
 
 # Clips-json: score a pre-dumped {pre_gate, post_gate} window list.
 python -m ml.eval.harness --test test1 --version my-change --clips-json dump.json
+
+# Dead-time: score a dumped condense keep-window list. No video, no app deps —
+# runs on a laptop.
+python -m ml.eval.harness --mode deadtime --test test1 --version my-change \
+  --windows-json keep.json
+
+# Dead-time, offline: derive the windows from the real video via the R2
+# ball-cache, mirroring the pipeline's stage-5 condense path.
+docker compose run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
+  worker python -m ml.eval.harness --mode deadtime --test test1 \
+  --version my-change --offline
 ```
 
 - `--version <label>` is free text; it and a `config_snapshot` (pad/score
   constants) + git commit are written with each run.
 - `--no-record` prints without appending to the results log.
-- Results append one JSON line per run to `results/{test_id}.jsonl` (committed
-  to git — that file *is* the cross-version history).
+- Results append one JSON line per run to `results/{test_id}.jsonl` — or
+  `results/{test_id}_deadtime.jsonl` in dead-time mode (both committed to git —
+  those files *are* the cross-version history).
+- Dead-time extras: `--audit-limit N` caps each divergence list (0 = all), and
+  `--dump-windows` on an `--offline` run saves the derived windows so a later
+  re-score needs no container and no download.
 
 `--clips-json` input shape:
 ```json
@@ -88,6 +115,27 @@ python -m ml.eval.harness --test test1 --version my-change --clips-json dump.jso
    **no code change**.
 3. Run the harness with `--test {test_id}` to record its baseline.
 
+### …for dead-time mode
+
+A dead-time case is a **separate label pass** into
+`fixtures/{test_id}_deadtime.json` — full format in
+[`fixtures/README_deadtime.md`](fixtures/README_deadtime.md). Do not reuse the
+highlight fixture's `clips` list.
+
+The trap worth stating here, because nothing errors when you hit it: `keep_tiers`
+selects which tiers count as **ball-in-play**, and that is a wider set than
+"highlight-worthy" — `M`/`C`/`N` are all live ball (a failed serve is still play
+the condense stage must keep), while only `B` (break) and `O` (camera outlier)
+become dead time. Reusing the highlight tiers `["M", "C"]` would count every
+boring-but-real rally as dead time, so a model that correctly kept them scores as
+*missing dead time* and one that aggressively cut real play scores as *removing
+more* — the metric inverts.
+
+`load_deadtime_fixture` is deliberately permissive: an absent `keep_tiers`, or a
+span with no tier, counts as in-play. A tier-less fixture therefore loads
+without complaint and scores every labeled span as play. Silent, plausible, and
+wrong — so copy the dead-time format rather than adapting the highlight one.
+
 ### Fixture format — `fixtures/{test_id}.json`
 ```json
 {
@@ -109,8 +157,14 @@ exact bytes forever and matches the ball-cache key.
 
 ## Files
 ```
-metrics.py    pure signal math (unit-tested in ml/tests/test_eval_metrics.py)
-harness.py    fixture load, model-clip acquisition, report, results append
-fixtures/     one JSON per test case (ground truth)
-results/      {test_id}.jsonl — one row per tagged run, committed
+metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
+harness.py             fixture load, model-clip acquisition, report, results append
+diagnose_detection.py  why a rally was missed: BLIND / SPARSE / GATED breakdown
+tune_contacts.py       sweep find_contacts tunables over a dumped ball track
+fixtures/              one JSON per test case (ground truth)
+                       {test_id}.json          highlights (CF-55)
+                       {test_id}_deadtime.json ball-in-play spans (CF-98)
+                       README_deadtime.md      dead-time fixture format
+results/               {test_id}.jsonl and {test_id}_deadtime.jsonl —
+                       one row per tagged run, committed
 ```

@@ -1,0 +1,819 @@
+{
+  "test_id": "test1",
+  "labeler": "Kunyuan",
+  "labeled_at": "2026-07-14",
+  "labeling": "independent",
+  "derived_from": "ClipFarm task board > Test1 tab (full rally table, For-Claude tier column). Pins mirror test1.json.",
+  "source_video_url": "https://www.youtube.com/watch?v=rMQRxjKLkns",
+  "source_note": "Labeled against the first 0:00:00-1:01:00 of the 2:01:38 original; the uploaded ClipFarm file is that first-hour cut, so timestamps map 1:1 (no offset).",
+  "source_video_md5": "ed2897148f8f59d48fccff83905bbdc3",
+  "source_r2_key": "raw/f25cf0f2-9865-4f70-8793-92f72b79b8b6.mp4",
+  "video_duration_sec": 3660.0,
+  "keep_tiers": [
+    "M",
+    "C",
+    "N"
+  ],
+  "tier_legend": {
+    "M": "must clip - highlight rally (in play)",
+    "C": "can clip - highlight rally (in play)",
+    "N": "no-clip / bad play - failed serve, shank, average rally. STILL BALL-IN-PLAY, so still kept.",
+    "B": "break between sets/games - dead time",
+    "O": "outlier - camera knocked/adjusted, or a pause in play - dead time"
+  },
+  "note": "spans lists EVERY labeled span; keep_tiers selects which count as ball-in-play. Dead time is the complement: [0, video_duration_sec] minus the selected spans, so the B/O spans below plus every unlabeled gap become dead time. Note that N spans are IN PLAY: a failed serve is live ball the condense stage should keep, and scoring it as dead time would reward a model for cutting real play. Do not confuse this with test1.json, whose ground_truth_tiers is [M, C] because highlight-worthiness is a different question.",
+  "spans": [
+    {
+      "start": "00:50",
+      "end": "01:08",
+      "tier": "N",
+      "note": "Decent rally with 3 spikes, 1 block, 1 touch, and a tip. Final spike goes out."
+    },
+    {
+      "start": "01:30",
+      "end": "02:01",
+      "tier": "C",
+      "note": "Long rally with great finishing straight spike."
+    },
+    {
+      "start": "02:18",
+      "end": "02:28",
+      "tier": "C",
+      "note": "Great cross spike finisher"
+    },
+    {
+      "start": "02:45",
+      "end": "02:51",
+      "tier": "N",
+      "note": "Serve into pass into setter messing up and putting the ball out."
+    },
+    {
+      "start": "03:00",
+      "end": "03:06",
+      "tier": "M",
+      "note": "Very good back set into great spike."
+    },
+    {
+      "start": "03:24",
+      "end": "03:27",
+      "tier": "N",
+      "note": "Failed serve into net"
+    },
+    {
+      "start": "03:38",
+      "end": "03:44",
+      "tier": "N",
+      "note": "Clumsy receive into failed play"
+    },
+    {
+      "start": "03:58",
+      "end": "04:01",
+      "tier": "N",
+      "note": "Failed serve into net"
+    },
+    {
+      "start": "04:15",
+      "end": "04:20",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "04:32",
+      "end": "04:46",
+      "tier": "C",
+      "note": "Good rally with good blocks"
+    },
+    {
+      "start": "05:00",
+      "end": "05:08",
+      "tier": "C",
+      "note": "Good straight spike"
+    },
+    {
+      "start": "05:27",
+      "end": "05:33",
+      "tier": "N",
+      "note": "Terrible play"
+    },
+    {
+      "start": "05:49",
+      "end": "05:52",
+      "tier": "N",
+      "note": "Failed serve"
+    },
+    {
+      "start": "06:04",
+      "end": "06:15",
+      "tier": "C",
+      "note": "Good spike"
+    },
+    {
+      "start": "06:30",
+      "end": "06:41",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "06:57",
+      "end": "07:04",
+      "tier": "M",
+      "note": "Great cross-spike"
+    },
+    {
+      "start": "07:20",
+      "end": "07:24",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "07:39",
+      "end": "07:55",
+      "tier": "C",
+      "note": "Great rally, ended with good block"
+    },
+    {
+      "start": "08:08",
+      "end": "08:12",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "08:28",
+      "end": "08:47",
+      "tier": "M",
+      "note": "Great rally with a really good dig and a great finishing spike"
+    },
+    {
+      "start": "09:12",
+      "end": "09:21",
+      "tier": "N",
+      "note": "Good back set but overall average"
+    },
+    {
+      "start": "09:35",
+      "end": "10:07",
+      "tier": "N",
+      "note": "Long rally but very average plays"
+    },
+    {
+      "start": "10:25",
+      "end": "10:30",
+      "tier": "N",
+      "note": "Good serve"
+    },
+    {
+      "start": "10:45",
+      "end": "11:14",
+      "tier": "N",
+      "note": "Long rally but average plays"
+    },
+    {
+      "start": "11:29",
+      "end": "11:39",
+      "tier": "N",
+      "note": "Rally into block out"
+    },
+    {
+      "start": "11:55",
+      "end": "12:02",
+      "tier": "N",
+      "note": "Rally into failed spike"
+    },
+    {
+      "start": "12:17",
+      "end": "12:20",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "12:24",
+      "end": "12:47",
+      "tier": "N",
+      "note": "Subpar gameplay"
+    },
+    {
+      "start": "13:00",
+      "end": "13:07",
+      "tier": "N",
+      "note": "Very average play"
+    },
+    {
+      "start": "13:25",
+      "end": "13:31",
+      "tier": "N",
+      "note": "Failed set"
+    },
+    {
+      "start": "13:45",
+      "end": "13:52",
+      "tier": "C",
+      "note": "Good finish"
+    },
+    {
+      "start": "14:10",
+      "end": "14:20",
+      "tier": "C",
+      "note": "Great spike and block"
+    },
+    {
+      "start": "14:37",
+      "end": "14:39",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "14:53",
+      "end": "15:01",
+      "tier": "N",
+      "note": "Average rally"
+    },
+    {
+      "start": "15:15",
+      "end": "15:26",
+      "tier": "C",
+      "note": "Decent play with 2 spikes and a touch."
+    },
+    {
+      "start": "15:40",
+      "end": "15:44",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "16:00",
+      "end": "16:05",
+      "tier": "M",
+      "note": "Great spike"
+    },
+    {
+      "start": "16:05",
+      "end": "19:00",
+      "tier": "B",
+      "note": "BREAK"
+    },
+    {
+      "start": "19:06",
+      "end": "19:18",
+      "tier": "C",
+      "note": "Great spike into a shank"
+    },
+    {
+      "start": "19:33",
+      "end": "19:43",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "20:00",
+      "end": "20:04",
+      "tier": "C",
+      "note": "Ace serve"
+    },
+    {
+      "start": "20:17",
+      "end": "20:29",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "20:43",
+      "end": "20:50",
+      "tier": "N",
+      "note": "Spiked out"
+    },
+    {
+      "start": "21:05",
+      "end": "21:25",
+      "tier": "N",
+      "note": "Long rally but average plays"
+    },
+    {
+      "start": "21:36",
+      "end": "21:41",
+      "tier": "N",
+      "note": "Serve into shank"
+    },
+    {
+      "start": "21:56",
+      "end": "22:09",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "22:26",
+      "end": "22:30",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "22:38",
+      "end": "22:48",
+      "tier": "C",
+      "note": "Good spike into good receive into bad finish."
+    },
+    {
+      "start": "23:03",
+      "end": "23:11",
+      "tier": "N",
+      "note": "Bad receive into set into failed spike"
+    },
+    {
+      "start": "23:26",
+      "end": "23:35",
+      "tier": "M",
+      "note": "Crazy spike"
+    },
+    {
+      "start": "23:51",
+      "end": "24:04",
+      "tier": "C",
+      "note": "Good rally into a good spike"
+    },
+    {
+      "start": "24:16",
+      "end": "24:20",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "24:36",
+      "end": "24:51",
+      "tier": "N",
+      "note": "Average plays"
+    },
+    {
+      "start": "25:07",
+      "end": "25:16",
+      "tier": "C",
+      "note": "Good spike"
+    },
+    {
+      "start": "25:31",
+      "end": "25:39",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "25:49",
+      "end": "25:59",
+      "tier": "C",
+      "note": "Pretty good play around the end"
+    },
+    {
+      "start": "26:10",
+      "end": "26:22",
+      "tier": "N",
+      "note": "Decent block, but overall average"
+    },
+    {
+      "start": "26:33",
+      "end": "26:46",
+      "tier": "M",
+      "note": "Very good spike"
+    },
+    {
+      "start": "27:01",
+      "end": "27:13",
+      "tier": "C",
+      "note": "Failed quick into a decent spike"
+    },
+    {
+      "start": "27:28",
+      "end": "27:35",
+      "tier": "N",
+      "note": "Subpar plays"
+    },
+    {
+      "start": "27:44",
+      "end": "27:57",
+      "tier": "M",
+      "note": "Great spike"
+    },
+    {
+      "start": "28:10",
+      "end": "28:19",
+      "tier": "M",
+      "note": "Great two man block"
+    },
+    {
+      "start": "28:26",
+      "end": "28:42",
+      "tier": "C",
+      "note": "Spike into a good dig, but bad finish"
+    },
+    {
+      "start": "28:56",
+      "end": "29:15",
+      "tier": "C",
+      "note": "Average rally into good finish"
+    },
+    {
+      "start": "29:31",
+      "end": "29:36",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "29:53",
+      "end": "30:03",
+      "tier": "N",
+      "note": "Messy rally"
+    },
+    {
+      "start": "30:16",
+      "end": "30:28",
+      "tier": "N",
+      "note": "Average rally"
+    },
+    {
+      "start": "30:43",
+      "end": "30:47",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "31:01",
+      "end": "31:09",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "31:23",
+      "end": "31:29",
+      "tier": "N",
+      "note": "Failed serve"
+    },
+    {
+      "start": "31:39",
+      "end": "32:05",
+      "tier": "M",
+      "note": "Good rally into great spike and great dig"
+    },
+    {
+      "start": "32:06",
+      "end": "35:30",
+      "tier": "B",
+      "note": "BREAK"
+    },
+    {
+      "start": "35:31",
+      "end": "35:38",
+      "tier": "C",
+      "note": "Ace serve"
+    },
+    {
+      "start": "35:51",
+      "end": "35:58",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "36:15",
+      "end": "36:20",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "36:43",
+      "end": "36:47",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "37:00",
+      "end": "37:05",
+      "tier": "C",
+      "note": "Float serve into failed offense"
+    },
+    {
+      "start": "37:21",
+      "end": "37:25",
+      "tier": "N",
+      "note": "Failed serve"
+    },
+    {
+      "start": "37:34",
+      "end": "37:46",
+      "tier": "C",
+      "note": "Great cross spike"
+    },
+    {
+      "start": "38:01",
+      "end": "38:09",
+      "tier": "C",
+      "note": "Good tip"
+    },
+    {
+      "start": "38:27",
+      "end": "38:37",
+      "tier": "N",
+      "note": "Spiked out"
+    },
+    {
+      "start": "38:51",
+      "end": "39:20",
+      "tier": "N",
+      "note": "Long but average rally"
+    },
+    {
+      "start": "39:33",
+      "end": "39:42",
+      "tier": "N",
+      "note": "Failed offense"
+    },
+    {
+      "start": "39:53",
+      "end": "40:05",
+      "tier": "N",
+      "note": "Failed play"
+    },
+    {
+      "start": "40:19",
+      "end": "40:25",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "40:33",
+      "end": "40:41",
+      "tier": "M",
+      "note": "Great cross spike"
+    },
+    {
+      "start": "40:51",
+      "end": "41:04",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "41:20",
+      "end": "41:30",
+      "tier": "N",
+      "note": "Failed tip"
+    },
+    {
+      "start": "41:53",
+      "end": "42:02",
+      "tier": "N",
+      "note": "Failed play"
+    },
+    {
+      "start": "42:17",
+      "end": "42:25",
+      "tier": "M",
+      "note": "Great spike down"
+    },
+    {
+      "start": "42:39",
+      "end": "42:48",
+      "tier": "N",
+      "note": "Block out"
+    },
+    {
+      "start": "42:58",
+      "end": "43:05",
+      "tier": "N",
+      "note": "Serve out"
+    },
+    {
+      "start": "43:25",
+      "end": "43:36",
+      "tier": "M",
+      "note": "Great cross spike"
+    },
+    {
+      "start": "43:51",
+      "end": "43:57",
+      "tier": "N",
+      "note": "Shanked serve"
+    },
+    {
+      "start": "44:09",
+      "end": "44:21",
+      "tier": "N",
+      "note": "Hit into net"
+    },
+    {
+      "start": "44:33",
+      "end": "44:45",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "45:01",
+      "end": "45:09",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "45:31",
+      "end": "45:35",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "45:51",
+      "end": "45:56",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "46:13",
+      "end": "46:19",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "46:28",
+      "end": "46:41",
+      "tier": "M",
+      "note": "Great finishing spike"
+    },
+    {
+      "start": "47:03",
+      "end": "47:16",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "47:26",
+      "end": "47:31",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "47:32",
+      "end": "49:47",
+      "tier": "B",
+      "note": "BREAK"
+    },
+    {
+      "start": "49:48",
+      "end": "50:03",
+      "tier": "N",
+      "note": "Decent rally"
+    },
+    {
+      "start": "50:20",
+      "end": "50:27",
+      "tier": "N",
+      "note": "Shanked serve"
+    },
+    {
+      "start": "50:38",
+      "end": "50:58",
+      "tier": "C",
+      "note": "Good finish"
+    },
+    {
+      "start": "51:13",
+      "end": "51:26",
+      "tier": "M",
+      "note": "Monster block"
+    },
+    {
+      "start": "51:42",
+      "end": "51:47",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "51:55",
+      "end": "52:05",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "52:15",
+      "end": "52:24",
+      "tier": "N",
+      "note": "Failed set"
+    },
+    {
+      "start": "52:34",
+      "end": "52:43",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "52:56",
+      "end": "53:01",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "53:17",
+      "end": "53:33",
+      "tier": "C",
+      "note": "Clumsy rally into good finish"
+    },
+    {
+      "start": "53:50",
+      "end": "53:59",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "54:10",
+      "end": "54:26",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "54:36",
+      "end": "54:40",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "55:04",
+      "end": "55:08",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "55:20",
+      "end": "55:27",
+      "tier": "N",
+      "note": "Served into net"
+    },
+    {
+      "start": "55:41",
+      "end": "55:51",
+      "tier": "C",
+      "note": "Good cross spike"
+    },
+    {
+      "start": "56:06",
+      "end": "56:25",
+      "tier": "N",
+      "note": "Good rally"
+    },
+    {
+      "start": "56:26",
+      "end": "56:47",
+      "tier": "O",
+      "note": "Ball knocks down camera. Camera is adjusted back but moves when adjusted."
+    },
+    {
+      "start": "56:48",
+      "end": "56:56",
+      "tier": "M",
+      "note": "Great cross spike"
+    },
+    {
+      "start": "56:57",
+      "end": "57:14",
+      "tier": "O",
+      "note": "Camera has movement and is adjusted again."
+    },
+    {
+      "start": "57:15",
+      "end": "57:18",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "57:19",
+      "end": "57:58",
+      "tier": "O",
+      "note": "Position confusion. Minor pause in gameplay."
+    },
+    {
+      "start": "57:59",
+      "end": "58:10",
+      "tier": "C",
+      "note": "Great finishing spike"
+    },
+    {
+      "start": "58:35",
+      "end": "58:46",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "58:57",
+      "end": "59:11",
+      "tier": "N",
+      "note": "Average play"
+    },
+    {
+      "start": "59:24",
+      "end": "59:30",
+      "tier": "N",
+      "note": "Served out"
+    },
+    {
+      "start": "59:41",
+      "end": "59:52",
+      "tier": "N",
+      "note": "Failed spike"
+    },
+    {
+      "start": "1:00:07",
+      "end": "1:00:16",
+      "tier": "N",
+      "note": "Failed play"
+    }
+  ]
+}
