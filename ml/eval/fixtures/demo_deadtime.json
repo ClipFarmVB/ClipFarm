@@ -1,0 +1,13 @@
+{
+  "test_id": "demo",
+  "labeler": "SYNTHETIC — placeholder, not a real label pass",
+  "note": "Fake rally spans so the dead-time harness runs end-to-end before a real fixture exists (CF-98). Replace with a hand-labeled fixture; see fixtures/README_deadtime.md.",
+  "video_duration_sec": 300.0,
+  "keep": [
+    {"start": "00:20", "end": "00:48", "note": "rally"},
+    {"start": "01:10", "end": "01:35", "note": "rally"},
+    {"start": "02:00", "end": "02:22", "note": "rally"},
+    {"start": "03:40", "end": "04:05", "note": "rally"},
+    {"start": "04:30", "end": "04:52", "note": "rally"}
+  ]
+}
