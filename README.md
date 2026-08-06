@@ -174,19 +174,21 @@ docker compose --env-file .env.docker up --build
 #   web  → http://localhost:3000
 #   api  → http://localhost:8000  (docs at /docs)
 
-# 3. Enable the pre-commit hook (runs the same checks as CI)
+# 3. Enable the pre-commit hook (runs most of what CI runs — not api/tests)
 git config core.hooksPath .hooks
 ```
 
 Tests:
 
 ```bash
-npm ci                                   # once per worktree, at the repo root
+# Installs, once per worktree. The pip line supplies pytest for BOTH suites
+# below — it is pinned in api/requirements-dev.txt and not in requirements.txt.
+npm ci                                   # at the repo root
+pip install -r api/requirements-dev.txt  # runtime deps + test-only deps
+
 npm run test --workspace=web             # vitest, ~1s
 npm run test:watch --workspace=web       # same suite, watch mode
 python -m pytest ml/tests/               # ml eval metrics + dead-time
-
-pip install -r api/requirements-dev.txt  # once: runtime deps + test-only deps
 cd api && python -m pytest tests/        # api (CI runs this; the hook does not)
 ```
 
