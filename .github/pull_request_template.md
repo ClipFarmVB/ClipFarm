@@ -1,3 +1,10 @@
+Closes #
+
+<!-- ^ The GitHub issue number, e.g. "Closes #53". Keep this line bare and
+     unbolded on its own line — that exact form is what GitHub parses.
+     "CF-53" alone is plain text to GitHub and closes nothing, so without this
+     the issue stays open after merge and its board card never moves. -->
+
 ## What
 
 <!-- One or two sentences: what does this PR change? -->

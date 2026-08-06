@@ -6,19 +6,30 @@ import Link from "next/link";
 import { AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase";
+import { safeNextPath } from "@/lib/redirect";
+import { AUTH_ERROR_PARAM, authErrorMessage } from "@/lib/authError";
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const nextPath = searchParams.get("next") ?? "/games";
+  // `next` comes from the URL — the middleware sets it, but so can anyone.
+  const nextPath = safeNextPath(searchParams.get("next"));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Why /auth/confirm sent them here, if it did. Dropped once they try a login
+  // of their own — the param outlives its usefulness but stays in the URL.
+  const [linkErrorDismissed, setLinkErrorDismissed] = useState(false);
+  const linkError = linkErrorDismissed
+    ? null
+    : authErrorMessage(searchParams.get(AUTH_ERROR_PARAM));
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setLinkErrorDismissed(true);
     setLoading(true);
     const supabase = createClient();
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -81,10 +92,10 @@ function LoginForm() {
             />
           </div>
 
-          {error && (
+          {(error ?? linkError) && (
             <div className="flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
               <AlertCircle size={13} className="shrink-0 mt-0.5" />
-              {error}
+              {error ?? linkError}
             </div>
           )}
 

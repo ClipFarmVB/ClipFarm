@@ -9,7 +9,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.observability import init_sentry
-from app.routers import games, clips, players, collections
+from app.routers import games, clips, players, collections, corrections
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ app.include_router(games.router)
 app.include_router(clips.router)
 app.include_router(players.router)
 app.include_router(collections.router)
+app.include_router(corrections.router)
 
 
 async def _check_db() -> bool:
@@ -56,8 +57,10 @@ async def _check_redis() -> bool:
 
 @app.get("/health")
 async def health(response: Response):
-    """Liveness + readiness: reports Postgres and Redis reachability. Returns
-    503 when a dependency is down so an external uptime monitor can alert."""
+    """Deep readiness: reports Postgres and Redis reachability. Returns 503 when
+    a dependency is down so an external uptime monitor can alert. This is the
+    route the uptime check should watch — NOT the platform health check, which
+    uses /healthz below."""
     db_ok, redis_ok = await asyncio.gather(_check_db(), _check_redis())
     healthy = db_ok and redis_ok
     if not healthy:
@@ -69,6 +72,15 @@ async def health(response: Response):
             "redis": "ok" if redis_ok else "down",
         },
     }
+
+
+@app.get("/healthz")
+async def liveness():
+    """Shallow liveness probe for the platform health check (Render's
+    healthCheckPath). Always 200 while the process is up — it deliberately does
+    NOT touch Postgres or Redis, so a transient dependency blip never cycles a
+    healthy API instance or blocks a deploy."""
+    return {"status": "ok"}
 
 
 if settings.debug:

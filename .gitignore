@@ -39,6 +39,11 @@ npm-debug.log*
 # Local scratch / manual tuning workspace (never commit)
 ball-track/
 
+# Ball-track dumps from ml/eval/diagnose_detection.py — derived from the R2
+# ball-cache and regenerable, ~500KB each. The scores computed *from* them
+# belong in results/*.jsonl; the raw track does not.
+ml/eval/results/*_ball_track.json
+
 # ML / data
 *.pt
 *.pth

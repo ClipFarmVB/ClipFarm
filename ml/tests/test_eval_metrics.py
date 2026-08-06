@@ -8,7 +8,10 @@ from ml.eval.metrics import (
     ModelWindow,
     _decompose_window,
     evaluate,
+    evaluate_deadtime,
+    intersect,
     intersect_length,
+    subtract,
     union,
 )
 
@@ -130,3 +133,83 @@ class TestBucketBoundary:
         assert sig.per_clip[0].fraction == 0.5
         assert sig.buckets.well_captured == 1
         assert sig.buckets.butchered == 0
+
+
+# ── dead-time metrics (CF-98) ──────────────────────────────────────────────
+
+class TestSubtract:
+    def test_removes_middle(self):
+        assert subtract([(0, 100)], [(30, 40)]) == [(0, 30), (40, 100)]
+
+    def test_disjoint_leaves_a_whole(self):
+        assert subtract([(0, 10)], [(50, 60)]) == [(0, 10)]
+
+    def test_full_cover_leaves_nothing(self):
+        assert subtract([(10, 20)], [(0, 100)]) == []
+
+    def test_complement_via_span(self):
+        # dead time = the span minus the keep-windows
+        assert subtract([(0, 100)], [(10, 30), (60, 80)]) == [(0, 10), (30, 60), (80, 100)]
+
+
+class TestIntersect:
+    def test_returns_overlap_spans(self):
+        assert intersect([(0, 50)], [(20, 80)]) == [(20, 50)]
+
+    def test_multiple_pieces(self):
+        assert intersect([(0, 100)], [(10, 20), (40, 60)]) == [(10, 20), (40, 60)]
+
+    def test_disjoint_is_empty(self):
+        assert intersect([(0, 10)], [(20, 30)]) == []
+
+
+class TestDeadTime:
+    def test_perfect_condense(self):
+        # model keeps exactly the rallies → all dead removed, no play lost
+        keep = [(10, 20), (60, 80)]
+        s = evaluate_deadtime(human_keep=keep, model_keep=keep, duration=100)
+        assert s.dead_removed_pct == 1.0
+        assert s.live_removed_sec == 0.0
+        assert s.live_removed_pct == 0.0
+        assert s.kept_play_pct == 1.0
+        assert s.missed_dead == []
+        assert s.over_cut_live == []
+
+    def test_kept_all_dead_removed_nothing(self):
+        # model keeps the whole video → 0% dead removed, but 0 play lost either
+        s = evaluate_deadtime(human_keep=[(10, 20)], model_keep=[(0, 100)], duration=100)
+        assert s.dead_removed_pct == 0.0
+        assert s.live_removed_sec == 0.0
+        # all dead time kept, listed longest-first
+        assert s.missed_dead == [(20, 100), (0, 10)]
+
+    def test_over_cut_live_is_the_harm(self):
+        # human rally 10-30; model keeps only 10-20 → cut 20-30 of real play
+        s = evaluate_deadtime(human_keep=[(10, 30)], model_keep=[(10, 20)], duration=100)
+        assert s.live_removed_sec == 10.0
+        assert s.live_removed_pct == 0.5
+        assert s.kept_play_pct == 0.5
+        assert s.over_cut_live == [(20, 30)]
+
+    def test_audit_sorted_longest_first(self):
+        # two over-cut spans of 5s and 20s → longer one listed first
+        s = evaluate_deadtime(
+            human_keep=[(10, 15), (40, 60)], model_keep=[], duration=100
+        )
+        assert s.over_cut_live == [(40, 60), (10, 15)]
+
+    def test_inputs_clamped_to_duration(self):
+        # a label past the video end must not inflate the totals
+        s = evaluate_deadtime(human_keep=[(90, 200)], model_keep=[(90, 200)], duration=100)
+        assert s.human_keep_sec == 10.0        # 90-100, not 90-200
+        assert s.kept_play_pct == 1.0
+
+    def test_no_dead_time(self):
+        # whole video is rally → dead_removed_pct undefined, not a divide-by-zero
+        s = evaluate_deadtime(human_keep=[(0, 100)], model_keep=[(0, 100)], duration=100)
+        assert s.dead_removed_pct is None
+        assert s.human_dead_sec == 0.0
+
+    def test_condense_ratio(self):
+        s = evaluate_deadtime(human_keep=[(0, 40)], model_keep=[(0, 40)], duration=100)
+        assert s.condense_ratio == 0.4
