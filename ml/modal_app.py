@@ -54,11 +54,21 @@ image = (
 )
 
 
+# Cost ceiling (CF-65c). Nothing upstream bounds GPU fan-out: M worker replicas
+# x N prefork children each invoke this independently, so without a cap a queue
+# spike maps 1:1 onto simultaneously-billed T4s. MAX_GPU_CONTAINERS is the one
+# place that ceiling is expressed — excess calls queue instead of scaling out,
+# which is the right trade for a batch pipeline where throughput matters and
+# per-job latency doesn't. Raise it deliberately alongside worker replicas.
+MAX_GPU_CONTAINERS = 4
+
+
 @app.function(
     image=image,
     gpu="T4",
     volumes={"/models": model_cache},
     timeout=1800,  # 30 min ceiling — generous headroom over the expected ~5 min run
+    max_containers=MAX_GPU_CONTAINERS,
 )
 def track_ball_remote(video_url: str, api_key: str, sample_every: int) -> list[dict]:
     """
@@ -101,6 +111,10 @@ def track_ball_remote(video_url: str, api_key: str, sample_every: int) -> list[d
     gpu="T4",
     volumes={"/models": model_cache},
     timeout=1800,
+    # Same ceiling as track_ball_remote — this is the function the worker
+    # actually prefers, so capping only the other one would leave the real path
+    # unbounded.
+    max_containers=MAX_GPU_CONTAINERS,
 )
 def track_ball_stream(video_url: str, api_key: str, sample_every: int):
     """

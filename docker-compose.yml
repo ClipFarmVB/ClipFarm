@@ -98,6 +98,17 @@ services:
         condition: service_healthy
       api:
         condition: service_started
+    # Scale horizontally (CF-65c) with:
+    #     docker compose --env-file .env.docker up -d --scale worker=3
+    # The replicas share one Redis queue; Celery distributes tasks and CF-65a's
+    # per-game lock keeps any single game on exactly one of them. No
+    # container_name or host port is declared here — either would break scaling.
+    #
+    # Caveat on a COLD model_cache volume: every replica mounts the same volume,
+    # so scaling from empty means several of them race to download the same
+    # weights. Bring the stack up with one worker, let it process a job, then
+    # scale — after that the cache is warm and read-only.
+    #
     # Prefork pool (CF-65b): concurrency comes from CELERY_WORKER_CONCURRENCY
     # (app/config.py), so raising parallelism is an env change, not a command
     # edit. Dev runs 2 so the forked-child path is actually exercised locally —

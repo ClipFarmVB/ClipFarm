@@ -126,6 +126,15 @@ services:
     branch: main
     region: oregon
     plan: standard
+    # Horizontal scaling (CF-65c). Raising this runs M independent workers off
+    # the same Redis queue; Celery distributes tasks between them and CF-65a's
+    # per-game lock guarantees no game is picked up twice. Workers are stateless
+    # — everything durable lives in Supabase, R2 or Redis, and the only local
+    # state is a per-job tempdir and the model cache below.
+    #
+    # Left at 1 as the shipped default: scale out only after CF-65f (queue
+    # visibility) so the decision is driven by measured queue depth rather than
+    # guesswork, and note each replica multiplies Modal spend under load.
     numInstances: 1
     dockerfilePath: ./Dockerfile.api
     dockerContext: .
@@ -135,15 +144,19 @@ services:
     # old solo pool. Raise it in the dashboard only after watching this box's
     # memory under a real job; each child loads its own pose model.
     dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT celery -A app.workers.celery_app worker --loglevel=info --pool=prefork"
-    # NOTE: the image runs as non-root `appuser` (uid 1000). A Render disk can
-    # mount root-owned, which would mask the Dockerfile's build-time chown of
-    # /models and make weight writes fail. Verify on first deploy (see DEPLOY_RENDER.md
-    # "model cache" check); if writes fail, the cache is an optimization only —
-    # point the MODEL_* vars off the disk to fall back to per-deploy re-download.
-    disk:
-      name: model-cache
-      mountPath: /models
-      sizeGB: 1
+    # NO DISK — deliberate (CF-65c). A Render disk pins a service to a single
+    # instance, so keeping one would make `numInstances > 1` impossible. The
+    # model cache (CF-40) therefore lives on the container's own filesystem at
+    # /models: still warm for the life of a container, re-fetched once per
+    # replica per deploy.
+    #
+    # That trade is cheap on the normal path. The 114 MB RF-DETR ball model is
+    # only loaded by the LOCAL tracking fallback (`ml/pipeline/ball.py::_load_model`);
+    # with Modal configured, tracking runs on the GPU and the worker only pulls
+    # pose weights (~6 MB for yolov8n, ~23 MB for yolov8s). Deploys are manual
+    # (autoDeploy: false), so this is a rare, small cost — paid in exchange for
+    # being able to scale at all. It also removes the root-owned-disk permission
+    # hazard the previous comment warned about.
     # Off for the same reason as the api, plus one of its own: the worker shares
     # the api's models, so auto-deploying it while the api waits for a manual
     # deploy would run new task code against the old schema. Deploy the two
