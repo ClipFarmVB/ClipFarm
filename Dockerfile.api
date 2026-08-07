@@ -40,6 +40,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 COPY api /app/api
 COPY ml /app/ml
 
+# Render start commands (CF-170). chmod here rather than trusting the mode in
+# git: the repo is worked on from Windows, where the executable bit does not
+# survive, and a non-executable start script fails the deploy with a "not
+# found" that points at the wrong thing.
+COPY scripts /app/scripts
+RUN chmod +x /app/scripts/*.sh
+
 # Run as a non-root user so Celery doesn't warn about superuser privileges.
 # /models seeds the model_cache volume's ownership: a named volume inherits
 # the image directory's owner on first creation, and appuser must be able to

@@ -196,6 +196,19 @@ same Blueprint when there are real users; that's also what would let
 
 ## Notes & gotchas
 
+- **Start commands live in `scripts/render-start-*.sh`, not inline in
+  `render.yaml`.** Render does not shell-parse `dockerCommand`, so an
+  `sh -c "VAR=x cmd args"` there is handed over as a single command *name* and
+  the service dies at boot with
+
+  ```
+  sh: 1: SENTRY_RELEASE=<sha> celery -A app.workers.celery_app worker …: not found
+  ```
+
+  That reads like a missing binary and isn't — celery and uvicorn are both in the
+  image. It cost a full blueprint deploy to diagnose (CF-170). Anything needing a
+  shell (`$PORT`, `$RENDER_GIT_COMMIT`) belongs in the script; if you inline it
+  again, both services stop starting.
 - **Migrations run once per deploy** via the api service's `preDeployCommand`
   (`alembic upgrade head`), not on every boot. Don't re-add per-boot migration to
   production start commands — it races across restarts and can advance a shared

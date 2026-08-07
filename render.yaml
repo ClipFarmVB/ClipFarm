@@ -71,12 +71,14 @@ services:
     plan: starter
     dockerfilePath: ./Dockerfile.api
     dockerContext: .
-    # Render assigns the port via $PORT — bind it, don't hardcode. sh -c so the
-    # vars expand (a bare exec form wouldn't). EXPOSE 8000 in the image is only
-    # documentation; the health check hits $PORT/healthz.
-    # SENTRY_RELEASE ties events to the deployed commit ($RENDER_GIT_COMMIT is
-    # injected by Render) so a regression can be traced to a specific deploy.
-    dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    # A script, not an inline command: Render does not shell-parse this value,
+    # so `sh -c "VAR=x cmd args"` here arrives as one command *name* and the
+    # service dies with `sh: 1: SENTRY_RELEASE=<sha> uvicorn ...: not found`,
+    # which reads like a missing binary (CF-170). The script binds Render's
+    # $PORT and defaults SENTRY_RELEASE to $RENDER_GIT_COMMIT so events trace to
+    # a deploy. Keep the logic there — do not inline it again.
+    # EXPOSE 8000 in the image is only documentation; the health check hits $PORT/healthz.
+    dockerCommand: /app/scripts/render-start-api.sh
     # Point the platform health check at the SHALLOW liveness route, not the
     # deep /health readiness check (CF-89 makes /health return 503 when Postgres
     # or Redis is down). Coupling deploy gating / instance health to a dependency
@@ -129,8 +131,8 @@ services:
     numInstances: 1
     dockerfilePath: ./Dockerfile.api
     dockerContext: .
-    # sh -c so $RENDER_GIT_COMMIT expands into SENTRY_RELEASE (see api above).
-    dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT celery -A app.workers.celery_app worker --loglevel=info --pool=solo"
+    # A script, not an inline command — same reason as the api above (CF-170).
+    dockerCommand: /app/scripts/render-start-worker.sh
     # NOTE: the image runs as non-root `appuser` (uid 1000). A Render disk can
     # mount root-owned, which would mask the Dockerfile's build-time chown of
     # /models and make weight writes fail. Verify on first deploy (see DEPLOY_RENDER.md
