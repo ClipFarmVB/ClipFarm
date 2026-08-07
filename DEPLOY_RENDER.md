@@ -211,11 +211,23 @@ same Blueprint when there are real users; that's also what would let
   what failed was the splitting, not the availability of a shell.) It cost a full
   blueprint deploy to diagnose (CF-170).
 
-  This applies to **`preDeployCommand` as well as `dockerCommand`** — the
-  migration hook runs before the service starts, so the same shape there aborts
-  the deploy before any start script is reached. Anything needing a shell
-  (`$PORT`, `$RENDER_GIT_COMMIT`, a `cd`) belongs in a script; if you inline it
-  again, the backend stops deploying.
+  This applies to **`preDeployCommand` as well as `dockerCommand`**. Observed on
+  the same deploy — the api never reached its start command at all:
+
+  ```
+  ==> Starting pre-deploy: sh -lc 'cd /app/api && alembic upgrade head'
+  sh: 1: cd /app/api && alembic upgrade head: not found
+  ==> Pre-deploy has failed
+  ==> Exited with status 127
+  ```
+
+  Note there is no `VAR=x` prefix in that one, just a `cd … && …`: the trigger is
+  the **quoting**, not the env assignment. Exit 127 is "command not found", so a
+  failure here looks nothing like a migration or database problem — don't go
+  hunting `DATABASE_URL` for it.
+
+  Anything needing a shell (`$PORT`, `$RENDER_GIT_COMMIT`, a `cd`) belongs in a
+  script; if you inline it again, the backend stops deploying.
 - **Migrations run once per deploy** via the api service's `preDeployCommand`
   (`alembic upgrade head`), not on every boot. Don't re-add per-boot migration to
   production start commands — it races across restarts and can advance a shared
