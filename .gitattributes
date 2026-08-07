@@ -1,0 +1,7 @@
+# Shell scripts must check out with LF even on Windows. A CRLF shebang makes
+# Linux report `bad interpreter: /bin/sh^M`, which surfaces as the same
+# misleading "not found" at container boot that CF-170 was — and this repo is
+# worked on from Windows, so without this the line endings depend on whoever
+# happens to commit the file.
+*.sh text eol=lf
+.hooks/* text eol=lf
