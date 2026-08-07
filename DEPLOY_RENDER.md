@@ -196,19 +196,26 @@ same Blueprint when there are real users; that's also what would let
 
 ## Notes & gotchas
 
-- **Start commands live in `scripts/render-start-*.sh`, not inline in
-  `render.yaml`.** Render does not shell-parse `dockerCommand`, so an
-  `sh -c "VAR=x cmd args"` there is handed over as a single command *name* and
-  the service dies at boot with
+- **Start commands live in `scripts/render-*.sh`, not inline in `render.yaml`.**
+  These fields are not tokenized the way a shell would tokenize them: a quoted
+  body arrives as a single **word**. So `sh -c "VAR=x cmd args"` starts a shell
+  that then hunts for one command named by the entire string, and the service
+  dies at boot with
 
   ```
   sh: 1: SENTRY_RELEASE=<sha> celery -A app.workers.celery_app worker …: not found
   ```
 
   That reads like a missing binary and isn't — celery and uvicorn are both in the
-  image. It cost a full blueprint deploy to diagnose (CF-170). Anything needing a
-  shell (`$PORT`, `$RENDER_GIT_COMMIT`) belongs in the script; if you inline it
-  again, both services stop starting.
+  image. (The `sh: 1:` prefix is dash's own error format, so a shell *did* run;
+  what failed was the splitting, not the availability of a shell.) It cost a full
+  blueprint deploy to diagnose (CF-170).
+
+  This applies to **`preDeployCommand` as well as `dockerCommand`** — the
+  migration hook runs before the service starts, so the same shape there aborts
+  the deploy before any start script is reached. Anything needing a shell
+  (`$PORT`, `$RENDER_GIT_COMMIT`, a `cd`) belongs in a script; if you inline it
+  again, the backend stops deploying.
 - **Migrations run once per deploy** via the api service's `preDeployCommand`
   (`alembic upgrade head`), not on every boot. Don't re-add per-boot migration to
   production start commands — it races across restarts and can advance a shared

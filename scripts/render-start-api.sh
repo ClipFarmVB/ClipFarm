@@ -2,10 +2,13 @@
 # Render start command for clipfarm-api.
 #
 # This lives in a file rather than inline in render.yaml's `dockerCommand`
-# because Render does not shell-parse that value: an `sh -c "VAR=x cmd args"`
-# there arrives as a single command *name*, and the service dies with
+# because that value is not tokenized the way a shell would tokenize it: a
+# quoted body arrives as a single *word*, so `sh -c "VAR=x cmd args"` runs a
+# shell that then looks for one command by that entire name, and the service
+# dies with
 #   sh: 1: SENTRY_RELEASE=<sha> uvicorn app.main:app ...: not found
-# which reads like a missing binary and is not (CF-170).
+# which reads like a missing binary and is not (CF-170). The `sh: 1:` prefix is
+# dash's own error format — a shell did run; it was handed an unsplit string.
 #
 # Two things need a shell, so a shell is what runs them:
 #   PORT            - assigned by Render per instance; uvicorn needs it as an arg.

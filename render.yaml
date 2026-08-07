@@ -71,12 +71,14 @@ services:
     plan: starter
     dockerfilePath: ./Dockerfile.api
     dockerContext: .
-    # A script, not an inline command: Render does not shell-parse this value,
-    # so `sh -c "VAR=x cmd args"` here arrives as one command *name* and the
-    # service dies with `sh: 1: SENTRY_RELEASE=<sha> uvicorn ...: not found`,
-    # which reads like a missing binary (CF-170). The script binds Render's
-    # $PORT and defaults SENTRY_RELEASE to $RENDER_GIT_COMMIT so events trace to
-    # a deploy. Keep the logic there — do not inline it again.
+    # A script, not an inline command: this value is not tokenized the way a
+    # shell would tokenize it, so a quoted body arrives as a single *word* —
+    # `sh -c "VAR=x cmd args"` then dies with
+    # `sh: 1: SENTRY_RELEASE=<sha> uvicorn ...: not found`, which reads like a
+    # missing binary and is not (CF-170). The script binds Render's $PORT and
+    # defaults SENTRY_RELEASE to $RENDER_GIT_COMMIT so events trace to a deploy.
+    # Keep the logic there — do not inline it again, in this field or the
+    # neighbouring preDeployCommand.
     # EXPOSE 8000 in the image is only documentation; the health check hits $PORT/healthz.
     dockerCommand: /app/scripts/render-start-api.sh
     # Point the platform health check at the SHALLOW liveness route, not the
@@ -88,7 +90,10 @@ services:
     # Migrations run ONCE per deploy here — not on every container boot — so
     # replicas never race the schema and a shared DB isn't advanced by a stray
     # boot. Fixes the per-boot `alembic upgrade head` the dev compose file uses.
-    preDeployCommand: "sh -lc 'cd /app/api && alembic upgrade head'"
+    # Also a script: this field carried the same `sh -c "…'…'"` shape the start
+    # commands did, and it runs *before* the service starts — so if it parses the
+    # same way, the deploy aborts here and the start script is never reached.
+    preDeployCommand: /app/scripts/render-predeploy-api.sh
     # Deliberately OFF. With autoDeploy on, this preDeployCommand would run a
     # migration against the production database on every merge to main, with
     # nobody watching — the same unattended-schema-change class of failure as
