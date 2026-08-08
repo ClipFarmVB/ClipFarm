@@ -179,6 +179,51 @@ wrong — so copy the dead-time format rather than adapting the highlight one.
 **content MD5**, not `game_id` — game rows get deleted; the hash identifies the
 exact bytes forever and matches the ball-cache key.
 
+## Tuning the contact thresholds (CF-103)
+
+`find_contacts` decides where keep-windows can anchor, so its thresholds set the
+ceiling on dead-time recall — a rally with zero contacts is invisible to condense
+and gets cut whole. `tune_contacts.py` replays the entire condense chain off the
+ball caches, so a candidate threshold costs seconds, no container and no video.
+
+```bash
+python -m ml.eval.tune_contacts                                  # every knob, then LOO
+python -m ml.eval.tune_contacts --knob CONTACT_HIT_SPEED_PXPS    # one knob, built-in range
+python -m ml.eval.tune_contacts --knob CONTACT_HIT_SPEED_PXPS --values 240 230 220 210
+python -m ml.eval.tune_contacts --candidates                     # whole configs, cross-validated
+```
+
+Same **leave-one-game-out** discipline as the trainer, and for the same reason:
+the first pass of this tool scored one video, and #116 shipped a single knob
+rather than five because nothing could distinguish "this threshold is wrong" from
+"this value fits that gym's noise". Fixtures now split into two roles —
+`--fixtures` are tuned on and take turns being held out, `--guards` are scored and
+never optimized against. `test3` is a guard by default: its tracking is broken
+(CF-171), so a knob that appears to improve it is admitting noise, not contacts.
+
+Two reading habits this tool is built around, both learned the hard way:
+
+- **Sweep both directions.** A range that only loosens cannot tell a mis-set
+  threshold from one where loosening always helps the recall half of the metric.
+  `CONTACT_HIT_SPEED_PXPS` is trustworthy partly because tightening it to 300
+  costs 30 rallies.
+- **Read the marginal table, not the totals.** Past the knee a knob keeps adding
+  contacts while recovering no further rallies — that is false positives
+  accumulating, and it is what the per-step "dead lost per rally" column shows.
+
+Recording a run needs no container either — dump the windows, then score them:
+
+```bash
+python -m ml.eval.tune_contacts --dump-windows /tmp/keep
+python -m ml.eval.harness --mode deadtime --test test1 --version my-change \
+    --windows-json /tmp/keep/test1_keep.json
+```
+
+`--config <name>` dumps a named `CANDIDATES` configuration instead of the
+shipping constants, which is how a superseded setting still gets its own row
+rather than letting one change absorb the credit for everything before it.
+
+## Retraining the learned condenser (CF-173)
 ## Which condense builder runs (CF-187)
 
 `condense_mode` in `app.config` picks the keep-window builder, and every mode
@@ -297,12 +342,19 @@ test4); every other column is held out and is starred in the summary. test5 is
 the strongest of those — it was labeled after the variants were written, so it
 could not have shaped them even indirectly.
 
+Four of the features (`contacts_5s`, `contacts_15s`, `since_contact`,
+`until_contact`) are derived from `find_contacts`, so **a contact-threshold change
+stales the committed weights** — they describe a contact distribution that no
+longer exists. Retrain before flipping `validated`, and treat a weights file
+whose `git_commit` predates the last `ml/pipeline/ball.py` threshold change as
+unfit regardless of what its LOGO numbers say.
+
 ## Files
 ```
 metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
 harness.py             fixture load, model-clip acquisition, report, results append
 diagnose_detection.py  why a rally was missed: BLIND / SPARSE / GATED breakdown
-tune_contacts.py       sweep find_contacts tunables over a dumped ball track
+tune_contacts.py       sweep find_contacts tunables across the fixtures, LOGO-validated (CF-103)
 deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187)
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 fixtures/              one JSON per test case (ground truth)
