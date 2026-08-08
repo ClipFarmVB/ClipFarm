@@ -11,47 +11,52 @@
     "mean_conf_3s",
     "y_std_5s"
   ],
+  "feature_version": 2,
   "mean": [
-    1.646038,
-    0.714059,
-    115.410888,
-    0.288736,
-    1.357923,
-    4.072404,
-    13.311521,
-    12.977914,
-    0.668068,
-    41.901244
+    1.939557,
+    0.772402,
+    0.328693,
+    0.297103,
+    1.935624,
+    5.788969,
+    12.505976,
+    12.25315,
+    0.675472,
+    0.126383
   ],
   "std": [
-    0.985734,
-    0.173061,
-    90.122547,
-    0.20329,
-    1.578122,
-    2.866798,
-    15.521697,
-    14.863429,
-    0.159697,
-    19.405232
+    1.042007,
+    0.197881,
+    0.252857,
+    0.207546,
+    2.488348,
+    5.167199,
+    15.133336,
+    14.587117,
+    0.15139,
+    0.059066
   ],
   "coef": [
-    0.918214,
-    0.016196,
-    0.22601,
-    0.322544,
-    0.282793,
-    -0.585151,
-    -0.186586,
-    -0.513044,
-    0.497352,
-    0.431625
+    0.773989,
+    -0.181374,
+    0.173341,
+    0.454485,
+    0.696982,
+    -0.905326,
+    -0.229085,
+    -0.409988,
+    0.669076,
+    0.070736
   ],
-  "intercept": -0.064752,
+  "intercept": -0.071334,
   "threshold": 0.65,
   "trained_on": [
-    "test1_deadtime"
+    "test1",
+    "test2",
+    "test4"
   ],
   "trained_at": "2026-08-07",
-  "notes": "logistic on ball-track features; pos_weight=3, threshold picked per CV fold by dead-removed minus 4x live-cut utility on train folds (pads 3.0/2.5); CV: 6 contiguous time folds on test1 (61 min)."
+  "ball_model": "volleyball-ball-tracking-0eo7r/3",
+  "git_commit": "1834d5d",
+  "notes": "logistic, pos_weight=3.0, threshold by 4:1 live-cut utility on train folds; LOGO thresholds [0.6, 0.65, 0.7]"
 }

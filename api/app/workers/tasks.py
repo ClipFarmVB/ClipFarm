@@ -526,6 +526,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                                 from ml.pipeline.dead_time_ml import active_windows_from_ml
                                 windows = active_windows_from_ml(
                                     ball_positions, ball_contacts, video_duration,
+                                    frame_height=_frame_h,
                                 )
                             except Exception as ml_err:
                                 logger.warning(

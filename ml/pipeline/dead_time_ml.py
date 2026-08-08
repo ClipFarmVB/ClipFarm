@@ -33,20 +33,27 @@ logger = logging.getLogger(__name__)
 WEIGHTS_PATH = Path(__file__).with_name("deadtime_ml_weights.json")
 
 # Order matters: must match the "features" list in the committed weights file.
+# Pixel-derived features are normalized by the source frame height so games
+# tracked at different resolutions share one feature space (test1's cache is
+# 640x360-space; app uploads are typically 1080p-space).
 FEATURE_NAMES = [
     "track_rate_2s",      # ball-track samples per second within ±2s
     "track_coverage_10s",  # fraction of ±10s one-second bins with any sample
-    "mean_speed_3s",      # mean ball speed (px/s) within ±3s
-    "fast_fraction_5s",   # fraction of ±5s speed samples ≥ 150 px/s (in-play flight)
+    "mean_speed_3s",      # mean ball speed (frame-heights/s) within ±3s
+    "fast_fraction_5s",   # fraction of ±5s speed samples ≥ FAST_SPEED (in-play flight)
     "contacts_5s",        # contacts within ±5s
     "contacts_15s",       # contacts within ±15s
     "since_contact",      # seconds since previous contact, capped
     "until_contact",      # seconds until next contact, capped
     "mean_conf_3s",       # mean tracker confidence within ±3s
-    "y_std_5s",           # std of ball y within ±5s (flight vs. carried ball)
+    "y_std_5s",           # std of ball y (frame-heights) within ±5s (flight vs. carried)
 ]
 
-FAST_SPEED_PXPS = 150.0     # same in-play flight threshold as the motion bridge
+# Bumped whenever feature semantics change (v2: pixel features normalized by
+# frame height). load_weights() rejects weights trained for another version.
+FEATURE_VERSION = 2
+
+FAST_SPEED = 150.0 / 360.0  # frame-heights/s — the motion bridge's 150 px/s in 360p space
 MAX_SAMPLE_SPACING = 1.5    # same dropout guard as bridge_windows_by_motion
 CONTACT_GAP_CAP = 60.0      # since/until saturate here — beyond this it's just "long ago"
 SMOOTH_SECONDS = 5          # moving-average width for the probability trace
@@ -56,32 +63,38 @@ def compute_features(
     positions: list[dict],
     contacts: list[dict],
     duration: float,
+    frame_height: int,
 ) -> np.ndarray:
     """
     Per-second feature matrix, one row per whole second of [0, duration).
 
-    positions are ball-track samples ({"time", "x", "y", "confidence"?}),
+    positions are ball-track samples ({"time", "x", "y", "confidence"?}) in
+    the source video's pixel space; frame_height is that video's height, used
+    to normalize the pixel-derived features to frame-relative units.
     contacts are find_contacts() output ({"time", ...}). Both may be empty:
     a second with no nearby track data gets zero activity features and
     saturated contact gaps, which the model reads as dead time.
     """
+    if frame_height <= 0:
+        raise ValueError(f"frame_height must be positive, got {frame_height}")
     n = max(1, int(math.ceil(duration)))
     centers = np.arange(n, dtype=np.float64) + 0.5
 
     pts = sorted((p["time"], p["x"], p["y"], p.get("confidence", 0.0)) for p in positions)
     p_times = np.array([p[0] for p in pts], dtype=np.float64)
-    p_y = np.array([p[2] for p in pts], dtype=np.float64)
+    p_y = np.array([p[2] for p in pts], dtype=np.float64) / frame_height
     p_conf = np.array([p[3] for p in pts], dtype=np.float64)
 
-    # Speeds between consecutive samples, skipping tracking dropouts so a gap
-    # contributes no samples rather than one huge jump (as in the motion bridge).
+    # Speeds between consecutive samples in frame-heights/s, skipping tracking
+    # dropouts so a gap contributes no samples rather than one huge jump (as in
+    # the motion bridge).
     s_times: list[float] = []
     s_values: list[float] = []
     for (t0, x0, y0, _), (t1, x1, y1, _) in zip(pts, pts[1:]):
         dt = t1 - t0
         if 0 < dt <= MAX_SAMPLE_SPACING:
             s_times.append((t0 + t1) / 2)
-            s_values.append(math.hypot(x1 - x0, y1 - y0) / dt)
+            s_values.append(math.hypot(x1 - x0, y1 - y0) / dt / frame_height)
     sp_times = np.array(s_times, dtype=np.float64)
     sp_values = np.array(s_values, dtype=np.float64)
 
@@ -117,7 +130,7 @@ def compute_features(
     feats[:, 1] = (coverage_cum[b_hi] - coverage_cum[b_lo]) / np.maximum(b_hi - b_lo, 1)
 
     feats[:, 2] = _window_mean(sp_times, sp_values, 3.0)
-    feats[:, 3] = _window_mean(sp_times, (sp_values >= FAST_SPEED_PXPS).astype(np.float64), 5.0)
+    feats[:, 3] = _window_mean(sp_times, (sp_values >= FAST_SPEED).astype(np.float64), 5.0)
 
     lo, hi = _window_slice(c_times, centers - 5.0, centers + 5.0)
     feats[:, 4] = hi - lo
@@ -155,6 +168,11 @@ def load_weights(path: Path = WEIGHTS_PATH) -> dict:
             f"deadtime weights at {path} were trained for features "
             f"{data.get('features')}, code expects {FEATURE_NAMES}"
         )
+    if data.get("feature_version") != FEATURE_VERSION:
+        raise ValueError(
+            f"deadtime weights at {path} are feature_version "
+            f"{data.get('feature_version')}, code expects {FEATURE_VERSION} — retrain"
+        )
     return data
 
 
@@ -174,6 +192,7 @@ def active_windows_from_ml(
     positions: list[dict],
     contacts: list[dict],
     duration: float,
+    frame_height: int,
     *,
     weights: dict | None = None,
     pad_before: float = 3.0,
@@ -201,7 +220,7 @@ def active_windows_from_ml(
         return []
 
     w = weights if weights is not None else load_weights()
-    probs = predict_in_play(compute_features(positions, contacts, duration), w)
+    probs = predict_in_play(compute_features(positions, contacts, duration, frame_height), w)
     keep = probs >= w["threshold"]
 
     windows: list[Interval] = []
