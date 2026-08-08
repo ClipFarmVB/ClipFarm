@@ -97,6 +97,19 @@ class TestWeights:
         with pytest.raises(ValueError, match="feature_version"):
             load_weights(bad)
 
+    def test_weights_carry_a_validated_verdict(self):
+        # Present either way; condense_use_ml should stay off while it is false.
+        assert isinstance(load_weights().get("validated"), bool)
+
+    def test_unvalidated_weights_warn(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.dead_time_ml"):
+            w = load_weights()
+        if not w["validated"]:
+            assert "NOT validated" in caplog.text
+        else:  # a validated file must not cry wolf
+            assert "NOT validated" not in caplog.text
+
 
 class TestPredictInPlay:
     def test_probabilities_bounded(self):

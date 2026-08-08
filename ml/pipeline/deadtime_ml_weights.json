@@ -13,50 +13,68 @@
   ],
   "feature_version": 2,
   "mean": [
-    1.939557,
-    0.772402,
-    0.328693,
-    0.297103,
-    1.935624,
-    5.788969,
-    12.505976,
-    12.25315,
-    0.675472,
-    0.126383
+    2.514037,
+    0.886591,
+    0.34456,
+    0.313479,
+    3.06631,
+    9.148663,
+    10.929347,
+    10.834628,
+    0.689963,
+    0.145937
   ],
   "std": [
-    1.042007,
-    0.197881,
-    0.252857,
-    0.207546,
-    2.488348,
-    5.167199,
-    15.133336,
-    14.587117,
-    0.15139,
-    0.059066
+    0.900258,
+    0.193586,
+    0.256971,
+    0.214693,
+    3.391857,
+    6.76886,
+    14.211296,
+    13.921807,
+    0.132452,
+    0.06366
   ],
   "coef": [
-    0.773989,
-    -0.181374,
-    0.173341,
-    0.454485,
-    0.696982,
-    -0.905326,
-    -0.229085,
-    -0.409988,
-    0.669076,
-    0.070736
+    0.902075,
+    -0.125602,
+    0.169374,
+    0.761544,
+    1.039387,
+    -0.773062,
+    -0.131766,
+    -0.146973,
+    0.433306,
+    -0.22197
   ],
-  "intercept": -0.071334,
-  "threshold": 0.65,
+  "intercept": -0.242486,
+  "threshold": 0.72,
+  "validated": false,
+  "leave_one_game_out": [
+    {
+      "held_out": "test2",
+      "threshold": 0.5999999999999999,
+      "ml_dead_removed_pct": 1.0,
+      "ml_live_cut_sec": 224.0,
+      "rules_dead_removed_pct": 0.0952,
+      "rules_live_cut_sec": 2.3
+    },
+    {
+      "held_out": "test4",
+      "threshold": 0.8499999999999999,
+      "ml_dead_removed_pct": 0.6906,
+      "ml_live_cut_sec": 121.5,
+      "rules_dead_removed_pct": 0.4416,
+      "rules_live_cut_sec": 83.2
+    }
+  ],
   "trained_on": [
-    "test1",
     "test2",
     "test4"
   ],
-  "trained_at": "2026-08-07",
+  "trained_at": "2026-08-08",
   "ball_model": "volleyball-ball-tracking-0eo7r/3",
-  "git_commit": "1834d5d",
-  "notes": "logistic, pos_weight=3.0, threshold by 4:1 live-cut utility on train folds; LOGO thresholds [0.6, 0.65, 0.7]"
+  "git_commit": "1b1ad70",
+  "notes": "logistic, pos_weight=3.0, threshold by 4:1 live-cut utility on train folds; LOGO thresholds [0.6, 0.85]"
 }

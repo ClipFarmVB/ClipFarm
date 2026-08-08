@@ -185,6 +185,7 @@ def main() -> None:
 
     # ── Leave-one-game-out validation ─────────────────────────────────────────
     fold_thresholds: list[float] = []
+    logo: list[dict] = []
     if len(games) >= 2:
         print("\nLeave-one-game-out (threshold picked on train games only):")
         for held in games:
@@ -193,8 +194,16 @@ def main() -> None:
             thr = pick_threshold(train_games, mean, std, coef, intercept)
             fold_thresholds.append(thr)
             sig = score_game(held, make_weights(mean, std, coef, intercept, thr))
+            base = score_baseline(held)
             print(f"  held-out {held.test_id:8s} thr={thr:.2f}  ML    {fmt(sig)}")
-            print(f"           {'':8s}          rules {fmt(score_baseline(held))}")
+            print(f"           {'':8s}          rules {fmt(base)}")
+            logo.append({
+                "held_out": held.test_id, "threshold": thr,
+                "ml_dead_removed_pct": round(sig.dead_removed_pct or 0.0, 4),
+                "ml_live_cut_sec": round(sig.live_removed_sec, 1),
+                "rules_dead_removed_pct": round(base.dead_removed_pct or 0.0, 4),
+                "rules_live_cut_sec": round(base.live_removed_sec, 1),
+            })
     else:
         print("\nSingle game — skipping LOGO, threshold picked on the training data "
               "(optimistic; add fixtures for honest validation)")
@@ -222,6 +231,11 @@ def main() -> None:
     except OSError:
         commit = "unknown"
     weights.update({
+        # Always false from the trainer: a human flips it after reading the LOGO
+        # report above. load_weights() warns while it is false, and
+        # condense_use_ml should stay off until it is true.
+        "validated": False,
+        "leave_one_game_out": logo,
         "trained_on": args.fixtures,
         "trained_at": date.today().isoformat(),
         "ball_model": MODEL_ID,
@@ -232,7 +246,7 @@ def main() -> None:
                   (str([round(t, 2) for t in fold_thresholds]) or "n/a")),
     })
     WEIGHTS_PATH.write_text(json.dumps(weights, indent=2) + "\n")
-    print(f"\nweights → {WEIGHTS_PATH}")
+    print(f"\nweights → {WEIGHTS_PATH}  (validated=false — flip by hand once LOGO justifies it)")
 
 
 if __name__ == "__main__":

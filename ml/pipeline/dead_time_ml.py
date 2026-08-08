@@ -161,7 +161,15 @@ def compute_features(
 
 
 def load_weights(path: Path = WEIGHTS_PATH) -> dict:
-    """Load the committed weights file, validating the feature contract."""
+    """
+    Load the committed weights file, validating the feature contract.
+
+    A weights file carries "validated": true only once its leave-one-game-out
+    numbers justified enabling it — the trainer always writes false, and a human
+    flips it after reading the report. Unvalidated weights still load (so the
+    flag stays usable for experiments) but warn loudly, because the committed
+    artifact is a placeholder until enough labeled games exist.
+    """
     data = json.loads(path.read_text())
     if data.get("features") != FEATURE_NAMES:
         raise ValueError(
@@ -172,6 +180,12 @@ def load_weights(path: Path = WEIGHTS_PATH) -> dict:
         raise ValueError(
             f"deadtime weights at {path} are feature_version "
             f"{data.get('feature_version')}, code expects {FEATURE_VERSION} — retrain"
+        )
+    if not data.get("validated"):
+        logger.warning(
+            "deadtime weights at %s are NOT validated (trained on %s) — "
+            "keep-windows from them are unproven on unseen footage",
+            path, data.get("trained_on", "?"),
         )
     return data
 
