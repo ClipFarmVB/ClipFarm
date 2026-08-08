@@ -34,13 +34,16 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install ruff mypy pytest
+      # numpy is for ml/tests: the CF-173 dead-time model does its inference in
+      # numpy, so ml/pipeline/dead_time_ml.py can no longer be imported without
+      # it. Everything else here stays dependency-free.
+      - run: pip install ruff mypy pytest numpy
       - run: ruff check api/
       - run: mypy api/app --ignore-missing-imports
       # ml/eval is pure, unit-tested logic — lint it too (rest of ml/ is not yet covered).
       - run: ruff check ml/eval
       - run: mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
-      # ml unit tests (eval metrics + dead-time) — stdlib-only, runs in seconds.
+      # ml unit tests (eval metrics + dead-time) — stdlib + numpy, runs in seconds.
       - run: python -m pytest ml/tests/
       # api unit tests now need the application's own dependencies:
       # app.observability imports app.config, which imports pydantic-settings.
