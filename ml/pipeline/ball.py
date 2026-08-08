@@ -99,6 +99,39 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 # video keeps growing. Further down the contact count still climbs with
 # rallies-hit flat, i.e. only false positives are being added.
 #
+# CONTACT_HIT_SPEED_PXPS was the other half of the same mis-calibration, and it
+# was invisible until the floor came down: while the floor sat at 480 the sweep
+# returned an identical 214 contacts at every hit-speed value tried, so the first
+# pass concluded the knob did nothing. It is now 220, down from 240 — scored on
+# test1/test2/test4 with leave-one-game-out (CF-103 stage 2), so each number
+# below comes from a game the value was not chosen on:
+#
+#   held out   rallies with >= 1 contact      live play wrongly cut
+#   test1      101 -> 103 of 126              176s -> 147s
+#   test2       20 ->  22 of 27                31s ->  16s
+#   test4       26 ->  26 of 46                89s ->  89s
+#
+# 220 is the knee, by the same argument that picked the floor: 220 -> 200
+# recovers zero further rallies while shedding another 75s of dead-time removal,
+# i.e. past this point the extra contacts are false positives. Going the other
+# way is far worse than the gain — 240 -> 300 loses 30 rallies — which is what
+# says this threshold was set too high rather than merely arbitrarily.
+#
+# The cost is real and lands on dead-time removal: 56.2% -> 55.3% on test1,
+# 54.4% -> 50.4% on test2. Same trade CF-46 and #118 took deliberately — a
+# condensed game missing whole rallies is worse than one that runs longer.
+#
+# Two neighbouring knobs measured as no-ops, worth knowing before touching them:
+#   - MIN_SPEED_PXPS is fully subsumed while CONTACT_HIT_SPEED_PXPS >= it. Its
+#     gate needs *both* sides slow, which already implies max(before, after) is
+#     under the hit-speed gate above it. Sweeping it moves nothing at any value;
+#     it only starts to bite if hit speed is ever pushed below it.
+#   - CONTACT_RESIDUAL_RATIO is inert *downward* only. max(floor, ratio × speed)
+#     picks the ratio term on 9.7% of test1's candidate triples and 0% of
+#     test2/test4/test3's, and on none of them does it reject a contact the floor
+#     had already passed — so lowering it is measurably a no-op, while raising it
+#     above 0.5 does cut contacts. Not dead code; a one-sided knob.
+#
 # Measured on the dead-time metric only. find_contacts feeds a second consumer:
 # tasks.py runs it through contacts_to_rallies for highlight clips, where
 # MIN_RALLY_CONTACTS gates at 3 — so the extra contacts can lift marginal 1-2
@@ -106,8 +139,10 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 # score it with the CF-55 highlight mode against results/test1.jsonl before
 # tuning this further.
 #
-# Re-tune by scoring, not by inspecting a trajectory:
-#   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
+# Re-tune by scoring, not by inspecting a trajectory. Runs on a laptop off the
+# committed fixtures + ball caches — no container, no video download:
+#   python -m ml.eval.tune_contacts --knob CONTACT_HIT_SPEED_PXPS
+#   python -m ml.eval.tune_contacts --candidates
 #
 # CF-174: the two px/s constants below are scaled by
 # frame_height / REFERENCE_FRAME_HEIGHT at use (see _scale_for). px/s is frame-rate
@@ -130,7 +165,7 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 REFERENCE_FRAME_HEIGHT    = 360.0   # tracking space the px/s constants below assume
 CONTACT_RESIDUAL_RATIO    = 0.50    # residual must exceed this fraction of ball speed
 CONTACT_RESIDUAL_MIN_PXPS = 240.0   # ...and this absolute floor (px/s, above noise)
-CONTACT_HIT_SPEED_PXPS    = 240.0   # px/s: a real hit has speed on at least one side
+CONTACT_HIT_SPEED_PXPS    = 220.0   # px/s: a real hit has speed on at least one side
 MIN_CONTACT_SPACING       = 0.6     # seconds: debounce — one hit can't fire twice
 MAX_SAMPLE_GAP_SEC        = 1.0     # skip triples spanning a detection gap
 # The scale factor is capped so the scaled hit-speed floor cannot reach
