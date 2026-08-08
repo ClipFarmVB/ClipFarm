@@ -127,6 +127,7 @@ def score_baseline(game: GameData) -> DeadTimeSignals:
         windows, game.positions,
         speed_pxps=BRIDGE["speed_pxps"], fast_fraction=BRIDGE["fast_fraction"],
         max_bridge_seconds=BRIDGE["max_bridge_seconds"],
+        frame_height=game.frame_height,
     )
     return evaluate_deadtime(game.human_keep, windows, game.duration)
 

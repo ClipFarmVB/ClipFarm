@@ -60,7 +60,7 @@ def main() -> None:
             contacts = B.find_contacts(track, frame_height=frame_h)
             w = active_windows_from_contacts(
                 [{"time": c["time"]} for c in contacts], fx.duration, **COND)
-            w = bridge_windows_by_motion(w, positions, **BRIDGE)
+            w = bridge_windows_by_motion(w, positions, frame_height=frame_h, **BRIDGE)
             s = evaluate_deadtime(fx.keep, w, fx.duration)
             times = sorted(c["time"] for c in contacts)
             hit = i = 0

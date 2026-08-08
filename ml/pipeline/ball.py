@@ -21,8 +21,13 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-import cv2
 import numpy as np
+
+# cv2 is imported lazily inside the two functions that decode video (track_ball,
+# detect_contacts). Everything else here — segmentation, find_contacts,
+# contacts_to_rallies — is pure trajectory maths, and keeping OpenCV out of
+# module import lets the eval tooling and unit tests exercise it with numpy
+# alone (ml/tests installs no OpenCV).
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +51,29 @@ MAX_MISS     = 5          # max consecutive missed frames before track is reset
 # ALL speeds are px/SECOND so thresholds hold at any source frame rate
 # (tuned on 30fps footage; a 60fps video halves px/frame velocities but
 # leaves px/second untouched).
+#
+# These two are deliberately NOT frame-height-scaled, unlike the contact
+# thresholds below (CF-174) — and that is a known compromise, not a clean
+# result. They answer "is this one physical object?" rather than "how hard was
+# this hit".
+#
+# SEG_MIN_MEDIAN_SPEED_PXPS sits in a wide valley between detector jitter
+# (~0-5 px/s at any resolution) and real ball motion, so the reference value
+# separates the two modes everywhere measured. Scaling it moves the cutoff
+# *into* the real-motion distribution on wide-angle footage: on test4 (1080p,
+# distant camera, ball median ~0.1 frame-heights/s vs ~0.3 on test1/test2) a 3x
+# threshold rejected every segment — 96 segments/965 positions became 0 and the
+# condense stage cut the whole video. Camera framing varies independently of
+# resolution, and frame height cannot normalize it.
+#
+# SEG_MAX_SPEED_PXPS *should* scale by the same argument as the contact
+# thresholds, and leaving it fixed costs real contacts: at 1080p it splits
+# 12.2% of test4's samples and 4.4% of test2's as bogus track hops (0% on 360p
+# test1). It is left unscaled anyway because raising it merges test4's
+# stationary false-positive detections into the ball's own segments, whose
+# median speed then falls under the filter above — same collapse to zero. The
+# blocker is that tracking pollution, not this constant; fix the tracker first
+# (see the CF-174 follow-up), then scale this.
 SEG_MAX_SPEED_PXPS        = 1200.0  # px/s: faster displacement = track hop, split here
 SEG_MIN_POSITIONS         = 4       # segments shorter than this are junk (hops/flicker)
 SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/spare balls
@@ -78,6 +106,17 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 #
 # Re-tune by scoring, not by inspecting a trajectory:
 #   docker compose run --rm --no-deps worker python -m ml.eval.tune_contacts
+#
+# CF-174: the three px/s constants below are scaled by
+# frame_height / REFERENCE_FRAME_HEIGHT at use (see _scale_for). px/s is frame-rate
+# independent but not frame-*size* independent — the same physical motion covers
+# ~3x more pixels at 1080p, so a floor meaning "a decisive hit" at 360p means
+# "a gentle lob, or jitter" at 1080p. Measured on the shipping condense path:
+# unscaled, 1080p test2 removed only 9.5% of dead time (condensed video 93% as
+# long as the source). At 360p the factor is exactly 1.0, so everything tuned
+# above is preserved bit-for-bit. CONTACT_RESIDUAL_RATIO needs no scaling — it
+# multiplies a speed already in this video's pixel space.
+REFERENCE_FRAME_HEIGHT    = 360.0   # tracking space the px/s constants below assume
 CONTACT_RESIDUAL_RATIO    = 0.50    # residual must exceed this fraction of ball speed
 CONTACT_RESIDUAL_MIN_PXPS = 240.0   # ...and this absolute floor (px/s, above noise)
 CONTACT_HIT_SPEED_PXPS    = 240.0   # px/s: a real hit has speed on at least one side
@@ -235,6 +274,8 @@ def track_ball(
 
     Returns a TrackedBall with all confirmed positions.
     """
+    import cv2
+
     model = _load_model(api_key)
 
     cap = cv2.VideoCapture(video_path)
@@ -376,6 +417,26 @@ def classify_contact_action(
     return "unknown", 0.42
 
 
+def _scale_for(frame_height: int) -> float:
+    """
+    Multiplier turning the module's 360p-tuned px/s constants into thresholds
+    for footage of this height (CF-174).
+
+    frame_height <= 0 means the caller did not know it; fall back to the
+    reference (no scaling, i.e. pre-CF-174 behaviour) and say so, because
+    silently applying 360p thresholds to a 1080p video is the bug this exists
+    to prevent.
+    """
+    if frame_height <= 0:
+        logger.warning(
+            "find_contacts called without frame_height — assuming %.0fpx tracking "
+            "space; px/s thresholds will be wrong on other resolutions",
+            REFERENCE_FRAME_HEIGHT,
+        )
+        return 1.0
+    return frame_height / REFERENCE_FRAME_HEIGHT
+
+
 def _segment_track(positions: list[BallPosition]) -> list[list[BallPosition]]:
     """
     Split the raw track into coherent single-ball segments.
@@ -385,6 +446,9 @@ def _segment_track(positions: list[BallPosition]) -> list[list[BallPosition]]:
     implied speed exceeds SEG_MAX_SPEED_PXPF (teleport = different object) or
     the detection gap exceeds MAX_SEGMENT_GAP_FRAMES, then drop segments that
     are too short (flicker) or near-stationary (held/spare balls).
+
+    These two thresholds are deliberately NOT frame-height-scaled — see the
+    segmentation config block for the measurements behind that.
     """
     if not positions:
         return []
@@ -460,11 +524,19 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
 
     Thresholds are tuned against real footage; see constants at module top.
 
-    Pass frame_height > 0 to get trajectory-based action classification.
+    frame_height is the tracking space of these positions. It scales the px/s
+    thresholds (CF-174) and enables trajectory-based action classification.
+    Omitting it assumes REFERENCE_FRAME_HEIGHT and warns — on 1080p footage
+    that silently over-fires the detector.
 
     Returns list of {time, frame, x, y, angle_change, speed_change,
     speed_before, speed_after, residual, action, action_confidence}.
     """
+    scale = _scale_for(frame_height)
+    min_speed     = MIN_SPEED_PXPS * scale
+    hit_speed     = CONTACT_HIT_SPEED_PXPS * scale
+    residual_min  = CONTACT_RESIDUAL_MIN_PXPS * scale
+
     segments = _segment_track(tracker.positions)
     if not segments:
         return []
@@ -489,10 +561,10 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
             speed_before = np.hypot(*v_before)
             speed_after  = np.hypot(*v_after)
 
-            if speed_before < MIN_SPEED_PXPS and speed_after < MIN_SPEED_PXPS:
+            if speed_before < min_speed and speed_after < min_speed:
                 continue
             # A real hit imparts speed — both sides slow = detector wobble
-            if max(speed_before, speed_after) < CONTACT_HIT_SPEED_PXPS:
+            if max(speed_before, speed_after) < hit_speed:
                 continue
 
             # Ballistic prediction: horizontal velocity persists, vertical gains gravity
@@ -500,7 +572,9 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
             predicted_vy = v_before[1] + g_px * dt_mid
             residual = float(np.hypot(v_after[0] - v_before[0], v_after[1] - predicted_vy))
 
-            threshold = max(CONTACT_RESIDUAL_MIN_PXPS, CONTACT_RESIDUAL_RATIO * speed_before)
+            # CONTACT_RESIDUAL_RATIO needs no scaling — it multiplies a speed
+            # that is already in this video's pixel space.
+            threshold = max(residual_min, CONTACT_RESIDUAL_RATIO * speed_before)
             if residual < threshold:
                 continue
 
@@ -730,6 +804,8 @@ def detect_rallies(
     key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
     if not key:
         raise ValueError("ROBOFLOW_API_KEY not set and api_key not provided")
+
+    import cv2
 
     cap = cv2.VideoCapture(video_path)
     fps          = cap.get(cv2.CAP_PROP_FPS) or 30.0

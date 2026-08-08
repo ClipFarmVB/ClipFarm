@@ -547,6 +547,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                                 speed_pxps=app_settings.condense_bridge_speed_pxps,
                                 fast_fraction=app_settings.condense_bridge_fast_fraction,
                                 max_bridge_seconds=app_settings.condense_bridge_max_seconds,
+                                frame_height=_frame_h,
                             )
                     else:
                         windows = active_windows_from_detections(
