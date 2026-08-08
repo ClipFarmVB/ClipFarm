@@ -30,7 +30,13 @@ import numpy as np
 
 from ml.eval.harness import load_deadtime_fixture
 from ml.eval.metrics import DeadTimeSignals, evaluate_deadtime, union
-from ml.eval.tune_contacts import BRIDGE, COND  # drift-guarded copies of the condense settings
+from ml.eval.tune_contacts import (  # drift-guarded condense settings + the shared cost model
+    BRIDGE,
+    COND,
+    LIVE_CUT_COST,
+    load_ball_cache,
+    utility,
+)
 from ml.pipeline.ball import MODEL_ID, BallPosition, TrackedBall, find_contacts
 from ml.pipeline.dead_time import active_windows_from_contacts, bridge_windows_by_motion
 from ml.pipeline.dead_time_ml import (
@@ -41,9 +47,6 @@ from ml.pipeline.dead_time_ml import (
     compute_features,
 )
 
-# 1s of wrongly cut play costs this many seconds of kept dead time. Matches the
-# repo posture (CF-46): keeping some dead time beats cutting play.
-LIVE_CUT_COST = 4.0
 POS_WEIGHT = 3.0            # class weight on in-play seconds during the fit
 THRESHOLDS = np.arange(0.35, 0.91, 0.05)
 
@@ -62,17 +65,7 @@ class GameData:
 
 def load_game(test_id: str, cache_dir: Path) -> GameData:
     fx = load_deadtime_fixture(test_id)
-    md5 = fx.raw["source_video_md5"]
-    frame_height = fx.raw.get("source_frame_height")
-    if not frame_height:
-        raise SystemExit(f"{test_id}: fixture needs source_frame_height (tracking-space px)")
-    cache_path = cache_dir / f"{md5}.json"
-    if not cache_path.exists():
-        raise SystemExit(
-            f"{test_id}: ball cache {cache_path} missing — download "
-            f"ball-cache/{md5}-*.json from R2 (see ml/eval/README.md)"
-        )
-    positions = json.loads(cache_path.read_text())["positions"]
+    positions, frame_height = load_ball_cache(fx, cache_dir)
     tracker = TrackedBall(positions=[BallPosition(**p) for p in positions])
     contacts = find_contacts(tracker, frame_height=frame_height)
     human_keep = union(fx.keep)
@@ -138,11 +131,6 @@ def score_game(game: GameData, weights: dict) -> DeadTimeSignals:
         weights=weights,
     )
     return evaluate_deadtime(game.human_keep, windows, game.duration)
-
-
-def utility(sig: DeadTimeSignals) -> float:
-    dead_removed_sec = (sig.dead_removed_pct or 0.0) * sig.human_dead_sec
-    return dead_removed_sec - LIVE_CUT_COST * sig.live_removed_sec
 
 
 def train_on(games: list[GameData]) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
