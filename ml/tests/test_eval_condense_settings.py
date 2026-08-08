@@ -37,6 +37,10 @@ BRIDGE_TO_SETTING = {
     "fast_fraction": "condense_bridge_fast_fraction",
     "max_bridge_seconds": "condense_bridge_max_seconds",
 }
+# Mode switches, not tunables: not copied into tune_contacts, which sweeps the
+# rule-based path only. Listed here so the coverage test stays a conscious
+# checkpoint for every new condense_* knob.
+SWITCH_SETTINGS = {"condense_use_ml"}
 
 
 def _settings_defaults() -> dict[str, object]:
@@ -92,7 +96,7 @@ class TestTuneContactsMatchesProduction:
         """A new condense_* knob should be mapped here, not silently skipped."""
         settings = _settings_defaults()
         condense_settings = {k for k in settings if k.startswith("condense_")}
-        mapped = set(COND_TO_SETTING.values()) | set(BRIDGE_TO_SETTING.values())
+        mapped = set(COND_TO_SETTING.values()) | set(BRIDGE_TO_SETTING.values()) | SWITCH_SETTINGS
         assert condense_settings == mapped, (
             f"unmapped condense settings: {sorted(condense_settings - mapped)} - "
             "add them to tune_contacts and to the maps in this test"

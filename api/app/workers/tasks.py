@@ -344,10 +344,13 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     detections = contacts_to_rallies(contacts, video_duration, _frame_h)
                     ball_ok   = True
                     ball_contacts = contacts
-                    # Kept for the condense stage's motion bridge (CF-46).
+                    # Kept for the condense stage's motion bridge (CF-46) and ML
+                    # windows — confidence is a model feature, so dropping it
+                    # here would skew inference against how it was trained.
                     if condense:
                         ball_positions = [
-                            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+                            {"time": p.time, "x": p.x, "y": p.y, "confidence": p.confidence}
+                            for p in tracker.positions
                         ]
                     logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
                 except Exception as ball_err:
@@ -515,20 +518,35 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     from ml.pipeline.clip import generate_condensed_video
 
                     if ball_ok:
-                        windows = active_windows_from_contacts(
-                            ball_contacts, video_duration,
-                            gap_seconds=app_settings.condense_gap_seconds,
-                            pad_before=app_settings.condense_pad_before,
-                            pad_after=app_settings.condense_pad_after,
-                            min_contacts=app_settings.condense_min_contacts,
-                            merge_gap_seconds=app_settings.condense_merge_gap_seconds,
-                        )
-                        windows = bridge_windows_by_motion(
-                            windows, ball_positions,
-                            speed_pxps=app_settings.condense_bridge_speed_pxps,
-                            fast_fraction=app_settings.condense_bridge_fast_fraction,
-                            max_bridge_seconds=app_settings.condense_bridge_max_seconds,
-                        )
+                        windows = []
+                        if app_settings.condense_use_ml:
+                            # Learned windows; anything wrong (missing weights
+                            # file, feature drift) falls back to the rules below.
+                            try:
+                                from ml.pipeline.dead_time_ml import active_windows_from_ml
+                                windows = active_windows_from_ml(
+                                    ball_positions, ball_contacts, video_duration,
+                                )
+                            except Exception as ml_err:
+                                logger.warning(
+                                    "ML condense windows failed (%s) — using rule-based windows",
+                                    ml_err,
+                                )
+                        if not windows:
+                            windows = active_windows_from_contacts(
+                                ball_contacts, video_duration,
+                                gap_seconds=app_settings.condense_gap_seconds,
+                                pad_before=app_settings.condense_pad_before,
+                                pad_after=app_settings.condense_pad_after,
+                                min_contacts=app_settings.condense_min_contacts,
+                                merge_gap_seconds=app_settings.condense_merge_gap_seconds,
+                            )
+                            windows = bridge_windows_by_motion(
+                                windows, ball_positions,
+                                speed_pxps=app_settings.condense_bridge_speed_pxps,
+                                fast_fraction=app_settings.condense_bridge_fast_fraction,
+                                max_bridge_seconds=app_settings.condense_bridge_max_seconds,
+                            )
                     else:
                         windows = active_windows_from_detections(
                             pre_gate_rallies, video_duration,

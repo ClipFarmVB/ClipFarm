@@ -1,0 +1,57 @@
+{
+  "features": [
+    "track_rate_2s",
+    "track_coverage_10s",
+    "mean_speed_3s",
+    "fast_fraction_5s",
+    "contacts_5s",
+    "contacts_15s",
+    "since_contact",
+    "until_contact",
+    "mean_conf_3s",
+    "y_std_5s"
+  ],
+  "mean": [
+    1.646038,
+    0.714059,
+    115.410888,
+    0.288736,
+    1.357923,
+    4.072404,
+    13.311521,
+    12.977914,
+    0.668068,
+    41.901244
+  ],
+  "std": [
+    0.985734,
+    0.173061,
+    90.122547,
+    0.20329,
+    1.578122,
+    2.866798,
+    15.521697,
+    14.863429,
+    0.159697,
+    19.405232
+  ],
+  "coef": [
+    0.918214,
+    0.016196,
+    0.22601,
+    0.322544,
+    0.282793,
+    -0.585151,
+    -0.186586,
+    -0.513044,
+    0.497352,
+    0.431625
+  ],
+  "intercept": -0.064752,
+  "threshold": 0.65,
+  "trained_on": [
+    "test1_deadtime"
+  ],
+  "trained_at": "2026-08-07",
+  "notes": "logistic on ball-track features; pos_weight=3, threshold picked per CV fold by dead-removed minus 4x live-cut utility on train folds (pads 3.0/2.5); CV: 6 contiguous time folds on test1 (61 min)."
+}

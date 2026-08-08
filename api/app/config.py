@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     condense_bridge_speed_pxps: float = 150.0   # a speed sample this fast counts as in-play
     condense_bridge_fast_fraction: float = 0.35  # bridge when ≥ this fraction of samples are fast
     condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
+    # Learned keep-windows (dead_time_ml.py): per-second in-play classifier over
+    # the same ball-track signals. On test1 it cuts more dead time while cutting
+    # less real play than the rules above; off by default until validated on more
+    # than one labeled game. Any failure falls back to the rule-based windows.
+    condense_use_ml: bool = False
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
