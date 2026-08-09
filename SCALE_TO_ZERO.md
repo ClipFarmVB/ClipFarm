@@ -88,7 +88,20 @@ than the Render service it would replace.
 
 **Web stays on Render.** $7/mo for a zero-risk, already-working frontend is a good trade.
 
-### CF-166 — api → Modal, retire Celery (backlog)
+### Moving Redis to a serverless free tier (rejected)
+The $10 Key Value instance is the last obvious always-on line item, and a metered
+"serverless Redis" free tier looks like an easy win. **It isn't.**
+
+Celery's broker is not a cache — a worker polls it continuously (`BRPOP` with reconnects),
+generating far more commands per day than command-metered free tiers allow. Exceeding the
+quota doesn't fail loudly; it degrades into **jobs that appear to vanish**, which is
+indistinguishable from a redelivery bug and would burn days to diagnose.
+
+Keep the paid instance. Note this is a *different* reason from the one in `render.yaml`,
+which warns against `plan: free` because free Key Value has no persistence — that one
+loses the queue on restart. Two separate traps, same conclusion.
+
+### CF-166 — api → Modal, retire Celery (closed, deferred)
 With cost set aside, what remains is elastic scaling we don't need yet — Celery prefork
 (CF-65b) plus replicas covers moderate concurrency — in exchange for:
 
@@ -98,8 +111,8 @@ With cost set aside, what remains is elastic scaling we don't need yet — Celer
 - cold starts on a user-facing api
 - local dev no longer mirroring production
 
-**Revisit when concurrent load actually exceeds a prefork-pooled worker.** The trigger is
-scale, not the bill.
+**Closed as deferred (not abandoned)** with that trigger recorded on the card: reopen when
+concurrent load actually exceeds a prefork-pooled worker. Scale, not the bill.
 
 ---
 
