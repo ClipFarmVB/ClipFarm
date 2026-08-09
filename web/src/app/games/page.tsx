@@ -10,7 +10,11 @@ import { deleteGame, renameGame, type Game } from "@/lib/api";
 import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
 
+// `uploading` is filtered out by the api's list endpoint — a game whose video
+// hasn't landed in R2 yet isn't in the Library. These entries exist to keep the
+// maps total over Game["status"], not because the state is expected here.
 const STATUS_DOT: Record<Game["status"], string> = {
+  uploading:  "bg-zinc-600 animate-pulse",
   ready:      "bg-emerald-400",
   processing: "bg-blue-400 animate-pulse",
   queued:     "bg-zinc-600",
@@ -18,6 +22,7 @@ const STATUS_DOT: Record<Game["status"], string> = {
 };
 
 const STATUS_LABEL: Record<Game["status"], string> = {
+  uploading:  "Uploading",
   queued:     "Queued",
   processing: "Processing",
   ready:      "Ready",

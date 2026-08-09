@@ -37,7 +37,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface Game {
   id: string;
   title: string;
-  status: "queued" | "processing" | "ready" | "failed";
+  // "uploading" means the row exists but the browser is still PUTting the
+  // video to R2. The Library filters these out server-side, so they're only
+  // ever seen by the tab doing the upload.
+  status: "uploading" | "queued" | "processing" | "ready" | "failed";
   progress: number;
   progress_stage: string | null;
   created_at: string;
@@ -75,52 +78,67 @@ export async function deleteGame(id: string): Promise<void> {
   }
 }
 
-// Upload happens in two legs: the browser sends the file to the API
-// ("sending", observable via XHR), then the API streams it up to R2 before
-// responding ("finalizing", invisible to the browser — no progress events).
-export type UploadProgress =
-  | { phase: "sending"; loaded: number; total: number }
-  | { phase: "finalizing"; total: number };
+// ─── Uploads ─────────────────────────────────────────────────────────────────
+// The video goes browser → R2 directly (CF-163). The api only issues a ticket
+// of presigned URLs and confirms the object afterwards; it never sees the
+// bytes. The transfer itself lives in ./upload.
 
-export async function uploadGame(
-  file: File,
-  title: string,
-  condense: boolean = false,
-  onProgress?: (p: UploadProgress) => void
-): Promise<Game> {
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("title", title);
-  formData.append("condense", String(condense));
+/** Server-owned limits. The client renders and validates against these rather
+ *  than its own constants, so the advertised cap is always the enforced one. */
+export interface UploadConfig {
+  max_upload_bytes: number;
+  allowed_content_types: string[];
+  single_put_max_bytes: number;
+  part_size_bytes: number;
+  url_ttl_seconds: number;
+}
 
-  const authHeaders = await getAuthHeaders();
+export interface UploadPart {
+  part_number: number;
+  url: string;
+}
 
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_URL}/games`);
+/** Everything needed to upload without talking to the api again until done. */
+export interface UploadTicket {
+  game_id: string;
+  mode: "single" | "multipart";
+  content_type: string;
+  expires_in: number;
+  upload_url: string | null;
+  upload_id: string | null;
+  part_size_bytes: number | null;
+  parts: UploadPart[];
+}
 
-    // Set auth header on XHR
-    for (const [key, value] of Object.entries(authHeaders)) {
-      xhr.setRequestHeader(key, value);
-    }
+export interface CompletedPart {
+  part_number: number;
+  etag: string;
+}
 
-    if (onProgress) {
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) onProgress({ phase: "sending", loaded: e.loaded, total: e.total });
-      };
-      // Body fully sent → the server is now uploading to R2 (the invisible leg).
-      xhr.upload.onload = () => onProgress({ phase: "finalizing", total: file.size });
-    }
+export function getUploadConfig(): Promise<UploadConfig> {
+  return request<UploadConfig>("/games/upload-config");
+}
 
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
-      } else {
-        reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
-      }
-    };
-    xhr.onerror = () => reject(new Error("Network error during upload"));
-    xhr.send(formData);
+export function createUpload(input: {
+  title: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  condense: boolean;
+}): Promise<UploadTicket> {
+  return request<UploadTicket>("/games/uploads", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** Confirm the object is in R2 so the api can queue processing. Only after
+ *  this resolves does the game exist as far as the rest of the app is
+ *  concerned — a failed transfer never becomes a job. */
+export function completeUpload(gameId: string, parts: CompletedPart[]): Promise<Game> {
+  return request<Game>(`/games/${gameId}/uploads/complete`, {
+    method: "POST",
+    body: JSON.stringify({ parts }),
   });
 }
 

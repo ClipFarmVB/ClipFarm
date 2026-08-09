@@ -1,32 +1,34 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Upload, Film, AlertCircle, Loader } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { uploadGame } from "@/lib/api";
+import { completeUpload, createUpload, getUploadConfig, type UploadConfig } from "@/lib/api";
+import { uploadFileToR2 } from "@/lib/upload";
 import { addGameToCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
 
-const ACCEPTED = ["video/mp4", "video/quicktime", "video/x-msvideo", "video/webm"];
-const MAX_SIZE_GB = 15;
+// Used only until GET /games/upload-config answers, and as the fallback if it
+// never does — the server's values are the real limits. Before CF-163 these
+// were the limits, and they disagreed with the server's (15 GB here vs a 2 GB
+// cap), so an in-between file was only rejected after the bytes had moved.
+const FALLBACK_CONFIG: UploadConfig = {
+  max_upload_bytes: 2 * 1024 ** 3,
+  allowed_content_types: ["video/mp4", "video/quicktime", "video/x-matroska", "video/webm"],
+  single_put_max_bytes: 100 * 1024 ** 2,
+  part_size_bytes: 100 * 1024 ** 2,
+  url_ttl_seconds: 6 * 3600,
+};
 
-// Assumed throughput of the server's upload to R2 — the "finalizing" leg the
-// browser can't observe. Used only to *estimate* that leg's duration so the
-// bar keeps moving instead of freezing. The real rate depends on the server's
-// uplink, so it's configurable via NEXT_PUBLIC_FINALIZE_MBPS (defaulting to
-// the ~3.4 MB/s measured in dev). A wrong value only affects pacing, never
-// correctness — the bar always snaps to 100% when the server actually responds.
-const _finalizeMbps = Number(process.env.NEXT_PUBLIC_FINALIZE_MBPS);
-const FINALIZE_BYTES_PER_SEC =
-  (Number.isFinite(_finalizeMbps) && _finalizeMbps > 0 ? _finalizeMbps : 3.4) * 1024 * 1024;
-
-// Countdown shown while the server is still uploading to R2 (the estimated
-// leg). "Finalizing…" is deliberately NOT used here — it's reserved for when
-// the estimate elapses and we're only waiting on the server's confirmation.
 function fmtRemaining(remainingSec: number): string {
   if (remainingSec < 60) return "Uploading — less than a minute left";
   return `Uploading — about ${Math.round(remainingSec / 60)} min left`;
+}
+
+function fmtLimit(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  return gb >= 1 ? `${Number(gb.toFixed(gb < 10 ? 1 : 0))} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
 export function UploadZone() {
@@ -39,17 +41,25 @@ export function UploadZone() {
   const [progress, setProgress] = useState<number | null>(null);
   const [statusText, setStatusText] = useState("Uploading…");
   const [error, setError] = useState<string | null>(null);
-  // Bar spans both upload legs; refs survive re-renders during a single upload.
-  const pctRef = useRef(0);                                    // monotonic — never rewind
-  const finalizeTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [config, setConfig] = useState<UploadConfig>(FALLBACK_CONFIG);
 
-  useEffect(() => () => {  // stop the finalize animation if we unmount mid-upload
-    if (finalizeTimer.current) clearInterval(finalizeTimer.current);
+  // Limits come from the api so the advertised cap can't drift from the
+  // enforced one. A failure here is not fatal: the fallback keeps the page
+  // usable, and the server rejects anything over its real cap at presign time
+  // anyway — before a byte moves.
+  useEffect(() => {
+    let live = true;
+    getUploadConfig()
+      .then((c) => { if (live) setConfig(c); })
+      .catch(() => {});
+    return () => { live = false; };
   }, []);
 
   const validate = (f: File) => {
-    if (!ACCEPTED.includes(f.type)) return "Unsupported file type. Upload an MP4, MOV, AVI, or WebM.";
-    if (f.size > MAX_SIZE_GB * 1024 ** 3) return `File too large. Maximum is ${MAX_SIZE_GB} GB.`;
+    if (!config.allowed_content_types.includes(f.type))
+      return "Unsupported file type. Upload an MP4, MOV, MKV, or WebM.";
+    if (f.size > config.max_upload_bytes)
+      return `File too large. Maximum is ${fmtLimit(config.max_upload_bytes)}.`;
     return null;
   };
 
@@ -60,7 +70,7 @@ export function UploadZone() {
     setFile(f);
     if (!title) setTitle(f.name.replace(/\.[^.]+$/, ""));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title]);
+  }, [title, config]);
 
   const onDrop = (e: React.DragEvent) => {
     // preventDefault already called by the inline onDrop wrapper below
@@ -78,50 +88,39 @@ export function UploadZone() {
     if (!file || uploading) return; // re-entry guard — a second click is a no-op
     setError(null);
     setUploading(true);
-    pctRef.current = 0;
     setProgress(0); // show the progress bar immediately, not on the first onprogress event
     setStatusText("Uploading…");
 
-    const sendStart = Date.now();
-    // Estimated duration of the invisible server→R2 leg (see constant above).
-    const estFinalizeSec = file.size / FINALIZE_BYTES_PER_SEC;
-    // Advance the bar but never let it rewind or hit 100% before the server
-    // actually confirms — the estimate is a guide, the response is the truth.
-    const advance = (pct: number) => {
-      pctRef.current = Math.max(pctRef.current, Math.min(pct, 99));
-      setProgress(pctRef.current);
-    };
-
+    const start = Date.now();
     try {
-      const game = await uploadGame(file, title || file.name, condense, (p) => {
-        if (p.phase === "sending") {
-          // Weight the two legs by their estimated time: leg 1 (send) is
-          // measured live from throughput, leg 2 (finalize) from the estimate.
-          const elapsed = (Date.now() - sendStart) / 1000;
-          // Guard loaded>0: a 0-byte progress event would make this Infinity →
-          // NaN, and NaN sticks through Math.max, freezing the bar permanently.
-          const estSendSec = elapsed > 0.2 && p.loaded > 0 ? p.total / (p.loaded / elapsed) : 0;
-          const sendShare = estSendSec / (estSendSec + estFinalizeSec || 1);
-          advance((p.loaded / p.total) * sendShare * 100);
-        } else {
-          // Finalizing: animate across the estimate with a live countdown.
-          const actualSendSec = Math.max((Date.now() - sendStart) / 1000, 0.001);
-          const finalizeStart = Date.now();
-          const total = actualSendSec + estFinalizeSec;
-          if (finalizeTimer.current) clearInterval(finalizeTimer.current);
-          finalizeTimer.current = setInterval(() => {
-            const finElapsed = (Date.now() - finalizeStart) / 1000;
-            const finFrac = Math.min(finElapsed / estFinalizeSec, 0.99);
-            advance(((actualSendSec + finFrac * estFinalizeSec) / total) * 100);
-            const remaining = estFinalizeSec - finElapsed;
-            // Only call it "Finalizing…" once the estimated R2 upload has run
-            // its full course — until then it's still uploading, with a countdown.
-            setStatusText(remaining > 0 ? fmtRemaining(remaining) : "Finalizing…");
-          }, 500);
+      // 1. Ask the api for a ticket. Type and size are checked here, server
+      //    side, before anything is transferred — a rejection costs nothing.
+      const ticket = await createUpload({
+        title: title || file.name,
+        filename: file.name,
+        content_type: file.type,
+        size_bytes: file.size,
+        condense,
+      });
+
+      // 2. Send the video straight to R2. One leg, fully observable: the api
+      //    is no longer in the data path, so there is nothing left to guess at
+      //    and the countdown is arithmetic on bytes we watched leave.
+      const parts = await uploadFileToR2(file, ticket, ({ loaded, total }) => {
+        // Held under 100 so a full bar always means "done, redirecting" —
+        // completion below is a real step that can still fail.
+        setProgress(Math.min(99, (loaded / total) * 100));
+        const elapsed = (Date.now() - start) / 1000;
+        if (elapsed > 1 && loaded > 0) {
+          setStatusText(fmtRemaining((total - loaded) / (loaded / elapsed)));
         }
       });
-      if (finalizeTimer.current) clearInterval(finalizeTimer.current);
-      setProgress(100); // server confirmed — snap the bar to done
+
+      // 3. Confirm the object landed so the api can queue processing. Nothing
+      //    is enqueued before this, so an upload that died never becomes a job.
+      setStatusText("Finalizing…");
+      const game = await completeUpload(ticket.game_id, parts);
+      setProgress(100);
       // Write the new game straight into the cache so the Library shows it
       // immediately — invalidating alone let a prefetch that started during
       // the (long) upload resolve afterwards and repopulate the cache with a
@@ -129,7 +128,6 @@ export function UploadZone() {
       addGameToCache(game);
       router.push(`/games/${game.id}`);
     } catch (e) {
-      if (finalizeTimer.current) clearInterval(finalizeTimer.current);
       setError(e instanceof Error ? e.message : "Upload failed.");
       setProgress(null);
       setUploading(false); // re-enable so the user can retry after a failure
@@ -156,7 +154,7 @@ export function UploadZone() {
         <input
           id="file-input"
           type="file"
-          accept={ACCEPTED.join(",")}
+          accept={config.allowed_content_types.join(",")}
           className="hidden"
           onChange={onFileInput}
           disabled={uploading}
@@ -185,7 +183,7 @@ export function UploadZone() {
             </div>
             <p className="text-[14px] font-medium text-foreground">Drop video here</p>
             <p className="mt-1.5 text-[12px] text-muted">
-              MP4, MOV, AVI, WebM · up to {MAX_SIZE_GB} GB
+              MP4, MOV, MKV, WebM · up to {fmtLimit(config.max_upload_bytes)}
             </p>
             <p className="mt-3 text-[11px] text-subtle">or click to browse</p>
           </>

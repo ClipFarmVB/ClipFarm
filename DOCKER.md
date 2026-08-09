@@ -28,6 +28,11 @@ Fill required values in `.env.docker`:
 
 You can leave `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` blank if not using Modal.
 
+The R2 bucket also needs a **CORS policy** before uploads work at all — the browser
+PUTs video straight to R2 and never routes it through the api. It must allow `PUT`
+from `http://localhost:3000` and expose the `ETag` header (multipart completion
+cannot read it otherwise). See "R2 bucket setup" in `README.md` for the exact policy.
+
 ## 2) Start everything
 
 ```bash

@@ -28,15 +28,18 @@ It should be enough to understand how the system fits together and where to make
 
 ## Architecture & Flow
 
-A game is uploaded through the web app, stored in R2, and a Celery task processes it
-end to end. The heavy, occlusion-proof primary path is **ball tracking**, not pose.
+A game is uploaded **straight from the browser to R2** with a presigned URL, and a
+Celery task processes it end to end. The heavy, occlusion-proof primary path is
+**ball tracking**, not pose.
 
 ```
 Browser (web/, Next.js)
-    │  upload video (multipart)
+    │  1. POST /games/uploads  ───►  FastAPI: validate type + size, presign
+    │  2. PUT video ──────────────►  R2: raw/{game_id}.mp4   (api not involved)
+    │  3. POST /games/{id}/uploads/complete
     ▼
-FastAPI (api/)  ──►  R2: raw/{game_id}.mp4
-    │  enqueue process_game
+FastAPI (api/)  ──►  HEAD the object, then enqueue process_game
+    │
     ▼
 Celery worker  ──  process_game_task()  (api/app/workers/tasks.py)
     │
@@ -240,11 +243,39 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `r2_*` | — | Cloudflare R2 bucket + credentials. |
 | `redis_url` / `celery_*` | redis:6379 | Job queue. |
 | `modal_token_id` / `modal_token_secret` | "" | Enables the Modal GPU tracking path. |
-| `max_upload_bytes` | 2 GB | Upload size cap. |
+| `max_upload_bytes` | 2 GB | Upload size cap. Served to the web app by `GET /games/upload-config` so the advertised limit can't drift from the enforced one. |
+| `single_put_max_bytes` / `upload_part_size_bytes` | 100 MiB / 100 MiB | Below the threshold an upload is one presigned PUT; above it, multipart with parts this size. |
+| `upload_url_ttl_seconds` | `21600` (6 h) | Lifetime of a presigned upload URL — must cover a whole upload on a slow uplink. |
+| `abandoned_upload_hours` | `24` | Upload tickets never completed are swept (row deleted, multipart aborted) on the owner's next presign. |
 | `raw_upload_retention_days` | `7` | Intended raw-upload TTL (enforcement is a backlog item). |
 
 Secrets go in `.env.docker` (gitignored) for the stack, `api/.env` and `web/.env.local` for
 local non-Docker runs. Never commit credentials.
+
+### R2 bucket setup (required for uploads to work)
+
+The browser PUTs video directly to R2, so the bucket must allow it — without these
+two settings uploads fail in the browser with an opaque CORS error, no matter how
+the api is configured.
+
+**CORS policy** — `ExposeHeaders: ETag` is not optional: multipart completion sends
+each part's ETag back to the api, and a cross-origin response header is unreadable
+to JavaScript unless it is exposed.
+
+```json
+[{
+  "AllowedOrigins": ["https://your-web-domain", "http://localhost:3000"],
+  "AllowedMethods": ["PUT", "GET", "HEAD"],
+  "AllowedHeaders": ["content-type"],
+  "ExposeHeaders": ["ETag"],
+  "MaxAgeSeconds": 3600
+}]
+```
+
+**Lifecycle rule** — abort incomplete multipart uploads after ~7 days. The api aborts
+on delete and on the abandoned-upload sweep; this is the backstop for uploads neither
+path reaches. Parts of an unfinished upload are billed until aborted and are invisible
+to a normal object listing.
 
 ---
 
