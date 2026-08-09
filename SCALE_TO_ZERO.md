@@ -1,179 +1,122 @@
-# Scale-to-Zero Architecture — proposal
+# Scale-to-Zero — evaluation and decision
 
-> **Status: proposed, not decided.** Tracked as epic **CF-161**. Step 4 is gated on
-> the spike (**CF-162**). This document explains the change; the cards carry the work.
+> **Status: evaluated, decided.** Epic **CF-161** is closed. This records what was
+> considered, what we're doing, and — more usefully — **what we decided not to do and
+> why**, so it isn't re-litigated in six months.
 >
-> Current production architecture is [`DEPLOY_RENDER.md`](./DEPLOY_RENDER.md).
-> Nothing here is live.
+> Current production architecture remains [`DEPLOY_RENDER.md`](./DEPLOY_RENDER.md).
 
 ---
 
-## The problem
+## What prompted it
 
 Production costs **$49.25/month flat** — web $7 + api $7 + worker $25 + Key Value $10 —
-and at current usage the worker is idle well over 99% of the time.
+and the worker is idle well over 99% of the time at current usage.
 
-This is not a capacity problem, so autoscaling cannot fix it. Render has **no
-scale-to-zero for paid services**: the minimum is one always-on instance. Autoscaling
-with `min=1` returns to the same $49.25 at idle and only adds spend when the queue is
-deep, which at a handful of users never happens.
+Render has **no scale-to-zero for paid services**: the minimum is one always-on instance.
+So autoscaling cannot help — with `min=1` it returns to the same $49.25 at idle and only
+adds spend when the queue is deep. It's a floor problem, not a ceiling problem.
 
-**It's a floor problem, not a ceiling problem.**
+The question asked was: could the stack bill per *game processed* rather than per *hour
+rented*?
 
-## The idea
+## The answer, and why it isn't the whole answer
 
-Change the unit of billing from **time** to **work**.
+Technically yes. Modal hosts full ASGI apps, so the api could scale to zero; jobs could
+spawn as Modal functions; Celery and Redis could be deleted. Idle would land near $0.
 
-Today you rent four machines by the hour whether or not a game is processing. After,
-you pay per game processed and roughly nothing when idle. You already have one component
-that works this way — Modal, which is why the GPU stage costs ~$0.20/game instead of a
-monthly instance fee. The proposal extends that model to the rest of the stack.
+**But the objective changed once the numbers were on the table.** The original goal was
+minimum idle cost. The actual goal turned out to be *the most appropriate stack*, with a
+small-to-medium monthly bill being perfectly acceptable. Roughly 80% of the case for the
+biggest step was cost — so it does not survive that reframing.
 
-## Before
-
-```
-Browser
-    │  uploads video THROUGH the api (multipart)
-    ▼
-[Render] api ───────────────► R2: raw/{game_id}.mp4
-    │  enqueue process_game
-    ▼
-[Render] Redis   ← Celery broker + result backend
-    │
-    ▼
-[Render] worker  (2 GB, always on, --pool=solo)
-    ├─ ball tracking ──► Modal GPU        ← already scale-to-zero
-    ├─ pose            (local CPU, light config)
-    ├─ scoring + ffmpeg clip cutting
-    └─ clips ──► R2 + Postgres
-
-always on:  web $7 + api $7 + worker $25 + redis $10  =  $49.25/mo
-```
-
-## After
-
-```
-Browser ──presigned PUT──────► R2: raw/{game_id}.mp4   (api never sees the bytes)
-    │  POST /games  (metadata only)
-    ▼
-[Modal] api (FastAPI ASGI)         ← runs only during a request
-    │  .spawn()
-    ▼
-[Modal] process_game               ← one container per job, N in parallel
-    ├─ ball tracking   (GPU)
-    ├─ pose            (GPU, full quality restored)
-    ├─ scoring + ffmpeg
-    └─ clips ──► R2 + Postgres  (advisory lock + progress)
-
-[Cloudflare Pages] web             ← free
-[Supabase] Postgres                ← free tier
-
-always on:  nothing.   ~$0–5/mo idle
-```
+What follows is what stands up **without** the cost argument.
 
 ---
 
-## What happens to Celery
+## Doing
 
-The obvious objection is that we recently hardened Celery across several PRs (CF-65a
-redelivery safety, CF-150 result handling). None of that reasoning is wasted — each
-guarantee is **replaced one for one**, not dropped.
+### CF-163 — presigned direct-to-R2 uploads
+The browser uploads straight to R2; the api issues a presigned URL and records metadata,
+never touching the bytes.
 
-| Celery provides | Replaced by |
-|---|---|
-| the queue | Modal `.spawn()` |
-| retries, `task_acks_late`, `reject_on_worker_lost` | Modal function retries + timeouts |
-| per-game lock (Redis `SET NX EX`) | **Postgres advisory lock** |
-| progress tracking | already Postgres (`Game.status`) — unchanged |
-| idempotent clip refresh (CF-37) | unchanged — lives in the DB layer |
-| `task_ignore_result` (CF-150) | n/a — no result backend exists |
+Never really a cost item. It removes the api from the multi-GB data path, fixes the
+CF-167 cap mismatch properly, eliminates a class of upload timeout/retry failures, and
+gives CF-91 a natural enforcement point — limits are decided when the URL is issued,
+before any bytes move.
 
-### The lock change is the point
+### CF-164 — pose → Modal
+Moves YOLOv8-pose to Modal, the pattern `track_ball` already uses.
 
-`api/app/workers/locks.py` uses Redis `SET NX EX` — a lock with a **TTL**, which has no
-relationship to whether the holder is still alive. That is the root cause of **CF-65g
-(#149)**: kill a worker mid-job, the lock outlives the process, the requeued task finds
-it still held and no-ops, and the game strands in `processing` with nothing working on
-it. `celery_app.py` documents this in situ.
+Pays twice. Removing torch/ultralytics/`inference` from the worker image lets it run on
+`starter` (−$18/mo), **and** full-quality pose returns on GPU — `yolov8s` @ 1280 instead
+of the light config production ships — which improves CF-3's action labels and retires
+the "don't compare prod labels against CF-55 baselines" warning in `DEPLOY_RENDER.md`.
 
-A Postgres advisory lock is **session-scoped** — it is released when the connection
-dies. Kill the job, the lock goes with it, the retry succeeds.
+Worth doing for the quality alone.
 
-**So #149 is not fixed by this change; it stops existing.** That is a correctness
-argument that happens to also be cheaper, and it is the strongest reason to do this.
+### CF-184 — Postgres advisory lock replaces the Redis TTL lock
+The strongest finding of the whole evaluation, and it turned out **not to require the
+migration it arrived bundled with**.
 
-### Scaling follows the same pattern
+`locks.py` uses Redis `SET NX EX` — a lock whose TTL has no relationship to whether the
+holder is alive. `celery_app.py` documents the consequence: a hard-killed worker leaves
+the lock held, the requeued task no-ops, and the game strands in `processing`. That is
+the entire reason CF-65g (#149) exists.
 
-Modal runs one container per spawned job and scales out by default. That turns three
-open cards into a configuration value:
-
-| Card | Becomes |
-|---|---|
-| CF-65c — horizontal scaling, multiple replicas | `max_containers` |
-| CF-65d — queue-depth autoscaling | not needed; no queue to measure |
-| CF-65f — worker observability (Flower) | Modal dashboards + Sentry |
-
-These are flagged as likely superseded on the board, pending the CF-162 spike.
+A session-scoped Postgres advisory lock is released when its connection dies. Kill the
+worker, the lock goes with it, the retry succeeds — **the failure mode stops existing
+rather than being reaped after the fact.** Celery is untouched; the lock mechanism is
+independent of the queue.
 
 ---
 
-## What it costs
+## Not doing
 
-Honest trade-offs, not footnotes:
+### CF-165 — web → Cloudflare (closed)
+Only ever worth **$7/month**, and the implementation path carries more risk than that buys:
 
-- **Cold starts.** A few seconds on the first request after idle — a real, user-facing
-  cost. Warm containers remove it and cost money, which defeats the purpose.
-- **Vendor concentration on Modal** (api + jobs + GPU). Genuine blast radius. Mitigated
-  by the app being standard ASGI, so it ports to Cloud Run or Fly with little change.
-- **Local dev stops mirroring production.** `docker compose` no longer reflects what
-  runs in prod; that needs documenting.
-- **At high utilization, per-second billing loses** to a flat instance. There is a
-  crossover point. Current usage is nowhere near it.
-- **Sentry rewiring.** `CeleryIntegration()` no longer applies; job error capture must
-  be wired for Modal, preserving the credential scrubbing from CF-89/#131.
+- Cloudflare **no longer recommends Pages** for Next.js; the current path is OpenNext on
+  Workers, so the original ticket named a deprecated approach.
+- An [active Next.js 16 version trap](https://github.com/cloudflare/workers-sdk/issues/13755)
+  between Next 16's proxy architecture and the current Cloudflare adapter.
+- **Middleware is the known sharp edge**, and ours runs `supabase.auth.getUser()` on
+  nearly every request. That's auth, not a peripheral feature.
 
----
+Vercel doesn't rescue it: Hobby forbids commercial use, and Pro at ~$20/seat costs *more*
+than the Render service it would replace.
 
-## The steps, and why they're in this order
+**Web stays on Render.** $7/mo for a zero-risk, already-working frontend is a good trade.
 
-| # | Card | Effect | Depends on |
-|---|---|---|---|
-| 1 | **CF-163** — presigned direct-to-R2 uploads | — | — |
-| 2 | **CF-164** — pose → Modal | $49 → ~$31 | — |
-| 3 | **CF-165** — web → Cloudflare Pages | ~$31 → ~$24 | — |
-| 4 | **CF-166** — api → Modal ASGI, retire Celery + Redis | ~$24 → **~$0–5** | 1, and CF-162 |
+### CF-166 — api → Modal, retire Celery (backlog)
+With cost set aside, what remains is elastic scaling we don't need yet — Celery prefork
+(CF-65b) plus replicas covers moderate concurrency — in exchange for:
 
-**Step 1 is a hard dependency, not a preference.** Modal caps request bodies at 4 GiB
-and the UI currently advertises 15 GB. Until the browser uploads straight to R2, the api
-physically cannot move. It also resolves CF-167 properly and gives CF-91 a natural
-enforcement point — limits are decided when the presigned URL is issued, before any
-bytes move.
+- replacing the Alembic mechanism (Modal has no `preDeployCommand` equivalent)
+- rewiring Sentry off `CeleryIntegration`
+- unverified custom-domain support
+- cold starts on a user-facing api
+- local dev no longer mirroring production
 
-**Step 2 is worth doing regardless of the rest.** Removing torch/ultralytics/`inference`
-from the worker image lets it run on `starter`, *and* restores full-quality pose on GPU
-(`yolov8s` @ 1280 instead of the light config production ships). Cheaper and better
-simultaneously — and the quality half improves CF-3's action labels as a side effect.
-
-**Step 3 is independent** and can be taken at any time. Cloudflare Pages rather than
-Vercel: Vercel's Hobby tier forbids commercial use, and Pro at ~$20/seat costs more than
-the $7 it saves.
-
-**Step 4 is the commitment**, gated on CF-162 answering three questions:
-
-1. Custom domains on Modal web endpoints — undocumented; may force Cloudflare in front
-   or Cloud Run instead.
-2. What replaces `preDeployCommand` for Alembic. Modal has no equivalent hook, and
-   deleting the Render api deletes the migration mechanism.
-3. The advisory-lock design against Supabase's pooler — transaction-mode pooling and
-   session-scoped locks do not mix.
+**Revisit when concurrent load actually exceeds a prefork-pooled worker.** The trigger is
+scale, not the bill.
 
 ---
 
-## The decision
+## Where that leaves the stack
 
-Steps 1–3 are unambiguous wins in any world; they reduce cost, fix a real bug, and
-improve output quality without architectural risk.
+FastAPI + Celery + Redis + Postgres + R2, with GPU bursts on Modal. Boring, standard,
+already understood by the team — and **~$31/month** steady state once CF-164 lands.
 
-Step 4 is a genuine project with genuine unknowns. The spike exists so that it is
-decided on evidence rather than enthusiasm — and so that CF-65c/d/f are not built on a
-premise the team is planning to change.
+The genuinely inappropriate parts were narrow: the api sitting in the upload data path,
+and pose running on CPU at reduced quality. CF-163 and CF-164 fix exactly those. The rest
+of the architecture was already right.
+
+## Consequences for other cards
+
+- **CF-65c / CF-65d / CF-65f are *not* superseded.** They were briefly marked so while
+  CF-166 looked likely. Celery stays, so Celery-based scaling is the live path.
+- **CF-65b (PR #154)** goes from "possibly moot" to the right next step for concurrency.
+- **CF-65g (#149)** is superseded by **CF-184** rather than by CF-166 — same conclusion,
+  much smaller change. Don't build the reaper until CF-184 is decided; if the Supabase
+  pooler blocks session-scoped locks, it returns as the fallback.
