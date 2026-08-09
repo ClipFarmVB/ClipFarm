@@ -7,6 +7,8 @@
 #
 # Requirements: ruff, mypy, pytest, and npm must be on PATH.
 # In the api/ virtualenv: pip install ruff mypy pytest
+# The api/tests step additionally needs the app's own deps and the test-only
+# ones (pip install -r api/requirements-dev.txt); without them it is skipped.
 # For npm: it should already be available.
 
 set -e
@@ -39,6 +41,27 @@ if ! _pytest_out=$(python -m pytest ml/tests/ -q --no-header 2>&1); then
   exit 1
 fi
 echo "ok"
+
+# ── API: unit tests ───────────────────────────────────────────────────────────
+# Runs from api/ (in a subshell, so later steps stay at the repo root) because
+# the tests do `from app... import ...`.
+#
+# Unlike ml/tests these need the application's own dependencies: the
+# `pytest.importorskip` guards only cover the optional test doubles, so without
+# pydantic-settings the app-importing tests error at collection rather than
+# skipping. The header only asks for `pip install ruff mypy pytest`, so treat a
+# dependency-free environment as "not runnable here" and leave it to CI instead
+# of blocking the commit on a setup step nobody was told to do.
+printf "  pytest api/tests ... "
+if ! python -c "import pydantic_settings" >/dev/null 2>&1; then
+  echo "skipped (pip install -r api/requirements-dev.txt to run these locally)"
+elif ! _api_pytest_out=$(cd api && python -m pytest tests/ -q --no-header 2>&1); then
+  echo "FAIL"
+  echo "$_api_pytest_out"
+  exit 1
+else
+  echo "ok"
+fi
 
 # ── Web: ESLint ───────────────────────────────────────────────────────────────
 printf "  eslint (web) ...     "
