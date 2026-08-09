@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ClaimHandleBanner } from "@/components/ClaimHandleBanner";
 import { Sidebar } from "@/components/Sidebar";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
@@ -34,6 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Sidebar />
             <main className="ml-[220px] min-h-screen">
               <div className="mx-auto max-w-5xl px-8 py-8">
+                <ClaimHandleBanner />
                 {children}
               </div>
             </main>
