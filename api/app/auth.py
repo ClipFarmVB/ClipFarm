@@ -131,3 +131,26 @@ async def get_current_user_id(
     await _ensure_user_exists(user_id, email, db)
 
     return user_id
+
+
+async def get_optional_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    db: AsyncSession = Depends(get_db),
+) -> uuid.UUID | None:
+    """Identify the caller if they're signed in, else return None (CF-108).
+
+    Public content has to be readable by a signed-out visitor, so those routes
+    can't use `get_current_user_id` — it raises 401 with no credentials. This
+    returns None instead and lets `services/access.py` decide.
+
+    An *invalid or expired* token still raises: a broken credential is an error
+    worth surfacing, not something to silently downgrade to anonymous. Only the
+    genuine no-credentials case yields None.
+    """
+    if credentials is None:
+        # Preserve the dev fallback so the local stack behaves as it does for
+        # get_current_user_id rather than silently going anonymous.
+        if settings.debug and not settings.supabase_url:
+            return uuid.UUID("00000000-0000-0000-0000-000000000001")
+        return None
+    return await get_current_user_id(credentials=credentials, db=db)

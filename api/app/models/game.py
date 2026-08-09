@@ -6,6 +6,7 @@ from sqlalchemy import Boolean, Float, String, DateTime, ForeignKey, Enum as SAE
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.visibility import Visibility
 
 
 class GameStatus(str, enum.Enum):
@@ -32,6 +33,14 @@ class Game(Base):
     progress_stage: Mapped[str | None] = mapped_column(String(64))
     # Opt-in dead-time removal: one condensed video with only the rally
     # windows kept, produced alongside the highlight clips.
+    # Who may read this game and its clips (CF-108). Private by default —
+    # nothing becomes visible to a non-owner without a deliberate change.
+    visibility: Mapped[Visibility] = mapped_column(
+        SAEnum(Visibility, name="visibility"),
+        nullable=False,
+        server_default=Visibility.private.value,
+        default=Visibility.private,
+    )
     condense_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     condensed_video_url: Mapped[str | None] = mapped_column(String(2048))
     original_duration: Mapped[float | None] = mapped_column(Float)

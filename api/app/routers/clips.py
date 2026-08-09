@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user_id
+from app.auth import get_current_user_id, get_optional_user_id
 from app.database import get_db
 from app.models.clip import Clip, ActionType
 from app.models.correction import Correction
@@ -20,7 +20,7 @@ from app.schemas.clip import (
     ClipTagRequest,
     ClipTrimRequest,
 )
-from app.services import storage
+from app.services import access, storage
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -28,10 +28,33 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["clips"])
 
 DB = Annotated[AsyncSession, Depends(get_db)]
+# Read paths accept a signed-out viewer; writes keep get_current_user_id.
+ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
+
+
+async def _get_viewable_clip(
+    clip_id: uuid.UUID, viewer_id: uuid.UUID | None, db: AsyncSession
+) -> tuple[Clip, Game]:
+    """Fetch a clip the viewer is allowed to READ (CF-108).
+
+    Distinct from _get_owned_clip below, which still gates every write. Reads go
+    through services/access.py so visibility is decided in one place; writes stay
+    owner-only and must not use this.
+    """
+    clip = await db.get(Clip, clip_id)
+    game = await db.get(Game, clip.game_id) if clip else None
+    if not access.can_view_clip(viewer_id, clip, game):
+        # 404 not 403 — a 403 would confirm the clip exists to anyone probing.
+        raise HTTPException(status_code=404, detail="Clip not found")
+    assert clip is not None and game is not None  # narrowed by can_view_clip
+    return clip, game
 
 
 async def _get_owned_clip(clip_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> Clip:
-    """Fetch a clip and verify the requesting user owns its parent game."""
+    """Fetch a clip and verify the requesting user OWNS its parent game.
+
+    Write paths only (tag / labels / trim / delete). Read paths use
+    _get_viewable_clip."""
     clip = await db.get(Clip, clip_id)
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found")
@@ -63,7 +86,7 @@ def _rewrite_urls(clip: Clip) -> dict[str, str | None]:
 async def list_clips(
     game_id: uuid.UUID,
     db: DB,
-    user_id: uuid.UUID = Depends(get_current_user_id),
+    viewer_id: ViewerId = None,
     action_type: Annotated[str | None, Query()] = None,
     player_id: Annotated[uuid.UUID | None, Query()] = None,
     min_confidence: Annotated[float, Query(ge=0, le=1)] = 0.0,
@@ -72,12 +95,19 @@ async def list_clips(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 50,
 ):
-    # Verify game ownership
+    # The game itself must be viewable, else 404 (indistinguishable from a
+    # game that doesn't exist — see access.assert_can_view_game).
     game = await db.get(Game, game_id)
-    if not game or game.owner_id != user_id:
-        raise HTTPException(status_code=404, detail="Game not found")
+    access.assert_can_view_game(viewer_id, game)
 
-    q = select(Clip).where(Clip.game_id == game_id)
+    # Clips are filtered IN SQL (CF-108). Post-filtering the page in Python
+    # would silently break pagination — ask for 50, get however many survived —
+    # and would have loaded rows the viewer isn't entitled to.
+    q = (
+        select(Clip)
+        .join(Game, Clip.game_id == Game.id)
+        .where(Clip.game_id == game_id, access.visible_clips_filter(viewer_id))
+    )
 
     if action_type:
         types = [ActionType(t.strip()) for t in action_type.split(",") if t.strip()]
@@ -318,7 +348,12 @@ async def delete_clips(
 async def share_clip(
     clip_id: uuid.UUID,
     db: DB,
-    user_id: uuid.UUID = Depends(get_current_user_id),
+    viewer_id: ViewerId = None,
 ):
-    clip = await _get_owned_clip(clip_id, user_id, db)
+    # Read path (CF-108): anyone who may view the clip may mint a share link.
+    clip, _game = await _get_viewable_clip(clip_id, viewer_id, db)
+    # NOTE: still a 1h presigned URL even for public clips. CF-108's card flags
+    # revisiting this — a public clip's link is meant to be passed around, so a
+    # short expiry is user-hostile, while a long one is a bearer token nobody
+    # can revoke. Left as-is here rather than changed without a decision.
     return {"url": storage.presign_from_stored_url(clip.clip_url, expires_in=3600)}

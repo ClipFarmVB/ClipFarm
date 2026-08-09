@@ -6,6 +6,7 @@ from sqlalchemy import String, Float, DateTime, ForeignKey, Enum as SAEnum, ARRA
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.visibility import Visibility
 
 
 class ActionType(str, enum.Enum):
@@ -38,6 +39,15 @@ class Clip(Base):
     thumbnail_url: Mapped[str | None] = mapped_column(String(2048))
     labels: Mapped[list[str]] = mapped_column(
         ARRAY(String(50)), nullable=False, server_default="{}"
+    )
+    # Per-clip visibility override (CF-108). NULL — the default — means
+    # "inherit whatever the parent game says", which is deliberate: copying the
+    # game's value onto each clip at creation would go stale the moment someone
+    # changes the game's visibility, silently leaving old clips readable. Set a
+    # value here only to diverge from the game (e.g. one public highlight from
+    # an otherwise private match).
+    visibility: Mapped[Visibility | None] = mapped_column(
+        SAEnum(Visibility, name="visibility"), nullable=True, default=None
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
