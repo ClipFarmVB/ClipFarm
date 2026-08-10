@@ -142,6 +142,13 @@ function singleTicket(): UploadTicket {
   };
 }
 
+/** Let workers still running after Promise.all rejected finish their turn.
+ *  Without this, `sent` is read while the siblings are mid-flight and any
+ *  assertion about them stopping passes regardless of whether they did. */
+function drain() {
+  return new Promise((r) => setTimeout(r, 100));
+}
+
 describe("uploadFileToR2", () => {
   beforeEach(() => {
     scripted = [];
@@ -222,11 +229,24 @@ describe("uploadFileToR2", () => {
     expect(parts.map((p) => p.part_number)).toEqual([1, 2, 3, 4, 5]);
   });
 
+  it("stops claiming new parts when a part URL is missing from the ticket", async () => {
+    // This guard used to throw from outside the try, so it never set the
+    // failure flag and the other workers kept uploading into a doomed upload.
+    const ticket = multipartTicket(10, 100);
+    ticket.parts = ticket.parts.filter((p) => p.part_number !== 1);
+
+    await uploadFileToR2(fakeFile(1000), ticket).catch(() => {});
+    await drain();
+    // 9 parts have URLs; if the siblings kept going they would all be sent.
+    expect(sent.length).toBeLessThan(9);
+  });
+
   it("stops claiming new parts once one has failed", async () => {
     // 10 parts, 3 workers. Part 1 fails permanently; the rest must not keep
     // uploading into an upload that is already doomed.
     scripted = [{ status: 403 }];
     await uploadFileToR2(fakeFile(1000), multipartTicket(10, 100)).catch(() => {});
+    await drain();
     expect(sent.length).toBeLessThan(10);
   });
 });

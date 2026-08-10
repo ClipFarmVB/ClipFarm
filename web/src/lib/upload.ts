@@ -184,10 +184,16 @@ export async function uploadFileToR2(
   const worker = async () => {
     while (next < plans.length && !failed) {
       const plan = plans[next++];
-      const url = urls.get(plan.partNumber);
-      if (!url) throw new Error(`Upload ticket is missing part ${plan.partNumber}`);
 
       try {
+        // Inside the try so it sets `failed` like any other error — thrown
+        // from outside, the other workers would keep uploading parts into an
+        // upload already guaranteed to fail.
+        const url = urls.get(plan.partNumber);
+        if (!url) {
+          throw new UploadError(`Upload ticket is missing part ${plan.partNumber}`, false);
+        }
+
         const etag = await withRetry(() => {
           loadedByPart.set(plan.partNumber, 0); // a retry re-sends the whole part
           report();

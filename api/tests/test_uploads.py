@@ -365,6 +365,25 @@ def test_sweeping_a_single_put_upload_deletes_the_object(fake_storage, monkeypat
     assert not fake_storage["abort_multipart"], "nothing to abort for a single PUT"
 
 
+def test_sweeping_a_multipart_upload_deletes_the_object_too(fake_storage, monkeypatch):
+    """`upload_id` set does not mean "no object exists yet".
+
+    complete_multipart runs before the row is claimed, so a request that dies
+    between assembly and the claim leaves a real object on a row that still
+    carries an upload id. Aborting alone would leave it orphaned — the exact
+    leak the single-PUT branch was added to close.
+    """
+    monkeypatch.setattr(settings, "single_put_max_bytes", 10_000)
+    stale = _uploading_game(upload_id="assembled-already")
+    db = FakeDB(stale=[stale])
+
+    asyncio.run(games_router.create_upload(_create(100), USER, db))
+
+    assert fake_storage["abort_multipart"], "still attempts the abort"
+    assert fake_storage["delete_file"] == ["raw/abc.mp4"], "and deletes the object"
+    assert stale in db.deleted
+
+
 def test_multipart_is_aborted_when_the_row_cannot_be_written(fake_storage, monkeypatch):
     """The row is the only handle on a multipart upload — delete_game and the
     sweep both reach it through the row. If the insert fails, nothing else

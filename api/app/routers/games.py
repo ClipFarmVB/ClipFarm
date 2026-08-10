@@ -99,6 +99,13 @@ async def _sweep_abandoned_uploads(user_id: uuid.UUID, db: AsyncSession) -> None
         stale = result.scalars().all()
         for game in stale:
             key = urlparse(game.raw_video_url or "").path.lstrip("/")
+            # Both, not either. `upload_id` set does NOT imply the object
+            # doesn't exist: complete_multipart runs before the row is claimed,
+            # so a request that dies between assembly and the claim leaves a
+            # real object on a row that still carries an upload id. Aborting
+            # and then deleting covers that as well as the plain cases —
+            # delete_object on a missing key is a no-op, and aborting an
+            # already-completed upload just warns.
             if key and game.upload_id:
                 try:
                     await run_in_threadpool(storage.abort_multipart, key, game.upload_id)
@@ -107,11 +114,9 @@ async def _sweep_abandoned_uploads(user_id: uuid.UUID, db: AsyncSession) -> None
                         "Abort of abandoned multipart upload failed for game %s",
                         game.id, exc_info=True,
                     )
-            elif key:
-                # A single-PUT upload that finished but was never completed: the
-                # object is really in the bucket, and this row is the only record
-                # of its key. Deleting the row without it would strand the object
-                # unreferenced and billed forever.
+            if key:
+                # This row is the only record of the key. Deleting it without
+                # the object would strand the object unreferenced and billed.
                 try:
                     await run_in_threadpool(storage.delete_file, key)
                 except Exception:

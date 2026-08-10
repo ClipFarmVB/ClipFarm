@@ -100,6 +100,10 @@ export function UploadZone() {
 
     const start = Date.now();
     let ticket: UploadTicket | null = null;
+    // Once completion is in flight the server may have already claimed the row
+    // and dispatched the job, so a failure past this point is ambiguous rather
+    // than a clean loss — see the catch.
+    let completing = false;
     try {
       // 1. Ask the api for a ticket. Type and size are checked here, server
       //    side, before anything is transferred — a rejection costs nothing.
@@ -127,6 +131,7 @@ export function UploadZone() {
       // 3. Confirm the object landed so the api can queue processing. Nothing
       //    is enqueued before this, so an upload that died never becomes a job.
       setStatusText("Finalizing…");
+      completing = true;
       const game = await completeUpload(ticket.game_id, parts);
       setProgress(100);
       // Write the new game straight into the cache so the Library shows it
@@ -142,7 +147,15 @@ export function UploadZone() {
       // uploaded parts, billed until the 24h sweep. A dropped 1.5 GB upload on
       // cellular is precisely the case this flow exists for, so retries are
       // expected rather than exceptional.
-      if (ticket) {
+      //
+      // NOT once completion is in flight. `complete_upload` claims the row and
+      // dispatches the job before it responds, so a lost response — dropped
+      // connection, proxy timeout, backgrounded tab — means the upload may well
+      // have succeeded. Deleting there would remove a game the worker is
+      // processing right now, turning a recoverable blip into a vanished
+      // upload. An ambiguous completion is left alone: the worst case is a row
+      // the 24h sweep collects, against silently destroying real work.
+      if (ticket && !completing) {
         // Best-effort: the row may already be gone (an oversize upload is
         // deleted server-side), and a cleanup failure must not replace the
         // real error with a confusing one.
