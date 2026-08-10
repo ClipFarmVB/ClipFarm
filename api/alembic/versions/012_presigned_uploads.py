@@ -7,8 +7,13 @@ and the worker may pick it up. `upload_id` holds the S3 multipart upload id
 while that is true, so a delete can abort the upload instead of leaving billable
 parts behind.
 
-Revision ID: 010
-Revises: 009
+Numbered 012 to sit after the CF-107 (#183, 010) / CF-108 (#188, 011) pair,
+which chain onto each other. This revision is independent of both — it only
+adds an enum value and a column — so it is the cheapest of the three to move.
+Merge order is therefore #183 → #188 → this one.
+
+Revision ID: 012
+Revises: 011
 Create Date: 2026-08-09
 """
 from typing import Sequence, Union
@@ -16,8 +21,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "010"
-down_revision: Union[str, None] = "009"
+revision: str = "012"
+down_revision: Union[str, None] = "011"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

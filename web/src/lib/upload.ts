@@ -50,13 +50,28 @@ export interface TransferProgress {
   total: number;
 }
 
-/** One PUT with progress reporting.  Resolves with the response ETag, which
- *  multipart completion needs (and which requires the bucket's CORS rule to
- *  list ETag under ExposeHeaders — it is not readable by default). */
+export class UploadError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message);
+    this.name = "UploadError";
+  }
+}
+
+/** Only transient conditions are worth a second attempt.  A 403 from an
+ *  expired URL or a signature mismatch will fail identically every time, and
+ *  retrying it three times per part across three workers just delays the
+ *  error the user needs to see. */
+function isRetryableStatus(status: number): boolean {
+  return status >= 500 || status === 408 || status === 429;
+}
+
+/** One PUT with progress reporting.  Resolves with the response ETag when
+ *  `requireEtag` (multipart completion needs it); a single PUT does not. */
 function put(
   url: string,
   body: Blob,
   contentType: string | null,
+  requireEtag: boolean,
   onLoaded: (loaded: number) => void
 ): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -71,15 +86,33 @@ function put(
       if (e.lengthComputable) onLoaded(e.loaded);
     };
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        onLoaded(body.size); // the last progress event can lag the actual end
-        resolve(xhr.getResponseHeader("ETag") ?? "");
-      } else {
-        reject(new Error(`Storage rejected the upload (${xhr.status})`));
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new UploadError(
+          `Storage rejected the upload (${xhr.status})`,
+          isRetryableStatus(xhr.status)
+        ));
+        return;
       }
+      onLoaded(body.size); // the last progress event can lag the actual end
+
+      const etag = xhr.getResponseHeader("ETag");
+      if (requireEtag && !etag) {
+        // Not a transfer failure — a bucket misconfiguration. ETag is not
+        // readable cross-origin unless CORS lists it under ExposeHeaders, and
+        // without this check every part would resolve to "" and the upload
+        // would fail only at assembly, after every byte had moved, with a
+        // generic 400 that points nowhere near the actual cause.
+        reject(new UploadError(
+          "Storage did not return an ETag. The R2 bucket's CORS policy must " +
+          "list ETag under ExposeHeaders for uploads to complete.",
+          false
+        ));
+        return;
+      }
+      resolve(etag ?? "");
     };
-    xhr.onerror = () => reject(new Error("Network error during upload"));
-    xhr.onabort = () => reject(new Error("Upload aborted"));
+    xhr.onerror = () => reject(new UploadError("Network error during upload", true));
+    xhr.onabort = () => reject(new UploadError("Upload aborted", false));
     xhr.send(body);
   });
 }
@@ -91,6 +124,7 @@ async function withRetry<T>(attempt: (n: number) => Promise<T>): Promise<T> {
       return await attempt(n);
     } catch (err) {
       lastErr = err;
+      if (err instanceof UploadError && !err.retryable) break;
       if (n < ATTEMPTS - 1) {
         await new Promise((r) => setTimeout(r, RETRY_BASE_MS * 2 ** n));
       }
@@ -117,7 +151,8 @@ export async function uploadFileToR2(
   if (ticket.mode === "single") {
     if (!ticket.upload_url) throw new Error("Upload ticket is missing its URL");
     await withRetry(() =>
-      put(ticket.upload_url!, file, ticket.content_type, (loaded) =>
+      // No ETag needed: a single PUT is the whole object, nothing to assemble.
+      put(ticket.upload_url!, file, ticket.content_type, false, (loaded) =>
         onProgress?.({ loaded, total })
       )
     );
@@ -140,22 +175,32 @@ export async function uploadFileToR2(
 
   const completed: CompletedPart[] = [];
   let next = 0;
+  // Once any worker gives up, the others stop claiming new parts instead of
+  // uploading into an upload that is already doomed. Requests already in
+  // flight still run to completion — cancelling those needs the XHRs to be
+  // tracked and aborted, which is more machinery than the saving warrants.
+  let failed = false;
 
   const worker = async () => {
-    while (next < plans.length) {
+    while (next < plans.length && !failed) {
       const plan = plans[next++];
       const url = urls.get(plan.partNumber);
       if (!url) throw new Error(`Upload ticket is missing part ${plan.partNumber}`);
 
-      const etag = await withRetry(() => {
-        loadedByPart.set(plan.partNumber, 0); // a retry re-sends the whole part
-        report();
-        return put(url, file.slice(plan.start, plan.end), null, (loaded) => {
-          loadedByPart.set(plan.partNumber, loaded);
+      try {
+        const etag = await withRetry(() => {
+          loadedByPart.set(plan.partNumber, 0); // a retry re-sends the whole part
           report();
+          return put(url, file.slice(plan.start, plan.end), null, true, (loaded) => {
+            loadedByPart.set(plan.partNumber, loaded);
+            report();
+          });
         });
-      });
-      completed.push({ part_number: plan.partNumber, etag });
+        completed.push({ part_number: plan.partNumber, etag });
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
     }
   };
 

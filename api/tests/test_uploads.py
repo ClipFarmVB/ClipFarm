@@ -17,6 +17,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("celery")
 
 from fastapi import HTTPException  # noqa: E402
+from sqlalchemy.sql.dml import Update  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.models.game import Game, GameStatus  # noqa: E402
@@ -42,6 +43,20 @@ class _Result:
         return self._rows
 
 
+class _UpdateResult:
+    def __init__(self, rowcount: int):
+        self.rowcount = rowcount
+
+
+def _where_columns(stmt) -> set[str]:
+    """Column names compared in a statement's WHERE clause."""
+    where = stmt.whereclause
+    if where is None:
+        return set()
+    clauses = getattr(where, "clauses", [where])
+    return {c.left.name for c in clauses if hasattr(c, "left")}
+
+
 class FakeDB:
     """Just enough AsyncSession for the upload handlers."""
 
@@ -52,9 +67,32 @@ class FakeDB:
         self.deleted: list[Game] = []
         self.commits = 0
 
-    async def execute(self, _stmt):
+    async def execute(self, stmt):
+        if isinstance(stmt, Update):
+            return self._claim(stmt)
         rows, self.stale = self.stale, []  # one sweep per test
         return _Result(rows)
+
+    def _claim(self, stmt) -> _UpdateResult:
+        """Model the completion handler's conditional UPDATE:
+
+            UPDATE games SET status='queued', upload_id=NULL
+             WHERE id=:id AND status='uploading'
+
+        The `status` predicate is read off the statement rather than assumed.
+        Hardcoding it here would make the fake enforce atomicity that the
+        production code might not have, and the concurrency test below would
+        then pass even against an unguarded UPDATE — proving nothing.
+        """
+        guarded = "status" in _where_columns(stmt)
+        claimed = [
+            g for g in self.games.values()
+            if not guarded or g.status == GameStatus.uploading
+        ]
+        for g in claimed:
+            g.status = GameStatus.queued
+            g.upload_id = None
+        return _UpdateResult(len(claimed))
 
     def add(self, obj):
         self.added.append(obj)
@@ -312,6 +350,43 @@ def test_presign_sweeps_the_callers_abandoned_uploads(fake_storage, monkeypatch)
     assert fake_storage["abort_multipart"], "its multipart upload should be aborted"
 
 
+def test_sweeping_a_single_put_upload_deletes_the_object(fake_storage, monkeypatch):
+    """A single PUT that succeeded but was never completed leaves a real object.
+    The row is the only record of its key, so deleting the row without the
+    object strands it in the bucket, unreferenced and billed forever."""
+    monkeypatch.setattr(settings, "single_put_max_bytes", 10_000)
+    stale = _uploading_game(upload_id=None)  # single PUT — no multipart to abort
+    db = FakeDB(stale=[stale])
+
+    asyncio.run(games_router.create_upload(_create(100), USER, db))
+
+    assert stale in db.deleted
+    assert fake_storage["delete_file"] == ["raw/abc.mp4"]
+    assert not fake_storage["abort_multipart"], "nothing to abort for a single PUT"
+
+
+def test_multipart_is_aborted_when_the_row_cannot_be_written(fake_storage, monkeypatch):
+    """The row is the only handle on a multipart upload — delete_game and the
+    sweep both reach it through the row. If the insert fails, nothing else
+    could ever abort it."""
+    monkeypatch.setattr(settings, "single_put_max_bytes", 100)
+    monkeypatch.setattr(settings, "upload_part_size_bytes", 500)
+    monkeypatch.setattr(settings, "max_upload_bytes", 10_000)
+
+    db = FakeDB()
+
+    async def boom():
+        raise RuntimeError("connection reset")
+
+    db.commit = boom  # type: ignore[method-assign]
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.create_upload(_create(1200), USER, db))
+
+    assert exc.value.status_code == 500
+    assert fake_storage["abort_multipart"], "the orphaned multipart must be aborted"
+
+
 def test_a_failing_sweep_never_blocks_a_new_upload(fake_storage, monkeypatch):
     monkeypatch.setattr(settings, "single_put_max_bytes", 10_000)
     monkeypatch.setattr(
@@ -395,6 +470,32 @@ def test_successful_completion_queues_exactly_once(fake_storage, fake_task):
     args, kwargs = fake_task.calls[0]
     assert args == (str(game.id), f"{settings.r2_public_url}/raw/abc.mp4")
     assert kwargs == {"condense": True}
+
+
+def test_concurrent_completions_enqueue_exactly_once(fake_storage, fake_task):
+    """The `status != uploading` check is a read-then-write: a HEAD (and, for
+    multipart, an assembly call) sit between it and the commit, so two calls
+    can both pass it while the row still reads `uploading`. Only the atomic
+    claim keeps this to one job — and two GPU runs is what it costs otherwise.
+
+    Sequential calls cannot show this; these interleave at the threadpool
+    boundary that the real storage calls also yield on.
+    """
+    game = _uploading_game()
+    db = FakeDB(game)
+
+    async def both():
+        return await asyncio.gather(
+            games_router.complete_upload(game.id, UploadComplete(), USER, db),
+            games_router.complete_upload(game.id, UploadComplete(), USER, db),
+            return_exceptions=True,
+        )
+
+    results = asyncio.run(both())
+
+    assert len(fake_task.calls) == 1, "the pipeline must be enqueued exactly once"
+    conflicts = [r for r in results if isinstance(r, HTTPException)]
+    assert [c.status_code for c in conflicts] == [409], "the loser gets a clean 409"
 
 
 def test_successful_multipart_completion_assembles_then_queues(fake_storage, fake_task):

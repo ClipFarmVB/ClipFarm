@@ -4,7 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Upload, Film, AlertCircle, Loader } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { completeUpload, createUpload, getUploadConfig, type UploadConfig } from "@/lib/api";
+import {
+  completeUpload,
+  createUpload,
+  deleteGame,
+  getUploadConfig,
+  type UploadConfig,
+  type UploadTicket,
+} from "@/lib/api";
 import { uploadFileToR2 } from "@/lib/upload";
 import { addGameToCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
@@ -92,10 +99,11 @@ export function UploadZone() {
     setStatusText("Uploading…");
 
     const start = Date.now();
+    let ticket: UploadTicket | null = null;
     try {
       // 1. Ask the api for a ticket. Type and size are checked here, server
       //    side, before anything is transferred — a rejection costs nothing.
-      const ticket = await createUpload({
+      ticket = await createUpload({
         title: title || file.name,
         filename: file.name,
         content_type: file.type,
@@ -128,6 +136,18 @@ export function UploadZone() {
       addGameToCache(game);
       router.push(`/games/${game.id}`);
     } catch (e) {
+      // Discard the failed attempt server-side. Retrying mints a fresh ticket
+      // with a new game id, key and multipart upload, so without this every
+      // retry would leave behind a row and — for a large file — its already
+      // uploaded parts, billed until the 24h sweep. A dropped 1.5 GB upload on
+      // cellular is precisely the case this flow exists for, so retries are
+      // expected rather than exceptional.
+      if (ticket) {
+        // Best-effort: the row may already be gone (an oversize upload is
+        // deleted server-side), and a cleanup failure must not replace the
+        // real error with a confusing one.
+        deleteGame(ticket.game_id).catch(() => {});
+      }
       setError(e instanceof Error ? e.message : "Upload failed.");
       setProgress(null);
       setUploading(false); // re-enable so the user can retry after a failure

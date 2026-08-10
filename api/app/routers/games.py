@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import select, func
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user_id
@@ -98,13 +98,25 @@ async def _sweep_abandoned_uploads(user_id: uuid.UUID, db: AsyncSession) -> None
         )
         stale = result.scalars().all()
         for game in stale:
-            if game.upload_id and game.raw_video_url:
-                key = urlparse(game.raw_video_url).path.lstrip("/")
+            key = urlparse(game.raw_video_url or "").path.lstrip("/")
+            if key and game.upload_id:
                 try:
                     await run_in_threadpool(storage.abort_multipart, key, game.upload_id)
                 except Exception:
                     logger.warning(
                         "Abort of abandoned multipart upload failed for game %s",
+                        game.id, exc_info=True,
+                    )
+            elif key:
+                # A single-PUT upload that finished but was never completed: the
+                # object is really in the bucket, and this row is the only record
+                # of its key. Deleting the row without it would strand the object
+                # unreferenced and billed forever.
+                try:
+                    await run_in_threadpool(storage.delete_file, key)
+                except Exception:
+                    logger.warning(
+                        "Cleanup of abandoned upload object failed for game %s",
                         game.id, exc_info=True,
                     )
             await db.delete(game)
@@ -195,8 +207,23 @@ async def create_upload(body: UploadCreate, user_id: UserId, db: DB) -> UploadTi
         condense_requested=body.condense,
         upload_id=upload_id,
     )
-    db.add(game)
-    await db.commit()
+    try:
+        db.add(game)
+        await db.commit()
+    except Exception:
+        # The row is the only handle on the multipart upload — delete_game and
+        # the sweep both find it through the row. If the insert fails, nothing
+        # would ever be able to abort it, and its parts bill indefinitely.
+        logger.exception("Could not record upload for game %s", game_id)
+        await db.rollback()
+        if upload_id:
+            try:
+                await run_in_threadpool(storage.abort_multipart, key, upload_id)
+            except Exception:
+                logger.warning(
+                    "Abort of unrecorded multipart upload failed for %s", key, exc_info=True
+                )
+        raise HTTPException(status_code=500, detail="Could not start upload")
 
     return UploadTicket(
         game_id=game_id,
@@ -225,9 +252,8 @@ async def complete_upload(
     if not game or game.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Game not found")
     if game.status != GameStatus.uploading:
-        # Already completed (a duplicated completion call) or otherwise not
-        # awaiting bytes. Not an error worth failing the client over, but it
-        # must not enqueue the pipeline a second time.
+        # Fast path for the obvious repeat. This check alone is NOT what makes
+        # completion single-shot — see the conditional UPDATE below.
         raise HTTPException(status_code=409, detail="This upload is already complete")
 
     key = urlparse(game.raw_video_url or "").path.lstrip("/")
@@ -274,8 +300,22 @@ async def complete_upload(
             detail=f"File too large. Max {settings.max_upload_bytes // (1024 * 1024)} MB",
         )
 
-    game.status = GameStatus.queued
-    game.upload_id = None  # nothing left to abort
+    # Claim the upload atomically. The status check above is a read-then-write:
+    # a HEAD (and, for multipart, an assembly call) sit between it and this
+    # point, so two completion calls — a client retry on a slow response, a
+    # double-click through a stalled request — can both pass it while the row
+    # still reads `uploading`, and both enqueue. Making the transition itself
+    # the guard means exactly one of them affects a row, and only that one
+    # queues the pipeline.
+    claimed = await db.execute(
+        update(Game)
+        .where(Game.id == game_id, Game.status == GameStatus.uploading)
+        .values(status=GameStatus.queued, upload_id=None)
+    )
+    if claimed.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="This upload is already complete")
+
     raw_url = game.raw_video_url
     condense = game.condense_requested
     await db.commit()
