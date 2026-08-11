@@ -23,10 +23,17 @@ class ProfileOut(BaseModel):
 
 
 class MeOut(ProfileOut):
-    """The caller's own profile. Adds fields only the owner should see."""
+    """The caller's own profile. Adds fields only the owner should see.
+
+    Adding a field here is safe; adding one to `ProfileOut` publishes it through
+    the unauthenticated handle lookup. `email` sits here for exactly that reason
+    and `test_profile_routes.py` pins the split.
+    """
 
     email: str
     username_changed_at: datetime | None
+    # Lets the frontend keep prompting a backfilled user to pick a real handle.
+    username_is_generated: bool
 
 
 class ProfileUpdate(BaseModel):

@@ -4,6 +4,7 @@ import { ClaimHandleBanner } from "@/components/ClaimHandleBanner";
 import { Sidebar } from "@/components/Sidebar";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
+import { SOCIAL_ENABLED } from "@/lib/features";
 
 export const metadata: Metadata = {
   title: "ClipFarm — Volleyball Highlights",
@@ -35,7 +36,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Sidebar />
             <main className="ml-[220px] min-h-screen">
               <div className="mx-auto max-w-5xl px-8 py-8">
-                <ClaimHandleBanner />
+                {/* Mounted on every page, so gating it here is also what keeps
+                    /users/me from being requested at all when social is off. */}
+                {SOCIAL_ENABLED && <ClaimHandleBanner />}
                 {children}
               </div>
             </main>

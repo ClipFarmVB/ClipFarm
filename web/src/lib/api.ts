@@ -275,6 +275,8 @@ export interface Profile {
 export interface Me extends Profile {
   email: string;
   username_changed_at: string | null;
+  /** True while the handle is the one migration 010 generated, not one chosen. */
+  username_is_generated: boolean;
 }
 
 export interface HandleAvailability {

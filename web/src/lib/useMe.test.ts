@@ -14,6 +14,7 @@ const profile = (username: string | null) =>
     created_at: "2026-01-01T00:00:00Z",
     email: "a@b.com",
     username_changed_at: null,
+    username_is_generated: false,
   }) as api.Me;
 
 afterEach(() => {
@@ -80,6 +81,30 @@ describe("useMe cache", () => {
     await fetchMe();
 
     // Otherwise the next user sees the previous one's handle in the chrome.
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("an in-flight fetch does not repopulate the cache after clearMe", async () => {
+    // The race the other clearMe test can't see, because it awaits first:
+    // clearMe() drops the reference to the request but cannot cancel it, so
+    // without a generation check the signed-out user's profile lands in the
+    // cache *after* sign-out and the chrome keeps showing their handle.
+    let landResponse!: (me: api.Me) => void;
+    const spy = vi
+      .spyOn(api, "getMe")
+      .mockReturnValueOnce(
+        new Promise<api.Me>((resolve) => {
+          landResponse = resolve;
+        })
+      )
+      .mockResolvedValueOnce(profile("second_user"));
+
+    const inflight = fetchMe(); // first user's request, still open
+    clearMe(); // sign out mid-flight
+    landResponse(profile("first_user")); // their response arrives late
+    await inflight;
+
+    expect((await fetchMe())?.username).toBe("second_user");
     expect(spy).toHaveBeenCalledTimes(2);
   });
 });

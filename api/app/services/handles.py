@@ -79,18 +79,59 @@ def validate(raw: str) -> str:
 def suggest_from_email(email: str, suffix: int | None = None) -> str:
     """Generate a starting handle for a user who hasn't chosen one.
 
-    Used by the backfill: existing accounts need *some* handle so the column can
-    carry a uniqueness guarantee, and the user is free to change it afterwards.
-    Falls back to a generic stem when the local part yields nothing usable.
+    Used by the backfill in migration 010: existing accounts need *some* handle
+    so the column can carry a uniqueness guarantee, and the user is free to
+    change it afterwards. Falls back to a generic stem when the local part
+    yields nothing usable.
+
+    Every return value satisfies `validate()` — the backfill assigns these
+    directly, so a handle this produces but the app would reject is a live
+    account stuck with a name it cannot re-save.
     """
     stem = re.sub(r"[^a-z0-9_]", "", (email or "").split("@")[0].lower())
     stem = re.sub(r"_+", "_", stem).strip("_")
     if len(stem) < MIN_LENGTH:
         stem = f"player{stem}" if stem else "player"
-    stem = stem[:MAX_LENGTH]
+    # Truncation can re-expose a trailing underscore that strip() already
+    # removed once (`a_very_long_name_` cut mid-way), which validate() rejects.
+    stem = stem[:MAX_LENGTH].rstrip("_")
+    if len(stem) < MIN_LENGTH:
+        stem = "player"
 
     if suffix is None and stem not in RESERVED_HANDLES:
         return stem
 
     tail = str(suffix if suffix is not None else 1)
-    return f"{stem[: MAX_LENGTH - len(tail)]}{tail}"
+    return f"{stem[: MAX_LENGTH - len(tail)].rstrip('_')}{tail}"
+
+
+# The backfill runs against real user tables; a pathological dataset shouldn't
+# turn into an unbounded loop inside a migration holding a transaction.
+_MAX_SUGGESTION_ATTEMPTS = 10_000
+
+
+def suggest_unique(email: str, taken: set[str]) -> str:
+    """First handle derived from `email` that isn't already in `taken`.
+
+    `taken` holds normalized (lower-case) handles and is the caller's running
+    set — it must include handles assigned earlier in the same pass, not just
+    those already in the database.
+
+    Numbering per-stem is not enough on its own: `alice@a.com` and `alice@b.com`
+    yield `alice` and `alice2`, which collides with a real `alice2@c.com`
+    because both draw from one namespace. Checking each candidate against the
+    whole set is what makes the result actually unique.
+    """
+    candidate = suggest_from_email(email)
+    if candidate not in taken:
+        return candidate
+
+    for n in range(2, _MAX_SUGGESTION_ATTEMPTS):
+        candidate = suggest_from_email(email, n)
+        if candidate not in taken:
+            return candidate
+
+    raise HandleError(
+        f"Could not derive a free handle for {email!r} after "
+        f"{_MAX_SUGGESTION_ATTEMPTS} attempts"
+    )

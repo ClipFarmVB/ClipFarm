@@ -22,7 +22,10 @@ export function ClaimHandleBanner() {
   // `me` is null while signed out, still loading, or if the lookup failed —
   // all cases where staying quiet beats showing a prompt we can't substantiate.
   const me = useMe(Boolean(user) && !loading);
-  const needsHandle = me !== null && !me.username;
+  // A generated handle (migration 010 backfill) counts as "not chosen": that
+  // user has a name they never picked, and without this they'd never be told
+  // it exists — they'd only find it by opening settings.
+  const needsHandle = me !== null && (!me.username || me.username_is_generated);
 
   // Don't nag on the page that resolves it.
   if (!needsHandle || pathname?.startsWith("/settings/profile")) return null;

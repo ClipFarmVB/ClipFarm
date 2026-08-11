@@ -31,7 +31,11 @@ app.include_router(clips.router)
 app.include_router(players.router)
 app.include_router(collections.router)
 app.include_router(corrections.router)
-app.include_router(profiles.router)
+# Behind SOCIAL_ENABLED (CF-107): with the flag off the profile routes are not
+# registered at all, so /users/* 404s rather than existing-but-empty. Nothing
+# else in the app depends on them.
+if settings.social_enabled:
+    app.include_router(profiles.router)
 
 
 async def _check_db() -> bool:

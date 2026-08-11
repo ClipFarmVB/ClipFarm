@@ -18,6 +18,13 @@ let _me: Me | null = null;
 let _promise: Promise<Me | null> | null = null;
 const _subscribers = new Set<(me: Me | null) => void>();
 
+// Bumped by clearMe(). A fetch started before the bump belongs to the previous
+// session and must not publish: nulling `_promise` drops our reference to the
+// request but cannot cancel it, so its `.then` would otherwise write the
+// signed-out user's profile back into the cache and every subscriber — the
+// stale chrome that calling clearMe() on sign-out exists to prevent.
+let _generation = 0;
+
 function _publish(me: Me | null) {
   _me = me;
   for (const notify of _subscribers) notify(me);
@@ -27,19 +34,25 @@ function _publish(me: Me | null) {
 export function fetchMe(): Promise<Me | null> {
   if (_me) return Promise.resolve(_me);
   if (!_promise) {
+    const generation = _generation;
+    const isCurrent = () => generation === _generation;
+
     _promise = getMe()
       .then((me) => {
+        if (!isCurrent()) return null;
         _publish(me);
         return me;
       })
       .catch(() => {
         // Signed out (401) or a transient failure. Null is a valid answer —
         // callers render the signed-out state rather than an error.
-        _publish(null);
+        if (isCurrent()) _publish(null);
         return null;
       })
       .finally(() => {
-        _promise = null;
+        // Only clear the slot if it's still ours; a newer fetch may have
+        // replaced it after clearMe().
+        if (isCurrent()) _promise = null;
       });
   }
   return _promise;
@@ -52,6 +65,7 @@ export function setMe(me: Me | null) {
 
 /** Drop the cache — call on sign-out so the next user doesn't see stale data. */
 export function clearMe() {
+  _generation++;
   _me = null;
   _promise = null;
   _publish(null);

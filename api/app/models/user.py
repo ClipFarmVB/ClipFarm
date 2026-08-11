@@ -38,5 +38,12 @@ class User(Base):
     username_changed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # True for handles migration 010 invented from the email local part. Such a
+    # user has a handle but has never made a choice, so they still get the claim
+    # prompt and the free first claim — otherwise the backfill silently spends
+    # both on a name they never picked.
+    username_is_generated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
 
     games: Mapped[list["Game"]] = relationship(back_populates="owner")  # type: ignore[name-defined]

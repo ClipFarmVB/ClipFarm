@@ -103,7 +103,15 @@ async def update_me(body: ProfileUpdate, user_id: UserId, db: DB):
             # Claiming a first handle is free; changing an existing one is rate
             # limited. `username_changed_at` stays null on the initial claim so
             # a new user isn't locked out of fixing a typo for 30 days.
-            if user.username and user.username_changed_at:
+            #
+            # A generated handle (migration 010) counts as *not yet claimed*: the
+            # user never chose it, so replacing it is the free first claim, not a
+            # rename. Without this the backfilled cohort — everyone who predates
+            # CF-107 — silently starts one step into the cooldown for a name they
+            # were assigned.
+            is_claim = not user.username or user.username_is_generated
+
+            if not is_claim and user.username_changed_at:
                 next_allowed = user.username_changed_at + USERNAME_CHANGE_COOLDOWN
                 if datetime.now(timezone.utc) < next_allowed:
                     raise HTTPException(
@@ -116,9 +124,11 @@ async def update_me(body: ProfileUpdate, user_id: UserId, db: DB):
             if await _handle_taken(candidate, db, excluding=user_id):
                 raise HTTPException(status_code=409, detail="That username is taken")
 
-            if user.username:
+            if not is_claim:
                 user.username_changed_at = datetime.now(timezone.utc)
             user.username = candidate
+            # Chosen now, whatever it was before.
+            user.username_is_generated = False
 
     if body.display_name is not None:
         user.display_name = body.display_name.strip() or None
@@ -175,7 +185,14 @@ async def upload_avatar(user_id: UserId, db: DB, file: UploadFile = File(...)):
         logger.exception("Avatar upload failed for user %s", user_id)
         raise HTTPException(status_code=500, detail="Storage upload failed")
 
-    user.avatar_url = avatar_url
+    # Cache-bust. The key is deterministic, so a second upload yields a byte
+    # identical URL: React re-renders the same `src`, and the browser and CDN
+    # both serve the image already cached under it. The user changes their photo
+    # and the sidebar, /u/{handle} and this page all keep showing the old one
+    # until the cache expires. The version param makes the URL change with the
+    # upload without changing the object.
+    version = int(datetime.now(timezone.utc).timestamp())
+    user.avatar_url = f"{avatar_url}?v={version}"
     await db.commit()
     await db.refresh(user)
     return user
@@ -193,5 +210,13 @@ async def get_profile(handle: str, db: DB):
     Returns the identity only. A private account's *content* stays hidden — the
     profile itself is visible so someone can find the account to request a
     follow. Content gating arrives with CF-108's visibility model.
+
+    KNOWN, ACCEPTED FOR NOW: this is unauthenticated and unthrottled, so it is
+    enumerable. "Findable by handle" and "bulk-listable by a stranger" are not
+    the same property, and migration 010's backfill makes handles guessable
+    (they come from email local parts), so a wordlist walk would return a roster
+    of accounts with bios and photos — on a youth-sports product. CF-108 gates
+    *content* visibility and does not cover this. Rate limiting this route is
+    tracked separately; until then it is a deliberate risk, not an oversight.
     """
     return await _by_handle(handle, db)

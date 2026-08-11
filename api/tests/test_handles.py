@@ -76,3 +76,64 @@ def test_suggestion_never_returns_a_reserved_handle():
 def test_suggestion_respects_the_length_cap():
     long_email = ("z" * 60) + "@example.com"
     assert len(handles.suggest_from_email(long_email, suffix=12)) <= handles.MAX_LENGTH
+
+
+# ── suggest_unique: what the backfill actually calls ────────────────────────
+#
+# The SQL backfill this replaced numbered rows *within* a stem partition, which
+# is not the same as being unique — the generated names all draw from one
+# namespace. These pin the cases that produced a duplicate and aborted
+# migration 010 at CREATE UNIQUE INDEX.
+
+
+def _assign(emails):
+    """Run the backfill's loop over `emails`, as migration 010 does."""
+    taken: set[str] = set()
+    out = []
+    for email in emails:
+        handle = handles.suggest_unique(email, taken)
+        taken.add(handle)
+        out.append(handle)
+    return out
+
+
+def test_unique_suggestions_disambiguate_a_shared_stem():
+    assert _assign(["alice@a.com", "alice@b.com"]) == ["alice", "alice2"]
+
+
+def test_unique_suggestions_survive_a_stem_that_looks_like_a_suffix():
+    """The regression: `alice2@c.com` collides with the name generated for the
+    second `alice`, because per-stem numbering can't see across partitions."""
+    assigned = _assign(["alice@a.com", "alice@b.com", "alice2@c.com"])
+    assert len(set(assigned)) == 3, f"duplicate handles: {assigned}"
+
+
+def test_unique_suggestions_survive_the_generic_fallback_colliding():
+    """Same shape via the short-local-part fallback: `player`, `player2`, and a
+    real `player2@z.com`."""
+    assigned = _assign(["a@x.com", "!!!@y.com", "player2@z.com"])
+    assert len(set(assigned)) == 3, f"duplicate handles: {assigned}"
+
+
+def test_unique_suggestions_respect_handles_already_in_the_database():
+    """`taken` is seeded from existing rows, not just this pass."""
+    assert handles.suggest_unique("alice@a.com", {"alice"}) != "alice"
+
+
+def test_every_generated_handle_passes_validation():
+    """A handle the backfill assigns but validate() rejects leaves a live user
+    holding a name they cannot re-save."""
+    emails = [
+        "alice@a.com", "alice@b.com", "alice2@c.com", "admin@x.com",
+        "_matt_@x.com", "m@x.com", "!!!@y.com", "player2@z.com",
+        ("z" * 60) + "@example.com", "UPPER.Case+tag@x.com", "a__b@x.com",
+        ("q" * 29 + "_") + "@x.com",
+    ]
+    for handle in _assign(emails):
+        assert handles.validate(handle) == handle, f"invalid generated handle: {handle!r}"
+
+
+def test_generated_handles_are_never_reserved():
+    """`admin@yourgym.com` must not end up owning /u/admin."""
+    for handle in _assign([f"{name}@x.com" for name in sorted(handles.RESERVED_HANDLES)]):
+        assert handle not in handles.RESERVED_HANDLES
