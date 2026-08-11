@@ -9,8 +9,8 @@ read this?", for both single-object fetches and list queries.
 Two forms, deliberately kept in step:
 
 * ``can_view_game`` / ``can_view_clip`` — for an object already loaded.
-* ``apply_game_visibility`` / ``apply_clip_visibility`` — take a select and
-  return it filtered, so list endpoints filter **in SQL**. Post-filtering a page
+* ``visible_games_filter`` / ``apply_clip_visibility`` — so list endpoints
+  filter **in SQL**. Post-filtering a page
   in Python silently breaks pagination (ask for 50, get 11) and reads rows the
   viewer may not see. They take the whole statement rather than handing back a
   predicate because the clip rule needs a ``Game`` join, and a caller who
@@ -91,8 +91,14 @@ def can_view_clip(viewer_id: uuid.UUID | None, clip: Clip | None, game: Game | N
 
 
 def visible_games_filter(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
-    """Predicate over `Game` alone — safe to use in any query where Game is the
-    entity being selected. Prefer `apply_game_visibility` for a plain list."""
+    """Predicate over `Game` alone — safe in any query where Game is the entity
+    being selected, so it needs no join and no wrapper.
+
+    No production caller yet: `list_games` stays owner-scoped and `get_game`
+    goes through `assert_can_view_game`. CF-111's discovery listing is the first
+    consumer. Kept rather than deleted because the CF-108 acceptance matrix
+    covers games in list form, and `test_game_filter_*` pins it.
+    """
     clauses = [Game.visibility == Visibility.public]
     if viewer_id is not None:
         clauses.append(Game.owner_id == viewer_id)
@@ -130,15 +136,6 @@ def apply_clip_visibility(stmt: Select, viewer_id: uuid.UUID | None) -> Select:
     The caller supplies the rest of the query; do not join `Game` yourself.
     """
     return stmt.join(Game, Clip.game_id == Game.id).where(_clips_predicate(viewer_id))
-
-
-def apply_game_visibility(stmt: Select, viewer_id: uuid.UUID | None) -> Select:
-    """Filter a game query to what `viewer_id` may read.
-
-    No join needed — the predicate is over `Game` itself — but paired with
-    `apply_clip_visibility` so list endpoints have one habit rather than two.
-    """
-    return stmt.where(visible_games_filter(viewer_id))
 
 
 def assert_can_view_game(viewer_id: uuid.UUID | None, game: Game | None) -> Game:

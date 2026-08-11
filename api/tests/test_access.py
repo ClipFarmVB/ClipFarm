@@ -176,16 +176,6 @@ def test_clip_visibility_survives_an_existing_join():
     assert "JOIN games" in sql
 
 
-def test_game_visibility_applier_matches_the_predicate():
-    from sqlalchemy import select
-
-    from app.models.game import Game
-
-    applied = _sql(access.apply_game_visibility(select(Game.id), ANONYMOUS))
-    assert "'public'" in applied
-    assert "owner_id" not in applied
-
-
 # ── the public-clip-in-a-private-game asymmetry (deliberate) ────────────────
 #
 # An override publishes *that clip*, not the right to enumerate its game's
@@ -204,15 +194,23 @@ def test_public_clip_in_private_game_is_viewable_directly():
 def test_public_clip_in_private_game_matches_the_list_filter():
     """What `GET /collections/{id}/clips` uses — the clip's own 'public' wins."""
     sql = _clip_sql(ANONYMOUS)
-    assert "clips.visibility" in sql, "the clip's own level must be consulted"
+    # The specific clause, not just the column name: `clips.visibility` also
+    # renders as part of the IS NULL inheritance test, so the loose assertion
+    # survives deleting the override clause entirely.
+    assert "clips.visibility = 'public'" in sql
 
 
 def test_public_clip_in_private_game_still_hides_the_parent_game():
     """And so `GET /games/{id}/clips` 404s: assert_can_view_game runs first."""
+    from fastapi import HTTPException
+
     game = _Game(Visibility.private)
     assert access.can_view_game(STRANGER, game) is False
-    with pytest.raises(Exception):
+    # HTTPException/404 specifically — a bare Exception would also pass on a
+    # TypeError from a signature change, which is not what this pins.
+    with pytest.raises(HTTPException) as exc:
         access.assert_can_view_game(STRANGER, game)
+    assert exc.value.status_code == 404
 
 
 # ── optional authentication ─────────────────────────────────────────────────

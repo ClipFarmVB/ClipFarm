@@ -39,6 +39,8 @@ class Game(Base):
         server_default=Visibility.private.value,
         default=Visibility.private,
     )
+    # Opt-in dead-time removal: one condensed video with only the rally
+    # windows kept, produced alongside the highlight clips.
     condense_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     condensed_video_url: Mapped[str | None] = mapped_column(String(2048))
     original_duration: Mapped[float | None] = mapped_column(Float)
