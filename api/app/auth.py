@@ -143,9 +143,19 @@ async def get_optional_user_id(
     can't use `get_current_user_id` — it raises 401 with no credentials. This
     returns None instead and lets `services/access.py` decide.
 
-    An *invalid or expired* token still raises: a broken credential is an error
-    worth surfacing, not something to silently downgrade to anonymous. Only the
-    genuine no-credentials case yields None.
+    A token that fails verification — expired, malformed, wrong signature —
+    also yields None rather than 401.
+
+    This route is *optionally* authenticated: its own summary is "identify the
+    caller if they're signed in", and an expired token is not signed in. Raising
+    would mean a user whose tab has been open past expiry opens a public link
+    and is refused content that loads fine in a private window, because their
+    browser helpfully attached a stale bearer. Anonymous is the honest reading
+    of a credential that no longer identifies anyone, and access.py then applies
+    exactly the rules a signed-out visitor gets.
+
+    Note this only ever *reduces* what the caller can see. Routes that require
+    a user keep using `get_current_user_id`, which still raises.
     """
     if credentials is None:
         # Preserve the dev fallback so the local stack behaves as it does for
@@ -153,4 +163,11 @@ async def get_optional_user_id(
         if settings.debug and not settings.supabase_url:
             return uuid.UUID("00000000-0000-0000-0000-000000000001")
         return None
-    return await get_current_user_id(credentials=credentials, db=db)
+    try:
+        return await get_current_user_id(credentials=credentials, db=db)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            return None
+        # 5xx from the JWKS fetch, say — that is a real failure and hiding it
+        # behind "anonymous" would turn an outage into silent 404s.
+        raise

@@ -96,13 +96,11 @@ async def list_collection_clips(collection_id: uuid.UUID, user_id: UserId, db: D
     # so a clip that later goes private drops out instead of lingering here
     # (CF-108).
     result = await db.execute(
-        select(Clip)
-        .join(CollectionClip, CollectionClip.clip_id == Clip.id)
-        .join(Game, Clip.game_id == Game.id)
-        .where(
-            CollectionClip.collection_id == collection_id,
-            access.visible_clips_filter(user_id),
+        access.apply_clip_visibility(
+            select(Clip).join(CollectionClip, CollectionClip.clip_id == Clip.id),
+            user_id,
         )
+        .where(CollectionClip.collection_id == collection_id)
         .order_by(CollectionClip.added_at.desc())
     )
     clips = result.scalars().all()
