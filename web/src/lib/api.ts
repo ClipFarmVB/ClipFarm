@@ -325,3 +325,51 @@ export async function uploadAvatar(file: File): Promise<Me> {
   }
   return res.json() as Promise<Me>;
 }
+
+// ─── Posts (CF-109) ───────────────────────────────────────────────────────────
+
+export type Visibility = "private" | "followers" | "public";
+
+export interface PostPlayback {
+  clip_url: string | null;
+  thumbnail_url: string | null;
+  proxy_url: string | null;
+  start_time: number;
+  end_time: number;
+}
+
+export interface Post {
+  id: string;
+  clip_id: string;
+  caption: string | null;
+  visibility: Visibility;
+  like_count: number;
+  comment_count: number;
+  created_at: string;
+  author: {
+    id: string;
+    username: string | null;
+    display_name: string | null;
+    avatar_url: string | null;
+  };
+  playback: PostPlayback;
+}
+
+export function createPost(
+  clipId: string,
+  caption: string,
+  visibility: Visibility,
+): Promise<Post> {
+  return request<Post>("/posts", {
+    method: "POST",
+    body: JSON.stringify({ clip_id: clipId, caption, visibility }),
+  });
+}
+
+export function getUserPosts(username: string): Promise<Post[]> {
+  return request<Post[]>(`/posts?username=${encodeURIComponent(username)}`);
+}
+
+export function deletePost(postId: string): Promise<void> {
+  return request<void>(`/posts/${postId}`, { method: "DELETE" });
+}

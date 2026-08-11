@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, ChevronLeft, ChevronRight, Link2 } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Link2, Send } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
+import { PostComposerModal } from "@/components/PostComposerModal";
+import { SOCIAL_ENABLED } from "@/lib/features";
 import { type Clip, getClipShareUrl } from "@/lib/api";
 
 interface ClipModalProps {
@@ -40,6 +42,8 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, onPrev, onNext]);
+
+  const [composing, setComposing] = useState(false);
 
   // Click-outside: close only when clicking the overlay itself, not the modal card
   function handleOverlayClick(e: React.MouseEvent<HTMLDivElement>) {
@@ -130,6 +134,16 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           <span className="text-[11px] text-subtle">
             {formatDuration(clip.end_time - clip.start_time)}
           </span>
+          {SOCIAL_ENABLED && (
+          <button
+            onClick={() => setComposing(true)}
+            className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-muted hover:bg-surface-high hover:text-foreground transition-colors focus-ring"
+            title="Post this clip"
+          >
+            <Send size={12} />
+            Post
+          </button>
+          )}
           <div className="ml-auto flex items-center gap-2 text-[10px] text-subtle">
             <span>← →  navigate</span>
             <span className="w-px h-3 bg-border" />
@@ -137,6 +151,9 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           </div>
         </div>
       </div>
+      {composing && (
+        <PostComposerModal clip={clip} onClose={() => setComposing(false)} />
+      )}
     </div>,
     document.body
   );

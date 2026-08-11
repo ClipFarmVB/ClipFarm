@@ -9,7 +9,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.observability import init_sentry
-from app.routers import games, clips, players, collections, corrections, profiles
+from app.routers import games, clips, players, collections, corrections, profiles, posts
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,13 @@ app.include_router(corrections.router)
 # Behind SOCIAL_ENABLED (CF-107): with the flag off the profile routes are not
 # registered at all, so /users/* 404s rather than existing-but-empty. Nothing
 # else in the app depends on them.
+#
+# Posts (CF-109) share the gate: a post is only reachable through a profile or
+# the feed, so leaving /posts/* routed while the rest of the social surface is
+# hidden would expose the one endpoint that serves other people's footage.
 if settings.social_enabled:
     app.include_router(profiles.router)
+    app.include_router(posts.router)
 
 
 async def _check_db() -> bool:
