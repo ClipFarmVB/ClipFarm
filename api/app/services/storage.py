@@ -160,3 +160,18 @@ def thumbnail_key(game_id: uuid.UUID, clip_id: uuid.UUID) -> str:
 def condensed_key(game_id: uuid.UUID) -> str:
     # Deterministic per game so task retries overwrite instead of orphaning.
     return f"condensed/{game_id}.mp4"
+
+
+def avatar_key(user_id: uuid.UUID) -> str:
+    # Deterministic per user (CF-107): re-uploading an avatar overwrites the
+    # previous object instead of accumulating one per change. Keyed by user id
+    # rather than username so a handle rename doesn't strand the image.
+    #
+    # No extension: ALLOWED_AVATAR_TYPES accepts JPEG, PNG and WebP, so a fixed
+    # `.jpg` would mislabel two of the three. The object's ContentType carries
+    # the real type, and keeping the key extensionless means switching format
+    # overwrites the old avatar rather than orphaning it under another suffix.
+    #
+    # The URL built from this key is stable, so callers must add a cache-busting
+    # query param when they record it — see routers/profiles.py.
+    return f"avatars/{user_id}"

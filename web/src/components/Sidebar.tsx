@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import { Clapperboard, Upload, LayoutGrid, LogOut, Sun, Moon, FolderOpen } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
+import { SOCIAL_ENABLED } from "@/lib/features";
+import { clearMe, needsHandle, useMe } from "@/lib/useMe";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
@@ -17,6 +19,13 @@ export function Sidebar() {
   const pathname = usePathname();
   const { user, loading, signOut } = useAuth();
   const { theme, toggle } = useTheme();
+  // `enabled` false means no /users/me request at all — which is what keeps the
+  // flag-off build from calling a route the API doesn't register.
+  const me = useMe(SOCIAL_ENABLED && Boolean(user) && !loading);
+  // A generated handle is not published — /users/{handle} 404s until it's
+  // claimed — so linking to it would send the user to "No one is using @alice".
+  // needsHandle() is the same predicate the banner and the API use.
+  const hasPublicProfile = Boolean(me?.username) && !needsHandle(me);
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
@@ -108,20 +117,53 @@ export function Sidebar() {
           {theme === "dark" ? "Light mode" : "Dark mode"}
         </button>
 
-        {/* User row */}
+        {/* User row. With social on it's the entry point to your profile
+            (CF-107) — the public page once a handle exists, the claim form
+            until then. With the flag off it stays the pre-CF-107 row: avatar
+            initial, email, sign out, and no request for /users/me. */}
         {user && (
           <div className="flex items-center gap-2.5 rounded-md px-2 py-2">
-            {/* Avatar */}
-            <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-surface-high border border-border text-[10px] font-bold uppercase text-muted">
-              {user.email?.[0] ?? "?"}
-            </div>
-            {/* Email */}
-            <span className="flex-1 min-w-0 truncate text-[11px] text-muted">
-              {user.email}
-            </span>
+            {SOCIAL_ENABLED ? (
+              <Link
+                href={hasPublicProfile ? `/u/${me!.username}` : "/settings/profile"}
+                className="flex min-w-0 flex-1 items-center gap-2.5 rounded focus-ring hover:opacity-80 transition-opacity"
+                title={hasPublicProfile ? "View your profile" : "Set up your profile"}
+              >
+                {me?.avatar_url ? (
+                  /* eslint-disable-next-line @next/next/no-img-element -- the R2
+                     host isn't in next.config images.remotePatterns */
+                  <img
+                    src={me.avatar_url}
+                    alt=""
+                    className="h-[26px] w-[26px] shrink-0 rounded-full border border-border object-cover"
+                  />
+                ) : (
+                  <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-surface-high border border-border text-[10px] font-bold uppercase text-muted">
+                    {(hasPublicProfile ? me!.username! : user.email)?.[0] ?? "?"}
+                  </div>
+                )}
+                <span className="flex-1 min-w-0 truncate text-[11px] text-muted">
+                  {hasPublicProfile ? `@${me!.username}` : user.email}
+                </span>
+              </Link>
+            ) : (
+              <>
+                <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-surface-high border border-border text-[10px] font-bold uppercase text-muted">
+                  {user.email?.[0] ?? "?"}
+                </div>
+                <span className="flex-1 min-w-0 truncate text-[11px] text-muted">
+                  {user.email}
+                </span>
+              </>
+            )}
             {/* Sign out */}
             <button
-              onClick={signOut}
+              onClick={() => {
+                // Drop the cached profile first so the next user never sees the
+                // previous one's handle/avatar in the chrome.
+                clearMe();
+                void signOut();
+              }}
               className="shrink-0 rounded p-1 text-subtle hover:text-foreground hover:bg-surface-high transition-colors focus-ring"
               title="Sign out"
               aria-label="Sign out"
