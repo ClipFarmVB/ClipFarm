@@ -6,15 +6,18 @@ moment one of them is allowed to return someone else's content, the others are
 the leak surface. This module is the single place that answers "may this viewer
 read this?", for both single-object fetches and list queries.
 
-Two forms, deliberately kept in step:
+Three entry points, deliberately kept in step:
 
 * ``can_view_game`` / ``can_view_clip`` — for an object already loaded.
-* ``visible_games_filter`` / ``apply_clip_visibility`` — so list endpoints
-  filter **in SQL**. Post-filtering a page
-  in Python silently breaks pagination (ask for 50, get 11) and reads rows the
-  viewer may not see. They take the whole statement rather than handing back a
-  predicate because the clip rule needs a ``Game`` join, and a caller who
-  forgets it gets a cartesian product that fails *open* with no warning.
+* ``visible_games_filter`` — a predicate for a game list. The rule is over
+  ``Game`` alone, so it needs no join and there is nothing to get wrong.
+* ``apply_clip_visibility`` — takes the whole statement and returns it joined
+  and filtered. A predicate would not be safe here: the clip rule reads
+  ``games.visibility``, and a caller who forgets the join gets a cartesian
+  product that fails *open* with no warning from SQLAlchemy.
+
+Both list forms filter **in SQL**. Post-filtering a page in Python silently
+breaks pagination (ask for 50, get 11) and reads rows the viewer may not see.
 
 Writes are NOT covered here. Creating, editing and deleting stay owner-only, and
 the routers keep their own ownership checks for those paths.
