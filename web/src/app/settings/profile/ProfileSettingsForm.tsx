@@ -46,8 +46,8 @@ function ProfileSettingsContent() {
   }, []);
 
   // Debounced availability check. Skipped when the handle is unchanged, so
-  // editing only the bio doesn't render "that username is taken" against the
-  // user's own handle.
+  // editing only the bio doesn't render "isn't available" against the user's
+  // own handle.
   useEffect(() => {
     const trimmed = username.trim().toLowerCase();
     if (!trimmed || trimmed === (me?.username ?? "")) {
