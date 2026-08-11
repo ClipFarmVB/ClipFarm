@@ -258,3 +258,70 @@ export function addClipToCollection(collectionId: string, clipId: string): Promi
 export function removeClipFromCollection(collectionId: string, clipId: string): Promise<void> {
   return request<void>(`/collections/${collectionId}/clips/${clipId}`, { method: "DELETE" });
 }
+
+// ─── Profiles (CF-107) ────────────────────────────────────────────────────────
+
+export interface Profile {
+  id: string;
+  username: string | null;
+  display_name: string | null;
+  bio: string | null;
+  avatar_url: string | null;
+  is_private: boolean;
+  created_at: string;
+}
+
+/** The caller's own profile — adds fields not exposed on a public lookup. */
+export interface Me extends Profile {
+  email: string;
+  username_changed_at: string | null;
+  /** True while the handle is the one migration 010 generated, not one chosen. */
+  username_is_generated: boolean;
+}
+
+export interface HandleAvailability {
+  username: string;
+  available: boolean;
+  reason: string | null;
+}
+
+export function getMe(): Promise<Me> {
+  return request<Me>("/users/me");
+}
+
+export function getProfile(handle: string): Promise<Profile> {
+  return request<Profile>(`/users/${encodeURIComponent(handle)}`);
+}
+
+export function checkHandle(username: string): Promise<HandleAvailability> {
+  return request<HandleAvailability>(
+    `/users/handle-available?username=${encodeURIComponent(username)}`,
+  );
+}
+
+export interface ProfileUpdate {
+  username?: string;
+  display_name?: string;
+  bio?: string;
+  is_private?: boolean;
+}
+
+export function updateMe(body: ProfileUpdate): Promise<Me> {
+  return request<Me>("/users/me", { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export async function uploadAvatar(file: File): Promise<Me> {
+  const authHeaders = await getAuthHeaders();
+  const form = new FormData();
+  form.append("file", file);
+  // No Content-Type header: the browser must set the multipart boundary itself.
+  const res = await fetch(`${API_URL}/users/me/avatar`, {
+    method: "POST",
+    headers: authHeaders,
+    body: form,
+  });
+  if (!res.ok) {
+    throw new Error(`API error ${res.status}: ${await res.text()}`);
+  }
+  return res.json() as Promise<Me>;
+}
