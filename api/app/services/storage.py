@@ -172,6 +172,10 @@ def avatar_key(user_id: uuid.UUID) -> str:
     # the real type, and keeping the key extensionless means switching format
     # overwrites the old avatar rather than orphaning it under another suffix.
     #
-    # The URL built from this key is stable, so callers must add a cache-busting
-    # query param when they record it — see routers/profiles.py.
+    # Store the plain `{r2_public_url}/{key}` form. Do NOT append a cache-buster
+    # to the recorded value: presign_from_stored_url slices the prefix off to
+    # recover the Key, so a query string ends up inside it and R2 404s on every
+    # signature. Freshness comes from presigning on read instead — each response
+    # carries a new signature, so a re-uploaded avatar is fetched again without
+    # the stored value ever changing (see routers/profiles.py._serialize).
     return f"avatars/{user_id}"

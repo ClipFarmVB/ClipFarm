@@ -55,6 +55,13 @@ def _serialize(user: User, schema: type[_Schema]) -> _Schema:
     avatar is picked up without a cache-busting query param — which is just as
     well, since a `?v=` baked into the stored value breaks the key extraction in
     `presign_from_stored_url`.
+
+    The cost of that freshness is that the URL never repeats, so an unchanged
+    avatar is re-fetched on every page load and sidebar mount. Negligible at one
+    avatar per page; not negligible once CF-109 renders a feed of them. The fix
+    then is a stable URL plus a version token taken from the object itself (an
+    ETag, or an `avatar_updated_at` column) — that buys freshness *and* caching.
+    Worth doing before the feed multiplies the request count, not now.
     """
     out = schema.model_validate(user)
     if not user.avatar_url or not storage.r2_configured():
@@ -120,7 +127,12 @@ async def check_handle(username: str, user_id: UserId, db: DB):
 
     if await _handle_taken(candidate, db, excluding=user_id):
         return HandleAvailability(
-            username=candidate, available=False, reason="That username is taken"
+            username=candidate,
+            available=False,
+            # Not "taken": a generated handle holds the name but 404s on the
+            # public route, so "taken" next to "No one is using @johnsmith"
+            # reads as a bug. "Not available" is true in both cases.
+            reason="That username isn't available",
         )
     return HandleAvailability(username=candidate, available=True)
 
@@ -169,7 +181,9 @@ async def update_me(body: ProfileUpdate, user_id: UserId, db: DB):
                         ),
                     )
             if await _handle_taken(candidate, db, excluding=user_id):
-                raise HTTPException(status_code=409, detail="That username is taken")
+                raise HTTPException(
+                    status_code=409, detail="That username isn't available"
+                )
 
             if not is_claim:
                 user.username_changed_at = datetime.now(timezone.utc)
@@ -190,7 +204,7 @@ async def update_me(body: ProfileUpdate, user_id: UserId, db: DB):
         # The unique index is the real arbiter — two simultaneous claims of the
         # same handle both pass the check above and one loses here.
         await db.rollback()
-        raise HTTPException(status_code=409, detail="That username is taken")
+        raise HTTPException(status_code=409, detail="That username isn't available")
 
     await db.refresh(user)
     return _serialize(user, MeOut)
