@@ -13,7 +13,7 @@ import {
   type HandleAvailability,
   type Me,
 } from "@/lib/api";
-import { setMe as publishMe } from "@/lib/useMe";
+import { needsHandle as handleUnclaimed, setMe as publishMe } from "@/lib/useMe";
 import { cn } from "@/lib/utils";
 
 function ProfileSettingsContent() {
@@ -55,13 +55,26 @@ function ProfileSettingsContent() {
       return;
     }
     setChecking(true);
+    // `cancelled` as well as clearTimeout: clearing the timer stops a request
+    // that hasn't started, but one already in flight still resolves. Typing
+    // `alice` then `alicex` can land `alice`'s answer last and render it
+    // against the newer text — disabling Save for a free handle, or allowing a
+    // taken one and eating a 409. Same guard as ProfileView's fetch.
+    let cancelled = false;
     const timer = setTimeout(() => {
       checkHandle(trimmed)
-        .then(setAvailability)
-        .catch(() => setAvailability(null))
-        .finally(() => setChecking(false));
+        .then((result) => {
+          if (!cancelled) setAvailability(result);
+        })
+        .catch(() => {
+          if (!cancelled) setAvailability(null);
+        })
+        .finally(() => {
+          if (!cancelled) setChecking(false);
+        });
     }, 400);
     return () => {
+      cancelled = true;
       clearTimeout(timer);
       setChecking(false);
     };
@@ -69,6 +82,10 @@ function ProfileSettingsContent() {
 
   const handleChanged = username.trim().toLowerCase() !== (me?.username ?? "");
   const blockedByHandle = handleChanged && availability?.available === false;
+  // Same predicate as the claim banner and the server's `is_claim`, so a
+  // backfilled user sees the claim wording rather than a plain "Profile" page
+  // that gives no hint why the banner sent them here.
+  const needsHandle = handleUnclaimed(me);
 
   async function save() {
     setSaving(true);
@@ -76,9 +93,14 @@ function ProfileSettingsContent() {
     setSaved(false);
     try {
       const updated = await updateMe({
-        // Only send the handle when it actually changed — the cooldown check
-        // on the server treats any change as a rename.
-        ...(handleChanged ? { username: username.trim().toLowerCase() } : {}),
+        // Send the handle when it changed, and also when it's still the
+        // generated one: submitting it unchanged is how a backfilled user says
+        // "I'll keep this", which is the only thing that clears
+        // username_is_generated and stops the banner. Otherwise omitted, so
+        // editing a bio isn't treated as a rename by the cooldown check.
+        ...(handleChanged || needsHandle
+          ? { username: username.trim().toLowerCase() }
+          : {}),
         display_name: displayName,
         bio,
         is_private: isPrivate,
@@ -112,8 +134,6 @@ function ProfileSettingsContent() {
   if (loading) {
     return <div className="text-sm text-muted">Loading profile…</div>;
   }
-
-  const needsHandle = !me?.username;
 
   return (
     <div className="max-w-xl">

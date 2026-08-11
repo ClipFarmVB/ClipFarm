@@ -58,8 +58,30 @@ export function fetchMe(): Promise<Me | null> {
   return _promise;
 }
 
-/** Push a freshly-updated profile to every consumer. */
+/**
+ * Has this user chosen a handle?
+ *
+ * One definition, because there are three places that ask — the claim banner,
+ * the settings form, and the server's own `is_claim` in routers/profiles.py.
+ * A handle migration 010 generated is *not* chosen: the user never picked it,
+ * so they still get the prompt and the free first claim.
+ */
+export function needsHandle(me: Me | null): boolean {
+  return me !== null && (!me.username || me.username_is_generated);
+}
+
+/**
+ * Push a freshly-updated profile to every consumer.
+ *
+ * Bumps the generation for the same reason clearMe() does: a fetch already in
+ * flight would otherwise resolve afterwards and overwrite this fresher value
+ * with the pre-update body. Claiming a handle on a slow connection is exactly
+ * that case — the form's own getMe() returns first, the user saves, and the
+ * shared fetchMe() then lands with the pre-claim profile and reverts the
+ * sidebar and banner.
+ */
 export function setMe(me: Me | null) {
+  _generation++;
   _publish(me);
 }
 

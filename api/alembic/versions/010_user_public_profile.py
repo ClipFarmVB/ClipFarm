@@ -19,17 +19,82 @@ Revision ID: 010
 Revises: 009
 Create Date: 2026-08-05
 """
+import re
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
-from app.services import handles
-
 revision: str = "010"
 down_revision: Union[str, None] = "009"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
+
+
+# ── Frozen copy of the handle rules, as of this revision ─────────────────────
+#
+# Yes, this duplicates app/services/handles.py. That is the point.
+#
+# Importing the service would couple the whole migration chain to a module path:
+# alembic's ScriptDirectory imports *every* file in versions/ just to read
+# revision/down_revision and build the graph, so renaming or moving handles.py —
+# or adding an import to it that fails in the migration context — would make
+# `alembic upgrade head` raise at graph construction, on databases already past
+# this revision where 010 would never run. The api container runs that command
+# at startup, so a refactor touching no migration would crash-loop production.
+#
+# It would also make the data non-reproducible: replaying migrations on a fresh
+# database after any rule change would generate different handles than the ones
+# production actually has.
+#
+# A migration is a historical record, so a frozen copy cannot drift the way the
+# earlier SQL reimplementation did — that version diverged because it was a
+# second *live* implementation. If the rules change, this file keeps producing
+# what it produced in August 2026, which is correct.
+#
+# ml/tests covers this copy directly (test_migration_010_backfill.py) rather
+# than assuming it matches the service.
+
+_MIN_LENGTH = 3
+_MAX_LENGTH = 30
+_RESERVED = {
+    "auth", "collections", "debug", "games", "login", "signup", "upload",
+    "feed", "explore", "search", "settings", "notifications", "u",
+    "corrections", "players", "clips", "health", "healthz", "monitoring",
+    "api", "www", "static", "assets", "public", "favicon",
+    "admin", "administrator", "root", "system", "support", "help", "billing",
+    "security", "moderator", "mod", "staff", "team", "official", "clipfarm",
+    "about", "terms", "privacy", "legal", "contact",
+}
+
+
+def _suggest(email: str, suffix: int | None = None) -> str:
+    stem = re.sub(r"[^a-z0-9_]", "", (email or "").split("@")[0].lower())
+    stem = re.sub(r"_+", "_", stem).strip("_")
+    if len(stem) < _MIN_LENGTH:
+        stem = f"player{stem}" if stem else "player"
+    stem = stem[:_MAX_LENGTH].rstrip("_")
+    if len(stem) < _MIN_LENGTH:
+        stem = "player"
+
+    if suffix is None and stem not in _RESERVED:
+        return stem
+
+    tail = str(suffix if suffix is not None else 1)
+    return f"{stem[: _MAX_LENGTH - len(tail)].rstrip('_')}{tail}"
+
+
+def _suggest_unique(email: str, taken: set) -> str:
+    """First candidate not already in `taken` — which must include the handles
+    assigned earlier in this same pass, not just those already in the table."""
+    candidate = _suggest(email)
+    if candidate not in taken:
+        return candidate
+    for n in range(2, 10_000):
+        candidate = _suggest(email, n)
+        if candidate not in taken:
+            return candidate
+    raise RuntimeError(f"Could not derive a free handle for {email!r}")
 
 
 def upgrade() -> None:
@@ -60,7 +125,7 @@ def upgrade() -> None:
         ),
     )
 
-    # Backfill in Python through handles.suggest_unique() rather than in SQL.
+    # Backfill in Python via _suggest_unique() rather than in SQL.
     #
     # The SQL version numbered within a stem partition, which is not the same as
     # being unique: `alice@a.com` and `alice@b.com` produce `alice` and `alice2`,
@@ -69,10 +134,9 @@ def upgrade() -> None:
     # since the api runs `alembic upgrade head` at startup, that is a deploy-time
     # crash loop against production data.
     #
-    # Going through the service also means the generated handles obey the same
-    # rules the app enforces — reserved names (`admin@…` must not become
-    # `/u/admin`), underscore normalization, and the short-stem fallback. A
-    # second implementation in SQL drifted from all three.
+    # The rewrite also restores rules the SQL had dropped — reserved names
+    # (`admin@…` must not become `/u/admin`), underscore normalization, and the
+    # short-stem fallback.
     conn = op.get_bind()
     taken = {
         row[0]
@@ -87,7 +151,7 @@ def upgrade() -> None:
     ).fetchall()
 
     for user_id, email in rows:
-        handle = handles.suggest_unique(email or "", taken)
+        handle = _suggest_unique(email or "", taken)
         taken.add(handle)
         conn.execute(
             sa.text(

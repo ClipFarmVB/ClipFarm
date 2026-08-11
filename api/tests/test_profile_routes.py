@@ -27,6 +27,7 @@ pytest.importorskip("fastapi")
 from fastapi import HTTPException  # noqa: E402
 
 from app.routers import profiles  # noqa: E402
+from app.services import storage  # noqa: E402
 from app.schemas.profile import MeOut, ProfileOut, ProfileUpdate  # noqa: E402
 
 
@@ -208,3 +209,113 @@ def test_avatar_accepts_every_declared_type():
     """The allowlist and the key must agree on what can be stored; a type here
     that upload_avatar rejects would be a dead entry."""
     assert profiles.ALLOWED_AVATAR_TYPES == {"image/jpeg", "image/png", "image/webp"}
+
+
+# ── keeping a generated handle ──────────────────────────────────────────────
+
+def test_submitting_the_generated_handle_unchanged_clears_the_flag():
+    """A backfilled user who follows the banner and decides to keep the name
+    they were given. Without this there is no request that clears the flag
+    while keeping the handle, so the banner never goes away."""
+    user = _FakeUser(username="alice", username_is_generated=True)
+    session = _FakeSession(user)
+    body = ProfileUpdate(username="alice")
+
+    asyncio.run(profiles.update_me(body, user.id, session))
+
+    assert user.username == "alice"
+    assert user.username_is_generated is False
+    assert user.username_changed_at is None, "keeping a name is not a rename"
+
+
+def test_resubmitting_a_chosen_handle_unchanged_is_a_no_op():
+    user = _FakeUser(username="alice", username_is_generated=False)
+    session = _FakeSession(user)
+
+    asyncio.run(profiles.update_me(ProfileUpdate(username="alice"), user.id, session))
+
+    assert user.username_changed_at is None
+    assert user.username_is_generated is False
+
+
+# ── generated handles are not published ─────────────────────────────────────
+
+def test_public_lookup_404s_a_generated_handle():
+    """The backfill derives handles from email local parts, so publishing them
+    would make this route an existence oracle keyed to real addresses."""
+    user = _FakeUser(username="johnsmith", username_is_generated=True)
+
+    class _ByHandleSession(_FakeSession):
+        async def execute(self, _statement):
+            outer = self._user
+
+            class _Result:
+                def scalar_one_or_none(self):
+                    return outer
+
+                def first(self):
+                    return None
+
+            return _Result()
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(profiles.get_profile("johnsmith", _ByHandleSession(user)))
+    assert exc.value.status_code == 404
+
+
+# ── avatar URLs are presigned ───────────────────────────────────────────────
+
+def test_serialize_presigns_the_avatar(monkeypatch):
+    """The bucket is not public: every other media URL in the app is presigned
+    before it reaches a browser, and a bare stored URL would render broken."""
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+    monkeypatch.setattr(
+        storage, "presign_from_stored_url", lambda url, **kw: f"https://signed/{url}"
+    )
+    user = _FakeUser(username="matt", avatar_url="https://pub.r2.dev/avatars/abc")
+
+    out = profiles._serialize(user, MeOut)
+
+    assert out.avatar_url == "https://signed/https://pub.r2.dev/avatars/abc"
+
+
+def test_serialize_survives_a_signing_failure(monkeypatch):
+    """A signing error must not take the whole profile down."""
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+
+    def _boom(*a, **kw):
+        raise RuntimeError("no credentials")
+
+    monkeypatch.setattr(storage, "presign_from_stored_url", _boom)
+    user = _FakeUser(username="matt", avatar_url="https://pub.r2.dev/avatars/abc")
+
+    out = profiles._serialize(user, MeOut)
+
+    assert out.username == "matt"
+
+
+def test_serialize_leaves_a_missing_avatar_alone(monkeypatch):
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+    out = profiles._serialize(_FakeUser(avatar_url=None), MeOut)
+    assert out.avatar_url is None
+
+
+def test_stored_avatar_url_has_no_query_string(monkeypatch):
+    """A `?v=` baked into the column ends up inside the Key that
+    presign_from_stored_url slices out, and R2 404s. The stored value has to
+    stay in the same `{r2_public_url}/{key}` shape as every other media URL."""
+    stored = "https://pub.r2.dev/avatars/abc"
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+    monkeypatch.setattr(storage, "upload_fileobj", lambda *a, **kw: stored)
+    monkeypatch.setattr(storage, "LimitedReader", lambda f, cap: f)
+    monkeypatch.setattr(storage, "presign_from_stored_url", lambda url, **kw: "signed")
+
+    class _Upload:
+        content_type = "image/png"
+        file = object()
+
+    user = _FakeUser()
+    asyncio.run(profiles.upload_avatar(user.id, _FakeSession(user), _Upload()))
+
+    assert user.avatar_url == stored
+    assert "?" not in user.avatar_url

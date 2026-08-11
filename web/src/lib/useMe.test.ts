@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { clearMe, fetchMe, setMe } from "./useMe";
+import { clearMe, fetchMe, needsHandle, setMe } from "./useMe";
 import * as api from "./api";
 
 const profile = (username: string | null) =>
@@ -106,5 +106,46 @@ describe("useMe cache", () => {
 
     expect((await fetchMe())?.username).toBe("second_user");
     expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("setMe is not overwritten by a fetch that was already in flight", async () => {
+    // Claiming a handle on a slow connection: the sidebar's shared fetchMe() is
+    // still open when the settings form saves and pushes the fresh profile. The
+    // older response then resolves with the pre-claim body and, without a
+    // generation bump in setMe, reverts the chrome and brings the banner back.
+    let landResponse!: (me: api.Me) => void;
+    vi.spyOn(api, "getMe").mockReturnValueOnce(
+      new Promise<api.Me>((resolve) => {
+        landResponse = resolve;
+      })
+    );
+
+    const inflight = fetchMe(); // started before the claim
+    setMe(profile("claimed_name")); // the user saves
+    landResponse(profile(null)); // pre-claim response lands late
+    await inflight;
+
+    expect((await fetchMe())?.username).toBe("claimed_name");
+  });
+});
+
+describe("needsHandle", () => {
+  it("is true when no handle has been claimed", () => {
+    expect(needsHandle(profile(null))).toBe(true);
+  });
+
+  it("is true for a handle the backfill generated", () => {
+    expect(
+      needsHandle({ ...profile("alice"), username_is_generated: true })
+    ).toBe(true);
+  });
+
+  it("is false once a handle has been chosen", () => {
+    expect(needsHandle(profile("alice"))).toBe(false);
+  });
+
+  it("is false while the profile is unknown", () => {
+    // Signed out or still loading — staying quiet beats prompting on a guess.
+    expect(needsHandle(null)).toBe(false);
   });
 });

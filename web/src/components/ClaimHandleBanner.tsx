@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { AtSign } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/contexts/AuthContext";
-import { useMe } from "@/lib/useMe";
+import { needsHandle, useMe } from "@/lib/useMe";
 
 /**
  * Prompts a signed-in user who has no handle yet to claim one (CF-107).
@@ -22,13 +22,9 @@ export function ClaimHandleBanner() {
   // `me` is null while signed out, still loading, or if the lookup failed —
   // all cases where staying quiet beats showing a prompt we can't substantiate.
   const me = useMe(Boolean(user) && !loading);
-  // A generated handle (migration 010 backfill) counts as "not chosen": that
-  // user has a name they never picked, and without this they'd never be told
-  // it exists — they'd only find it by opening settings.
-  const needsHandle = me !== null && (!me.username || me.username_is_generated);
 
   // Don't nag on the page that resolves it.
-  if (!needsHandle || pathname?.startsWith("/settings/profile")) return null;
+  if (!needsHandle(me) || pathname?.startsWith("/settings/profile")) return null;
 
   return (
     <div className="mb-6 flex items-center gap-3 rounded-md border border-brand/30 bg-brand/10 px-4 py-3">

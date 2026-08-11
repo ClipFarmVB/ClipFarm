@@ -1,7 +1,7 @@
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, TypeVar
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -22,13 +22,52 @@ router = APIRouter(prefix="/users", tags=["profiles"])
 DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
 
-# A handle may be changed once per this window. Renaming is legitimate, but
-# rapid churn is how someone frees a handle and impersonates its former holder.
+# A handle may be changed once per this window.
+#
+# What this buys: friction against churn — mass handle-cycling, and squatting a
+# name, dropping it, and taking it back.
+#
+# What it does NOT buy, despite the obvious reading: protection for a released
+# handle. It rate-limits the *renamer*, so when @coach_dan becomes @dan_coach the
+# old name is free immediately and anyone can PATCH it onto their own account
+# with their own cooldown untouched — the former holder is the only party
+# delayed. Defending that needs a tombstone holding a released handle against its
+# previous owner for a window, which is not implemented.
 USERNAME_CHANGE_COOLDOWN = timedelta(days=30)
 
 # Avatars are small images; the 2 GB video cap is meaningless here.
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
+
+_Schema = TypeVar("_Schema", bound=ProfileOut)
+
+
+def _serialize(user: User, schema: type[_Schema]) -> _Schema:
+    """Render a user, presigning the avatar.
+
+    The R2 bucket is not public — every other media URL in the app is presigned
+    before it reaches a browser (clips, thumbnails, condensed video). Returning
+    the stored `r2_public_url` form here would hand the client a URL it cannot
+    load, and the API would still report success.
+
+    Presigned URLs also carry a fresh signature each time, so a re-uploaded
+    avatar is picked up without a cache-busting query param — which is just as
+    well, since a `?v=` baked into the stored value breaks the key extraction in
+    `presign_from_stored_url`.
+    """
+    out = schema.model_validate(user)
+    if not user.avatar_url or not storage.r2_configured():
+        return out
+    try:
+        return out.model_copy(
+            update={"avatar_url": storage.presign_from_stored_url(user.avatar_url)}
+        )
+    except Exception:
+        # A signing failure shouldn't take the whole profile down — the rest of
+        # the response is still useful, and the avatar degrades to broken.
+        logger.warning("Could not presign avatar for user %s", user.id, exc_info=True)
+        return out
 
 
 async def _by_handle(handle: str, db: AsyncSession) -> User:
@@ -62,7 +101,7 @@ async def get_me(user_id: UserId, db: DB):
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return user
+    return _serialize(user, MeOut)
 
 
 @router.get("/handle-available", response_model=HandleAvailability)
@@ -99,7 +138,15 @@ async def update_me(body: ProfileUpdate, user_id: UserId, db: DB):
         except handles.HandleError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
-        if candidate != (user.username or ""):
+        if candidate == (user.username or "") and user.username_is_generated:
+            # Submitting the generated handle unchanged is still a choice: the
+            # user was sent here by the claim banner and decided to keep the name
+            # they were given. Without this branch there is no request that can
+            # clear the flag while keeping the handle, so the banner follows them
+            # around every page forever.
+            user.username_is_generated = False
+
+        elif candidate != (user.username or ""):
             # Claiming a first handle is free; changing an existing one is rate
             # limited. `username_changed_at` stays null on the initial claim so
             # a new user isn't locked out of fixing a typo for 30 days.
@@ -146,7 +193,7 @@ async def update_me(body: ProfileUpdate, user_id: UserId, db: DB):
         raise HTTPException(status_code=409, detail="That username is taken")
 
     await db.refresh(user)
-    return user
+    return _serialize(user, MeOut)
 
 
 @router.post("/me/avatar", response_model=MeOut)
@@ -185,17 +232,15 @@ async def upload_avatar(user_id: UserId, db: DB, file: UploadFile = File(...)):
         logger.exception("Avatar upload failed for user %s", user_id)
         raise HTTPException(status_code=500, detail="Storage upload failed")
 
-    # Cache-bust. The key is deterministic, so a second upload yields a byte
-    # identical URL: React re-renders the same `src`, and the browser and CDN
-    # both serve the image already cached under it. The user changes their photo
-    # and the sidebar, /u/{handle} and this page all keep showing the old one
-    # until the cache expires. The version param makes the URL change with the
-    # upload without changing the object.
-    version = int(datetime.now(timezone.utc).timestamp())
-    user.avatar_url = f"{avatar_url}?v={version}"
+    # Stored in the same `{r2_public_url}/{key}` form as every other media URL,
+    # so `presign_from_stored_url` can slice the key back off it. No `?v=`
+    # cache-buster: it would end up inside the extracted Key and 404 at R2, and
+    # it isn't needed — `_serialize` presigns on read and every signature is
+    # different, so a re-uploaded avatar is fetched fresh anyway.
+    user.avatar_url = avatar_url
     await db.commit()
     await db.refresh(user)
-    return user
+    return _serialize(user, MeOut)
 
 
 @router.get("/{handle}", response_model=ProfileOut)
@@ -211,12 +256,21 @@ async def get_profile(handle: str, db: DB):
     profile itself is visible so someone can find the account to request a
     follow. Content gating arrives with CF-108's visibility model.
 
-    KNOWN, ACCEPTED FOR NOW: this is unauthenticated and unthrottled, so it is
-    enumerable. "Findable by handle" and "bulk-listable by a stranger" are not
-    the same property, and migration 010's backfill makes handles guessable
-    (they come from email local parts), so a wordlist walk would return a roster
-    of accounts with bios and photos — on a youth-sports product. CF-108 gates
-    *content* visibility and does not cover this. Rate limiting this route is
-    tracked separately; until then it is a deliberate risk, not an oversight.
+    A **generated** handle 404s here until its owner claims one. The backfill
+    derives handles from email local parts, so publishing them would turn this
+    route into an existence oracle keyed to real addresses — `john.smith@…`
+    becomes `/u/johnsmith` — for accounts that never chose to be findable, on a
+    youth-sports product. The backfill exists to give the column a uniqueness
+    guarantee, and it keeps that either way; being publicly resolvable is a
+    separate thing the user should opt into by picking a name.
+
+    KNOWN, ACCEPTED FOR NOW: for claimed handles this is unauthenticated and
+    unthrottled, so it is enumerable — "findable by handle" and "bulk-listable
+    by a stranger" are different properties. CF-108 gates *content* visibility
+    and does not cover it. Tracked in CF-186 (#189); until then it is a
+    deliberate risk, not an oversight.
     """
-    return await _by_handle(handle, db)
+    user = await _by_handle(handle, db)
+    if user.username_is_generated:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return _serialize(user, ProfileOut)
