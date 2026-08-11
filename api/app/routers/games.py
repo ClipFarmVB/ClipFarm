@@ -9,7 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user_id
+from app.auth import get_current_user_id, get_optional_user_id
 from app.config import settings
 from app.database import get_db
 from app.models.game import Game, GameStatus
@@ -23,7 +23,7 @@ from app.schemas.game import (
     UploadPart,
     UploadTicket,
 )
-from app.services import storage
+from app.services import access, storage
 from app.workers.tasks import process_game_task
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,9 @@ router = APIRouter(prefix="/games", tags=["games"])
 
 DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
+# Read paths use this: None when signed out, so public content stays
+# reachable without an account (CF-108).
+ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
 
 
 @router.get("", response_model=list[GameOut])
@@ -332,10 +335,10 @@ async def complete_upload(
 
 
 @router.get("/{game_id}", response_model=GameOut)
-async def get_game(game_id: uuid.UUID, user_id: UserId, db: DB):
-    game = await db.get(Game, game_id)
-    if not game or game.owner_id != user_id:
-        raise HTTPException(status_code=404, detail="Game not found")
+async def get_game(game_id: uuid.UUID, db: DB, viewer_id: ViewerId = None):
+    # Read path: visibility-scoped, not owner-only (CF-108). viewer_id is None
+    # for a signed-out visitor, which access.py resolves to "public only".
+    game = access.assert_can_view_game(viewer_id, await db.get(Game, game_id))
     clip_count_q = await db.execute(
         select(func.count(Clip.id)).where(Clip.game_id == game_id)
     )

@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     # the owner's next presign — no cron, no new infrastructure.
     abandoned_upload_hours: int = 24
 
+    # Social surface (CF-107+). Off by default: public identity ships behind a
+    # flag so the epic can land incrementally without exposing profiles,
+    # handles or avatars in production before the whole of it is ready. The web
+    # half reads NEXT_PUBLIC_SOCIAL_ENABLED — both must be on for the feature to
+    # work, and either being off is a coherent state.
+    social_enabled: bool = False
+
     # ML pipeline
     clip_verify_enabled: bool = False  # Use CLIP frames in highlight scoring (slow on CPU, enable for GPU)
     # Tuned on real footage: 0.50 turns a 22-min VOD into ~5 min of clips

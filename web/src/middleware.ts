@@ -2,7 +2,10 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 // Routes that require an authenticated session
-const PROTECTED_PREFIXES = ["/games", "/upload", "/collections"];
+// /settings is protected; /u/{handle} deliberately is not — a profile has to be
+// reachable by someone who isn't signed in (or isn't following) for the account
+// to be findable at all. What's *visible* there is gated separately (CF-108).
+const PROTECTED_PREFIXES = ["/games", "/upload", "/collections", "/settings"];
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
