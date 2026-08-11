@@ -207,12 +207,20 @@ function ProfileSettingsContent() {
             {!checking && handleChanged && availability?.available && (
               <span className="text-brand">@{availability.username} is available</span>
             )}
-            {!handleChanged && me?.username && (
+            {!handleChanged && me?.username && !needsHandle && (
               <span className="text-muted">
                 Your profile is at{" "}
                 <Link href={`/u/${me.username}`} className="underline">
                   /u/{me.username}
                 </Link>
+              </span>
+            )}
+            {!handleChanged && needsHandle && me?.username && (
+              // Generated, so /u/{handle} 404s by design. Say what it is rather
+              // than linking somewhere broken.
+              <span className="text-muted">
+                We picked <span className="text-foreground">@{me.username}</span> for
+                you — keep it or choose your own, then save to publish it.
               </span>
             )}
           </p>

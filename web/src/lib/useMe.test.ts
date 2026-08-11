@@ -148,4 +148,18 @@ describe("needsHandle", () => {
     // Signed out or still loading — staying quiet beats prompting on a guess.
     expect(needsHandle(null)).toBe(false);
   });
+
+  it("gates the profile link the same way the API gates the route", () => {
+    // The sidebar and the settings hint both link to /u/{handle}, which 404s
+    // for a generated handle. `Boolean(username) && !needsHandle(me)` is the
+    // condition both use — a truthiness check on username alone sends a
+    // backfilled user to "No one is using @alice".
+    const linkable = (me: api.Me | null) =>
+      Boolean(me?.username) && !needsHandle(me);
+
+    expect(linkable(profile("alice"))).toBe(true);
+    expect(linkable({ ...profile("alice"), username_is_generated: true })).toBe(false);
+    expect(linkable(profile(null))).toBe(false);
+    expect(linkable(null)).toBe(false);
+  });
 });
