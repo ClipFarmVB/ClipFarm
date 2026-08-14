@@ -31,8 +31,6 @@ class Game(Base):
     # machine-readable stage slug (e.g. "tracking_ball") for the frontend bar.
     progress: Mapped[float] = mapped_column(Float, default=0.0, server_default="0", nullable=False)
     progress_stage: Mapped[str | None] = mapped_column(String(64))
-    # Opt-in dead-time removal: one condensed video with only the rally
-    # windows kept, produced alongside the highlight clips.
     # Who may read this game and its clips (CF-108). Private by default —
     # nothing becomes visible to a non-owner without a deliberate change.
     visibility: Mapped[Visibility] = mapped_column(
@@ -41,6 +39,8 @@ class Game(Base):
         server_default=Visibility.private.value,
         default=Visibility.private,
     )
+    # Opt-in dead-time removal: one condensed video with only the rally
+    # windows kept, produced alongside the highlight clips.
     condense_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     condensed_video_url: Mapped[str | None] = mapped_column(String(2048))
     original_duration: Mapped[float | None] = mapped_column(Float)

@@ -103,10 +103,8 @@ async def list_clips(
     # Clips are filtered IN SQL (CF-108). Post-filtering the page in Python
     # would silently break pagination — ask for 50, get however many survived —
     # and would have loaded rows the viewer isn't entitled to.
-    q = (
-        select(Clip)
-        .join(Game, Clip.game_id == Game.id)
-        .where(Clip.game_id == game_id, access.visible_clips_filter(viewer_id))
+    q = access.apply_clip_visibility(select(Clip), viewer_id).where(
+        Clip.game_id == game_id
     )
 
     if action_type:

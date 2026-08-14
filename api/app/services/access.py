@@ -6,19 +6,42 @@ moment one of them is allowed to return someone else's content, the others are
 the leak surface. This module is the single place that answers "may this viewer
 read this?", for both single-object fetches and list queries.
 
-Two forms, deliberately kept in step:
+Three entry points, deliberately kept in step:
 
 * ``can_view_game`` / ``can_view_clip`` — for an object already loaded.
-* ``visible_games_filter`` / ``visible_clips_filter`` — SQLAlchemy predicates so
-  list endpoints filter **in SQL**. Post-filtering a page in Python silently
-  breaks pagination (ask for 50, get 11) and reads rows the viewer may not see.
+* ``visible_games_filter`` — a predicate for a game list. The rule is over
+  ``Game`` alone, so it needs no join and there is nothing to get wrong.
+* ``apply_clip_visibility`` — takes the whole statement and returns it joined
+  and filtered. A predicate would not be safe here: the clip rule reads
+  ``games.visibility``, and a caller who forgets the join gets a cartesian
+  product that fails *open* with no warning from SQLAlchemy.
+
+Both list forms filter **in SQL**. Post-filtering a page in Python silently
+breaks pagination (ask for 50, get 11) and reads rows the viewer may not see.
 
 Writes are NOT covered here. Creating, editing and deleting stay owner-only, and
 the routers keep their own ownership checks for those paths.
+
+**Unauthenticated surface.** Allowing anonymous reads means ``GET /games/{id}``,
+``GET /games/{id}/clips`` and ``GET /clips/{id}/share`` now reach the database
+without a credential, joining ``GET /users/{handle}`` from CF-107 — four
+unthrottled endpoints where there were none. Nothing can be public yet, so all
+of that traffic 404s today, making this a load question rather than a disclosure
+one. Rate limiting is tracked in CF-186 (#189) and needs to land before anything
+is actually publishable; the 404-not-403 choice below means none of them is an
+existence oracle in the meantime.
+
+**One deliberate asymmetry.** A public clip inside a private game is reachable
+by direct link (``GET /clips/{id}/share``) and through a collection, but
+``GET /games/{id}/clips`` 404s the whole endpoint because the game itself isn't
+viewable. That is intended: an override publishes *that clip*, not the right to
+enumerate its game's contents. `test_public_clip_in_private_game_*` pins all
+three paths so the split stays a decision rather than an accident.
 """
 import uuid
 
-from sqlalchemy import ColumnElement, and_, or_
+from fastapi import HTTPException
+from sqlalchemy import ColumnElement, Select, and_, or_
 
 from app.models.clip import Clip
 from app.models.game import Game
@@ -71,7 +94,14 @@ def can_view_clip(viewer_id: uuid.UUID | None, clip: Clip | None, game: Game | N
 
 
 def visible_games_filter(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
-    """Predicate for `select(Game).where(...)`."""
+    """Predicate over `Game` alone — safe in any query where Game is the entity
+    being selected, so it needs no join and no wrapper.
+
+    No production caller yet: `list_games` stays owner-scoped and `get_game`
+    goes through `assert_can_view_game`. CF-111's discovery listing is the first
+    consumer. Kept rather than deleted because the CF-108 acceptance matrix
+    covers games in list form, and `test_game_filter_*` pins it.
+    """
     clauses = [Game.visibility == Visibility.public]
     if viewer_id is not None:
         clauses.append(Game.owner_id == viewer_id)
@@ -81,17 +111,34 @@ def visible_games_filter(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
     return or_(*clauses)
 
 
-def visible_clips_filter(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
-    """Predicate for a `select(Clip).join(Game)` list query.
-
-    Requires the Game to be joined — a clip's own visibility can be NULL, and
-    resolving that needs the game's value, exactly like `_effective` above.
-    """
+def _clips_predicate(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
+    """The clip visibility rule. Only valid where `Game` is already joined —
+    which is why the only public way to get it is `apply_clip_visibility`."""
     inherited_public = and_(Clip.visibility.is_(None), Game.visibility == Visibility.public)
     clauses = [Clip.visibility == Visibility.public, inherited_public]
     if viewer_id is not None:
         clauses.append(Game.owner_id == viewer_id)
     return or_(*clauses)
+
+
+def apply_clip_visibility(stmt: Select, viewer_id: uuid.UUID | None) -> Select:
+    """Join `Game` and filter a clip query to what `viewer_id` may read.
+
+    The join is done here rather than left to the caller because forgetting it
+    fails *open*, silently. A bare `select(Clip).where(<predicate>)` compiles to
+
+        FROM clips, games WHERE clips.visibility = 'public' OR ...
+
+    — a cartesian product that returns every NULL-visibility clip in the table
+    as long as one public game row exists anywhere, and SQLAlchemy emits no
+    warning. For a predicate guarding someone's footage, "the caller has to
+    remember" is not a strong enough guarantee, and the feed and discovery
+    queries in CF-109/CF-111 are exactly where a fresh `select(Clip)` gets
+    written.
+
+    The caller supplies the rest of the query; do not join `Game` yourself.
+    """
+    return stmt.join(Game, Clip.game_id == Game.id).where(_clips_predicate(viewer_id))
 
 
 def assert_can_view_game(viewer_id: uuid.UUID | None, game: Game | None) -> Game:
@@ -101,8 +148,6 @@ def assert_can_view_game(viewer_id: uuid.UUID | None, game: Game | None) -> Game
     leaks which game ids are real to anyone probing. This mirrors what the
     routers already did for owner-only content.
     """
-    from fastapi import HTTPException
-
     if not can_view_game(viewer_id, game):
         raise HTTPException(status_code=404, detail="Game not found")
     assert game is not None  # narrowed by can_view_game

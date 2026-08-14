@@ -52,8 +52,10 @@ depends_on: Union[str, Sequence[str], None] = None
 # second *live* implementation. If the rules change, this file keeps producing
 # what it produced in August 2026, which is correct.
 #
-# ml/tests covers this copy directly (test_migration_010_backfill.py) rather
-# than assuming it matches the service.
+# api/tests/test_migration_010_backfill.py covers this copy directly rather than
+# assuming it matches the service. That suite runs in CI (ci.yml, working-
+# directory: api) but NOT in .hooks/pre-commit — see CLAUDE.md — so a local
+# commit that breaks these rules passes the hook and fails on the PR.
 
 _MIN_LENGTH = 3
 _MAX_LENGTH = 30
