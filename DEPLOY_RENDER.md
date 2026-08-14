@@ -7,7 +7,7 @@ managed **Redis**. Supabase (Postgres + Auth), Cloudflare R2 (storage) and Modal
 
 This file covers the steps a person must do — the Blueprint handles everything
 else. Tracked as **CF-68**; related: CF-18 (Supabase Pro), CF-89 (monitoring),
-CF-90 (secret management).
+CF-90 (secret management), CF-17 (custom SMTP).
 
 > **Two deploy docs exist — this one is the production path.**
 > [`DEPLOY.md`](./DEPLOY.md) (CF-41) stands the **backend** up on a self-managed
@@ -119,6 +119,78 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
   route *and* deciding where that link should land — reset in particular must
   not drop the user on `/games` still needing a new password.
 
+### 5. Custom SMTP for auth emails (CF-17)
+
+**Supabase's built-in sender is not a production mailer.** It is rate-limited to
+a couple of messages per hour per project (Supabase has lowered this number
+before — read the current value off Auth → Rate Limits rather than trusting this
+line), it sends from a shared Supabase domain nobody can authenticate as us, and
+it is documented as being for development only. On the built-in sender a modest
+signup burst means most new users simply never receive a confirmation link, and
+the app has no way to tell them that: Supabase returns success for the signup and
+the send fails behind it, so the user sits on "Check your inbox" forever.
+
+Do this **after** step 4 — the sending domain and the Site URL both depend on the
+real domain existing.
+
+**Provider: Resend.** 3k emails/month free, SMTP endpoint, per-message logs.
+Nothing below is Resend-specific except the hostname and the username: any
+provider that exposes SMTP works the same way, and swapping means changing the
+five fields in the Supabase form.
+
+1. **Resend → Domains → Add Domain.** Use a *subdomain*, e.g.
+   `mail.clipfarm.app`, not the apex. Auth mail then can't damage the apex
+   domain's reputation, and it keeps any future marketing sender independent.
+2. **Add the DNS records it shows** (DKIM `TXT`, SPF `TXT`, and the MX record for
+   the return path) in Cloudflare, on the subdomain. Set them to **DNS only** —
+   proxying an MX record breaks it. Verification usually lands in minutes.
+3. **Add a DMARC record** on the apex if there isn't one:
+   `_dmarc.clipfarm.app  TXT  "v=DMARC1; p=none; rua=mailto:you@clipfarm.app"`.
+   Start at `p=none` and only tighten to `quarantine` once the reports are clean —
+   going straight to a strict policy is a good way to have your own confirmation
+   mail rejected.
+4. **Resend → API Keys → Create**, permission **Sending access**. Copy it once;
+   it isn't shown again.
+5. **Supabase → Project Settings → Authentication → SMTP Settings → Enable
+   Custom SMTP:**
+
+   | Field | Value |
+   |---|---|
+   | Host | `smtp.resend.com` |
+   | Port | `465` (implicit TLS). `587` works if 465 is blocked; `25` is blocked everywhere and will just time out. |
+   | Username | `resend` — literally that string, not an email address |
+   | Password | the API key from step 4 |
+   | Sender email | `noreply@mail.clipfarm.app` — must be on the **verified** domain, or every send is rejected |
+   | Sender name | `ClipFarm` |
+
+6. **Supabase → Authentication → Rate Limits → "Emails sent per hour".** Custom
+   SMTP does not raise this by itself — the ceiling stays where it was until you
+   raise it. Set it to something that covers a launch-day burst (e.g. 100/hr) and
+   keep it *below* the provider's own limit, so the throttle you hit is the one
+   with a readable error.
+
+**Verify:** sign up with a real address on the live domain and confirm three
+things — the mail arrives, **Resend → Logs** shows the send (this is where a
+rejected sender or bad key surfaces; Supabase's own UI won't tell you), and it
+lands in the inbox rather than spam. Gmail and Outlook are the two worth checking;
+they weigh SPF/DKIM alignment differently.
+
+**Notes:**
+- **No repo or Render secret is involved.** The API key lives only in Supabase's
+  dashboard, which is what CF-90 wants — don't mirror it into `render.yaml` or an
+  env group.
+- **Rotating the key is a two-step:** create the new key in Resend, paste it into
+  Supabase, *then* revoke the old one. Revoking first silently breaks signup.
+- **Only *Confirm signup* is wired today.** That is the one template step 4
+  rewrote and the only type `/auth/confirm` accepts, so it is the only auth mail
+  that goes out — there is no password-reset flow in the app yet. Any template
+  enabled later needs the same `token_hash` rewrite and its type added to the
+  route, per the note above.
+- **Deliverability degrades if this domain is only used for auth mail in
+  bursts.** A domain that sends nothing for weeks and then 200 messages in an hour
+  looks like a compromised sender. Not worth engineering around now, but it is the
+  likely explanation if mail suddenly starts landing in spam after a quiet period.
+
 ---
 
 ## Verify the deploy
@@ -126,8 +198,8 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
    check watches), expect `{"status":"ok"}`. Once CF-89 (#107) merges, also point
    an **external uptime monitor** at `/health` — the deep check that returns 503
    when Postgres/Redis is down, so it can alert.
-2. Load the web domain, sign up (confirm the verification email arrives — needs
-   CF-17 custom SMTP for volume; Supabase's built-in sender is rate-limited).
+2. Load the web domain, sign up (confirm the verification email arrives — if it
+   doesn't, custom SMTP is the first thing to check, see step 5 above).
    **Open that link in a different browser than you signed up in** — that is the
    case the token_hash template exists for, and the one that silently regresses
    if the template is ever reset to the default.
