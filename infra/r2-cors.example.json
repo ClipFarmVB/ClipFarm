@@ -1,0 +1,12 @@
+[
+  {
+    "AllowedOrigins": [
+      "https://clipfarm.app",
+      "http://localhost:3000"
+    ],
+    "AllowedMethods": ["PUT", "GET", "HEAD"],
+    "AllowedHeaders": ["content-type"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]

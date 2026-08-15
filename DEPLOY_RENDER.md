@@ -62,6 +62,12 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 | `SUPABASE_SERVICE_ROLE_KEY` | same page — **server-only**, never expose |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | Cloudflare → R2 → Manage API Tokens |
 | `R2_PUBLIC_URL` | your bucket's public URL (`https://<bucket>.r2.dev` or R2 custom domain) |
+
+> The R2 bucket also needs a **CORS policy and a lifecycle rule** — see
+> `infra/README.md`. These are not env vars and not code; uploads go browser →
+> R2 directly, so without the CORS policy they fail in the browser regardless of
+> how the services are configured. Set `AllowedOrigins` to the same value as
+> `CORS_ORIGINS` below.
 | `SENTRY_DSN` | Sentry → **clipfarm-api** project → Settings → Client Keys (DSN). Shared by api + worker (worker events are tagged `service:worker`). Blank = monitoring off. |
 
 **`clipfarm-api`:**
