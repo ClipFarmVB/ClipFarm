@@ -62,6 +62,36 @@ class UploadConfig(BaseModel):
     part_size_bytes: int
     url_ttl_seconds: int
 
+    # Per-user processing quota (CF-91). Served alongside the static limits so
+    # the client can show the remaining allowance before a file is chosen, and
+    # so "why was this rejected" is answerable without a failed upload.
+    max_duration_seconds: float
+    window_hours: float
+    max_games_per_window: int
+    games_used: int
+    games_remaining: int
+    max_minutes_per_window: float
+    minutes_used: float
+    minutes_remaining: float
+
+    @classmethod
+    def from_status(cls, status, **static) -> "UploadConfig":
+        """Build from a `quota.QuotaStatus` plus the transfer-shape settings."""
+        limits = status.limits
+        return cls(
+            max_upload_bytes=limits.max_upload_bytes,
+            allowed_content_types=list(limits.allowed_content_types),
+            max_duration_seconds=limits.max_duration_seconds,
+            window_hours=limits.window_hours,
+            max_games_per_window=limits.max_games_per_window,
+            games_used=status.games_used,
+            games_remaining=status.games_remaining,
+            max_minutes_per_window=limits.max_minutes_per_window,
+            minutes_used=round(status.minutes_used, 1),
+            minutes_remaining=round(status.minutes_remaining, 1),
+            **static,
+        )
+
 
 class UploadCreate(BaseModel):
     """What the client declares up front, before any bytes move."""
@@ -72,6 +102,12 @@ class UploadCreate(BaseModel):
     # Declared, not proven — the size is re-checked against the object itself
     # at completion, since a presigned PUT cannot enforce Content-Length.
     size_bytes: int = Field(gt=0)
+    # Also declared, and also not proven: the api never decodes the video. It
+    # gates the obvious over-length upload here and charges the quota at
+    # completion; the worker's probe is what actually settles both (CF-91).
+    # ge=0 because the value is charged against the minute quota — a negative
+    # one would credit the sender.
+    duration_seconds: float | None = Field(default=None, ge=0)
     condense: bool = False
 
     @field_validator("title")

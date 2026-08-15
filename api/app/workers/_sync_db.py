@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.game import Game, GameStatus
 from app.models.clip import Clip, ActionType
+from app.models.upload_event import UploadEvent
 
 # Sync engine (Celery workers don't run in an asyncio loop)
 _sync_url = settings.database_url.replace("+asyncpg", "")
@@ -63,6 +64,40 @@ def sync_set_game_progress(game_id: uuid.UUID, progress: float, stage: str | Non
             return
         game.progress = progress
         game.progress_stage = stage
+        s.commit()
+
+
+def sync_set_original_duration(game_id: uuid.UUID, original_duration: float):
+    """Record the probed source duration.
+
+    Set for every run, not just condensed ones. This column holds only measured
+    values — the client's claim at upload time is kept out of it and lives in
+    `upload_events.charged_seconds` instead, so `original_duration` continues to
+    mean what its consumers assume.
+    """
+    with Session(_engine) as s:
+        game = s.get(Game, game_id)
+        if not game:
+            return
+        game.original_duration = original_duration
+        s.commit()
+
+
+def sync_settle_upload_charge(game_id: uuid.UUID, actual_seconds: float):
+    """Correct this game's quota charge to the probed duration (CF-91).
+
+    At accept time the api charges what the client declared, or the full
+    per-video maximum when it declared nothing. This is the correction that
+    makes the conservative default fair to honest clients — and that stops an
+    under-declared duration from sticking as the charge.
+    """
+    with Session(_engine) as s:
+        event = (
+            s.query(UploadEvent).filter(UploadEvent.game_id == game_id).one_or_none()
+        )
+        if not event:
+            return
+        event.charged_seconds = max(0.0, actual_seconds)
         s.commit()
 
 

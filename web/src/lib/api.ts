@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "@/lib/apiError";
 import { createClient } from "@/lib/supabase";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -27,7 +28,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`API error ${res.status}: ${text}`);
+    // Prefer the server's own explanation. The upload limits (CF-91) write
+    // real, actionable sentences into `detail` — "you have 60 min of your
+    // 360 min per 24 hours left" — which the raw form buried inside JSON.
+    throw new Error(apiErrorMessage(text, `API error ${res.status}: ${text}`));
   }
   return res.json() as Promise<T>;
 }
@@ -91,6 +95,18 @@ export interface UploadConfig {
   single_put_max_bytes: number;
   part_size_bytes: number;
   url_ttl_seconds: number;
+
+  // Per-user processing quota (CF-91). `*_remaining` is what's left in the
+  // rolling window right now, so the allowance can be shown before a file is
+  // even chosen rather than surfacing as a rejection at the end.
+  max_duration_seconds: number;
+  window_hours: number;
+  max_games_per_window: number;
+  games_used: number;
+  games_remaining: number;
+  max_minutes_per_window: number;
+  minutes_used: number;
+  minutes_remaining: number;
 }
 
 export interface UploadPart {
@@ -125,6 +141,9 @@ export function createUpload(input: {
   content_type: string;
   size_bytes: number;
   condense: boolean;
+  // Read from the file in the browser. Lets the api reject an over-long video
+  // and charge the quota before the transfer; the worker's probe settles it.
+  duration_seconds?: number | null;
 }): Promise<UploadTicket> {
   return request<UploadTicket>("/games/uploads", {
     method: "POST",

@@ -23,7 +23,7 @@ from app.schemas.game import (
     UploadPart,
     UploadTicket,
 )
-from app.services import access, storage
+from app.services import access, quota, storage
 from app.workers.tasks import process_game_task
 
 logger = logging.getLogger(__name__)
@@ -137,15 +137,15 @@ async def _sweep_abandoned_uploads(user_id: uuid.UUID, db: AsyncSession) -> None
 
 
 @router.get("/upload-config", response_model=UploadConfig)
-async def upload_config(user_id: UserId) -> UploadConfig:
+async def upload_config(user_id: UserId, db: DB) -> UploadConfig:
     """
-    The limits the client must respect. Served rather than hardcoded in the web
-    app so the advertised cap can never drift from the enforced one, and so
-    CF-91 has one place to add remaining quota.
+    The limits the client must respect, plus how much of the quota is left.
+
+    Served rather than hardcoded in the web app so the advertised cap can never
+    drift from the enforced one.
     """
-    return UploadConfig(
-        max_upload_bytes=settings.max_upload_bytes,
-        allowed_content_types=sorted(settings.allowed_content_types_set),
+    return UploadConfig.from_status(
+        await quota.get_quota_status(db, user_id),
         single_put_max_bytes=settings.single_put_max_bytes,
         part_size_bytes=settings.upload_part_size_bytes,
         url_ttl_seconds=settings.upload_url_ttl_seconds,
@@ -157,22 +157,29 @@ async def create_upload(body: UploadCreate, user_id: UserId, db: DB) -> UploadTi
     """
     Validate an intended upload and hand back presigned URLs for it.
 
-    Both checks here happen before a single byte moves. The content type is
+    Every check here happens before a single byte moves. The content type is
     signed into the URL, so R2 itself rejects a mismatched upload; the declared
     size is checked against the cap and re-verified against the real object in
     complete_upload, because a presigned PUT cannot enforce Content-Length.
+
+    The quota check (CF-91) is a **preview**, not the claim: it exists so a user
+    who is already over their limit finds out now rather than after transferring
+    2 GB. The binding reservation is taken in complete_upload, at the moment the
+    upload turns into queued work — reserving here would charge for tickets that
+    are abandoned, and `_sweep_abandoned_uploads` deleting those rows would then
+    have to refund, which is exactly the loop the ledger exists to prevent.
     """
     content_type = body.content_type.split(";")[0].strip().lower()
-    if content_type not in settings.allowed_content_types_set:
-        raise HTTPException(
-            status_code=415,
-            detail=f"Unsupported file type. Allowed: {sorted(settings.allowed_content_types_set)}",
-        )
-    if body.size_bytes > settings.max_upload_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File too large. Max {settings.max_upload_bytes // (1024 * 1024)} MB",
-        )
+    status_ = await quota.get_quota_status(db, user_id)
+    rejection = quota.check_upload_allowed(
+        status_,
+        content_type=content_type,
+        size_bytes=body.size_bytes,
+        duration_seconds=body.duration_seconds,
+    )
+    if rejection:
+        code, message = rejection
+        raise HTTPException(status_code=code, detail=message)
 
     await _sweep_abandoned_uploads(user_id, db)
 
@@ -214,6 +221,7 @@ async def create_upload(body: UploadCreate, user_id: UserId, db: DB) -> UploadTi
         raw_video_url=f"{settings.r2_public_url}/{key}",
         condense_requested=body.condense,
         upload_id=upload_id,
+        declared_duration=body.duration_seconds,
     )
     try:
         db.add(game)
@@ -308,6 +316,46 @@ async def complete_upload(
             detail=f"File too large. Max {settings.max_upload_bytes // (1024 * 1024)} MB",
         )
 
+    # Charge the quota (CF-91). This is the binding claim, taken here rather
+    # than at presign because this is the point the upload becomes queued work:
+    # an abandoned ticket never reaches it, so it is never charged, and the
+    # sweep never has to refund. The check and the write are one transaction
+    # serialised per user, so parallel completions cannot all read the same
+    # "under the cap".
+    #
+    # The size charged is the real object's, not the declared one. The duration
+    # is still a claim — nothing here decodes the video — but it is the claim
+    # made *before* the transfer, and the worker settles it against the probe.
+    # Read what we need off the row before reserving: reserve_upload commits,
+    # which expires `game`, and a lazy reload on attribute access is not safe
+    # on the async session.
+    declared_duration = game.declared_duration
+    raw_url = game.raw_video_url
+    condense = game.condense_requested
+    reservation, rejection = await quota.reserve_upload(
+        db,
+        user_id,
+        # Type was validated at presign and signed into the URL, so R2 already
+        # rejected any mismatch — nothing left to check here.
+        content_type=None,
+        size_bytes=head["size"],
+        duration_seconds=declared_duration,
+    )
+    if rejection or reservation is None:
+        code, message = rejection or (429, "Upload quota reached.")
+        # Nothing will process this, so don't leave the object or the row
+        # behind — same disposal as the oversize path above.
+        logger.info("Upload for game %s rejected by quota — discarding", game_id)
+        try:
+            await run_in_threadpool(storage.delete_file, key)
+        except Exception:
+            logger.warning("Cleanup of over-quota upload failed for %s", key, exc_info=True)
+        stale = await db.get(Game, game_id)
+        if stale is not None:
+            await db.delete(stale)
+            await db.commit()
+        raise HTTPException(status_code=code, detail=message)
+
     # Claim the upload atomically. The status check above is a read-then-write:
     # a HEAD (and, for multipart, an assembly call) sit between it and this
     # point, so two completion calls — a client retry on a slow response, a
@@ -322,10 +370,17 @@ async def complete_upload(
     )
     if claimed.rowcount != 1:
         await db.rollback()
+        # A concurrent completion won the claim and is charging its own
+        # reservation; ours bought nothing, so give the slot back.
+        await quota.release_reservation(db, reservation.id)
         raise HTTPException(status_code=409, detail="This upload is already complete")
 
-    raw_url = game.raw_video_url
-    condense = game.condense_requested
+    # Link the charge to the game so the worker can settle it against the
+    # probed duration, and so deleting the game detaches the row
+    # (ON DELETE SET NULL) instead of refunding the slot. The row is already
+    # persistent from the reservation, so the assignment is the whole update.
+    reservation.game_id = game_id
+
     await db.commit()
     await db.refresh(game)
 

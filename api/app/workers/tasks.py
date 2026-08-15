@@ -213,6 +213,8 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         sync_save_clips,
         sync_delete_game_clips,
         sync_game_exists,
+        sync_set_original_duration,
+        sync_settle_upload_charge,
     )
     from app.workers.progress import (
         GameProgress, compute_stage_spans, CONDENSE_SECS_PER_KEPT_SEC,
@@ -287,6 +289,41 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             _frame_h     = int(_cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
             _cap.release()
             video_duration = _frames / _fps
+
+            # CF-91: the api can only enforce the duration cap against what the
+            # client declared — this is the first point the real length is
+            # known, and it is still ahead of every expensive stage. Record it,
+            # settle the quota charge against the truth, and stop here if the
+            # video is over the cap.
+            try:
+                sync_set_original_duration(gid, video_duration)
+                sync_settle_upload_charge(gid, video_duration)
+            except Exception:
+                # Accounting must not break processing — the gate below reads
+                # the probed value directly, so it holds either way.
+                logger.warning("Failed to record duration for game %s", game_id, exc_info=True)
+            if video_duration > _cfg.max_upload_duration_seconds:
+                logger.warning(
+                    "Game %s is %.0f s, over the %.0f s cap — refusing to process",
+                    game_id, video_duration, _cfg.max_upload_duration_seconds,
+                )
+                sync_set_game_status(
+                    gid, "failed",
+                    error_message=(
+                        f"Video is {video_duration / 60:.0f} min long; the maximum is "
+                        f"{_cfg.max_upload_duration_seconds / 60:.0f} min. "
+                        "Split it into separate uploads."
+                    ),
+                )
+                # The object is rejected and will never be processed, so it is
+                # pure stored cost — nothing else reclaims it (the retention
+                # sweep is still a backlog item). Best-effort: a failed delete
+                # must not turn a clean rejection into a retried task.
+                try:
+                    s3.delete_file(r2_key)
+                except Exception:
+                    logger.warning("Could not delete rejected upload %s", r2_key, exc_info=True)
+                return
 
             # fps-aware sampling: ~3 ball detections per second of video
             # regardless of source frame rate (tuned at 30fps/every-10th;

@@ -12,6 +12,20 @@ class Settings(BaseSettings):
     # Upload limits
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GB
     allowed_upload_content_types: str = "video/mp4,video/quicktime,video/x-matroska,video/webm"
+    # Hard duration cap (CF-91). GPU inference costs roughly $0.25 per hour of
+    # footage, so an unbounded upload is an unbounded bill. 4 h clears a long
+    # 5-set match with room to spare — the limit is aimed at multi-hour
+    # stream dumps, not at any real game.
+    max_upload_duration_seconds: float = 4 * 3600  # 4 h
+
+    # Per-user processing quota (CF-91), evaluated over a rolling window.
+    # Both caps apply: whichever is hit first stops the upload. Defaults allow
+    # a full tournament day (5 matches / 6 h ≈ $1.50 of GPU) while bounding
+    # what a single account can spend per day. Plan tiers (CF-64) will raise
+    # these per user rather than replace them — see services/quota.py.
+    quota_window_hours: float = 24.0
+    quota_max_games_per_window: int = 5
+    quota_max_minutes_per_window: float = 360.0  # 6 h of footage
 
     # Direct-to-R2 uploads (CF-163). The browser PUTs to R2 with a presigned
     # URL; the api only issues the ticket and confirms the object afterwards.
