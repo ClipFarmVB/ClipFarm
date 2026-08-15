@@ -14,7 +14,7 @@ from app.models.post import Post
 from app.models.user import User
 from app.models.visibility import Visibility
 from app.schemas.post import PostAuthor, PostCreate, PostOut, PostPlayback, PostUpdate
-from app.services import access, storage
+from app.services import access, follow_graph, storage
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,15 @@ async def _load_for_read(
     if clip is None or game is None or author is None:
         raise HTTPException(status_code=404, detail="Post not found")
 
-    if not access.can_view_post(viewer_id, post, clip, game):
+    # One lookup for both gates. A post's author is always the owner of the
+    # game behind it (create_post enforces that), and resolve_follow skips the
+    # query entirely unless one of the two tiers is actually `followers`.
+    follows = await follow_graph.resolve_follow(
+        db, viewer_id, post.author_id, post.visibility, access.effective(clip, game)
+    )
+    if not access.can_view_post(
+        viewer_id, post, clip, game, viewer_follows_owner=follows
+    ):
         # 404 not 403 — consistent with CF-108; a 403 confirms the id is real.
         raise HTTPException(status_code=404, detail="Post not found")
 

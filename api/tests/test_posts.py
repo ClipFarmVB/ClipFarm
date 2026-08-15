@@ -110,15 +110,18 @@ def test_the_ladder_is_not_duplicated_in_the_router():
     assert hasattr(access, "apply_post_visibility")
 
 
-def test_followers_tier_is_closed_until_cf110():
-    """Mirrors the CF-108 seam: `followers` posts stay author-only until the
-    follow graph exists, rather than defaulting to visible."""
-    assert access.is_follower(STRANGER, AUTHOR) is False
+def test_followers_tier_now_admits_an_accepted_follower():
+    """CF-110: the edge is resolved by the caller (follow_graph) and threaded
+    in. Pending requests resolve False upstream, so `followers` posts stay
+    author-only until a request is actually accepted."""
     game = _Game(Visibility.public)
     clip = _Clip(game)
     post = _Post(Visibility.followers)
     post.clip_id = clip.id
     assert access.can_view_post(STRANGER, post, clip, game) is False
+    assert access.can_view_post(
+        STRANGER, post, clip, game, viewer_follows_owner=True
+    ) is True
 
 
 # ── the page must be filtered in SQL, not after the LIMIT ───────────────────

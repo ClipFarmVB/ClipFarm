@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, String, DateTime
+from sqlalchemy import Boolean, Integer, String, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -44,6 +44,17 @@ class User(Base):
     # both on a name they never picked.
     username_is_generated: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
+    )
+
+    # Denormalized follow counters (CF-110, epic decision 6). A profile renders
+    # both on every view; COUNT(*) over a growing edge table per page load is
+    # what this avoids. Written in the same transaction as the edge; the CF-116
+    # reconciliation job is what catches drift.
+    follower_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    following_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
     )
 
     games: Mapped[list["Game"]] = relationship(back_populates="owner")  # type: ignore[name-defined]

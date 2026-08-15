@@ -14,7 +14,7 @@ from app.database import get_db
 from app.models.game import Game, GameStatus
 from app.models.clip import Clip
 from app.schemas.game import GameOut, GameRename
-from app.services import access, storage
+from app.services import access, follow_graph, storage
 from app.workers.tasks import process_game_task
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,12 @@ async def list_games(user_id: UserId, db: DB):
 async def get_game(game_id: uuid.UUID, db: DB, viewer_id: ViewerId = None):
     # Read path: visibility-scoped, not owner-only (CF-108). viewer_id is None
     # for a signed-out visitor, which access.py resolves to "public only".
-    game = access.assert_can_view_game(viewer_id, await db.get(Game, game_id))
+    loaded = await db.get(Game, game_id)
+    follows = await follow_graph.resolve_follow(
+        db, viewer_id, loaded.owner_id if loaded else None,
+        loaded.visibility if loaded else None,
+    )
+    game = access.assert_can_view_game(viewer_id, loaded, viewer_follows_owner=follows)
     clip_count_q = await db.execute(
         select(func.count(Clip.id)).where(Clip.game_id == game_id)
     )

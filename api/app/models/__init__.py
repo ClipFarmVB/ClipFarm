@@ -12,6 +12,7 @@ from app.models.game import Game
 from app.models.clip import Clip
 from app.models.collection import Collection, CollectionClip
 from app.models.correction import Correction
+from app.models.follow import Follow
 from app.models.post import Post
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     "Collection",
     "CollectionClip",
     "Correction",
+    "Follow",
     "Post",
 ]
