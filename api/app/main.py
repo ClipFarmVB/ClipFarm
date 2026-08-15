@@ -9,7 +9,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.observability import init_sentry
-from app.routers import games, clips, players, collections, corrections, profiles, posts, follows
+from app.routers import games, clips, players, collections, corrections, profiles, posts, follows, feed
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ if settings.social_enabled:
     app.include_router(profiles.router)
     app.include_router(posts.router)
     app.include_router(follows.router)
+    app.include_router(feed.router)
 
 
 async def _check_db() -> bool:
