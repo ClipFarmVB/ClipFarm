@@ -155,6 +155,38 @@ wrong — so copy the dead-time format rather than adapting the highlight one.
 **content MD5**, not `game_id` — game rows get deleted; the hash identifies the
 exact bytes forever and matches the ball-cache key.
 
+## Comparing condense variants (CF-187)
+
+`deadtime_variants.py` holds candidate keep-window builders — `v0` is the
+shipping path in `ml/pipeline/dead_time.py`, the rest are prototypes. **Nothing
+in that file is wired into the pipeline**; it exists so a change can be judged on
+the fixtures before it moves there. `visualize_deadtime.py` scores them all
+against every dead-time fixture and writes a standalone HTML timeline.
+
+```bash
+python -m ml.eval.visualize_deadtime   # -> results/deadtime_visualization.html
+```
+
+The HTML is **gitignored** — it is ~1MB of inline SVG that would re-churn its
+whole diff on every run. Regenerate it rather than looking for it in git, and
+note that doing so needs the ball caches (also gitignored, see the trainer
+section below): a fresh clone cannot rebuild it until those are in place.
+
+Two things to read carefully, because both invert a number's meaning:
+
+- **The padding ceiling** shown per game is the most dead time removable at the
+  shipping pads with *zero* live cut. It bounds `v0`–`v3`. It does **not** bound
+  `v4`/`v5`, which shrink the pads to 3/2 with merge 3 — an 8s budget against the
+  shipping 14s — so they clear it legitimately rather than by cutting play.
+- **A variant can beat the ceiling by cutting real play.** `v4` removes 90.6% of
+  test3's dead time against a 23.2% ceiling by cutting 162s of rally. Read the
+  dead-removed column against the live-cut column, never alone.
+
+`TUNED_ON` marks which fixtures the variants were designed against (test2 and
+test4); every other column is held out and is starred in the summary. test5 is
+the strongest of those — it was labeled after the variants were written, so it
+could not have shaped them even indirectly.
+
 ## Retraining the learned condenser (CF-173)
 
 `ml/pipeline/dead_time_ml.py` derives keep-windows from a per-second in-play
@@ -195,11 +227,15 @@ harness.py             fixture load, model-clip acquisition, report, results app
 diagnose_detection.py  why a rally was missed: BLIND / SPARSE / GATED breakdown
 tune_contacts.py       sweep find_contacts tunables over a dumped ball track
 train_deadtime.py      fit + LOGO-validate the learned condenser (CF-173)
+deadtime_variants.py   candidate keep-window builders, v0 = shipping (CF-187)
+visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 fixtures/              one JSON per test case (ground truth)
                        {test_id}.json          highlights (CF-55)
                        {test_id}_deadtime.json ball-in-play spans (CF-98)
                        README_deadtime.md      dead-time fixture format
-ball_caches/           gitignored: {md5}.json ball tracks for train_deadtime.py
+ball_caches/           gitignored: {md5}.json ball tracks, for train_deadtime.py
+                       and visualize_deadtime.py
 results/               {test_id}.jsonl and {test_id}_deadtime.jsonl —
                        one row per tagged run, committed
+                       deadtime_visualization.html — generated, gitignored
 ```
