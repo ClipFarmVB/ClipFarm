@@ -29,6 +29,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const text = await res.text();
     throw new Error(`API error ${res.status}: ${text}`);
   }
+  // A 204 has no body, so res.json() rejects with "Unexpected end of JSON
+  // input" — on *success*. Every DELETE here returns 204, which is why
+  // deleteGame hand-rolls its own fetch to sidestep this helper. Handled here
+  // instead so the next DELETE doesn't have to.
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
   return res.json() as Promise<T>;
 }
 

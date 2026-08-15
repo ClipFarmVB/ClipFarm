@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, Globe, Lock, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -29,6 +29,30 @@ const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof L
 ];
 
 /**
+ * Pull a readable message out of an API error.
+ *
+ * FastAPI's `detail` is a string for our deliberate 4xx (the 409 visibility
+ * ceiling) but an **array of objects** for a 422 validation failure. The
+ * previous regex unwrap only matched the string shape, so an over-long caption
+ * showed the user a raw `{"detail":[{"type":"string_too_long",...}]}` — and any
+ * escaped quote inside a string detail survived as a literal backslash.
+ */
+function errorText(e: unknown): string {
+  const raw = (e instanceof Error ? e.message : "").replace(/^API error \d+:\s*/, "");
+  if (!raw) return "Could not post";
+  try {
+    const { detail } = JSON.parse(raw);
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      return detail.map((d) => d?.msg).filter(Boolean).join("; ") || "Could not post";
+    }
+  } catch {
+    // Not JSON — a network failure or a proxy error page. Show it as-is.
+  }
+  return raw;
+}
+
+/**
  * Publish a clip as a post (CF-109).
  *
  * The visibility choice says plainly who will be able to see it rather than
@@ -53,6 +77,26 @@ export function PostComposerModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  // The success pause holds a reference to this component for 900ms. Cancelling
+  // Post within that window would otherwise fire onClose a second time after
+  // unmount — harmless against today's setComposing(false), and a real bug the
+  // first time onClose isn't idempotent.
+  useEffect(() => {
+    return () => { if (closeTimer.current) clearTimeout(closeTimer.current); };
+  }, []);
+
+  // Escape closes the composer, not the ClipModal underneath it. ClipModal
+  // stands down while this is mounted; this is the other half of that.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") { e.stopPropagation(); onClose(); }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   async function submit() {
     setSaving(true);
@@ -61,19 +105,23 @@ export function PostComposerModal({
       await createPost(clip.id, caption, visibility);
       setDone(true);
       onPosted?.();
-      setTimeout(onClose, 900);
+      closeTimer.current = setTimeout(onClose, 900);
     } catch (e) {
-      const raw = e instanceof Error ? e.message : "Could not post";
-      // The 409 body explains the visibility ceiling; show it rather than a
-      // generic failure, since the fix is a specific user action.
-      setError(raw.replace(/^API error \d+:\s*/, "").replace(/^\{"detail":"|"\}$/g, ""));
+      setError(errorText(e));
     } finally {
       setSaving(false);
     }
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4">
+    <div
+      ref={overlayRef}
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4"
+      // Click-outside, like every other modal here. Compared against this
+      // overlay rather than the parent's, which is why the parent's handler
+      // never fired for the composer.
+      onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
+    >
       <div className="w-full max-w-md rounded-lg border border-border bg-background p-5">
         <div className="flex items-start justify-between">
           <h2 className="text-lg font-semibold tracking-tight">Post this clip</h2>

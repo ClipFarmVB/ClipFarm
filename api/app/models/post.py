@@ -16,6 +16,17 @@ class Post(Base):
     duplicating it per post would multiply storage for no benefit. Playback
     resolves through the clip at read time, so trimming a clip updates its post
     for free.
+
+    **No UNIQUE on (author_id, clip_id), deliberately.** Posting the same clip
+    twice is a legitimate act — a better caption months later, a repost after
+    deleting the first — and a unique index makes that permanently impossible,
+    including after the original was deleted, in a way that's expensive to
+    reverse once the table has rows. The failure it would prevent is a
+    double-tapped Post button, which is a client concern: the composer disables
+    its button on submit, and an idempotency key on the write is the right fix
+    if duplicates ever show up in practice. Noting the tradeoff because the
+    constraint is much cheaper now than later, so choosing not to add it should
+    be a decision on the record rather than an omission.
     """
 
     __tablename__ = "posts"

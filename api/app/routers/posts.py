@@ -84,21 +84,11 @@ async def _load_for_read(
     if clip is None or game is None or author is None:
         raise HTTPException(status_code=404, detail="Post not found")
 
-    viewer_is_author = viewer_id is not None and viewer_id == post.author_id
-    post_visible = viewer_is_author or _post_readable(viewer_id, post, game)
-    if not (post_visible and access.can_view_clip(viewer_id, clip, game)):
+    if not access.can_view_post(viewer_id, post, clip, game):
         # 404 not 403 — consistent with CF-108; a 403 confirms the id is real.
         raise HTTPException(status_code=404, detail="Post not found")
 
     return post, clip, author
-
-
-def _post_readable(viewer_id: uuid.UUID | None, post: Post, game: Game) -> bool:
-    if post.visibility is Visibility.public:
-        return True
-    if post.visibility is Visibility.followers:
-        return access.is_follower(viewer_id, post.author_id)
-    return False
 
 
 @router.post("", response_model=PostOut, status_code=status.HTTP_201_CREATED)
@@ -168,31 +158,24 @@ async def list_user_posts(
     if author is None:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    # One joined query, not a fetch per post: the clip and game are needed to
-    # resolve both playback and the inherited visibility, so loading them per
+    # One joined query, not a fetch per post: the clip is needed to resolve
+    # playback and the game to resolve inherited visibility, so loading them per
     # row would be 2N round trips for a page of N.
+    #
+    # Visibility is applied by apply_post_visibility, in SQL, *before* the
+    # limit. Filtering after it would mean the limit counted rows this viewer
+    # can't see — an author with 60 private posts then 20 public ones would hand
+    # a stranger an empty page and no way to page past it.
     rows = (
         await db.execute(
-            select(Post, Clip, Game)
-            .join(Clip, Post.clip_id == Clip.id)
-            .join(Game, Clip.game_id == Game.id)
+            access.apply_post_visibility(select(Post, Clip), viewer_id)
             .where(Post.author_id == author.id)
             .order_by(Post.created_at.desc(), Post.id.desc())
             .limit(limit)
         )
     ).all()
 
-    out: list[PostOut] = []
-    for post, clip, game in rows:
-        viewer_is_author = viewer_id is not None and viewer_id == post.author_id
-        if not (viewer_is_author or _post_readable(viewer_id, post, game)):
-            continue
-        # The clip gate is separate and also required — a clip that went private
-        # after posting must drop out here too.
-        if not access.can_view_clip(viewer_id, clip, game):
-            continue
-        out.append(_serialize(post, clip, author))
-    return out
+    return [_serialize(post, clip, author) for post, clip in rows]
 
 
 @router.patch("/{post_id}", response_model=PostOut)
@@ -202,15 +185,18 @@ async def update_post(post_id: uuid.UUID, body: PostUpdate, user_id: UserId, db:
     if post is None or post.author_id != user_id:
         raise HTTPException(status_code=404, detail="Post not found")
 
-    if body.caption is not None:
-        post.caption = body.caption.strip() or None
-    await db.commit()
-    await db.refresh(post)
-
+    # Load before committing: the previous order wrote the caption and *then*
+    # decided whether to 404, so the client saw a failure for a write that had
+    # already landed. create_post resolves its author first for the same reason.
     clip = await db.get(Clip, post.clip_id)
     author = await db.get(User, post.author_id)
     if clip is None or author is None:
         raise HTTPException(status_code=404, detail="Post not found")
+
+    if body.caption is not None:
+        post.caption = body.caption.strip() or None
+    await db.commit()
+    await db.refresh(post)
     return _serialize(post, clip, author)
 
 

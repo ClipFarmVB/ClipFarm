@@ -32,18 +32,37 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
     return () => { document.body.style.overflow = prev; };
   }, []);
 
+  // Which clip the composer was opened for, rather than a bare boolean.
+  // Derived, so the composer closes itself when the clip changes underneath it
+  // — otherwise a draft written for one clip stays mounted over the next and
+  // Post publishes it against footage the user never chose, possibly at a
+  // different visibility. Syncing that with an effect would be a cascading
+  // render; this needs no effect at all.
+  const [composingFor, setComposingFor] = useState<string | null>(null);
+  const composing = composingFor === clip.id;
+
   // Keyboard navigation
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // The composer owns the keyboard while it's open. Otherwise ← to fix a
+      // typo in the caption navigates to the previous clip, and Escape throws
+      // the draft away by closing this modal instead of just the composer.
+      if (composing) {
+        if (e.key === "Escape") setComposingFor(null);
+        return;
+      }
+      // Any other text field on the page gets the same courtesy.
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
+        return;
+      }
       if (e.key === "Escape")     onClose();
       if (e.key === "ArrowLeft")  onPrev?.();
       if (e.key === "ArrowRight") onNext?.();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, onPrev, onNext]);
-
-  const [composing, setComposing] = useState(false);
+  }, [onClose, onPrev, onNext, composing]);
 
   // Click-outside: close only when clicking the overlay itself, not the modal card
   function handleOverlayClick(e: React.MouseEvent<HTMLDivElement>) {
@@ -136,7 +155,7 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           </span>
           {SOCIAL_ENABLED && (
           <button
-            onClick={() => setComposing(true)}
+            onClick={() => setComposingFor(clip.id)}
             className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-muted hover:bg-surface-high hover:text-foreground transition-colors focus-ring"
             title="Post this clip"
           >
@@ -152,7 +171,7 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
         </div>
       </div>
       {composing && (
-        <PostComposerModal clip={clip} onClose={() => setComposing(false)} />
+        <PostComposerModal clip={clip} onClose={() => setComposingFor(null)} />
       )}
     </div>,
     document.body
