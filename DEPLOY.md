@@ -112,15 +112,19 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build re
 ```
 
 This builds the shared api/worker image on the box, starts redis (private),
-the API (which runs `alembic upgrade head` then uvicorn), and the Celery
-worker (`--pool=solo`, one job at a time).
+the API, and the Celery worker (`--pool=solo`, one job at a time).
 
-> **⚠ Migration coordination.** The API runs `alembic upgrade head` against
-> Supabase on every boot. Supabase is the shared database — booting this box
-> can advance the shared schema. Make sure the branch you deploy is at the
-> intended migration head and coordinate with the team, per the "shared DB"
-> warning in the README. (CF-68 will turn migrations into a deliberate deploy
-> step rather than a boot side effect.)
+> **⚠ Migrations do not run here.** `DATABASE_URL` on this box points at
+> Supabase, and the api's boot guard (`scripts/auto_migrate.py`, CF-189) refuses
+> to migrate a non-local host — so booting this box no longer advances the shared
+> schema as a side effect. When the branch you deploy carries a new revision,
+> apply it deliberately, once, before or right after bringing the stack up:
+>
+> ```bash
+> docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api alembic upgrade head
+> ```
+>
+> Coordinate it with the team, per the "shared DB" warning in the README.
 
 ## 6. Verify end-to-end
 

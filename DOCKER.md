@@ -28,6 +28,10 @@ Fill required values in `.env.docker`:
 
 You can leave `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` blank if not using Modal.
 
+`DATABASE_URL` defaults to the local `db` container (Option A in the template).
+Switch to the shared Supabase pooler (Option B) when you want the team's shared
+games and clips — see the migration note under "Useful commands" before you do.
+
 ## 2) Start everything
 
 ```bash
@@ -72,3 +76,10 @@ Run migrations manually:
 ```bash
 docker compose exec api alembic upgrade head
 ```
+
+This is the only way a **non-local** `DATABASE_URL` gets migrated. On boot the api
+runs `scripts/auto_migrate.py`, which applies `alembic upgrade head` only when
+`DATABASE_URL` points at a local host (the `db` container, localhost); against the
+shared Supabase pooler it skips and logs why, so `docker compose up` can never
+advance the shared schema on its own (CF-189). Setting `ALEMBIC_ALLOW_REMOTE=1`
+opts a boot back into migrating a remote host — don't, unless you mean it.

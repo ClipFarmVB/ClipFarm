@@ -48,12 +48,16 @@ plus eslint and tsc for `web/`.
 
 ## Migrations
 
-Alembic revisions live in `api/alembic/versions/`. The chain is linear and the
-api container runs `alembic upgrade head` on startup, so **two PRs adding
-migrations in parallel will collide.** Coordinate the revision order, and merge
-before running anything against the shared Supabase instance. See the
+Alembic revisions live in `api/alembic/versions/`. The chain is linear, so **two
+PRs adding migrations in parallel will collide.** Coordinate the revision order,
+and merge before running anything against the shared Supabase instance. See the
 Local Development section of the README for the local-db workflow used for schema
 work.
+
+The api container migrates on startup **only when `DATABASE_URL` is local**
+(`api/scripts/auto_migrate.py`, CF-189) — against Supabase it skips and logs why,
+so `docker compose up` cannot advance the shared schema. Applying a migration
+there stays a deliberate, separate `alembic upgrade head`.
 
 ## Code posture
 

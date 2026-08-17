@@ -179,22 +179,21 @@ git config core.hooksPath .hooks
 ```
 
 Notes:
-- **Default `DATABASE_URL` is shared Supabase** (`.env.docker.example` Option A).
-  This is intentional, not an oversight: the team logs into the frontend with a
-  shared dev account specifically so everyone uploads to and sees the same games
-  and clips. Use this for general dev/testing.
-- **Switch to the local `db` container (Option B) whenever you're doing
-  schema/migration work.** The api container runs `alembic upgrade head` on every
-  boot — on the shared DB that means any container boot (yours or a teammate's)
-  can silently advance the shared schema out from under everyone else, which is
-  exactly what caused the 007→008 mismatch. If your branch adds or edits an
-  Alembic revision, point `DATABASE_URL` at the local db container while you
-  iterate, then switch back once you're done.
+- **Default `DATABASE_URL` is the local `db` container** (`.env.docker.example`
+  Option A). The api migrates it on boot, so schema work stays on your machine.
+- **Shared Supabase (Option B) is a deliberate opt-in.** Pointing at it is still
+  the normal way to do general dev/testing — the team logs into the frontend with
+  a shared dev account specifically so everyone uploads to and sees the same games
+  and clips — but the api will **not** migrate it on boot. `scripts/auto_migrate.py`
+  runs `alembic upgrade head` only when `DATABASE_URL` names a local host; against
+  the pooler it skips and logs why (CF-189). Before that guard existed, any
+  container boot — yours or a teammate's — could silently advance the shared
+  schema, which is exactly what caused the 007→008 mismatch.
 - **Landing a new migration on Supabase is a deliberate, one-time step**, not a
   side effect of `docker compose up`. When a PR with a new Alembic revision merges,
   one person runs `alembic upgrade head` against Supabase once (point `DATABASE_URL`
   at the pooler, run it, switch back). Don't rely on the next person's container
-  boot to do it — coordinate it instead.
+  boot to do it — it won't happen — coordinate it instead.
 - `docker compose restart` does **not** reload env files. To pick up `.env.docker` changes:
   `docker compose up -d --force-recreate <service>`.
 - The worker mounts `./api` and `./ml`, so Python changes are picked up on worker restart.
