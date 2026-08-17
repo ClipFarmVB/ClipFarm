@@ -17,15 +17,22 @@ Required by CF-163: the browser PUTs video straight to R2, so the bucket has to
 accept cross-origin writes from the web app. Without this, every upload fails
 at the first request.
 
-`r2-cors.example.json` is the shape. Copy it, set `AllowedOrigins`, apply:
+`r2-cors.example.json` is the shape. Copy it, set the origins, apply:
 
 ```bash
 cp infra/r2-cors.example.json infra/r2-cors.json   # gitignored
 npx wrangler r2 bucket cors set clipfarm --file infra/r2-cors.json
 ```
 
-`AllowedOrigins` is the one field that differs per environment, which is why
-this is an `.example` file rather than the real thing — same convention as
+> **This is the R2 API's schema — a `rules` array of `{allowed:{origins,
+> methods, headers}, exposeHeaders, maxAgeSeconds}`.** It is *not* the S3-style
+> `[{"AllowedOrigins": …}]` JSON that most CORS documentation shows. Handing
+> wrangler the S3 shape fails with *"must contain a 'rules' array as expected by
+> the R2 API"* — the field names and nesting both differ, so the two are not
+> interchangeable.
+
+`origins` is the one field that differs per environment, which is why this is an
+`.example` file rather than the real thing — same convention as
 `.env.docker.example`.
 
 **Use the same value as the api's `CORS_ORIGINS`.** Both describe the browser's
@@ -33,13 +40,16 @@ origin, and if they disagree one of the two layers breaks. R2 string-matches
 without normalising, so a trailing slash, a missing scheme, or `http` where the
 site serves `https` all fail silently.
 
-Every other field is load-bearing:
+`set` **replaces** the whole policy rather than merging into it, so the file has
+to list every origin you want, not just the new one.
+
+Every field is load-bearing:
 
 | Field | Why |
 |---|---|
-| `PUT` | The upload itself. `GET`/`HEAD` cover playback and the completion check. |
-| `content-type` in `AllowedHeaders` | The single-PUT path sends `Content-Type` because the api signs it into the URL. Without this, preflight fails on small uploads. |
-| `ETag` in `ExposeHeaders` | **The easy one to miss.** Multipart completion sends each part's ETag back to the api, and a cross-origin response header is unreadable to JavaScript unless it is explicitly exposed. Omit it and multipart uploads fail at assembly, after every byte has already transferred. |
+| `PUT` in `methods` | The upload itself. `GET`/`HEAD` cover playback and the completion check. A bucket left on R2's `GET, HEAD` default cannot be uploaded to at all. |
+| `content-type` in `headers` | The single-PUT path sends `Content-Type` because the api signs it into the URL. Without this, preflight fails on small uploads. |
+| `ETag` in `exposeHeaders` | **The easy one to miss.** Multipart completion sends each part's ETag back to the api, and a cross-origin response header is unreadable to JavaScript unless it is explicitly exposed. Omit it and multipart uploads fail at assembly, after every byte has already transferred. |
 | `http://localhost:3000` | Keeps the Docker dev stack working against the same bucket. Drop it if dev uses its own. |
 
 ### Verifying
@@ -70,11 +80,20 @@ abandoned-upload sweep in `create_upload` — so this is a backstop for uploads
 neither reaches, such as a process dying between starting the upload and
 recording its row.
 
+**R2 creates this rule by default**, so most buckets already have it. Check
+before adding anything:
+
+```bash
+npx wrangler r2 bucket lifecycle list clipfarm
+```
+
+A bucket with `Default Multipart Abort Rule` — *abort incomplete multipart
+uploads after 7 days*, all prefixes, enabled — needs no action. If it is
+missing or disabled:
+
 ```bash
 npx wrangler r2 bucket lifecycle add clipfarm abort-incomplete-uploads \
   --abort-multipart-days 7
-
-npx wrangler r2 bucket lifecycle list clipfarm   # verify
 ```
 
 Seven days is comfortably longer than `upload_url_ttl_seconds` (6h), so it can

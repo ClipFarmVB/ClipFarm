@@ -1,12 +1,17 @@
-[
-  {
-    "AllowedOrigins": [
-      "https://clipfarm.app",
-      "http://localhost:3000"
-    ],
-    "AllowedMethods": ["PUT", "GET", "HEAD"],
-    "AllowedHeaders": ["content-type"],
-    "ExposeHeaders": ["ETag"],
-    "MaxAgeSeconds": 3600
-  }
-]
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": [
+          "https://clipfarm.app",
+          "http://localhost:3000",
+          "http://127.0.0.1:3000"
+        ],
+        "methods": ["PUT", "GET", "HEAD"],
+        "headers": ["content-type"]
+      },
+      "exposeHeaders": ["ETag"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}
