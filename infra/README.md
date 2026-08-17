@@ -26,8 +26,9 @@ point of this directory is that a change to the bucket's config gets reviewed
 like any other change, and the file holds only web origins, which are already
 public in `DEPLOY_RENDER.md` and `api/app/config.py`. Nothing secret goes here.
 
-> **Provenance:** applied to the `clipfarm` bucket and verified field-for-field
-> against `npx wrangler@4 r2 bucket cors list clipfarm` on **2026-08-17**. The CORS policy was also
+> **Provenance:** last applied to the `clipfarm` bucket and verified
+> field-for-field against `npx wrangler@4 r2 bucket cors list clipfarm` on
+> **2026-08-17**, when the `clipfarm.ca` origin was added. The CORS policy was also
 > exercised end to end — a browser at an allowed origin PUT two presigned
 > multipart parts and read both ETags back, which is the behaviour
 > `exposeHeaders` exists for. If you change this file, re-apply it and update
@@ -47,16 +48,32 @@ npx wrangler@4 r2 bucket cors set clipfarm --file infra/r2-cors.json
 
 ### Origins
 
-> ⚠️ **As committed, `r2-cors.json` contains development origins only** —
-> `localhost:3000` and `127.0.0.1:3000`. There is no deployed web origin yet, and
-> this file records what is actually on the bucket rather than an aspiration.
->
-> **Before the first production deploy, add the web origin to this file and
-> re-apply it.** Skipping that leaves the bucket rejecting the live domain and
-> every upload fails at preflight. Because `cors set` replaces rather than
-> merges, applying this file *as it stands* to a bucket that already has a
-> production origin would remove it — so edit the file, don't run a second
-> command.
+> `r2-cors.json` lists the production origin (`https://clipfarm.ca`) alongside
+> the localhost entries used in development — three in total. `www` is not one
+> of them, deliberately; see below. Adding an origin means **editing this file
+> and re-applying it**, never running a second command: `cors set` replaces the
+> policy rather than merging into it, so a second invocation would drop
+> everything the first one set.
+
+**`www` is deliberately absent, and adding it here would not help.** It is a
+distinct origin — R2 compares origins as strings, so `https://clipfarm.ca` does
+not cover `https://www.clipfarm.ca` — but this bucket is the *last* hop in an
+upload, and a `www` visitor never gets here. They fail earlier, three times
+over:
+
+1. **DNS / Render** — only the apex is registered as a custom domain, so `www`
+   does not resolve to the app at all.
+2. **The api's own CORS** — `main.py` hands `cors_origins_list` to Starlette,
+   which exact-matches. With `CORS_ORIGINS` set to the apex, the `POST` that
+   issues the presigned ticket is rejected before any R2 URL exists.
+3. **Supabase** — Site URL and the auth callback are single values, so sign-in
+   from `www` breaks too.
+
+So `www` is handled **once, at the edge**: redirect `https://www.clipfarm.ca` →
+`https://clipfarm.ca` in Cloudflare, before any of those layers sees the
+request. Serving `www` as a real origin instead would mean maintaining it in all
+four places, and forgetting any one of them produces a failure that presents as
+"uploads are broken for some people".
 
 One bucket serves every environment, so `origins` is intended as a **superset**:
 production plus the localhost entries used in development. It is therefore never
