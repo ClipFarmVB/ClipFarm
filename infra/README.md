@@ -5,7 +5,7 @@ They are checked in because nothing in the app can enforce them and nothing
 reconciles them against the dashboard — a wrong value is invisible until an
 upload fails in a browser.
 
-Applied with `wrangler` (`npx wrangler login`, or a scoped
+Applied with `wrangler` (`npx wrangler@4 login`, or a scoped
 `CLOUDFLARE_API_TOKEN` with **Workers R2 Storage: Edit**), or by hand in the
 Cloudflare dashboard under **R2 → your bucket → Settings**.
 
@@ -27,7 +27,7 @@ like any other change, and the file holds only web origins, which are already
 public in `DEPLOY_RENDER.md` and `api/app/config.py`. Nothing secret goes here.
 
 > **Provenance:** applied to the `clipfarm` bucket and verified field-for-field
-> against `cors bucket cors list` on **2026-08-17**. The CORS policy was also
+> against `npx wrangler@4 r2 bucket cors list clipfarm` on **2026-08-17**. The CORS policy was also
 > exercised end to end — a browser at an allowed origin PUT two presigned
 > multipart parts and read both ETags back, which is the behaviour
 > `exposeHeaders` exists for. If you change this file, re-apply it and update
