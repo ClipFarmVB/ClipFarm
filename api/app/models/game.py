@@ -10,6 +10,10 @@ from app.models.visibility import Visibility
 
 
 class GameStatus(str, enum.Enum):
+    # The row exists but the video hasn't landed in R2 yet: the browser is
+    # PUTting it directly (CF-163). Nothing is queued until the object is
+    # confirmed, so an upload that fails or is abandoned never becomes work.
+    uploading = "uploading"
     queued = "queued"
     processing = "processing"
     ready = "ready"
@@ -27,6 +31,10 @@ class Game(Base):
     )
     raw_video_url: Mapped[str | None] = mapped_column(String(2048))
     error_message: Mapped[str | None] = mapped_column(String(1024))
+    # S3 multipart upload id, held only while status == uploading. Stored so a
+    # delete (or the abandoned-upload sweep) can abort the upload and stop
+    # paying for its parts, rather than waiting on a lifecycle rule.
+    upload_id: Mapped[str | None] = mapped_column(String(255))
     # Pipeline progress while status == processing: fraction 0.0-1.0 plus a
     # machine-readable stage slug (e.g. "tracking_ball") for the frontend bar.
     progress: Mapped[float] = mapped_column(Float, default=0.0, server_default="0", nullable=False)

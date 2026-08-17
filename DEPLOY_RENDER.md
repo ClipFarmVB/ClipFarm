@@ -131,8 +131,19 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
    **Open that link in a different browser than you signed up in** — that is the
    case the token_hash template exists for, and the one that silently regresses
    if the template is ever reset to the default.
-3. Upload a short video → confirm the worker picks it up (worker logs) and clips
+3. Upload a video → confirm the worker picks it up (worker logs) and clips
    appear. This exercises api → Redis → worker → R2 → Modal end to end.
+
+   **Use a file over 100 MiB** (`single_put_max_bytes`), and keep the browser's
+   network panel open. Since CF-163 the video goes browser → R2 directly, and
+   the two paths fail differently: a smaller file is uploaded with one presigned
+   PUT that never reads an ETag, so it passes even when the bucket's CORS policy
+   is missing `ExposeHeaders: ETag` and every multipart upload is broken. A short
+   clip no longer tests the upload path that matters.
+
+   What to check: several `PUT`s to `*.r2.cloudflarestorage.com`, **no upload
+   bytes to the api origin**, then one `POST /games/{id}/uploads/complete`. See
+   `infra/README.md` for the bucket settings this depends on.
 4. **Model cache disk** — check the worker logs on first job: it should download
    the ball model once, then on a redeploy **not** re-download it. If you see a
    `PermissionError` writing to `/models`, the disk mounted root-owned and the

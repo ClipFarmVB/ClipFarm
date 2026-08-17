@@ -14,16 +14,23 @@ between rallies removed.
 
 ```
 Browser (Next.js 16, React 19)
-   │  Supabase JWT in Authorization header
-   ▼
-FastAPI (async, SQLAlchemy 2.0 + asyncpg) ──► Postgres (Supabase)
-   │  enqueue                                   ▲
-   ▼                                            │ sync engine (no event loop in Celery)
-Celery worker (Redis broker, solo pool) ────────┘
-   │  ML pipeline (ml/pipeline/*)
-   ▼
+   │  Supabase JWT in Authorization header            video bytes (presigned PUT)
+   ▼                                                             │
+FastAPI (async, SQLAlchemy 2.0 + asyncpg) ──► Postgres (Supabase)│
+   │  enqueue                                   ▲                │
+   ▼                                            │ sync engine    │
+Celery worker (Redis broker, solo pool) ────────┘                │
+   │  ML pipeline (ml/pipeline/*)                                │
+   ▼                                                             ▼
 Cloudflare R2 (S3 API): raw videos, clips, thumbs, condensed videos, ball cache
 ```
+
+- **Uploads bypass the api entirely.** `POST /games/uploads` validates the declared
+  type and size and returns presigned URLs; the browser PUTs to R2; `POST
+  /games/{id}/uploads/complete` HEADs the object and only then enqueues the job.
+  The api handling multi-GB bodies was both a resource cost and a hard blocker for
+  serverless hosting (Modal caps request bodies at 4 GiB). It also moves the
+  enforcement point *before* the transfer instead of after it.
 
 - **Monorepo**: `api/` (FastAPI + Celery), `ml/` (pure pipeline code), `web/` (Next.js
   app-router).
@@ -115,9 +122,15 @@ separate motion pass.
 - **Object storage URLs are stored public-form, served presigned.** DB rows hold
   `{r2_public_url}/{key}`; routers convert to time-limited presigned URLs on read.
   Storage stays private; links expire; the DB never holds secrets.
-- **Uploads stream through the API with a hard cap.** `LimitedReader` wraps the
-  request stream and raises past N bytes — enforces the limit even when
-  Content-Length is absent. XHR (not fetch) on the frontend for upload progress.
+- **Uploads go browser → R2 directly, presigned** (CF-163). The api validates the
+  declared type and size, hands back presigned URLs, and confirms the object with a
+  HEAD before enqueueing — so the limit is enforced *before* the transfer rather
+  than while proxying it, and a failed upload never becomes a job. Content type is
+  signed into the URL, so R2 itself rejects a mismatch. Size cannot be signed
+  (S3/R2 ignore Content-Length as a query parameter), which is why the HEAD exists.
+  Files over 100 MiB use multipart — not for the 5 GiB single-PUT ceiling, which the
+  2 GB cap keeps out of reach, but so a dropped connection retries one part instead
+  of the whole file. XHR (not fetch) on the frontend for upload progress.
 - **Auth:** Supabase issues JWTs; the API verifies them (JWKS), never handles
   passwords. Next.js middleware guards routes server-side.
 - **Migrations:** Alembic, applied automatically by the api container's start command
