@@ -68,13 +68,15 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 > an env var and not code, so nothing above configures it: uploads go browser →
 > R2 directly, and without it they fail in the browser however the services are
 > set up. The policy's `origins` list must *contain* the web origin you set as
-> `CORS_ORIGINS` below, alongside the localhost entries kept for development —
-> the committed file does not yet, so this is a real step, done in **4. Domains
-> + HTTPS** once the domain exists.
+> `CORS_ORIGINS` below, alongside the localhost entries kept for development.
+> `https://clipfarm.ca` is already there. **`www` is not, by design** — it is
+> redirected to the apex at the edge (step 4) rather than served, so it never
+> becomes an origin. Deploying on any other origin, or serving `www` for real,
+> means adding it to `infra/r2-cors.json` and re-applying.
 
 **`clipfarm-api`:**
 - `API_BASE_URL` → this service's public URL (set after step 4, or its custom domain)
-- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.app`
+- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.ca`
 
 **`clipfarm-worker`:**
 - `ROBOFLOW_API_KEY` → Roboflow → Settings → API Keys
@@ -82,7 +84,7 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 
 **`clipfarm-web`:**
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` → Supabase API page (anon key is browser-safe)
-- `NEXT_PUBLIC_API_URL` → the API's public URL, e.g. `https://api.clipfarm.app`
+- `NEXT_PUBLIC_API_URL` → the API's public URL, e.g. `https://api.clipfarm.ca`
 - `NEXT_PUBLIC_SENTRY_DSN` → Sentry → **clipfarm-web** project → Client Keys (a different DSN from the api one)
 - `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` → optional but recommended: enables source-map upload so prod web stack traces show real source lines instead of minified bundles. Token from Sentry → Settings → Auth Tokens.
 
@@ -96,24 +98,43 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 > trigger a redeploy of web (its values are baked in at build time).
 
 ### 4. Domains + HTTPS
-- Add a custom domain to **clipfarm-web** (e.g. `clipfarm.app`) and to
-  **clipfarm-api** (e.g. `api.clipfarm.app`) in each service's Settings.
+- Add a custom domain to **clipfarm-web** (e.g. `clipfarm.ca`) and to
+  **clipfarm-api** (e.g. `api.clipfarm.ca`) in each service's Settings.
 - Point the DNS records at Render (via Cloudflare). Render provisions HTTPS
   automatically.
-- **Add the web domain to the R2 CORS policy.** `infra/r2-cors.json` currently
-  lists development origins only, because until this step there is no production
-  origin to list. Add `https://<web-domain>` to its `origins` array — keeping the
-  localhost entries — and re-apply:
+- **Redirect `www` to the apex in Cloudflare** (Rules → Redirect Rules,
+  `www.clipfarm.ca/*` → `https://clipfarm.ca/$1`, 301). Only the apex is a
+  configured origin — in Render, in `CORS_ORIGINS`, in Supabase's Site URL, and
+  in the R2 CORS policy. Redirecting at the edge means `www` never becomes an
+  origin any of them has to know about; serving it for real would mean adding it
+  to all four.
+- **Confirm the web domain is in the R2 CORS policy.** Uploads go browser → R2
+  directly (CF-163), so an origin the bucket does not allow fails at preflight
+  however the services are configured.
+
+  ```bash
+  npx wrangler@4 r2 bucket cors list clipfarm
+  ```
+
+  `https://clipfarm.ca` is applied, so if you are serving the custom domain this
+  is a check rather than a step.
+
+  > ⚠️ **If you deploy before the custom domain is live, the origin is the
+  > `onrender.com` URL shown on the clipfarm-web service page — whatever Render
+  > assigned, since it appends a suffix when the service name isn't globally
+  > free — and it is not in the policy.** That is
+  > the normal first deploy, not an edge case — every upload will fail at
+  > preflight until the origin is added. The same applies to any other host.
+
+  To add one, edit `origins` in `infra/r2-cors.json` and re-apply:
 
   ```bash
   npx wrangler@4 r2 bucket cors set clipfarm --file infra/r2-cors.json
   ```
 
-  Uploads go browser → R2 directly (CF-163), so until this is done every upload
-  from the live domain fails at preflight, whatever the services are configured
-  to do. `cors set` replaces the policy rather than merging, which is why the
-  origin is added to the file rather than by a second command. See
-  `infra/README.md`.
+  Edit the file rather than issuing a second command: `cors set` replaces the
+  policy instead of merging, so a second invocation drops what the first one
+  set. See `infra/README.md`.
 - Supabase → Authentication → **URL Configuration**: set Site URL to the web
   domain and add `https://<web-domain>/auth/callback` to **Redirect URLs**.
   Google sign-in lands there; a link back to any other path is rejected by
