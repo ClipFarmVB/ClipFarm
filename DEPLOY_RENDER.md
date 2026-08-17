@@ -66,7 +66,7 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 
 **`clipfarm-api`:**
 - `API_BASE_URL` → this service's public URL (set after step 4, or its custom domain)
-- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.app`
+- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.ca`
 
 **`clipfarm-worker`:**
 - `ROBOFLOW_API_KEY` → Roboflow → Settings → API Keys
@@ -74,7 +74,7 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 
 **`clipfarm-web`:**
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` → Supabase API page (anon key is browser-safe)
-- `NEXT_PUBLIC_API_URL` → the API's public URL, e.g. `https://api.clipfarm.app`
+- `NEXT_PUBLIC_API_URL` → the API's public URL, e.g. `https://api.clipfarm.ca`
 - `NEXT_PUBLIC_SENTRY_DSN` → Sentry → **clipfarm-web** project → Client Keys (a different DSN from the api one)
 - `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` → optional but recommended: enables source-map upload so prod web stack traces show real source lines instead of minified bundles. Token from Sentry → Settings → Auth Tokens.
 
@@ -88,8 +88,8 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 > trigger a redeploy of web (its values are baked in at build time).
 
 ### 4. Domains + HTTPS
-- Add a custom domain to **clipfarm-web** (e.g. `clipfarm.app`) and to
-  **clipfarm-api** (e.g. `api.clipfarm.app`) in each service's Settings.
+- Add a custom domain to **clipfarm-web** (e.g. `clipfarm.ca`) and to
+  **clipfarm-api** (e.g. `api.clipfarm.ca`) in each service's Settings.
 - Point the DNS records at Render (via Cloudflare). Render provisions HTTPS
   automatically.
 - Supabase → Authentication → **URL Configuration**: set Site URL to the web
@@ -159,7 +159,7 @@ Substeps are lettered so that a reference to one can't be mistaken for a
 reference to a numbered **step** of this file.
 
 - **(a) Resend → Domains → Add Domain.** Use a *subdomain*, e.g.
-  `mail.clipfarm.app`, not the apex. Auth mail then can't damage the apex
+  `mail.clipfarm.ca`, not the apex. Auth mail then can't damage the apex
   domain's reputation, and it keeps any future marketing sender independent.
 
 - **(b) Add the DNS records it shows** in Cloudflare, on the subdomain — DKIM and
@@ -169,7 +169,7 @@ reference to a numbered **step** of this file.
   don't go hunting for one there. Verification usually lands in minutes.
 
 - **(c) Add a DMARC record for the sending subdomain:**
-  `_dmarc.mail.clipfarm.app  TXT  "v=DMARC1; p=none; rua=mailto:<a real mailbox>"`.
+  `_dmarc.mail.clipfarm.ca  TXT  "v=DMARC1; p=none; rua=mailto:<a real mailbox>"`.
 
   Publish it on the **subdomain**, not just the apex. DMARC falls back to the
   organizational domain when a subdomain has no record of its own, so an apex
@@ -197,7 +197,7 @@ reference to a numbered **step** of this file.
   | Port | `465` (implicit TLS) or `587` (STARTTLS) — Resend supports both, so use whichever the Supabase form is happiest with and switch if sends fail to connect. `25` is blocked everywhere and will just time out. |
   | Username | `resend` — literally that string, not an email address |
   | Password | the API key from substep (d) |
-  | Sender email | `noreply@mail.clipfarm.app` — must be on the **verified** domain, or every send is rejected |
+  | Sender email | `noreply@mail.clipfarm.ca` — must be on the **verified** domain, or every send is rejected |
   | Sender name | `ClipFarm` |
 
 - **(f) Supabase → Authentication → Rate Limits → "Emails sent per hour".** Custom
