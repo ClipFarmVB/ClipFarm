@@ -27,7 +27,8 @@ like any other change, and the file holds only web origins, which are already
 public in `DEPLOY_RENDER.md` and `api/app/config.py`. Nothing secret goes here.
 
 > **Provenance:** applied to the `clipfarm` bucket and verified field-for-field
-> against `npx wrangler@4 r2 bucket cors list clipfarm` on **2026-08-17**. The CORS policy was also
+> against `npx wrangler@4 r2 bucket cors list clipfarm` on **2026-08-17**, most
+> recently when the `clipfarm.ca` origins were added. The CORS policy was also
 > exercised end to end — a browser at an allowed origin PUT two presigned
 > multipart parts and read both ETags back, which is the behaviour
 > `exposeHeaders` exists for. If you change this file, re-apply it and update
@@ -47,16 +48,18 @@ npx wrangler@4 r2 bucket cors set clipfarm --file infra/r2-cors.json
 
 ### Origins
 
-> ⚠️ **As committed, `r2-cors.json` contains development origins only** —
-> `localhost:3000` and `127.0.0.1:3000`. There is no deployed web origin yet, and
-> this file records what is actually on the bucket rather than an aspiration.
->
-> **Before the first production deploy, add the web origin to this file and
-> re-apply it.** Skipping that leaves the bucket rejecting the live domain and
-> every upload fails at preflight. Because `cors set` replaces rather than
-> merges, applying this file *as it stands* to a bucket that already has a
-> production origin would remove it — so edit the file, don't run a second
-> command.
+> `r2-cors.json` lists the production origins (`clipfarm.ca`, and `www` — see
+> below) alongside the localhost entries used in development. Adding an origin
+> means **editing this file and re-applying it**, never running a second
+> command: `cors set` replaces the policy rather than merging into it, so a
+> second invocation would drop everything the first one set.
+
+**`www` is a separate origin.** `https://clipfarm.ca` and
+`https://www.clipfarm.ca` do not match each other — R2 compares origins as
+strings. `www` is listed so that a visitor who types it can still upload; if the
+deployment redirects `www` to the apex before the app loads, the entry is
+unnecessary and can be dropped. Leaving it costs nothing and removes a failure
+that would otherwise look like "uploads are broken for some people".
 
 One bucket serves every environment, so `origins` is intended as a **superset**:
 production plus the localhost entries used in development. It is therefore never
