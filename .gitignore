@@ -52,10 +52,6 @@ ml/eval/results/*_ball_track.json
 data/
 runs/
 
-# Infra — the filled-in bucket config. Only the .example is tracked; the real
-# one carries environment-specific origins (see infra/README.md).
-infra/r2-cors.json
-
 # Misc
 .turbo/
 .claude/
