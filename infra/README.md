@@ -26,9 +26,9 @@ point of this directory is that a change to the bucket's config gets reviewed
 like any other change, and the file holds only web origins, which are already
 public in `DEPLOY_RENDER.md` and `api/app/config.py`. Nothing secret goes here.
 
-> **Provenance:** applied to the `clipfarm` bucket and verified field-for-field
-> against `npx wrangler@4 r2 bucket cors list clipfarm` on **2026-08-17**, most
-> recently when the `clipfarm.ca` origins were added. The CORS policy was also
+> **Provenance:** last applied to the `clipfarm` bucket and verified
+> field-for-field against `npx wrangler@4 r2 bucket cors list clipfarm` on
+> **2026-08-17**, when the `clipfarm.ca` origin was added. The CORS policy was also
 > exercised end to end — a browser at an allowed origin PUT two presigned
 > multipart parts and read both ETags back, which is the behaviour
 > `exposeHeaders` exists for. If you change this file, re-apply it and update
@@ -54,12 +54,25 @@ npx wrangler@4 r2 bucket cors set clipfarm --file infra/r2-cors.json
 > command: `cors set` replaces the policy rather than merging into it, so a
 > second invocation would drop everything the first one set.
 
-**`www` is a separate origin.** `https://clipfarm.ca` and
-`https://www.clipfarm.ca` do not match each other — R2 compares origins as
-strings. `www` is listed so that a visitor who types it can still upload; if the
-deployment redirects `www` to the apex before the app loads, the entry is
-unnecessary and can be dropped. Leaving it costs nothing and removes a failure
-that would otherwise look like "uploads are broken for some people".
+**`www` is deliberately absent, and adding it here would not help.** It is a
+distinct origin — R2 compares origins as strings, so `https://clipfarm.ca` does
+not cover `https://www.clipfarm.ca` — but this bucket is the *last* hop in an
+upload, and a `www` visitor never gets here. They fail earlier, three times
+over:
+
+1. **DNS / Render** — only the apex is registered as a custom domain, so `www`
+   does not resolve to the app at all.
+2. **The api's own CORS** — `main.py` hands `cors_origins_list` to Starlette,
+   which exact-matches. With `CORS_ORIGINS` set to the apex, the `POST` that
+   issues the presigned ticket is rejected before any R2 URL exists.
+3. **Supabase** — Site URL and the auth callback are single values, so sign-in
+   from `www` breaks too.
+
+So `www` is handled **once, at the edge**: redirect `https://www.clipfarm.ca` →
+`https://clipfarm.ca` in Cloudflare, before any of those layers sees the
+request. Serving `www` as a real origin instead would mean maintaining it in all
+four places, and forgetting any one of them produces a failure that presents as
+"uploads are broken for some people".
 
 One bucket serves every environment, so `origins` is intended as a **superset**:
 production plus the localhost entries used in development. It is therefore never

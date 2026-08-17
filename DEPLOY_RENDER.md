@@ -100,6 +100,12 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
   **clipfarm-api** (e.g. `api.clipfarm.ca`) in each service's Settings.
 - Point the DNS records at Render (via Cloudflare). Render provisions HTTPS
   automatically.
+- **Redirect `www` to the apex in Cloudflare** (Rules → Redirect Rules,
+  `www.clipfarm.ca/*` → `https://clipfarm.ca/$1`, 301). Only the apex is a
+  configured origin — in Render, in `CORS_ORIGINS`, in Supabase's Site URL, and
+  in the R2 CORS policy. Redirecting at the edge means `www` never becomes an
+  origin any of them has to know about; serving it for real would mean adding it
+  to all four.
 - **Confirm the web domain is in the R2 CORS policy.** Uploads go browser → R2
   directly (CF-163), so an origin the bucket does not allow fails at preflight
   however the services are configured.
@@ -108,10 +114,15 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
   npx wrangler@4 r2 bucket cors list clipfarm
   ```
 
-  `https://clipfarm.ca` and `https://www.clipfarm.ca` are already applied, so
-  this is a check rather than a step. **Deploying on any other origin** — a
-  different domain, or a `*.onrender.com` URL — means adding it to
-  `infra/r2-cors.json` and re-applying:
+  `https://clipfarm.ca` is applied, so if you are serving the custom domain this
+  is a check rather than a step.
+
+  > ⚠️ **If you deploy before the custom domain is live, the origin is
+  > `https://clipfarm-web.onrender.com`, and it is not in the policy.** That is
+  > the normal first deploy, not an edge case — every upload will fail at
+  > preflight until the origin is added. The same applies to any other host.
+
+  To add one, edit `origins` in `infra/r2-cors.json` and re-apply:
 
   ```bash
   npx wrangler@4 r2 bucket cors set clipfarm --file infra/r2-cors.json
