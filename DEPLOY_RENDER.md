@@ -194,7 +194,7 @@ reference to a numbered **step** of this file.
   | Field | Value |
   |---|---|
   | Host | `smtp.resend.com` |
-  | Port | `465` (implicit TLS) or `587` (STARTTLS) — Resend supports both, so use whichever the Supabase form is happiest with and switch if sends fail to connect. `25` is blocked everywhere and will just time out. |
+  | Port | Start with `465` (implicit TLS); if the connection fails, switch to `587` (STARTTLS). Resend supports both, and which one a given Supabase project prefers hasn't been confirmed against the live dashboard. `25` is blocked everywhere and will just time out. |
   | Username | `resend` — literally that string, not an email address |
   | Password | the API key from substep (d) |
   | Sender email | `noreply@mail.clipfarm.ca` — must be on the **verified** domain, or every send is rejected |
