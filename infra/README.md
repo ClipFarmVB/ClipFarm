@@ -48,11 +48,12 @@ npx wrangler@4 r2 bucket cors set clipfarm --file infra/r2-cors.json
 
 ### Origins
 
-> `r2-cors.json` lists the production origins (`clipfarm.ca`, and `www` — see
-> below) alongside the localhost entries used in development. Adding an origin
-> means **editing this file and re-applying it**, never running a second
-> command: `cors set` replaces the policy rather than merging into it, so a
-> second invocation would drop everything the first one set.
+> `r2-cors.json` lists the production origin (`https://clipfarm.ca`) alongside
+> the localhost entries used in development — three in total. `www` is not one
+> of them, deliberately; see below. Adding an origin means **editing this file
+> and re-applying it**, never running a second command: `cors set` replaces the
+> policy rather than merging into it, so a second invocation would drop
+> everything the first one set.
 
 **`www` is deliberately absent, and adding it here would not help.** It is a
 distinct origin — R2 compares origins as strings, so `https://clipfarm.ca` does

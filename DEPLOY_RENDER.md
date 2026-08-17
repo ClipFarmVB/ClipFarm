@@ -69,8 +69,10 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 > R2 directly, and without it they fail in the browser however the services are
 > set up. The policy's `origins` list must *contain* the web origin you set as
 > `CORS_ORIGINS` below, alongside the localhost entries kept for development.
-> `clipfarm.ca` and `www.clipfarm.ca` are already there — if you deploy on any
-> other origin, add it to `infra/r2-cors.json` and re-apply.
+> `https://clipfarm.ca` is already there. **`www` is not, by design** — it is
+> redirected to the apex at the edge (step 4) rather than served, so it never
+> becomes an origin. Deploying on any other origin, or serving `www` for real,
+> means adding it to `infra/r2-cors.json` and re-applying.
 
 **`clipfarm-api`:**
 - `API_BASE_URL` → this service's public URL (set after step 4, or its custom domain)
@@ -117,8 +119,10 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
   `https://clipfarm.ca` is applied, so if you are serving the custom domain this
   is a check rather than a step.
 
-  > ⚠️ **If you deploy before the custom domain is live, the origin is
-  > `https://clipfarm-web.onrender.com`, and it is not in the policy.** That is
+  > ⚠️ **If you deploy before the custom domain is live, the origin is the
+  > `onrender.com` URL shown on the clipfarm-web service page — whatever Render
+  > assigned, since it appends a suffix when the service name isn't globally
+  > free — and it is not in the policy.** That is
   > the normal first deploy, not an edge case — every upload will fail at
   > preflight until the origin is added. The same applies to any other host.
 
