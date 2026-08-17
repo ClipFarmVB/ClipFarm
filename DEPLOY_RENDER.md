@@ -68,7 +68,9 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 > an env var and not code, so nothing above configures it: uploads go browser →
 > R2 directly, and without it they fail in the browser however the services are
 > set up. The policy's `origins` list must *contain* the web origin you set as
-> `CORS_ORIGINS` below, alongside the localhost entries kept for development.
+> `CORS_ORIGINS` below, alongside the localhost entries kept for development —
+> the committed file does not yet, so this is a real step, done in **4. Domains
+> + HTTPS** once the domain exists.
 
 **`clipfarm-api`:**
 - `API_BASE_URL` → this service's public URL (set after step 4, or its custom domain)
@@ -98,6 +100,20 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
   **clipfarm-api** (e.g. `api.clipfarm.app`) in each service's Settings.
 - Point the DNS records at Render (via Cloudflare). Render provisions HTTPS
   automatically.
+- **Add the web domain to the R2 CORS policy.** `infra/r2-cors.json` currently
+  lists development origins only, because until this step there is no production
+  origin to list. Add `https://<web-domain>` to its `origins` array — keeping the
+  localhost entries — and re-apply:
+
+  ```bash
+  npx wrangler@4 r2 bucket cors set clipfarm --file infra/r2-cors.json
+  ```
+
+  Uploads go browser → R2 directly (CF-163), so until this is done every upload
+  from the live domain fails at preflight, whatever the services are configured
+  to do. `cors set` replaces the policy rather than merging, which is why the
+  origin is added to the file rather than by a second command. See
+  `infra/README.md`.
 - Supabase → Authentication → **URL Configuration**: set Site URL to the web
   domain and add `https://<web-domain>/auth/callback` to **Redirect URLs**.
   Google sign-in lands there; a link back to any other path is rejected by

@@ -26,6 +26,14 @@ point of this directory is that a change to the bucket's config gets reviewed
 like any other change, and the file holds only web origins, which are already
 public in `DEPLOY_RENDER.md` and `api/app/config.py`. Nothing secret goes here.
 
+> **Provenance:** applied to the `clipfarm` bucket and verified field-for-field
+> against `cors bucket cors list` on **2026-08-17**. The CORS policy was also
+> exercised end to end — a browser at an allowed origin PUT two presigned
+> multipart parts and read both ETags back, which is the behaviour
+> `exposeHeaders` exists for. If you change this file, re-apply it and update
+> this line; a record nobody reconciles is the problem this directory exists to
+> fix.
+
 ```bash
 npx wrangler@4 r2 bucket cors set clipfarm --file infra/r2-cors.json
 ```
@@ -39,10 +47,21 @@ npx wrangler@4 r2 bucket cors set clipfarm --file infra/r2-cors.json
 
 ### Origins
 
-One bucket serves every environment, so `origins` is a **superset**: production
-plus the localhost entries used in development. It is therefore not the same
-value as the api's `CORS_ORIGINS` — that is a comma-separated string for one
-deployment, this is a JSON array covering all of them. The requirement is only
+> ⚠️ **As committed, `r2-cors.json` contains development origins only** —
+> `localhost:3000` and `127.0.0.1:3000`. There is no deployed web origin yet, and
+> this file records what is actually on the bucket rather than an aspiration.
+>
+> **Before the first production deploy, add the web origin to this file and
+> re-apply it.** Skipping that leaves the bucket rejecting the live domain and
+> every upload fails at preflight. Because `cors set` replaces rather than
+> merges, applying this file *as it stands* to a bucket that already has a
+> production origin would remove it — so edit the file, don't run a second
+> command.
+
+One bucket serves every environment, so `origins` is intended as a **superset**:
+production plus the localhost entries used in development. It is therefore never
+the same value as the api's `CORS_ORIGINS` — that is a comma-separated string for
+one deployment, this is a JSON array covering all of them. The requirement is
 that this list *contains* whatever origin the browser is actually on.
 
 R2 string-matches without normalising, so a trailing slash, a missing scheme, or
