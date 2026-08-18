@@ -25,10 +25,12 @@ version of it did not hold:
   an advisory lock. Reading the quota and then inserting after a multi-GB
   upload left a window minutes wide in which any number of parallel requests
   all saw the same "under the cap".
-* **An undeclared duration is charged at the maximum**, not at zero. Omitting
-  the field otherwise bought 5 x the per-video cap against a minute cap a
-  fraction of that size. The worker settles the charge down to the probed
-  truth, so honest clients are not penalised and dishonest ones gain nothing.
+* **A duration the file size contradicts is not believed.** Charging a missing
+  or zero duration at face value bought 5 x the per-video cap against a much
+  smaller minute cap; charging every unknown one a flat maximum instead
+  punished formats the browser cannot probe. The charge falls back to the
+  verified byte count — see `charge_for` — and the worker settles it to the
+  probed truth.
 
 The api never sees the video's metadata — probing a multi-GB object inside a
 request handler is not affordable — so the duration it acts on at accept time
@@ -42,7 +44,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -143,21 +145,68 @@ def _fmt_gb(num_bytes: int) -> str:
     return f"{num_bytes / 1024 ** 3:.1f} GB"
 
 
-def charge_for(limits: UploadLimits, duration_seconds: float | None) -> float:
+# Bitrate bounds used to sanity-check and stand in for a declared duration.
+# These are physical limits on what a video file *can* be, not tuning knobs:
+# together they say a file of N bytes cannot be shorter than N/MAX and is very
+# unlikely to be longer than N/MIN.
+#
+# MAX is set high (4K phone footage) so only a clearly impossible claim is
+# rejected; MIN is set low (heavily compressed 720p) so the stand-in
+# over-estimates rather than under-charges. Both are deliberately generous in
+# the direction that avoids punishing an honest upload.
+_MAX_PLAUSIBLE_BITRATE_BPS = 100_000_000  # 100 Mbps
+_MIN_PLAUSIBLE_BITRATE_BPS = 1_000_000    # 1 Mbps
+
+
+def _duration_from_size(limits: UploadLimits, size_bytes: int | None) -> float:
+    """A conservative stand-in duration for a file we can't time.
+
+    Derived from the object's real size, which — unlike the duration — is
+    verified. Assuming the lowest plausible bitrate over-estimates the length,
+    which is the safe direction for a charge that gets settled downward later.
+    Capped at the per-video maximum, since anything longer is rejected anyway.
+    """
+    if not size_bytes:
+        return limits.max_duration_seconds
+    return min(size_bytes * 8 / _MIN_PLAUSIBLE_BITRATE_BPS, limits.max_duration_seconds)
+
+
+def charge_for(
+    limits: UploadLimits, duration_seconds: float | None, size_bytes: int | None = None
+) -> float:
     """Seconds this upload costs the minute quota at accept time.
 
-    An undeclared duration is charged the **full per-video maximum**, not zero.
-    Zero was a free pass: omit one optional form field and the minute cap only
-    ever saw the count cap's worth of uploads at nothing each, so the effective
-    ceiling became `max_games x max_duration` — multiples of the stated cap.
+    The api never decodes the video, so the duration is always a claim. Two
+    failure modes pull in opposite directions and this is the seam where both
+    are handled:
 
-    Charging the maximum inverts that: declaring nothing is the most expensive
-    thing a client can do, and `settle_upload_charge` refunds the difference
-    once the worker knows the real length. Honest clients are unaffected.
+    * **Too cheap.** Charging a missing or zero duration at face value made the
+      minute cap advisory — omit the field (or send `0`, or `0.001`) and the
+      only real limit left was the count cap, so the ceiling became
+      `max_games x max_duration` rather than the stated one.
+    * **Too expensive.** Charging every unknown duration the flat per-video
+      maximum punishes formats the browser cannot probe. Chrome can't read MKV
+      metadata and MKV is a type we accept, so a 3-minute clip was charged 4
+      hours and blocked the user's day.
+
+    Both are answered by falling back to the file's *size*, which is verified,
+    rather than to a constant. A claim below what the byte count physically
+    allows is impossible, so it is discarded and the size stands in; otherwise
+    the claim is taken at face value. `settle_upload_charge` corrects whatever
+    is left once the worker has actually measured the file.
     """
-    if duration_seconds is None:
+    if size_bytes:
+        # The shortest a file this size could possibly be. A claim under it is
+        # not a low estimate, it is a contradiction — treat it as no claim.
+        physical_floor = size_bytes * 8 / _MAX_PLAUSIBLE_BITRATE_BPS
+        if duration_seconds is None or duration_seconds < physical_floor:
+            return _duration_from_size(limits, size_bytes)
+        return duration_seconds
+
+    # No size either (nothing to cross-check against): fall back to the cap.
+    if duration_seconds is None or duration_seconds <= 0:
         return limits.max_duration_seconds
-    return max(0.0, duration_seconds)
+    return duration_seconds
 
 
 def check_upload_allowed(
@@ -178,7 +227,7 @@ def check_upload_allowed(
     validates the type at presign and R2 enforces it from the signature, so
     re-deriving it from a HEAD at completion would risk rejecting an upload
     that already succeeded on a storage quirk. A None `duration_seconds` is
-    *not* skipped: it is charged at the maximum instead — see `charge_for`.
+    *not* skipped: it is priced from the size instead — see `charge_for`.
 
     Callers that go on to accept the upload must use `reserve_upload`, which
     runs this inside the transaction that records the charge. Calling this on
@@ -215,7 +264,7 @@ def check_upload_allowed(
             "Your quota frees up as earlier uploads age out of the window."
         )
 
-    requested_minutes = charge_for(limits, duration_seconds) / 60.0
+    requested_minutes = charge_for(limits, duration_seconds, size_bytes) / 60.0
     if status.minutes_used + requested_minutes > limits.max_minutes_per_window:
         # Say which of the two it is. An upload charged at the maximum for a
         # missing duration is otherwise indistinguishable from a genuinely
@@ -249,12 +298,13 @@ async def reserve_upload(
     db: AsyncSession,
     user_id: uuid.UUID,
     *,
+    game_id: uuid.UUID,
     content_type: str | None,
     size_bytes: int | None,
     duration_seconds: float | None,
     limits: UploadLimits | None = None,
 ) -> tuple[UploadEvent | None, tuple[int, str] | None]:
-    """Check the quota and claim a slot in one transaction.
+    """Check the quota and claim a slot for one game, in one transaction.
 
     Returns `(event, None)` on success or `(None, (status, message))` on
     rejection.
@@ -266,15 +316,26 @@ async def reserve_upload(
     not an off-by-one, so the reservation is taken *before* any bytes move.
 
     `pg_advisory_xact_lock` serialises the read-and-insert per user. It is held
-    only for the two statements below, not for the transfer: this commits before
+    only for the statements below, not for the transfer: this commits before
     the caller touches storage. Contention is per user, so one account hammering
     the endpoint cannot slow anyone else down.
 
-    Release the reservation with `release_reservation` if the upload then fails.
+    **Idempotent per game.** A game already carrying a charge returns that
+    charge rather than a second one, which is what makes a double-submit safe:
+    two completions of the same upload share one reservation, so neither can be
+    rejected on a slot the other just took, and the loser of the race has
+    nothing to hand back. It also means a crash between this commit and the
+    caller's own leaves a retry re-using the charge instead of paying twice.
     """
     limits = limits or limits_for_user(user_id)
 
     await db.execute(select(func.pg_advisory_xact_lock(_advisory_lock_key(user_id))))
+
+    existing = (
+        await db.execute(select(UploadEvent).where(UploadEvent.game_id == game_id))
+    ).scalars().first()
+    if existing is not None:
+        return existing, None
 
     status = await get_quota_status(db, user_id, limits)
     rejection = check_upload_allowed(
@@ -290,7 +351,8 @@ async def reserve_upload(
 
     event = UploadEvent(
         owner_id=user_id,
-        charged_seconds=charge_for(limits, duration_seconds),
+        game_id=game_id,
+        charged_seconds=charge_for(limits, duration_seconds, size_bytes),
     )
     db.add(event)
     await db.commit()  # releases the advisory lock
@@ -298,23 +360,11 @@ async def reserve_upload(
     return event, None
 
 
-async def release_reservation(db: AsyncSession, event_id: uuid.UUID) -> None:
-    """Give back a slot claimed for an upload that never happened.
-
-    Only for the storage-failure path: the bytes did not land, no job was
-    queued, and nothing was spent, so holding the slot would punish the user for
-    our own error. A *successful* upload is never released — that is the
-    refund loop this ledger exists to prevent.
-
-    Best-effort. A leaked reservation costs the user one slot until it ages out
-    of the window; raising here would replace the real upload error with this
-    one.
-    """
-    try:
-        await db.execute(delete(UploadEvent).where(UploadEvent.id == event_id))
-        await db.commit()
-    except Exception:
-        logger.warning("Failed to release upload reservation %s", event_id, exc_info=True)
+# There is deliberately no release/refund helper. With the reservation keyed to
+# the game, the loser of a completion race shares the winner's charge rather
+# than holding one of its own, so there is nothing to hand back — and a helper
+# that deletes ledger rows is precisely the refund path this table exists to
+# prevent. An upload that is rejected outright never reaches a reservation.
 
 
 # Settlement — correcting a reservation to the probed duration — lives in

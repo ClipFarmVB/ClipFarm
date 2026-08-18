@@ -619,7 +619,6 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         sync_set_condensed_result(
                             gid,
                             condensed_video_url=condensed_url,
-                            original_duration=video_duration,
                             condensed_duration=condensed_duration,
                         )
                         logger.info(

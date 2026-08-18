@@ -128,8 +128,8 @@ export function UploadZone() {
   };
 
   // Mirrors app/services/quota.py so the instant client rejection says the same
-  // thing the server would have. Unknown duration defers to the server, which
-  // charges it at the maximum rather than free.
+  // thing the server would have. An unknown duration defers to the server,
+  // which prices it from the file size rather than trusting or ignoring it.
   const validateDuration = (seconds: number | null) => {
     if (seconds == null) return null;
     if (seconds > config.max_duration_seconds) {
@@ -362,15 +362,15 @@ export function UploadZone() {
       )}
 
       {/* The browser couldn't read this file's length (CF-91). Common for MKV,
-          which Chrome can't decode even though we accept it. The server charges
-          an unknown duration at the maximum until the worker probes the real
-          one, so say that here rather than letting it surface as a surprise
-          rejection on the next upload. */}
+          which Chrome can't decode even though we accept it. The server then
+          estimates from the file size until the worker probes the real length,
+          so say so rather than letting the estimate surface as a surprise on
+          the next upload. */}
       {file && durationProbed && duration === null && (
         <div className="mt-3 rounded-md border border-border bg-surface px-3 py-2 text-[11px] text-muted">
-          We couldn&rsquo;t read this video&rsquo;s length in the browser. It will count as{" "}
-          {fmtMinutes(config.max_duration_seconds / 60)} against your quota until processing
-          confirms the real length, then the difference is credited back.
+          We couldn&rsquo;t read this video&rsquo;s length in the browser. Your quota will be
+          estimated from the file size until processing confirms the real length, then
+          corrected.
         </div>
       )}
 

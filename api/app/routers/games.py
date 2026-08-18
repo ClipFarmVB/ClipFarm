@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import func, select, update
+from sqlalchemy import delete as sa_delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user_id, get_optional_user_id
@@ -335,6 +335,9 @@ async def complete_upload(
     reservation, rejection = await quota.reserve_upload(
         db,
         user_id,
+        # Keyed to the game, so a double-submit shares one charge instead of
+        # the second call being rejected on the slot the first just took.
+        game_id=game_id,
         # Type was validated at presign and signed into the URL, so R2 already
         # rejected any mismatch — nothing left to check here.
         content_type=None,
@@ -343,25 +346,25 @@ async def complete_upload(
     )
     if rejection or reservation is None:
         code, message = rejection or (429, "Upload quota reached.")
-        # Nothing will process this, so don't leave the object or the row
-        # behind — same disposal as the oversize path above.
-        logger.info("Upload for game %s rejected by quota — discarding", game_id)
+        # Discard the upload — but only if this request still owns it. A
+        # sibling completion of the same game may have claimed it while we were
+        # in the HEAD, and deleting the object and row then would destroy the
+        # upload that request is about to enqueue. Making the row's own
+        # `uploading` state the guard means exactly one caller can dispose of
+        # it, for the same reason the claim below is a conditional UPDATE.
+        discarded = await db.execute(
+            sa_delete(Game).where(Game.id == game_id, Game.status == GameStatus.uploading)
+        )
+        if discarded.rowcount != 1:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="This upload is already complete")
+        await db.commit()
+        logger.info("Upload for game %s rejected by quota — discarded", game_id)
         try:
             await run_in_threadpool(storage.delete_file, key)
         except Exception:
             logger.warning("Cleanup of over-quota upload failed for %s", key, exc_info=True)
-        stale = await db.get(Game, game_id)
-        if stale is not None:
-            await db.delete(stale)
-            await db.commit()
         raise HTTPException(status_code=code, detail=message)
-
-    # Read the id out now, while the instance is known to be loaded. Every
-    # exit below this point either commits or rolls back, and a rollback
-    # expires the instance — touching `reservation.id` afterwards triggers a
-    # lazy refresh, which on an async session raises MissingGreenlet rather
-    # than returning a value. Same hazard the `game` reads above avoid.
-    reservation_id = reservation.id
 
     # Claim the upload atomically. The status check above is a read-then-write:
     # a HEAD (and, for multipart, an assembly call) sit between it and this
@@ -376,17 +379,11 @@ async def complete_upload(
         .values(status=GameStatus.queued, upload_id=None)
     )
     if claimed.rowcount != 1:
+        # A concurrent completion of this same game won. Nothing to hand back:
+        # the reservation is keyed to the game, so it is the same row the
+        # winner is using, and deleting it here would uncharge their upload.
         await db.rollback()
-        # A concurrent completion won the claim and is charging its own
-        # reservation; ours bought nothing, so give the slot back.
-        await quota.release_reservation(db, reservation_id)
         raise HTTPException(status_code=409, detail="This upload is already complete")
-
-    # Link the charge to the game so the worker can settle it against the
-    # probed duration, and so deleting the game detaches the row
-    # (ON DELETE SET NULL) instead of refunding the slot. The row is already
-    # persistent from the reservation, so the assignment is the whole update.
-    reservation.game_id = game_id
 
     await db.commit()
     await db.refresh(game)

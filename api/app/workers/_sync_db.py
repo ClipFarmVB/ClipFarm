@@ -105,15 +105,20 @@ def sync_set_condensed_result(
     game_id: uuid.UUID,
     *,
     condensed_video_url: str,
-    original_duration: float,
     condensed_duration: float,
 ):
+    """Record the condense stage's output.
+
+    `original_duration` is deliberately not set here: it is written for every
+    run as soon as the video is probed (see sync_set_original_duration), so
+    re-writing the same measurement on the condense path only created a second
+    place that had to agree.
+    """
     with Session(_engine) as s:
         game = s.get(Game, game_id)
         if not game:
             return
         game.condensed_video_url = condensed_video_url
-        game.original_duration = original_duration
         game.condensed_duration = condensed_duration
         s.commit()
 
