@@ -8,7 +8,7 @@
 # Install for your clone:
 #   git config core.hooksPath .hooks
 #
-# Requirements: ruff, mypy, and npm on PATH. For the full api/tests step:
+# Requirements: ruff, mypy, pytest, and npm on PATH. For the full api/tests step:
 #   pip install -r api/requirements-dev.txt     # app deps + pytest + fakeredis
 # Install that and every step runs. With only `pip install ruff mypy pytest`,
 # the api/tests step skips (loudly) rather than erroring — the app-importing
@@ -56,9 +56,11 @@ echo "ok"
 # the tests do `from app... import ...`.
 #
 # Unlike ml/tests these need the application's own dependencies, plus the
-# test-only ones. The probe is `fakeredis`, not an app runtime dep: fakeredis is
-# the one package that lives ONLY in requirements-dev.txt, so importing it proves
-# the whole dev set is present. Probing a runtime dep (pydantic-settings, etc.)
+# test-only ones. The probe is `fakeredis`, not an app runtime dep: it is the one
+# importorskip target that lives only in requirements-dev.txt, so importing it
+# proves the whole dev set is present. (pytest is pinned there too, but it is
+# already assumed on PATH for the ml/tests step above, so it can't discriminate a
+# dev install from a plain one.) Probing a runtime dep (pydantic-settings, etc.)
 # would pass after a plain `pip install -r requirements.txt` and then let
 # test_worker_safety.py's CF-65a Redis-lock test silently importorskip — the
 # exact passing-without-executing failure the requirements-dev install exists to
