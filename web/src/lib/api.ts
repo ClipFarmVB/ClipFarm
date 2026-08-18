@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "@/lib/apiError";
 import { createClient } from "@/lib/supabase";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -15,6 +16,20 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return {};
 }
 
+/**
+ * Fail with the server's own explanation of a bad response.
+ *
+ * Shared because not every call can go through `request()` — a DELETE has no
+ * JSON body, an avatar upload posts multipart — and those hand-rolled paths
+ * are exactly the ones that drifted: an over-quota video upload reported a
+ * clean sentence while the 2 MB avatar cap still showed
+ * `API error 413: {"detail":"..."}`.
+ */
+async function throwApiError(res: Response): Promise<never> {
+  const text = await res.text();
+  throw new Error(apiErrorMessage(text, `API error ${res.status}: ${text}`));
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_URL}${path}`, {
@@ -25,10 +40,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API error ${res.status}: ${text}`);
-  }
+  // Prefer the server's own explanation. The upload limits (CF-91) write
+  // real, actionable sentences into `detail` — "you have 60 min of your
+  // 360 min per 24 hours left" — which the raw form buried inside JSON.
+  if (!res.ok) await throwApiError(res);
   return res.json() as Promise<T>;
 }
 
@@ -37,7 +52,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface Game {
   id: string;
   title: string;
-  status: "queued" | "processing" | "ready" | "failed";
+  // "uploading" means the row exists but the browser is still PUTting the
+  // video to R2. The Library filters these out server-side, so they're only
+  // ever seen by the tab doing the upload.
+  status: "uploading" | "queued" | "processing" | "ready" | "failed";
   progress: number;
   progress_stage: string | null;
   created_at: string;
@@ -69,58 +87,85 @@ export async function deleteGame(id: string): Promise<void> {
     method: "DELETE",
     headers: authHeaders,
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API error ${res.status}: ${text}`);
-  }
+  if (!res.ok) await throwApiError(res);
 }
 
-// Upload happens in two legs: the browser sends the file to the API
-// ("sending", observable via XHR), then the API streams it up to R2 before
-// responding ("finalizing", invisible to the browser — no progress events).
-export type UploadProgress =
-  | { phase: "sending"; loaded: number; total: number }
-  | { phase: "finalizing"; total: number };
+// ─── Uploads ─────────────────────────────────────────────────────────────────
+// The video goes browser → R2 directly (CF-163). The api only issues a ticket
+// of presigned URLs and confirms the object afterwards; it never sees the
+// bytes. The transfer itself lives in ./upload.
 
-export async function uploadGame(
-  file: File,
-  title: string,
-  condense: boolean = false,
-  onProgress?: (p: UploadProgress) => void
-): Promise<Game> {
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("title", title);
-  formData.append("condense", String(condense));
+/** Server-owned limits. The client renders and validates against these rather
+ *  than its own constants, so the advertised cap is always the enforced one. */
+export interface UploadConfig {
+  max_upload_bytes: number;
+  allowed_content_types: string[];
+  single_put_max_bytes: number;
+  part_size_bytes: number;
+  url_ttl_seconds: number;
 
-  const authHeaders = await getAuthHeaders();
+  // Per-user processing quota (CF-91). `*_remaining` is what's left in the
+  // rolling window right now, so the allowance can be shown before a file is
+  // even chosen rather than surfacing as a rejection at the end.
+  max_duration_seconds: number;
+  window_hours: number;
+  max_games_per_window: number;
+  games_used: number;
+  games_remaining: number;
+  max_minutes_per_window: number;
+  minutes_used: number;
+  minutes_remaining: number;
+}
 
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_URL}/games`);
+export interface UploadPart {
+  part_number: number;
+  url: string;
+}
 
-    // Set auth header on XHR
-    for (const [key, value] of Object.entries(authHeaders)) {
-      xhr.setRequestHeader(key, value);
-    }
+/** Everything needed to upload without talking to the api again until done. */
+export interface UploadTicket {
+  game_id: string;
+  mode: "single" | "multipart";
+  content_type: string;
+  expires_in: number;
+  upload_url: string | null;
+  upload_id: string | null;
+  part_size_bytes: number | null;
+  parts: UploadPart[];
+}
 
-    if (onProgress) {
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) onProgress({ phase: "sending", loaded: e.loaded, total: e.total });
-      };
-      // Body fully sent → the server is now uploading to R2 (the invisible leg).
-      xhr.upload.onload = () => onProgress({ phase: "finalizing", total: file.size });
-    }
+export interface CompletedPart {
+  part_number: number;
+  etag: string;
+}
 
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
-      } else {
-        reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
-      }
-    };
-    xhr.onerror = () => reject(new Error("Network error during upload"));
-    xhr.send(formData);
+export function getUploadConfig(): Promise<UploadConfig> {
+  return request<UploadConfig>("/games/upload-config");
+}
+
+export function createUpload(input: {
+  title: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  condense: boolean;
+  // Read from the file in the browser. Lets the api reject an over-long video
+  // and charge the quota before the transfer; the worker's probe settles it.
+  duration_seconds?: number | null;
+}): Promise<UploadTicket> {
+  return request<UploadTicket>("/games/uploads", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** Confirm the object is in R2 so the api can queue processing. Only after
+ *  this resolves does the game exist as far as the rest of the app is
+ *  concerned — a failed transfer never becomes a job. */
+export function completeUpload(gameId: string, parts: CompletedPart[]): Promise<Game> {
+  return request<Game>(`/games/${gameId}/uploads/complete`, {
+    method: "POST",
+    body: JSON.stringify({ parts }),
   });
 }
 
@@ -257,4 +302,69 @@ export function addClipToCollection(collectionId: string, clipId: string): Promi
 
 export function removeClipFromCollection(collectionId: string, clipId: string): Promise<void> {
   return request<void>(`/collections/${collectionId}/clips/${clipId}`, { method: "DELETE" });
+}
+
+// ─── Profiles (CF-107) ────────────────────────────────────────────────────────
+
+export interface Profile {
+  id: string;
+  username: string | null;
+  display_name: string | null;
+  bio: string | null;
+  avatar_url: string | null;
+  is_private: boolean;
+  created_at: string;
+}
+
+/** The caller's own profile — adds fields not exposed on a public lookup. */
+export interface Me extends Profile {
+  email: string;
+  username_changed_at: string | null;
+  /** True while the handle is the one migration 010 generated, not one chosen. */
+  username_is_generated: boolean;
+}
+
+export interface HandleAvailability {
+  username: string;
+  available: boolean;
+  reason: string | null;
+}
+
+export function getMe(): Promise<Me> {
+  return request<Me>("/users/me");
+}
+
+export function getProfile(handle: string): Promise<Profile> {
+  return request<Profile>(`/users/${encodeURIComponent(handle)}`);
+}
+
+export function checkHandle(username: string): Promise<HandleAvailability> {
+  return request<HandleAvailability>(
+    `/users/handle-available?username=${encodeURIComponent(username)}`,
+  );
+}
+
+export interface ProfileUpdate {
+  username?: string;
+  display_name?: string;
+  bio?: string;
+  is_private?: boolean;
+}
+
+export function updateMe(body: ProfileUpdate): Promise<Me> {
+  return request<Me>("/users/me", { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export async function uploadAvatar(file: File): Promise<Me> {
+  const authHeaders = await getAuthHeaders();
+  const form = new FormData();
+  form.append("file", file);
+  // No Content-Type header: the browser must set the multipart boundary itself.
+  const res = await fetch(`${API_URL}/users/me/avatar`, {
+    method: "POST",
+    headers: authHeaders,
+    body: form,
+  });
+  if (!res.ok) await throwApiError(res);
+  return res.json() as Promise<Me>;
 }

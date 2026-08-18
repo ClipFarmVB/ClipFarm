@@ -6,9 +6,14 @@ from sqlalchemy import Boolean, Float, String, DateTime, ForeignKey, Enum as SAE
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.visibility import Visibility
 
 
 class GameStatus(str, enum.Enum):
+    # The row exists but the video hasn't landed in R2 yet: the browser is
+    # PUTting it directly (CF-163). Nothing is queued until the object is
+    # confirmed, so an upload that fails or is abandoned never becomes work.
+    uploading = "uploading"
     queued = "queued"
     processing = "processing"
     ready = "ready"
@@ -26,10 +31,28 @@ class Game(Base):
     )
     raw_video_url: Mapped[str | None] = mapped_column(String(2048))
     error_message: Mapped[str | None] = mapped_column(String(1024))
+    # S3 multipart upload id, held only while status == uploading. Stored so a
+    # delete (or the abandoned-upload sweep) can abort the upload and stop
+    # paying for its parts, rather than waiting on a lifecycle rule.
+    upload_id: Mapped[str | None] = mapped_column(String(255))
+    # What the client said the video's length was at presign time (CF-91).
+    # Carried from presign to completion so the quota charge is taken from the
+    # figure declared before the transfer, not from whatever the completion
+    # call asserts. A claim, never a measurement — kept apart from
+    # original_duration below for exactly that reason.
+    declared_duration: Mapped[float | None] = mapped_column(Float)
     # Pipeline progress while status == processing: fraction 0.0-1.0 plus a
     # machine-readable stage slug (e.g. "tracking_ball") for the frontend bar.
     progress: Mapped[float] = mapped_column(Float, default=0.0, server_default="0", nullable=False)
     progress_stage: Mapped[str | None] = mapped_column(String(64))
+    # Who may read this game and its clips (CF-108). Private by default —
+    # nothing becomes visible to a non-owner without a deliberate change.
+    visibility: Mapped[Visibility] = mapped_column(
+        SAEnum(Visibility, name="visibility"),
+        nullable=False,
+        server_default=Visibility.private.value,
+        default=Visibility.private,
+    )
     # Opt-in dead-time removal: one condensed video with only the rally
     # windows kept, produced alongside the highlight clips.
     condense_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

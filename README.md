@@ -28,15 +28,18 @@ It should be enough to understand how the system fits together and where to make
 
 ## Architecture & Flow
 
-A game is uploaded through the web app, stored in R2, and a Celery task processes it
-end to end. The heavy, occlusion-proof primary path is **ball tracking**, not pose.
+A game is uploaded **straight from the browser to R2** with a presigned URL, and a
+Celery task processes it end to end. The heavy, occlusion-proof primary path is
+**ball tracking**, not pose.
 
 ```
 Browser (web/, Next.js)
-    │  upload video (multipart)
+    │  1. POST /games/uploads  ───►  FastAPI: validate type + size, presign
+    │  2. PUT video ──────────────►  R2: raw/{game_id}.mp4   (api not involved)
+    │  3. POST /games/{id}/uploads/complete
     ▼
-FastAPI (api/)  ──►  R2: raw/{game_id}.mp4
-    │  enqueue process_game
+FastAPI (api/)  ──►  HEAD the object, then enqueue process_game
+    │
     ▼
 Celery worker  ──  process_game_task()  (api/app/workers/tasks.py)
     │
@@ -240,11 +243,41 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `r2_*` | — | Cloudflare R2 bucket + credentials. |
 | `redis_url` / `celery_*` | redis:6379 | Job queue. |
 | `modal_token_id` / `modal_token_secret` | "" | Enables the Modal GPU tracking path. |
-| `max_upload_bytes` | 2 GB | Upload size cap. |
+| `max_upload_bytes` | 2 GB | Upload size cap. Served to the web app by `GET /games/upload-config` so the advertised limit can't drift from the enforced one. |
+| `single_put_max_bytes` / `upload_part_size_bytes` | 100 MiB / 100 MiB | Below the threshold an upload is one presigned PUT; above it, multipart with parts this size. |
+| `upload_url_ttl_seconds` | `21600` (6 h) | Lifetime of a presigned upload URL — must cover a whole upload on a slow uplink. |
+| `abandoned_upload_hours` | `24` | Upload tickets never completed are swept (row deleted, multipart aborted) on the owner's next presign. |
+| `max_upload_duration_seconds` | `14400` (4 h) | Longest single video accepted. Checked at presign against the client-declared length, then again by the worker against the probed one. |
+| `quota_window_hours` / `quota_max_games_per_window` / `quota_max_minutes_per_window` | `24` / `5` / `360` | Per-user rolling processing quota (cost guardrail — GPU inference is ~$0.25 per hour of footage). Both caps apply. Counted from the `upload_events` ledger, so deleting a game does not refund a slot. A duration the file size contradicts (missing, `0`, or physically impossible for the byte count) is priced from the size instead of trusted, and settled to the probed value by the worker. `GET /games/upload-config` returns the limits plus the caller's remaining allowance. |
 | `raw_upload_retention_days` | `7` | Intended raw-upload TTL (enforcement is a backlog item). |
 
 Secrets go in `.env.docker` (gitignored) for the stack, `api/.env` and `web/.env.local` for
 local non-Docker runs. Never commit credentials.
+
+### R2 bucket setup (required for uploads to work)
+
+The browser PUTs video directly to R2, so the bucket must allow it — without these
+two settings uploads fail in the browser with an opaque CORS error, no matter how
+the api is configured.
+
+**CORS policy** — `ExposeHeaders: ETag` is not optional: multipart completion sends
+each part's ETag back to the api, and a cross-origin response header is unreadable
+to JavaScript unless it is exposed.
+
+```json
+[{
+  "AllowedOrigins": ["https://your-web-domain", "http://localhost:3000"],
+  "AllowedMethods": ["PUT", "GET", "HEAD"],
+  "AllowedHeaders": ["content-type"],
+  "ExposeHeaders": ["ETag"],
+  "MaxAgeSeconds": 3600
+}]
+```
+
+**Lifecycle rule** — abort incomplete multipart uploads after ~7 days. The api aborts
+on delete and on the abandoned-upload sweep; this is the backstop for uploads neither
+path reaches. Parts of an unfinished upload are billed until aborted and are invisible
+to a normal object listing.
 
 ---
 
@@ -261,6 +294,7 @@ Postgres via SQLAlchemy (`api/app/models/`), RLS enabled on all tables.
 | `Collection` | User-curated groupings of clips. |
 | `Correction` | User relabel events (written on relabel; readable via `GET /corrections` + CSV `/corrections/export` — training signal). |
 | `DeadTimeRun` / `DeadTimeClip` | Separate experimental dead-time detection flow. |
+| `UploadEvent` | Append-only quota ledger (CF-91). One row per accepted upload, holding the seconds charged against the per-user window. Deliberately not derived from `Game`: games are hard-deleted, so counting them let a user refund a slot whose GPU cost was already spent. `game_id` is `ON DELETE SET NULL`. |
 
 ---
 

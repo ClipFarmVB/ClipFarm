@@ -111,7 +111,7 @@ services:
         generateValue: true
       - key: API_BASE_URL             # this service's own public URL (custom domain or *.onrender.com)
         sync: false
-      - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.app
+      - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.ca
         sync: false
       - key: REDIS_URL
         fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
@@ -219,7 +219,7 @@ services:
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false
-      - key: NEXT_PUBLIC_API_URL      # the API's public URL, e.g. https://api.clipfarm.app
+      - key: NEXT_PUBLIC_API_URL      # the API's public URL, e.g. https://api.clipfarm.ca
         sync: false
       # Error monitoring (CF-89) — separate DSN from the api/worker project.
       - key: NEXT_PUBLIC_SENTRY_DSN   # Sentry → clipfarm-web → Settings → Client Keys (DSN)

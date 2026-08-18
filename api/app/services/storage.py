@@ -13,6 +13,10 @@ class LimitedReader:
     Wraps a file-like object and raises ValueError if more than `limit` bytes
     are read. Passed directly to upload_fileobj to enforce size limits even
     when the client omits a Content-Length header.
+
+    CF-163 took video off this path (the browser PUTs straight to R2 now), but
+    avatar uploads still stream through the api — they are small enough that
+    presigning would be more machinery than it saves.
     """
 
     def __init__(self, fileobj, limit: int) -> None:
@@ -92,13 +96,108 @@ def download_file(key: str, local_path: str | Path) -> None:
     _client().download_file(settings.r2_bucket_name, key, str(local_path))
 
 
+def head_object(key: str) -> dict | None:
+    """
+    HEAD an object; None on missing or any error (probe, never raises).
+
+    The size is what makes this more than an existence check: a presigned PUT
+    cannot enforce Content-Length (S3 and R2 ignore it as a query parameter),
+    so the only place a client's *declared* size can be checked against the
+    bytes it actually wrote is here, after the fact — see confirm_upload.
+    """
+    try:
+        resp = _client().head_object(Bucket=settings.r2_bucket_name, Key=key)
+    except Exception:
+        return None
+    return {
+        "size": resp.get("ContentLength", 0),
+        "content_type": resp.get("ContentType", ""),
+    }
+
+
 def object_exists(key: str) -> bool:
     """HEAD an object; False on missing or any error (probe, never raises)."""
-    try:
-        _client().head_object(Bucket=settings.r2_bucket_name, Key=key)
-        return True
-    except Exception:
-        return False
+    return head_object(key) is not None
+
+
+# ── Presigned direct-to-R2 uploads (CF-163) ──────────────────────────────────
+# The browser sends video straight to R2 so the api never handles the bytes.
+# generate_presigned_url is pure local signing — no network, safe to call on
+# the event loop. Everything else here is a blocking API call and must be run
+# through run_in_threadpool by its caller.
+
+
+def presign_put(key: str, content_type: str, expires_in: int) -> str:
+    """
+    Presigned URL for a single-shot PUT of a whole object.
+
+    ContentType is deliberately signed into the URL: R2 rejects the request if
+    the browser's Content-Type header doesn't match, which makes the file-type
+    check a real pre-transfer control rather than an advisory one.
+    """
+    return _client().generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": settings.r2_bucket_name,
+            "Key": key,
+            "ContentType": content_type,
+        },
+        ExpiresIn=expires_in,
+    )
+
+
+def create_multipart(key: str, content_type: str) -> str:
+    """Begin a multipart upload; returns the upload id."""
+    resp = _client().create_multipart_upload(
+        Bucket=settings.r2_bucket_name,
+        Key=key,
+        ContentType=content_type,
+    )
+    return resp["UploadId"]
+
+
+def presign_upload_part(key: str, upload_id: str, part_number: int, expires_in: int) -> str:
+    """Presigned URL for one part of an in-progress multipart upload."""
+    return _client().generate_presigned_url(
+        "upload_part",
+        Params={
+            "Bucket": settings.r2_bucket_name,
+            "Key": key,
+            "UploadId": upload_id,
+            "PartNumber": part_number,
+        },
+        ExpiresIn=expires_in,
+    )
+
+
+def complete_multipart(key: str, upload_id: str, parts: list[dict]) -> None:
+    """
+    Assemble the uploaded parts into the final object.
+
+    `parts` is [{"PartNumber": int, "ETag": str}, ...] and must be sorted by
+    part number — S3 and R2 reject an out-of-order list.
+    """
+    _client().complete_multipart_upload(
+        Bucket=settings.r2_bucket_name,
+        Key=key,
+        UploadId=upload_id,
+        MultipartUpload={"Parts": sorted(parts, key=lambda p: p["PartNumber"])},
+    )
+
+
+def abort_multipart(key: str, upload_id: str) -> None:
+    """
+    Discard an unfinished multipart upload and its parts.
+
+    Uploaded parts are billed until aborted, so this runs on delete and on the
+    abandoned-upload sweep. The bucket's abort-incomplete-multipart lifecycle
+    rule is the backstop for uploads neither path reaches.
+    """
+    _client().abort_multipart_upload(
+        Bucket=settings.r2_bucket_name,
+        Key=key,
+        UploadId=upload_id,
+    )
 
 
 def presign_url(key: str, expires_in: int = 3600, download_filename: str | None = None) -> str:
@@ -144,9 +243,32 @@ def delete_file(key: str) -> None:
     _client().delete_object(Bucket=settings.r2_bucket_name, Key=key)
 
 
+def plan_part_count(size_bytes: int, part_size: int) -> int:
+    """
+    How many multipart parts a file of `size_bytes` needs.
+
+    The web client slices the file with the same ceil division, so both sides
+    agree on part boundaries without exchanging them. A zero-byte file still
+    needs one part — S3 rejects a multipart upload with no parts at all.
+    """
+    if part_size <= 0:
+        raise ValueError("part_size must be positive")
+    return max(1, -(-size_bytes // part_size))
+
+
 def game_raw_key(game_id: uuid.UUID, filename: str) -> str:
-    ext = Path(filename).suffix
-    return f"raw/{game_id}{ext}"
+    """
+    Storage key for a game's source video, keeping only the extension.
+
+    The extension is reduced to plain alphanumerics: it is the one part of a
+    user-supplied filename that survives into the key, and the key is embedded
+    in `raw_video_url`, which every consumer parses back out with urlparse. A
+    "?" or "#" in the extension would silently truncate the key on that round
+    trip, leaving the row pointing at an object that doesn't exist.
+    """
+    raw_ext = Path(filename).suffix.lstrip(".")
+    ext = "".join(c for c in raw_ext if c.isalnum())[:10].lower()
+    return f"raw/{game_id}.{ext}" if ext else f"raw/{game_id}"
 
 
 def clip_key(game_id: uuid.UUID, clip_id: uuid.UUID) -> str:
@@ -160,3 +282,22 @@ def thumbnail_key(game_id: uuid.UUID, clip_id: uuid.UUID) -> str:
 def condensed_key(game_id: uuid.UUID) -> str:
     # Deterministic per game so task retries overwrite instead of orphaning.
     return f"condensed/{game_id}.mp4"
+
+
+def avatar_key(user_id: uuid.UUID) -> str:
+    # Deterministic per user (CF-107): re-uploading an avatar overwrites the
+    # previous object instead of accumulating one per change. Keyed by user id
+    # rather than username so a handle rename doesn't strand the image.
+    #
+    # No extension: ALLOWED_AVATAR_TYPES accepts JPEG, PNG and WebP, so a fixed
+    # `.jpg` would mislabel two of the three. The object's ContentType carries
+    # the real type, and keeping the key extensionless means switching format
+    # overwrites the old avatar rather than orphaning it under another suffix.
+    #
+    # Store the plain `{r2_public_url}/{key}` form. Do NOT append a cache-buster
+    # to the recorded value: presign_from_stored_url slices the prefix off to
+    # recover the Key, so a query string ends up inside it and R2 404s on every
+    # signature. Freshness comes from presigning on read instead — each response
+    # carries a new signature, so a re-uploaded avatar is fetched again without
+    # the stored value ever changing (see routers/profiles.py._serialize).
+    return f"avatars/{user_id}"

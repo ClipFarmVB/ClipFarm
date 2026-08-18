@@ -12,6 +12,48 @@ class Settings(BaseSettings):
     # Upload limits
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GB
     allowed_upload_content_types: str = "video/mp4,video/quicktime,video/x-matroska,video/webm"
+    # Hard duration cap (CF-91). GPU inference costs roughly $0.25 per hour of
+    # footage, so an unbounded upload is an unbounded bill. 4 h clears a long
+    # 5-set match with room to spare — the limit is aimed at multi-hour
+    # stream dumps, not at any real game.
+    max_upload_duration_seconds: float = 4 * 3600  # 4 h
+
+    # Per-user processing quota (CF-91), evaluated over a rolling window.
+    # Both caps apply: whichever is hit first stops the upload. Defaults allow
+    # a full tournament day (5 matches / 6 h ≈ $1.50 of GPU) while bounding
+    # what a single account can spend per day. Plan tiers (CF-64) will raise
+    # these per user rather than replace them — see services/quota.py.
+    quota_window_hours: float = 24.0
+    quota_max_games_per_window: int = 5
+    quota_max_minutes_per_window: float = 360.0  # 6 h of footage
+
+    # Direct-to-R2 uploads (CF-163). The browser PUTs to R2 with a presigned
+    # URL; the api only issues the ticket and confirms the object afterwards.
+    #
+    # TTL has to cover a whole upload — a 2 GB file on a slow phone uplink is
+    # comfortably over an hour — but the URL is a write grant for one specific
+    # key, so 6h bounds a leak to the same day rather than indefinitely.
+    upload_url_ttl_seconds: int = 6 * 3600
+    # Files at or below this go as one PUT: a single round trip, no completion
+    # bookkeeping. Above it, multipart — not because of R2's 5 GiB single-PUT
+    # ceiling (which never binds at a 2 GB cap) but for resumability: a phone
+    # on cellular that drops at 90% retries one part, not the whole file.
+    single_put_max_bytes: int = 100 * 1024 * 1024
+    # S3/R2 require every part except the last to be >= 5 MiB. 100 MiB keeps a
+    # 2 GB upload to ~20 parts (the 10,000-part limit is never in reach) while
+    # still being a cheap unit to retry.
+    upload_part_size_bytes: int = 100 * 1024 * 1024
+    # A presigned ticket the client never completes leaves an `uploading` row
+    # and possibly orphaned multipart parts. Rows older than this are swept on
+    # the owner's next presign — no cron, no new infrastructure.
+    abandoned_upload_hours: int = 24
+
+    # Social surface (CF-107+). Off by default: public identity ships behind a
+    # flag so the epic can land incrementally without exposing profiles,
+    # handles or avatars in production before the whole of it is ready. The web
+    # half reads NEXT_PUBLIC_SOCIAL_ENABLED — both must be on for the feature to
+    # work, and either being off is a coherent state.
+    social_enabled: bool = False
 
     # ML pipeline
     clip_verify_enabled: bool = False  # Use CLIP frames in highlight scoring (slow on CPU, enable for GPU)
