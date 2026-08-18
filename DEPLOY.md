@@ -9,7 +9,7 @@
 > **Don't use it as a staging environment.** Staging is only useful with parity,
 > and this differs from Render prod in every deployment-shaped dimension:
 > runtime (compose vs Render services), secrets (plaintext `.env.docker` vs a
-> secret store), migration timing (on boot vs `preDeployCommand`), TLS, and Key
+> secret store), migration timing (a manual step vs `preDeployCommand`), TLS, and Key
 > Value persistence. It would pass while prod fails and vice versa. A real
 > staging environment is **CF-152**, as a second service group in the Render
 > Blueprint.
@@ -128,19 +128,25 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build re
 ```
 
 This builds the shared api/worker image on the box, starts redis (private),
-the API (which runs `alembic upgrade head` then uvicorn), and the Celery
-worker (`--pool=solo`, one job at a time).
+the API, and the Celery worker (`--pool=solo`, one job at a time).
 
-> **⚠ Migration coordination.** The API runs `alembic upgrade head` against
-> Supabase on every boot. Supabase is the shared database — booting this box
-> can advance the shared schema. Make sure the branch you deploy is at the
-> intended migration head and coordinate with the team, per the "shared DB"
-> warning in the README.
+> **⚠ Migrations do not run here.** `DATABASE_URL` on this box points at
+> Supabase, and the api's boot guard (`scripts/auto_migrate.py`, CF-189) refuses
+> to migrate a non-local host — so booting this box no longer advances the shared
+> schema as a side effect. When the branch you deploy carries a new revision,
+> apply it deliberately, once, before or right after bringing the stack up:
 >
-> CF-68 (#98) made migrations a deliberate deploy step — but **only on the Render
-> path**, via `preDeployCommand`. This box still migrates on every boot and
-> always will; that is one of the standing parity gaps listed at the top of this
-> file, not a temporary state waiting on a fix. Coordinate every time.
+> ```bash
+> docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api alembic upgrade head
+> ```
+>
+> Coordinate it with the team, per the "shared DB" warning in the README.
+>
+> CF-68 (#98) made migrations a deliberate step on the Render path via
+> `preDeployCommand`; CF-189 closes the same hole here, from the other side — by
+> refusing rather than by scheduling. The paths still differ in *timing*: Render
+> applies them automatically once per deploy, this box waits for the command
+> above. That remains a parity gap, just no longer a silent one.
 
 ## 6. Verify end-to-end
 

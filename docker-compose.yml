@@ -34,22 +34,24 @@ services:
     env_file:
       - .env.docker
     environment:
-      # DATABASE_URL comes from .env.docker (shared Supabase by default,
-      # local db container when doing schema/migration work) — do not
-      # override here
+      # DATABASE_URL comes from .env.docker (local db container by default,
+      # shared Supabase as a deliberate opt-in) — do not override here
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
     depends_on:
       redis:
         condition: service_healthy
-      # api runs `alembic upgrade head` on boot — wait for Postgres to be ready
-      # so the migration doesn't race a still-starting db (harmless when
-      # DATABASE_URL points at Supabase, required when it points at the db container)
+      # api migrates on boot when DATABASE_URL is local — wait for Postgres to be
+      # ready so the migration doesn't race a still-starting db
       db:
         condition: service_healthy
+    # auto_migrate.py runs `alembic upgrade head` ONLY when DATABASE_URL names a
+    # local host (CF-189). Pointed at Supabase it skips and says so, so no
+    # `docker compose up` can advance the shared schema as a side effect —
+    # that stays a deliberate, separate step (README § Local Development).
     command: >
-      sh -lc "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+      sh -lc "python scripts/auto_migrate.py && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
     volumes:
@@ -64,9 +66,8 @@ services:
     env_file:
       - .env.docker
     environment:
-      # DATABASE_URL comes from .env.docker (shared Supabase by default,
-      # local db container when doing schema/migration work) — do not
-      # override here
+      # DATABASE_URL comes from .env.docker (local db container by default,
+      # shared Supabase as a deliberate opt-in) — do not override here
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
