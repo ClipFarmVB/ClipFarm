@@ -21,7 +21,17 @@ Exits 0 when it skips, so the `&& uvicorn …` chain still starts the API.
 import os
 import subprocess
 import sys
-from urllib.parse import urlsplit
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+# Put the api/ package root on the path so `app.config` imports the same way it
+# does under uvicorn and pytest. Running this as `python scripts/auto_migrate.py`
+# seeds sys.path with the script's own dir (scripts/), not the working dir, so
+# without this the app.config read in resolve_database_url() would fail and fall
+# back to os.environ — defeating the point of reading through app.config at all.
+_API_ROOT = Path(__file__).resolve().parent.parent
+if str(_API_ROOT) not in sys.path:
+    sys.path.insert(0, str(_API_ROOT))
 
 
 def resolve_database_url() -> str:
@@ -61,18 +71,32 @@ TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 def database_host(database_url: str) -> str:
-    """Host portion of a SQLAlchemy URL, lowercased. Empty when there is none
-    (a unix-socket or sqlite URL — both local by construction)."""
+    """Host the connection will actually use, lowercased.
+
+    Empty when there is genuinely no host (a unix-socket or sqlite URL, both
+    local by construction). But an empty netloc host does not always mean local:
+    libpq-style URLs move the host into a `?host=` query parameter
+    (`postgresql://u:p@/db?host=example.com`), which asyncpg and psycopg honour.
+    So when the netloc carries no host, the query param is consulted before
+    concluding "no host" — otherwise `?host=<remote>` would read as local and be
+    migrated, the exact thing this guard prevents.
+    """
     try:
-        return (urlsplit(database_url).hostname or "").lower()
+        parts = urlsplit(database_url)
     except ValueError:
         # Unparseable netloc (an unescaped credential, usually). Treat it as
         # remote: refusing to migrate is the safe side of the guess.
         return "<unparseable>"
+    host = (parts.hostname or "").lower()
+    if not host:
+        host = parse_qs(parts.query).get("host", [""])[0].strip().lower()
+    return host
 
 
 def is_local(host: str) -> bool:
-    return host == "" or host in LOCAL_HOSTS
+    # A leading slash is a unix-socket directory (libpq `host=/var/run/...`),
+    # which is always on this machine.
+    return host == "" or host.startswith("/") or host in LOCAL_HOSTS
 
 
 def main() -> int:

@@ -4,6 +4,7 @@ Pure stdlib — no importorskip needed (the script imports nothing from `app`).
 Run from the api/ dir: `cd api && pytest tests/test_auto_migrate.py`.
 """
 import importlib.util
+import sys
 import os
 from pathlib import Path
 
@@ -15,7 +16,8 @@ assert _spec and _spec.loader
 auto_migrate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(auto_migrate)
 
-SUPABASE = "postgresql+asyncpg://postgres:pw@aws-1-us-east-1.pooler.supabase.com:5432/postgres"
+SUPABASE_HOST = "aws-1-us-east-1.pooler.supabase.com"
+SUPABASE = f"postgresql+asyncpg://postgres:pw@{SUPABASE_HOST}:5432/postgres"
 LOCAL_DB = "postgresql+asyncpg://postgres:postgres@db:5432/clipfarm"
 
 
@@ -26,10 +28,24 @@ LOCAL_DB = "postgresql+asyncpg://postgres:postgres@db:5432/clipfarm"
         (SUPABASE, "aws-1-us-east-1.pooler.supabase.com"),
         ("postgresql+asyncpg://u:p@LOCALHOST:5432/clipfarm", "localhost"),
         ("postgresql+asyncpg:///clipfarm", ""),  # unix socket — no host
+        # libpq `?host=` overrides an empty netloc host (asyncpg/psycopg honour it)
+        ("postgresql+asyncpg://u:p@/db?host=" + SUPABASE_HOST, SUPABASE_HOST),
+        ("postgresql+asyncpg://u:p@/db?host=/var/run/postgresql", "/var/run/postgresql"),
     ],
 )
 def test_database_host(url, expected):
     assert auto_migrate.database_host(url) == expected
+
+
+def test_host_query_param_pointing_remote_is_not_local():
+    """`?host=<remote>` with an empty netloc must not read as a local socket."""
+    url = "postgresql+asyncpg://u:p@/db?host=aws-1-us-east-1.pooler.supabase.com"
+    assert not auto_migrate.is_local(auto_migrate.database_host(url))
+
+
+def test_unix_socket_directory_host_is_local():
+    """`?host=/var/run/postgresql` is a local socket dir, not a remote host."""
+    assert auto_migrate.is_local("/var/run/postgresql")
 
 
 def test_local_hosts_are_local():
@@ -110,3 +126,44 @@ def test_guard_reads_the_same_url_alembic_will_use(monkeypatch):
     monkeypatch.setattr(settings, "database_url", SUPABASE)
     assert auto_migrate.resolve_database_url() == SUPABASE
     assert not auto_migrate.is_local(auto_migrate.database_host(SUPABASE))
+
+
+def test_container_invocation_reads_app_config_not_environ(tmp_path):
+    """Reproduce the real container invocation and prove the app.config read is
+    live, not dead.
+
+    The container runs `python scripts/auto_migrate.py`, which seeds sys.path
+    with scripts/ -- not the api root -- so `from app.config import settings`
+    would raise and fall back to os.environ unless the script fixes its own
+    path. That fallback is invisible when the two sources agree, so this forces
+    them to DISAGREE and reads which one won off the log line:
+
+      .env names a remote host, DATABASE_URL is unset in the environment.
+        app.config live       -> reads .env  -> "not local", names the host
+        dead, environ fallback -> reads ""    -> "no database URL configured"
+
+    Both exit 0 (nothing is migrated either way), so no alembic stub is needed
+    and the test runs on every platform.
+    """
+    import subprocess
+
+    script = Path(auto_migrate.__file__).resolve()  # absolute, so cwd can differ
+    remote = "aws-1-us-east-1.pooler.supabase.com"
+    (tmp_path / ".env").write_text("DATABASE_URL=postgresql+asyncpg://u:p@" + remote + ":5432/postgres" + chr(10))
+
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("DATABASE_URL", "ALEMBIC_ALLOW_REMOTE")}
+
+    result = subprocess.run(
+        [sys.executable, str(script)], cwd=tmp_path, env=env,
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ModuleNotFoundError" not in result.stderr, result.stderr
+    # The remote host in stderr proves app.config (the .env) was the source;
+    # the os.environ fallback would have seen no URL and said so instead.
+    assert remote in result.stderr, (
+        "app.config path was not read -- the script fell back to os.environ."
+        + chr(10) + result.stderr
+    )
