@@ -35,6 +35,12 @@ class Game(Base):
     # delete (or the abandoned-upload sweep) can abort the upload and stop
     # paying for its parts, rather than waiting on a lifecycle rule.
     upload_id: Mapped[str | None] = mapped_column(String(255))
+    # What the client said the video's length was at presign time (CF-91).
+    # Carried from presign to completion so the quota charge is taken from the
+    # figure declared before the transfer, not from whatever the completion
+    # call asserts. A claim, never a measurement — kept apart from
+    # original_duration below for exactly that reason.
+    declared_duration: Mapped[float | None] = mapped_column(Float)
     # Pipeline progress while status == processing: fraction 0.0-1.0 plus a
     # machine-readable stage slug (e.g. "tracking_ball") for the frontend bar.
     progress: Mapped[float] = mapped_column(Float, default=0.0, server_default="0", nullable=False)
