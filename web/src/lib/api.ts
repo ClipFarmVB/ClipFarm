@@ -16,6 +16,20 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return {};
 }
 
+/**
+ * Fail with the server's own explanation of a bad response.
+ *
+ * Shared because not every call can go through `request()` — a DELETE has no
+ * JSON body, an avatar upload posts multipart — and those hand-rolled paths
+ * are exactly the ones that drifted: an over-quota video upload reported a
+ * clean sentence while the 2 MB avatar cap still showed
+ * `API error 413: {"detail":"..."}`.
+ */
+async function throwApiError(res: Response): Promise<never> {
+  const text = await res.text();
+  throw new Error(apiErrorMessage(text, `API error ${res.status}: ${text}`));
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_URL}${path}`, {
@@ -26,13 +40,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
-  if (!res.ok) {
-    const text = await res.text();
-    // Prefer the server's own explanation. The upload limits (CF-91) write
-    // real, actionable sentences into `detail` — "you have 60 min of your
-    // 360 min per 24 hours left" — which the raw form buried inside JSON.
-    throw new Error(apiErrorMessage(text, `API error ${res.status}: ${text}`));
-  }
+  // Prefer the server's own explanation. The upload limits (CF-91) write
+  // real, actionable sentences into `detail` — "you have 60 min of your
+  // 360 min per 24 hours left" — which the raw form buried inside JSON.
+  if (!res.ok) await throwApiError(res);
   return res.json() as Promise<T>;
 }
 
@@ -76,10 +87,7 @@ export async function deleteGame(id: string): Promise<void> {
     method: "DELETE",
     headers: authHeaders,
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API error ${res.status}: ${text}`);
-  }
+  if (!res.ok) await throwApiError(res);
 }
 
 // ─── Uploads ─────────────────────────────────────────────────────────────────
@@ -357,8 +365,6 @@ export async function uploadAvatar(file: File): Promise<Me> {
     headers: authHeaders,
     body: form,
   });
-  if (!res.ok) {
-    throw new Error(`API error ${res.status}: ${await res.text()}`);
-  }
+  if (!res.ok) await throwApiError(res);
   return res.json() as Promise<Me>;
 }
