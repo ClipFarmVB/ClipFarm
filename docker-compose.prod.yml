@@ -30,7 +30,8 @@
 services:
   api:
     # Supabase via .env.docker DATABASE_URL — drop the local-db dependency, the
-    # source bind-mounts, and reload. `alembic upgrade head` still runs on boot
+    # source bind-mounts, and reload. Migrations do NOT run on boot: the start
+    # command's guard skips a non-local host (CF-189), so apply them by hand
     # (see the migration note in DEPLOY.md).
     depends_on: !override
       redis:

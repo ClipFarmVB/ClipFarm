@@ -133,9 +133,11 @@ separate motion pass.
   of the whole file. XHR (not fetch) on the frontend for upload progress.
 - **Auth:** Supabase issues JWTs; the API verifies them (JWKS), never handles
   passwords. Next.js middleware guards routes server-side.
-- **Migrations:** Alembic, applied automatically by the api container's start command
-  (`alembic upgrade head && uvicorn`). Destructive drops use `IF EXISTS` because dev
-  databases drift (008 hit a missing index that 005 claimed to create).
+- **Migrations:** Alembic. The api container's start command applies them automatically
+  *only against a local database* (`scripts/auto_migrate.py`, CF-189); a shared or
+  production target is migrated deliberately instead — Render's `preDeployCommand`, or
+  a person running `alembic upgrade head` once. Destructive drops use `IF EXISTS`
+  because dev databases drift (008 hit a missing index that 005 claimed to create).
 
 ## Operational decisions
 
