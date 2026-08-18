@@ -71,12 +71,16 @@ services:
     plan: starter
     dockerfilePath: ./Dockerfile.api
     dockerContext: .
-    # Render assigns the port via $PORT — bind it, don't hardcode. sh -c so the
-    # vars expand (a bare exec form wouldn't). EXPOSE 8000 in the image is only
-    # documentation; the health check hits $PORT/healthz.
-    # SENTRY_RELEASE ties events to the deployed commit ($RENDER_GIT_COMMIT is
-    # injected by Render) so a regression can be traced to a specific deploy.
-    dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    # A script, not an inline command: this value is not tokenized the way a
+    # shell would tokenize it, so a quoted body arrives as a single *word* —
+    # `sh -c "VAR=x cmd args"` then dies with
+    # `sh: 1: SENTRY_RELEASE=<sha> uvicorn ...: not found`, which reads like a
+    # missing binary and is not (CF-170). The script binds Render's $PORT and
+    # defaults SENTRY_RELEASE to $RENDER_GIT_COMMIT so events trace to a deploy.
+    # Keep the logic there — do not inline it again, in this field or the
+    # neighbouring preDeployCommand.
+    # EXPOSE 8000 in the image is only documentation; the health check hits $PORT/healthz.
+    dockerCommand: /app/scripts/render-start-api.sh
     # Point the platform health check at the SHALLOW liveness route, not the
     # deep /health readiness check (CF-89 makes /health return 503 when Postgres
     # or Redis is down). Coupling deploy gating / instance health to a dependency
@@ -86,7 +90,10 @@ services:
     # Migrations run ONCE per deploy here — not on every container boot — so
     # replicas never race the schema and a shared DB isn't advanced by a stray
     # boot. Fixes the per-boot `alembic upgrade head` the dev compose file uses.
-    preDeployCommand: "sh -lc 'cd /app/api && alembic upgrade head'"
+    # Also a script: this field carried the same `sh -c "…'…'"` shape the start
+    # commands did, and it runs *before* the service starts — so if it parses the
+    # same way, the deploy aborts here and the start script is never reached.
+    preDeployCommand: /app/scripts/render-predeploy-api.sh
     # Deliberately OFF. With autoDeploy on, this preDeployCommand would run a
     # migration against the production database on every merge to main, with
     # nobody watching — the same unattended-schema-change class of failure as
@@ -104,7 +111,7 @@ services:
         generateValue: true
       - key: API_BASE_URL             # this service's own public URL (custom domain or *.onrender.com)
         sync: false
-      - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.app
+      - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.ca
         sync: false
       - key: REDIS_URL
         fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
@@ -129,8 +136,8 @@ services:
     numInstances: 1
     dockerfilePath: ./Dockerfile.api
     dockerContext: .
-    # sh -c so $RENDER_GIT_COMMIT expands into SENTRY_RELEASE (see api above).
-    dockerCommand: sh -c "SENTRY_RELEASE=$RENDER_GIT_COMMIT celery -A app.workers.celery_app worker --loglevel=info --pool=solo"
+    # A script, not an inline command — same reason as the api above (CF-170).
+    dockerCommand: /app/scripts/render-start-worker.sh
     # NOTE: the image runs as non-root `appuser` (uid 1000). A Render disk can
     # mount root-owned, which would mask the Dockerfile's build-time chown of
     # /models and make weight writes fail. Verify on first deploy (see DEPLOY_RENDER.md
@@ -212,7 +219,7 @@ services:
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false
-      - key: NEXT_PUBLIC_API_URL      # the API's public URL, e.g. https://api.clipfarm.app
+      - key: NEXT_PUBLIC_API_URL      # the API's public URL, e.g. https://api.clipfarm.ca
         sync: false
       # Error monitoring (CF-89) — separate DSN from the api/worker project.
       - key: NEXT_PUBLIC_SENTRY_DSN   # Sentry → clipfarm-web → Settings → Client Keys (DSN)

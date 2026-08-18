@@ -32,6 +32,11 @@ You can leave `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` blank if not using Modal
 Switch to the shared Supabase pooler (Option B) when you want the team's shared
 games and clips — see the migration note under "Useful commands" before you do.
 
+The R2 bucket also needs a **CORS policy** before uploads work at all — the browser
+PUTs video straight to R2 and never routes it through the api. It must allow `PUT`
+from `http://localhost:3000` and expose the `ETag` header (multipart completion
+cannot read it otherwise). See "R2 bucket setup" in `README.md` for the exact policy.
+
 ## 2) Start everything
 
 ```bash
@@ -77,9 +82,12 @@ Run migrations manually:
 docker compose exec api alembic upgrade head
 ```
 
-This is the only way a **non-local** `DATABASE_URL` gets migrated. On boot the api
-runs `scripts/auto_migrate.py`, which applies `alembic upgrade head` only when
-`DATABASE_URL` points at a local host (the `db` container, localhost); against the
-shared Supabase pooler it skips and logs why, so `docker compose up` can never
-advance the shared schema on its own (CF-189). Setting `ALEMBIC_ALLOW_REMOTE=1`
-opts a boot back into migrating a remote host — don't, unless you mean it.
+That command is how a **non-local** `DATABASE_URL` gets migrated. On boot the api
+runs `scripts/auto_migrate.py`, which applies `alembic upgrade head` only when the
+configured database is on a local host (`LOCAL_HOSTS` in that script — the `db`
+service and the loopback addresses); against the shared Supabase pooler it skips
+and logs why, so `docker compose up` cannot advance the shared schema on its own
+(CF-189).
+
+The one other way in is `ALEMBIC_ALLOW_REMOTE=1`, which opts a boot back into
+migrating a remote host. Nothing in the repo sets it; don't, unless you mean it.

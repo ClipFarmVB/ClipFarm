@@ -4,6 +4,7 @@ Pure stdlib — no importorskip needed (the script imports nothing from `app`).
 Run from the api/ dir: `cd api && pytest tests/test_auto_migrate.py`.
 """
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -32,8 +33,14 @@ def test_database_host(url, expected):
 
 
 def test_local_hosts_are_local():
-    for host in ("db", "localhost", "127.0.0.1", "::1", "host.docker.internal", ""):
+    for host in ("db", "localhost", "127.0.0.1", "::1", ""):
         assert auto_migrate.is_local(host), host
+
+
+def test_host_docker_internal_is_not_local():
+    """It resolves to whatever the host has on that port — an `ssh -L` tunnel to
+    Supabase would otherwise be migrated while the guard reported "local"."""
+    assert not auto_migrate.is_local("host.docker.internal")
 
 
 def test_remote_host_is_not_local():
@@ -50,6 +57,13 @@ def _run(monkeypatch, env, called):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
+    # Pin the URL to the env var: resolve_database_url() prefers app.config,
+    # whose Settings has a localhost default, so an unset DATABASE_URL would
+    # otherwise resolve to that default instead of to "no URL configured".
+    monkeypatch.setattr(
+        auto_migrate, "resolve_database_url",
+        lambda: os.environ.get("DATABASE_URL", ""),
+    )
     monkeypatch.setattr(auto_migrate.subprocess, "call", lambda cmd: called.append(cmd) or 0)
     return auto_migrate.main()
 
@@ -82,7 +96,17 @@ def test_missing_database_url_skips(monkeypatch):
 
 def test_alembic_failure_propagates(monkeypatch):
     """A failed local migration must still fail the boot, as `&&` always did."""
-    monkeypatch.setenv("DATABASE_URL", LOCAL_DB)
     monkeypatch.delenv("ALEMBIC_ALLOW_REMOTE", raising=False)
+    monkeypatch.setattr(auto_migrate, "resolve_database_url", lambda: LOCAL_DB)
     monkeypatch.setattr(auto_migrate.subprocess, "call", lambda cmd: 1)
     assert auto_migrate.main() == 1
+
+
+def test_guard_reads_the_same_url_alembic_will_use(monkeypatch):
+    """alembic/env.py migrates `settings.database_url`. If the guard decided
+    from a different value, it could permit a migration against a host it never
+    inspected — so resolve_database_url must go through app.config."""
+    settings = pytest.importorskip("app.config").settings
+    monkeypatch.setattr(settings, "database_url", SUPABASE)
+    assert auto_migrate.resolve_database_url() == SUPABASE
+    assert not auto_migrate.is_local(auto_migrate.database_host(SUPABASE))

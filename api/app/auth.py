@@ -131,3 +131,43 @@ async def get_current_user_id(
     await _ensure_user_exists(user_id, email, db)
 
     return user_id
+
+
+async def get_optional_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    db: AsyncSession = Depends(get_db),
+) -> uuid.UUID | None:
+    """Identify the caller if they're signed in, else return None (CF-108).
+
+    Public content has to be readable by a signed-out visitor, so those routes
+    can't use `get_current_user_id` — it raises 401 with no credentials. This
+    returns None instead and lets `services/access.py` decide.
+
+    A token that fails verification — expired, malformed, wrong signature —
+    also yields None rather than 401.
+
+    This route is *optionally* authenticated: its own summary is "identify the
+    caller if they're signed in", and an expired token is not signed in. Raising
+    would mean a user whose tab has been open past expiry opens a public link
+    and is refused content that loads fine in a private window, because their
+    browser helpfully attached a stale bearer. Anonymous is the honest reading
+    of a credential that no longer identifies anyone, and access.py then applies
+    exactly the rules a signed-out visitor gets.
+
+    Note this only ever *reduces* what the caller can see. Routes that require
+    a user keep using `get_current_user_id`, which still raises.
+    """
+    if credentials is None:
+        # Preserve the dev fallback so the local stack behaves as it does for
+        # get_current_user_id rather than silently going anonymous.
+        if settings.debug and not settings.supabase_url:
+            return uuid.UUID("00000000-0000-0000-0000-000000000001")
+        return None
+    try:
+        return await get_current_user_id(credentials=credentials, db=db)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            return None
+        # 5xx from the JWKS fetch, say — that is a real failure and hiding it
+        # behind "anonymous" would turn an outage into silent 404s.
+        raise

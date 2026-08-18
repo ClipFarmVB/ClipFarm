@@ -56,10 +56,30 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 # trajectory >25° between samples 0.33s apart, flagging normal flight as hits.
 # Gravity is estimated per-video from coherent segments (median vertical
 # acceleration — free flight dominates, so the median is robust to hits).
-# Thresholds tuned against a real cached trajectory: detector centroid wobble
-# puts the residual noise floor at ~p75 = 450 px/s (15 px/frame @ 30fps).
+# The residual floor was originally 480 px/s, from a p75 noise estimate read off
+# a single cached trajectory by inspection. Scored against hand-labeled rallies
+# (CF-98 harness, #116) that proved ~2x too high: it rejected every contact in
+# 60 of 126 labeled rallies, and since keep-windows are anchored on contacts,
+# the condense stage then cut those rallies as dead time.
+#
+# 240 is a recall-vs-condense tradeoff, not a strict optimum. On test1, 180
+# scores marginally better on both recall numbers (102 vs 101 of 126 rallies
+# hit, 167s vs 176s of live play lost) but removes less dead time; 240 was
+# picked because below it the recall gains are marginal while the condensed
+# video keeps growing. Further down the contact count still climbs with
+# rallies-hit flat, i.e. only false positives are being added.
+#
+# Measured on the dead-time metric only. find_contacts feeds a second consumer:
+# tasks.py runs it through contacts_to_rallies for highlight clips, where
+# MIN_RALLY_CONTACTS gates at 3 — so the extra contacts can lift marginal 1-2
+# contact segments over that line and emit junk clips. That side is unmeasured;
+# score it with the CF-55 highlight mode against results/test1.jsonl before
+# tuning this further.
+#
+# Re-tune by scoring, not by inspecting a trajectory:
+#   docker compose run --rm --no-deps worker python -m ml.eval.tune_contacts
 CONTACT_RESIDUAL_RATIO    = 0.50    # residual must exceed this fraction of ball speed
-CONTACT_RESIDUAL_MIN_PXPS = 480.0   # ...and this absolute floor (px/s, above noise)
+CONTACT_RESIDUAL_MIN_PXPS = 240.0   # ...and this absolute floor (px/s, above noise)
 CONTACT_HIT_SPEED_PXPS    = 240.0   # px/s: a real hit has speed on at least one side
 MIN_CONTACT_SPACING       = 0.6     # seconds: debounce — one hit can't fire twice
 MAX_SAMPLE_GAP_SEC        = 1.0     # skip triples spanning a detection gap

@@ -12,6 +12,11 @@ if (dsn) {
     tracesSampleRate: Number(
       process.env.NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE ?? 0,
     ),
+    // Ties each event to a commit and matches it to the uploaded source maps,
+    // so prod stack traces resolve to real files instead of minified bundles.
+    // next.config.ts resolves this from SENTRY_RELEASE too and re-exports it
+    // here, since non-public env vars aren't inlined into the browser bundle.
+    release: process.env.NEXT_PUBLIC_SENTRY_RELEASE || undefined,
     sendDefaultPii: false,
   });
 }

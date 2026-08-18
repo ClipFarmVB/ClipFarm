@@ -23,9 +23,39 @@ import subprocess
 import sys
 from urllib.parse import urlsplit
 
-# Hosts that mean "a database on this machine": the compose `db` service, the
-# usual loopback spellings, and the Docker bridge back to the host.
-LOCAL_HOSTS = frozenset({"db", "localhost", "127.0.0.1", "::1", "host.docker.internal"})
+
+def resolve_database_url() -> str:
+    """The URL the migration will actually connect to.
+
+    Read through app.config rather than os.environ, because that is what
+    alembic/env.py hands to Alembic (`config.set_main_option("sqlalchemy.url",
+    settings.database_url)`). The two agree today only because environment
+    variables outrank the dotenv file in pydantic-settings — add an alias or a
+    second DB field to Settings and a guard reading os.environ would go blind
+    while env.py still resolved a pooler URI. Deciding from a different value
+    than the one that gets connected to is the whole bug class this script
+    exists to prevent.
+
+    Falls back to the environment if app.config cannot be imported, so the
+    guard still functions outside the container image.
+    """
+    try:
+        from app.config import settings
+        return settings.database_url or ""
+    except Exception:
+        return os.environ.get("DATABASE_URL", "")
+
+# Hosts that mean "a database on this machine", from inside the container: the
+# compose `db` service and the loopback spellings. Each is local by
+# construction — nothing can point them at another machine.
+#
+# host.docker.internal is deliberately NOT here. It resolves to whatever the
+# host has on that port, so an `ssh -L 5432:db.<project>.supabase.co:5432`
+# tunnel turns it into the shared database while this guard reports "local" and
+# migrates it — precisely the failure the script exists to prevent. Running
+# Postgres on the host instead of the `db` container is a real workflow; it is
+# served by ALEMBIC_ALLOW_REMOTE=1, which is at least a decision someone made.
+LOCAL_HOSTS = frozenset({"db", "localhost", "127.0.0.1", "::1"})
 
 TRUTHY = frozenset({"1", "true", "yes", "on"})
 
@@ -46,9 +76,9 @@ def is_local(host: str) -> bool:
 
 
 def main() -> int:
-    database_url = os.environ.get("DATABASE_URL", "")
+    database_url = resolve_database_url()
     if not database_url:
-        print("auto_migrate: DATABASE_URL is unset - skipping migrations.", file=sys.stderr)
+        print("auto_migrate: no database URL configured - skipping migrations.", file=sys.stderr)
         return 0
 
     host = database_host(database_url)  # never print the URL itself — it carries the password

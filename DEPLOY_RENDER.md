@@ -7,7 +7,7 @@ managed **Redis**. Supabase (Postgres + Auth), Cloudflare R2 (storage) and Modal
 
 This file covers the steps a person must do — the Blueprint handles everything
 else. Tracked as **CF-68**; related: CF-18 (Supabase Pro), CF-89 (monitoring),
-CF-90 (secret management).
+CF-90 (secret management), CF-17 (custom SMTP).
 
 > **Two deploy docs exist — this one is the production path.**
 > [`DEPLOY.md`](./DEPLOY.md) (CF-41) stands the **backend** up on a self-managed
@@ -64,9 +64,19 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 | `R2_PUBLIC_URL` | your bucket's public URL (`https://<bucket>.r2.dev` or R2 custom domain) |
 | `SENTRY_DSN` | Sentry → **clipfarm-api** project → Settings → Client Keys (DSN). Shared by api + worker (worker events are tagged `service:worker`). Blank = monitoring off. |
 
+> **The R2 bucket also needs a CORS policy** — see `infra/README.md`. It is not
+> an env var and not code, so nothing above configures it: uploads go browser →
+> R2 directly, and without it they fail in the browser however the services are
+> set up. The policy's `origins` list must *contain* the web origin you set as
+> `CORS_ORIGINS` below, alongside the localhost entries kept for development.
+> `https://clipfarm.ca` is already there. **`www` is not, by design** — it is
+> redirected to the apex at the edge (step 4) rather than served, so it never
+> becomes an origin. Deploying on any other origin, or serving `www` for real,
+> means adding it to `infra/r2-cors.json` and re-applying.
+
 **`clipfarm-api`:**
 - `API_BASE_URL` → this service's public URL (set after step 4, or its custom domain)
-- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.app`
+- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.ca`
 
 **`clipfarm-worker`:**
 - `ROBOFLOW_API_KEY` → Roboflow → Settings → API Keys
@@ -74,7 +84,7 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 
 **`clipfarm-web`:**
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` → Supabase API page (anon key is browser-safe)
-- `NEXT_PUBLIC_API_URL` → the API's public URL, e.g. `https://api.clipfarm.app`
+- `NEXT_PUBLIC_API_URL` → the API's public URL, e.g. `https://api.clipfarm.ca`
 - `NEXT_PUBLIC_SENTRY_DSN` → Sentry → **clipfarm-web** project → Client Keys (a different DSN from the api one)
 - `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` → optional but recommended: enables source-map upload so prod web stack traces show real source lines instead of minified bundles. Token from Sentry → Settings → Auth Tokens.
 
@@ -88,10 +98,189 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 > trigger a redeploy of web (its values are baked in at build time).
 
 ### 4. Domains + HTTPS
-- Add a custom domain to **clipfarm-web** (e.g. `clipfarm.app`) and to
-  **clipfarm-api** (e.g. `api.clipfarm.app`) in each service's Settings.
+- Add a custom domain to **clipfarm-web** (e.g. `clipfarm.ca`) and to
+  **clipfarm-api** (e.g. `api.clipfarm.ca`) in each service's Settings.
 - Point the DNS records at Render (via Cloudflare). Render provisions HTTPS
   automatically.
+- **Redirect `www` to the apex in Cloudflare** (Rules → Redirect Rules,
+  `www.clipfarm.ca/*` → `https://clipfarm.ca/$1`, 301). Only the apex is a
+  configured origin — in Render, in `CORS_ORIGINS`, in Supabase's Site URL, and
+  in the R2 CORS policy. Redirecting at the edge means `www` never becomes an
+  origin any of them has to know about; serving it for real would mean adding it
+  to all four.
+- **Confirm the web domain is in the R2 CORS policy.** Uploads go browser → R2
+  directly (CF-163), so an origin the bucket does not allow fails at preflight
+  however the services are configured.
+
+  ```bash
+  npx wrangler@4 r2 bucket cors list clipfarm
+  ```
+
+  `https://clipfarm.ca` is applied, so if you are serving the custom domain this
+  is a check rather than a step.
+
+  > ⚠️ **If you deploy before the custom domain is live, the origin is the
+  > `onrender.com` URL shown on the clipfarm-web service page — whatever Render
+  > assigned, since it appends a suffix when the service name isn't globally
+  > free — and it is not in the policy.** That is
+  > the normal first deploy, not an edge case — every upload will fail at
+  > preflight until the origin is added. The same applies to any other host.
+
+  To add one, edit `origins` in `infra/r2-cors.json` and re-apply:
+
+  ```bash
+  npx wrangler@4 r2 bucket cors set clipfarm --file infra/r2-cors.json
+  ```
+
+  Edit the file rather than issuing a second command: `cors set` replaces the
+  policy instead of merging, so a second invocation drops what the first one
+  set. See `infra/README.md`.
+- Supabase → Authentication → **URL Configuration**: set Site URL to the web
+  domain and add `https://<web-domain>/auth/callback` to **Redirect URLs**.
+  Google sign-in lands there; a link back to any other path is rejected by
+  Supabase and the user gets "requested path is invalid".
+- Supabase → Authentication → **Email Templates** → *Confirm signup*: replace the
+  default `{{ .ConfirmationURL }}` link with
+
+  ```html
+  <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup">Confirm your email</a>
+  ```
+
+  **This is required, not optional.** The default template sends a PKCE link that
+  only works in the browser that started signup — sign up on a laptop, tap the
+  link on a phone, and it fails with `bad_code_verifier`. `/auth/confirm` verifies
+  the token server-side, so any browser works. Until the template is changed the
+  route is never reached and nothing improves (CF-16).
+
+  The link is built from **Site URL**, so it must point at the web domain — a
+  preview or staging deploy on another host needs its own Supabase project.
+
+  Keep `type=signup` exactly as written. `/auth/confirm` only accepts the types
+  it has a destination for and rejects the rest, so Supabase's generic
+  `type=email` example bounces to the login page instead of confirming. Wiring
+  another template (password reset, email change) means adding its type to the
+  route *and* deciding where that link should land — reset in particular must
+  not drop the user on `/games` still needing a new password.
+
+### 5. Custom SMTP for auth emails (CF-17)
+
+> ⚠️ **Unlike every other step in this file, this one has not been executed
+> against the live project.** It is written from provider and Supabase docs, not
+> from a run. Treat the field values as *expected* and verify each against what
+> the dashboard actually shows — Supabase in particular moves auth settings
+> between pages between releases, so a nav path that doesn't match is far more
+> likely to be this doc being stale than you being in the wrong project. Correct
+> this section as you go and drop this banner once it has been walked once.
+
+**Supabase's built-in sender is not a production mailer.** It is rate-limited to
+a couple of messages per hour per project (Supabase has lowered this number
+before — read the current value off Authentication → Rate Limits rather than
+trusting this line), it sends from a shared Supabase domain nobody can
+authenticate as us, and it is documented as being for development only.
+
+Two distinct failure modes follow, and they are worth keeping apart because only
+one of them is silent:
+
+- **Over the per-hour cap** the signup call itself fails —
+  `over_email_send_rate_limit`, HTTP 429. `web/src/app/signup/page.tsx` renders
+  `error.message` in the red alert box, so the user is told and the cause is
+  named. Loud, and already surfaced.
+- **Under the cap but the send fails afterwards** (bad credentials, unverified
+  sender, provider outage) Supabase accepts the signup and the delivery fails
+  behind it. Nothing propagates back: the user sits on "Check your inbox"
+  forever. **This is the case custom SMTP and the verification below exist for.**
+
+Do this **after** step 4 — the sending domain and the Site URL both depend on
+the real domain existing.
+
+**Provider: Resend.** 3k emails/month free, SMTP endpoint, per-message logs.
+Nothing below is Resend-specific except the hostname and the username: any
+provider that exposes SMTP works the same way, and swapping means changing the
+five fields in the Supabase form.
+
+Substeps are lettered so that a reference to one can't be mistaken for a
+reference to a numbered **step** of this file.
+
+- **(a) Resend → Domains → Add Domain.** Use a *subdomain*, e.g.
+  `mail.clipfarm.ca`, not the apex. Auth mail then can't damage the apex
+  domain's reputation, and it keeps any future marketing sender independent.
+
+- **(b) Add the DNS records it shows** in Cloudflare, on the subdomain — DKIM and
+  SPF as `TXT`, the return-path `MX`, and for some DKIM configurations a
+  `CNAME`. **Any `CNAME` must be set to "DNS only"** (grey cloud); proxying it
+  breaks verification. `MX` and `TXT` records have no proxy toggle at all, so
+  don't go hunting for one there. Verification usually lands in minutes.
+
+- **(c) Add a DMARC record for the sending subdomain:**
+  `_dmarc.mail.clipfarm.ca  TXT  "v=DMARC1; p=none; rua=mailto:<a real mailbox>"`.
+
+  Publish it on the **subdomain**, not just the apex. DMARC falls back to the
+  organizational domain when a subdomain has no record of its own, so an apex
+  policy with no `sp=` governs auth mail too — and tightening the apex later for
+  a marketing sender would silently tighten confirmation mail with it, which is
+  exactly the isolation substep (a) was chosen to buy. (Publishing `sp=none` on
+  the apex instead works, but the subdomain record is harder to undo by
+  accident.)
+
+  `rua=` is a **placeholder — put an address that actually receives mail there.**
+  Reports sent to a non-existent mailbox are dropped, and then the "tighten once
+  the reports are clean" condition below can never be evaluated. Start at
+  `p=none` and only move to `quarantine` on clean reports; going straight to a
+  strict policy is a good way to have your own confirmation mail rejected.
+
+- **(d) Resend → API Keys → Create**, permission **Sending access**. Copy it
+  once; it isn't shown again.
+
+- **(e) Supabase → Authentication → Emails → SMTP Settings → Enable Custom SMTP**
+  (older dashboards file this under Project Settings → Auth):
+
+  | Field | Value |
+  |---|---|
+  | Host | `smtp.resend.com` |
+  | Port | Start with `465` (implicit TLS); if the connection fails, switch to `587` (STARTTLS). Resend supports both, and which one a given Supabase project prefers hasn't been confirmed against the live dashboard. `25` is blocked everywhere and will just time out. |
+  | Username | `resend` — literally that string, not an email address |
+  | Password | the API key from substep (d) |
+  | Sender email | `noreply@mail.clipfarm.ca` — must be on the **verified** domain, or every send is rejected |
+  | Sender name | `ClipFarm` |
+
+- **(f) Supabase → Authentication → Rate Limits → "Emails sent per hour".** Custom
+  SMTP does not raise this by itself — the ceiling stays where it was until you
+  raise it. Set it to something that covers a launch-day burst (e.g. 100/hr) and
+  keep it *below* the provider's own limit. That way the ceiling you hit first is
+  Supabase's, which fails loudly as `over_email_send_rate_limit` on the signup
+  call, rather than the provider's, which fails after Supabase has already told
+  the user to check their inbox.
+
+**Verify:** sign up with a real address on the live domain and confirm three
+things — the mail arrives, **Resend → Logs** shows the send (this is where a
+rejected sender or bad key surfaces; Supabase's own UI won't tell you), and it
+lands in the inbox rather than spam. Gmail and Outlook are the two worth checking;
+they weigh SPF/DKIM alignment differently.
+
+**Notes:**
+- **No repo or Render secret is involved.** The API key lives only in Supabase's
+  dashboard, which is what CF-90 wants — don't mirror it into `render.yaml` or an
+  env group.
+- **Rotating the key is a two-step:** create the new key in Resend, paste it into
+  Supabase, *then* revoke the old one. Revoking first silently breaks signup.
+- **Nothing detects a later silent failure — accepted for now, with one cheap
+  mitigation.** The verification above is one-time. A botched rotation, an
+  exhausted free tier, or a lapsed domain verification stops delivery while
+  `/healthz` stays green and Sentry sees nothing: the failure is inside Supabase's
+  mailer, not in any code this repo runs, so the first signal is a user complaint.
+  Blind operation is tolerable at current volume, but **turn on Resend's bounce
+  and delivery-failure notifications** while you're in the dashboard — it costs a
+  checkbox and converts the silent case into an email. Real alerting belongs with
+  CF-89 (#107).
+- **Only *Confirm signup* is wired today.** That is the one template step 4
+  rewrote and the only type `/auth/confirm` accepts, so it is the only auth mail
+  that goes out — there is no password-reset flow in the app yet. Any template
+  enabled later needs the same `token_hash` rewrite and its type added to the
+  route, per the note above.
+- **Deliverability degrades if this domain is only used for auth mail in
+  bursts.** A domain that sends nothing for weeks and then 200 messages in an hour
+  looks like a compromised sender. Not worth engineering around now, but it is the
+  likely explanation if mail suddenly starts landing in spam after a quiet period.
 
 ---
 
@@ -100,10 +289,24 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
    check watches), expect `{"status":"ok"}`. Once CF-89 (#107) merges, also point
    an **external uptime monitor** at `/health` — the deep check that returns 503
    when Postgres/Redis is down, so it can alert.
-2. Load the web domain, sign up (confirm the verification email arrives — needs
-   CF-17 custom SMTP for volume; Supabase's built-in sender is rate-limited).
-3. Upload a short video → confirm the worker picks it up (worker logs) and clips
+2. Load the web domain, sign up (confirm the verification email arrives — if it
+   doesn't, custom SMTP is the first thing to check, see step 5 above).
+   **Open that link in a different browser than you signed up in** — that is the
+   case the token_hash template exists for, and the one that silently regresses
+   if the template is ever reset to the default.
+3. Upload a video → confirm the worker picks it up (worker logs) and clips
    appear. This exercises api → Redis → worker → R2 → Modal end to end.
+
+   **Use a file over 100 MiB** (`single_put_max_bytes`), and keep the browser's
+   network panel open. Since CF-163 the video goes browser → R2 directly, and
+   the two paths fail differently: a smaller file is uploaded with one presigned
+   PUT that never reads an ETag, so it passes even when the bucket's CORS policy
+   is missing `ExposeHeaders: ETag` and every multipart upload is broken. A short
+   clip no longer tests the upload path that matters.
+
+   What to check: several `PUT`s to `*.r2.cloudflarestorage.com`, **no upload
+   bytes to the api origin**, then one `POST /games/{id}/uploads/complete`. See
+   `infra/README.md` for the bucket settings this depends on.
 4. **Model cache disk** — check the worker logs on first job: it should download
    the ball model once, then on a redeploy **not** re-download it. If you see a
    `PermissionError` writing to `/models`, the disk mounted root-owned and the
@@ -167,6 +370,26 @@ same Blueprint when there are real users; that's also what would let
 
 ## Notes & gotchas
 
+- **Start commands live in `scripts/render-*.sh`, not inline in `render.yaml`.**
+  These fields are not tokenized the way a shell would tokenize them: a quoted
+  body arrives as a single **word**. So `sh -c "VAR=x cmd args"` starts a shell
+  that then hunts for one command named by the entire string, and the service
+  dies at boot with
+
+  ```
+  sh: 1: SENTRY_RELEASE=<sha> celery -A app.workers.celery_app worker …: not found
+  ```
+
+  That reads like a missing binary and isn't — celery and uvicorn are both in the
+  image. (The `sh: 1:` prefix is dash's own error format, so a shell *did* run;
+  what failed was the splitting, not the availability of a shell.) It cost a full
+  blueprint deploy to diagnose (CF-170).
+
+  This applies to **`preDeployCommand` as well as `dockerCommand`** — the
+  migration hook runs before the service starts, so the same shape there aborts
+  the deploy before any start script is reached. Anything needing a shell
+  (`$PORT`, `$RENDER_GIT_COMMIT`, a `cd`) belongs in a script; if you inline it
+  again, the backend stops deploying.
 - **Migrations run once per deploy** via the api service's `preDeployCommand`
   (`alembic upgrade head`), not on every boot. Don't re-add per-boot migration to
   production start commands — it races across restarts and can advance a shared

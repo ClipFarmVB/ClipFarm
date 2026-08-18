@@ -1,8 +1,8 @@
 """CF-65a: worker redelivery/concurrency safety — broker config + per-game lock.
 
-Guarded with importorskip like the other api tests: the api CI job installs only
-ruff/mypy/pytest today, so these light up locally (and in CI once CF-102 installs
-api deps). Run from the api/ dir: `cd api && pytest tests/test_worker_safety.py`.
+The `importorskip` guard is now belt-and-braces: the api CI job installs
+api/requirements-dev.txt (including fakeredis), so these execute in CI as well as
+locally. Run from the api/ dir: `cd api && pytest tests/test_worker_safety.py`.
 """
 import pytest
 
@@ -18,6 +18,28 @@ def test_celery_redelivery_config():
     assert conf.task_reject_on_worker_lost is True
     vt = conf.broker_transport_options.get("visibility_timeout")
     assert vt and vt > 3600, "visibility_timeout must exceed Redis' 3600s default"
+
+
+def test_results_are_ignored_without_weakening_redelivery_safety():
+    """CF-150: results are never read, so storing them only fills the broker.
+
+    In production the broker and result backend are the same Key Value instance
+    (#98) under `noeviction`, so unread results accumulate in the store whose
+    fullness blocks job submission.
+
+    Asserted together with the CF-65a settings on purpose. The two changes append
+    to the same config block and met as a textual conflict, which is exactly the
+    merge that silently drops one side — and they are independent, since
+    `acks_late` and the retry path re-publish to the *broker* and never touch the
+    result backend.
+    """
+    from app.workers.celery_app import celery_app
+
+    conf = celery_app.conf
+    assert conf.task_ignore_result is True
+    assert conf.task_acks_late is True
+    assert conf.task_reject_on_worker_lost is True
+    assert conf.broker_transport_options.get("visibility_timeout")
 
 
 def test_lock_ttl_exceeds_visibility_timeout():

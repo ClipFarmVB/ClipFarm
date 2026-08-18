@@ -1,9 +1,25 @@
-# Deploying the ClipFarm backend off a laptop (CF-41)
+# Self-hosted backend on a VPS (CF-41) — *alternative*, not the production path
+
+> **Production is [`DEPLOY_RENDER.md`](./DEPLOY_RENDER.md) (CF-68).** ClipFarm
+> deploys the full stack (web + api + worker + broker) on Render as managed
+> infrastructure. This runbook is kept as a **self-hosted alternative** — a
+> Render escape hatch, and a cheap always-on box for long-running batch work
+> (reprocessing footage, the CF-55 eval harness).
+>
+> **Don't use it as a staging environment.** Staging is only useful with parity,
+> and this differs from Render prod in every deployment-shaped dimension:
+> runtime (compose vs Render services), secrets (plaintext `.env.docker` vs a
+> secret store), migration timing (a manual step vs `preDeployCommand`), TLS, and Key
+> Value persistence. It would pass while prod fails and vice versa. A real
+> staging environment is **CF-152**, as a second service group in the Render
+> Blueprint.
+>
+> Not exercised by CI — treat it as best-effort and expect some drift.
 
 This runbook stands up the ClipFarm **backend** — redis + api + worker — on a
 small always-on VPS so video processing keeps running when your dev machine is
-off. It is the compute-off-laptop stepping stone to the full production deploy
-(CF-68); everything here is reused as CF-68's backend tier.
+off. It was written (CF-41) as the get-off-the-laptop step before a full
+production deploy existed.
 
 > **Scope:** backend only. The Next.js frontend (`web/`) can stay on Vercel or
 > run separately — it is not required on this box. The database stays on
@@ -102,8 +118,8 @@ Must be set for this deploy:
 - **`MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`** — the prerequisite from §0.
 
 > Secrets-on-disk is the minimum for CF-41. Productionizing secret handling
-> (no plaintext `.env` files) is tracked separately in **CF-77** and supersedes
-> this step once done.
+> (no plaintext `.env` files) is tracked separately in **CF-90 (#90)** and
+> supersedes this step once done.
 
 ## 5. Bring up the backend
 
@@ -125,6 +141,12 @@ the API, and the Celery worker (`--pool=solo`, one job at a time).
 > ```
 >
 > Coordinate it with the team, per the "shared DB" warning in the README.
+>
+> CF-68 (#98) made migrations a deliberate step on the Render path via
+> `preDeployCommand`; CF-189 closes the same hole here, from the other side — by
+> refusing rather than by scheduling. The paths still differ in *timing*: Render
+> applies them automatically once per deploy, this box waits for the command
+> above. That remains a parity gap, just no longer a silent one.
 
 ## 6. Verify end-to-end
 
@@ -170,7 +192,8 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml down    # stop a
 **TLS / public exposure.** This runbook leaves the API on plain `:8000`
 behind the firewall. Do **not** expose it to the internet without TLS — front
 it with a reverse proxy (Caddy/nginx/Cloudflare Tunnel) terminating HTTPS.
-Wiring a domain + TLS + a proper edge is **CF-68**, not CF-41.
+Domains, TLS and a proper edge are handled for you on the production path
+(**CF-68**, Render) — this box is deliberately firewalled instead.
 
 ---
 
@@ -194,10 +217,17 @@ Wiring a domain + TLS + a proper edge is **CF-68**, not CF-41.
 - **One game at a time.** Celery runs `--pool=solo` / `prefetch=1`; a second
   upload queues behind the first. Concurrency + horizontal scaling is **CF-65**.
 - **Secrets live in `.env.docker` on the box.** Hardened secret management is
-  **CF-77**.
-- **Observability.** Worker error tracking + uptime alerting lands via **CF-76**
-  and slots straight into this box.
+  **CF-90 (#90)** — still open, and the main reason this path isn't production.
+- **Observability — already solved.** CF-89 (#89) shipped Sentry across api,
+  worker and web; it is wired by env var (`SENTRY_DSN`), so it applies to this
+  box too. Set the DSN in `.env.docker` — and set `SENTRY_ENVIRONMENT` to
+  something distinct (e.g. `self-hosted`), because the template ships
+  `development` and this box would otherwise report into the same bucket as
+  every teammate's compose stack, which is the one place you actually want to
+  filter on. Then worker errors report like anywhere else.
 - **Supabase auto-pause.** The worker depends on Supabase; the keepalive from
   **CF-18** already guards against the free-tier idle pause.
-- **This is CF-68's backend tier.** The full production deploy (domains, TLS,
-  CI/CD image builds, deliberate migrations, monitoring) builds on top of this.
+- **This is not CF-68's backend tier.** It was written expecting to be, but CF-68
+  went with Render (`render.yaml` + [`DEPLOY_RENDER.md`](./DEPLOY_RENDER.md)),
+  which provisions its own managed services — nothing in this runbook is reused
+  there. The two are alternative hosting strategies; production is Render.
