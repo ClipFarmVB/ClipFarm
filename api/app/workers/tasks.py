@@ -292,12 +292,10 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
 
             # CF-91: the api can only enforce the duration cap against what the
             # client declared — this is the first point the real length is
-            # known, and it is still ahead of every expensive stage. Record it,
-            # settle the quota charge against the truth, and stop here if the
-            # video is over the cap.
+            # known, and it is still ahead of every expensive stage. Record the
+            # measurement, then decide.
             try:
                 sync_set_original_duration(gid, video_duration)
-                sync_settle_upload_charge(gid, video_duration)
             except Exception:
                 # Accounting must not break processing — the gate below reads
                 # the probed value directly, so it holds either way.
@@ -323,7 +321,25 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     s3.delete_file(r2_key)
                 except Exception:
                     logger.warning("Could not delete rejected upload %s", r2_key, exc_info=True)
+                # Note what is deliberately NOT done here: the quota charge is
+                # left at whatever was reserved at accept time. Settling it up
+                # to the real length would bill a rejected upload for footage
+                # that never ran — 6 h of probed video against a 6 h daily cap
+                # wipes out the day for work we refused and deleted. The slot
+                # it consumed is the cost; the count cap is what bounds someone
+                # doing this repeatedly. It also keeps an honest client whose
+                # container reports a wrong duration from losing their day to a
+                # metadata bug.
                 return
+
+            # Accepted. Settle the quota charge to the measured length — this
+            # is what makes charging an undeclared duration at the per-video
+            # maximum fair rather than punitive, and what stops an
+            # under-declared one from sticking as the charge.
+            try:
+                sync_settle_upload_charge(gid, video_duration)
+            except Exception:
+                logger.warning("Failed to settle quota charge for game %s", game_id, exc_info=True)
 
             # fps-aware sampling: ~3 ball detections per second of video
             # regardless of source frame rate (tuned at 30fps/every-10th;

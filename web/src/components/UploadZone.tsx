@@ -98,6 +98,9 @@ export function UploadZone() {
   // are placeholders and must never be shown as if they were real.
   const [quotaKnown, setQuotaKnown] = useState(false);
   const [duration, setDuration] = useState<number | null>(null);
+  // Distinguishes "not probed yet" from "probed and the browser couldn't tell
+  // us" — only the second is worth warning about.
+  const [durationProbed, setDurationProbed] = useState(false);
   const pickSeq = useRef(0);  // generation counter — see pickFile
 
   // Limits come from the api so the advertised cap can't drift from the
@@ -147,6 +150,7 @@ export function UploadZone() {
     setError(null);
     setFile(f);
     setDuration(null);
+    setDurationProbed(false);
     if (!title) setTitle(f.name.replace(/\.[^.]+$/, ""));
     // Metadata reads off the local file, so this is quick — but it is still
     // async, and the file is shown while it resolves. Stamp the pick: a slow
@@ -157,6 +161,7 @@ export function UploadZone() {
     const seconds = await readDuration(f);
     if (pick !== pickSeq.current) return;  // superseded by a later pick
     setDuration(seconds);
+    setDurationProbed(true);
     setError(validateDuration(seconds));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [title, config, quotaKnown]);
@@ -354,6 +359,19 @@ export function UploadZone() {
             </span>
           </span>
         </label>
+      )}
+
+      {/* The browser couldn't read this file's length (CF-91). Common for MKV,
+          which Chrome can't decode even though we accept it. The server charges
+          an unknown duration at the maximum until the worker probes the real
+          one, so say that here rather than letting it surface as a surprise
+          rejection on the next upload. */}
+      {file && durationProbed && duration === null && (
+        <div className="mt-3 rounded-md border border-border bg-surface px-3 py-2 text-[11px] text-muted">
+          We couldn&rsquo;t read this video&rsquo;s length in the browser. It will count as{" "}
+          {fmtMinutes(config.max_duration_seconds / 60)} against your quota until processing
+          confirms the real length, then the difference is credited back.
+        </div>
       )}
 
       {/* Remaining quota (CF-91) — shown before a file is chosen so hitting

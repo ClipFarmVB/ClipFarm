@@ -356,6 +356,13 @@ async def complete_upload(
             await db.commit()
         raise HTTPException(status_code=code, detail=message)
 
+    # Read the id out now, while the instance is known to be loaded. Every
+    # exit below this point either commits or rolls back, and a rollback
+    # expires the instance — touching `reservation.id` afterwards triggers a
+    # lazy refresh, which on an async session raises MissingGreenlet rather
+    # than returning a value. Same hazard the `game` reads above avoid.
+    reservation_id = reservation.id
+
     # Claim the upload atomically. The status check above is a read-then-write:
     # a HEAD (and, for multipart, an assembly call) sit between it and this
     # point, so two completion calls — a client retry on a slow response, a
@@ -372,7 +379,7 @@ async def complete_upload(
         await db.rollback()
         # A concurrent completion won the claim and is charging its own
         # reservation; ours bought nothing, so give the slot back.
-        await quota.release_reservation(db, reservation.id)
+        await quota.release_reservation(db, reservation_id)
         raise HTTPException(status_code=409, detail="This upload is already complete")
 
     # Link the charge to the game so the worker can settle it against the

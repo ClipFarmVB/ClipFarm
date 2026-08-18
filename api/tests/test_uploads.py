@@ -17,7 +17,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("celery")
 
 from fastapi import HTTPException  # noqa: E402
-from sqlalchemy.sql.dml import Update  # noqa: E402
+from sqlalchemy.sql.dml import Delete, Update  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.models.game import Game, GameStatus  # noqa: E402
@@ -83,10 +83,16 @@ class FakeDB:
         self.added: list = []
         self.deleted: list = []
         self.commits = 0
+        self.rollbacks = 0
+        self.released: list = []      # ids passed to release_reservation
 
     async def execute(self, stmt):
         if isinstance(stmt, Update):
             return self._claim(stmt)
+        if isinstance(stmt, Delete):
+            # release_reservation's DELETE ... WHERE id = :id
+            self.released.append(stmt.compile().params.get("id_1"))
+            return _UpdateResult(1)
         sql = str(stmt)
         # CF-91 takes a per-user advisory lock before reading the quota; it
         # returns nothing the handler looks at.
@@ -140,7 +146,7 @@ class FakeDB:
         pass
 
     async def rollback(self):
-        pass
+        self.rollbacks += 1
 
 
 class FakeTask:
@@ -668,3 +674,64 @@ def test_completion_over_quota_discards_the_object_and_the_row(
     assert fake_storage["delete_file"] == ["raw/abc.mp4"], "no orphaned object"
     assert db.deleted == [game], "and no row left to process"
     assert not fake_task.calls, "nothing queued"
+
+
+class _ExpiringReservation:
+    """A reservation row that behaves like SQLAlchemy after a rollback.
+
+    `rollback()` expires every instance in the session, so the next attribute
+    read triggers a lazy refresh — and on an async session that raises
+    MissingGreenlet instead of returning a value. FakeDB.rollback() cannot
+    reproduce that on its own, so the object models it: read `.id` after a
+    rollback and you get the same explosion the real session gives.
+    """
+
+    def __init__(self, db: "FakeDB"):
+        self._db = db
+        self._id = uuid.uuid4()
+        self.game_id = None
+
+    @property
+    def id(self):
+        if self._db.rollbacks:
+            raise RuntimeError("MissingGreenlet: lazy refresh on an expired instance")
+        return self._id
+
+
+class _LostClaimDB(FakeDB):
+    """A session where the conditional UPDATE always loses.
+
+    Models the other half of a completion race: the row still read `uploading`
+    at the handler's early check, and a concurrent request claimed it before
+    this one got to the UPDATE.
+    """
+
+    def _claim(self, stmt):
+        return _UpdateResult(0)
+
+
+def test_the_loser_of_a_completion_race_gets_409_and_its_slot_back(
+    fake_storage, fake_task, monkeypatch
+):
+    """Reading the reservation id after rollback() turned a 409 into a 500.
+
+    The read has to happen while the instance is still loaded. Getting this
+    wrong costs the loser a real error *and* leaks the quota slot, because the
+    exception fires before release_reservation is ever called.
+    """
+    game = _uploading_game()
+    db = _LostClaimDB(game)
+    reservation = _ExpiringReservation(db)
+
+    async def fake_reserve(*_a, **_kw):
+        return reservation, None
+
+    monkeypatch.setattr(games_router.quota, "reserve_upload", fake_reserve)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
+
+    assert exc.value.status_code == 409, "a lost race is a conflict, not a crash"
+    assert db.rollbacks == 1
+    assert db.released == [reservation._id], "and the slot is handed back"
+    assert not fake_task.calls
