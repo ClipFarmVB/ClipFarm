@@ -80,7 +80,11 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 
 **`clipfarm-worker`:**
 - `ROBOFLOW_API_KEY` → Roboflow → Settings → API Keys
-- `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` → modal.com → Settings → API Tokens (leave blank to run inference locally on CPU — slow)
+- `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` → modal.com → Settings → API Tokens. **Required**, not optional: since CF-164 every model runs on Modal and the worker image ships no torch, so blank tokens no longer mean "slow local CPU" — they mean trajectory-only labels, and no clips at all if the ball model is also unreachable. Deploy both Modal apps once from a machine with `modal setup` auth before the first job:
+
+  ```bash
+  modal deploy ml/modal_app.py && modal deploy ml/modal_pose.py
+  ```
 
 **`clipfarm-web`:**
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` → Supabase API page (anon key is browser-safe)
@@ -307,11 +311,17 @@ they weigh SPF/DKIM alignment differently.
    What to check: several `PUT`s to `*.r2.cloudflarestorage.com`, **no upload
    bytes to the api origin**, then one `POST /games/{id}/uploads/complete`. See
    `infra/README.md` for the bucket settings this depends on.
-4. **Model cache disk** — check the worker logs on first job: it should download
-   the ball model once, then on a redeploy **not** re-download it. If you see a
-   `PermissionError` writing to `/models`, the disk mounted root-owned and the
-   non-root worker user can't write it (see the note in `render.yaml`) — fall
-   back by pointing the `MODEL_*` vars off the disk, or run the worker as root.
+4. **GPU offload** — the worker log should say `Ball tracking ran on Modal GPU`
+   and `Pose refinement ran on Modal GPU`, and both `clipfarm-ball-tracking` and
+   `clipfarm-pose` should show a run on the Modal dashboard. A `falling back to
+   local CPU` line means the tokens or the deploy are missing; on a `starter`
+   worker that fallback finds no torch and quietly degrades the labels, so this
+   check is the one that catches it.
+
+   There is no model-cache disk to verify any more — CF-164 removed it along
+   with the last model in this image. Pose weights are baked into the
+   `clipfarm-pose` image; the ball model still uses the `clipfarm-model-cache`
+   Modal Volume.
 5. Redeploy once and confirm no data loss.
 
 ---
@@ -398,19 +408,20 @@ same Blueprint when there are real users; that's also what would let
   prepared statements. If you hit `prepared statement already exists`, use the
   session-mode pooler port or append the appropriate asyncpg options. (The dev
   stack already runs against the pooler, so the working URL format carries over.)
-- **Worker sizing** is the main cost lever. It ships on `standard` (2 GB) with
-  the **light** `POSE_*` values (`yolov8n-pose` @ 640) — the config the dev stack
-  has actually exercised. `app/config.py`'s defaults (`yolov8s-pose` @ 1280) are
-  higher quality but unproven on a 2 GB box; raise the env values once you've
-  measured real headroom, rather than discovering an OOM on day one. Better
-  long-term: offload more of the pipeline to Modal (CF-65) so the box stays small.
-- ⚠️ **Production runs the light pose config, so its action labels are weaker
-  than the `config.py` defaults.** Clip *boundaries* come from ball tracking and
-  are unaffected, but per-clip action labels (dig/set/spike — the subject of
-  CF-3) will be worse than a run using the defaults. **Don't compare production
-  label quality against CF-55's eval baselines** unless the eval was run with the
-  same `POSE_*` values — they'd disagree for configuration reasons, not model
-  ones. Raise the prod values to match before drawing any conclusion.
+- **Worker sizing** is the main cost lever, and CF-164 spent it: the worker runs
+  on `starter` (512 MB), down from `standard` (2 GB). That is affordable only
+  because no model ships in the image — ball tracking and pose are both on
+  Modal, so torch, ultralytics and Roboflow `inference` are gone. **If you ever
+  put an ML runtime back into `Dockerfile.api`, size the worker back up in the
+  same change**; a torch import on 512 MB OOMs the box.
+  `api/tests/test_pose_modal.py` pins the two together.
+- **Production now runs the full-quality pose config** (`yolov8s-pose` @ 1280,
+  every 4th frame — `app/config.py`'s defaults), because it runs on a T4 rather
+  than on the worker's CPU. The old warning here — that prod ran a light
+  `POSE_*` config and its labels therefore couldn't be compared against CF-55's
+  eval baselines — no longer applies: prod and the eval defaults are the same
+  configuration again. Action-label quality (CF-3) should improve as a side
+  effect of this move.
 - **Region:** everything is pinned to `oregon`. Confirm the Supabase project sits
   in (or nearest to) that region — every DB round-trip pays the difference, and
   CF-47's progress writes made the worker chattier, so a cross-region mismatch

@@ -1,0 +1,118 @@
+"""
+Modal GPU deployment for pose classification (CF-164).
+
+Second half of the GPU offload that started with ball tracking (CF-11). Pose
+was the last model still running in the worker image, and it is the reason
+that image carries torch + ultralytics — which in turn is why the Render
+worker sits on `standard` (2 GB). Moving pose here lets the worker image drop
+to ffmpeg + opencv + numpy + boto3, and lets the *full-quality* pose config
+(yolov8s-pose @ 1280) come back: it was downgraded to yolov8n @ 640 in
+`render.yaml` only because a 2 GB CPU box could not carry the real one.
+
+Both functions call the same `ml.pipeline.detect` code the worker calls
+locally, so this is an execution-location change, not a second implementation.
+(The old `ml/modal_detect.py` was a second implementation — a drifted copy of
+`classify_action` wired to nothing — and is deleted by this change.)
+
+Video arrives by presigned R2 URL, same as `modal_app.py`: R2 credentials stay
+in the worker and never need to exist as a Modal Secret.
+
+Deploy:
+    modal deploy ml/modal_pose.py
+
+Requires a Modal account + CLI auth (`modal setup`) and MODAL_TOKEN_ID /
+MODAL_TOKEN_SECRET wherever this is invoked from.
+"""
+import modal
+
+APP_NAME = "clipfarm-pose"
+
+app = modal.App(APP_NAME)
+
+# Weights are baked into the image rather than cached on a Volume (the CF-40
+# pattern used by ball tracking). Pose weights are small — ~23 MB for
+# yolov8s-pose, ~7 MB for yolov8n — so paying for them once at build time is
+# cheaper than a Volume mount and removes cold-start download latency entirely.
+# MODELS_DIR is what `_model_path()` in ml.pipeline.detect resolves bare weight
+# names against, so both names below are already local at call time.
+image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("ffmpeg", "libgl1", "libglib2.0-0")
+    .pip_install(
+        "torch",
+        "torchvision",
+        # Same pin as ml/requirements.txt — the skeleton heuristics in
+        # detect.py assume the COCO 17-keypoint layout this emits.
+        "ultralytics==8.3.55",
+        "opencv-python-headless",
+        "numpy",
+        "requests",
+    )
+    .env({"MODELS_DIR": "/models", "YOLO_CONFIG_DIR": "/tmp/ultralytics"})
+    .run_commands(
+        "mkdir -p /models",
+        # Bare `YOLO(name)` downloads into the working directory, so cd first.
+        "cd /models && python -c \""
+        "from ultralytics import YOLO; YOLO('yolov8s-pose.pt'); YOLO('yolov8n-pose.pt')\"",
+    )
+    .add_local_python_source("ml")
+)
+
+
+def _download(video_url: str, dest: str) -> None:
+    """Stream a presigned URL to a local path."""
+    import requests
+
+    with requests.get(video_url, stream=True, timeout=120) as r:
+        r.raise_for_status()
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                f.write(chunk)
+
+
+@app.function(image=image, gpu="T4", timeout=1800)
+def classify_windows_remote(
+    video_url: str,
+    windows: list[dict],
+    model_name: str,
+    imgsz: int,
+    skip_frames: int,
+) -> list[dict]:
+    """
+    Pose-refine rally windows on GPU. Drop-in for `classify_within_windows()`.
+
+    `windows` and the return value are plain dicts, which is what the pipeline
+    passes around anyway — nothing to serialize by hand at the RPC boundary.
+    """
+    import os
+    import tempfile
+
+    from ml.pipeline.detect import classify_within_windows
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_path = os.path.join(tmpdir, "video.mp4")
+        _download(video_url, local_path)
+        return classify_within_windows(
+            local_path, windows,
+            model_name=model_name, imgsz=imgsz, skip_frames=skip_frames,
+        )
+
+
+@app.function(image=image, gpu="T4", timeout=3600)
+def detect_actions_remote(video_url: str) -> list[dict]:
+    """
+    Full-video pose-first scan on GPU. Drop-in for `run_detection()`.
+
+    This is the rare path — it only runs when the ball pipeline is unavailable
+    or failed. It scans every SKIP_FRAMES-th frame of the whole video rather
+    than only the surviving rallies, hence the longer timeout.
+    """
+    import os
+    import tempfile
+
+    from ml.pipeline.detect import run_detection
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_path = os.path.join(tmpdir, "video.mp4")
+        _download(video_url, local_path)
+        return run_detection(local_path)

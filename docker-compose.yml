@@ -70,24 +70,16 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-      # Lighter pose settings for CPU dev — production (GPU) uses the
-      # defaults in app/config.py (yolov8s-pose @ 1280, every 4th frame).
-      POSE_MODEL: yolov8n-pose.pt
-      POSE_IMGSZ: "640"
-      POSE_SKIP_FRAMES: "8"
-      # Persistent model-weight cache (CF-40): without these, every container
-      # recreate re-downloads the ball model (114MB, Roboflow CDN) and the
-      # YOLO pose weights (GitHub) before processing can start.
-      MODEL_CACHE_DIR: /models/roboflow   # inference: model metadata cache
-      INFERENCE_HOME: /models/roboflow    # inference 1.x: shared-blobs weight store (the 114MB)
-      # Pose weights: the /models volume is empty, the container has no tool to
-      # download into it, and appuser can't write it (root-owned) — so pose
-      # refinement was silently failing on every game. Point at the model
-      # bundled in the image instead (api/yolov8n-pose.pt). NOTE: this resolves
-      # the bundled yolov8n only; a non-bundled prod model (e.g. yolov8s-pose)
-      # must be added to the image or seeded into a writable models dir.
-      MODELS_DIR: /app/api
-      YOLO_CONFIG_DIR: /tmp/ultralytics   # writable by appuser (unlike /models)
+      # No POSE_* or MODEL_* vars since CF-164: this image carries no torch, so
+      # nothing here loads a model or downloads weights. Ball tracking and pose
+      # both run on Modal — set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in
+      # .env.docker to exercise them (`modal deploy ml/modal_app.py` and
+      # `modal deploy ml/modal_pose.py` once, first).
+      #
+      # Without Modal tokens the dev stack still runs end to end: pose
+      # refinement no-ops and clips keep their ball-trajectory labels. To do
+      # real pose work locally, run the worker outside Docker against
+      # ml/requirements.txt — every local path is still in the code.
     depends_on:
       redis:
         condition: service_healthy
@@ -127,4 +119,3 @@ services:
 volumes:
   postgres_data:
   node_modules:
-  model_cache:

@@ -29,11 +29,12 @@ def _modal_configured() -> bool:
 
 
 def _will_attempt_modal(r2_key: str) -> bool:
-    """Whether ball tracking will try Modal GPU for this run.
+    """Whether the GPU stages will try Modal for this run.
 
-    Single source of truth for the condition below and in `_track_ball_cached`
-    so the progress bar's tracking span can't be mis-sized against the path the
-    pipeline actually takes.
+    Covers ball tracking (CF-11) and pose (CF-164) alike: both need a presigned
+    URL for the raw object, so both are gated on the same two facts. Single
+    source of truth for the call sites below so the progress bar's tracking span
+    can't be mis-sized against the path the pipeline actually takes.
     """
     return _modal_configured() and bool(r2_key)
 
@@ -185,8 +186,83 @@ def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start:
         raise self.retry(exc=exc)
 
 
-def _run_detection_local(video_path: str) -> list[dict]:
-    """Fallback: run detection locally (CPU, slow)."""
+def _classify_windows_modal(r2_key: str, windows: list[dict]) -> list[dict]:
+    """
+    Pose-refine rally windows on Modal GPU (CF-164). Raises on any failure;
+    the caller falls back to local CPU pose.
+
+    Blocking, unlike `_track_ball_modal`: refinement visits only the rallies
+    that survived the highlight gate, so there is far less wall-clock to report
+    against, and `classify_within_windows` has no progress callback to bridge.
+    """
+    import modal as modal_sdk
+    from app.config import settings
+    from app.services import storage as s3
+
+    video_url = s3.presign_url(r2_key, expires_in=3600)
+    fn = modal_sdk.Function.from_name("clipfarm-pose", "classify_windows_remote")
+    return fn.remote(
+        video_url, windows,
+        settings.pose_model, settings.pose_imgsz, settings.pose_skip_frames,
+    )
+
+
+def _refine_with_pose(local_video: Path, r2_key: str, windows: list[dict]) -> list[dict]:
+    """
+    Stage 3 pose refinement: Modal GPU when configured, local CPU otherwise.
+
+    Same degradation contract as ball tracking — a Modal outage costs speed and
+    label quality, never the run. Note the deployed worker image no longer
+    carries torch (CF-164), so the local branch is a real path only for
+    development installs; without ultralytics `classify_within_windows`
+    no-ops and the ball-trajectory labels stand.
+    """
+    from app.config import settings
+
+    if _will_attempt_modal(r2_key):
+        try:
+            refined = _classify_windows_modal(r2_key, windows)
+            logger.info("Pose refinement ran on Modal GPU: %d windows", len(refined))
+            return refined
+        except Exception as modal_err:
+            logger.warning(
+                "Modal pose refinement failed (%s) — falling back to local CPU", modal_err
+            )
+
+    # Imported here, not at the top: on the Modal path this pulls cv2 + numpy
+    # (and, inside classify_within_windows, torch) for nothing.
+    from ml.pipeline.detect import classify_within_windows
+
+    return classify_within_windows(
+        str(local_video), windows,
+        model_name=settings.pose_model,
+        imgsz=settings.pose_imgsz,
+        skip_frames=settings.pose_skip_frames,
+    )
+
+
+def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
+    """
+    Pose-first full-video scan — the fallback when the ball pipeline is out.
+
+    Runs on Modal GPU when configured. This scans every SKIP_FRAMES-th frame of
+    the entire video (not just rally windows), so it is the most expensive thing
+    the pipeline can do on CPU and the one that most wants a GPU.
+    """
+    if _will_attempt_modal(r2_key):
+        try:
+            import modal as modal_sdk
+            from app.services import storage as s3
+
+            fn = modal_sdk.Function.from_name("clipfarm-pose", "detect_actions_remote")
+            detections = fn.remote(s3.presign_url(r2_key, expires_in=3600))
+            logger.info("Pose-first scan ran on Modal GPU: %d detections", len(detections))
+            return detections
+        except Exception as modal_err:
+            logger.warning(
+                "Modal pose-first scan failed (%s) — falling back to local CPU", modal_err
+            )
+
     from ml.pipeline.detect import run_detection
     return run_detection(video_path)
 
@@ -354,9 +430,10 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     logger.warning("Ball pipeline failed (%s) — falling back to pose-first", ball_err)
 
             if not ball_ok:
-                # Fallback: pose-first local CPU scan (Ball tracking failed
-                # entirely or ROBOFLOW_API_KEY unset — rare path)
-                detections = _run_detection_local(str(local_video))
+                # Fallback: pose-first full-video scan (ball tracking failed
+                # entirely or ROBOFLOW_API_KEY unset — rare path). On Modal GPU
+                # when configured; the worker image has no torch to do it here.
+                detections = _run_detection(str(local_video), r2_key)
 
                 try:
                     from ml.pipeline.detect import group_into_rallies
@@ -399,17 +476,11 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
 
             # ── Stage 3: Pose within surviving windows — refine labels ────
             # Runs YOLOv8s-pose only inside rallies that passed the highlight
-            # gate. Overrides the ball-trajectory label when pose is more
-            # confident.
+            # gate, on Modal GPU when configured (CF-164). Overrides the
+            # ball-trajectory label when pose is more confident.
             progress.stage("refining_actions")
             try:
-                from ml.pipeline.detect import classify_within_windows
-                detections = classify_within_windows(
-                    str(local_video), detections,
-                    model_name=app_settings.pose_model,
-                    imgsz=app_settings.pose_imgsz,
-                    skip_frames=app_settings.pose_skip_frames,
-                )
+                detections = _refine_with_pose(local_video, r2_key, detections)
                 logger.info("Pose refinement complete (%d windows)", len(detections))
             except Exception as pose_err:
                 logger.warning("Pose refinement failed (%s) — keeping trajectory labels", pose_err)

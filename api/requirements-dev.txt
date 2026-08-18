@@ -6,3 +6,7 @@
 -r requirements.txt
 pytest==8.3.4
 fakeredis[lua]==2.26.2
+# Read-only parsing of render.yaml in the CF-164 deploy-invariant tests. Without
+# it those tests importorskip themselves into a silent pass, which is the exact
+# failure mode requirements-dev exists to prevent.
+PyYAML==6.0.2

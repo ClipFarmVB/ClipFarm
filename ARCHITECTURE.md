@@ -48,7 +48,7 @@ enhancement degrades instead of killing the run:
 | 0 | Audio RMS envelope (ffmpeg → numpy) | Computed once (~seconds), reused by stages 2 and 4 |
 | 1 | Ball tracking (Roboflow model) → contacts → rally windows | Primary signal: physics-based, occlusion-tolerant, no GPU |
 | 2 | Highlight scoring (cheer + rally shape [+ CLIP]) → drop low scorers | Precision gate *before* expensive pose so pose only runs on keepers |
-| 3 | YOLOv8-pose inside surviving windows → refine action labels | Pose is the most expensive signal; scope it to windows |
+| 3 | YOLOv8-pose inside surviving windows → refine action labels | Pose is the most expensive signal; scope it to windows — and run it on Modal GPU (CF-164) |
 | 4 | Audio confidence weighting | Cheap adjustment, no filtering |
 | 5 | Cut clips (ffmpeg), upload to R2, persist rows | |
 | 6 | *(opt-in)* Condensed dead-time-removed video | See below; uses the **pre-gate** stage-1 signal |
@@ -139,14 +139,26 @@ separate motion pass.
 
 ## Operational decisions
 
-- **CPU-only torch in Docker** (`--index-url .../whl/cpu`): several GB smaller than
-  the CUDA build; GPU work is delegated to Modal instead of shipped in the image.
-- **Pinned `inference==1.3.3`** (CF-33): unpinned, pip's resolver backtracked to an
-  ancient version that predates the ball model's architecture and broke it at runtime.
-  Lesson: resolver backtracking can "succeed" into a broken state; pin what matters.
-- **arm64 build fix:** `zxing-cpp` has no arm64 wheel, so Apple Silicon builds compile
-  it from source — `build-essential`/`cmake` are installed and purged *inside the same
-  Docker layer* so the final image stays lean (same-layer delete = zero size cost).
+- **No ML runtime in the server image at all** (CF-164). This started as
+  "CPU-only torch" (`--index-url .../whl/cpu`) to avoid shipping CUDA, then went
+  further: with ball tracking (CF-11) and pose (CF-164) both on Modal, torch,
+  ultralytics, transformers and Roboflow `inference` leave the image entirely.
+  What that buys is a **`starter` (512 MB) Render worker instead of `standard`
+  (2 GB)** — the image was sized by its heaviest import, not its workload — and,
+  because pose now has a GPU, the full-quality config (`yolov8s-pose` @ 1280)
+  that a 2 GB CPU box could not afford.
+
+  It also removes two long-standing build hazards along with the packages that
+  caused them, both worth remembering if an ML dependency is ever added back:
+  `inference` had to be **pinned to 1.3.3** (CF-33) because pip's resolver
+  backtracked to a version predating the ball model's architecture — resolver
+  backtracking can "succeed" into a broken state; and its transitive `zxing-cpp`
+  has no arm64 wheel, so Apple Silicon builds compiled it from source behind a
+  same-layer `build-essential`/`cmake` install-and-purge.
+
+  The cost is that a Modal outage no longer degrades into a slow local run. The
+  local code paths all still exist and still work against `ml/requirements.txt`;
+  they are simply not installed in the deployed image.
 - **boto3 socket timeouts** (CF-32): with a solo worker pool, one hung S3 transfer
   blocks the entire queue; connect/read timeouts + retries turn hangs into retryable
   failures.
