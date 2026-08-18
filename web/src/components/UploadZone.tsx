@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Upload, Film, AlertCircle, Loader } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -26,7 +26,52 @@ const FALLBACK_CONFIG: UploadConfig = {
   single_put_max_bytes: 100 * 1024 ** 2,
   part_size_bytes: 100 * 1024 ** 2,
   url_ttl_seconds: 6 * 3600,
+  // Quota fallbacks are deliberately "nothing used yet": if the config never
+  // arrives we must not invent a limit and block a legitimate upload. The
+  // readout is hidden in that case (see `quotaKnown`), and the server enforces
+  // the real numbers at presign regardless.
+  max_duration_seconds: 4 * 3600,
+  window_hours: 24,
+  max_games_per_window: 5,
+  games_used: 0,
+  games_remaining: 5,
+  max_minutes_per_window: 360,
+  minutes_used: 0,
+  minutes_remaining: 360,
 };
+
+function fmtMinutes(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) return `${m} min`;
+  return m % 60 === 0 ? `${m / 60} h` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+/**
+ * Read a video's duration in the browser so an over-long file is caught before
+ * the upload rather than after it. Resolves null whenever the browser can't
+ * tell us — an unparsed codec, a stream with no duration, or metadata that
+ * never loads — in which case the server and the worker's probe decide.
+ */
+function readDuration(f: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(f);
+    const video = document.createElement("video");
+    let settled = false;
+    const done = (value: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      URL.revokeObjectURL(url);
+      resolve(value);
+    };
+    // Some containers fire neither event; never leave the picker hanging.
+    const timer = setTimeout(() => done(null), 10_000);
+    video.preload = "metadata";
+    video.onloadedmetadata = () => done(Number.isFinite(video.duration) ? video.duration : null);
+    video.onerror = () => done(null);
+    video.src = url;
+  });
+}
 
 function fmtRemaining(remainingSec: number): string {
   if (remainingSec < 60) return "Uploading — less than a minute left";
@@ -49,6 +94,14 @@ export function UploadZone() {
   const [statusText, setStatusText] = useState("Uploading…");
   const [error, setError] = useState<string | null>(null);
   const [config, setConfig] = useState<UploadConfig>(FALLBACK_CONFIG);
+  // Only true once the server's numbers arrived — the fallback's quota figures
+  // are placeholders and must never be shown as if they were real.
+  const [quotaKnown, setQuotaKnown] = useState(false);
+  const [duration, setDuration] = useState<number | null>(null);
+  // Distinguishes "not probed yet" from "probed and the browser couldn't tell
+  // us" — only the second is worth warning about.
+  const [durationProbed, setDurationProbed] = useState(false);
+  const pickSeq = useRef(0);  // generation counter — see pickFile
 
   // Limits come from the api so the advertised cap can't drift from the
   // enforced one. A failure here is not fatal: the fallback keeps the page
@@ -57,10 +110,14 @@ export function UploadZone() {
   useEffect(() => {
     let live = true;
     getUploadConfig()
-      .then((c) => { if (live) setConfig(c); })
+      .then((c) => { if (live) { setConfig(c); setQuotaKnown(true); } })
       .catch(() => {});
     return () => { live = false; };
   }, []);
+
+  const outOfQuota =
+    quotaKnown && (config.games_remaining <= 0 || config.minutes_remaining <= 0);
+  const windowLabel = `${config.window_hours} h`;
 
   const validate = (f: File) => {
     if (!config.allowed_content_types.includes(f.type))
@@ -70,14 +127,44 @@ export function UploadZone() {
     return null;
   };
 
-  const pickFile = useCallback((f: File) => {
+  // Mirrors app/services/quota.py so the instant client rejection says the same
+  // thing the server would have. An unknown duration defers to the server,
+  // which prices it from the file size rather than trusting or ignoring it.
+  const validateDuration = (seconds: number | null) => {
+    if (seconds == null) return null;
+    if (seconds > config.max_duration_seconds) {
+      return `Video is ${fmtMinutes(seconds / 60)} long; the maximum is ` +
+        `${fmtMinutes(config.max_duration_seconds / 60)}. Split it into separate uploads.`;
+    }
+    if (quotaKnown && seconds / 60 > config.minutes_remaining) {
+      return `Video is ${fmtMinutes(seconds / 60)} but you have only ` +
+        `${fmtMinutes(config.minutes_remaining)} of footage left in your last ${windowLabel}. ` +
+        "Your quota frees up as earlier uploads age out.";
+    }
+    return null;
+  };
+
+  const pickFile = useCallback(async (f: File) => {
     const err = validate(f);
     if (err) { setError(err); return; }
     setError(null);
     setFile(f);
+    setDuration(null);
+    setDurationProbed(false);
     if (!title) setTitle(f.name.replace(/\.[^.]+$/, ""));
+    // Metadata reads off the local file, so this is quick — but it is still
+    // async, and the file is shown while it resolves. Stamp the pick: a slow
+    // read (up to the 10 s timeout) for a file the user has already replaced
+    // would otherwise land on the new file's state, showing one file's name
+    // against another's duration and declaring the wrong length to the api.
+    const pick = ++pickSeq.current;
+    const seconds = await readDuration(f);
+    if (pick !== pickSeq.current) return;  // superseded by a later pick
+    setDuration(seconds);
+    setDurationProbed(true);
+    setError(validateDuration(seconds));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, config]);
+  }, [title, config, quotaKnown]);
 
   const onDrop = (e: React.DragEvent) => {
     // preventDefault already called by the inline onDrop wrapper below
@@ -93,6 +180,10 @@ export function UploadZone() {
 
   const handleUpload = async () => {
     if (!file || uploading) return; // re-entry guard — a second click is a no-op
+    // Re-check on submit: the config may have loaded, or the duration
+    // resolved, after the file was picked.
+    const blocked = validate(file) ?? validateDuration(duration);
+    if (blocked) { setError(blocked); return; }
     setError(null);
     setUploading(true);
     setProgress(0); // show the progress bar immediately, not on the first onprogress event
@@ -113,6 +204,7 @@ export function UploadZone() {
         content_type: file.type,
         size_bytes: file.size,
         condense,
+        duration_seconds: duration,
       });
 
       // 2. Send the video straight to R2. One leg, fully observable: the api
@@ -199,7 +291,10 @@ export function UploadZone() {
               <Film size={18} className="text-brand" />
             </div>
             <p className="text-[14px] font-medium text-foreground">{file.name}</p>
-            <p className="mt-1 text-[12px] text-muted">{formatBytes(file.size)}</p>
+            <p className="mt-1 text-[12px] text-muted">
+              {formatBytes(file.size)}
+              {duration != null && ` · ${fmtMinutes(duration / 60)}`}
+            </p>
             {!uploading && (
               <button
                 onClick={() => document.getElementById("file-input")?.click()}
@@ -217,6 +312,7 @@ export function UploadZone() {
             <p className="text-[14px] font-medium text-foreground">Drop video here</p>
             <p className="mt-1.5 text-[12px] text-muted">
               MP4, MOV, MKV, WebM · up to {fmtLimit(config.max_upload_bytes)}
+              {` · ${fmtMinutes(config.max_duration_seconds / 60)} max`}
             </p>
             <p className="mt-3 text-[11px] text-subtle">or click to browse</p>
           </>
@@ -265,6 +361,48 @@ export function UploadZone() {
         </label>
       )}
 
+      {/* The browser couldn't read this file's length (CF-91). Common for MKV,
+          which Chrome can't decode even though we accept it. The server then
+          estimates from the file size until the worker probes the real length,
+          so say so rather than letting the estimate surface as a surprise on
+          the next upload. */}
+      {file && durationProbed && duration === null && (
+        <div className="mt-3 rounded-md border border-border bg-surface px-3 py-2 text-[11px] text-muted">
+          We couldn&rsquo;t read this video&rsquo;s length in the browser. Your quota will be
+          estimated from the file size until processing confirms the real length, then
+          corrected.
+        </div>
+      )}
+
+      {/* Remaining quota (CF-91) — shown before a file is chosen so hitting
+          the cap is predictable rather than a rejection at the end. */}
+      {quotaKnown && (
+        <div
+          className={cn(
+            "mt-3 rounded-md border px-3 py-2 text-[11px]",
+            outOfQuota
+              ? "border-amber-500/20 bg-amber-500/5 text-amber-400"
+              : "border-border bg-surface text-muted"
+          )}
+        >
+          {outOfQuota ? (
+            <>
+              You&rsquo;ve used your upload allowance for the last {windowLabel}
+              {" — "}
+              {config.max_games_per_window} videos and{" "}
+              {fmtMinutes(config.max_minutes_per_window)} of footage. It frees up as
+              earlier uploads age out.
+            </>
+          ) : (
+            <>
+              {config.games_remaining} of {config.max_games_per_window} uploads and{" "}
+              {fmtMinutes(config.minutes_remaining)} of footage left in your last{" "}
+              {windowLabel}.
+            </>
+          )}
+        </div>
+      )}
+
       {/* Error */}
       {error && (
         <div className="mt-3 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
@@ -292,7 +430,12 @@ export function UploadZone() {
       {/* Upload button — stays mounted but disabled while uploading so a
           slow network can't leave a clickable button (double-submit, CF-35) */}
       {file && (
-        <Button className="mt-4 w-full" size="lg" onClick={handleUpload} disabled={uploading}>
+        <Button
+          className="mt-4 w-full"
+          size="lg"
+          onClick={handleUpload}
+          disabled={uploading || outOfQuota}
+        >
           {uploading ? <Loader size={16} className="animate-spin" /> : "Upload & process"}
         </Button>
       )}

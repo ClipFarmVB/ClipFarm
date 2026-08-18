@@ -17,10 +17,11 @@ pytest.importorskip("fastapi")
 pytest.importorskip("celery")
 
 from fastapi import HTTPException  # noqa: E402
-from sqlalchemy.sql.dml import Update  # noqa: E402
+from sqlalchemy.sql.dml import Delete, Update  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.models.game import Game, GameStatus  # noqa: E402
+from app.models.upload_event import UploadEvent  # noqa: E402
 from app.routers import games as games_router  # noqa: E402
 from app.schemas.game import CompletedPart, UploadComplete, UploadCreate  # noqa: E402
 from app.services import storage  # noqa: E402
@@ -42,6 +43,19 @@ class _Result:
     def all(self):
         return self._rows
 
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+
+class _AggregateResult:
+    """A one-row aggregate, as the CF-91 quota count returns."""
+
+    def __init__(self, row):
+        self._row = row
+
+    def one(self):
+        return self._row
+
 
 class _UpdateResult:
     def __init__(self, rowcount: int):
@@ -60,16 +74,40 @@ def _where_columns(stmt) -> set[str]:
 class FakeDB:
     """Just enough AsyncSession for the upload handlers."""
 
-    def __init__(self, *games: Game, stale: list[Game] | None = None):
+    def __init__(
+        self,
+        *games: Game,
+        stale: list[Game] | None = None,
+        quota_usage: tuple[int, float] = (0, 0.0),
+    ):
         self.games = {g.id: g for g in games}
         self.stale = stale or []          # what the sweep's SELECT returns
-        self.added: list[Game] = []
-        self.deleted: list[Game] = []
+        self.quota_usage = quota_usage    # (accepted uploads, charged seconds)
+        # A charge already on this game, as a retry or a sibling completion
+        # would find. None = this is the first completion to get here.
+        self.existing_reservation = None
+        self.added: list = []
+        self.deleted: list = []
         self.commits = 0
+        self.rollbacks = 0
 
     async def execute(self, stmt):
         if isinstance(stmt, Update):
             return self._claim(stmt)
+        if isinstance(stmt, Delete):
+            return self._discard(stmt)
+        sql = str(stmt)
+        # CF-91 takes a per-user advisory lock before reading the quota; it
+        # returns nothing the handler looks at.
+        if "pg_advisory_xact_lock" in sql:
+            return _AggregateResult((None,))
+        if "upload_events" in sql:
+            # Two different reads hit this table: the window aggregate, and the
+            # per-game idempotency lookup that makes a double-submit share one
+            # charge. Only the first is an aggregate.
+            if "count(" in sql:
+                return _AggregateResult(self.quota_usage)
+            return _Result([self.existing_reservation] if self.existing_reservation else [])
         rows, self.stale = self.stale, []  # one sweep per test
         return _Result(rows)
 
@@ -87,16 +125,40 @@ class FakeDB:
         guarded = "status" in _where_columns(stmt)
         claimed = [
             g for g in self.games.values()
-            if not guarded or g.status == GameStatus.uploading
+            if isinstance(g, Game) and (not guarded or g.status == GameStatus.uploading)
         ]
         for g in claimed:
             g.status = GameStatus.queued
             g.upload_id = None
         return _UpdateResult(len(claimed))
 
+    def _discard(self, stmt) -> _UpdateResult:
+        """Model the quota-rejection disposal:
+
+            DELETE FROM games WHERE id=:id AND status='uploading'
+
+        Guarded the same way as the claim, and for the same reason: a sibling
+        completion that already claimed this game must not have its row deleted
+        out from under it. As with `_claim`, the predicate is read off the
+        statement rather than assumed, so an unguarded DELETE would fail the
+        test rather than quietly pass it.
+        """
+        guarded = "status" in _where_columns(stmt)
+        doomed = [
+            g for g in self.games.values()
+            if isinstance(g, Game) and (not guarded or g.status == GameStatus.uploading)
+        ]
+        for g in doomed:
+            self.deleted.append(g)
+            self.games.pop(g.id, None)
+        return _UpdateResult(len(doomed))
+
     def add(self, obj):
         self.added.append(obj)
-        self.games[obj.id] = obj
+        # Only games are addressable by get(); the CF-91 ledger row is written
+        # through the same session but never read back by id.
+        if isinstance(obj, Game):
+            self.games[obj.id] = obj
 
     async def get(self, _model, pk):
         return self.games.get(pk)
@@ -112,7 +174,7 @@ class FakeDB:
         pass
 
     async def rollback(self):
-        pass
+        self.rollbacks += 1
 
 
 class FakeTask:
@@ -530,3 +592,257 @@ def test_successful_multipart_completion_assembles_then_queues(fake_storage, fak
     assert (key, upload_id) == ("raw/abc.mp4", "upload-id-123")
     assert [p["PartNumber"] for p in parts] == [2, 1], "storage layer does the sorting"
     assert len(fake_task.calls) == 1
+
+
+# ── CF-91: where the quota actually bites ────────────────────────────────────
+#
+# The policy table lives in test_quota.py. These cover the wiring — that the
+# handlers call it at all, at the right point, and dispose of what they reject.
+# Deleting the quota calls from the router leaves every test in test_quota.py
+# green, so this is the half that notices.
+
+
+def _full_window(monkeypatch):
+    """Config where one upload is the whole allowance."""
+    monkeypatch.setattr(settings, "quota_max_games_per_window", 1)
+    monkeypatch.setattr(settings, "quota_max_minutes_per_window", 60.0)
+
+
+def test_presign_refuses_a_user_who_is_already_over_quota(fake_storage, monkeypatch):
+    """The point of checking at presign: no URL, so no 2 GB transfer to waste."""
+    _full_window(monkeypatch)
+    db = FakeDB(quota_usage=(1, 600.0))  # one upload already accepted
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.create_upload(_create(1024), USER, db))
+
+    assert exc.value.status_code == 429
+    assert not fake_storage["presign_put"], "no ticket is issued"
+    assert db.added == [], "and no row is written"
+
+
+def test_presign_refuses_a_video_over_the_duration_cap(fake_storage, monkeypatch):
+    monkeypatch.setattr(settings, "max_upload_duration_seconds", 3600.0)
+    db = FakeDB()
+    body = _create(1024)
+    body.duration_seconds = 7200.0
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.create_upload(body, USER, db))
+
+    assert exc.value.status_code == 413
+    assert not fake_storage["presign_put"]
+
+
+def test_presign_carries_the_declared_duration_onto_the_row(fake_storage):
+    """It has to survive to completion, where the charge is taken.
+
+    Reading it from the completion request instead would let a client declare
+    a long video to get a ticket and a short one to be billed for it.
+    """
+    db = FakeDB()
+    body = _create(1024)
+    body.duration_seconds = 5400.0
+
+    asyncio.run(games_router.create_upload(body, USER, db))
+
+    assert db.added[0].declared_duration == 5400.0
+
+
+def test_presign_does_not_charge_the_quota(fake_storage):
+    """An abandoned ticket must cost nothing.
+
+    Charging here would mean the sweep had to refund abandoned rows, which is
+    the refundable-quota loop the ledger exists to prevent.
+    """
+    db = FakeDB()
+    asyncio.run(games_router.create_upload(_create(1024), USER, db))
+
+    assert [o for o in db.added if isinstance(o, UploadEvent)] == []
+
+
+def test_completion_charges_the_quota_before_queueing(fake_storage, fake_task):
+    game = _uploading_game(declared_duration=1800.0)
+    db = FakeDB(game)
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
+
+    charged = [o for o in db.added if isinstance(o, UploadEvent)]
+    assert len(charged) == 1
+    assert charged[0].charged_seconds == 1800.0
+    assert charged[0].game_id == game.id, "linked, so the worker can settle it"
+    assert len(fake_task.calls) == 1
+
+
+def test_completion_prices_an_undeclared_duration_from_the_file_size(
+    fake_storage, fake_task, monkeypatch
+):
+    """MKV can't be probed in the browser, so this path is the common one.
+
+    A flat maximum here charged a 3-minute clip four hours and blocked the
+    user's day. The verified byte count stands in instead.
+    """
+    monkeypatch.setattr(settings, "max_upload_duration_seconds", 14400.0)
+    game = _uploading_game(declared_duration=None)
+    db = FakeDB(game)
+    fake_storage["_head"]["value"] = {"size": 75_000_000, "content_type": "video/x-matroska"}
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
+
+    charged = [o for o in db.added if isinstance(o, UploadEvent)][0]
+    # 75 MB at the low-bitrate assumption — minutes, not the 4 h cap.
+    assert charged.charged_seconds == pytest.approx(600.0)
+    assert charged.charged_seconds < 14400.0
+
+
+def test_a_declared_duration_the_file_size_contradicts_is_not_believed(
+    fake_storage, fake_task, monkeypatch
+):
+    """Declaring 0 (or a token value) was the way around the minute cap.
+
+    Charging it at face value let one account queue max_games x max_duration
+    against a much smaller minute allowance — the same defect the undeclared
+    case was fixed for, reachable by sending a number instead of omitting one.
+    """
+    monkeypatch.setattr(settings, "max_upload_duration_seconds", 14400.0)
+    game = _uploading_game(declared_duration=0.0)
+    db = FakeDB(game)
+    fake_storage["_head"]["value"] = {"size": 75_000_000, "content_type": "video/mp4"}
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
+
+    charged = [o for o in db.added if isinstance(o, UploadEvent)][0]
+    assert charged.charged_seconds == pytest.approx(600.0), "priced from size, not the claim"
+
+
+def test_completion_over_quota_discards_the_object_and_the_row(
+    fake_storage, fake_task, monkeypatch
+):
+    """The upload raced past the presign preview — dispose, don't process."""
+    _full_window(monkeypatch)
+    game = _uploading_game(declared_duration=600.0)
+    db = FakeDB(game, quota_usage=(1, 600.0))
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
+
+    assert exc.value.status_code == 429
+    assert fake_storage["delete_file"] == ["raw/abc.mp4"], "no orphaned object"
+    assert db.deleted == [game], "and no row left to process"
+    assert not fake_task.calls, "nothing queued"
+
+
+class _LostClaimDB(FakeDB):
+    """A session where the conditional UPDATE always loses.
+
+    Models the other half of a completion race: the row still read `uploading`
+    at the handler's early check, and a concurrent request claimed it before
+    this one got to the UPDATE.
+    """
+
+    def _claim(self, stmt):
+        return _UpdateResult(0)
+
+
+def _charge_on(game: Game) -> UploadEvent:
+    """The charge a sibling completion of this game would already have made."""
+    return UploadEvent(id=uuid.uuid4(), owner_id=USER, game_id=game.id, charged_seconds=1800.0)
+
+
+def test_the_loser_of_a_completion_race_gets_409_and_keeps_the_winners_charge(
+    fake_storage, fake_task
+):
+    """The loser must not hand anything back.
+
+    The reservation is keyed to the game, so it is the *same row* the winner is
+    using — releasing it here would uncharge an upload that is about to run.
+    """
+    game = _uploading_game()
+    db = _LostClaimDB(game)
+    db.existing_reservation = _charge_on(game)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
+
+    assert exc.value.status_code == 409, "a lost race is a conflict, not a crash"
+    assert [o for o in db.added if isinstance(o, UploadEvent)] == [], "no second charge"
+    assert db.deleted == [], "and the winner's row is untouched"
+    assert not fake_task.calls
+
+
+def test_a_sibling_completion_at_the_quota_boundary_cannot_destroy_the_upload(
+    fake_storage, fake_task, monkeypatch
+):
+    """Double-submit with exactly one slot left used to delete a live upload.
+
+    The charge was reserved before the atomic claim, so the sibling saw the
+    winner's fresh event, was rejected as over quota, and then ran the
+    rejection path — deleting the object and the game row out from under the
+    completion that was about to enqueue it.
+
+    Keying the reservation to the game removes the rejection entirely: the
+    sibling finds the existing charge instead of competing for a slot.
+    """
+    monkeypatch.setattr(settings, "quota_max_games_per_window", 1)
+    game = _uploading_game(declared_duration=1800.0)
+    # Window already full *because of this game's own charge*.
+    db = _LostClaimDB(game, quota_usage=(1, 1800.0))
+    db.existing_reservation = _charge_on(game)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
+
+    assert exc.value.status_code == 409, "a conflict, not a quota rejection"
+    assert fake_storage["delete_file"] == [], "the winner's object survives"
+    assert db.deleted == [], "and so does its row"
+
+
+class _StolenAfterHeadDB(FakeDB):
+    """The row reads `uploading` when the handler loads it, but is gone by the
+    time the disposal DELETE runs — a sibling claimed it during the HEAD.
+
+    Needed because the handler's early status check would short-circuit a row
+    that already reads `queued`, so simply pre-setting the status tests the
+    fast path instead of the guard.
+    """
+
+    def _discard(self, stmt):
+        return _UpdateResult(0)
+
+
+def test_a_genuine_quota_rejection_only_discards_an_upload_it_still_owns(
+    fake_storage, fake_task, monkeypatch
+):
+    """The disposal DELETE carries the same `uploading` predicate as the claim.
+
+    Without it, a caller that lost the row during its HEAD still deleted the
+    object and the row — destroying the upload the winner was about to enqueue.
+    """
+    monkeypatch.setattr(settings, "quota_max_games_per_window", 1)
+    game = _uploading_game(declared_duration=1800.0)
+    # Over quota with no charge on this game, so the rejection itself is real.
+    db = _StolenAfterHeadDB(game, quota_usage=(1, 1800.0))
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
+
+    assert exc.value.status_code == 409, "someone else owns it now — not our 429"
+    assert fake_storage["delete_file"] == [], "not ours to delete"
+    assert not fake_task.calls
+
+
+def test_a_quota_rejection_it_does_own_discards_object_and_row(
+    fake_storage, fake_task, monkeypatch
+):
+    """The other side of the guard: still ours, so clean it up properly."""
+    monkeypatch.setattr(settings, "quota_max_games_per_window", 1)
+    game = _uploading_game(declared_duration=1800.0)
+    db = FakeDB(game, quota_usage=(1, 1800.0))
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
+
+    assert exc.value.status_code == 429
+    assert fake_storage["delete_file"] == ["raw/abc.mp4"], "no orphaned object"
+    assert db.deleted == [game], "and no row left to process"
+    assert not fake_task.calls
