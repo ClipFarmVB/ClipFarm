@@ -88,6 +88,19 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
+    # Connection used only for the worker's per-game advisory lock (CF-184).
+    # Empty = use database_url, which is right locally and for any direct or
+    # session-mode connection. Set this when DATABASE_URL is a TRANSACTION-mode
+    # pooler (Supabase port 6543): that mode can serve consecutive statements
+    # from different backends, which cannot hold a session-scoped lock. Point it
+    # at the session-mode port (5432) instead. The worker refuses to process
+    # rather than run under a lock that does not hold — see locks.py.
+    lock_database_url: str = ""
+    # Ports refused outright as a lock connection: they serve a transaction-mode
+    # pooler, which cannot hold a session-scoped lock, and no runtime check
+    # detects that reliably (see locks.py). 6543 is Supabase's; a deployment
+    # behind a PgBouncer on some other port declares it here, comma-separated.
+    lock_pooler_ports: str = "6543"
 
     # Auth / JWT (legacy — Supabase JWKS is the source of truth)
     jwt_secret: str = ""
@@ -123,14 +136,12 @@ class Settings(BaseSettings):
     # the local-CPU fallback is slow (~1.3–2x realtime tracking), so a long match
     # with Modal unavailable can run for hours; size for your slowest path.
     celery_visibility_timeout: int = 7200    # 2h
-    # The per-game lock MUST outlive the visibility timeout, not equal it: a
-    # redelivery fires at ~visibility_timeout, and if the lock lapses at the same
-    # instant a second worker acquires it and runs concurrently — the exact bug
-    # this prevents. Keeping the lock longer means the redelivered copy always
-    # finds the lock still held and no-ops. (Trade-off: a hard-killed worker
-    # orphans the lock until this TTL; a stale-"processing" reaper is the fix —
-    # see #149, which gates the Render cutover in #98.)
-    process_lock_ttl_seconds: int = 10800    # 3h — deliberately > visibility_timeout
+    # CF-184: the per-game lock is a session-scoped Postgres advisory lock
+    # (app/workers/locks.py), so it has no TTL to tune against the timeout above
+    # — it is released when the holding connection dies. What replaced
+    # `process_lock_ttl_seconds` is nothing at all, deliberately: a TTL was only
+    # ever an approximation of "is the holder alive", and it was the reason a
+    # hard-killed worker stranded a game in `processing`.
 
     # Modal
     modal_token_id: str = ""
