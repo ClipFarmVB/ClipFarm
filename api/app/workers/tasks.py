@@ -254,11 +254,17 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
     # The lock lives on its own database connection (CF-184), so if this worker
     # is hard-killed the lock dies with it and the requeued copy can run.
     lock = GameLock(gid)
-    if not lock.acquire():
-        logger.warning("Game %s already being processed elsewhere — skipping duplicate delivery", gid)
-        return
 
+    # acquire() is INSIDE the retryable try on purpose: taking the lock is a
+    # database round trip, and a transient Postgres blip while taking it must
+    # retry like any other failure. Raising above the try would be a permanent
+    # failure instead — acks_late acks a task that raises, so nothing would
+    # redeliver it and the game would sit in `queued`.
     try:
+        if not lock.acquire():
+            logger.warning("Game %s already being processed elsewhere — skipping duplicate delivery", gid)
+            return
+
         sync_set_game_status(gid, "processing")
         # Written directly rather than through GameProgress: the stage spans
         # need the downloaded file's MD5 (cache probe below), which isn't

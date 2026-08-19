@@ -12,6 +12,8 @@ demonstrated against a double. Those skip without a database; CI runs a
 throwaway Postgres so they execute there (see `.github/workflows/ci.yml`).
 """
 import os
+import socket
+import struct
 import time
 import uuid
 
@@ -179,6 +181,34 @@ def test_release_closes_the_connection_even_if_unlock_fails(monkeypatch):
     lock.release()          # a second release is a no-op, not an error
 
 
+def test_engine_asks_for_server_side_keepalives(monkeypatch):
+    """Client keepalives detect a dead *server*; these detect a dead *client*.
+
+    They are what bounds the one case the lock does not cover instantly — a
+    connection severed with no FIN, where the backend would otherwise hold the
+    lock until the OS default (~2h) noticed. Silently ignored through a pooler
+    (the backend's peer is the pooler, not us), which is why locks.py documents
+    the residual rather than claiming release is always immediate.
+    """
+    from app.workers import locks
+
+    opts = locks.SERVER_KEEPALIVE_OPTIONS
+    assert "tcp_keepalives_idle=" in opts
+    assert "tcp_keepalives_interval=" in opts
+    assert "tcp_keepalives_count=" in opts
+
+    captured = {}
+    monkeypatch.setattr(locks, "_engine", None)
+    monkeypatch.setattr(
+        locks, "create_engine", lambda url, **kw: captured.update(kw) or "engine"
+    )
+    locks._get_engine()
+    monkeypatch.setattr(locks, "_engine", None)
+
+    assert captured["connect_args"]["options"] == opts
+    assert captured["connect_args"]["keepalives"] == 1
+
+
 # ── Against a real Postgres ──────────────────────────────────────────────────
 
 def _lock_db_url() -> str:
@@ -236,23 +266,51 @@ def test_different_games_do_not_block_each_other(pg_locks):
         b.release()
 
 
+def _sever(conn) -> None:
+    """Make the next close of `conn` an RST rather than a clean shutdown.
+
+    `SO_LINGER {on, 0}` means the final close discards the socket and sends a
+    reset instead of a FIN, which is the closest a test can get to a worker that
+    disappears — a graceful `close()` is a *polite* disconnect and would let the
+    lock go even if abrupt loss did not.
+
+    The wrapper is `detach()`ed rather than closed: it borrows libpq's fd only
+    to set the option, and closing it too would free an fd libpq still owns.
+    """
+    raw = conn.connection.dbapi_connection
+    sock = socket.socket(fileno=raw.fileno())
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    sock.detach()
+    raw.close()
+    # Tell SQLAlchemy the DBAPI connection is gone, so its own cleanup doesn't
+    # try to roll back a dead socket at GC time and print a spurious traceback.
+    conn.invalidate()
+
+
 def test_lock_dies_with_the_worker(pg_locks):
     """The CF-184 acceptance test, in miniature.
 
     A hard-killed worker never runs `release()` — its connection just dies. The
     lock must go with it so the redelivered task can acquire it, rather than
     outliving the holder on a TTL and stranding the game in `processing`.
-    Dropping the connection without unlocking is that kill.
+
+    The kill here is an RST: no unlock, no FIN, the connection is torn away.
+    What this still does NOT cover is a *silent* loss — a partition where no
+    packet reaches the server at all, so the backend sits blocked on a read and
+    only the server's TCP keepalives reap it. That tail is minutes (bounded by
+    the `tcp_keepalives_idle` locks.py asks for) rather than instant, and it is
+    the one case that needs a real network to demonstrate.
     """
     gid = uuid.uuid4()
     killed = pg_locks.GameLock(gid)
     assert killed.acquire() is True
 
-    killed._conn.close()                   # the worker dies; no unlock is sent
+    _sever(killed._conn)                   # the worker dies; no unlock, no FIN
     killed.held = False
 
     # Postgres frees the lock when it reaps the backend, which is prompt but not
-    # synchronous with our close() — poll rather than assert on the first try.
+    # synchronous with our end of the socket dying — poll rather than assert on
+    # the first try.
     redelivered = pg_locks.GameLock(gid)
     try:
         for _ in range(50):

@@ -353,6 +353,17 @@ What a deploy still costs is **the work in flight**: a requeued game restarts
 from the beginning, not from where it was killed. So deploying while a long
 match is processing is wasteful, not dangerous.
 
+**How immediate "released" is.** A Render deploy stops the container, the socket
+closes, and the lock goes within milliseconds. The slow case is a connection
+*severed* without a close — host loss or a network partition — where the
+database only reaps the backend on its own TCP keepalives. The worker asks for a
+short keepalive on its lock connection (~2 min), which applies on a direct
+connection; through Supabase's pooler that request is ignored and the bound is
+Supabase's own (`tcp_keepalives_idle` = 1800s, so tens of minutes). Still far
+better than the old lock's flat 3h on *every* hard kill, but not zero — if a
+game is stuck in `processing` after a partition, that is the window it clears
+in.
+
 > ⚠️ **This depends on `DATABASE_URL` (or `LOCK_DATABASE_URL`) being a
 > session-mode connection.** Supabase's transaction-mode pooler (port **6543**)
 > can serve consecutive statements from different backends, which cannot hold a

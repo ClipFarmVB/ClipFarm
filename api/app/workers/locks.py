@@ -22,6 +22,18 @@ closes, the lock goes with it, and the redelivered task acquires it and runs.
 The failure mode stops existing instead of being reaped after the fact — so
 there is no TTL here, and nothing to tune against `celery_visibility_timeout`.
 
+**How fast "dies" is, honestly.** A kill that closes the socket — SIGKILL, a
+container stop, a crash — sends a FIN and the lock is released within
+milliseconds. A kill that *severs* the connection without one (host loss, a
+network partition, a namespace torn down before the FIN flushes) leaves the
+backend blocked on a read from a peer that will never answer, and only the
+server's TCP keepalives reap it. That tail is bounded by
+`tcp_keepalives_idle` **on the server**, which is why `_get_engine()` asks for a
+short one (see there for what happens through a pooler). Worst case is minutes
+to tens of minutes rather than the old lock's flat 3h on *every* hard kill — but
+it is not zero, and this is the one place the guarantee is softer than
+"released immediately".
+
 Two things this depends on, both handled below:
 
 - **The lock connection is dedicated and lives for the whole task.** It is not a
@@ -52,12 +64,21 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Namespaced so the hash can never collide with an advisory key some other part
-# of the system picks for a different purpose on the same database.
+# Advisory keys are global to the database, and this is not the only thing
+# minting them — `app.services.quota._advisory_lock_key` takes a transaction
+# lock keyed on a *user* id, without going through here. The namespace below
+# therefore separates this module's own keys from each other; what makes a
+# cross-purpose collision a non-issue is the 64-bit space, not the prefix.
 _KEY_NAMESPACE = b"clipfarm:process_game:"
 
 _UINT64 = 0xFFFFFFFFFFFFFFFF
 _UINT32 = 0xFFFFFFFF
+
+# Server-side TCP keepalives for the lock connection, set as session GUCs at
+# connect time. See _get_engine() for why, and for where they do not apply.
+SERVER_KEEPALIVE_OPTIONS = (
+    "-c tcp_keepalives_idle=60 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=6"
+)
 
 _engine: Engine | None = None
 
@@ -109,9 +130,28 @@ def _get_engine() -> Engine:
         # would pin a snapshot and hold off VACUUM. Session-level advisory locks
         # are not transactional, so nothing is lost by not being in one.
         #
-        # TCP keepalives: the connection is idle for the whole task, and an idle
-        # connection silently dropped by a pooler or NAT timeout takes the lock
-        # with it. Keepalives keep it demonstrably alive (psycopg2/libpq).
+        # Client-side TCP keepalives (`keepalives*`): the connection is idle for
+        # the whole task, and an idle connection silently dropped by a pooler or
+        # NAT timeout would take the lock with it. These keep it demonstrably
+        # alive — they detect a dead *server*.
+        #
+        # Server-side TCP keepalives (`options`, applied as GUCs on our own
+        # backend): the other direction, and the one that matters for a hard
+        # kill. They are how the server notices *we* died when no FIN arrived,
+        # so the tail case in the module docstring is bounded at
+        # 60 + 6x10 ≈ 2 minutes instead of the OS default (~2h). Verified to
+        # apply on a direct connection. Through Supabase's pooler they are
+        # silently ignored — the backend's peer is the pooler, not us, and
+        # Supabase sets its own (tcp_keepalives_idle=1800), so there the tail is
+        # tens of minutes and depends on the pooler noticing the dead client.
+        # Still worth asking for: harmless where ignored, real where it lands.
+        #
+        # Capacity: one of these exists per *in-flight job*, held for the whole
+        # job, on top of the sync pool in _sync_db. The worker pool is `solo`,
+        # so that is one connection per worker process today — but session-mode
+        # connections are the scarce class on Supabase, so re-check this against
+        # max concurrent games before raising worker count or moving to prefork
+        # (CF-65b).
         _engine = create_engine(
             _lock_url(),
             poolclass=NullPool,
@@ -121,6 +161,7 @@ def _get_engine() -> Engine:
                 "keepalives_idle": 30,
                 "keepalives_interval": 10,
                 "keepalives_count": 5,
+                "options": SERVER_KEEPALIVE_OPTIONS,
                 "application_name": "clipfarm-worker-lock",
             },
         )
