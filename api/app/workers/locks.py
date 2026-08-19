@@ -91,6 +91,29 @@ SERVER_KEEPALIVE_OPTIONS = (
     "-c tcp_keepalives_idle=60 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=6"
 )
 
+# Nothing this module sends is more than a single-row lookup, so a query that
+# runs this long is a server that has stopped answering, not a busy one. Bounds
+# the case the socket timeouts below cannot: a backend that is alive and acking
+# our packets but never completes the statement.
+LOCK_STATEMENT_TIMEOUT_MS = 15_000
+
+# The client-side counterpart to the keepalives, and the one that matters most.
+# Keepalives only fire on an *idle* socket: once a query is in flight, a peer
+# that vanishes silently is left to TCP retransmission, which gives up after
+# ~15 minutes at the default tcp_retries2. still_held() is documented as one
+# cheap round trip and release() runs in a `finally` — neither may stall a
+# worker for a quarter of an hour on a job it has already lost. libpq applies
+# this only where TCP_USER_TIMEOUT exists (Linux, so production and CI); it is
+# parsed and ignored elsewhere, which is why the statement timeout above is not
+# redundant with it.
+LOCK_TCP_USER_TIMEOUT_MS = 30_000
+
+# Connect-time GUCs: the keepalives, plus the statement timeout. Kept separate
+# from SERVER_KEEPALIVE_OPTIONS so each half is still readable on its own.
+CONNECT_OPTIONS = (
+    f"{SERVER_KEEPALIVE_OPTIONS} -c statement_timeout={LOCK_STATEMENT_TIMEOUT_MS}"
+)
+
 # Ports known to serve a TRANSACTION-mode pooler, which cannot hold a
 # session-scoped lock. The default is Supabase's 6543 — the only one this
 # deployment can meet — but a PgBouncer somewhere else answers on whatever port
@@ -187,6 +210,13 @@ def _get_engine() -> Engine:
         # tens of minutes and depends on the pooler noticing the dead client.
         # Still worth asking for: harmless where ignored, real where it lands.
         #
+        # Timeouts (`connect_timeout`, `tcp_user_timeout`, `statement_timeout`):
+        # every call this module makes has to come back in bounded time. The
+        # keepalives above are not that bound — they only run on an idle socket,
+        # so a query sent into a connection that was severed mid-flight waits on
+        # TCP retransmission (~15 min) instead. See the constants for the split
+        # of which timeout covers which failure.
+        #
         # Capacity: one of these exists per *in-flight job*, held for the whole
         # job, on top of the sync pool in _sync_db. The worker pool is `solo`,
         # so that is one connection per worker process today — but session-mode
@@ -198,11 +228,13 @@ def _get_engine() -> Engine:
             poolclass=NullPool,
             isolation_level="AUTOCOMMIT",
             connect_args={
+                "connect_timeout": 10,
                 "keepalives": 1,
                 "keepalives_idle": 30,
                 "keepalives_interval": 10,
                 "keepalives_count": 5,
-                "options": SERVER_KEEPALIVE_OPTIONS,
+                "tcp_user_timeout": LOCK_TCP_USER_TIMEOUT_MS,
+                "options": CONNECT_OPTIONS,
                 "application_name": "clipfarm-worker-lock",
             },
         )
@@ -307,7 +339,9 @@ class GameLock:
         """Is the lock *currently* still held on this connection?
 
         Cheap (one round trip on an otherwise idle connection) and meant to be
-        called at checkpoints during a long job.
+        called at checkpoints during a long job — and bounded in time even when
+        the connection has been severed, which the keepalives alone do not do
+        (see LOCK_TCP_USER_TIMEOUT_MS).
 
         A *successful* query saying the lock is not there is final — no retry,
         it is genuinely gone. An *error* is the ambiguous case, and answering it

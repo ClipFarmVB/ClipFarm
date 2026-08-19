@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from celery.exceptions import Retry
+
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -277,6 +279,27 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 f"Lost the processing lock for game {gid} mid-job — aborting so "
                 "the retry can re-acquire it"
             )
+
+    def _lock_is_free() -> bool:
+        """True if this game's lock can be taken right now, i.e. nobody holds it.
+
+        Only used to decide whether it is ours to write a terminal status after
+        losing the lock. Answers False when it cannot tell: an unanswerable
+        probe and a lock someone else holds must be read the same way, since
+        both mean "not ours to write".
+        """
+        probe = GameLock(gid)
+        try:
+            if not probe.acquire():
+                return False
+        except Exception:
+            logger.warning(
+                "Could not probe the lock for game %s — leaving its row alone",
+                game_id, exc_info=True,
+            )
+            return False
+        probe.release()
+        return True
 
     try:
         try:
@@ -691,6 +714,34 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             logger.info("Done: %d clips for game %s", len(rows), game_id)
             logger.info("STAGE_TIMING stage=TOTAL seconds=%.2f", _timing.perf_counter() - _run_t0)
 
+    except LockLost as lost:
+        # We no longer own this game, so we are no longer the authority on its
+        # row — the worker holding the lock is, and it may be part-way through
+        # its own run right now. The generic handler below would stamp `failed`
+        # over that live `processing`, and the retry it schedules no-ops on the
+        # held lock, so nothing would put the row right until the other worker
+        # finished. Step aside instead: log, drop the lock, and let the retry
+        # re-acquire it if it is genuinely free.
+        logger.warning("Aborting game %s: %s", game_id, lost)
+        lock.release()          # before the probe below, so we don't see ourselves
+        try:
+            raise self.retry(exc=lost)
+        except Retry:
+            raise
+        except Exception:
+            # Retries are spent. (Celery re-raises the `exc` we handed it rather
+            # than MaxRetriesExceededError, so "not a Retry" is the reliable
+            # reading of exhaustion, not the exception type.)
+            #
+            # The row must not be left in `processing` forever — that stranding
+            # is exactly what CF-184 removed. But only write it if nobody else
+            # holds the lock: taking it proves the game is not in flight
+            # anywhere, and releasing it immediately leaves nothing behind. If
+            # the probe cannot answer, say nothing — a wrong `failed` on a live
+            # job is worse than a row left behind.
+            if _lock_is_free():
+                sync_set_game_status(gid, "failed", error_message=str(lost))
+            raise
     except Exception as exc:
         # A game deleted mid-flight is the cause of the failure (missing video on
         # retry, FK violation on save), not a transient error — abandon, don't

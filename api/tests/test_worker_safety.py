@@ -207,8 +207,69 @@ def test_engine_asks_for_server_side_keepalives(monkeypatch):
     locks._get_engine()
     monkeypatch.setattr(locks, "_engine", None)
 
-    assert captured["connect_args"]["options"] == opts
+    assert opts in captured["connect_args"]["options"]
     assert captured["connect_args"]["keepalives"] == 1
+
+
+def test_every_call_on_the_lock_connection_is_bounded_in_time(monkeypatch):
+    """Keepalives are not a bound on a call that is already in flight.
+
+    They only fire on an *idle* socket, so a query sent just as the connection
+    is severed waits on TCP retransmission instead — ~15 min at the default
+    tcp_retries2. `still_held()` is one round trip at a stage boundary and
+    `release()` runs in a `finally`; neither may stall a worker that long on a
+    job it has already lost. `tcp_user_timeout` covers the severed socket,
+    `statement_timeout` the backend that is alive but never answers, and
+    `connect_timeout` the acquire that cannot reach the server at all.
+    """
+    from app.workers import locks
+
+    captured = {}
+    monkeypatch.setattr(locks, "_engine", None)
+    monkeypatch.setattr(
+        locks, "create_engine", lambda url, **kw: captured.update(kw) or "engine"
+    )
+    locks._get_engine()
+    monkeypatch.setattr(locks, "_engine", None)
+
+    args = captured["connect_args"]
+    assert args["connect_timeout"] > 0
+    assert args["tcp_user_timeout"] == locks.LOCK_TCP_USER_TIMEOUT_MS
+    assert f"statement_timeout={locks.LOCK_STATEMENT_TIMEOUT_MS}" in args["options"]
+
+
+class _LockLostProbe(RuntimeError):
+    """Stand-in for LockLost. Module level so the eager result can unpickle it."""
+
+
+def test_retry_exhaustion_reraises_the_original_exception():
+    """What the LockLost handler in tasks.py reads as "retries are spent".
+
+    `self.retry(exc=...)` does *not* raise MaxRetriesExceededError once the
+    retries are gone — Celery re-raises the exception it was handed. So the
+    handler distinguishes the two cases by `Retry` vs anything else, and this
+    pins the behaviour that makes that the right reading.
+    """
+    from celery import Celery
+    from celery.exceptions import MaxRetriesExceededError, Retry
+
+    app = Celery("lock_retry_probe")
+    app.conf.task_always_eager = True
+
+    seen = {}
+
+    @app.task(bind=True, max_retries=0)
+    def _spent(self):
+        try:
+            raise self.retry(exc=_LockLostProbe("lock lost"))
+        except Retry:                       # a real retry — never on this path
+            seen["retry"] = True
+            raise
+
+    result = _spent.apply()
+    assert "retry" not in seen
+    assert isinstance(result.result, _LockLostProbe)
+    assert not isinstance(result.result, MaxRetriesExceededError)
 
 
 def test_acquire_unlocks_before_closing_on_the_error_path(monkeypatch):
