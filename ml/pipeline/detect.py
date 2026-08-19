@@ -90,6 +90,7 @@ def run_detection(
     model_name: str = "yolov8s-pose.pt",  # small model — detects far-side players at imgsz=1280
     imgsz: int = 1280,
     skip_frames: int = SKIP_FRAMES,
+    allow_stub: bool = False,
 ) -> list[dict]:
     """
     Run full detection pipeline on a video file.
@@ -99,11 +100,25 @@ def run_detection(
     same reason: both are driven by the POSE_* settings, and a fallback scan
     that ignored them would silently run a different (heavier) config than the
     refinement path on the very same deployment.
+
+    `allow_stub` gates `_stub_detections` — fabricated clips at invented
+    timestamps, a development affordance for environments without a pose
+    runtime. It defaults to OFF because callers persist what this returns: a
+    caller that wants fake clips has to say so. The guard lives here rather than
+    in the caller because the trigger is this import failing, which is not the
+    same question as whether ultralytics is installed (a broken torch fails the
+    import with ultralytics present).
     """
     try:
         from ultralytics import YOLO
         model = YOLO(_model_path(model_name))
-    except ImportError:
+    except ImportError as import_err:
+        if not allow_stub:
+            raise RuntimeError(
+                f"Pose detection is unavailable ({import_err}) and stub detections are "
+                "not allowed. Refusing to return fabricated clips — pass allow_stub=True "
+                "only where invented data is acceptable (local development)."
+            ) from import_err
         logger.warning("ultralytics not installed — returning stub detections")
         return _stub_detections(video_path)
 

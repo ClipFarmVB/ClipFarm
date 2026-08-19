@@ -129,6 +129,9 @@ def detect_actions_remote(
     with tempfile.TemporaryDirectory() as tmpdir:
         local_path = os.path.join(tmpdir, "video.mp4")
         _download(video_url, local_path)
+        # allow_stub defaults to False: if this image ever loses its pose runtime,
+        # the call fails loudly rather than returning invented clips for the worker
+        # to persist.
         return run_detection(
             local_path, model_name=model_name, imgsz=imgsz, skip_frames=skip_frames,
         )

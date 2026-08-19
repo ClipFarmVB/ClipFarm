@@ -15,9 +15,16 @@ WORKDIR /app
 
 # Install Python dependencies first for better layer caching.
 COPY api/requirements.txt /tmp/api-requirements.txt
+# numpy and opencv are PINNED, and pinned to the same versions as
+# ml/requirements.txt and ml/modal_pose.py. This is not tidiness: pipeline code
+# runs in this process AND in the Modal image, and rally dicts cross that
+# boundary as a pickle. A numpy-2 pickle names `numpy._core`, which a numpy-1.x
+# image cannot import, so a version split here fails at *deserialization* on the
+# far side — which the caller can only see as "Modal failed", one warning line.
+# Bump these three files together or not at all.
 RUN pip install --upgrade pip \
     && pip install -r /tmp/api-requirements.txt \
-    && pip install ffmpeg-python opencv-python-headless numpy greenlet
+    && pip install ffmpeg-python opencv-python-headless==4.10.0.84 numpy==1.26.4 greenlet
 
 # ── NO ML dependencies in this image (CF-164) ────────────────────────────
 # Every model now runs on Modal: ball tracking on `clipfarm-ball-tracking`

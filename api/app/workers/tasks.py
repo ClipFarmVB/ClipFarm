@@ -186,6 +186,38 @@ def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start:
         raise self.retry(exc=exc)
 
 
+def _json_safe(value):
+    """Plain-Python copy of a nested structure, with numpy scalars unwrapped.
+
+    The pipeline builds confidences with numpy arithmetic and the results leak
+    out as numpy scalars: `ball.py::classify_contact_action` computes
+    `min(0.88, 0.65 + sp_after / 1500.0)` where `sp_after` is an `np.hypot`
+    result, so the numpy operand wins the `min()` for any contact under
+    ~345 px/s, `round()` preserves the type, and it lands in the rally's
+    "confidence" via `_make_rally`.
+
+    In one process that is invisible. Across the Modal boundary it is a live
+    hazard: a numpy-2 pickle names `numpy._core`, which a numpy-1.x image cannot
+    import, so the call fails at *deserialization* and the caller sees only
+    "Modal failed — falling back to local CPU". With no ultralytics in this
+    image, pose then silently never runs: green deploy, one warning line,
+    trajectory-only labels. Worse, it is data-dependent — a fast enough contact
+    yields the plain 0.88 literal and the same code path works.
+
+    Matching pins fix it today (see Dockerfile.api); sending plain floats means a
+    future bump on either side cannot bring it back.
+    """
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    # numpy scalars and arrays, without importing numpy into this module.
+    # 0-d .tolist() yields a Python scalar; nd yields nested lists.
+    if hasattr(value, "dtype") and hasattr(value, "tolist"):
+        return _json_safe(value.tolist())
+    return value
+
+
 def _classify_windows_modal(r2_key: str, windows: list[dict]) -> list[dict]:
     """
     Pose-refine rally windows on Modal GPU (CF-164). Raises on any failure;
@@ -202,7 +234,7 @@ def _classify_windows_modal(r2_key: str, windows: list[dict]) -> list[dict]:
     video_url = s3.presign_url(r2_key, expires_in=3600)
     fn = modal_sdk.Function.from_name("clipfarm-pose", "classify_windows_remote")
     return fn.remote(
-        video_url, windows,
+        video_url, _json_safe(windows),
         settings.pose_model, settings.pose_imgsz, settings.pose_skip_frames,
     )
 
@@ -255,8 +287,6 @@ def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
     the entire video (not just rally windows), so it is the most expensive thing
     the pipeline can do on CPU and the one that most wants a GPU.
     """
-    import importlib.util
-
     from app.config import settings
 
     if _will_attempt_modal(r2_key):
@@ -276,29 +306,24 @@ def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
                 "Modal pose-first scan failed (%s) — falling back to local CPU", modal_err
             )
 
-    # `run_detection` degrades to `_stub_detections` when ultralytics is missing:
-    # up to 15 fabricated clips at invented timestamps and a flat 0.75 confidence.
-    # That is a dev affordance, and it was harmless while the image always carried
-    # ultralytics. Since CF-164 it does not — so this branch would cut, upload and
-    # persist invented highlights as real ones on every Modal failure.
+    # allow_stub is the whole safety question here. `run_detection` degrades to
+    # `_stub_detections` when the pose import fails — up to 15 fabricated clips at
+    # invented timestamps, flat 0.75 confidence — and this pipeline cuts, uploads
+    # and persists whatever it returns. Harmless while the image always carried
+    # ultralytics; since CF-164 it does not, so that stub sits one Modal failure
+    # away from production data.
     #
-    # Fail loudly instead. The caller marks the game `failed` with this message and
-    # reports to Sentry, which is the correct outcome: with no ball pipeline, no
-    # pose runtime and no GPU, there is genuinely nothing to detect. DEBUG=1 keeps
-    # the stub reachable for development, where fake clips are the point.
-    if not settings.debug and importlib.util.find_spec("ultralytics") is None:
-        raise RuntimeError(
-            "Pose-first fallback scan is unavailable: the ball pipeline is out, Modal "
-            "did not run, and this image has no ultralytics (CF-164). Refusing the "
-            "local path — run_detection() would return fabricated stub detections."
-        )
-
+    # Off outside DEBUG, therefore, and `run_detection` raises instead. The caller
+    # marks the game `failed` with that message and reports to Sentry, which is the
+    # right outcome: no ball pipeline, no GPU and no pose runtime means there is
+    # genuinely nothing to detect. In development, fake clips are the point.
     from ml.pipeline.detect import run_detection
     return run_detection(
         video_path,
         model_name=settings.pose_model,
         imgsz=settings.pose_imgsz,
         skip_frames=settings.pose_skip_frames,
+        allow_stub=settings.debug,
     )
 
 

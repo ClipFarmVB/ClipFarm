@@ -163,43 +163,25 @@ def test_full_scan_sends_configured_pose_settings_to_modal(monkeypatch, fake_det
     }
 
 
-def test_full_scan_refuses_to_fabricate_clips_without_a_pose_runtime(
-    monkeypatch, fake_detect
-):
-    """The critical one.
+@pytest.mark.parametrize("debug", [False, True])
+def test_full_scan_ties_stub_permission_to_debug(monkeypatch, fake_detect, debug):
+    """The stub-refusal contract, from the caller's side.
 
-    `run_detection` degrades to `_stub_detections` when ultralytics is missing:
-    up to 15 invented clips at invented timestamps, flat 0.75 confidence — which
-    this pipeline would cut, upload and persist as genuine highlights. That was
-    harmless while the image always carried ultralytics; since CF-164 it does
-    not, so the stub sat one Modal failure away from production data.
-
-    Failing the game is the correct outcome here, and the loud one: no ball
-    pipeline, no GPU and no pose runtime means there is genuinely nothing to
-    detect. This test asserts the refusal, not the stub.
+    The refusal itself now lives in `run_detection` (see
+    ml/tests/test_detect_stub_guard.py), keyed on the pose import actually
+    failing rather than on ultralytics being installed — a broken torch fails
+    that import with the package present, which a find_spec check would miss.
+    What the worker owes is the *permission*: fabricated clips are acceptable in
+    development and never in production, because this pipeline persists whatever
+    comes back.
     """
+    from app.config import settings
     from app.workers import tasks
 
     monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: False)
-    monkeypatch.setattr("app.config.settings.debug", False)
-
-    with pytest.raises(RuntimeError, match="fabricated stub detections"):
-        tasks._run_detection("game.mp4", "")
-
-    assert fake_detect.calls == [], "run_detection must not be reached at all"
-
-
-def test_full_scan_still_runs_locally_in_debug(monkeypatch, fake_detect):
-    """The stub is a development affordance and stays reachable under DEBUG,
-    where fake clips are the point."""
-    from app.workers import tasks
-
-    monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: False)
-    monkeypatch.setattr("app.config.settings.debug", True)
+    monkeypatch.setattr("app.config.settings.debug", debug)
 
     out = tasks._run_detection("game.mp4", "")
-
-    from app.config import settings
 
     assert [d["action"] for d in out] == ["local"]
     kind, path, kwargs = fake_detect.calls[0]
@@ -208,7 +190,65 @@ def test_full_scan_still_runs_locally_in_debug(monkeypatch, fake_detect):
         "model_name": settings.pose_model,
         "imgsz": settings.pose_imgsz,
         "skip_frames": settings.pose_skip_frames,
+        "allow_stub": debug,
     }
+
+
+# ── The cross-process boundary ───────────────────────────────────────────────
+
+def test_numpy_scalars_never_reach_the_modal_boundary(monkeypatch):
+    """A numpy-2 pickle names `numpy._core`, which a numpy-1.x image cannot
+    import, so a version split fails at *deserialization* on the far side — and
+    the caller sees only "Modal failed", then silently skips pose because there
+    is no local runtime. It is also data-dependent: `classify_contact_action`
+    computes `min(0.88, 0.65 + sp_after / 1500.0)`, so the numpy operand only
+    wins the `min()` below ~345 px/s and faster contacts serialize fine.
+
+    Pins keep the two images aligned; this keeps the payload plain regardless.
+    """
+    np = pytest.importorskip("numpy")
+    from app.workers import tasks
+
+    sent = {}
+
+    def remote(url, windows, model, imgsz, skip):
+        sent["windows"] = windows
+        return windows
+
+    _fake_modal(monkeypatch, remote)
+
+    windows = [{
+        "start": np.float64(1.0),
+        "end": 6.0,
+        "action": "spike",
+        # Exactly the expression ball.py evaluates for a slower contact.
+        "confidence": round(min(0.88, 0.65 + np.hypot(np.float64(120.0), 60.0) / 1500.0), 2),
+        "labels": ["spike"],
+        "features": {"contact_count": np.int64(3), "speeds": np.array([1.5, 2.5])},
+    }]
+    assert isinstance(windows[0]["confidence"], np.floating), "fixture must reproduce the leak"
+
+    tasks._classify_windows_modal("raw/x.mp4", windows)
+
+    def assert_plain(value, path="windows"):
+        assert not hasattr(value, "dtype"), f"numpy object survived to the wire at {path}"
+        if isinstance(value, dict):
+            for k, v in value.items():
+                assert_plain(v, f"{path}.{k}")
+        elif isinstance(value, list):
+            for i, v in enumerate(value):
+                assert_plain(v, f"{path}[{i}]")
+
+    assert_plain(sent["windows"])
+    assert sent["windows"][0]["features"]["speeds"] == [1.5, 2.5]
+
+
+def test_json_safe_leaves_ordinary_payloads_untouched():
+    from app.workers.tasks import _json_safe
+
+    payload = [{"a": 1, "b": 2.5, "c": "x", "d": None, "e": [1, {"f": True}]}]
+    assert _json_safe(payload) == payload
+
 
 
 def test_refine_skips_modal_entirely_when_no_rallies_survived(monkeypatch, fake_detect):
@@ -315,6 +355,37 @@ def test_invariant_detects_an_ml_runtime_hidden_behind_a_requirements_file():
         REPO_ROOT / "api" / "requirements.txt"
     )
     assert not in_api, f"api/requirements.txt now pulls an ML runtime: {in_api}"
+
+
+@pytest.mark.parametrize("package", ["numpy", "opencv-python-headless"])
+def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
+    """Pipeline code runs in the worker AND in the Modal image, and rally dicts
+    cross that boundary as a pickle. A numpy-2 pickle names `numpy._core`, which
+    a numpy-1.x image cannot import — so a version split between these files
+    fails at deserialization on the far side, which the worker can only report as
+    "Modal failed". `_json_safe` keeps the payload plain so this can't bite, but
+    the two runtimes disagreeing is its own bug; catch it here rather than in a
+    silent label regression.
+    """
+    sources = {
+        "Dockerfile.api": REPO_ROOT / "Dockerfile.api",
+        "ml/requirements.txt": REPO_ROOT / "ml" / "requirements.txt",
+        "ml/modal_pose.py": REPO_ROOT / "ml" / "modal_pose.py",
+    }
+    pattern = re.compile(re.escape(package) + r"==([0-9][0-9A-Za-z.\-]*)")
+
+    found = {}
+    for label, path in sources.items():
+        text = "\n".join(
+            line for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        matches = set(pattern.findall(text))
+        assert matches, f"{label} does not pin {package} — it must, see this test's docstring"
+        assert len(matches) == 1, f"{label} pins {package} to several versions: {matches}"
+        found[label] = matches.pop()
+
+    assert len(set(found.values())) == 1, f"{package} version split across runtimes: {found}"
 
 
 def test_dev_compose_declares_every_named_volume_it_mounts():
