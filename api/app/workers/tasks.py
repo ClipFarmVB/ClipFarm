@@ -266,7 +266,7 @@ def _refine_with_pose(
 
     # The highlight gate can drop every rally. `classify_within_windows` already
     # no-ops on an empty list locally; without this the Modal path would cold-start
-    # a T4 and pull the whole video (up to 2 GB) to hand back [].
+    # a T4, open the video and hand back [].
     if not windows:
         return windows
 

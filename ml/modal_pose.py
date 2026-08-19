@@ -15,7 +15,8 @@ locally, so this is an execution-location change, not a second implementation.
 `classify_action` wired to nothing — and is deleted by this change.)
 
 Video arrives by presigned R2 URL, same as `modal_app.py`: R2 credentials stay
-in the worker and never need to exist as a Modal Secret.
+in the worker and never need to exist as a Modal Secret. Refinement reads that
+URL in place rather than downloading it first — see `classify_windows_remote`.
 
 Deploy:
     modal deploy ml/modal_pose.py
@@ -23,7 +24,11 @@ Deploy:
 Requires a Modal account + CLI auth (`modal setup`) and MODAL_TOKEN_ID /
 MODAL_TOKEN_SECRET wherever this is invoked from.
 """
+import logging
+
 import modal
+
+logger = logging.getLogger(__name__)
 
 APP_NAME = "clipfarm-pose"
 
@@ -75,6 +80,28 @@ def _download(video_url: str, dest: str) -> None:
                 f.write(chunk)
 
 
+def _streamable(video_url: str) -> bool:
+    """Can the decoder read this URL in place, seeking it with range requests?
+
+    Probed, not assumed: it needs an https-capable FFmpeg behind OpenCV in this
+    image and a store that honours `Range` (R2 does). `isOpened()` on its own is
+    not the answer — a capture can open against a URL it then cannot read — so
+    force one real read before believing it.
+
+    Cheap either way: opening an mp4 fetches the header and the moov atom, not
+    the file.
+    """
+    import cv2
+
+    cap = cv2.VideoCapture(video_url)
+    try:
+        return bool(cap.isOpened() and cap.grab())
+    except Exception:
+        return False
+    finally:
+        cap.release()
+
+
 @app.function(image=image, gpu="T4", timeout=1800)
 def classify_windows_remote(
     video_url: str,
@@ -88,12 +115,37 @@ def classify_windows_remote(
 
     `windows` and the return value are plain dicts, which is what the pipeline
     passes around anyway — nothing to serialize by hand at the RPC boundary.
+
+    The video is read *in place* off the presigned URL when the decoder can seek
+    it. Refinement visits only the rallies that survived the highlight gate — a
+    fraction of a long match — so pulling the whole object down first moved
+    gigabytes onto a billed T4 to be skipped. Seeking transfers roughly the
+    footage actually decoded instead, and `classify_within_windows` already
+    seeks per window, so nothing above this call changes.
+
+    Expiry is not a new exposure: the presigned URL is good for an hour and this
+    function's timeout is half that, so a stream outliving its signature cannot
+    happen while those two numbers hold.
     """
     import os
     import tempfile
 
     from ml.pipeline.detect import classify_within_windows
 
+    if _streamable(video_url):
+        logger.info(
+            "Pose refinement reading %d windows from the source URL", len(windows)
+        )
+        return classify_within_windows(
+            video_url, windows,
+            model_name=model_name, imgsz=imgsz, skip_frames=skip_frames,
+        )
+
+    # No seekable read — an image whose FFmpeg lacks https, or a store that
+    # ignores Range. Fall back to the whole object rather than failing the
+    # stage: it is what this did before, and refinement that runs beats
+    # refinement that doesn't.
+    logger.warning("Source URL is not seekable — falling back to a full download")
     with tempfile.TemporaryDirectory() as tmpdir:
         local_path = os.path.join(tmpdir, "video.mp4")
         _download(video_url, local_path)
@@ -120,6 +172,11 @@ def detect_actions_remote(
     Takes the same POSE_* knobs as `classify_windows_remote`: the two entry
     points run on the same hardware for the same deployment, so a fallback that
     ignored them would quietly run a different config than the refinement path.
+
+    Downloads rather than reading in place, unlike the refinement path above:
+    this scan visits every skip_frames-th frame of the *whole* video, so there
+    is no unread footage to save and seeking would only add round trips to a
+    transfer that has to happen anyway.
     """
     import os
     import tempfile

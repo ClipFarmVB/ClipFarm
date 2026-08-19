@@ -358,6 +358,136 @@ def test_refine_skips_modal_entirely_when_no_rallies_survived(monkeypatch, fake_
     assert fake_detect.calls == []
 
 
+# ── How the GPU reads the video ──────────────────────────────────────────────
+
+@pytest.fixture
+def modal_pose(monkeypatch):
+    """`ml/modal_pose.py` with the Modal SDK faked out.
+
+    The module builds its App and Image at import time, so it cannot be imported
+    without the SDK installed. Behind a pass-through decorator the two entry
+    points are ordinary functions, which is the only part these tests need — the
+    same trick `fake_detect` plays for `ml`.
+    """
+    import importlib.util
+
+    class _Chain:
+        """Every Image builder call returns the Image, so one object covers all."""
+        def __getattr__(self, _name):
+            return lambda *a, **kw: self
+
+    class _App:
+        def function(self, *a, **kw):
+            return lambda fn: fn
+
+    sdk = types.ModuleType("modal")
+    sdk.App = lambda *a, **kw: _App()
+    sdk.Image = _Chain()
+    monkeypatch.setitem(sys.modules, "modal", sdk)
+
+    spec = importlib.util.spec_from_file_location(
+        "modal_pose_under_test", REPO_ROOT / "ml" / "modal_pose.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_refinement_reads_the_source_in_place_rather_than_downloading_it(
+    monkeypatch, modal_pose, fake_detect
+):
+    """Refinement visits only the rallies that survived the highlight gate.
+
+    Downloading the whole object first moved gigabytes onto a billed T4 to be
+    skipped; seeking the presigned URL transfers roughly the footage actually
+    decoded.
+    """
+    monkeypatch.setattr(modal_pose, "_streamable", lambda url: True)
+
+    def never(*args, **kwargs):
+        raise AssertionError("pulled the whole object down instead of seeking it")
+
+    monkeypatch.setattr(modal_pose, "_download", never)
+
+    url = "https://r2.example/raw/x.mp4?sig=abc"
+    out = modal_pose.classify_windows_remote(url, WINDOWS, "yolov8s-pose.pt", 1280, 4)
+
+    kind, video_path, windows, kwargs = fake_detect.calls[0]
+    assert kind == "classify"
+    assert video_path == url, "the decoder must be pointed at the source, not a copy"
+    assert windows == WINDOWS, "window times are absolute — nothing is remapped"
+    assert [w["action"] for w in out] == ["local"]
+
+
+def test_refinement_falls_back_to_a_download_when_the_url_cannot_be_seeked(
+    monkeypatch, modal_pose, fake_detect
+):
+    """An image whose FFmpeg lacks https, or a store that ignores Range.
+
+    Refinement that runs beats refinement that doesn't, so this degrades to the
+    old behaviour instead of failing the stage.
+    """
+    monkeypatch.setattr(modal_pose, "_streamable", lambda url: False)
+    pulled = {}
+    monkeypatch.setattr(
+        modal_pose, "_download", lambda url, dest: pulled.update(url=url, dest=dest)
+    )
+
+    url = "https://r2.example/raw/x.mp4?sig=abc"
+    modal_pose.classify_windows_remote(url, WINDOWS, "yolov8s-pose.pt", 1280, 4)
+
+    assert pulled["url"] == url
+    _, video_path, _, _ = fake_detect.calls[0]
+    assert video_path == pulled["dest"], "must decode the copy it just pulled down"
+
+
+def test_the_full_scan_still_downloads(monkeypatch, modal_pose, fake_detect):
+    """No unread footage to save here, so seeking would only add round trips.
+
+    Pinned because the refinement path above now looks like the thing to copy.
+    """
+    monkeypatch.setattr(modal_pose, "_streamable", lambda url: True)
+    pulled = {}
+    monkeypatch.setattr(
+        modal_pose, "_download", lambda url, dest: pulled.update(url=url, dest=dest)
+    )
+
+    url = "https://r2.example/raw/x.mp4?sig=abc"
+    modal_pose.detect_actions_remote(url, "yolov8s-pose.pt", 1280, 4)
+
+    kind, video_path, _ = fake_detect.calls[0]
+    assert kind == "run_detection"
+    assert video_path == pulled["dest"]
+
+
+@pytest.mark.parametrize(
+    "opened, grabbed, expected",
+    [(True, True, True), (True, False, False), (False, False, False)],
+)
+def test_streamable_demands_a_real_read_not_just_an_open(
+    monkeypatch, modal_pose, opened, grabbed, expected
+):
+    """A capture can open against a URL it then cannot read a frame from.
+
+    Believing `isOpened()` alone would route the stage down a path that yields
+    nothing and silently returns the windows unrefined.
+    """
+    released = {"n": 0}
+
+    class _Cap:
+        def __init__(self, _url): pass
+        def isOpened(self): return opened
+        def grab(self): return grabbed
+        def release(self): released["n"] += 1
+
+    cv2 = types.ModuleType("cv2")
+    cv2.VideoCapture = _Cap
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+
+    assert modal_pose._streamable("https://r2.example/x.mp4") is expected
+    assert released["n"] == 1, "the probe must not leak a capture"
+
+
 # ── Deploy invariant ─────────────────────────────────────────────────────────
 
 ML_RUNTIME_PACKAGES = ("torch", "torchvision", "ultralytics", "transformers", "inference")
