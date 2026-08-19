@@ -322,35 +322,44 @@ they weigh SPF/DKIM alignment differently.
 to production — you deploy deliberately:
 
 1. Merge the batch to `main`.
-2. ⚠️ **Check nothing is mid-processing before deploying the worker** — see
-   "Deploying kills in-flight jobs" below. Until **#149 (CF-65g)** lands, a game
-   killed mid-flight stays stuck in `processing`.
+2. A game mid-processing is no longer a reason to wait — it is requeued and
+   re-run after the deploy (see "Deploying kills in-flight jobs" below). It does
+   restart from the beginning, so deploying under load still costs the work in
+   flight.
 3. Render Dashboard → the service → **Manual Deploy → Deploy latest commit**.
 4. Deploy **`clipfarm-api` first** (its `preDeployCommand` applies migrations),
    then `clipfarm-worker`, then `clipfarm-web`. The worker shares the api's
    models, so shipping it against an un-migrated schema is the thing this
    ordering avoids.
 
-### ⚠️ Deploying kills in-flight jobs (dependency: #149)
+### Deploying kills in-flight jobs (and they recover)
 
-Every Render deploy hard-kills the running worker. **This behaviour is live on
-`main` today**, not something to watch for later: CF-65a merged and made it
-*mostly* safe — `task_acks_late` + `task_reject_on_worker_lost` requeue the task
-— but there's a gap it can't close alone:
+Every Render deploy hard-kills the running worker. Two changes make that
+survivable rather than something to schedule around:
 
-- the dead worker's per-game lock (`process_lock_ttl_seconds`, **3h**)
-  deliberately outlives the visibility timeout (**2h**), so
-- the requeued copy finds the lock still held and **no-ops**, and
-- the game sits in `processing` with nothing working on it.
+- **CF-65a** — `task_acks_late` + `task_reject_on_worker_lost` mean a killed
+  task is requeued instead of lost.
+- **CF-184** — the per-game lock is a *session-scoped Postgres advisory lock*,
+  held on its own connection. The kill closes that connection, Postgres drops
+  the lock, and the requeued copy acquires it and runs.
 
-`api/app/config.py` names this explicitly: *"a stale-'processing' reaper is the
-fix — see #149, which gates the Render cutover."* **#149 is still open**, so
-until it merges, treat "is anything processing?" as a manual pre-deploy check
-and expect to recover a stranded game by hand (its lock clears after ~3h).
+Until CF-184 the second half was missing: the old Redis lock had a 3h TTL that
+outlived the dead worker, so the requeued copy found the lock held, no-opped,
+and the game sat in `processing` until someone intervened. That is what #149's
+stale-`processing` reaper was for — with the lock released by the kill itself,
+there is nothing left to reap.
 
-This doesn't block *merging* the Blueprint — nothing deploys until someone
-clicks deploy — but it is a real dependency for the **first production cutover**
-and for any deploy under load.
+What a deploy still costs is **the work in flight**: a requeued game restarts
+from the beginning, not from where it was killed. So deploying while a long
+match is processing is wasteful, not dangerous.
+
+> ⚠️ **This depends on `DATABASE_URL` (or `LOCK_DATABASE_URL`) being a
+> session-mode connection.** Supabase's transaction-mode pooler (port **6543**)
+> can serve consecutive statements from different backends, which cannot hold a
+> session-scoped lock. The worker checks after acquiring and **refuses to
+> process** rather than run under a lock that does not hold — if worker logs
+> show `LockNotSessionScoped`, set `LOCK_DATABASE_URL` to the session-mode
+> connection (port **5432**) in the `clipfarm-shared` env group.
 
 **Why auto-deploy is off:** the api runs `alembic upgrade head` on every deploy. With
 auto-deploy on, any merge to `main` would apply a migration to the production

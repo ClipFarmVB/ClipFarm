@@ -23,6 +23,16 @@ envVarGroups:
     envVars:
       - key: DATABASE_URL              # Supabase pooler URL, postgresql+asyncpg://…  (Pro tier — see CF-18)
         sync: false
+      # The worker's per-game lock is a session-scoped Postgres advisory lock
+      # (CF-184) and needs a SESSION-mode connection — Supabase's
+      # transaction-mode pooler (port 6543) can serve consecutive statements
+      # from different backends, which silently cannot hold one. Leave unset
+      # while DATABASE_URL is the session-mode/direct connection (port 5432);
+      # add it in the dashboard if DATABASE_URL ever moves to 6543. The worker
+      # refuses to process rather than run under a lock that does not hold, so
+      # the symptom is loud: `LockNotSessionScoped` in the worker log.
+      # - key: LOCK_DATABASE_URL
+      #   sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY # server-only secret

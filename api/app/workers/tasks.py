@@ -251,7 +251,9 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
 
     # CF-65a: never process one game on two workers at once. A redelivered or
     # duplicated task whose game is already in flight is a harmless no-op.
-    lock = GameLock(gid, ttl_seconds=_cfg.process_lock_ttl_seconds)
+    # The lock lives on its own database connection (CF-184), so if this worker
+    # is hard-killed the lock dies with it and the requeued copy can run.
+    lock = GameLock(gid)
     if not lock.acquire():
         logger.warning("Game %s already being processed elsewhere — skipping duplicate delivery", gid)
         return
