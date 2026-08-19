@@ -219,6 +219,12 @@ def _refine_with_pose(local_video: Path, r2_key: str, windows: list[dict]) -> li
     """
     from app.config import settings
 
+    # The highlight gate can drop every rally. `classify_within_windows` already
+    # no-ops on an empty list locally; without this the Modal path would cold-start
+    # a T4 and pull the whole video (up to 2 GB) to hand back [].
+    if not windows:
+        return windows
+
     if _will_attempt_modal(r2_key):
         try:
             refined = _classify_windows_modal(r2_key, windows)
@@ -245,17 +251,24 @@ def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
     """
     Pose-first full-video scan — the fallback when the ball pipeline is out.
 
-    Runs on Modal GPU when configured. This scans every SKIP_FRAMES-th frame of
+    Runs on Modal GPU when configured. This scans every skip_frames-th frame of
     the entire video (not just rally windows), so it is the most expensive thing
     the pipeline can do on CPU and the one that most wants a GPU.
     """
+    import importlib.util
+
+    from app.config import settings
+
     if _will_attempt_modal(r2_key):
         try:
             import modal as modal_sdk
             from app.services import storage as s3
 
             fn = modal_sdk.Function.from_name("clipfarm-pose", "detect_actions_remote")
-            detections = fn.remote(s3.presign_url(r2_key, expires_in=3600))
+            detections = fn.remote(
+                s3.presign_url(r2_key, expires_in=3600),
+                settings.pose_model, settings.pose_imgsz, settings.pose_skip_frames,
+            )
             logger.info("Pose-first scan ran on Modal GPU: %d detections", len(detections))
             return detections
         except Exception as modal_err:
@@ -263,8 +276,30 @@ def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
                 "Modal pose-first scan failed (%s) — falling back to local CPU", modal_err
             )
 
+    # `run_detection` degrades to `_stub_detections` when ultralytics is missing:
+    # up to 15 fabricated clips at invented timestamps and a flat 0.75 confidence.
+    # That is a dev affordance, and it was harmless while the image always carried
+    # ultralytics. Since CF-164 it does not — so this branch would cut, upload and
+    # persist invented highlights as real ones on every Modal failure.
+    #
+    # Fail loudly instead. The caller marks the game `failed` with this message and
+    # reports to Sentry, which is the correct outcome: with no ball pipeline, no
+    # pose runtime and no GPU, there is genuinely nothing to detect. DEBUG=1 keeps
+    # the stub reachable for development, where fake clips are the point.
+    if not settings.debug and importlib.util.find_spec("ultralytics") is None:
+        raise RuntimeError(
+            "Pose-first fallback scan is unavailable: the ball pipeline is out, Modal "
+            "did not run, and this image has no ultralytics (CF-164). Refusing the "
+            "local path — run_detection() would return fabricated stub detections."
+        )
+
     from ml.pipeline.detect import run_detection
-    return run_detection(video_path)
+    return run_detection(
+        video_path,
+        model_name=settings.pose_model,
+        imgsz=settings.pose_imgsz,
+        skip_frames=settings.pose_skip_frames,
+    )
 
 
 @celery_app.task(bind=True, name="process_game", max_retries=2, default_retry_delay=60)

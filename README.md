@@ -162,8 +162,11 @@ writes `Clip` rows. Re-running a game clears its prior clips first (idempotent).
   quality and multi-court false positives are known open problems (see backlog).
 - **The ball cache is content-addressed.** Re-uploading the same file is nearly free.
   Changing the model or sample rate invalidates it automatically (it's in the key).
-- **Model weights persist in a volume**, not the image — the worker mounts a `model_cache`
-  volume so RF-DETR/YOLO weights aren't re-downloaded on every container recreate.
+- **Model weights live on Modal, not here** (CF-164). The worker used to mount a
+  `model_cache` volume so RF-DETR/YOLO weights survived a container recreate; now no
+  weights are loaded in this image at all. Pose weights are baked into the
+  `clipfarm-pose` image; the ball model still uses the `clipfarm-model-cache` Modal
+  Volume, which is what that caching lesson (CF-40) applies to today.
 
 ---
 

@@ -85,14 +85,24 @@ class Detection:
         self.end = self.peak_time + PAD_AFTER
 
 
-def run_detection(video_path: str) -> list[dict]:
+def run_detection(
+    video_path: str,
+    model_name: str = "yolov8s-pose.pt",  # small model — detects far-side players at imgsz=1280
+    imgsz: int = 1280,
+    skip_frames: int = SKIP_FRAMES,
+) -> list[dict]:
     """
     Run full detection pipeline on a video file.
     Returns list of {start, end, action, confidence} dicts.
+
+    Takes the same three quality knobs as `classify_within_windows` and for the
+    same reason: both are driven by the POSE_* settings, and a fallback scan
+    that ignored them would silently run a different (heavier) config than the
+    refinement path on the very same deployment.
     """
     try:
         from ultralytics import YOLO
-        model = YOLO(_model_path("yolov8s-pose.pt"))  # small model — detects far-side players at imgsz=1280
+        model = YOLO(_model_path(model_name))
     except ImportError:
         logger.warning("ultralytics not installed — returning stub detections")
         return _stub_detections(video_path)
@@ -120,12 +130,12 @@ def run_detection(video_path: str) -> list[dict]:
         if not ret:
             break
 
-        if frame_idx % SKIP_FRAMES != 0:
+        if frame_idx % skip_frames != 0:
             frame_idx += 1
             continue
 
         t = frame_idx / fps
-        results = model(frame, imgsz=1280, verbose=False)
+        results = model(frame, imgsz=imgsz, verbose=False)
 
         curr_keypoints: dict[int, np.ndarray] = {}
 

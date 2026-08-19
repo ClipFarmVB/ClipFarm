@@ -38,14 +38,19 @@ app = modal.App(APP_NAME)
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("ffmpeg", "libgl1", "libglib2.0-0")
+    # Everything that can change the labels is pinned, per the CF-33 lesson
+    # ARCHITECTURE.md records: an unpinned resolver can "succeed" into a subtly
+    # different model and the only symptom is worse output. There is no failed
+    # deploy to point at, so pin rather than discover it in the eval numbers.
+    # (`requests` is deliberately loose — it moves bytes, not labels.)
     .pip_install(
-        "torch",
-        "torchvision",
+        "torch==2.5.1",
+        "torchvision==0.20.1",
         # Same pin as ml/requirements.txt — the skeleton heuristics in
         # detect.py assume the COCO 17-keypoint layout this emits.
         "ultralytics==8.3.55",
-        "opencv-python-headless",
-        "numpy",
+        "opencv-python-headless==4.10.0.84",
+        "numpy==1.26.4",
         "requests",
     )
     .env({"MODELS_DIR": "/models", "YOLO_CONFIG_DIR": "/tmp/ultralytics"})
@@ -99,13 +104,22 @@ def classify_windows_remote(
 
 
 @app.function(image=image, gpu="T4", timeout=3600)
-def detect_actions_remote(video_url: str) -> list[dict]:
+def detect_actions_remote(
+    video_url: str,
+    model_name: str,
+    imgsz: int,
+    skip_frames: int,
+) -> list[dict]:
     """
     Full-video pose-first scan on GPU. Drop-in for `run_detection()`.
 
     This is the rare path — it only runs when the ball pipeline is unavailable
-    or failed. It scans every SKIP_FRAMES-th frame of the whole video rather
+    or failed. It scans every skip_frames-th frame of the whole video rather
     than only the surviving rallies, hence the longer timeout.
+
+    Takes the same POSE_* knobs as `classify_windows_remote`: the two entry
+    points run on the same hardware for the same deployment, so a fallback that
+    ignored them would quietly run a different config than the refinement path.
     """
     import os
     import tempfile
@@ -115,4 +129,6 @@ def detect_actions_remote(video_url: str) -> list[dict]:
     with tempfile.TemporaryDirectory() as tmpdir:
         local_path = os.path.join(tmpdir, "video.mp4")
         _download(video_url, local_path)
-        return run_detection(local_path)
+        return run_detection(
+            local_path, model_name=model_name, imgsz=imgsz, skip_frames=skip_frames,
+        )

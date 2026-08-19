@@ -25,8 +25,8 @@
 # Since CF-164 this is a hard requirement, not a performance knob: ball tracking
 # and pose both run on Modal's T4 GPU, and the image no longer ships torch to
 # fall back to. Without Modal the box still cuts clips, but every game comes out
-# with trajectory-only labels — and if the ball model is unavailable too, with
-# no clips at all. Deploy both Modal apps first:
+# with trajectory-only labels — and if the ball model is unavailable too, the
+# game fails outright rather than inventing clips. Deploy both Modal apps first:
 #   modal deploy ml/modal_app.py     # ball tracking (CF-11)
 #   modal deploy ml/modal_pose.py    # pose (CF-164)
 

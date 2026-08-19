@@ -33,8 +33,9 @@ production deploy existed.
   than a speed knob: ball tracking *and* pose both run on Modal's T4 GPU, and
   the image no longer ships torch to fall back to. Without
   `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` the box still cuts clips, but every
-  game comes out with trajectory-only labels — and none at all if the ball model
-  is unreachable too. Deploy both Modal apps first if you haven't:
+  game comes out with trajectory-only labels — and if the ball model is
+  unreachable too, the game fails outright rather than inventing clips. Deploy
+  both Modal apps first if you haven't:
 
   ```bash
   modal deploy ml/modal_app.py && modal deploy ml/modal_pose.py
@@ -49,12 +50,18 @@ production deploy existed.
 | Resource | Recommendation | Why |
 |---|---|---|
 | vCPU | 2 | ffmpeg cutting + OpenCV frame work, one game at a time |
-| RAM | 2–4 GB | no torch since CF-164 — opencv frames and ffmpeg are the peak |
+| RAM | 2–4 GB | redis + api + worker together; no torch since CF-164 |
 | Disk | 40–80 GB | 2 GB upload cap × transient working files (no model cache) |
 
 A **Hetzner CPX21 (3 vCPU / 4 GB, ~€8/mo)** or a DigitalOcean / EC2 equivalent
 is plenty; the older 8 GB recommendation here was sized for torch. No GPU on
 this box — Modal owns every model.
+
+> This asks for more RAM than the Render worker's `starter` (512 MB) plan, which
+> is not a contradiction: **this box runs all three services in one place**
+> (redis, api and the worker), where Render splits them across instances. For
+> the worker process alone the peak is the ~150 MB audio energy envelope; see
+> the headroom note in `render.yaml`.
 
 ---
 

@@ -88,10 +88,11 @@ services:
       api:
         condition: service_started
     command: celery -A app.workers.celery_app worker --loglevel=info --pool=solo
+    # No model_cache volume since CF-164: nothing in this image downloads
+    # weights, and the top-level volume it referenced is gone.
     volumes:
       - ./api:/app/api
       - ./ml:/app/ml
-      - model_cache:/models
 
   web:
     build:

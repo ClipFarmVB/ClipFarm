@@ -80,7 +80,7 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 
 **`clipfarm-worker`:**
 - `ROBOFLOW_API_KEY` → Roboflow → Settings → API Keys
-- `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` → modal.com → Settings → API Tokens. **Required**, not optional: since CF-164 every model runs on Modal and the worker image ships no torch, so blank tokens no longer mean "slow local CPU" — they mean trajectory-only labels, and no clips at all if the ball model is also unreachable. Deploy both Modal apps once from a machine with `modal setup` auth before the first job:
+- `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` → modal.com → Settings → API Tokens. **Required**, not optional: since CF-164 every model runs on Modal and the worker image ships no torch, so blank tokens no longer mean "slow local CPU" — they mean trajectory-only labels — and a hard failure, not fabricated clips, if the ball model is also unreachable. Deploy both Modal apps once from a machine with `modal setup` auth before the first job:
 
   ```bash
   modal deploy ml/modal_app.py && modal deploy ml/modal_pose.py
