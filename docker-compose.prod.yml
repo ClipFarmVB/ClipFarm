@@ -50,10 +50,17 @@ services:
     # last model out of this image, so there are no weights to cache.
     volumes: !override []
     environment:
-      # api and worker share .env.docker here, so a DEBUG set to troubleshoot the
-      # api would land on the worker too. Fabricated clips are gated on
-      # ALLOW_STUB_DETECTIONS rather than DEBUG for exactly that reason; this
-      # pins the general flag off on the service that persists data.
+      # api and worker share one .env.docker on this box, so anything set to
+      # troubleshoot the api lands on the worker too — the service that writes to
+      # the database. Both switches are therefore pinned here, not merely left
+      # unset. `environment:` takes precedence over `env_file:`, which is what
+      # makes these override .env.docker rather than being overridden by it.
+      #
+      # ALLOW_STUB_DETECTIONS is the one that matters: it permits the pose-first
+      # fallback to return fabricated clips, which this worker would then cut,
+      # upload and persist as genuine highlights. DEBUG no longer grants that by
+      # any route (CF-164 review 3) and is pinned so it cannot drift back in.
+      ALLOW_STUB_DETECTIONS: "false"
       DEBUG: "false"
     # No POSE_* block here any more. It used to pin the light config
     # (yolov8n-pose @ 640, every 8th frame) because pose was the one model still

@@ -411,7 +411,29 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
     assert len(set(found.values())) == 1, f"{package} version split across runtimes: {found}"
 
 
-def test_worker_never_ships_permission_to_fabricate_clips():
+def _load_compose(path: Path):
+    """Parse a Compose file, tolerating its `!override` / `!reset` merge tags.
+
+    `yaml.safe_load` refuses unknown tags outright, which would make this test
+    skip the one file it most needs to read.
+    """
+    yaml = pytest.importorskip("yaml")
+
+    class ComposeLoader(yaml.SafeLoader):
+        pass
+
+    def passthrough(loader, tag_suffix, node):
+        if isinstance(node, yaml.SequenceNode):
+            return loader.construct_sequence(node, deep=True)
+        if isinstance(node, yaml.MappingNode):
+            return loader.construct_mapping(node, deep=True)
+        return loader.construct_scalar(node)
+
+    ComposeLoader.add_multi_constructor("!", passthrough)
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=ComposeLoader)
+
+
+def test_worker_never_ships_permission_to_fabricate_clips_on_render():
     """Neither switch may be enabled on the deployed worker, and DEBUG is pinned
     rather than merely left unset: the worker inherits `clipfarm-shared`, so a
     flag added there for the api arrives on the process that writes to the
@@ -434,6 +456,26 @@ def test_worker_never_ships_permission_to_fabricate_clips():
         "these are per-service decisions — defining them in the shared group "
         "applies them to the worker too"
     )
+
+
+def test_worker_never_ships_permission_to_fabricate_clips_on_the_vps():
+    """Same invariant, the other deploy path — and a sharper version of it.
+
+    On that box api and worker share a single `.env.docker`, so a flag set to
+    troubleshoot the api reaches the worker directly, with no env group in
+    between. `environment:` wins over `env_file:`, so pinning here is what makes
+    the override hold. ALLOW_STUB_DETECTIONS is the load-bearing one: DEBUG was
+    pinned first and, on its own, pins the wrong flag.
+    """
+    compose = _load_compose(REPO_ROOT / "docker-compose.prod.yml")
+    env = compose["services"]["worker"].get("environment") or {}
+
+    assert str(env.get("ALLOW_STUB_DETECTIONS", "")).lower() == "false", (
+        "docker-compose.prod.yml must pin ALLOW_STUB_DETECTIONS — .env.docker is "
+        "shared with the api, so leaving it unset lets a debugging session grant "
+        "the worker permission to persist fabricated clips"
+    )
+    assert str(env.get("DEBUG", "")).lower() == "false"
 
 
 def test_dev_compose_declares_every_named_volume_it_mounts():
