@@ -253,6 +253,7 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `r2_*` | — | Cloudflare R2 bucket + credentials. |
 | `redis_url` / `celery_*` | redis:6379 | Job queue. |
 | `modal_token_id` / `modal_token_secret` | "" | Enables the Modal GPU path for ball tracking *and* pose. |
+| `allow_stub_detections` | `false` | Lets the pose-first fallback return **fabricated** clips when no pose runtime is available. Development only — the worker persists what it returns. Kept separate from `debug` on purpose, so a shared dev flag can't grant it. |
 | `max_upload_bytes` | 2 GB | Upload size cap. Served to the web app by `GET /games/upload-config` so the advertised limit can't drift from the enforced one. |
 | `single_put_max_bytes` / `upload_part_size_bytes` | 100 MiB / 100 MiB | Below the threshold an upload is one presigned PUT; above it, multipart with parts this size. |
 | `upload_url_ttl_seconds` | `21600` (6 h) | Lifetime of a presigned upload URL — must cover a whole upload on a slow uplink. |

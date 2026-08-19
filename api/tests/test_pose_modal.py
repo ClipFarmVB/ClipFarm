@@ -163,23 +163,22 @@ def test_full_scan_sends_configured_pose_settings_to_modal(monkeypatch, fake_det
     }
 
 
-@pytest.mark.parametrize("debug", [False, True])
-def test_full_scan_ties_stub_permission_to_debug(monkeypatch, fake_detect, debug):
+@pytest.mark.parametrize("allowed", [False, True])
+def test_full_scan_forwards_the_stub_permission(monkeypatch, fake_detect, allowed):
     """The stub-refusal contract, from the caller's side.
 
-    The refusal itself now lives in `run_detection` (see
+    The refusal itself lives in `run_detection` (see
     ml/tests/test_detect_stub_guard.py), keyed on the pose import actually
     failing rather than on ultralytics being installed — a broken torch fails
     that import with the package present, which a find_spec check would miss.
-    What the worker owes is the *permission*: fabricated clips are acceptable in
-    development and never in production, because this pipeline persists whatever
-    comes back.
+    What the worker owes is the *permission*, because this pipeline persists
+    whatever comes back.
     """
     from app.config import settings
     from app.workers import tasks
 
     monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: False)
-    monkeypatch.setattr("app.config.settings.debug", debug)
+    monkeypatch.setattr("app.config.settings.allow_stub_detections", allowed)
 
     out = tasks._run_detection("game.mp4", "")
 
@@ -190,8 +189,32 @@ def test_full_scan_ties_stub_permission_to_debug(monkeypatch, fake_detect, debug
         "model_name": settings.pose_model,
         "imgsz": settings.pose_imgsz,
         "skip_frames": settings.pose_skip_frames,
-        "allow_stub": debug,
+        "allow_stub": allowed,
     }
+
+
+def test_debug_does_not_grant_permission_to_fabricate_clips(monkeypatch, fake_detect):
+    """DEBUG is a general dev-fallbacks flag and it lives in the env group shared
+    by the api and the worker — the group exists to set things for both. Turning
+    it on to troubleshoot the api must not hand the worker permission to write
+    invented highlights, so the two switches are deliberately separate.
+    """
+    from app.workers import tasks
+
+    monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: False)
+    monkeypatch.setattr("app.config.settings.debug", True)
+    monkeypatch.setattr("app.config.settings.allow_stub_detections", False)
+
+    tasks._run_detection("game.mp4", "")
+
+    assert fake_detect.calls[0][2]["allow_stub"] is False
+
+
+def test_stub_detections_are_off_by_default():
+    """The default is the whole protection for anyone who never sets the var."""
+    from app.config import Settings
+
+    assert Settings().allow_stub_detections is False
 
 
 # ── The cross-process boundary ───────────────────────────────────────────────
@@ -386,6 +409,31 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
         found[label] = matches.pop()
 
     assert len(set(found.values())) == 1, f"{package} version split across runtimes: {found}"
+
+
+def test_worker_never_ships_permission_to_fabricate_clips():
+    """Neither switch may be enabled on the deployed worker, and DEBUG is pinned
+    rather than merely left unset: the worker inherits `clipfarm-shared`, so a
+    flag added there for the api arrives on the process that writes to the
+    database."""
+    yaml = pytest.importorskip("yaml")
+
+    render = yaml.safe_load((REPO_ROOT / "render.yaml").read_text(encoding="utf-8"))
+    worker = next(s for s in render["services"] if s["name"] == "clipfarm-worker")
+    env = {e["key"]: e.get("value") for e in worker["envVars"] if "key" in e}
+
+    assert env.get("DEBUG") == "false", "worker must pin DEBUG, not inherit it"
+    assert str(env.get("ALLOW_STUB_DETECTIONS", "false")).lower() == "false"
+
+    # And the shared group must not define either one, since both services read it.
+    shared = next(
+        g for g in render["envVarGroups"] if g["name"] == "clipfarm-shared"
+    )
+    shared_keys = {e["key"] for e in shared["envVars"]}
+    assert not shared_keys & {"DEBUG", "ALLOW_STUB_DETECTIONS"}, (
+        "these are per-service decisions — defining them in the shared group "
+        "applies them to the worker too"
+    )
 
 
 def test_dev_compose_declares_every_named_volume_it_mounts():

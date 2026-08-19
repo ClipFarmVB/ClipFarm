@@ -313,17 +313,19 @@ def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
     # ultralytics; since CF-164 it does not, so that stub sits one Modal failure
     # away from production data.
     #
-    # Off outside DEBUG, therefore, and `run_detection` raises instead. The caller
-    # marks the game `failed` with that message and reports to Sentry, which is the
-    # right outcome: no ball pipeline, no GPU and no pose runtime means there is
-    # genuinely nothing to detect. In development, fake clips are the point.
+    # Gated on its own setting, not on `debug`: `debug` is a general dev-fallbacks
+    # flag living in the shared api+worker env group, so turning it on to debug the
+    # api would quietly grant this permission too. Off by default, and
+    # `run_detection` raises instead — the caller marks the game `failed` with that
+    # message and reports to Sentry, which is the right outcome, since no ball
+    # pipeline, no GPU and no pose runtime means there is nothing to detect.
     from ml.pipeline.detect import run_detection
     return run_detection(
         video_path,
         model_name=settings.pose_model,
         imgsz=settings.pose_imgsz,
         skip_frames=settings.pose_skip_frames,
-        allow_stub=settings.debug,
+        allow_stub=settings.allow_stub_detections,
     )
 
 

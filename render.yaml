@@ -163,6 +163,14 @@ services:
     autoDeploy: false
     envVars:
       - fromGroup: clipfarm-shared
+      # Pinned here as well as on the api. The worker inherits clipfarm-shared,
+      # and that group exists precisely to set things for both services — so any
+      # dev-fallback flag added there arrives here too, on the process that
+      # writes to the database. ALLOW_STUB_DETECTIONS is what actually gates
+      # fabricated clips (see api/app/config.py); this keeps the general flag
+      # from drifting in behind it.
+      - key: DEBUG
+        value: "false"
       - key: ROBOFLOW_API_KEY
         sync: false
       # NOT optional since CF-164. Ball tracking and pose both run on Modal and

@@ -49,6 +49,12 @@ services:
     # image code, and drop the model_cache volume with them — CF-164 took the
     # last model out of this image, so there are no weights to cache.
     volumes: !override []
+    environment:
+      # api and worker share .env.docker here, so a DEBUG set to troubleshoot the
+      # api would land on the worker too. Fabricated clips are gated on
+      # ALLOW_STUB_DETECTIONS rather than DEBUG for exactly that reason; this
+      # pins the general flag off on the service that persists data.
+      DEBUG: "false"
     # No POSE_* block here any more. It used to pin the light config
     # (yolov8n-pose @ 640, every 8th frame) because pose was the one model still
     # running locally and this box is CPU-only by design. CF-164 moved pose to
