@@ -230,6 +230,65 @@ def test_acquire_unlocks_before_closing_on_the_error_path(monkeypatch):
     assert conn.closed is True
 
 
+def test_refused_pooler_ports_are_configurable(monkeypatch):
+    """6543 is Supabase's; a PgBouncer elsewhere answers on whatever port it got.
+
+    Nothing in the protocol announces transaction pooling, and the runtime check
+    fails open under load, so a deployment behind another pooler has to be able
+    to declare its port rather than silently falling through to the net.
+    """
+    from app.config import settings
+    from app.workers import locks
+
+    monkeypatch.setattr(settings, "lock_pooler_ports", "6543, 6432")
+    monkeypatch.setattr(settings, "lock_database_url", "postgresql://u:p@bouncer:6432/postgres")
+    monkeypatch.setattr(locks, "_engine", None)
+
+    with pytest.raises(locks.LockNotSessionScoped):
+        locks._lock_url()
+
+    monkeypatch.setattr(settings, "lock_database_url", "postgresql://u:p@direct:5432/postgres")
+    assert locks._lock_url().endswith("5432/postgres")
+
+
+def test_still_held_re_probes_before_declaring_the_lock_lost(monkeypatch):
+    """A blip must not cost an hour of ball tracking.
+
+    `still_held()` answering False aborts the job and re-runs it from scratch,
+    so a single failed query is re-probed. A *successful* query reporting no
+    lock is final — that one is not ambiguous.
+    """
+    from app.workers import locks
+
+    monkeypatch.setattr(locks, "_RE_PROBE_DELAY_SECONDS", 0)
+    conn = _FakeConn({"pg_try_advisory_lock": True, "pg_locks": 1})
+    locks_mod = _patch_engine(monkeypatch, conn)
+
+    lock = locks_mod.GameLock(uuid.uuid4())
+    assert lock.acquire() is True
+
+    calls = {"n": 0}
+    blip = {"armed": True}
+    real_execute = conn.execute
+
+    def flaky(clause, params=None):
+        if "pg_locks" in str(clause):
+            calls["n"] += 1
+            if blip["armed"]:
+                blip["armed"] = False
+                raise RuntimeError("momentary hiccup")
+        return real_execute(clause, params)
+
+    monkeypatch.setattr(conn, "execute", flaky)
+    assert lock.still_held() is True        # recovered on the second probe
+    assert calls["n"] == 2
+
+    conn.results["pg_locks"] = None         # a clean "not held" is final
+    calls["n"] = 0
+    assert lock.still_held() is False
+    assert calls["n"] == 1, "a definitive answer must not be re-probed"
+
+
 def test_transaction_pooler_port_is_refused_without_connecting(monkeypatch):
     """The runtime `pg_locks` check is a net; the port is the deterministic guard.
 

@@ -59,6 +59,7 @@ acquire — a forked child never inherits a parent's connection. Keep it that wa
 """
 import hashlib
 import logging
+import time
 import uuid
 from urllib.parse import urlsplit
 
@@ -77,6 +78,10 @@ logger = logging.getLogger(__name__)
 # cross-purpose collision a non-issue is the 64-bit space, not the prefix.
 _KEY_NAMESPACE = b"clipfarm:process_game:"
 
+# Long enough to outlast a momentary hiccup, short enough that a job which has
+# genuinely lost its lock is not left running unprotected.
+_RE_PROBE_DELAY_SECONDS = 2.0
+
 _UINT64 = 0xFFFFFFFFFFFFFFFF
 _UINT32 = 0xFFFFFFFF
 
@@ -86,10 +91,16 @@ SERVER_KEEPALIVE_OPTIONS = (
     "-c tcp_keepalives_idle=60 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=6"
 )
 
-# Supabase serves the transaction-mode pooler here. A URL on this port cannot
-# hold a session-scoped lock, and the runtime check below cannot be relied on to
-# catch it (see _verify_session_scoped), so the port is refused outright.
-_TRANSACTION_POOLER_PORTS = frozenset({6543})
+# Ports known to serve a TRANSACTION-mode pooler, which cannot hold a
+# session-scoped lock. The default is Supabase's 6543 — the only one this
+# deployment can meet — but a PgBouncer somewhere else answers on whatever port
+# it was given, and the runtime check cannot be relied on to catch it (see
+# _verify_session_scoped). `LOCK_POOLER_PORTS` is how such a deployment declares
+# its own, since nothing in the protocol will tell us.
+def _refused_ports() -> frozenset[int]:
+    return frozenset(
+        int(p) for p in settings.lock_pooler_ports.split(",") if p.strip()
+    )
 
 _engine: Engine | None = None
 
@@ -137,7 +148,7 @@ def _lock_url() -> str:
     """
     url = (settings.lock_database_url or settings.database_url).replace("+asyncpg", "")
     port = urlsplit(url).port
-    if port in _TRANSACTION_POOLER_PORTS:
+    if port in _refused_ports():
         raise LockNotSessionScoped(
             f"The lock database URL is on port {port}, Supabase's "
             "TRANSACTION-mode pooler, which cannot hold a session-scoped lock. "
@@ -296,21 +307,34 @@ class GameLock:
         """Is the lock *currently* still held on this connection?
 
         Cheap (one round trip on an otherwise idle connection) and meant to be
-        called at checkpoints during a long job. Any error answers False: a
-        connection we cannot query is a connection whose lock we cannot claim to
-        hold, and the safe reading of "unknown" here is "lost".
+        called at checkpoints during a long job.
+
+        A *successful* query saying the lock is not there is final — no retry,
+        it is genuinely gone. An *error* is the ambiguous case, and answering it
+        costs a whole job: the caller aborts and the retry re-runs from the
+        start, discarding an hour of ball tracking. So a query error is
+        re-probed once, and only a second failure is treated as loss. Beyond
+        that the safe reading of "unknown" is still "lost" — a connection we
+        cannot query is one whose lock we cannot claim to hold.
         """
         conn = self._conn
         if not self.held or conn is None:
             return False
-        try:
-            return _lock_visible(conn, self.key)
-        except Exception:
-            logger.warning(
-                "Lock connection for game %s is not answering — treating the "
-                "lock as lost", self.game_id, exc_info=True,
-            )
-            return False
+        for attempt in (1, 2):
+            try:
+                return _lock_visible(conn, self.key)
+            except Exception:
+                if attempt == 1:
+                    logger.warning(
+                        "Lock check for game %s failed — re-probing before "
+                        "giving up on the lock", self.game_id, exc_info=True,
+                    )
+                    time.sleep(_RE_PROBE_DELAY_SECONDS)
+        logger.warning(
+            "Lock connection for game %s is not answering — treating the lock "
+            "as lost", self.game_id,
+        )
+        return False
 
     def release(self) -> None:
         """

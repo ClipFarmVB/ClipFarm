@@ -371,6 +371,14 @@ in.
 > process** rather than run under a lock that does not hold — if worker logs
 > show `LockNotSessionScoped`, set `LOCK_DATABASE_URL` to the session-mode
 > connection (port **5432**) in the `clipfarm-shared` env group.
+>
+> Games that hit this are left `queued` (not `failed`, so no quota is spent) with
+> the reason on the row, so the backlog to resubmit after the fix is one query,
+> not a Sentry archaeology exercise:
+>
+> ```sql
+> SELECT id, title FROM games WHERE status = 'queued' AND error_message IS NOT NULL;
+> ```
 
 **Why auto-deploy is off:** the api runs `alembic upgrade head` on every deploy. With
 auto-deploy on, any merge to `main` would apply a migration to the production

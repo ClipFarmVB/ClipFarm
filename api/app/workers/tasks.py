@@ -213,6 +213,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         sync_save_clips,
         sync_delete_game_clips,
         sync_game_exists,
+        sync_note_game_error,
         sync_set_original_duration,
         sync_settle_upload_charge,
     )
@@ -280,17 +281,27 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
     try:
         try:
             acquired = lock.acquire()
-        except LockNotSessionScoped:
+        except LockNotSessionScoped as lock_cfg_err:
             # A misconfigured lock database, not a transient failure: retrying
             # cannot fix it, and burning the retries would leave the game
             # terminally `failed` with its quota already charged. Leave it
-            # `queued` and say why — loudly, so it reaches Sentry — and it runs
-            # unchanged once LOCK_DATABASE_URL is fixed and it is resubmitted.
+            # `queued` — still runnable, once the environment is — and say why
+            # loudly enough to reach Sentry.
             logger.exception(
                 "Refusing to process game %s: the lock database cannot hold a "
                 "session-scoped lock. Game left queued; fix LOCK_DATABASE_URL "
                 "and resubmit.", gid,
             )
+            # Also written to the row, because a misconfiguration strands EVERY
+            # game the same way: without this the backlog exists only as Sentry
+            # events, and recovering means guessing which games to resubmit.
+            # With it they are one query away (see sync_note_game_error).
+            try:
+                sync_note_game_error(
+                    gid, f"Not started: lock database misconfigured ({lock_cfg_err})"
+                )
+            except Exception:
+                logger.warning("Could not note the lock misconfiguration on game %s", gid)
             return
 
         if not acquired:

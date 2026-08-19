@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     # at the session-mode port (5432) instead. The worker refuses to process
     # rather than run under a lock that does not hold — see locks.py.
     lock_database_url: str = ""
+    # Ports refused outright as a lock connection: they serve a transaction-mode
+    # pooler, which cannot hold a session-scoped lock, and no runtime check
+    # detects that reliably (see locks.py). 6543 is Supabase's; a deployment
+    # behind a PgBouncer on some other port declares it here, comma-separated.
+    lock_pooler_ports: str = "6543"
 
     # Auth / JWT (legacy — Supabase JWKS is the source of truth)
     jwt_secret: str = ""
