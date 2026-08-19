@@ -23,6 +23,17 @@ def _file_md5(path: Path) -> str:
     return h.hexdigest()
 
 
+class PermanentPipelineError(Exception):
+    """A failure that retrying cannot fix.
+
+    Celery retries this task twice by default, which is right for transient
+    trouble (a flaky download, a Modal blip) and pure waste for a condition that
+    is identical on every attempt — e.g. no pose runtime in the image. The
+    pose-first scan is the most expensive path in the pipeline, so re-running it
+    three times to reach the same conclusion costs real money and queue time.
+    """
+
+
 def _modal_configured() -> bool:
     from app.config import settings
     return bool(settings.modal_token_id and settings.modal_token_secret)
@@ -239,7 +250,9 @@ def _classify_windows_modal(r2_key: str, windows: list[dict]) -> list[dict]:
     )
 
 
-def _refine_with_pose(local_video: Path, r2_key: str, windows: list[dict]) -> list[dict]:
+def _refine_with_pose(
+    local_video: Path, r2_key: str, windows: list[dict], game_id: str = "",
+) -> list[dict]:
     """
     Stage 3 pose refinement: Modal GPU when configured, local CPU otherwise.
 
@@ -269,7 +282,26 @@ def _refine_with_pose(local_video: Path, r2_key: str, windows: list[dict]) -> li
 
     # Imported here, not at the top: on the Modal path this pulls cv2 + numpy
     # (and, inside classify_within_windows, torch) for nothing.
-    from ml.pipeline.detect import classify_within_windows
+    from ml.pipeline.detect import classify_within_windows, pose_available
+
+    # Reaching here means Modal was unconfigured or failed. In the deployed image
+    # there is no pose runtime behind it (CF-164), so `classify_within_windows`
+    # would quietly return the windows untouched and the game would keep
+    # trajectory-only labels — WORSE than the pre-CF-164 baseline, which always
+    # had local pose to fall back on.
+    #
+    # Don't let that pass as a warning line in a stream of them. This is logged at
+    # ERROR, which the Sentry logging integration promotes to an event, and
+    # carries the game id so degraded games can be listed and re-run once Modal is
+    # healthy. Not fatal: clips and their boundaries come from ball tracking and
+    # are unaffected — only the action labels are.
+    if not pose_available():
+        logger.error(
+            "POSE_DEGRADED game=%s windows=%d — no GPU and no local pose runtime; "
+            "keeping trajectory-only labels. Re-run this game once Modal is healthy.",
+            game_id or "unknown", len(windows),
+        )
+        return windows
 
     return classify_within_windows(
         str(local_video), windows,
@@ -319,14 +351,20 @@ def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
     # `run_detection` raises instead — the caller marks the game `failed` with that
     # message and reports to Sentry, which is the right outcome, since no ball
     # pipeline, no GPU and no pose runtime means there is nothing to detect.
-    from ml.pipeline.detect import run_detection
-    return run_detection(
-        video_path,
-        model_name=settings.pose_model,
-        imgsz=settings.pose_imgsz,
-        skip_frames=settings.pose_skip_frames,
-        allow_stub=settings.allow_stub_detections,
-    )
+    from ml.pipeline.detect import PoseRuntimeUnavailable, run_detection
+
+    try:
+        return run_detection(
+            video_path,
+            model_name=settings.pose_model,
+            imgsz=settings.pose_imgsz,
+            skip_frames=settings.pose_skip_frames,
+            allow_stub=settings.allow_stub_detections,
+        )
+    except PoseRuntimeUnavailable as exc:
+        # Translated at the boundary so the task handler can recognise it without
+        # importing ml (and without matching on a message).
+        raise PermanentPipelineError(str(exc)) from exc
 
 
 @celery_app.task(bind=True, name="process_game", max_retries=2, default_retry_delay=60)
@@ -542,7 +580,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             # ball-trajectory label when pose is more confident.
             progress.stage("refining_actions")
             try:
-                detections = _refine_with_pose(local_video, r2_key, detections)
+                detections = _refine_with_pose(local_video, r2_key, detections, game_id)
                 logger.info("Pose refinement complete (%d windows)", len(detections))
             except Exception as pose_err:
                 logger.warning("Pose refinement failed (%s) — keeping trajectory labels", pose_err)
@@ -730,6 +768,11 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             return
         logger.exception("Processing failed for game %s", game_id)
         sync_set_game_status(gid, "failed", error_message=str(exc))
+        if isinstance(exc, PermanentPipelineError):
+            # Identical on every attempt — retrying re-runs the pipeline's most
+            # expensive path to reach the same failure. Settle on `failed` now.
+            logger.info("Not retrying game %s — permanent condition", game_id)
+            return
         raise self.retry(exc=exc)
     finally:
         lock.release()

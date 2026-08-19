@@ -39,8 +39,15 @@ def fake_detect(monkeypatch):
         detect.calls.append(("run_detection", video_path, kwargs))
         return [{"start": 0.0, "end": 5.0, "action": "local", "confidence": 0.5}]
 
+    class PoseRuntimeUnavailable(RuntimeError):
+        pass
+
     detect.classify_within_windows = classify_within_windows
     detect.run_detection = run_detection
+    detect.PoseRuntimeUnavailable = PoseRuntimeUnavailable
+    # Default: a pose runtime IS present, so the local fallback is real and the
+    # degradation marker stays quiet. Tests that care override this.
+    detect.pose_available = lambda: True
 
     pipeline = types.ModuleType("ml.pipeline")
     pipeline.detect = detect
@@ -215,6 +222,68 @@ def test_stub_detections_are_off_by_default():
     from app.config import Settings
 
     assert Settings().allow_stub_detections is False
+
+
+def test_degraded_pose_is_logged_findably_with_the_game_id(monkeypatch, fake_detect, caplog):
+    """Modal down + no local pose runtime = trajectory-only labels, which is
+    below the pre-CF-164 baseline (local pose always ran). That must not pass as
+    one more warning line: ERROR is what the Sentry logging integration promotes
+    to an event, and the game id is what makes degraded games re-runnable.
+    """
+    import logging
+
+    from app.workers import tasks
+
+    fake_detect.pose_available = lambda: False
+    monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: True)
+    monkeypatch.setattr(
+        tasks, "_classify_windows_modal",
+        lambda r2_key, windows: (_ for _ in ()).throw(RuntimeError("modal down")),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        out = tasks._refine_with_pose(Path("g.mp4"), "raw/x.mp4", WINDOWS, "game-abc")
+
+    assert out == WINDOWS, "windows pass through untouched — labels are not invented"
+    marker = [r for r in caplog.records if "POSE_DEGRADED" in r.getMessage()]
+    assert len(marker) == 1, "expected exactly one findable marker"
+    assert marker[0].levelno == logging.ERROR, "WARNING would not reach Sentry"
+    assert "game-abc" in marker[0].getMessage()
+    assert fake_detect.calls == [], "no point calling local pose with no runtime"
+
+
+def test_no_marker_when_a_pose_runtime_is_actually_present(monkeypatch, fake_detect, caplog):
+    """The marker means degraded, not merely 'Modal was skipped'. A dev box with
+    ultralytics installed falls back locally and is not degraded."""
+    import logging
+
+    from app.workers import tasks
+
+    fake_detect.pose_available = lambda: True
+    monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: False)
+
+    with caplog.at_level(logging.ERROR):
+        tasks._refine_with_pose(Path("g.mp4"), "raw/x.mp4", WINDOWS, "game-abc")
+
+    assert not [r for r in caplog.records if "POSE_DEGRADED" in r.getMessage()]
+    assert fake_detect.calls[0][0] == "classify"
+
+
+def test_missing_pose_runtime_is_a_permanent_error(monkeypatch, fake_detect):
+    """`run_detection`'s refusal is identical on every attempt, so it is
+    translated at the boundary into the type the task handler declines to retry
+    — rather than re-running the pipeline's priciest path twice more."""
+    from app.workers import tasks
+
+    def boom(video_path, **kwargs):
+        from ml.pipeline.detect import PoseRuntimeUnavailable
+        raise PoseRuntimeUnavailable("no pose runtime")
+
+    fake_detect.run_detection = boom
+    monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: False)
+
+    with pytest.raises(tasks.PermanentPipelineError):
+        tasks._run_detection("game.mp4", "")
 
 
 # ── The cross-process boundary ───────────────────────────────────────────────

@@ -34,6 +34,29 @@ def _model_path(name: str) -> str:
         return os.path.join(models_dir, name)
     return name
 
+class PoseRuntimeUnavailable(RuntimeError):
+    """No usable pose runtime, and fabricated detections were not permitted.
+
+    Subclasses RuntimeError so existing handling still catches it; the distinct
+    type lets callers recognise it as PERMANENT — no amount of retrying makes
+    ultralytics appear — and skip an expensive retry loop.
+    """
+
+
+def pose_available() -> bool:
+    """Whether pose inference can actually run in this process.
+
+    Keyed on the import succeeding rather than on the package being installed:
+    a broken torch fails `from ultralytics import YOLO` with ultralytics present,
+    which a `find_spec` check would call available.
+    """
+    try:
+        from ultralytics import YOLO  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 ActionType = Literal["spike", "serve", "dig", "set", "block", "unknown"]
 
 # YOLOv8 pose keypoint indices (COCO 17-point)
@@ -114,7 +137,7 @@ def run_detection(
         model = YOLO(_model_path(model_name))
     except ImportError as import_err:
         if not allow_stub:
-            raise RuntimeError(
+            raise PoseRuntimeUnavailable(
                 f"Pose detection is unavailable ({import_err}) and stub detections are "
                 "not allowed. Refusing to return fabricated clips — pass allow_stub=True "
                 "only where invented data is acceptable (local development)."
