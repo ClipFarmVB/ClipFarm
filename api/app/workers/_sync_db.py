@@ -47,6 +47,10 @@ def sync_set_game_status(
         if status == "processing":
             game.progress = 0.0
             game.progress_stage = None
+            # A run starting clean clears whatever the last one left behind —
+            # otherwise a note from a previous failure (see
+            # sync_note_game_error) outlives it onto a game that goes `ready`.
+            game.error_message = None
         elif status == "ready":
             game.progress = 1.0
             game.progress_stage = None
@@ -54,6 +58,25 @@ def sync_set_game_status(
             game.processed_at = processed_at
         if error_message:
             game.error_message = error_message
+        s.commit()
+
+
+def sync_note_game_error(game_id: uuid.UUID, message: str):
+    """Record why a game is not progressing, without changing its status.
+
+    For the case where the *environment* is broken rather than the game: the row
+    stays where it is (`queued`, still runnable once the environment is fixed)
+    but says why it stalled, so stranded games can be listed —
+
+        SELECT id FROM games WHERE status = 'queued' AND error_message IS NOT NULL
+
+    — rather than existing only as log lines. Cleared when a run next starts.
+    """
+    with Session(_engine) as s:
+        game = s.get(Game, game_id)
+        if not game:
+            return
+        game.error_message = message
         s.commit()
 
 

@@ -4,6 +4,12 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Published on the host (unlike redis) so tools and tests outside the stack
+    # can reach it — api/tests' advisory-lock tests (CF-184) auto-detect a local
+    # Postgres here and skip without one. Set POSTGRES_HOST_PORT if 5432 is
+    # already taken by a Postgres installed on the host.
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-clipfarm}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}

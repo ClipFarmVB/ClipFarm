@@ -238,6 +238,7 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `clip_verify_enabled` | `false` | Use CLIP frames in scoring (slow on CPU; enable for GPU). |
 | `pose_model` / `pose_imgsz` / `pose_skip_frames` | `yolov8s-pose.pt` / `1280` / `4` | Pose quality vs speed. Docker dev overrides to lighter values. |
 | `database_url` | — | Supabase Postgres (async). |
+| `lock_database_url` | `""` | Connection used *only* for the worker's per-game advisory lock (CF-184). Empty = use `database_url`, which is right for any direct or session-mode connection. Set it when `database_url` is a **transaction**-mode pooler (Supabase port 6543): that mode cannot hold a session-scoped lock, so the worker refuses to process rather than run unprotected. `lock_pooler_ports` (default `6543`) lists the ports refused for that reason — set it if your transaction pooler answers somewhere else. |
 | `supabase_url` / `supabase_service_role_key` | — | Auth (JWKS) verification. |
 | `r2_*` | — | Cloudflare R2 bucket + credentials. |
 | `redis_url` / `celery_*` | redis:6379 | Job queue. |
