@@ -8,14 +8,16 @@ The lock tests come in two layers. The fake-connection ones pin the behaviour
 that is ours (what `acquire`/`release` do with the connection); the Postgres
 ones pin the behaviour that is the *database's* — mutual exclusion, and a lock
 dying with its connection, which is the whole point of CF-184 and cannot be
-demonstrated against a double. Those skip without a database; CI runs a
-throwaway Postgres so they execute there (see `.github/workflows/ci.yml`).
+demonstrated against a double. Those find a local Postgres by themselves (the
+compose `db` service is enough) or take LOCK_TEST_DATABASE_URL, which is what CI
+sets for its throwaway server; they skip only when there is no database at all.
 """
 import os
 import socket
 import struct
 import time
 import uuid
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -209,19 +211,130 @@ def test_engine_asks_for_server_side_keepalives(monkeypatch):
     assert captured["connect_args"]["keepalives"] == 1
 
 
+def test_acquire_unlocks_before_closing_on_the_error_path(monkeypatch):
+    """The pooler case is exactly where `close()` alone is not enough.
+
+    A transaction pooler returns the backend to its pool without a DISCARD, so a
+    session lock left on it outlives the connection and blocks that game's key
+    for the life of that backend. Unlock explicitly, then close.
+    """
+    conn = _FakeConn(
+        {"pg_try_advisory_lock": True, "pg_locks": None, "pg_advisory_unlock": True}
+    )
+    locks = _patch_engine(monkeypatch, conn)
+
+    with pytest.raises(locks.LockNotSessionScoped):
+        locks.GameLock(uuid.uuid4()).acquire()
+
+    assert any("pg_advisory_unlock" in stmt for stmt in conn.statements)
+    assert conn.closed is True
+
+
+def test_transaction_pooler_port_is_refused_without_connecting(monkeypatch):
+    """The runtime `pg_locks` check is a net; the port is the deterministic guard.
+
+    A transaction pooler with an idle pool often serves both statements from the
+    same backend, so the check passes precisely when someone is validating a new
+    LOCK_DATABASE_URL by hand. Port 6543 cannot be right, so it never gets as far
+    as connecting.
+    """
+    from app.config import settings
+    from app.workers import locks
+
+    monkeypatch.setattr(settings, "lock_database_url", "postgresql://u:p@db.example:6543/postgres")
+    monkeypatch.setattr(locks, "_engine", None)
+
+    with pytest.raises(locks.LockNotSessionScoped) as exc:
+        locks._lock_url()
+    assert "6543" in str(exc.value)
+
+
+def test_still_held_reports_false_on_a_dead_connection(monkeypatch):
+    """"Cannot ask" and "not held" are the same answer here.
+
+    Treating an unanswerable connection as still-locked is the reading that lets
+    a job keep processing next to a redelivered copy.
+    """
+    conn = _FakeConn({"pg_try_advisory_lock": True, "pg_locks": 1})
+    locks = _patch_engine(monkeypatch, conn)
+
+    lock = locks.GameLock(uuid.uuid4())
+    assert lock.acquire() is True
+    assert lock.still_held() is True
+
+    conn.results["pg_locks"] = RuntimeError("server closed the connection")
+    assert lock.still_held() is False
+
+
+def test_release_warns_when_the_lock_was_already_gone(monkeypatch, caplog):
+    """`pg_advisory_unlock` returning false is the only trace of a lost lock."""
+    conn = _FakeConn(
+        {"pg_try_advisory_lock": True, "pg_locks": 1, "pg_advisory_unlock": False}
+    )
+    locks = _patch_engine(monkeypatch, conn)
+
+    lock = locks.GameLock(uuid.uuid4())
+    assert lock.acquire() is True
+    with caplog.at_level("WARNING"):
+        lock.release()
+
+    assert "may have run unprotected" in caplog.text
+
+
 # ── Against a real Postgres ──────────────────────────────────────────────────
+
+# Tried in order when LOCK_TEST_DATABASE_URL is unset. Localhost only, and
+# never `settings.database_url`: auto-detection must not be able to take locks
+# on a shared database because someone ran the suite. The compose `db` service
+# publishes 5432, so a running dev stack is enough for these to execute — in the
+# pre-commit hook as well as CI, which is the point (they are the tests that
+# actually demonstrate CF-184).
+_LOCAL_CANDIDATES = (
+    "postgresql://postgres:postgres@localhost:5432/clipfarm",
+    "postgresql://postgres:postgres@localhost:5432/postgres",
+)
+
+
+def _reachable(url: str) -> bool:
+    """Can we open a session on `url`? Cheap probe first, so a machine with no
+    Postgres at all costs a refused TCP connect rather than a connect timeout."""
+    import psycopg2
+
+    parts = urlsplit(url)
+    with socket.socket() as probe:
+        probe.settimeout(0.5)
+        if probe.connect_ex((parts.hostname or "localhost", parts.port or 5432)) != 0:
+            return False
+    try:
+        psycopg2.connect(url, connect_timeout=2).close()
+        return True
+    except Exception:
+        return False
+
+
+# Detection runs once per session: it is the same answer every time, and paying
+# it per test is what makes an unrunnable suite feel slow.
+_RESOLVED_URL: str | None = None
+
 
 def _lock_db_url() -> str:
     """A Postgres URL for the lock tests, or skip.
 
-    LOCK_TEST_DATABASE_URL is opt-in on purpose: these need a real server, and a
-    silent fallback to whatever DATABASE_URL names could take locks on a shared
-    database from a test run.
+    An explicit LOCK_TEST_DATABASE_URL wins (CI sets it). Otherwise a local
+    Postgres is auto-detected, so a developer with the compose stack up runs
+    these without opting in.
     """
-    url = os.environ.get("LOCK_TEST_DATABASE_URL", "")
-    if not url:
-        pytest.skip("set LOCK_TEST_DATABASE_URL to run the advisory-lock tests")
-    return url
+    global _RESOLVED_URL
+    if _RESOLVED_URL is None:
+        _RESOLVED_URL = os.environ.get("LOCK_TEST_DATABASE_URL", "") or next(
+            (c for c in _LOCAL_CANDIDATES if _reachable(c)), ""
+        )
+    if not _RESOLVED_URL:
+        pytest.skip(
+            "no local Postgres (start the compose stack, or set "
+            "LOCK_TEST_DATABASE_URL) — the advisory-lock tests need a real server"
+        )
+    return _RESOLVED_URL
 
 
 @pytest.fixture
@@ -236,7 +349,7 @@ def pg_locks(monkeypatch):
     try:
         locks._get_engine().connect().close()
     except Exception as exc:                      # pragma: no cover - env dependent
-        pytest.skip(f"LOCK_TEST_DATABASE_URL is not reachable: {exc}")
+        pytest.skip(f"the lock test database is not reachable: {exc}")
     yield locks
     locks._engine = None
 
@@ -285,6 +398,29 @@ def _sever(conn) -> None:
     # Tell SQLAlchemy the DBAPI connection is gone, so its own cleanup doesn't
     # try to roll back a dead socket at GC time and print a spurious traceback.
     conn.invalidate()
+
+
+def test_still_held_notices_a_terminated_backend(pg_locks):
+    """The failure the checkpoints in tasks.py exist for.
+
+    The worker is alive and working; its *lock connection* is killed out from
+    under it (failover, `idle_session_timeout`, `pg_terminate_backend`). Postgres
+    releases the lock immediately, so a redelivery would acquire it and run
+    beside a job that never stopped — unless the holder notices, which is what
+    `still_held()` is for.
+    """
+    from sqlalchemy import text
+
+    lock = pg_locks.GameLock(uuid.uuid4())
+    assert lock.acquire() is True
+    assert lock.still_held() is True
+
+    with pg_locks._get_engine().connect() as killer:
+        pid = lock._conn.execute(text("SELECT pg_backend_pid()")).scalar()
+        killer.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+
+    assert lock.still_held() is False
+    lock.release()      # must stay quiet on a dead connection
 
 
 def test_lock_dies_with_the_worker(pg_locks):

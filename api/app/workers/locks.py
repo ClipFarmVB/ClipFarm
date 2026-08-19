@@ -44,9 +44,14 @@ Two things this depends on, both handled below:
   (port 6543) can serve consecutive statements from different backends, which
   silently breaks session-scoped locks: `pg_try_advisory_lock` returns true and
   the lock is on some other backend, or already gone. That is worse than the bug
-  this replaces, so `acquire()` verifies the lock is really held on its own
-  backend and refuses to proceed if it isn't. Point `LOCK_DATABASE_URL` at the
-  session-mode port (5432) when `DATABASE_URL` is a transaction pooler.
+  this replaces, so the port is refused outright and `acquire()` additionally
+  verifies the lock is really held on its own backend. Point `LOCK_DATABASE_URL`
+  at the session-mode port (5432) when `DATABASE_URL` is a transaction pooler.
+- **The connection can die without the worker dying** — a failover, an
+  `idle_session_timeout`, a `pg_terminate_backend` — and the lock goes with it
+  while the job carries on. `still_held()` is the check for that, called at the
+  long stage boundaries in tasks.py so a redelivery can never end up running
+  beside a job that never noticed it had lost exclusivity.
 
 NOTE for CF-65b (prefork): the engine is built lazily, per process, on first
 acquire — a forked child never inherits a parent's connection. Keep it that way
@@ -55,6 +60,7 @@ acquire — a forked child never inherits a parent's connection. Keep it that wa
 import hashlib
 import logging
 import uuid
+from urllib.parse import urlsplit
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
@@ -80,7 +86,24 @@ SERVER_KEEPALIVE_OPTIONS = (
     "-c tcp_keepalives_idle=60 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=6"
 )
 
+# Supabase serves the transaction-mode pooler here. A URL on this port cannot
+# hold a session-scoped lock, and the runtime check below cannot be relied on to
+# catch it (see _verify_session_scoped), so the port is refused outright.
+_TRANSACTION_POOLER_PORTS = frozenset({6543})
+
 _engine: Engine | None = None
+
+
+class LockLost(RuntimeError):
+    """The lock was taken but is no longer held on this connection.
+
+    A backend killed by failover, `idle_session_timeout` or
+    `pg_terminate_backend` releases the lock while this worker carries on
+    processing — and a redelivery at the visibility timeout would then acquire
+    it and run *concurrently* with a job that is still very much alive. That is
+    the double-processing this lock exists to prevent, so the task aborts and
+    retries rather than finishing without exclusion.
+    """
 
 
 class LockNotSessionScoped(RuntimeError):
@@ -112,8 +135,15 @@ def _lock_url() -> str:
     `LOCK_DATABASE_URL` exists so the lock can use the session-mode pooler while
     the rest of the app keeps the transaction-mode one it is better served by.
     """
-    url = settings.lock_database_url or settings.database_url
-    return url.replace("+asyncpg", "")
+    url = (settings.lock_database_url or settings.database_url).replace("+asyncpg", "")
+    port = urlsplit(url).port
+    if port in _TRANSACTION_POOLER_PORTS:
+        raise LockNotSessionScoped(
+            f"The lock database URL is on port {port}, Supabase's "
+            "TRANSACTION-mode pooler, which cannot hold a session-scoped lock. "
+            "Set LOCK_DATABASE_URL to the session-mode connection (port 5432)."
+        )
+    return url
 
 
 def _get_engine() -> Engine:
@@ -168,6 +198,21 @@ def _get_engine() -> Engine:
     return _engine
 
 
+def _lock_visible(conn: Connection, key: int) -> bool:
+    """True if `key` is held as an advisory lock by this connection's backend."""
+    unsigned = key & _UINT64
+    return bool(
+        conn.execute(
+            text(
+                "SELECT 1 FROM pg_locks "
+                "WHERE locktype = 'advisory' AND pid = pg_backend_pid() "
+                "AND classid = :classid AND objid = :objid AND objsubid = 1"
+            ),
+            {"classid": (unsigned >> 32) & _UINT32, "objid": unsigned & _UINT32},
+        ).scalar()
+    )
+
+
 def _verify_session_scoped(conn: Connection, key: int) -> None:
     """Confirm the advisory lock we just took is held by *this* backend.
 
@@ -176,17 +221,16 @@ def _verify_session_scoped(conn: Connection, key: int) -> None:
     pooler this second statement can run on a different backend than
     `pg_try_advisory_lock` did, so the row is missing — exactly the silent
     breakage we refuse to run on.
+
+    **This is a net, not a proof.** A transaction pooler with an idle pool will
+    often hand both statements the same backend, and then this passes — which is
+    precisely the low-concurrency situation someone would use to sanity-check a
+    new `LOCK_DATABASE_URL`, and it fails open under load. The deterministic
+    guard for the case that actually occurs is the port check in `_lock_url`;
+    this catches the rest when it can, and is also what `still_held` uses to
+    notice a lock lost mid-job.
     """
-    unsigned = key & _UINT64
-    held = conn.execute(
-        text(
-            "SELECT 1 FROM pg_locks "
-            "WHERE locktype = 'advisory' AND pid = pg_backend_pid() "
-            "AND classid = :classid AND objid = :objid AND objsubid = 1"
-        ),
-        {"classid": (unsigned >> 32) & _UINT32, "objid": unsigned & _UINT32},
-    ).scalar()
-    if not held:
+    if not _lock_visible(conn, key):
         raise LockNotSessionScoped(
             "Advisory lock is not held on this connection's backend — the lock "
             "database is almost certainly a transaction-mode pooler, which "
@@ -228,12 +272,45 @@ class GameLock:
                 return False
             _verify_session_scoped(conn, self.key)
         except Exception:
-            # Closing the connection also drops the lock, if we did take one.
+            # Unlock explicitly before closing. Closing is enough on a real
+            # session, but this path exists mainly for the pooler case, and a
+            # pooler in transaction mode returns the backend to its pool without
+            # a DISCARD — so a lock left on it would sit there for the life of
+            # that backend, permanently blocking this game's key.
+            try:
+                conn.execute(
+                    text("SELECT pg_advisory_unlock(:key)"), {"key": self.key}
+                )
+            except Exception:
+                logger.warning(
+                    "Could not unlock game %s while unwinding a failed acquire",
+                    self.game_id,
+                )
             conn.close()
             raise
         self._conn = conn
         self.held = True
         return True
+
+    def still_held(self) -> bool:
+        """Is the lock *currently* still held on this connection?
+
+        Cheap (one round trip on an otherwise idle connection) and meant to be
+        called at checkpoints during a long job. Any error answers False: a
+        connection we cannot query is a connection whose lock we cannot claim to
+        hold, and the safe reading of "unknown" here is "lost".
+        """
+        conn = self._conn
+        if not self.held or conn is None:
+            return False
+        try:
+            return _lock_visible(conn, self.key)
+        except Exception:
+            logger.warning(
+                "Lock connection for game %s is not answering — treating the "
+                "lock as lost", self.game_id, exc_info=True,
+            )
+            return False
 
     def release(self) -> None:
         """
@@ -250,7 +327,19 @@ class GameLock:
         if conn is None:
             return
         try:
-            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": self.key})
+            unlocked = conn.execute(
+                text("SELECT pg_advisory_unlock(:key)"), {"key": self.key}
+            ).scalar()
+            if not unlocked:
+                # `false` (not an exception) is how Postgres says "you did not
+                # hold that". It means the lock went away under us — a killed
+                # backend, a failover, a pooler that moved us — which is the
+                # one signal that the job may have run part of its length
+                # without exclusion. Silence here would hide all of it.
+                logger.warning(
+                    "Unlock for game %s returned false — the lock was already "
+                    "gone, so this job may have run unprotected", self.game_id,
+                )
         except Exception:
             logger.warning(
                 "Failed to unlock game %s — closing the connection releases it",
