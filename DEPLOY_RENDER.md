@@ -386,6 +386,18 @@ What a deploy still costs is **the work in flight**: a requeued game restarts
 from the beginning, not from where it was killed. So deploying while a long
 match is processing is wasteful, not dangerous.
 
+The requeue is also not instant, and 2h is a floor on the wait, not a ceiling.
+Redis has no push-based cancel, so a killed worker's task is restored to the
+queue only once it has been unacked for the broker `visibility_timeout`
+(`celery_visibility_timeout`, 2h) — and `restore_visible` runs only while a
+worker is polling the broker, which a `--pool=solo` worker busy on another game
+is not. So a killed game can sit in `processing` for the 2h timeout *plus*
+however long the surviving worker spends on other jobs first. This is why the
+timeout is kept low rather than raised (CF-192): in the deployed image every
+model runs on Modal (CF-164, no local-CPU path), so no job approaches 2h and
+there is no worst case to size up for — raising it would only stretch this
+recovery window.
+
 **How immediate "released" is.** A Render deploy stops the container, the socket
 closes, and the lock goes within milliseconds. The slow case is a connection
 *severed* without a close — host loss or a network partition — where the

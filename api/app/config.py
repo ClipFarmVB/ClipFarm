@@ -261,10 +261,57 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
     # Worker redelivery safety (CF-65a). Redis' default visibility timeout is
-    # 3600s, so a task longer than that is silently redelivered — the CF-45
-    # duplicate-processing root cause. Set it above worst-case task time. Note
-    # the local-CPU fallback is slow (~1.3–2x realtime tracking), so a long match
-    # with Modal unavailable can run for hours; size for your slowest path.
+    # 3600s: a task still running past it is redelivered while it runs. Before
+    # CF-184 that was the CF-45 duplicate-processing root cause, and the fix was
+    # "size above worst-case task time" — back then the local-CPU fallback ran at
+    # ~1.3–2x realtime, so a long match with Modal down could run for hours.
+    #
+    # CF-192 asked whether the CF-167 cap raise (2 GB → 8 GB, longer videos) means
+    # this must rise to match. It does not, and the most direct reason is that the
+    # premise no longer holds where it is deployed: since CF-164 every model runs
+    # on Modal and the worker image ships no torch/ultralytics/inference
+    # (Dockerfile.api) — "local-CPU ball tracking is gone", restorable only by
+    # installing ml/requirements.txt outside the image for dev. So in production
+    # the worst-case task time is the Modal path (single-digit-minute tracking),
+    # nowhere near 2h; a job that outruns this timeout is a dev-stack event, not a
+    # production one. The card's 2.6–4h CPU figure is absent in the image, not
+    # merely rare.
+    #
+    # Two further facts, for when that dev-stack redelivery does happen:
+    #   • Correctness does not depend on the timeout. CF-184's session-scoped
+    #     advisory lock (app/workers/locks.py) — not this number — is what makes
+    #     concurrent double-processing impossible: a redelivery finds the lock
+    #     held by the still-running original and no-ops.
+    #   • That no-op is not free, and neither is a re-run — so redelivery is a
+    #     defect, not a harmless event (an earlier draft called it harmless). The
+    #     duplicate returns; acks_late acks it, so the original's delivery is now
+    #     spent, and a hard kill after that strands the game in `processing` with
+    #     nothing to requeue it (the #149 reaper was retired as superseded by the
+    #     lock, which preserves mutual exclusion, not at-least-once). And when the
+    #     duplicate instead finds the lock free (original finished), it RE-RUNS:
+    #     CF-37's refresh hard-deletes the clips and re-creates them with fresh
+    #     uuids, and collection_clips.clip_id / corrections.clip_id are ON DELETE
+    #     CASCADE — so a re-run silently drops curated collections and user
+    #     corrections. Cheap in compute (ball positions cached, CF-11), not data.
+    #
+    # Why not raise it anyway, to be safe? Raising above worst-case WOULD close
+    # the spent-delivery hole — no redelivery means no no-op to consume the
+    # original's delivery, which is exactly what "size above worst-case" bought
+    # under CF-45. But it buys that at proportionally longer recovery latency (the
+    # too-high cost below), leaves the destructive re-run untouched (that fires on
+    # any legitimate kill-and-requeue too), and is unnecessary given the image has
+    # no multi-hour path. The two defects' real fixes live elsewhere:
+    # self.retry(countdown=...) in the duplicate branch for the delivery hole, and
+    # decoupling clip ids from re-runs for the cascade. So 2h stays:
+    #   • too high → on the Redis transport a hard-killed worker's task is only
+    #     restored to the queue after this timeout elapses (there is no push
+    #     cancel). It is a floor, not a ceiling: under --pool=solo
+    #     `restore_visible` runs only while the worker polls the broker, so a
+    #     worker busy on another game defers the restore — the real wait is 2h
+    #     plus whatever else it processes first. This is the live reason to keep
+    #     it low.
+    #   • too low → the dev-stack redelivery above; harmless to correctness,
+    #     costly to a dev's data, and not a production concern.
     celery_visibility_timeout: int = 7200    # 2h
     # CF-184: the per-game lock is a session-scoped Postgres advisory lock
     # (app/workers/locks.py), so it has no TTL to tune against the timeout above
