@@ -250,3 +250,28 @@ def test_the_feed_reuses_the_shared_predicate():
     assert "access.apply_post_visibility" in src
     assert "Post.visibility" not in src, "no local visibility logic"
     assert "Clip.visibility" not in src
+
+
+# ── the overlay contract (CF-112) ───────────────────────────────────────────
+
+
+def test_playback_carries_the_fields_the_feed_overlay_renders():
+    """CF-112's overlay shows the action label and highlight score. They live on
+    the clip, which the feed already joins — so they are free here and would be
+    a per-card fetch anywhere else, which is the N+1 this endpoint exists to
+    avoid. Pinned because the cost of adding them later is a client that has to
+    handle both shapes."""
+    from app.schemas.post import PostPlayback
+
+    assert "action_type" in PostPlayback.model_fields
+    assert "highlight_score" in PostPlayback.model_fields
+
+
+def test_the_action_label_is_required_and_the_score_is_not():
+    """Every clip has an action type; `highlight_score` is nullable in the model
+    and stays nullable here, so the overlay hides the badge rather than
+    rendering a zero for a clip that was never scored."""
+    from app.schemas.post import PostPlayback
+
+    assert PostPlayback.model_fields["action_type"].is_required()
+    assert not PostPlayback.model_fields["highlight_score"].is_required()

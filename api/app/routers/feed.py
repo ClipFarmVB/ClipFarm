@@ -135,6 +135,8 @@ async def get_feed(
                     proxy_url=None,  # CF-48 populates this
                     start_time=clip.start_time,
                     end_time=clip.end_time,
+                    action_type=clip.action_type.value,
+                    highlight_score=clip.highlight_score,
                 ),
                 # False until CF-113 adds likes. The field ships now so the
                 # response shape doesn't change under the client later, and so

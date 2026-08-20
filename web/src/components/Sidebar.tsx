@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Clapperboard, Upload, LayoutGrid, LogOut, Sun, Moon, FolderOpen } from "lucide-react";
+import { Clapperboard, Upload, LayoutGrid, LogOut, Sun, Moon, FolderOpen, Home } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { SOCIAL_ENABLED } from "@/lib/features";
@@ -10,10 +10,13 @@ import { clearMe, needsHandle, useMe } from "@/lib/useMe";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
+  // Feed first, and only with social on — it is the post-login landing page
+  // (CF-112), so it should be the first thing in the nav that matches.
+  ...(SOCIAL_ENABLED ? [{ href: "/feed", label: "Feed", icon: Home }] : []),
   { href: "/games",       label: "Library",     icon: LayoutGrid },
   { href: "/collections", label: "Collections", icon: FolderOpen },
   { href: "/upload",      label: "Upload",      icon: Upload },
-] as const;
+];
 
 export function Sidebar() {
   const pathname = usePathname();
