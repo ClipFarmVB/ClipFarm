@@ -393,11 +393,14 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         sync_save_clips,
         sync_delete_game_clips,
         sync_game_exists,
+        sync_note_game_error,
+        sync_set_original_duration,
+        sync_settle_upload_charge,
     )
     from app.workers.progress import (
         GameProgress, compute_stage_spans, CONDENSE_SECS_PER_KEPT_SEC,
     )
-    from app.workers.locks import GameLock
+    from app.workers.locks import GameLock, LockLost, LockNotSessionScoped
     from app.config import settings as _cfg
     from app.services import storage as s3
     import cv2 as _cv2
@@ -429,12 +432,62 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
 
     # CF-65a: never process one game on two workers at once. A redelivered or
     # duplicated task whose game is already in flight is a harmless no-op.
-    lock = GameLock(gid, ttl_seconds=_cfg.process_lock_ttl_seconds)
-    if not lock.acquire():
-        logger.warning("Game %s already being processed elsewhere — skipping duplicate delivery", gid)
-        return
+    # The lock lives on its own database connection (CF-184), so if this worker
+    # is hard-killed the lock dies with it and the requeued copy can run.
+    lock = GameLock(gid)
+
+    # acquire() is INSIDE the retryable try on purpose: taking the lock is a
+    # database round trip, and a transient Postgres blip while taking it must
+    # retry like any other failure. Raising above the try would be a permanent
+    # failure instead — acks_late acks a task that raises, so nothing would
+    # redeliver it and the game would sit in `queued`.
+    def _require_lock() -> None:
+        """Abort the job if the lock stopped being ours part-way through.
+
+        The connection can die without this worker dying — a failover, an
+        `idle_session_timeout`, a `pg_terminate_backend` — and Postgres releases
+        the lock the moment it does. Nothing about *this* process changes, so
+        without a check the job runs on to completion while a redelivery at the
+        visibility timeout acquires the free lock and runs beside it. Checked at
+        the long stage boundaries: it bounds the unprotected stretch to one
+        stage rather than the whole job, and the retry re-acquires cleanly.
+        """
+        if not lock.still_held():
+            raise LockLost(
+                f"Lost the processing lock for game {gid} mid-job — aborting so "
+                "the retry can re-acquire it"
+            )
 
     try:
+        try:
+            acquired = lock.acquire()
+        except LockNotSessionScoped as lock_cfg_err:
+            # A misconfigured lock database, not a transient failure: retrying
+            # cannot fix it, and burning the retries would leave the game
+            # terminally `failed` with its quota already charged. Leave it
+            # `queued` — still runnable, once the environment is — and say why
+            # loudly enough to reach Sentry.
+            logger.exception(
+                "Refusing to process game %s: the lock database cannot hold a "
+                "session-scoped lock. Game left queued; fix LOCK_DATABASE_URL "
+                "and resubmit.", gid,
+            )
+            # Also written to the row, because a misconfiguration strands EVERY
+            # game the same way: without this the backlog exists only as Sentry
+            # events, and recovering means guessing which games to resubmit.
+            # With it they are one query away (see sync_note_game_error).
+            try:
+                sync_note_game_error(
+                    gid, f"Not started: lock database misconfigured ({lock_cfg_err})"
+                )
+            except Exception:
+                logger.warning("Could not note the lock misconfiguration on game %s", gid)
+            return
+
+        if not acquired:
+            logger.warning("Game %s already being processed elsewhere — skipping duplicate delivery", gid)
+            return
+
         sync_set_game_status(gid, "processing")
         # Written directly rather than through GameProgress: the stage spans
         # need the downloaded file's MD5 (cache probe below), which isn't
@@ -467,6 +520,57 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             _frame_h     = int(_cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
             _cap.release()
             video_duration = _frames / _fps
+
+            # CF-91: the api can only enforce the duration cap against what the
+            # client declared — this is the first point the real length is
+            # known, and it is still ahead of every expensive stage. Record the
+            # measurement, then decide.
+            try:
+                sync_set_original_duration(gid, video_duration)
+            except Exception:
+                # Accounting must not break processing — the gate below reads
+                # the probed value directly, so it holds either way.
+                logger.warning("Failed to record duration for game %s", game_id, exc_info=True)
+            if video_duration > _cfg.max_upload_duration_seconds:
+                logger.warning(
+                    "Game %s is %.0f s, over the %.0f s cap — refusing to process",
+                    game_id, video_duration, _cfg.max_upload_duration_seconds,
+                )
+                sync_set_game_status(
+                    gid, "failed",
+                    error_message=(
+                        f"Video is {video_duration / 60:.0f} min long; the maximum is "
+                        f"{_cfg.max_upload_duration_seconds / 60:.0f} min. "
+                        "Split it into separate uploads."
+                    ),
+                )
+                # The object is rejected and will never be processed, so it is
+                # pure stored cost — nothing else reclaims it (the retention
+                # sweep is still a backlog item). Best-effort: a failed delete
+                # must not turn a clean rejection into a retried task.
+                try:
+                    s3.delete_file(r2_key)
+                except Exception:
+                    logger.warning("Could not delete rejected upload %s", r2_key, exc_info=True)
+                # Note what is deliberately NOT done here: the quota charge is
+                # left at whatever was reserved at accept time. Settling it up
+                # to the real length would bill a rejected upload for footage
+                # that never ran — 6 h of probed video against a 6 h daily cap
+                # wipes out the day for work we refused and deleted. The slot
+                # it consumed is the cost; the count cap is what bounds someone
+                # doing this repeatedly. It also keeps an honest client whose
+                # container reports a wrong duration from losing their day to a
+                # metadata bug.
+                return
+
+            # Accepted. Settle the quota charge to the measured length — this
+            # is what makes charging an undeclared duration at the per-video
+            # maximum fair rather than punitive, and what stops an
+            # under-declared one from sticking as the charge.
+            try:
+                sync_settle_upload_charge(gid, video_duration)
+            except Exception:
+                logger.warning("Failed to settle quota charge for game %s", game_id, exc_info=True)
 
             # fps-aware sampling: ~3 ball detections per second of video
             # regardless of source frame rate (tuned at 30fps/every-10th;
@@ -551,6 +655,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             # keep every rally, not just the ones the highlight gate favors.
             pre_gate_rallies = [dict(d) for d in detections]
             _lap("tracking_ball")
+            _require_lock()   # the longest stage just ran — are we still alone?
 
             # ── Stage 2: Highlight scoring → drop low scorers ─────────────
             # Cheer reaction after the rally + rally shape features (+ CLIP
@@ -671,6 +776,9 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             if stale_urls:
                 logger.info("Replaced %d stale clip artifacts from a prior run", len(stale_urls))
 
+            # Nothing may be written for a game we no longer hold: another
+            # worker owning the lock is the authority on its clips.
+            _require_lock()
             sync_save_clips(rows)
 
             # ── Stage 5 (opt-in): condensed dead-time-removed video ───────
@@ -730,6 +838,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         # Condensing runs after the clip-save checkpoint and takes
                         # minutes of its own, so re-check: sync_set_condensed_result
                         # would no-op on a deleted game and strand this upload in R2.
+                        _require_lock()
                         if _abandoned():
                             try:
                                 s3.delete_file(s3.condensed_key(gid))
@@ -741,7 +850,6 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         sync_set_condensed_result(
                             gid,
                             condensed_video_url=condensed_url,
-                            original_duration=video_duration,
                             condensed_duration=condensed_duration,
                         )
                         logger.info(

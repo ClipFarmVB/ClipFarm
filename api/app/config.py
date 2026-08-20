@@ -20,6 +20,20 @@ class Settings(BaseSettings):
     # Upload limits
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GB
     allowed_upload_content_types: str = "video/mp4,video/quicktime,video/x-matroska,video/webm"
+    # Hard duration cap (CF-91). GPU inference costs roughly $0.25 per hour of
+    # footage, so an unbounded upload is an unbounded bill. 4 h clears a long
+    # 5-set match with room to spare — the limit is aimed at multi-hour
+    # stream dumps, not at any real game.
+    max_upload_duration_seconds: float = 4 * 3600  # 4 h
+
+    # Per-user processing quota (CF-91), evaluated over a rolling window.
+    # Both caps apply: whichever is hit first stops the upload. Defaults allow
+    # a full tournament day (5 matches / 6 h ≈ $1.50 of GPU) while bounding
+    # what a single account can spend per day. Plan tiers (CF-64) will raise
+    # these per user rather than replace them — see services/quota.py.
+    quota_window_hours: float = 24.0
+    quota_max_games_per_window: int = 5
+    quota_max_minutes_per_window: float = 360.0  # 6 h of footage
 
     # Direct-to-R2 uploads (CF-163). The browser PUTs to R2 with a presigned
     # URL; the api only issues the ticket and confirms the object afterwards.
@@ -82,6 +96,19 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
+    # Connection used only for the worker's per-game advisory lock (CF-184).
+    # Empty = use database_url, which is right locally and for any direct or
+    # session-mode connection. Set this when DATABASE_URL is a TRANSACTION-mode
+    # pooler (Supabase port 6543): that mode can serve consecutive statements
+    # from different backends, which cannot hold a session-scoped lock. Point it
+    # at the session-mode port (5432) instead. The worker refuses to process
+    # rather than run under a lock that does not hold — see locks.py.
+    lock_database_url: str = ""
+    # Ports refused outright as a lock connection: they serve a transaction-mode
+    # pooler, which cannot hold a session-scoped lock, and no runtime check
+    # detects that reliably (see locks.py). 6543 is Supabase's; a deployment
+    # behind a PgBouncer on some other port declares it here, comma-separated.
+    lock_pooler_ports: str = "6543"
 
     # Auth / JWT (legacy — Supabase JWKS is the source of truth)
     jwt_secret: str = ""
@@ -117,14 +144,12 @@ class Settings(BaseSettings):
     # the local-CPU fallback is slow (~1.3–2x realtime tracking), so a long match
     # with Modal unavailable can run for hours; size for your slowest path.
     celery_visibility_timeout: int = 7200    # 2h
-    # The per-game lock MUST outlive the visibility timeout, not equal it: a
-    # redelivery fires at ~visibility_timeout, and if the lock lapses at the same
-    # instant a second worker acquires it and runs concurrently — the exact bug
-    # this prevents. Keeping the lock longer means the redelivered copy always
-    # finds the lock still held and no-ops. (Trade-off: a hard-killed worker
-    # orphans the lock until this TTL; a stale-"processing" reaper is the fix —
-    # see #149, which gates the Render cutover in #98.)
-    process_lock_ttl_seconds: int = 10800    # 3h — deliberately > visibility_timeout
+    # CF-184: the per-game lock is a session-scoped Postgres advisory lock
+    # (app/workers/locks.py), so it has no TTL to tune against the timeout above
+    # — it is released when the holding connection dies. What replaced
+    # `process_lock_ttl_seconds` is nothing at all, deliberately: a TTL was only
+    # ever an approximation of "is the holder alive", and it was the reason a
+    # hard-killed worker stranded a game in `processing`.
 
     # Modal
     modal_token_id: str = ""

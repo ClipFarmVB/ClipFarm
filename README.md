@@ -210,22 +210,21 @@ packages deliberately stay out of `requirements.txt`, which builds the productio
 image via `Dockerfile.api`.
 
 Notes:
-- **Default `DATABASE_URL` is shared Supabase** (`.env.docker.example` Option A).
-  This is intentional, not an oversight: the team logs into the frontend with a
-  shared dev account specifically so everyone uploads to and sees the same games
-  and clips. Use this for general dev/testing.
-- **Switch to the local `db` container (Option B) whenever you're doing
-  schema/migration work.** The api container runs `alembic upgrade head` on every
-  boot — on the shared DB that means any container boot (yours or a teammate's)
-  can silently advance the shared schema out from under everyone else, which is
-  exactly what caused the 007→008 mismatch. If your branch adds or edits an
-  Alembic revision, point `DATABASE_URL` at the local db container while you
-  iterate, then switch back once you're done.
+- **Default `DATABASE_URL` is the local `db` container** (`.env.docker.example`
+  Option A). The api migrates it on boot, so schema work stays on your machine.
+- **Shared Supabase (Option B) is a deliberate opt-in.** Pointing at it is still
+  the normal way to do general dev/testing — the team logs into the frontend with
+  a shared dev account specifically so everyone uploads to and sees the same games
+  and clips — but the api will **not** migrate it on boot. `scripts/auto_migrate.py`
+  runs `alembic upgrade head` only when `DATABASE_URL` names a local host; against
+  the pooler it skips and logs why (CF-189). Before that guard existed, any
+  container boot — yours or a teammate's — could silently advance the shared
+  schema, which is exactly what caused the 007→008 mismatch.
 - **Landing a new migration on Supabase is a deliberate, one-time step**, not a
   side effect of `docker compose up`. When a PR with a new Alembic revision merges,
   one person runs `alembic upgrade head` against Supabase once (point `DATABASE_URL`
   at the pooler, run it, switch back). Don't rely on the next person's container
-  boot to do it — coordinate it instead.
+  boot to do it — it won't happen — coordinate it instead.
 - `docker compose restart` does **not** reload env files. To pick up `.env.docker` changes:
   `docker compose up -d --force-recreate <service>`.
 - The worker mounts `./api` and `./ml`, so Python changes are picked up on worker restart.
@@ -249,6 +248,7 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `clip_verify_enabled` | `false` | Use CLIP frames in scoring (slow on CPU; enable for GPU). |
 | `pose_model` / `pose_imgsz` / `pose_skip_frames` | `yolov8s-pose.pt` / `1280` / `4` | Pose quality vs speed. Sent to the Modal GPU function; the defaults are what production runs since CF-164. |
 | `database_url` | — | Supabase Postgres (async). |
+| `lock_database_url` | `""` | Connection used *only* for the worker's per-game advisory lock (CF-184). Empty = use `database_url`, which is right for any direct or session-mode connection. Set it when `database_url` is a **transaction**-mode pooler (Supabase port 6543): that mode cannot hold a session-scoped lock, so the worker refuses to process rather than run unprotected. `lock_pooler_ports` (default `6543`) lists the ports refused for that reason — set it if your transaction pooler answers somewhere else. |
 | `supabase_url` / `supabase_service_role_key` | — | Auth (JWKS) verification. |
 | `r2_*` | — | Cloudflare R2 bucket + credentials. |
 | `redis_url` / `celery_*` | redis:6379 | Job queue. |
@@ -258,6 +258,8 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `single_put_max_bytes` / `upload_part_size_bytes` | 100 MiB / 100 MiB | Below the threshold an upload is one presigned PUT; above it, multipart with parts this size. |
 | `upload_url_ttl_seconds` | `21600` (6 h) | Lifetime of a presigned upload URL — must cover a whole upload on a slow uplink. |
 | `abandoned_upload_hours` | `24` | Upload tickets never completed are swept (row deleted, multipart aborted) on the owner's next presign. |
+| `max_upload_duration_seconds` | `14400` (4 h) | Longest single video accepted. Checked at presign against the client-declared length, then again by the worker against the probed one. |
+| `quota_window_hours` / `quota_max_games_per_window` / `quota_max_minutes_per_window` | `24` / `5` / `360` | Per-user rolling processing quota (cost guardrail — GPU inference is ~$0.25 per hour of footage). Both caps apply. Counted from the `upload_events` ledger, so deleting a game does not refund a slot. A duration the file size contradicts (missing, `0`, or physically impossible for the byte count) is priced from the size instead of trusted, and settled to the probed value by the worker. `GET /games/upload-config` returns the limits plus the caller's remaining allowance. |
 | `raw_upload_retention_days` | `7` | Intended raw-upload TTL (enforcement is a backlog item). |
 
 Secrets go in `.env.docker` (gitignored) for the stack, `api/.env` and `web/.env.local` for
@@ -303,6 +305,7 @@ Postgres via SQLAlchemy (`api/app/models/`), RLS enabled on all tables.
 | `Collection` | User-curated groupings of clips. |
 | `Correction` | User relabel events (written on relabel; readable via `GET /corrections` + CSV `/corrections/export` — training signal). |
 | `DeadTimeRun` / `DeadTimeClip` | Separate experimental dead-time detection flow. |
+| `UploadEvent` | Append-only quota ledger (CF-91). One row per accepted upload, holding the seconds charged against the per-user window. Deliberately not derived from `Game`: games are hard-deleted, so counting them let a user refund a slot whose GPU cost was already spent. `game_id` is `ON DELETE SET NULL`. |
 
 ---
 
