@@ -48,13 +48,11 @@ function Feed() {
       setCursor(page.next_cursor);
       if (!page.next_cursor) setDone(true);
       setError(null);
-    } catch {
-      // Deliberately not surfacing the API's message. A feed that failed to
-      // load gives the user nothing to act on, unlike an upload rejection, so
-      // the detail belongs in Sentry rather than over the video. (CF-91 landed
-      // an `apiErrorMessage` helper on main for the cases where it *is*
-      // actionable; this branch predates it — see the PR note on rebasing.)
-      setError("Could not load your feed.");
+    } catch (e) {
+      // `request()` already ran the body through apiErrorMessage (CF-91), so
+      // this is the server's own sentence when it wrote one — the flag being
+      // off on the API, say — and a generic line when it didn't.
+      setError(e instanceof Error && e.message ? e.message : "Could not load your feed.");
     } finally {
       setLoading(false);
     }
