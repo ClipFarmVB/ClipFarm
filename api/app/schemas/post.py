@@ -80,6 +80,12 @@ class PostPlayback(BaseModel):
     proxy_url: str | None = None
     start_time: float
     end_time: float
+    # The volleyball-specific bits the feed overlay surfaces (CF-112). They live
+    # on the clip, and a feed card that had to fetch them per post would be the
+    # N+1 CF-111 exists to avoid — the clip is already joined, so they are free
+    # here and expensive anywhere else.
+    action_type: str
+    highlight_score: float | None = None
 
 
 class PostOut(BaseModel):
