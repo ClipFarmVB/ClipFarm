@@ -170,18 +170,31 @@ class Settings(BaseSettings):
     # the lock held by the still-running original and no-ops. Correctness no
     # longer depends on the timeout outrunning the job.
     #
-    # What it still bounds is a cost/latency trade-off, and both sides want it
-    # LOW, not high:
-    #   • too low → a job that outruns it is redelivered wastefully. Harmless
-    #     (lock + CF-37 idempotent refresh) and cheap on any re-run, since ball
-    #     positions are cached (CF-11), but still wasted scheduling.
+    # What it still bounds is a cost/latency trade-off. Only the recovery side
+    # wants it low; the redelivery side is a defect, not a free knob, so both are
+    # spelled out honestly:
     #   • too high → on the Redis transport a hard-killed worker's task is only
     #     restored to the queue after this timeout elapses (there is no push
-    #     cancel), so this doubles as the ceiling on how long a Render-deploy kill
-    #     leaves a game stranded in `processing` before the requeue runs.
-    # 2h balances them: comfortably past the Modal path (single-digit minutes) and
-    # a tolerable recovery ceiling. Raising it to chase the CPU-fallback worst case
-    # would only lengthen that recovery, for a path that is already the rare one.
+    #     cancel). This is the reason to keep it low. It is a floor, not a
+    #     ceiling: under --pool=solo `restore_visible` runs only while the worker
+    #     polls the broker, so a worker busy on another game defers the restore —
+    #     the real wait is 2h plus whatever else it processes first.
+    #   • too low → a job that outruns it is redelivered, and that redelivery is
+    #     NOT harmless (an earlier draft claimed it was). The duplicate hits the
+    #     held lock and returns; acks_late acks it, so the original's delivery is
+    #     now spent — a hard kill after that point strands the game in
+    #     `processing` with nothing to requeue it (the #149 reaper was retired as
+    #     superseded by the lock, which preserves mutual exclusion, not
+    #     at-least-once). And when the duplicate instead finds the lock free
+    #     (original already finished), it RE-RUNS: CF-37's refresh hard-deletes
+    #     the clips and re-creates them with fresh uuids, and
+    #     collection_clips.clip_id / corrections.clip_id are ON DELETE CASCADE —
+    #     so a re-run silently drops curated collections and user corrections.
+    #     Cheap in compute (ball positions cached, CF-11), destructive in data.
+    # 2h stays regardless: the recovery-latency argument keeps it low, and the
+    # redelivery costs above are a separate defect (the refresh is not truly
+    # idempotent, and the no-op does not preserve the delivery) that raising the
+    # timeout does not fix — it would only lengthen recovery. See CF-192 review.
     celery_visibility_timeout: int = 7200    # 2h
     # CF-184: the per-game lock is a session-scoped Postgres advisory lock
     # (app/workers/locks.py), so it has no TTL to tune against the timeout above
