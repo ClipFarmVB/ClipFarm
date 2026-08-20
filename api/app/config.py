@@ -1,10 +1,50 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The zero-config local database. Also the sentinel the production check
+# below looks for: a deployment that reaches this value did not get a
+# DATABASE_URL, because nobody points production at localhost on purpose.
+LOCAL_DATABASE_URL = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
+
+
+# ── Production config guard (CF-172) ─────────────────────────────────────────
+# Render's env group only creates keys that carry a literal `value:`; every
+# `sync: false` key is invisible until a human pastes it in. So on a fresh
+# blueprint apply these are simply absent, and each one fails late and
+# unrecognisably: DATABASE_URL falls back to the local default and the
+# pre-deploy migration dies with `Connect call failed ('127.0.0.1', 5432)`,
+# which reads as a Supabase outage; a blank R2 or Supabase credential
+# survives boot and fails at the first upload or auth check instead.
+#
+# Named here, once, at startup. Not `sentry_dsn` — blank there means
+# "monitoring off", which is a supported production state.
+_REQUIRED_IN_PRODUCTION = (
+    "DATABASE_URL",
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "R2_ACCOUNT_ID",
+    "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY",
+    "R2_PUBLIC_URL",
+)
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # Environment
+    #
+    # "production" turns on the required-settings check below (CF-172). It is
+    # NOT `debug` inverted: `debug` defaults to False because dev auth fallbacks
+    # must be off unless asked for, so gating on `not debug` would make every
+    # zero-config run — a bare `uvicorn`, CI's `pytest api/tests` — start
+    # demanding secrets. This flag defaults the other way round, so the safe
+    # default for each is its own default.
+    #
+    # Every real deployment sets it: render.yaml pins it in the clipfarm-shared
+    # group with a literal `value:` (not `sync: false`), so it arrives without a
+    # human step — the guard cannot be the thing you forgot to fill in.
+    environment: str = "development"
     debug: bool = False  # Enables dev fallbacks (DEV_USER_ID auth, etc.)
     # Whether the pose-first fallback scan may return `_stub_detections` —
     # fabricated clips at invented timestamps, which the worker PERSISTS. This
@@ -113,7 +153,7 @@ class Settings(BaseSettings):
     condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
 
     # Database
-    database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
+    database_url: str = LOCAL_DATABASE_URL
     # Connection used only for the worker's per-game advisory lock (CF-184).
     # Empty = use database_url, which is right locally and for any direct or
     # session-mode connection. Set this when DATABASE_URL is a TRANSACTION-mode
@@ -183,6 +223,31 @@ class Settings(BaseSettings):
 
     # Delete raw uploads after N days (0 = keep forever)
     raw_upload_retention_days: int = 7
+
+    @model_validator(mode="after")
+    def _check_production_settings(self) -> "Settings":
+        if self.environment.strip().lower() != "production":
+            return self
+
+        missing = [
+            name for name in _REQUIRED_IN_PRODUCTION
+            if not str(getattr(self, name.lower())).strip()
+        ]
+        # An unset DATABASE_URL is not blank, it is the local default — same
+        # cause, so report it in the same list rather than as a second error.
+        if self.database_url == LOCAL_DATABASE_URL and "DATABASE_URL" not in missing:
+            missing.insert(0, "DATABASE_URL")
+
+        if missing:
+            raise ValueError(
+                "ENVIRONMENT=production but these required settings are not set: "
+                + ", ".join(missing)
+                + ". On Render they are `sync: false` keys in the clipfarm-shared "
+                "env group — Render does not create them, so they stay absent "
+                "until someone adds them in the dashboard "
+                "(DEPLOY_RENDER.md § Fill the secrets)."
+            )
+        return self
 
 
 settings = Settings()

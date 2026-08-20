@@ -251,6 +251,7 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 
 | Setting | Default | Purpose |
 |---|---|---|
+| `environment` | `development` | `production` makes the api and worker **refuse to start** when `database_url`, the `supabase_*` keys or the `r2_*` credentials are unset, naming the ones that are (CF-172). Both production paths set it for you (`render.yaml`, `docker-compose.prod.yml`); local dev leaves it alone and keeps its zero-config defaults. Not `debug` inverted — `debug` defaults to off, so gating on it would fire on every local run. |
 | `highlight_score_threshold` | `0.50` | Rallies below this are dropped before pose/cutting. Env-overridable, no rebuild. |
 | `clip_verify_enabled` | `false` | Use CLIP frames in scoring (slow on CPU; enable for GPU). |
 | `pose_model` / `pose_imgsz` / `pose_skip_frames` | `yolov8s-pose.pt` / `1280` / `4` | Pose quality vs speed. Sent to the Modal GPU function; the defaults are what production runs since CF-164. |

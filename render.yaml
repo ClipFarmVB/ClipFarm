@@ -21,6 +21,18 @@
 envVarGroups:
   - name: clipfarm-shared
     envVars:
+      # Turns on the required-settings check in api/app/config.py (CF-172): with
+      # this set, api and worker refuse to start when any `sync: false` key
+      # below is still absent, naming the ones that are missing. Without it a
+      # blank DATABASE_URL falls back to a localhost default and the pre-deploy
+      # migration dies with `Connect call failed ('127.0.0.1', 5432)` — which
+      # reads as a Supabase outage, not as a missing variable.
+      #
+      # A literal `value:`, deliberately: Render only creates keys that carry
+      # one, so this arrives on its own. A `sync: false` guard would be absent
+      # in exactly the situation it exists to catch.
+      - key: ENVIRONMENT
+        value: production
       - key: DATABASE_URL              # Supabase pooler URL, postgresql+asyncpg://…  (Pro tier — see CF-18)
         sync: false
       # The worker's per-game lock is a session-scoped Postgres advisory lock

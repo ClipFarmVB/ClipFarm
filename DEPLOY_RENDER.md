@@ -53,6 +53,29 @@ you have real users or the no-backups risk becomes unacceptable.
 ### 3. Fill the secrets
 Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 
+> ⚠️ **`sync: false` keys do not appear in the env group until you add them.**
+> Render only creates keys that carry a literal `value:`; a `sync: false` key is
+> a declaration that *you* will supply it, not an empty slot waiting to be
+> filled. So "I applied the blueprint" and "the services have credentials" are
+> two different statements, and the group looking short is the normal state, not
+> a sync failure.
+>
+> Since **CF-172** a missing one is loud: `ENVIRONMENT=production` (pinned in the
+> group, so it arrives on its own) makes api and worker refuse to start, naming
+> what is absent —
+>
+> ```
+> ENVIRONMENT=production but these required settings are not set:
+> DATABASE_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, R2_ACCOUNT_ID, ...
+> ```
+>
+> Before that, a blank `DATABASE_URL` fell back to a localhost default and the
+> pre-deploy migration died with `Connect call failed ('127.0.0.1', 5432)`,
+> which reads as a Supabase outage; blank R2 or Supabase keys survived boot and
+> surfaced at the first upload or auth check instead. If you see either symptom
+> on an older deploy, check the env group before checking the database.
+> `SENTRY_DSN` stays genuinely optional — blank means monitoring off.
+
 **`clipfarm-shared` group** (used by api + worker):
 
 | Key | Where to find it |
