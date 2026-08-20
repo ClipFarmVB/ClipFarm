@@ -34,6 +34,18 @@ def _model_path(name: str) -> str:
         return os.path.join(models_dir, name)
     return name
 
+class PoseStreamError(RuntimeError):
+    """The video stream died partway through refinement.
+
+    Distinct from "this window had nothing to see": it means the decoder stopped
+    returning frames after having returned them, so every remaining window would
+    silently keep its trajectory label while the run still reported success.
+    Reachable since refinement reads the presigned URL in place rather than a
+    fully-downloaded local file — a mid-run network fault now looks exactly like
+    end-of-video to `cap.read()`.
+    """
+
+
 class PoseRuntimeUnavailable(RuntimeError):
     """No usable pose runtime, and fabricated detections were not permitted.
 
@@ -490,6 +502,8 @@ def classify_within_windows(
     motion_px     = MOTION_THRESHOLD * frame_h
 
     refined: list[dict] = []
+    scored = 0            # windows that actually produced a pose signal
+    decoded_any = False   # have we ever successfully read a frame?
 
     for window in windows:
         w_start = window["start"]
@@ -501,10 +515,25 @@ def classify_within_windows(
         prev_kps: dict[int, np.ndarray] = {}
         frame_idx = int(w_start * fps)
 
+        frames_here = 0
         while True:
             ret, frame = cap.read()
             if not ret:
+                # Ambiguous on its own: true end-of-video, or a stream that has
+                # stopped answering. Reading nothing at all in a window we have
+                # seeked to, after earlier windows decoded fine, is the second
+                # one — and it is silent, because every later window fails the
+                # same way and still gets counted as "refined".
+                if frames_here == 0 and decoded_any:
+                    cap.release()
+                    raise PoseStreamError(
+                        f"decoder returned no frames for window "
+                        f"{w_start:.1f}-{w_end:.1f}s after {scored} scored window(s); "
+                        f"refinement cannot continue on this source"
+                    )
                 break
+            frames_here += 1
+            decoded_any = True
             pos_sec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
             if pos_sec > w_end:
                 break
@@ -571,10 +600,23 @@ def classify_within_windows(
                     w_start, w_end, best_pose_action, pose_conf, ball_conf,
                 )
 
+        if action_scores:
+            scored += 1
         refined.append(out)
 
     cap.release()
-    logger.info("classify_within_windows: refined %d windows", len(refined))
+    # Report windows that produced a pose signal, not windows visited. The old
+    # count was len(refined), which is just the input length — a run that decoded
+    # nothing still read as a full success.
+    logger.info(
+        "classify_within_windows: pose signal on %d/%d windows", scored, len(refined),
+    )
+    if windows and scored == 0:
+        logger.warning(
+            "classify_within_windows: no window produced a pose signal — every clip "
+            "keeps its trajectory label. Expected only if the footage genuinely has "
+            "no visible players; otherwise the source or the model is at fault."
+        )
     return refined
 
 

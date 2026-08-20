@@ -273,7 +273,11 @@ def _refine_with_pose(
     if _will_attempt_modal(r2_key):
         try:
             refined = _classify_windows_modal(r2_key, windows)
-            logger.info("Pose refinement ran on Modal GPU: %d windows", len(refined))
+            # Deliberately "returned", not "refined": this side only sees the
+            # list come back, and its length is just the input size. How many
+            # windows pose actually scored is logged by classify_within_windows
+            # on the Modal side.
+            logger.info("Pose refinement returned %d windows from Modal GPU", len(refined))
             return refined
         except Exception as modal_err:
             logger.warning(
@@ -581,7 +585,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             progress.stage("refining_actions")
             try:
                 detections = _refine_with_pose(local_video, r2_key, detections, game_id)
-                logger.info("Pose refinement complete (%d windows)", len(detections))
+                logger.info("Pose refinement stage done (%d windows)", len(detections))
             except Exception as pose_err:
                 logger.warning("Pose refinement failed (%s) — keeping trajectory labels", pose_err)
             _lap("refining_actions")
