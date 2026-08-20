@@ -525,8 +525,8 @@ def test_oversize_object_is_deleted_and_rejected(fake_storage, fake_task, monkey
     """A presigned PUT cannot enforce Content-Length, so a client can declare a
     small file and upload a large one. This is where that is caught — after the
     transfer, but still before any GPU time is spent."""
-    monkeypatch.setattr(settings, "max_upload_bytes", 1024)
-    fake_storage["_head"]["value"] = {"size": 99_999, "content_type": "video/mp4"}
+    monkeypatch.setattr(settings, "max_upload_bytes", 8 * 1024**3)
+    fake_storage["_head"]["value"] = {"size": 9 * 1024**3, "content_type": "video/mp4"}
     game = _uploading_game()
     db = FakeDB(game)
 
@@ -534,6 +534,9 @@ def test_oversize_object_is_deleted_and_rejected(fake_storage, fake_task, monkey
         asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
 
     assert exc.value.status_code == 413
+    # CF-167: the same sentence the presign path and the dropzone would give,
+    # naming the cap in the units the user was shown it in.
+    assert exc.value.detail == "File is 9 GB; the maximum is 8 GB."
     assert fake_storage["delete_file"] == ["raw/abc.mp4"], "the object must not linger"
     assert game in db.deleted, "the row must not linger either"
     assert fake_task.calls == []

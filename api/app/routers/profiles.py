@@ -35,7 +35,7 @@ UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
 # previous owner for a window, which is not implemented.
 USERNAME_CHANGE_COOLDOWN = timedelta(days=30)
 
-# Avatars are small images; the 2 GB video cap is meaningless here.
+# Avatars are small images; the multi-GB video cap is meaningless here.
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/webp"}
 

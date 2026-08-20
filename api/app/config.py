@@ -18,7 +18,19 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"  # comma-separated
 
     # Upload limits
-    max_upload_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GB
+    # 8 GB (CF-167). The old 2 GB was sized for an api that proxied the bytes;
+    # since CF-163 the browser PUTs straight to R2, so the ceiling is a cost
+    # decision rather than a transfer one.
+    #
+    # What 8 GB actually buys, since the honest answer is "it depends on the
+    # camera": ~2 h of HEVC 1080p30 at ~8 Mbps (7.2 GB — the tight case, not a
+    # comfortable one), ~1 h of H.264 1080p60, ~30 min of 4K. A full 4K match
+    # does NOT fit and is rejected up front.
+    #
+    # Note this binds well before max_upload_duration_seconds below for
+    # anything over ~4.4 Mbps: the 4 h duration cap is the ceiling on cheap
+    # footage, this is the ceiling on expensive footage, and both apply.
+    max_upload_bytes: int = 8 * 1024 * 1024 * 1024  # 8 GB
     allowed_upload_content_types: str = "video/mp4,video/quicktime,video/x-matroska,video/webm"
     # Hard duration cap (CF-91). GPU inference costs roughly $0.25 per hour of
     # footage, so an unbounded upload is an unbounded bill. 4 h clears a long
@@ -38,18 +50,24 @@ class Settings(BaseSettings):
     # Direct-to-R2 uploads (CF-163). The browser PUTs to R2 with a presigned
     # URL; the api only issues the ticket and confirms the object afterwards.
     #
-    # TTL has to cover a whole upload — a 2 GB file on a slow phone uplink is
-    # comfortably over an hour — but the URL is a write grant for one specific
-    # key, so 6h bounds a leak to the same day rather than indefinitely.
-    upload_url_ttl_seconds: int = 6 * 3600
+    # TTL has to cover a whole upload, and every part URL in a multipart ticket
+    # shares this one expiry with no renewal path — an expired URL 403s, which
+    # upload.ts treats as non-retryable (correctly: a signature failure repeats
+    # forever), so a ticket that lapses mid-transfer loses the whole thing.
+    # 12h means a cap-sized 8 GB upload needs only ~1.6 Mbps sustained to
+    # finish, under any uplink that could have started it; at 6h it needed 3.2.
+    # The URL is still a write grant for one specific key, so the exposure this
+    # trades away stays bounded and same-day.
+    upload_url_ttl_seconds: int = 12 * 3600
     # Files at or below this go as one PUT: a single round trip, no completion
     # bookkeeping. Above it, multipart — not because of R2's 5 GiB single-PUT
-    # ceiling (which never binds at a 2 GB cap) but for resumability: a phone
-    # on cellular that drops at 90% retries one part, not the whole file.
+    # ceiling (which a 100 MiB threshold keeps out of reach) but for
+    # resumability: a phone on cellular that drops at 90% retries one part, not
+    # the whole file.
     single_put_max_bytes: int = 100 * 1024 * 1024
     # S3/R2 require every part except the last to be >= 5 MiB. 100 MiB keeps a
-    # 2 GB upload to ~20 parts (the 10,000-part limit is never in reach) while
-    # still being a cheap unit to retry.
+    # cap-sized 8 GB upload to ~80 parts (the 10,000-part limit is never in
+    # reach) while still being a cheap unit to retry.
     upload_part_size_bytes: int = 100 * 1024 * 1024
     # A presigned ticket the client never completes leaves an `uploading` row
     # and possibly orphaned multipart parts. Rows older than this are swept on

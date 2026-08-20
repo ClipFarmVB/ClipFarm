@@ -261,9 +261,9 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `redis_url` / `celery_*` | redis:6379 | Job queue. |
 | `modal_token_id` / `modal_token_secret` | "" | Enables the Modal GPU path for ball tracking *and* pose. |
 | `allow_stub_detections` | `false` | Lets the pose-first fallback return **fabricated** clips when no pose runtime is available. Development only — the worker persists what it returns. Kept separate from `debug` on purpose, so a shared dev flag can't grant it. |
-| `max_upload_bytes` | 2 GB | Upload size cap. Served to the web app by `GET /games/upload-config` so the advertised limit can't drift from the enforced one. |
+| `max_upload_bytes` | 8 GB | Upload size cap. Served to the web app by `GET /games/upload-config` so the advertised limit can't drift from the enforced one. |
 | `single_put_max_bytes` / `upload_part_size_bytes` | 100 MiB / 100 MiB | Below the threshold an upload is one presigned PUT; above it, multipart with parts this size. |
-| `upload_url_ttl_seconds` | `21600` (6 h) | Lifetime of a presigned upload URL — must cover a whole upload on a slow uplink. |
+| `upload_url_ttl_seconds` | `43200` (12 h) | Lifetime of a presigned upload URL — must cover a whole upload on a slow uplink. |
 | `abandoned_upload_hours` | `24` | Upload tickets never completed are swept (row deleted, multipart aborted) on the owner's next presign. |
 | `max_upload_duration_seconds` | `14400` (4 h) | Longest single video accepted. Checked at presign against the client-declared length, then again by the worker against the probed one. |
 | `quota_window_hours` / `quota_max_games_per_window` / `quota_max_minutes_per_window` | `24` / `5` / `360` | Per-user rolling processing quota (cost guardrail — GPU inference is ~$0.25 per hour of footage). Both caps apply. Counted from the `upload_events` ledger, so deleting a game does not refund a slot. A duration the file size contradicts (missing, `0`, or physically impossible for the byte count) is priced from the size instead of trusted, and settled to the probed value by the worker. `GET /games/upload-config` returns the limits plus the caller's remaining allowance. |

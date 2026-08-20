@@ -51,7 +51,7 @@ production deploy existed.
 |---|---|---|
 | vCPU | 2 | ffmpeg cutting + OpenCV frame work, one game at a time |
 | RAM | 2–4 GB | redis + api + worker together; no torch since CF-164 |
-| Disk | 40–80 GB | 2 GB upload cap × transient working files (no model cache) |
+| Disk | 80–120 GB | the 8 GB upload cap × transient working files — the worker pulls the whole source to a tempdir and writes clips plus any condensed cut alongside it, ~20 GB in flight per cap-sized game (no model cache) |
 
 A **Hetzner CPX21 (3 vCPU / 4 GB, ~€8/mo)** or a DigitalOcean / EC2 equivalent
 is plenty; the older 8 GB recommendation here was sized for torch. No GPU on

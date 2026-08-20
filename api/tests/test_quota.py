@@ -84,7 +84,28 @@ def test_disallowed_content_type_is_415():
 def test_oversize_file_is_413_and_names_the_limit():
     code, message = upload(status(), size_bytes=3 * GB)
     assert code == 413
-    assert "2.0 GB" in message
+    assert "2 GB" in message
+
+
+@pytest.mark.parametrize(
+    ("num_bytes", "expected"),
+    [
+        (8 * GB, "8 GB"),
+        (int(1.5 * GB), "1.5 GB"),
+        (12 * GB, "12 GB"),
+        (500 * 1024**2, "500 MB"),
+        # Half cases: this is where Python's round-half-to-even would part
+        # company with the dropzone's toFixed and print a different number for
+        # the same limit — the CF-167 drift in smaller print.
+        (int(10.5 * GB), "11 GB"),
+        (int(2.25 * GB), "2.3 GB"),
+    ],
+)
+def test_fmt_size_matches_the_dropzone(num_bytes, expected):
+    """Values verified against fmtLimit in web/src/components/UploadZone.tsx.
+    The two formatters must agree or the advertised and enforced limits read
+    as different numbers again."""
+    assert quota_service.fmt_size(num_bytes) == expected
 
 
 def test_at_exactly_the_size_limit_is_allowed():

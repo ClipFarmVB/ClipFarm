@@ -129,8 +129,8 @@ separate motion pass.
   signed into the URL, so R2 itself rejects a mismatch. Size cannot be signed
   (S3/R2 ignore Content-Length as a query parameter), which is why the HEAD exists.
   Files over 100 MiB use multipart — not for the 5 GiB single-PUT ceiling, which the
-  2 GB cap keeps out of reach, but so a dropped connection retries one part instead
-  of the whole file. XHR (not fetch) on the frontend for upload progress.
+  100 MiB threshold keeps out of reach, but so a dropped connection retries one part
+  instead of the whole file. XHR (not fetch) on the frontend for upload progress.
 - **Auth:** Supabase issues JWTs; the API verifies them (JWKS), never handles
   passwords. Next.js middleware guards routes server-side.
 - **Migrations:** Alembic. The api container's start command applies them automatically
