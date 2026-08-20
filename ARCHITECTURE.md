@@ -14,16 +14,23 @@ between rallies removed.
 
 ```
 Browser (Next.js 16, React 19)
-   │  Supabase JWT in Authorization header
-   ▼
-FastAPI (async, SQLAlchemy 2.0 + asyncpg) ──► Postgres (Supabase)
-   │  enqueue                                   ▲
-   ▼                                            │ sync engine (no event loop in Celery)
-Celery worker (Redis broker, solo pool) ────────┘
-   │  ML pipeline (ml/pipeline/*)
-   ▼
+   │  Supabase JWT in Authorization header            video bytes (presigned PUT)
+   ▼                                                             │
+FastAPI (async, SQLAlchemy 2.0 + asyncpg) ──► Postgres (Supabase)│
+   │  enqueue                                   ▲                │
+   ▼                                            │ sync engine    │
+Celery worker (Redis broker, solo pool) ────────┘                │
+   │  ML pipeline (ml/pipeline/*)                                │
+   ▼                                                             ▼
 Cloudflare R2 (S3 API): raw videos, clips, thumbs, condensed videos, ball cache
 ```
+
+- **Uploads bypass the api entirely.** `POST /games/uploads` validates the declared
+  type and size and returns presigned URLs; the browser PUTs to R2; `POST
+  /games/{id}/uploads/complete` HEADs the object and only then enqueues the job.
+  The api handling multi-GB bodies was both a resource cost and a hard blocker for
+  serverless hosting (Modal caps request bodies at 4 GiB). It also moves the
+  enforcement point *before* the transfer instead of after it.
 
 - **Monorepo**: `api/` (FastAPI + Celery), `ml/` (pure pipeline code), `web/` (Next.js
   app-router).
@@ -41,7 +48,7 @@ enhancement degrades instead of killing the run:
 | 0 | Audio RMS envelope (ffmpeg → numpy) | Computed once (~seconds), reused by stages 2 and 4 |
 | 1 | Ball tracking (Roboflow model) → contacts → rally windows | Primary signal: physics-based, occlusion-tolerant, no GPU |
 | 2 | Highlight scoring (cheer + rally shape [+ CLIP]) → drop low scorers | Precision gate *before* expensive pose so pose only runs on keepers |
-| 3 | YOLOv8-pose inside surviving windows → refine action labels | Pose is the most expensive signal; scope it to windows |
+| 3 | YOLOv8-pose inside surviving windows → refine action labels | Pose is the most expensive signal; scope it to windows — and run it on Modal GPU (CF-164) |
 | 4 | Audio confidence weighting | Cheap adjustment, no filtering |
 | 5 | Cut clips (ffmpeg), upload to R2, persist rows | |
 | 6 | *(opt-in)* Condensed dead-time-removed video | See below; uses the **pre-gate** stage-1 signal |
@@ -115,25 +122,45 @@ separate motion pass.
 - **Object storage URLs are stored public-form, served presigned.** DB rows hold
   `{r2_public_url}/{key}`; routers convert to time-limited presigned URLs on read.
   Storage stays private; links expire; the DB never holds secrets.
-- **Uploads stream through the API with a hard cap.** `LimitedReader` wraps the
-  request stream and raises past N bytes — enforces the limit even when
-  Content-Length is absent. XHR (not fetch) on the frontend for upload progress.
+- **Uploads go browser → R2 directly, presigned** (CF-163). The api validates the
+  declared type and size, hands back presigned URLs, and confirms the object with a
+  HEAD before enqueueing — so the limit is enforced *before* the transfer rather
+  than while proxying it, and a failed upload never becomes a job. Content type is
+  signed into the URL, so R2 itself rejects a mismatch. Size cannot be signed
+  (S3/R2 ignore Content-Length as a query parameter), which is why the HEAD exists.
+  Files over 100 MiB use multipart — not for the 5 GiB single-PUT ceiling, which the
+  2 GB cap keeps out of reach, but so a dropped connection retries one part instead
+  of the whole file. XHR (not fetch) on the frontend for upload progress.
 - **Auth:** Supabase issues JWTs; the API verifies them (JWKS), never handles
   passwords. Next.js middleware guards routes server-side.
-- **Migrations:** Alembic, applied automatically by the api container's start command
-  (`alembic upgrade head && uvicorn`). Destructive drops use `IF EXISTS` because dev
-  databases drift (008 hit a missing index that 005 claimed to create).
+- **Migrations:** Alembic. The api container's start command applies them automatically
+  *only against a local database* (`scripts/auto_migrate.py`, CF-189); a shared or
+  production target is migrated deliberately instead — Render's `preDeployCommand`, or
+  a person running `alembic upgrade head` once. Destructive drops use `IF EXISTS`
+  because dev databases drift (008 hit a missing index that 005 claimed to create).
 
 ## Operational decisions
 
-- **CPU-only torch in Docker** (`--index-url .../whl/cpu`): several GB smaller than
-  the CUDA build; GPU work is delegated to Modal instead of shipped in the image.
-- **Pinned `inference==1.3.3`** (CF-33): unpinned, pip's resolver backtracked to an
-  ancient version that predates the ball model's architecture and broke it at runtime.
-  Lesson: resolver backtracking can "succeed" into a broken state; pin what matters.
-- **arm64 build fix:** `zxing-cpp` has no arm64 wheel, so Apple Silicon builds compile
-  it from source — `build-essential`/`cmake` are installed and purged *inside the same
-  Docker layer* so the final image stays lean (same-layer delete = zero size cost).
+- **No ML runtime in the server image at all** (CF-164). This started as
+  "CPU-only torch" (`--index-url .../whl/cpu`) to avoid shipping CUDA, then went
+  further: with ball tracking (CF-11) and pose (CF-164) both on Modal, torch,
+  ultralytics, transformers and Roboflow `inference` leave the image entirely.
+  What that buys is a **`starter` (512 MB) Render worker instead of `standard`
+  (2 GB)** — the image was sized by its heaviest import, not its workload — and,
+  because pose now has a GPU, the full-quality config (`yolov8s-pose` @ 1280)
+  that a 2 GB CPU box could not afford.
+
+  It also removes two long-standing build hazards along with the packages that
+  caused them, both worth remembering if an ML dependency is ever added back:
+  `inference` had to be **pinned to 1.3.3** (CF-33) because pip's resolver
+  backtracked to a version predating the ball model's architecture — resolver
+  backtracking can "succeed" into a broken state; and its transitive `zxing-cpp`
+  has no arm64 wheel, so Apple Silicon builds compiled it from source behind a
+  same-layer `build-essential`/`cmake` install-and-purge.
+
+  The cost is that a Modal outage no longer degrades into a slow local run. The
+  local code paths all still exist and still work against `ml/requirements.txt`;
+  they are simply not installed in the deployed image.
 - **boto3 socket timeouts** (CF-32): with a solo worker pool, one hung S3 transfer
   blocks the entire queue; connect/read timeouts + retries turn hangs into retryable
   failures.

@@ -9,7 +9,7 @@
 > **Don't use it as a staging environment.** Staging is only useful with parity,
 > and this differs from Render prod in every deployment-shaped dimension:
 > runtime (compose vs Render services), secrets (plaintext `.env.docker` vs a
-> secret store), migration timing (on boot vs `preDeployCommand`), TLS, and Key
+> secret store), migration timing (a manual step vs `preDeployCommand`), TLS, and Key
 > Value persistence. It would pass while prod fails and vice versa. A real
 > staging environment is **CF-152**, as a second service group in the Render
 > Blueprint.
@@ -29,11 +29,17 @@ production deploy existed.
 
 ## 0. Prerequisites (read first)
 
-- **Modal must be configured.** Ball tracking (~30 min/game) offloads to Modal's
-  T4 GPU when `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` are set. With them, this box
-  only needs CPU. **Without them, this box does local CPU tracking (~28–42 min)
-  and a small VPS will be slower than your laptop.** Deploy the Modal app first
-  if you haven't: `modal deploy ml/modal_app.py`.
+- **Modal must be configured.** Since CF-164 this is a hard requirement rather
+  than a speed knob: ball tracking *and* pose both run on Modal's T4 GPU, and
+  the image no longer ships torch to fall back to. Without
+  `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` the box still cuts clips, but every
+  game comes out with trajectory-only labels — and if the ball model is
+  unreachable too, the game fails outright rather than inventing clips. Deploy
+  both Modal apps first if you haven't:
+
+  ```bash
+  modal deploy ml/modal_app.py && modal deploy ml/modal_pose.py
+  ```
 - Credentials on hand for `.env.docker`: Supabase (`DATABASE_URL` pooler string,
   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`), Cloudflare R2 (`R2_*`), Roboflow
   (`ROBOFLOW_API_KEY`), Modal (`MODAL_TOKEN_*`), and a `JWT_SECRET`.
@@ -43,12 +49,19 @@ production deploy existed.
 
 | Resource | Recommendation | Why |
 |---|---|---|
-| vCPU | 2–4 | pose (YOLOv8-pose) + ffmpeg run on CPU, one game at a time |
-| RAM | 4–8 GB | torch + inference + OpenCV frames; 8 GB comfortable |
-| Disk | 40–80 GB | 2 GB upload cap × transient working files + ~200 MB model cache |
+| vCPU | 2 | ffmpeg cutting + OpenCV frame work, one game at a time |
+| RAM | 2–4 GB | redis + api + worker together; no torch since CF-164 |
+| Disk | 40–80 GB | 2 GB upload cap × transient working files (no model cache) |
 
-A **Hetzner CPX31 (4 vCPU / 8 GB / 160 GB, ~€15/mo)** or a DigitalOcean /
-EC2 equivalent is plenty. No GPU on this box — Modal owns the GPU stage.
+A **Hetzner CPX21 (3 vCPU / 4 GB, ~€8/mo)** or a DigitalOcean / EC2 equivalent
+is plenty; the older 8 GB recommendation here was sized for torch. No GPU on
+this box — Modal owns every model.
+
+> This asks for more RAM than the Render worker's `starter` (512 MB) plan, which
+> is not a contradiction: **this box runs all three services in one place**
+> (redis, api and the worker), where Render splits them across instances. For
+> the worker process alone the peak is the ~150 MB audio energy envelope; see
+> the headroom note in `render.yaml`.
 
 ---
 
@@ -128,19 +141,25 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build re
 ```
 
 This builds the shared api/worker image on the box, starts redis (private),
-the API (which runs `alembic upgrade head` then uvicorn), and the Celery
-worker (`--pool=solo`, one job at a time).
+the API, and the Celery worker (`--pool=solo`, one job at a time).
 
-> **⚠ Migration coordination.** The API runs `alembic upgrade head` against
-> Supabase on every boot. Supabase is the shared database — booting this box
-> can advance the shared schema. Make sure the branch you deploy is at the
-> intended migration head and coordinate with the team, per the "shared DB"
-> warning in the README.
+> **⚠ Migrations do not run here.** `DATABASE_URL` on this box points at
+> Supabase, and the api's boot guard (`scripts/auto_migrate.py`, CF-189) refuses
+> to migrate a non-local host — so booting this box no longer advances the shared
+> schema as a side effect. When the branch you deploy carries a new revision,
+> apply it deliberately, once, before or right after bringing the stack up:
 >
-> CF-68 (#98) made migrations a deliberate deploy step — but **only on the Render
-> path**, via `preDeployCommand`. This box still migrates on every boot and
-> always will; that is one of the standing parity gaps listed at the top of this
-> file, not a temporary state waiting on a fix. Coordinate every time.
+> ```bash
+> docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api alembic upgrade head
+> ```
+>
+> Coordinate it with the team, per the "shared DB" warning in the README.
+>
+> CF-68 (#98) made migrations a deliberate step on the Render path via
+> `preDeployCommand`; CF-189 closes the same hole here, from the other side — by
+> refusing rather than by scheduling. The paths still differ in *timing*: Render
+> applies them automatically once per deploy, this box waits for the command
+> above. That remains a parity gap, just no longer a silent one.
 
 ## 6. Verify end-to-end
 
@@ -157,9 +176,10 @@ Then the real test:
 
 1. Upload a game (from the frontend pointed at this API, or via the upload
    endpoint) and watch it move `queued → processing → ready`.
-2. Confirm tracking ran **on Modal** — check the Modal dashboard for a
-   `clipfarm-ball-tracking` invocation, and the worker log should say
-   *"Ball tracking ran on Modal GPU"*, **not** a local-CPU tracking run.
+2. Confirm both GPU stages ran **on Modal** — the dashboard should show a
+   `clipfarm-ball-tracking` and a `clipfarm-pose` invocation, and the worker log
+   should say *"Ball tracking ran on Modal GPU"* and *"Pose refinement ran on
+   Modal GPU"*, **not** a *"falling back to local CPU"* line.
 3. Confirm clips + thumbnails appear in R2 and `Clip` rows in Supabase.
 4. **Close your laptop.** Upload again (or re-enqueue). It should still process
    — that is the whole point of CF-41.
@@ -193,20 +213,17 @@ Domains, TLS and a proper edge are handled for you on the production path
 
 ## Known limitations & related tickets
 
-- **Pose runs at CPU-tuned quality on this box (deliberate).** The worker uses
-  `yolov8n-pose @ 640, every 8th frame` rather than the `app/config.py` defaults
-  (`yolov8s-pose @ 1280, every 4th frame`). This box is CPU-only by design —
-  Modal owns the GPU stage (ball tracking), and pose is the only model still
-  running locally, so the heavier settings would be badly slow here.
+- **Pose now runs full-quality, on Modal (CF-164).** This box used to pin
+  `yolov8n-pose @ 640, every 8th frame` in `docker-compose.prod.yml` because
+  pose was the one model still running on its CPU. Pose moved to the GPU, so
+  that block is gone and `app/config.py`'s defaults (`yolov8s-pose @ 1280`,
+  every 4th frame) are what runs — better labels *and* less local work.
 
-  **What it costs:** pose only *refines action labels* within rally windows that
-  already passed the highlight gate. It does **not** decide which clips get made
-  — that's ball tracking + scoring, both unaffected. So the tradeoff is somewhat
-  less accurate action labels, **not** missed highlights.
-
-  The values are set explicitly in `docker-compose.prod.yml` so they're a visible
-  choice. To run full-quality pose, remove that block **and** size the box up (or
-  move pose to GPU) — doing one without the other just makes processing slow.
+  **What it costs:** a Modal outage no longer degrades gracefully into a slow
+  local run, because the image has no torch. Clips are still cut, from ball
+  contacts; only the action labels suffer. Re-adding a CPU path means installing
+  `ml/requirements.txt` into the image **and** sizing the box back up — doing
+  one without the other just makes processing slow or OOM.
 
 - **One game at a time.** Celery runs `--pool=solo` / `prefetch=1`; a second
   upload queues behind the first. Concurrency + horizontal scaling is **CF-65**.

@@ -23,6 +23,16 @@ envVarGroups:
     envVars:
       - key: DATABASE_URL              # Supabase pooler URL, postgresql+asyncpg://…  (Pro tier — see CF-18)
         sync: false
+      # The worker's per-game lock is a session-scoped Postgres advisory lock
+      # (CF-184) and needs a SESSION-mode connection — Supabase's
+      # transaction-mode pooler (port 6543) can serve consecutive statements
+      # from different backends, which silently cannot hold one. Leave unset
+      # while DATABASE_URL is the session-mode/direct connection (port 5432);
+      # add it in the dashboard if DATABASE_URL ever moves to 6543. The worker
+      # refuses to process rather than run under a lock that does not hold, so
+      # the symptom is loud: `LockNotSessionScoped` in the worker log.
+      # - key: LOCK_DATABASE_URL
+      #   sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY # server-only secret
@@ -111,7 +121,7 @@ services:
         generateValue: true
       - key: API_BASE_URL             # this service's own public URL (custom domain or *.onrender.com)
         sync: false
-      - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.app
+      - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.ca
         sync: false
       - key: REDIS_URL
         fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
@@ -121,32 +131,41 @@ services:
         fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
 
   # ── Worker (Celery) ────────────────────────────────────────────────────────
-  # `standard` (2 GB) — torch + opencv + ffmpeg in one process makes `starter`
-  # (512 MB) tight regardless of pose settings. Ships with the light POSE_*
-  # config below (see note there) so the box has real headroom on day one.
-  # A disk pins the model cache (~114 MB ball model + pose weights) across
-  # deploys; a disk means a single instance — horizontal scaling is CF-65.
+  # `starter` (512 MB) since CF-164. It was on `standard` (2 GB) because torch +
+  # ultralytics + Roboflow `inference` sat in the image; with ball tracking
+  # (CF-11) and pose (CF-164) both on Modal, none of them ship any more and what
+  # is left in this process is ffmpeg, opencv, numpy and boto3.
+  #
+  # If a future change puts a model back in the image, put this back to
+  # `standard` in the same commit — a torch import on 512 MB OOMs the box.
+  # api/tests/test_pose_modal.py pins the two together, following `pip install -r`
+  # so the check isn't fooled by a requirements file.
+  #
+  # Headroom, since 512 MB is not a lot and this has NOT been measured on a real
+  # game yet (the card's acceptance is exactly that check, on deploy): the
+  # largest remaining allocation is the audio energy envelope — 16 kHz mono
+  # float32 is ~150 MB of PCM for a 40-minute game. CF-164 streams that through
+  # a temp file instead of subprocess capture_output, which was holding the
+  # finished bytes and the chunk list they were accumulated from at the same
+  # time; the peak is now one array rather than roughly two. If a long game does
+  # OOM here, that envelope is the first thing to look at, not ffmpeg.
+  #
+  # No disk either: the model cache it pinned (~114 MB ball model + pose
+  # weights) has nothing to hold now that no weights are downloaded here. That
+  # also un-pins the single instance a disk forced, so horizontal scaling
+  # (CF-65) is a numInstances change rather than a migration.
   - type: worker
     name: clipfarm-worker
     runtime: docker
     repo: https://github.com/ClipFarmVB/ClipFarm
     branch: main
     region: oregon
-    plan: standard
+    plan: starter
     numInstances: 1
     dockerfilePath: ./Dockerfile.api
     dockerContext: .
     # A script, not an inline command — same reason as the api above (CF-170).
     dockerCommand: /app/scripts/render-start-worker.sh
-    # NOTE: the image runs as non-root `appuser` (uid 1000). A Render disk can
-    # mount root-owned, which would mask the Dockerfile's build-time chown of
-    # /models and make weight writes fail. Verify on first deploy (see DEPLOY_RENDER.md
-    # "model cache" check); if writes fail, the cache is an optimization only —
-    # point the MODEL_* vars off the disk to fall back to per-deploy re-download.
-    disk:
-      name: model-cache
-      mountPath: /models
-      sizeGB: 1
     # Off for the same reason as the api, plus one of its own: the worker shares
     # the api's models, so auto-deploying it while the api waits for a manual
     # deploy would run new task code against the old schema. Deploy the two
@@ -154,9 +173,24 @@ services:
     autoDeploy: false
     envVars:
       - fromGroup: clipfarm-shared
+      # Pinned here as well as on the api. The worker inherits clipfarm-shared,
+      # and that group exists precisely to set things for both services — so any
+      # dev-fallback flag added there arrives here too, on the process that
+      # writes to the database. ALLOW_STUB_DETECTIONS is what actually gates
+      # fabricated clips (see api/app/config.py); this keeps the general flag
+      # from drifting in behind it.
+      - key: DEBUG
+        value: "false"
       - key: ROBOFLOW_API_KEY
         sync: false
-      - key: MODAL_TOKEN_ID           # blank = run inference locally (slow); set to offload to Modal GPU
+      # NOT optional since CF-164. Ball tracking and pose both run on Modal and
+      # this image carries no torch to fall back to, so an unset token means
+      # every game degrades to trajectory-only labels. If the ball model is
+      # unreachable too, the game FAILS loudly rather than producing anything:
+      # the pose-first fallback refuses its local path, because without
+      # ultralytics run_detection() returns fabricated stub clips and this
+      # pipeline would persist them as real highlights.
+      - key: MODAL_TOKEN_ID
         sync: false
       - key: MODAL_TOKEN_SECRET
         sync: false
@@ -166,27 +200,16 @@ services:
         fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
       - key: CELERY_RESULT_BACKEND
         fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
-      # Persistent model-weight cache (CF-40) — all under the mounted disk.
-      - key: MODEL_CACHE_DIR
-        value: /models/roboflow
-      - key: INFERENCE_HOME
-        value: /models/roboflow
-      - key: MODELS_DIR
-        value: /models
-      - key: YOLO_CONFIG_DIR
-        value: /models/ultralytics
-      # Pose settings: start on the LIGHT config — the same one the dev stack has
-      # actually exercised. app/config.py's defaults (yolov8s-pose @ 1280, every
-      # 4th frame) are higher quality but have never run on a 2 GB box, and the
-      # first production deploy is a bad place to discover an OOM. Raise these
-      # once the worker's real memory headroom has been measured; it's a config
-      # change + redeploy, no rebuild.
-      - key: POSE_MODEL
-        value: yolov8n-pose.pt
-      - key: POSE_IMGSZ
-        value: "640"
-      - key: POSE_SKIP_FRAMES
-        value: "8"
+      # No MODEL_CACHE_DIR / INFERENCE_HOME / MODELS_DIR / YOLO_CONFIG_DIR here
+      # any more (CF-40's cache): nothing in this image loads a model, so there
+      # are no weights to cache. Modal owns the weights — pose's are baked into
+      # the clipfarm-pose image, ball's live on the clipfarm-model-cache Volume.
+      #
+      # No POSE_* overrides either. They pinned the LIGHT config
+      # (yolov8n-pose @ 640, every 8th frame) because yolov8s @ 1280 was
+      # unproven on a 2 GB CPU box. Pose runs on a T4 now, so app/config.py's
+      # full-quality defaults are what production gets — which is the label
+      # quality the CF-55 eval baselines were measured against.
 
   # ── Web (Next.js) ──────────────────────────────────────────────────────────
   # Native Node runtime (not Docker) — Render runs `next start` and injects PORT.
@@ -219,7 +242,7 @@ services:
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false
-      - key: NEXT_PUBLIC_API_URL      # the API's public URL, e.g. https://api.clipfarm.app
+      - key: NEXT_PUBLIC_API_URL      # the API's public URL, e.g. https://api.clipfarm.ca
         sync: false
       # Error monitoring (CF-89) — separate DSN from the api/worker project.
       - key: NEXT_PUBLIC_SENTRY_DSN   # Sentry → clipfarm-web → Settings → Client Keys (DSN)
