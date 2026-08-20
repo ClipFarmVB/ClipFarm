@@ -5,7 +5,7 @@ import logging
 import tempfile
 import uuid
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -14,6 +14,11 @@ from celery.exceptions import Retry
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+# Key prefix for game source videos (see storage.game_raw_key). Nothing else
+# lives under it — the ball-position cache has its own prefix — so the
+# retention sweep can treat every object here as a raw upload.
+RAW_PREFIX = "raw/"
 
 
 def _file_md5(path: Path) -> str:
@@ -373,6 +378,116 @@ def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
         raise PermanentPipelineError(str(exc)) from exc
 
 
+def _sweep_expired_raw_uploads() -> None:
+    """
+    Delete raw uploads older than `raw_upload_retention_days` (CF-194).
+
+    Two passes, and the second is what makes this safe to run repeatedly:
+
+    1. **Rows.** Every game past the cutoff has its `raw_video_url` cleared —
+       guarded on the URL the sweep saw, so a row that changed underneath is
+       left alone. Nothing is deleted from storage in this pass.
+    2. **Objects.** Every object under `raw/` older than the cutoff that no game
+       row still references is deleted, in batches. That covers the keys pass 1
+       just released *and* any object orphaned by an earlier failed delete or a
+       worker killed between the two passes, so the sweep converges instead of
+       leaking: null-first ordering can only ever cost storage, and this is what
+       reclaims it. Two independent guards protect a live upload — it is
+       referenced by its row (`uploading` rows included, from the moment the
+       ticket is issued), and it is newer than the cutoff.
+
+    Order matters between the passes. Deleting first and clearing second can
+    leave a row pointing at a missing object, which turns every later trim into
+    a download failure plus two Celery retries — a broken feature rather than a
+    storage cost.
+
+    Purging a raw video is not free: `recut_clip` re-cuts from it, so trimming a
+    clip stops working once its game's source expires. That is the deliberate
+    trade (the retention window is how long trims stay available) — the API
+    reports it via ClipOut.source_available so the UI can say so.
+
+    **Where this runs.** At the end of a successful process_game run: no cron or
+    celery-beat exists in this stack, and the worker is the one place already
+    off the request path. `_sweep_abandoned_uploads` (CF-163) makes the other
+    choice — the owner's next presign — but that is per-user and only reaches
+    people who are still uploading. Retention is a global cost, so it wants a
+    global trigger. Both share the same limitation: enforcement stops while the
+    system is idle, which is also when the bill stops growing. A beat schedule
+    is the real fix and is a follow-up, not this card.
+
+    Reporting must never break processing: every failure is logged and
+    swallowed, and a partial sweep resumes on the next run.
+    """
+    from app.config import settings as _cfg
+    from app.services import storage as s3
+    from app.workers._sync_db import (
+        sync_clear_raw_video_url,
+        sync_expired_raw_uploads,
+        sync_referenced_raw_keys,
+    )
+
+    days = _cfg.raw_upload_retention_days
+    if days <= 0:  # 0 = keep forever
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # ── Pass 1: release expired rows ─────────────────────────────────────────
+    try:
+        expired = sync_expired_raw_uploads(cutoff)
+    except Exception as exc:
+        logger.warning("Raw-upload retention: could not list expired rows (%s)", exc)
+        return
+
+    released = 0
+    for expired_gid, raw_url in expired:
+        try:
+            if sync_clear_raw_video_url(expired_gid, raw_url):
+                released += 1
+        except Exception as exc:
+            logger.warning(
+                "Raw-upload retention: could not release game %s (%s)", expired_gid, exc
+            )
+
+    # ── Pass 2: reclaim unreferenced objects ─────────────────────────────────
+    # The reference set is the guard, so a failure to build it aborts the pass.
+    # Deleting against a partial set could destroy a live upload.
+    try:
+        referenced = sync_referenced_raw_keys()
+    except Exception as exc:
+        logger.warning(
+            "Raw-upload retention: released %d row(s), but could not read the "
+            "reference set — leaving objects for the next sweep (%s)", released, exc,
+        )
+        return
+
+    try:
+        stale = [
+            obj["key"]
+            for obj in s3.list_objects(RAW_PREFIX)
+            if obj["last_modified"] < cutoff and obj["key"] not in referenced
+        ]
+    except Exception as exc:
+        logger.warning("Raw-upload retention: could not list %s (%s)", RAW_PREFIX, exc)
+        return
+
+    if not stale:
+        return
+
+    failed = s3.delete_files(stale)
+    if failed:
+        # Not lost: they stay unreferenced and past the cutoff, so the next
+        # sweep finds them again.
+        logger.warning(
+            "Raw-upload retention: %d object(s) could not be deleted, retrying next sweep",
+            len(failed),
+        )
+    logger.info(
+        "Raw-upload retention: released %d row(s), reclaimed %d object(s) older than %d day(s)",
+        released, len(stale) - len(failed), days,
+    )
+
+
 @celery_app.task(bind=True, name="process_game", max_retries=2, default_retry_delay=60)
 def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = False):
     """
@@ -573,8 +688,9 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     ),
                 )
                 # The object is rejected and will never be processed, so it is
-                # pure stored cost — nothing else reclaims it (the retention
-                # sweep is still a backlog item). Best-effort: a failed delete
+                # pure stored cost, and the retention sweep would not reclaim
+                # it for another `raw_upload_retention_days`. Best-effort: a
+                # failed delete
                 # must not turn a clean rejection into a retried task.
                 try:
                     s3.delete_file(r2_key)
@@ -949,3 +1065,16 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         raise self.retry(exc=exc)
     finally:
         lock.release()
+
+    # CF-194: enforce raw_upload_retention_days. Deliberately out here — past
+    # the `finally`, so the advisory lock is already released, and past the
+    # TemporaryDirectory, so the game's working files are gone before a sweep
+    # of unrelated backlog holds this task open. Reached on the success path
+    # only: every abandon path above returns, and a failure re-raises.
+    try:
+        _sweep_expired_raw_uploads()
+    except Exception as sweep_err:
+        # Belt-and-braces — the sweep swallows its own failures, and the game
+        # is already `ready`, so nothing here may turn a finished run into a
+        # retried one.
+        logger.warning("Raw-upload retention sweep failed (%s)", sweep_err)
