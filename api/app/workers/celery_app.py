@@ -44,7 +44,9 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     # Redis default is 3600s: a task longer than that is redelivered while it's
-    # still running (CF-45). Raise it above worst-case task time.
+    # still running (CF-45). Since CF-184 the advisory lock — not this timeout —
+    # is what stops the resulting concurrent double-processing, so it is no longer
+    # sized to outrun the job; config.py has what it now trades off (CF-192).
     broker_transport_options={"visibility_timeout": settings.celery_visibility_timeout},
     # ── CF-150: don't store task results ──────────────────────────────────────
     # Nothing reads them: progress and terminal state are polled from Postgres

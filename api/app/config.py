@@ -157,10 +157,31 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
     # Worker redelivery safety (CF-65a). Redis' default visibility timeout is
-    # 3600s, so a task longer than that is silently redelivered — the CF-45
-    # duplicate-processing root cause. Set it above worst-case task time. Note
-    # the local-CPU fallback is slow (~1.3–2x realtime tracking), so a long match
-    # with Modal unavailable can run for hours; size for your slowest path.
+    # 3600s: a task still running past it is redelivered while it runs. Before
+    # CF-184 that was the CF-45 duplicate-processing root cause, and the fix was
+    # "size above worst-case task time" — the local-CPU fallback runs at ~1.3–2x
+    # realtime tracking, so a long match with Modal down can run for hours.
+    #
+    # CF-192 revisited this when the CF-167 upload cap went 2 GB → 8 GB, which
+    # admits longer videos and so longer worst-case runs. It does NOT follow that
+    # this must rise to match, because CF-184 changed what the number does. The
+    # session-scoped advisory lock (app/workers/locks.py) — not this timeout — is
+    # now what makes concurrent double-processing impossible: a redelivery finds
+    # the lock held by the still-running original and no-ops. Correctness no
+    # longer depends on the timeout outrunning the job.
+    #
+    # What it still bounds is a cost/latency trade-off, and both sides want it
+    # LOW, not high:
+    #   • too low → a job that outruns it is redelivered wastefully. Harmless
+    #     (lock + CF-37 idempotent refresh) and cheap on any re-run, since ball
+    #     positions are cached (CF-11), but still wasted scheduling.
+    #   • too high → on the Redis transport a hard-killed worker's task is only
+    #     restored to the queue after this timeout elapses (there is no push
+    #     cancel), so this doubles as the ceiling on how long a Render-deploy kill
+    #     leaves a game stranded in `processing` before the requeue runs.
+    # 2h balances them: comfortably past the Modal path (single-digit minutes) and
+    # a tolerable recovery ceiling. Raising it to chase the CPU-fallback worst case
+    # would only lengthen that recovery, for a path that is already the rare one.
     celery_visibility_timeout: int = 7200    # 2h
     # CF-184: the per-game lock is a session-scoped Postgres advisory lock
     # (app/workers/locks.py), so it has no TTL to tune against the timeout above

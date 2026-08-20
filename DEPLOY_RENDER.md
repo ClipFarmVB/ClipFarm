@@ -363,6 +363,13 @@ What a deploy still costs is **the work in flight**: a requeued game restarts
 from the beginning, not from where it was killed. So deploying while a long
 match is processing is wasteful, not dangerous.
 
+The requeue is also not instant. Redis has no push-based cancel, so a killed
+worker's task is restored to the queue only once it has been unacked for the
+broker `visibility_timeout` (`celery_visibility_timeout`, 2h) — that is the
+ceiling on how long a killed game waits in `processing` before a new worker
+picks it up. It is deliberately not raised to cover the CPU-fallback worst case
+(CF-192): doing so would only stretch this recovery window.
+
 **How immediate "released" is.** A Render deploy stops the container, the socket
 closes, and the lock goes within milliseconds. The slow case is a connection
 *severed* without a close — host loss or a network partition — where the
