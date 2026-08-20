@@ -25,6 +25,7 @@ from app.config import (  # noqa: E402
     REQUIRED_IN_PRODUCTION,
     REQUIRED_IN_PRODUCTION_WORKER,
     Settings,
+    production_config_error,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -175,9 +176,14 @@ def test_empty_database_url_counts_as_missing(clean_env):
         _settings(**{k.lower(): v for k, v in env.items()})
 
     assert "DATABASE_URL" in str(exc.value)
-    assert str(exc.value).count("DATABASE_URL") == 1, (
-        "an empty DATABASE_URL must be reported once, not once per detection path"
-    )
+
+    # Reported once, not once per detection path. Asserted against the list
+    # rather than the rendered message, which mentions the variable again in its
+    # closing note about localhost defaults.
+    blank = _settings(
+        **{k.lower(): v for k, v in dict(env, ENVIRONMENT="development").items()}
+    ).model_copy(update={"environment": "production"})
+    assert blank.missing_in_production(REQUIRED_IN_PRODUCTION) == ["DATABASE_URL"]
 
 
 def test_required_names_are_real_fields_with_the_expected_env_names(clean_env):
@@ -326,3 +332,38 @@ def test_worker_guard_survives_celerys_exception_swallowing(clean_env, monkeypat
         signal.send(sender=None)
 
     assert "MODAL_TOKEN_ID" in str(exc.value)
+
+
+def test_every_required_variable_has_a_slot_in_the_env_template():
+    """A named failure only helps if the file you are sent to edit has somewhere
+    to put the answer (CF-172 review 3).
+
+    `docker-compose.prod.yml` runs the VPS api and worker in production mode, so
+    everything the guard requires is a hard boot requirement on that box — and
+    the box is configured entirely from `.env.docker`, copied from this
+    template. A required variable the template never mentions turns a clear
+    refusal back into a puzzle: the same failure class this change fixes,
+    displaced one level. Commented lines count; an operator needs the name and
+    the explanation, not an active default.
+    """
+    template = (REPO_ROOT / ".env.docker.example").read_text(encoding="utf-8")
+
+    for field in REQUIRED_IN_PRODUCTION + REQUIRED_IN_PRODUCTION_WORKER:
+        name = Settings.env_name_for(field)
+        assert name in template, (
+            f"{name} is required in production but .env.docker.example never "
+            "mentions it — the VPS operator gets a boot refusal naming a "
+            "variable their template has no slot for"
+        )
+
+
+def test_the_error_message_points_at_both_deploy_paths():
+    """Render and the VPS supply these differently, and the message is read on
+    both. Naming only `sync: false` and DEPLOY_RENDER.md sends a VPS operator to
+    a mechanism that does not exist on their box.
+    """
+    message = production_config_error(["DATABASE_URL"])
+
+    assert "DEPLOY_RENDER.md" in message
+    assert "DEPLOY.md" in message
+    assert ".env.docker" in message

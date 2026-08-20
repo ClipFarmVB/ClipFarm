@@ -72,19 +72,21 @@ LOCAL_DEFAULT_SENTINELS = {
 
 
 def production_config_error(missing: list[str]) -> str:
-    """The message both checks raise. Names the variables, and says where they
-    come from — the whole point of CF-172 is that the old symptom named
-    neither."""
+    """The message both checks raise. Names the variables and where they come
+    from on each deploy path — the whole point of CF-172 is that the old symptom
+    named neither, and a message that names only one path sends half its readers
+    to the wrong file.
+    """
     return (
         "ENVIRONMENT=production but these required settings are not set: "
         + ", ".join(missing)
-        + ". On Render they are declared `sync: false` — in the "
-        "clipfarm-shared env group or in the service's own envVars — which "
-        "means Render does not create them at all, so they stay absent until "
-        "someone adds them in the dashboard "
-        "(DEPLOY_RENDER.md § Fill the secrets)."
+        + ". On Render these are declared `sync: false`, which means Render "
+        "does not create them at all — they stay absent until someone adds "
+        "them in the dashboard (DEPLOY_RENDER.md § Fill the secrets). On the "
+        "VPS stack they come from .env.docker (DEPLOY.md § 4). Note that "
+        "DATABASE_URL and CORS_ORIGINS have working localhost defaults, so "
+        "\"unset\" here can mean the default is still in place."
     )
-
 
 
 class Settings(BaseSettings):
