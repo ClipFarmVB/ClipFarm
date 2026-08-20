@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.game import Game, GameStatus
 from app.models.clip import Clip, ActionType
+from app.models.upload_event import UploadEvent
 
 # Sync engine (Celery workers don't run in an asyncio loop)
 _sync_url = settings.database_url.replace("+asyncpg", "")
@@ -46,6 +47,10 @@ def sync_set_game_status(
         if status == "processing":
             game.progress = 0.0
             game.progress_stage = None
+            # A run starting clean clears whatever the last one left behind —
+            # otherwise a note from a previous failure (see
+            # sync_note_game_error) outlives it onto a game that goes `ready`.
+            game.error_message = None
         elif status == "ready":
             game.progress = 1.0
             game.progress_stage = None
@@ -53,6 +58,25 @@ def sync_set_game_status(
             game.processed_at = processed_at
         if error_message:
             game.error_message = error_message
+        s.commit()
+
+
+def sync_note_game_error(game_id: uuid.UUID, message: str):
+    """Record why a game is not progressing, without changing its status.
+
+    For the case where the *environment* is broken rather than the game: the row
+    stays where it is (`queued`, still runnable once the environment is fixed)
+    but says why it stalled, so stranded games can be listed —
+
+        SELECT id FROM games WHERE status = 'queued' AND error_message IS NOT NULL
+
+    — rather than existing only as log lines. Cleared when a run next starts.
+    """
+    with Session(_engine) as s:
+        game = s.get(Game, game_id)
+        if not game:
+            return
+        game.error_message = message
         s.commit()
 
 
@@ -66,19 +90,58 @@ def sync_set_game_progress(game_id: uuid.UUID, progress: float, stage: str | Non
         s.commit()
 
 
+def sync_set_original_duration(game_id: uuid.UUID, original_duration: float):
+    """Record the probed source duration.
+
+    Set for every run, not just condensed ones. This column holds only measured
+    values — the client's claim at upload time is kept out of it and lives in
+    `upload_events.charged_seconds` instead, so `original_duration` continues to
+    mean what its consumers assume.
+    """
+    with Session(_engine) as s:
+        game = s.get(Game, game_id)
+        if not game:
+            return
+        game.original_duration = original_duration
+        s.commit()
+
+
+def sync_settle_upload_charge(game_id: uuid.UUID, actual_seconds: float):
+    """Correct this game's quota charge to the probed duration (CF-91).
+
+    At accept time the api charges what the client declared, or the full
+    per-video maximum when it declared nothing. This is the correction that
+    makes the conservative default fair to honest clients — and that stops an
+    under-declared duration from sticking as the charge.
+    """
+    with Session(_engine) as s:
+        event = (
+            s.query(UploadEvent).filter(UploadEvent.game_id == game_id).one_or_none()
+        )
+        if not event:
+            return
+        event.charged_seconds = max(0.0, actual_seconds)
+        s.commit()
+
+
 def sync_set_condensed_result(
     game_id: uuid.UUID,
     *,
     condensed_video_url: str,
-    original_duration: float,
     condensed_duration: float,
 ):
+    """Record the condense stage's output.
+
+    `original_duration` is deliberately not set here: it is written for every
+    run as soon as the video is probed (see sync_set_original_duration), so
+    re-writing the same measurement on the condense path only created a second
+    place that had to agree.
+    """
     with Session(_engine) as s:
         game = s.get(Game, game_id)
         if not game:
             return
         game.condensed_video_url = condensed_video_url
-        game.original_duration = original_duration
         game.condensed_duration = condensed_duration
         s.commit()
 

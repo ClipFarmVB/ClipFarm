@@ -64,7 +64,7 @@ const STEPS = [
   {
     step: "01",
     title: "Upload footage",
-    body: "Drop any MP4, MOV, or AVI up to 15 GB. Processing starts immediately in the background.",
+    body: "Drop any MP4, MOV, MKV, or WebM. Processing starts immediately in the background.",
   },
   {
     step: "02",

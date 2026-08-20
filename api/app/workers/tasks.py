@@ -23,17 +23,29 @@ def _file_md5(path: Path) -> str:
     return h.hexdigest()
 
 
+class PermanentPipelineError(Exception):
+    """A failure that retrying cannot fix.
+
+    Celery retries this task twice by default, which is right for transient
+    trouble (a flaky download, a Modal blip) and pure waste for a condition that
+    is identical on every attempt — e.g. no pose runtime in the image. The
+    pose-first scan is the most expensive path in the pipeline, so re-running it
+    three times to reach the same conclusion costs real money and queue time.
+    """
+
+
 def _modal_configured() -> bool:
     from app.config import settings
     return bool(settings.modal_token_id and settings.modal_token_secret)
 
 
 def _will_attempt_modal(r2_key: str) -> bool:
-    """Whether ball tracking will try Modal GPU for this run.
+    """Whether the GPU stages will try Modal for this run.
 
-    Single source of truth for the condition below and in `_track_ball_cached`
-    so the progress bar's tracking span can't be mis-sized against the path the
-    pipeline actually takes.
+    Covers ball tracking (CF-11) and pose (CF-164) alike: both need a presigned
+    URL for the raw object, so both are gated on the same two facts. Single
+    source of truth for the call sites below so the progress bar's tracking span
+    can't be mis-sized against the path the pipeline actually takes.
     """
     return _modal_configured() and bool(r2_key)
 
@@ -185,10 +197,178 @@ def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start:
         raise self.retry(exc=exc)
 
 
-def _run_detection_local(video_path: str) -> list[dict]:
-    """Fallback: run detection locally (CPU, slow)."""
-    from ml.pipeline.detect import run_detection
-    return run_detection(video_path)
+def _json_safe(value):
+    """Plain-Python copy of a nested structure, with numpy scalars unwrapped.
+
+    The pipeline builds confidences with numpy arithmetic and the results leak
+    out as numpy scalars: `ball.py::classify_contact_action` computes
+    `min(0.88, 0.65 + sp_after / 1500.0)` where `sp_after` is an `np.hypot`
+    result, so the numpy operand wins the `min()` for any contact under
+    ~345 px/s, `round()` preserves the type, and it lands in the rally's
+    "confidence" via `_make_rally`.
+
+    In one process that is invisible. Across the Modal boundary it is a live
+    hazard: a numpy-2 pickle names `numpy._core`, which a numpy-1.x image cannot
+    import, so the call fails at *deserialization* and the caller sees only
+    "Modal failed — falling back to local CPU". With no ultralytics in this
+    image, pose then silently never runs: green deploy, one warning line,
+    trajectory-only labels. Worse, it is data-dependent — a fast enough contact
+    yields the plain 0.88 literal and the same code path works.
+
+    Matching pins fix it today (see Dockerfile.api); sending plain floats means a
+    future bump on either side cannot bring it back.
+    """
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    # numpy scalars and arrays, without importing numpy into this module.
+    # 0-d .tolist() yields a Python scalar; nd yields nested lists.
+    if hasattr(value, "dtype") and hasattr(value, "tolist"):
+        return _json_safe(value.tolist())
+    return value
+
+
+def _classify_windows_modal(r2_key: str, windows: list[dict]) -> list[dict]:
+    """
+    Pose-refine rally windows on Modal GPU (CF-164). Raises on any failure;
+    the caller falls back to local CPU pose.
+
+    Blocking, unlike `_track_ball_modal`: refinement visits only the rallies
+    that survived the highlight gate, so there is far less wall-clock to report
+    against, and `classify_within_windows` has no progress callback to bridge.
+    """
+    import modal as modal_sdk
+    from app.config import settings
+    from app.services import storage as s3
+
+    video_url = s3.presign_url(r2_key, expires_in=3600)
+    fn = modal_sdk.Function.from_name("clipfarm-pose", "classify_windows_remote")
+    return fn.remote(
+        video_url, _json_safe(windows),
+        settings.pose_model, settings.pose_imgsz, settings.pose_skip_frames,
+    )
+
+
+def _refine_with_pose(
+    local_video: Path, r2_key: str, windows: list[dict], game_id: str = "",
+) -> list[dict]:
+    """
+    Stage 3 pose refinement: Modal GPU when configured, local CPU otherwise.
+
+    Same degradation contract as ball tracking — a Modal outage costs speed and
+    label quality, never the run. Note the deployed worker image no longer
+    carries torch (CF-164), so the local branch is a real path only for
+    development installs; without ultralytics `classify_within_windows`
+    no-ops and the ball-trajectory labels stand.
+    """
+    from app.config import settings
+
+    # The highlight gate can drop every rally. `classify_within_windows` already
+    # no-ops on an empty list locally; without this the Modal path would cold-start
+    # a T4, open the video and hand back [].
+    if not windows:
+        return windows
+
+    if _will_attempt_modal(r2_key):
+        try:
+            refined = _classify_windows_modal(r2_key, windows)
+            # Deliberately "returned", not "refined": this side only sees the
+            # list come back, and its length is just the input size. How many
+            # windows pose actually scored is logged by classify_within_windows
+            # on the Modal side.
+            logger.info("Pose refinement returned %d windows from Modal GPU", len(refined))
+            return refined
+        except Exception as modal_err:
+            logger.warning(
+                "Modal pose refinement failed (%s) — falling back to local CPU", modal_err
+            )
+
+    # Imported here, not at the top: on the Modal path this pulls cv2 + numpy
+    # (and, inside classify_within_windows, torch) for nothing.
+    from ml.pipeline.detect import classify_within_windows, pose_available
+
+    # Reaching here means Modal was unconfigured or failed. In the deployed image
+    # there is no pose runtime behind it (CF-164), so `classify_within_windows`
+    # would quietly return the windows untouched and the game would keep
+    # trajectory-only labels — WORSE than the pre-CF-164 baseline, which always
+    # had local pose to fall back on.
+    #
+    # Don't let that pass as a warning line in a stream of them. This is logged at
+    # ERROR, which the Sentry logging integration promotes to an event, and
+    # carries the game id so degraded games can be listed and re-run once Modal is
+    # healthy. Not fatal: clips and their boundaries come from ball tracking and
+    # are unaffected — only the action labels are.
+    if not pose_available():
+        logger.error(
+            "POSE_DEGRADED game=%s windows=%d — no GPU and no local pose runtime; "
+            "keeping trajectory-only labels. Re-run this game once Modal is healthy.",
+            game_id or "unknown", len(windows),
+        )
+        return windows
+
+    return classify_within_windows(
+        str(local_video), windows,
+        model_name=settings.pose_model,
+        imgsz=settings.pose_imgsz,
+        skip_frames=settings.pose_skip_frames,
+    )
+
+
+def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
+    """
+    Pose-first full-video scan — the fallback when the ball pipeline is out.
+
+    Runs on Modal GPU when configured. This scans every skip_frames-th frame of
+    the entire video (not just rally windows), so it is the most expensive thing
+    the pipeline can do on CPU and the one that most wants a GPU.
+    """
+    from app.config import settings
+
+    if _will_attempt_modal(r2_key):
+        try:
+            import modal as modal_sdk
+            from app.services import storage as s3
+
+            fn = modal_sdk.Function.from_name("clipfarm-pose", "detect_actions_remote")
+            detections = fn.remote(
+                s3.presign_url(r2_key, expires_in=3600),
+                settings.pose_model, settings.pose_imgsz, settings.pose_skip_frames,
+            )
+            logger.info("Pose-first scan ran on Modal GPU: %d detections", len(detections))
+            return detections
+        except Exception as modal_err:
+            logger.warning(
+                "Modal pose-first scan failed (%s) — falling back to local CPU", modal_err
+            )
+
+    # allow_stub is the whole safety question here. `run_detection` degrades to
+    # `_stub_detections` when the pose import fails — up to 15 fabricated clips at
+    # invented timestamps, flat 0.75 confidence — and this pipeline cuts, uploads
+    # and persists whatever it returns. Harmless while the image always carried
+    # ultralytics; since CF-164 it does not, so that stub sits one Modal failure
+    # away from production data.
+    #
+    # Gated on its own setting, not on `debug`: `debug` is a general dev-fallbacks
+    # flag living in the shared api+worker env group, so turning it on to debug the
+    # api would quietly grant this permission too. Off by default, and
+    # `run_detection` raises instead — the caller marks the game `failed` with that
+    # message and reports to Sentry, which is the right outcome, since no ball
+    # pipeline, no GPU and no pose runtime means there is nothing to detect.
+    from ml.pipeline.detect import PoseRuntimeUnavailable, run_detection
+
+    try:
+        return run_detection(
+            video_path,
+            model_name=settings.pose_model,
+            imgsz=settings.pose_imgsz,
+            skip_frames=settings.pose_skip_frames,
+            allow_stub=settings.allow_stub_detections,
+        )
+    except PoseRuntimeUnavailable as exc:
+        # Translated at the boundary so the task handler can recognise it without
+        # importing ml (and without matching on a message).
+        raise PermanentPipelineError(str(exc)) from exc
 
 
 @celery_app.task(bind=True, name="process_game", max_retries=2, default_retry_delay=60)
@@ -213,11 +393,14 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         sync_save_clips,
         sync_delete_game_clips,
         sync_game_exists,
+        sync_note_game_error,
+        sync_set_original_duration,
+        sync_settle_upload_charge,
     )
     from app.workers.progress import (
         GameProgress, compute_stage_spans, CONDENSE_SECS_PER_KEPT_SEC,
     )
-    from app.workers.locks import GameLock
+    from app.workers.locks import GameLock, LockLost, LockNotSessionScoped
     from app.config import settings as _cfg
     from app.services import storage as s3
     import cv2 as _cv2
@@ -249,12 +432,62 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
 
     # CF-65a: never process one game on two workers at once. A redelivered or
     # duplicated task whose game is already in flight is a harmless no-op.
-    lock = GameLock(gid, ttl_seconds=_cfg.process_lock_ttl_seconds)
-    if not lock.acquire():
-        logger.warning("Game %s already being processed elsewhere — skipping duplicate delivery", gid)
-        return
+    # The lock lives on its own database connection (CF-184), so if this worker
+    # is hard-killed the lock dies with it and the requeued copy can run.
+    lock = GameLock(gid)
+
+    # acquire() is INSIDE the retryable try on purpose: taking the lock is a
+    # database round trip, and a transient Postgres blip while taking it must
+    # retry like any other failure. Raising above the try would be a permanent
+    # failure instead — acks_late acks a task that raises, so nothing would
+    # redeliver it and the game would sit in `queued`.
+    def _require_lock() -> None:
+        """Abort the job if the lock stopped being ours part-way through.
+
+        The connection can die without this worker dying — a failover, an
+        `idle_session_timeout`, a `pg_terminate_backend` — and Postgres releases
+        the lock the moment it does. Nothing about *this* process changes, so
+        without a check the job runs on to completion while a redelivery at the
+        visibility timeout acquires the free lock and runs beside it. Checked at
+        the long stage boundaries: it bounds the unprotected stretch to one
+        stage rather than the whole job, and the retry re-acquires cleanly.
+        """
+        if not lock.still_held():
+            raise LockLost(
+                f"Lost the processing lock for game {gid} mid-job — aborting so "
+                "the retry can re-acquire it"
+            )
 
     try:
+        try:
+            acquired = lock.acquire()
+        except LockNotSessionScoped as lock_cfg_err:
+            # A misconfigured lock database, not a transient failure: retrying
+            # cannot fix it, and burning the retries would leave the game
+            # terminally `failed` with its quota already charged. Leave it
+            # `queued` — still runnable, once the environment is — and say why
+            # loudly enough to reach Sentry.
+            logger.exception(
+                "Refusing to process game %s: the lock database cannot hold a "
+                "session-scoped lock. Game left queued; fix LOCK_DATABASE_URL "
+                "and resubmit.", gid,
+            )
+            # Also written to the row, because a misconfiguration strands EVERY
+            # game the same way: without this the backlog exists only as Sentry
+            # events, and recovering means guessing which games to resubmit.
+            # With it they are one query away (see sync_note_game_error).
+            try:
+                sync_note_game_error(
+                    gid, f"Not started: lock database misconfigured ({lock_cfg_err})"
+                )
+            except Exception:
+                logger.warning("Could not note the lock misconfiguration on game %s", gid)
+            return
+
+        if not acquired:
+            logger.warning("Game %s already being processed elsewhere — skipping duplicate delivery", gid)
+            return
+
         sync_set_game_status(gid, "processing")
         # Written directly rather than through GameProgress: the stage spans
         # need the downloaded file's MD5 (cache probe below), which isn't
@@ -287,6 +520,57 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             _frame_h     = int(_cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
             _cap.release()
             video_duration = _frames / _fps
+
+            # CF-91: the api can only enforce the duration cap against what the
+            # client declared — this is the first point the real length is
+            # known, and it is still ahead of every expensive stage. Record the
+            # measurement, then decide.
+            try:
+                sync_set_original_duration(gid, video_duration)
+            except Exception:
+                # Accounting must not break processing — the gate below reads
+                # the probed value directly, so it holds either way.
+                logger.warning("Failed to record duration for game %s", game_id, exc_info=True)
+            if video_duration > _cfg.max_upload_duration_seconds:
+                logger.warning(
+                    "Game %s is %.0f s, over the %.0f s cap — refusing to process",
+                    game_id, video_duration, _cfg.max_upload_duration_seconds,
+                )
+                sync_set_game_status(
+                    gid, "failed",
+                    error_message=(
+                        f"Video is {video_duration / 60:.0f} min long; the maximum is "
+                        f"{_cfg.max_upload_duration_seconds / 60:.0f} min. "
+                        "Split it into separate uploads."
+                    ),
+                )
+                # The object is rejected and will never be processed, so it is
+                # pure stored cost — nothing else reclaims it (the retention
+                # sweep is still a backlog item). Best-effort: a failed delete
+                # must not turn a clean rejection into a retried task.
+                try:
+                    s3.delete_file(r2_key)
+                except Exception:
+                    logger.warning("Could not delete rejected upload %s", r2_key, exc_info=True)
+                # Note what is deliberately NOT done here: the quota charge is
+                # left at whatever was reserved at accept time. Settling it up
+                # to the real length would bill a rejected upload for footage
+                # that never ran — 6 h of probed video against a 6 h daily cap
+                # wipes out the day for work we refused and deleted. The slot
+                # it consumed is the cost; the count cap is what bounds someone
+                # doing this repeatedly. It also keeps an honest client whose
+                # container reports a wrong duration from losing their day to a
+                # metadata bug.
+                return
+
+            # Accepted. Settle the quota charge to the measured length — this
+            # is what makes charging an undeclared duration at the per-video
+            # maximum fair rather than punitive, and what stops an
+            # under-declared one from sticking as the charge.
+            try:
+                sync_settle_upload_charge(gid, video_duration)
+            except Exception:
+                logger.warning("Failed to settle quota charge for game %s", game_id, exc_info=True)
 
             # fps-aware sampling: ~3 ball detections per second of video
             # regardless of source frame rate (tuned at 30fps/every-10th;
@@ -354,9 +638,10 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     logger.warning("Ball pipeline failed (%s) — falling back to pose-first", ball_err)
 
             if not ball_ok:
-                # Fallback: pose-first local CPU scan (Ball tracking failed
-                # entirely or ROBOFLOW_API_KEY unset — rare path)
-                detections = _run_detection_local(str(local_video))
+                # Fallback: pose-first full-video scan (ball tracking failed
+                # entirely or ROBOFLOW_API_KEY unset — rare path). On Modal GPU
+                # when configured; the worker image has no torch to do it here.
+                detections = _run_detection(str(local_video), r2_key)
 
                 try:
                     from ml.pipeline.detect import group_into_rallies
@@ -370,6 +655,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             # keep every rally, not just the ones the highlight gate favors.
             pre_gate_rallies = [dict(d) for d in detections]
             _lap("tracking_ball")
+            _require_lock()   # the longest stage just ran — are we still alone?
 
             # ── Stage 2: Highlight scoring → drop low scorers ─────────────
             # Cheer reaction after the rally + rally shape features (+ CLIP
@@ -399,18 +685,12 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
 
             # ── Stage 3: Pose within surviving windows — refine labels ────
             # Runs YOLOv8s-pose only inside rallies that passed the highlight
-            # gate. Overrides the ball-trajectory label when pose is more
-            # confident.
+            # gate, on Modal GPU when configured (CF-164). Overrides the
+            # ball-trajectory label when pose is more confident.
             progress.stage("refining_actions")
             try:
-                from ml.pipeline.detect import classify_within_windows
-                detections = classify_within_windows(
-                    str(local_video), detections,
-                    model_name=app_settings.pose_model,
-                    imgsz=app_settings.pose_imgsz,
-                    skip_frames=app_settings.pose_skip_frames,
-                )
-                logger.info("Pose refinement complete (%d windows)", len(detections))
+                detections = _refine_with_pose(local_video, r2_key, detections, game_id)
+                logger.info("Pose refinement stage done (%d windows)", len(detections))
             except Exception as pose_err:
                 logger.warning("Pose refinement failed (%s) — keeping trajectory labels", pose_err)
             _lap("refining_actions")
@@ -496,6 +776,9 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             if stale_urls:
                 logger.info("Replaced %d stale clip artifacts from a prior run", len(stale_urls))
 
+            # Nothing may be written for a game we no longer hold: another
+            # worker owning the lock is the authority on its clips.
+            _require_lock()
             sync_save_clips(rows)
 
             # ── Stage 5 (opt-in): condensed dead-time-removed video ───────
@@ -555,6 +838,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         # Condensing runs after the clip-save checkpoint and takes
                         # minutes of its own, so re-check: sync_set_condensed_result
                         # would no-op on a deleted game and strand this upload in R2.
+                        _require_lock()
                         if _abandoned():
                             try:
                                 s3.delete_file(s3.condensed_key(gid))
@@ -566,7 +850,6 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         sync_set_condensed_result(
                             gid,
                             condensed_video_url=condensed_url,
-                            original_duration=video_duration,
                             condensed_duration=condensed_duration,
                         )
                         logger.info(
@@ -597,6 +880,11 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             return
         logger.exception("Processing failed for game %s", game_id)
         sync_set_game_status(gid, "failed", error_message=str(exc))
+        if isinstance(exc, PermanentPipelineError):
+            # Identical on every attempt — retrying re-runs the pipeline's most
+            # expensive path to reach the same failure. Settle on `failed` now.
+            logger.info("Not retrying game %s — permanent condition", game_id)
+            return
         raise self.retry(exc=exc)
     finally:
         lock.release()

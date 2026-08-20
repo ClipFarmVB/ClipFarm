@@ -27,6 +27,9 @@ function fmtDuration(seconds: number): string {
 }
 
 const STATUS_STYLES: Record<Game["status"], string> = {
+  // Reachable only by the tab performing the upload — the api hands back an
+  // `uploading` game while its video is still transferring to R2.
+  uploading:  "text-zinc-500 bg-zinc-500/8 border-zinc-500/20",
   queued:     "text-zinc-500 bg-zinc-500/8 border-zinc-500/20",
   processing: "text-blue-400 bg-blue-500/8 border-blue-500/20",
   ready:      "text-emerald-400 bg-emerald-500/8 border-emerald-500/20",
