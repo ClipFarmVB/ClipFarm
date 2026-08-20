@@ -280,26 +280,31 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 "the retry can re-acquire it"
             )
 
-    def _lock_is_free() -> bool:
-        """True if this game's lock can be taken right now, i.e. nobody holds it.
+    def _mark_failed_if_lock_free(message: str) -> None:
+        """Write `failed` for this game, but only if nobody else holds its lock.
 
-        Only used to decide whether it is ours to write a terminal status after
-        losing the lock. Answers False when it cannot tell: an unanswerable
-        probe and a lock someone else holds must be read the same way, since
-        both mean "not ours to write".
+        Used after we have lost the lock and spent our retries: the row must not
+        strand in `processing`, but it also must not be stamped over a live run
+        another worker owns. Taking the lock proves the game is not in flight
+        anywhere — and the write happens while the probe is still held, so the
+        fact it establishes cannot lapse between the check and the write. A probe
+        that cannot answer leaves the row alone: a wrong `failed` on a live job
+        is worse than a row left behind for the next run.
         """
         probe = GameLock(gid)
         try:
             if not probe.acquire():
-                return False
+                return
         except Exception:
             logger.warning(
                 "Could not probe the lock for game %s — leaving its row alone",
                 game_id, exc_info=True,
             )
-            return False
-        probe.release()
-        return True
+            return
+        try:
+            sync_set_game_status(gid, "failed", error_message=message)
+        finally:
+            probe.release()
 
     try:
         try:
@@ -706,6 +711,14 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         )
                     else:
                         logger.warning("Condense requested but no active windows detected — skipping")
+                except LockLost:
+                    # A lost lock is not "condense failed, carry on" — carrying
+                    # on reaches the `ready` write below and stamps it over
+                    # another worker's live `processing`. `LockLost` subclasses
+                    # RuntimeError, so without this it would be swallowed here.
+                    # Re-raise past this handler to the task-level one, which
+                    # steps aside instead.
+                    raise
                 except Exception as condense_err:
                     logger.exception("Condense stage failed (%s) — game proceeds without it", condense_err)
                 _lap("condensing")
@@ -735,12 +748,9 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             #
             # The row must not be left in `processing` forever — that stranding
             # is exactly what CF-184 removed. But only write it if nobody else
-            # holds the lock: taking it proves the game is not in flight
-            # anywhere, and releasing it immediately leaves nothing behind. If
-            # the probe cannot answer, say nothing — a wrong `failed` on a live
-            # job is worse than a row left behind.
-            if _lock_is_free():
-                sync_set_game_status(gid, "failed", error_message=str(lost))
+            # holds the lock, and only while that proof still holds — see
+            # _mark_failed_if_lock_free.
+            _mark_failed_if_lock_free(str(lost))
             raise
     except Exception as exc:
         # A game deleted mid-flight is the cause of the failure (missing video on
