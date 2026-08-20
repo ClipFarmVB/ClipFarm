@@ -34,6 +34,41 @@ def _model_path(name: str) -> str:
         return os.path.join(models_dir, name)
     return name
 
+class PoseStreamError(RuntimeError):
+    """The video stream died partway through refinement.
+
+    Distinct from "this window had nothing to see": it means the decoder stopped
+    returning frames after having returned them, so every remaining window would
+    silently keep its trajectory label while the run still reported success.
+    Reachable since refinement reads the presigned URL in place rather than a
+    fully-downloaded local file — a mid-run network fault now looks exactly like
+    end-of-video to `cap.read()`.
+    """
+
+
+class PoseRuntimeUnavailable(RuntimeError):
+    """No usable pose runtime, and fabricated detections were not permitted.
+
+    Subclasses RuntimeError so existing handling still catches it; the distinct
+    type lets callers recognise it as PERMANENT — no amount of retrying makes
+    ultralytics appear — and skip an expensive retry loop.
+    """
+
+
+def pose_available() -> bool:
+    """Whether pose inference can actually run in this process.
+
+    Keyed on the import succeeding rather than on the package being installed:
+    a broken torch fails `from ultralytics import YOLO` with ultralytics present,
+    which a `find_spec` check would call available.
+    """
+    try:
+        from ultralytics import YOLO  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 ActionType = Literal["spike", "serve", "dig", "set", "block", "unknown"]
 
 # YOLOv8 pose keypoint indices (COCO 17-point)
@@ -85,15 +120,40 @@ class Detection:
         self.end = self.peak_time + PAD_AFTER
 
 
-def run_detection(video_path: str) -> list[dict]:
+def run_detection(
+    video_path: str,
+    model_name: str = "yolov8s-pose.pt",  # small model — detects far-side players at imgsz=1280
+    imgsz: int = 1280,
+    skip_frames: int = SKIP_FRAMES,
+    allow_stub: bool = False,
+) -> list[dict]:
     """
     Run full detection pipeline on a video file.
     Returns list of {start, end, action, confidence} dicts.
+
+    Takes the same three quality knobs as `classify_within_windows` and for the
+    same reason: both are driven by the POSE_* settings, and a fallback scan
+    that ignored them would silently run a different (heavier) config than the
+    refinement path on the very same deployment.
+
+    `allow_stub` gates `_stub_detections` — fabricated clips at invented
+    timestamps, a development affordance for environments without a pose
+    runtime. It defaults to OFF because callers persist what this returns: a
+    caller that wants fake clips has to say so. The guard lives here rather than
+    in the caller because the trigger is this import failing, which is not the
+    same question as whether ultralytics is installed (a broken torch fails the
+    import with ultralytics present).
     """
     try:
         from ultralytics import YOLO
-        model = YOLO(_model_path("yolov8s-pose.pt"))  # small model — detects far-side players at imgsz=1280
-    except ImportError:
+        model = YOLO(_model_path(model_name))
+    except ImportError as import_err:
+        if not allow_stub:
+            raise PoseRuntimeUnavailable(
+                f"Pose detection is unavailable ({import_err}) and stub detections are "
+                "not allowed. Refusing to return fabricated clips — pass allow_stub=True "
+                "only where invented data is acceptable (local development)."
+            ) from import_err
         logger.warning("ultralytics not installed — returning stub detections")
         return _stub_detections(video_path)
 
@@ -120,12 +180,12 @@ def run_detection(video_path: str) -> list[dict]:
         if not ret:
             break
 
-        if frame_idx % SKIP_FRAMES != 0:
+        if frame_idx % skip_frames != 0:
             frame_idx += 1
             continue
 
         t = frame_idx / fps
-        results = model(frame, imgsz=1280, verbose=False)
+        results = model(frame, imgsz=imgsz, verbose=False)
 
         curr_keypoints: dict[int, np.ndarray] = {}
 
@@ -442,6 +502,8 @@ def classify_within_windows(
     motion_px     = MOTION_THRESHOLD * frame_h
 
     refined: list[dict] = []
+    scored = 0            # windows that actually produced a pose signal
+    decoded_any = False   # have we ever successfully read a frame?
 
     for window in windows:
         w_start = window["start"]
@@ -453,10 +515,25 @@ def classify_within_windows(
         prev_kps: dict[int, np.ndarray] = {}
         frame_idx = int(w_start * fps)
 
+        frames_here = 0
         while True:
             ret, frame = cap.read()
             if not ret:
+                # Ambiguous on its own: true end-of-video, or a stream that has
+                # stopped answering. Reading nothing at all in a window we have
+                # seeked to, after earlier windows decoded fine, is the second
+                # one — and it is silent, because every later window fails the
+                # same way and still gets counted as "refined".
+                if frames_here == 0 and decoded_any:
+                    cap.release()
+                    raise PoseStreamError(
+                        f"decoder returned no frames for window "
+                        f"{w_start:.1f}-{w_end:.1f}s after {scored} scored window(s); "
+                        f"refinement cannot continue on this source"
+                    )
                 break
+            frames_here += 1
+            decoded_any = True
             pos_sec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
             if pos_sec > w_end:
                 break
@@ -523,10 +600,23 @@ def classify_within_windows(
                     w_start, w_end, best_pose_action, pose_conf, ball_conf,
                 )
 
+        if action_scores:
+            scored += 1
         refined.append(out)
 
     cap.release()
-    logger.info("classify_within_windows: refined %d windows", len(refined))
+    # Report windows that produced a pose signal, not windows visited. The old
+    # count was len(refined), which is just the input length — a run that decoded
+    # nothing still read as a full success.
+    logger.info(
+        "classify_within_windows: pose signal on %d/%d windows", scored, len(refined),
+    )
+    if windows and scored == 0:
+        logger.warning(
+            "classify_within_windows: no window produced a pose signal — every clip "
+            "keeps its trajectory label. Expected only if the footage genuinely has "
+            "no visible players; otherwise the source or the model is at fault."
+        )
     return refined
 
 
