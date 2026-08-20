@@ -87,13 +87,25 @@ def _check_worker_production_config(**_kwargs):
 
     Why it is a hard failure rather than a warning: since CF-164 no model ships
     in this image, so blank tokens do not mean "slow local CPU" any more. Every
-    game completes with trajectory-only labels — output that looks like a
-    successful run and is not. Registered after Sentry above so the refusal is
-    reported before the process dies.
+    game completes with trajectory-only labels, and ROBOFLOW_API_KEY unset sends
+    the pipeline down the pose-first path — output that looks like a successful
+    run and is not. Registered after Sentry above so the refusal is reported
+    before the process dies.
+
+    SystemExit, NOT a RuntimeError, and this is load-bearing: celery's
+    `Signal.send` wraps every receiver in `except Exception` and appends the
+    exception to a list of responses nobody reads ("In Celery 'send' and
+    'send_robust' do the same thing" — its own docstring). A RuntimeError here
+    is swallowed and the worker boots anyway. The swallow is not even visible:
+    celeryd_init fires from `Worker.on_before_init`, before Celery configures
+    logging, so `Signal.send`'s own `logger.exception` reaches nothing.
+    SystemExit is a BaseException, so `except Exception` cannot catch it and the
+    process exits 1 without reaching `ready`. test_config.py pins this by
+    sending the handler through a real celery Signal.
     """
     missing = settings.missing_in_production(REQUIRED_IN_PRODUCTION_WORKER)
     if missing:
-        raise RuntimeError(production_config_error(missing))
+        raise SystemExit(production_config_error(missing))
 
 
 if settings.debug:

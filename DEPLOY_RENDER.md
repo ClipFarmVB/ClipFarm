@@ -66,7 +66,7 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 >
 > ```
 > ENVIRONMENT=production but these required settings are not set:
-> DATABASE_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, R2_ACCOUNT_ID, ...
+> DATABASE_URL, CORS_ORIGINS, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ...
 > ```
 >
 > Before that, a blank `DATABASE_URL` fell back to a localhost default and the
@@ -99,7 +99,7 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 
 **`clipfarm-api`:**
 - `API_BASE_URL` → this service's public URL (set after step 4, or its custom domain)
-- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.ca`
+- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.ca`. Checked at startup since **CF-172** — it has a localhost default, so unset it does not error, it silently CORS-blocks the whole frontend.
 
 **`clipfarm-worker`:**
 - `ROBOFLOW_API_KEY` → Roboflow → Settings → API Keys

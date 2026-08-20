@@ -1,10 +1,13 @@
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# The zero-config local database. Also the sentinel the production check
-# below looks for: a deployment that reaches this value did not get a
-# DATABASE_URL, because nobody points production at localhost on purpose.
+# Zero-config local defaults, and the sentinels the production check below looks
+# for. A blank-string check cannot see these settings go missing: the variable is
+# absent, pydantic supplies the default, and the process runs on it. Nobody
+# points production at localhost on purpose, so reaching one of these values in
+# production means the variable was never set.
 LOCAL_DATABASE_URL = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
+LOCAL_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
 
 
 # ── Production config guard (CF-172) ───────────────────────────────
@@ -25,6 +28,11 @@ LOCAL_DATABASE_URL = "postgresql+asyncpg://postgres:password@localhost:5432/clip
 # production state.
 REQUIRED_IN_PRODUCTION = (
     "database_url",
+    # Not a credential, and it fails in a place no server log shows: with the
+    # localhost default the api boots clean and passes its health check, then
+    # every request from the real web origin is CORS-blocked. A total frontend
+    # outage whose only symptom is in the browser console.
+    "cors_origins",
     "supabase_url",
     "supabase_service_role_key",
     "r2_account_id",
@@ -46,7 +54,21 @@ REQUIRED_IN_PRODUCTION = (
 REQUIRED_IN_PRODUCTION_WORKER = (
     "modal_token_id",
     "modal_token_secret",
+    # Same bar as the Modal tokens, and it is the primary detection signal:
+    # unset, run_detection() falls through to the pose-first path (tasks.py),
+    # which persists clips with weaker boundaries and reports the run a success.
+    "roboflow_api_key",
 )
+
+
+# Fields whose local default is indistinguishable from "never set". Checked in
+# addition to emptiness, not instead of it — a key added to the Render group and
+# left blank arrives as "" and never reaches the default at all, so both paths
+# have to be covered.
+LOCAL_DEFAULT_SENTINELS = {
+    "database_url": LOCAL_DATABASE_URL,
+    "cors_origins": LOCAL_CORS_ORIGINS,
+}
 
 
 def production_config_error(missing: list[str]) -> str:
@@ -56,8 +78,9 @@ def production_config_error(missing: list[str]) -> str:
     return (
         "ENVIRONMENT=production but these required settings are not set: "
         + ", ".join(missing)
-        + ". On Render they are `sync: false` keys in the clipfarm-shared env "
-        "group — Render does not create them, so they stay absent until "
+        + ". On Render they are declared `sync: false` — in the "
+        "clipfarm-shared env group or in the service's own envVars — which "
+        "means Render does not create them at all, so they stay absent until "
         "someone adds them in the dashboard "
         "(DEPLOY_RENDER.md § Fill the secrets)."
     )
@@ -89,8 +112,12 @@ class Settings(BaseSettings):
     # invented highlights to the database. A switch that decides whether made-up
     # data reaches production deserves its own name and its own default.
     allow_stub_detections: bool = False
+    # Same localhost-default shape as cors_origins below, and deliberately NOT
+    # in the production guard: nothing reads it. It configures no client and
+    # builds no outbound URL today, so a stale value in production breaks
+    # nothing. Move it into REQUIRED_IN_PRODUCTION the day something does.
     api_base_url: str = "http://localhost:8000"
-    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"  # comma-separated
+    cors_origins: str = LOCAL_CORS_ORIGINS  # comma-separated
 
     # Upload limits
     # 8 GB (CF-167). The old 2 GB was sized for an api that proxied the bytes;
@@ -244,6 +271,14 @@ class Settings(BaseSettings):
     # ever an approximation of "is the holder alive", and it was the reason a
     # hard-killed worker stranded a game in `processing`.
 
+    # Ball detection (Roboflow). Declared here for the worker's production
+    # guard; the pipeline call sites predate this class and read
+    # os.environ["ROBOFLOW_API_KEY"] directly, so the guard is only as good as
+    # the real environment — which is what both production paths set. A value
+    # reaching this field from an `.env` file alone would satisfy the check and
+    # not the call sites.
+    roboflow_api_key: str = ""
+
     # Modal
     modal_token_id: str = ""
     modal_token_secret: str = ""
@@ -277,18 +312,12 @@ class Settings(BaseSettings):
         if self.environment.strip().lower() != "production":
             return []
 
-        missing = [
+        return [
             self.env_name_for(field)
             for field in fields
             if not str(getattr(self, field)).strip()
+            or getattr(self, field) == LOCAL_DEFAULT_SENTINELS.get(field)
         ]
-        # An unset DATABASE_URL is not blank, it is the local default — same
-        # cause, so report it in the same list rather than as a second error.
-        if "database_url" in fields and self.database_url == LOCAL_DATABASE_URL:
-            name = self.env_name_for("database_url")
-            if name not in missing:
-                missing.insert(0, name)
-        return missing
 
     @model_validator(mode="after")
     def _check_production_settings(self) -> "Settings":

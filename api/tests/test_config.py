@@ -20,6 +20,7 @@ import pytest
 pytest.importorskip("pydantic_settings")
 
 from app.config import (  # noqa: E402
+    LOCAL_CORS_ORIGINS,
     LOCAL_DATABASE_URL,
     REQUIRED_IN_PRODUCTION,
     REQUIRED_IN_PRODUCTION_WORKER,
@@ -32,6 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PRODUCTION_ENV = {
     "ENVIRONMENT": "production",
     "DATABASE_URL": "postgresql+asyncpg://u:p@db.example.supabase.co:5432/postgres",
+    "CORS_ORIGINS": "https://clipfarm.ca",
     "SUPABASE_URL": "https://project.supabase.co",
     "SUPABASE_SERVICE_ROLE_KEY": "service-role-key",
     "R2_ACCOUNT_ID": "account",
@@ -214,6 +216,7 @@ def test_modal_tokens_are_required_of_the_worker_only(clean_env):
     assert settings.missing_in_production(REQUIRED_IN_PRODUCTION_WORKER) == [
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
+        "ROBOFLOW_API_KEY",
     ]
     assert settings.missing_in_production(REQUIRED_IN_PRODUCTION) == []
 
@@ -229,11 +232,12 @@ def test_worker_boot_refuses_a_production_worker_without_modal(clean_env, monkey
     production = _settings(**{k.lower(): v for k, v in PRODUCTION_ENV.items()})
     monkeypatch.setattr(worker_module, "settings", production)
 
-    with pytest.raises(RuntimeError) as exc:
+    with pytest.raises(SystemExit) as exc:
         worker_module._check_worker_production_config()
 
     assert "MODAL_TOKEN_ID" in str(exc.value)
     assert "MODAL_TOKEN_SECRET" in str(exc.value)
+    assert "ROBOFLOW_API_KEY" in str(exc.value)
 
 
 def test_worker_boot_is_silent_when_configured_or_local(clean_env, monkeypatch):
@@ -246,9 +250,79 @@ def test_worker_boot_is_silent_when_configured_or_local(clean_env, monkeypatch):
         **{k.lower(): v for k, v in PRODUCTION_ENV.items()},
         modal_token_id="token-id",
         modal_token_secret="token-secret",
+        roboflow_api_key="roboflow-key",
     )
     monkeypatch.setattr(worker_module, "settings", configured)
     worker_module._check_worker_production_config()
 
     monkeypatch.setattr(worker_module, "settings", _settings())
     worker_module._check_worker_production_config()
+
+
+def test_production_rejects_the_localhost_cors_default(clean_env):
+    """The api boots clean on this one and passes its health check.
+
+    Nothing server-side ever complains: with the localhost default in place,
+    every request from the real web origin is rejected by the CORS middleware
+    and the only symptom is in the browser console. Same absence-masked-by-a-
+    default shape as DATABASE_URL, so it gets the same sentinel treatment.
+    """
+    env = dict(PRODUCTION_ENV)
+    del env["CORS_ORIGINS"]
+
+    with pytest.raises(Exception) as exc:
+        _settings(**{k.lower(): v for k, v in env.items()})
+
+    assert "CORS_ORIGINS" in str(exc.value)
+    assert _settings().cors_origins == LOCAL_CORS_ORIGINS
+
+
+def test_a_production_origin_that_also_allows_localhost_is_accepted(clean_env):
+    """The sentinel is exact equality with the default, not a localhost search.
+
+    Keeping a localhost entry alongside the real origin is a legitimate (if
+    unusual) production choice; only the untouched default means "never set".
+    """
+    settings = _settings(
+        **{k.lower(): v for k, v in PRODUCTION_ENV.items()},
+    )
+    assert settings.cors_origins_list == ["https://clipfarm.ca"]
+
+    both = _settings(
+        **{
+            **{k.lower(): v for k, v in PRODUCTION_ENV.items()},
+            "cors_origins": "https://clipfarm.ca,http://localhost:3000",
+        }
+    )
+    assert "http://localhost:3000" in both.cors_origins_list
+
+
+def test_worker_guard_survives_celerys_exception_swallowing(clean_env, monkeypatch):
+    """The guard raises SystemExit, and that is not a stylistic choice.
+
+    `celery.utils.dispatch.Signal.send` wraps every receiver in
+    `except Exception` and appends the exception to a response list nobody
+    reads — its docstring says "In Celery 'send' and 'send_robust' do the same
+    thing". A RuntimeError from this handler is therefore discarded and the
+    worker boots anyway, with no trace: celeryd_init fires before Celery
+    configures logging, so even `Signal.send`'s own `logger.exception` reaches
+    nothing. SystemExit is a BaseException and escapes.
+
+    Sent through a real Signal rather than asserted against the class hierarchy,
+    so this keeps holding if Celery's dispatcher changes.
+    """
+    pytest.importorskip("celery")
+    from celery.utils.dispatch import Signal
+
+    from app.workers import celery_app as worker_module
+
+    production = _settings(**{k.lower(): v for k, v in PRODUCTION_ENV.items()})
+    monkeypatch.setattr(worker_module, "settings", production)
+
+    signal = Signal(name="test_celeryd_init", providing_args=[])
+    signal.connect(worker_module._check_worker_production_config, weak=False)
+
+    with pytest.raises(SystemExit) as exc:
+        signal.send(sender=None)
+
+    assert "MODAL_TOKEN_ID" in str(exc.value)

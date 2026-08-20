@@ -133,6 +133,10 @@ services:
         generateValue: true
       - key: API_BASE_URL             # this service's own public URL (custom domain or *.onrender.com)
         sync: false
+      # Required since CF-172, and checked at startup like the shared-group
+      # secrets: left unset the api boots clean, passes its health check, and
+      # CORS-blocks every request from the real web origin — an outage with no
+      # server-side symptom at all.
       - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.ca
         sync: false
       - key: REDIS_URL
