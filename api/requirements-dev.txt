@@ -7,3 +7,7 @@
 pytest==8.3.4
 # (fakeredis was here for the Redis per-game lock; CF-184 moved that lock to a
 # Postgres advisory lock, whose tests use a real Postgres or skip.)
+# Read-only parsing of render.yaml in the CF-164 deploy-invariant tests. Without
+# it those tests importorskip themselves into a silent pass, which is the exact
+# failure mode requirements-dev exists to prevent.
+PyYAML==6.0.2

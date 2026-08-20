@@ -17,11 +17,11 @@ It should be enough to understand how the system fits together and where to make
 |---|---|
 | **web/** | Next.js 16 (App Router, Turbopack) · React · Tailwind CSS v4 · TypeScript |
 | **api/** | FastAPI (Python 3.11) · SQLAlchemy 2 (async) · Alembic · Pydantic v2 |
-| **ml/** | Roboflow `inference` (RF-DETR ball model, local) · YOLOv8-pose (ultralytics) · OpenCV · FFmpeg · CLIP (optional) |
+| **ml/** | Roboflow `inference` (RF-DETR ball model) · YOLOv8-pose (ultralytics) — both on Modal GPU · OpenCV · FFmpeg · CLIP (optional) |
 | **Jobs** | Celery + Redis (broker + result backend) |
 | **Data** | Supabase Postgres (RLS on all tables) · Supabase Auth (JWKS JWT) |
 | **Storage** | Cloudflare R2 (S3-compatible, via boto3) — raw uploads, clips, thumbnails, ball-position cache |
-| **GPU** | Modal (serverless T4) for ball tracking; graceful fall back to local CPU |
+| **GPU** | Modal (serverless T4) for ball tracking **and** pose; the deployed image ships no torch, so local CPU is a development path only |
 | **Dev** | Docker Compose (the standard path) |
 
 ---
@@ -57,7 +57,7 @@ Celery worker  ──  process_game_task()  (api/app/workers/tasks.py)
     │     └─ drop rallies below highlight_score_threshold (0.50)
     │
     ├─ 3. POSE REFINEMENT (survivors only)         (ml/pipeline/detect.py)
-    │     └─ classify_within_windows() ← YOLOv8-pose overrides action label if more confident
+    │     └─ classify_within_windows() ← YOLOv8-pose (Modal GPU) overrides action label if more confident
     │
     ├─ 4. Audio confidence weighting               (ml/pipeline/audio.py)
     │
@@ -67,6 +67,8 @@ Celery worker  ──  process_game_task()  (api/app/workers/tasks.py)
 
 If `ROBOFLOW_API_KEY` is unset or ball tracking fails entirely, the pipeline falls back
 to a pose-first full-video scan (`ml/pipeline/detect.py::run_detection`) — the rare path.
+It runs on Modal GPU too (`ml/modal_pose.py`), since scanning a whole video is the most
+expensive thing the pipeline can do.
 
 ---
 
@@ -103,6 +105,7 @@ ml/pipeline/
   verify.py                CLIP zero-shot action scoring (optional, GPU-friendly)
   ocr.py                   jersey-number OCR (exists, NOT yet wired into the pipeline)
 ml/modal_app.py            Modal GPU deployment of track_ball (deploy: modal deploy ml/modal_app.py)
+ml/modal_pose.py           Modal GPU deployment of pose  (deploy: modal deploy ml/modal_pose.py)
 
 Dockerfile.api             image for api + worker (shared)
 Dockerfile.web             image for web
@@ -159,8 +162,11 @@ writes `Clip` rows. Re-running a game clears its prior clips first (idempotent).
   quality and multi-court false positives are known open problems (see backlog).
 - **The ball cache is content-addressed.** Re-uploading the same file is nearly free.
   Changing the model or sample rate invalidates it automatically (it's in the key).
-- **Model weights persist in a volume**, not the image — the worker mounts a `model_cache`
-  volume so RF-DETR/YOLO weights aren't re-downloaded on every container recreate.
+- **Model weights live on Modal, not here** (CF-164). The worker used to mount a
+  `model_cache` volume so RF-DETR/YOLO weights survived a container recreate; now no
+  weights are loaded in this image at all. Pose weights are baked into the
+  `clipfarm-pose` image; the ball model still uses the `clipfarm-model-cache` Modal
+  Volume, which is what that caching lesson (CF-40) applies to today.
 
 ---
 
@@ -222,8 +228,12 @@ Notes:
 - `docker compose restart` does **not** reload env files. To pick up `.env.docker` changes:
   `docker compose up -d --force-recreate <service>`.
 - The worker mounts `./api` and `./ml`, so Python changes are picked up on worker restart.
-- Modal GPU is optional. Without `MODAL_TOKEN_*`, ball tracking runs on local CPU
-  (~28–42 min/game). With Modal deployed (`modal deploy ml/modal_app.py`) + tokens set, it
+- Modal GPU is optional **for the dev stack only**, and the deployed image has no
+  torch to fall back to (CF-164) — see `DEPLOY_RENDER.md`. Without `MODAL_TOKEN_*`
+  in Docker Compose, ball tracking and pose have no local runtime and the pipeline
+  degrades to trajectory-only labels; install `ml/requirements.txt` and run the
+  worker outside Docker to exercise the local paths. With both Modal apps deployed
+  (`modal deploy ml/modal_app.py && modal deploy ml/modal_pose.py`) + tokens set, it
   runs on a T4 in a few minutes.
 
 ---
@@ -236,13 +246,14 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 |---|---|---|
 | `highlight_score_threshold` | `0.50` | Rallies below this are dropped before pose/cutting. Env-overridable, no rebuild. |
 | `clip_verify_enabled` | `false` | Use CLIP frames in scoring (slow on CPU; enable for GPU). |
-| `pose_model` / `pose_imgsz` / `pose_skip_frames` | `yolov8s-pose.pt` / `1280` / `4` | Pose quality vs speed. Docker dev overrides to lighter values. |
+| `pose_model` / `pose_imgsz` / `pose_skip_frames` | `yolov8s-pose.pt` / `1280` / `4` | Pose quality vs speed. Sent to the Modal GPU function; the defaults are what production runs since CF-164. |
 | `database_url` | — | Supabase Postgres (async). |
 | `lock_database_url` | `""` | Connection used *only* for the worker's per-game advisory lock (CF-184). Empty = use `database_url`, which is right for any direct or session-mode connection. Set it when `database_url` is a **transaction**-mode pooler (Supabase port 6543): that mode cannot hold a session-scoped lock, so the worker refuses to process rather than run unprotected. `lock_pooler_ports` (default `6543`) lists the ports refused for that reason — set it if your transaction pooler answers somewhere else. |
 | `supabase_url` / `supabase_service_role_key` | — | Auth (JWKS) verification. |
 | `r2_*` | — | Cloudflare R2 bucket + credentials. |
 | `redis_url` / `celery_*` | redis:6379 | Job queue. |
-| `modal_token_id` / `modal_token_secret` | "" | Enables the Modal GPU tracking path. |
+| `modal_token_id` / `modal_token_secret` | "" | Enables the Modal GPU path for ball tracking *and* pose. |
+| `allow_stub_detections` | `false` | Lets the pose-first fallback return **fabricated** clips when no pose runtime is available. Development only — the worker persists what it returns. Kept separate from `debug` on purpose, so a shared dev flag can't grant it. |
 | `max_upload_bytes` | 2 GB | Upload size cap. Served to the web app by `GET /games/upload-config` so the advertised limit can't drift from the enforced one. |
 | `single_put_max_bytes` / `upload_part_size_bytes` | 100 MiB / 100 MiB | Below the threshold an upload is one presigned PUT; above it, multipart with parts this size. |
 | `upload_url_ttl_seconds` | `21600` (6 h) | Lifetime of a presigned upload URL — must cover a whole upload on a slow uplink. |

@@ -6,6 +6,14 @@ class Settings(BaseSettings):
 
     # Environment
     debug: bool = False  # Enables dev fallbacks (DEV_USER_ID auth, etc.)
+    # Whether the pose-first fallback scan may return `_stub_detections` —
+    # fabricated clips at invented timestamps, which the worker PERSISTS. This
+    # is deliberately NOT `debug` (CF-164 review 3). `debug` is a general "dev
+    # fallbacks" flag that lives in the shared api+worker env group, so setting
+    # it to debug the api would silently grant the worker permission to write
+    # invented highlights to the database. A switch that decides whether made-up
+    # data reaches production deserves its own name and its own default.
+    allow_stub_detections: bool = False
     api_base_url: str = "http://localhost:8000"
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"  # comma-separated
 
