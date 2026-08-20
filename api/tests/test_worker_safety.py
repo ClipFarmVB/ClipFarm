@@ -1,9 +1,24 @@
-"""CF-65a: worker redelivery/concurrency safety — broker config + per-game lock.
+"""CF-65a/CF-184: worker redelivery/concurrency safety — broker config + per-game lock.
 
 The `importorskip` guard is now belt-and-braces: the api CI job installs
-api/requirements-dev.txt (including fakeredis), so these execute in CI as well as
-locally. Run from the api/ dir: `cd api && pytest tests/test_worker_safety.py`.
+api/requirements-dev.txt, so these execute in CI as well as locally. Run from
+the api/ dir: `cd api && pytest tests/test_worker_safety.py`.
+
+The lock tests come in two layers. The fake-connection ones pin the behaviour
+that is ours (what `acquire`/`release` do with the connection); the Postgres
+ones pin the behaviour that is the *database's* — mutual exclusion, and a lock
+dying with its connection, which is the whole point of CF-184 and cannot be
+demonstrated against a double. Those find a local Postgres by themselves (the
+compose `db` service is enough) or take LOCK_TEST_DATABASE_URL, which is what CI
+sets for its throwaway server; they skip only when there is no database at all.
 """
+import os
+import socket
+import struct
+import time
+import uuid
+from urllib.parse import urlsplit
+
 import pytest
 
 pytest.importorskip("celery")
@@ -42,62 +57,462 @@ def test_results_are_ignored_without_weakening_redelivery_safety():
     assert conf.broker_transport_options.get("visibility_timeout")
 
 
-def test_lock_ttl_exceeds_visibility_timeout():
-    """The lock must outlive the visibility timeout, or a redelivery during an
-    over-running task acquires it and runs concurrently (CF-65a review #2)."""
+def test_lock_has_no_ttl_setting():
+    """CF-184 removed `process_lock_ttl_seconds`, and it must stay removed.
+
+    A TTL was only ever a guess at whether the holder was still alive, and it is
+    what stranded a hard-killed game in `processing` for 3h. Re-adding one to
+    "bound" the advisory lock would restore that failure mode.
+    """
     from app.config import settings
 
-    assert settings.process_lock_ttl_seconds > settings.celery_visibility_timeout
+    assert not hasattr(settings, "process_lock_ttl_seconds")
 
 
-def _fake_redis_or_skip():
-    """A FakeStrictRedis with Lua support, or skip (release() uses a Lua CAS)."""
-    fakeredis = pytest.importorskip("fakeredis")
-    fake = fakeredis.FakeStrictRedis()
-    try:
-        fake.eval("return 1", 0)
-    except Exception:
-        pytest.skip("fakeredis without Lua support (install fakeredis[lua])")
-    return fake
+# ── Lock key derivation ──────────────────────────────────────────────────────
+
+def test_lock_key_is_stable_across_processes_and_fits_bigint():
+    """Two workers must derive the same key for a game, or the lock is no lock.
+
+    Rules out `hash()`, which PYTHONHASHSEED randomizes per process. The range
+    check is what keeps `pg_advisory_lock(bigint)` from erroring on overflow.
+    """
+    from app.workers.locks import lock_key
+
+    gid = uuid.UUID("11111111-2222-3333-4444-555555555555")
+    key = lock_key(gid)
+
+    assert key == lock_key(gid)
+    assert key == lock_key(str(gid)), "uuid and its string must agree"
+    assert -(2 ** 63) <= key < 2 ** 63
+    assert key != lock_key(uuid.UUID("11111111-2222-3333-4444-555555555556"))
 
 
-def _patch_lock_client(monkeypatch, fake):
-    pytest.importorskip("redis")
+# ── acquire()/release() connection handling (fake connection) ────────────────
+
+class _FakeResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar(self):
+        return self._value
+
+
+class _FakeConn:
+    """Minimal stand-in for a SQLAlchemy Connection.
+
+    `results` maps a substring of the statement to what `.scalar()` returns; an
+    Exception instance is raised instead.
+    """
+
+    def __init__(self, results):
+        self.results = results
+        self.closed = False
+        self.statements: list[str] = []
+
+    def execute(self, clause, params=None):
+        sql = str(clause)
+        self.statements.append(sql)
+        for fragment, value in self.results.items():
+            if fragment in sql:
+                if isinstance(value, Exception):
+                    raise value
+                return _FakeResult(value)
+        raise AssertionError(f"unexpected statement: {sql}")
+
+    def close(self):
+        self.closed = True
+
+
+def _patch_engine(monkeypatch, conn):
     from app.workers import locks
 
-    monkeypatch.setattr(locks, "_client", fake)
-    monkeypatch.setattr(
-        locks,
-        "_RELEASE",
-        fake.register_script(
-            "if redis.call('get', KEYS[1]) == ARGV[1] "
-            "then return redis.call('del', KEYS[1]) else return 0 end"
-        ),
-    )
+    class _FakeEngine:
+        def connect(self):
+            return conn
+
+    monkeypatch.setattr(locks, "_get_engine", lambda: _FakeEngine())
     return locks
 
 
-def test_lock_is_mutually_exclusive(monkeypatch):
-    fake = _fake_redis_or_skip()
-    locks = _patch_lock_client(monkeypatch, fake)
+def test_acquire_returns_false_and_closes_when_another_holder_has_it(monkeypatch):
+    """A duplicate delivery must release its connection, not leak one per retry."""
+    conn = _FakeConn({"pg_try_advisory_lock": False})
+    locks = _patch_engine(monkeypatch, conn)
 
-    a = locks.GameLock("game-1", ttl_seconds=60)
-    b = locks.GameLock("game-1", ttl_seconds=60)
-    assert a.acquire() is True
-    assert b.acquire() is False        # a holds it
-    a.release()
-    assert b.acquire() is True         # freed
+    lock = locks.GameLock(uuid.uuid4())
+    assert lock.acquire() is False
+    assert lock.held is False
+    assert conn.closed is True
 
 
-def test_release_is_token_scoped(monkeypatch):
-    """A stale holder must not delete a lock another worker re-acquired."""
-    fake = _fake_redis_or_skip()
-    locks = _patch_lock_client(monkeypatch, fake)
+def test_acquire_refuses_a_lock_that_is_not_session_scoped(monkeypatch):
+    """A transaction-mode pooler returns true without holding the lock.
 
-    a = locks.GameLock("game-2", ttl_seconds=60)
-    assert a.acquire()
-    fake.delete(a.key)                 # simulate a's lock expiring
-    b = locks.GameLock("game-2", ttl_seconds=60)
-    assert b.acquire()                 # b now owns it
-    a.release()                        # a's stale release must be a no-op
-    assert fake.get(b.key) == b.token.encode()
+    Processing under that is worse than the bug CF-184 fixes — two workers on
+    one game — so acquire() must raise rather than report success, and must drop
+    the connection on the way out.
+    """
+    conn = _FakeConn({"pg_try_advisory_lock": True, "pg_locks": None})
+    locks = _patch_engine(monkeypatch, conn)
+
+    lock = locks.GameLock(uuid.uuid4())
+    with pytest.raises(locks.LockNotSessionScoped):
+        lock.acquire()
+    assert lock.held is False
+    assert conn.closed is True
+
+
+def test_release_closes_the_connection_even_if_unlock_fails(monkeypatch):
+    """release() runs in a `finally` and must never mask the task's outcome.
+
+    Closing the connection is what actually frees the lock server-side, so it
+    has to happen even when the unlock statement errors.
+    """
+    conn = _FakeConn({"pg_try_advisory_lock": True, "pg_locks": 1})
+    locks = _patch_engine(monkeypatch, conn)
+
+    lock = locks.GameLock(uuid.uuid4())
+    assert lock.acquire() is True
+    conn.results["pg_advisory_unlock"] = RuntimeError("connection gone")
+
+    lock.release()          # must not raise
+    assert conn.closed is True
+    assert lock.held is False
+
+    lock.release()          # a second release is a no-op, not an error
+
+
+def test_engine_asks_for_server_side_keepalives(monkeypatch):
+    """Client keepalives detect a dead *server*; these detect a dead *client*.
+
+    They are what bounds the one case the lock does not cover instantly — a
+    connection severed with no FIN, where the backend would otherwise hold the
+    lock until the OS default (~2h) noticed. Silently ignored through a pooler
+    (the backend's peer is the pooler, not us), which is why locks.py documents
+    the residual rather than claiming release is always immediate.
+    """
+    from app.workers import locks
+
+    opts = locks.SERVER_KEEPALIVE_OPTIONS
+    assert "tcp_keepalives_idle=" in opts
+    assert "tcp_keepalives_interval=" in opts
+    assert "tcp_keepalives_count=" in opts
+
+    captured = {}
+    monkeypatch.setattr(locks, "_engine", None)
+    monkeypatch.setattr(
+        locks, "create_engine", lambda url, **kw: captured.update(kw) or "engine"
+    )
+    locks._get_engine()
+    monkeypatch.setattr(locks, "_engine", None)
+
+    assert captured["connect_args"]["options"] == opts
+    assert captured["connect_args"]["keepalives"] == 1
+
+
+def test_acquire_unlocks_before_closing_on_the_error_path(monkeypatch):
+    """The pooler case is exactly where `close()` alone is not enough.
+
+    A transaction pooler returns the backend to its pool without a DISCARD, so a
+    session lock left on it outlives the connection and blocks that game's key
+    for the life of that backend. Unlock explicitly, then close.
+    """
+    conn = _FakeConn(
+        {"pg_try_advisory_lock": True, "pg_locks": None, "pg_advisory_unlock": True}
+    )
+    locks = _patch_engine(monkeypatch, conn)
+
+    with pytest.raises(locks.LockNotSessionScoped):
+        locks.GameLock(uuid.uuid4()).acquire()
+
+    assert any("pg_advisory_unlock" in stmt for stmt in conn.statements)
+    assert conn.closed is True
+
+
+def test_refused_pooler_ports_are_configurable(monkeypatch):
+    """6543 is Supabase's; a PgBouncer elsewhere answers on whatever port it got.
+
+    Nothing in the protocol announces transaction pooling, and the runtime check
+    fails open under load, so a deployment behind another pooler has to be able
+    to declare its port rather than silently falling through to the net.
+    """
+    from app.config import settings
+    from app.workers import locks
+
+    monkeypatch.setattr(settings, "lock_pooler_ports", "6543, 6432")
+    monkeypatch.setattr(settings, "lock_database_url", "postgresql://u:p@bouncer:6432/postgres")
+    monkeypatch.setattr(locks, "_engine", None)
+
+    with pytest.raises(locks.LockNotSessionScoped):
+        locks._lock_url()
+
+    monkeypatch.setattr(settings, "lock_database_url", "postgresql://u:p@direct:5432/postgres")
+    assert locks._lock_url().endswith("5432/postgres")
+
+
+def test_still_held_re_probes_before_declaring_the_lock_lost(monkeypatch):
+    """A blip must not cost an hour of ball tracking.
+
+    `still_held()` answering False aborts the job and re-runs it from scratch,
+    so a single failed query is re-probed. A *successful* query reporting no
+    lock is final — that one is not ambiguous.
+    """
+    from app.workers import locks
+
+    monkeypatch.setattr(locks, "_RE_PROBE_DELAY_SECONDS", 0)
+    conn = _FakeConn({"pg_try_advisory_lock": True, "pg_locks": 1})
+    locks_mod = _patch_engine(monkeypatch, conn)
+
+    lock = locks_mod.GameLock(uuid.uuid4())
+    assert lock.acquire() is True
+
+    calls = {"n": 0}
+    blip = {"armed": True}
+    real_execute = conn.execute
+
+    def flaky(clause, params=None):
+        if "pg_locks" in str(clause):
+            calls["n"] += 1
+            if blip["armed"]:
+                blip["armed"] = False
+                raise RuntimeError("momentary hiccup")
+        return real_execute(clause, params)
+
+    monkeypatch.setattr(conn, "execute", flaky)
+    assert lock.still_held() is True        # recovered on the second probe
+    assert calls["n"] == 2
+
+    conn.results["pg_locks"] = None         # a clean "not held" is final
+    calls["n"] = 0
+    assert lock.still_held() is False
+    assert calls["n"] == 1, "a definitive answer must not be re-probed"
+
+
+def test_transaction_pooler_port_is_refused_without_connecting(monkeypatch):
+    """The runtime `pg_locks` check is a net; the port is the deterministic guard.
+
+    A transaction pooler with an idle pool often serves both statements from the
+    same backend, so the check passes precisely when someone is validating a new
+    LOCK_DATABASE_URL by hand. Port 6543 cannot be right, so it never gets as far
+    as connecting.
+    """
+    from app.config import settings
+    from app.workers import locks
+
+    monkeypatch.setattr(settings, "lock_database_url", "postgresql://u:p@db.example:6543/postgres")
+    monkeypatch.setattr(locks, "_engine", None)
+
+    with pytest.raises(locks.LockNotSessionScoped) as exc:
+        locks._lock_url()
+    assert "6543" in str(exc.value)
+
+
+def test_still_held_reports_false_on_a_dead_connection(monkeypatch):
+    """"Cannot ask" and "not held" are the same answer here.
+
+    Treating an unanswerable connection as still-locked is the reading that lets
+    a job keep processing next to a redelivered copy.
+    """
+    conn = _FakeConn({"pg_try_advisory_lock": True, "pg_locks": 1})
+    locks = _patch_engine(monkeypatch, conn)
+
+    lock = locks.GameLock(uuid.uuid4())
+    assert lock.acquire() is True
+    assert lock.still_held() is True
+
+    conn.results["pg_locks"] = RuntimeError("server closed the connection")
+    assert lock.still_held() is False
+
+
+def test_release_warns_when_the_lock_was_already_gone(monkeypatch, caplog):
+    """`pg_advisory_unlock` returning false is the only trace of a lost lock."""
+    conn = _FakeConn(
+        {"pg_try_advisory_lock": True, "pg_locks": 1, "pg_advisory_unlock": False}
+    )
+    locks = _patch_engine(monkeypatch, conn)
+
+    lock = locks.GameLock(uuid.uuid4())
+    assert lock.acquire() is True
+    with caplog.at_level("WARNING"):
+        lock.release()
+
+    assert "may have run unprotected" in caplog.text
+
+
+# ── Against a real Postgres ──────────────────────────────────────────────────
+
+# Tried in order when LOCK_TEST_DATABASE_URL is unset. Localhost only, and
+# never `settings.database_url`: auto-detection must not be able to take locks
+# on a shared database because someone ran the suite. The compose `db` service
+# publishes 5432, so a running dev stack is enough for these to execute — in the
+# pre-commit hook as well as CI, which is the point (they are the tests that
+# actually demonstrate CF-184).
+_LOCAL_CANDIDATES = (
+    "postgresql://postgres:postgres@localhost:5432/clipfarm",
+    "postgresql://postgres:postgres@localhost:5432/postgres",
+)
+
+
+def _reachable(url: str) -> bool:
+    """Can we open a session on `url`? Cheap probe first, so a machine with no
+    Postgres at all costs a refused TCP connect rather than a connect timeout."""
+    import psycopg2
+
+    parts = urlsplit(url)
+    with socket.socket() as probe:
+        probe.settimeout(0.5)
+        if probe.connect_ex((parts.hostname or "localhost", parts.port or 5432)) != 0:
+            return False
+    try:
+        psycopg2.connect(url, connect_timeout=2).close()
+        return True
+    except Exception:
+        return False
+
+
+# Detection runs once per session: it is the same answer every time, and paying
+# it per test is what makes an unrunnable suite feel slow.
+_RESOLVED_URL: str | None = None
+
+
+def _lock_db_url() -> str:
+    """A Postgres URL for the lock tests, or skip.
+
+    An explicit LOCK_TEST_DATABASE_URL wins (CI sets it). Otherwise a local
+    Postgres is auto-detected, so a developer with the compose stack up runs
+    these without opting in.
+    """
+    global _RESOLVED_URL
+    if _RESOLVED_URL is None:
+        _RESOLVED_URL = os.environ.get("LOCK_TEST_DATABASE_URL", "") or next(
+            (c for c in _LOCAL_CANDIDATES if _reachable(c)), ""
+        )
+    if not _RESOLVED_URL:
+        pytest.skip(
+            "no local Postgres (start the compose stack, or set "
+            "LOCK_TEST_DATABASE_URL) — the advisory-lock tests need a real server"
+        )
+    return _RESOLVED_URL
+
+
+@pytest.fixture
+def pg_locks(monkeypatch):
+    """`app.workers.locks` pointed at the test database, engine reset per test."""
+    pytest.importorskip("psycopg2")
+    from app.config import settings
+    from app.workers import locks
+
+    monkeypatch.setattr(settings, "lock_database_url", _lock_db_url())
+    monkeypatch.setattr(locks, "_engine", None)
+    try:
+        locks._get_engine().connect().close()
+    except Exception as exc:                      # pragma: no cover - env dependent
+        pytest.skip(f"the lock test database is not reachable: {exc}")
+    yield locks
+    locks._engine = None
+
+
+def test_lock_is_mutually_exclusive(pg_locks):
+    gid = uuid.uuid4()
+    a = pg_locks.GameLock(gid)
+    b = pg_locks.GameLock(gid)
+    try:
+        assert a.acquire() is True
+        assert b.acquire() is False        # a holds it
+        a.release()
+        assert b.acquire() is True         # freed
+    finally:
+        a.release()
+        b.release()
+
+
+def test_different_games_do_not_block_each_other(pg_locks):
+    a = pg_locks.GameLock(uuid.uuid4())
+    b = pg_locks.GameLock(uuid.uuid4())
+    try:
+        assert a.acquire() is True
+        assert b.acquire() is True
+    finally:
+        a.release()
+        b.release()
+
+
+def _sever(conn) -> None:
+    """Make the next close of `conn` an RST rather than a clean shutdown.
+
+    `SO_LINGER {on, 0}` means the final close discards the socket and sends a
+    reset instead of a FIN, which is the closest a test can get to a worker that
+    disappears — a graceful `close()` is a *polite* disconnect and would let the
+    lock go even if abrupt loss did not.
+
+    The wrapper is `detach()`ed rather than closed: it borrows libpq's fd only
+    to set the option, and closing it too would free an fd libpq still owns.
+    """
+    raw = conn.connection.dbapi_connection
+    sock = socket.socket(fileno=raw.fileno())
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    sock.detach()
+    raw.close()
+    # Tell SQLAlchemy the DBAPI connection is gone, so its own cleanup doesn't
+    # try to roll back a dead socket at GC time and print a spurious traceback.
+    conn.invalidate()
+
+
+def test_still_held_notices_a_terminated_backend(pg_locks):
+    """The failure the checkpoints in tasks.py exist for.
+
+    The worker is alive and working; its *lock connection* is killed out from
+    under it (failover, `idle_session_timeout`, `pg_terminate_backend`). Postgres
+    releases the lock immediately, so a redelivery would acquire it and run
+    beside a job that never stopped — unless the holder notices, which is what
+    `still_held()` is for.
+    """
+    from sqlalchemy import text
+
+    lock = pg_locks.GameLock(uuid.uuid4())
+    assert lock.acquire() is True
+    assert lock.still_held() is True
+
+    with pg_locks._get_engine().connect() as killer:
+        pid = lock._conn.execute(text("SELECT pg_backend_pid()")).scalar()
+        killer.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+
+    assert lock.still_held() is False
+    lock.release()      # must stay quiet on a dead connection
+
+
+def test_lock_dies_with_the_worker(pg_locks):
+    """The CF-184 acceptance test, in miniature.
+
+    A hard-killed worker never runs `release()` — its connection just dies. The
+    lock must go with it so the redelivered task can acquire it, rather than
+    outliving the holder on a TTL and stranding the game in `processing`.
+
+    The kill here is an RST: no unlock, no FIN, the connection is torn away.
+    What this still does NOT cover is a *silent* loss — a partition where no
+    packet reaches the server at all, so the backend sits blocked on a read and
+    only the server's TCP keepalives reap it. That tail is minutes (bounded by
+    the `tcp_keepalives_idle` locks.py asks for) rather than instant, and it is
+    the one case that needs a real network to demonstrate.
+    """
+    gid = uuid.uuid4()
+    killed = pg_locks.GameLock(gid)
+    assert killed.acquire() is True
+
+    _sever(killed._conn)                   # the worker dies; no unlock, no FIN
+    killed.held = False
+
+    # Postgres frees the lock when it reaps the backend, which is prompt but not
+    # synchronous with our end of the socket dying — poll rather than assert on
+    # the first try.
+    redelivered = pg_locks.GameLock(gid)
+    try:
+        for _ in range(50):
+            if redelivered.acquire():
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("lock outlived the connection that held it")
+    finally:
+        redelivered.release()

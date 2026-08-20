@@ -34,12 +34,13 @@ celery_app.conf.update(
     # mid-task. Combined with the per-game lock (app/workers/locks.py) and the
     # idempotent clip refresh (CF-37), a redelivered or duplicated task is safe.
     #
-    # Caveat (#149): on a *hard* kill the dead worker's per-game lock outlives
-    # the visibility timeout (lock TTL > visibility_timeout by design), so the
-    # requeued copy hits a still-held lock and no-ops — the game stays
-    # "processing" until a stale-processing reaper clears it. So this
-    # requeue-on-kill only fully recovers a hard-killed job once #149 lands,
-    # which matters on Render (#98) where every deploy hard-kills in-flight jobs.
+    # This fully recovers a hard-killed job since CF-184: the per-game lock is a
+    # session-scoped Postgres advisory lock, released by the server when the
+    # dead worker's connection drops, so the requeued copy acquires it and runs.
+    # (Under the old Redis TTL lock the requeued copy hit a still-held lock and
+    # no-opped, stranding the game in "processing" — which is why #149 proposed
+    # a reaper. That matters most on Render (#98), where every deploy
+    # hard-kills in-flight jobs.)
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     # Redis default is 3600s: a task longer than that is redelivered while it's

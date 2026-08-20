@@ -27,9 +27,13 @@ VERSIONS = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
 # Delete the entry once that PR has merged and the file is present — the last
 # test in this module fails if you don't, so the list can't rot into a
 # permanent exemption.
-PENDING_UPSTREAM = {
+PENDING_UPSTREAM: dict[str, tuple[str, str]] = {
     # revision: (its down_revision, the PR that brings it)
-    "012": ("011", "#185 — feat/CF-163-presigned-direct-to-r2-uploads"),
+    #
+    # Empty because the two that were listed here have merged: 012 came with
+    # #185 (CF-163) and 013 with #194 (CF-91). Both are in this tree now, so
+    # the exemptions were removed — which is what
+    # `test_pending_upstream_entries_are_still_pending` exists to force.
 }
 
 

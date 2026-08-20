@@ -6,8 +6,8 @@ Two constraints carry real weight and are enforced here rather than only in the
 router: the unique pair (which is also what makes following idempotent) and the
 self-follow CHECK.
 
-Revision ID: 014
-Revises: 013
+Revision ID: 015
+Revises: 014
 Create Date: 2026-08-11
 """
 from typing import Sequence, Union
@@ -16,8 +16,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "014"
-down_revision: Union[str, None] = "013"
+revision: str = "015"
+down_revision: Union[str, None] = "014"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
