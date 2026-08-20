@@ -80,6 +80,8 @@ def _serialize(post: Post, clip: Clip, author: User) -> PostOut:
             proxy_url=None,
             start_time=clip.start_time,
             end_time=clip.end_time,
+            action_type=clip.action_type.value,
+            highlight_score=clip.highlight_score,
         ),
     )
 
