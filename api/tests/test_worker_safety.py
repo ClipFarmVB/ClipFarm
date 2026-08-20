@@ -12,7 +12,9 @@ demonstrated against a double. Those find a local Postgres by themselves (the
 compose `db` service is enough) or take LOCK_TEST_DATABASE_URL, which is what CI
 sets for its throwaway server; they skip only when there is no database at all.
 """
+import ast
 import os
+import pathlib
 import socket
 import struct
 import time
@@ -67,6 +69,110 @@ def test_lock_has_no_ttl_setting():
     from app.config import settings
 
     assert not hasattr(settings, "process_lock_ttl_seconds")
+
+
+# ── Lock-loss handler routing (structural) ───────────────────────────────────
+
+# LockLost subclasses RuntimeError, so it is caught by any `except Exception`
+# ahead of it. The three `_require_lock()` checkpoints sit inside stage `try`
+# blocks that catch `Exception` to keep a stage failure non-fatal — and one of
+# them (the condense stage) does, then falls through to the `ready` write, which
+# is how a lost lock once got stamped `ready` over another worker's live run.
+# The fix is one `except LockLost: raise` per such block. The behaviour is not
+# unit-testable without a seam into `process_game_task`, but the routing is:
+# resolve each checkpoint to the handler that catches it and require it to be a
+# LockLost one. This flips the moment a guard is removed.
+
+_TASKS_PY = pathlib.Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks.py"
+
+# Any of these ahead of a LockLost handler would swallow a LockLost.
+_CATCHES_LOCKLOST = {"LockLost", "RuntimeError", "Exception", "BaseException"}
+
+
+def _caught_type_names(handler: ast.ExceptHandler) -> list[str] | None:
+    """Exception names an `except` clause names, or None for a bare `except:`."""
+    node = handler.type
+    if node is None:
+        return None
+    elts = node.elts if isinstance(node, ast.Tuple) else [node]
+    names = []
+    for e in elts:
+        if isinstance(e, ast.Name):
+            names.append(e.id)
+        elif isinstance(e, ast.Attribute):
+            names.append(e.attr)
+    return names
+
+
+def _first_handler_catching_locklost(try_node: ast.Try) -> str | None:
+    """The name the first LockLost-catching handler on `try_node` matches on."""
+    for handler in try_node.handlers:
+        names = _caught_type_names(handler)
+        if names is None:            # bare except catches everything
+            return "bare except"
+        for name in names:
+            if name in _CATCHES_LOCKLOST:
+                return name
+    return None
+
+
+def test_every_require_lock_checkpoint_routes_to_a_locklost_handler():
+    """Each `_require_lock()` must reach a LockLost handler before any broad one.
+
+    Walks the enclosing `try` blocks of every checkpoint from innermost out; the
+    first one whose handlers can catch a LockLost has to catch it *as* LockLost.
+    A stage's `except Exception` sitting in front of that is the condense-stage
+    bug: LockLost swallowed, execution falling through to a terminal status
+    write for a game another worker owns.
+    """
+    tree = ast.parse(_TASKS_PY.read_text(encoding="utf-8"))
+    parent_of = {
+        child: node
+        for node in ast.walk(tree)
+        for child in ast.iter_child_nodes(node)
+    }
+
+    def enclosing_catchers(call: ast.AST):
+        """(Try, child) pairs where the call is in the try *body*, innermost out.
+
+        Only the body is caught by that try's handlers — a call in an `else`,
+        `except`, or `finally` propagates past them — so those are skipped.
+        """
+        node = call
+        while node in parent_of:
+            parent = parent_of[node]
+            if isinstance(parent, ast.Try) and node in parent.body:
+                yield parent
+            node = parent
+
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_require_lock"
+    ]
+    assert len(calls) == 3, (
+        f"expected 3 _require_lock() checkpoints, found {len(calls)} — update "
+        "this test if a checkpoint was added or removed"
+    )
+
+    for call in calls:
+        for try_node in enclosing_catchers(call):
+            match = _first_handler_catching_locklost(try_node)
+            if match is None:
+                continue            # this try cannot catch it; look further out
+            assert match == "LockLost", (
+                f"_require_lock() at tasks.py:{call.lineno} is caught by "
+                f"`except {match}` (try at line {try_node.lineno}) before any "
+                "LockLost handler — a lost lock would be swallowed and the job "
+                "would run on. Add `except LockLost: raise` ahead of it."
+            )
+            break
+        else:
+            raise AssertionError(
+                f"_require_lock() at tasks.py:{call.lineno} is not inside any "
+                "try block — it can no longer abort the job on a lost lock."
+            )
 
 
 # ── Lock key derivation ──────────────────────────────────────────────────────
@@ -207,8 +313,69 @@ def test_engine_asks_for_server_side_keepalives(monkeypatch):
     locks._get_engine()
     monkeypatch.setattr(locks, "_engine", None)
 
-    assert captured["connect_args"]["options"] == opts
+    assert opts in captured["connect_args"]["options"]
     assert captured["connect_args"]["keepalives"] == 1
+
+
+def test_every_call_on_the_lock_connection_is_bounded_in_time(monkeypatch):
+    """Keepalives are not a bound on a call that is already in flight.
+
+    They only fire on an *idle* socket, so a query sent just as the connection
+    is severed waits on TCP retransmission instead — ~15 min at the default
+    tcp_retries2. `still_held()` is one round trip at a stage boundary and
+    `release()` runs in a `finally`; neither may stall a worker that long on a
+    job it has already lost. `tcp_user_timeout` covers the severed socket,
+    `statement_timeout` the backend that is alive but never answers, and
+    `connect_timeout` the acquire that cannot reach the server at all.
+    """
+    from app.workers import locks
+
+    captured = {}
+    monkeypatch.setattr(locks, "_engine", None)
+    monkeypatch.setattr(
+        locks, "create_engine", lambda url, **kw: captured.update(kw) or "engine"
+    )
+    locks._get_engine()
+    monkeypatch.setattr(locks, "_engine", None)
+
+    args = captured["connect_args"]
+    assert args["connect_timeout"] > 0
+    assert args["tcp_user_timeout"] == locks.LOCK_TCP_USER_TIMEOUT_MS
+    assert f"statement_timeout={locks.LOCK_STATEMENT_TIMEOUT_MS}" in args["options"]
+
+
+class _LockLostProbe(RuntimeError):
+    """Stand-in for LockLost. Module level so the eager result can unpickle it."""
+
+
+def test_retry_exhaustion_reraises_the_original_exception():
+    """What the LockLost handler in tasks.py reads as "retries are spent".
+
+    `self.retry(exc=...)` does *not* raise MaxRetriesExceededError once the
+    retries are gone — Celery re-raises the exception it was handed. So the
+    handler distinguishes the two cases by `Retry` vs anything else, and this
+    pins the behaviour that makes that the right reading.
+    """
+    from celery import Celery
+    from celery.exceptions import MaxRetriesExceededError, Retry
+
+    app = Celery("lock_retry_probe")
+    app.conf.task_always_eager = True
+
+    seen = {}
+
+    @app.task(bind=True, max_retries=0)
+    def _spent(self):
+        try:
+            raise self.retry(exc=_LockLostProbe("lock lost"))
+        except Retry:                       # a real retry — never on this path
+            seen["retry"] = True
+            raise
+
+    result = _spent.apply()
+    assert "retry" not in seen
+    assert isinstance(result.result, _LockLostProbe)
+    assert not isinstance(result.result, MaxRetriesExceededError)
 
 
 def test_acquire_unlocks_before_closing_on_the_error_path(monkeypatch):

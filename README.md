@@ -201,13 +201,20 @@ python -m pytest ml/tests/               # ml eval metrics + dead-time
 cd api && python -m pytest tests/        # api (CI runs this; the hook does not)
 ```
 
-The api suite needs `requirements-dev.txt`, not just `requirements.txt`. Several
-tests guard their imports with `pytest.importorskip`, so without the test-only
-deps (`fakeredis[lua]` and friends) they **skip silently** — the run still reports
-green while covering less than you think. `requirements-dev.txt` pulls the runtime
-deps in via `-r requirements.txt`, so it is the only install you need. Test-only
-packages deliberately stay out of `requirements.txt`, which builds the production
-image via `Dockerfile.api`.
+The api suite needs `requirements-dev.txt`, not just `requirements.txt`. Almost
+every test guards its imports with `pytest.importorskip` (`sqlalchemy`,
+`fastapi`, `celery`, `psycopg2`), so an incomplete install makes them **skip
+silently** — the run still reports green while covering less than you think.
+`requirements-dev.txt` pulls the runtime deps in via `-r requirements.txt` and
+adds the test-only ones, so it is the only install you need. Test-only packages
+deliberately stay out of `requirements.txt`, which builds the production image
+via `Dockerfile.api`.
+
+The CF-184 advisory-lock tests skip on a second condition: they assert what the
+*database* does, so they need a real Postgres. They find one on localhost by
+themselves — `docker compose up db` is enough — or take `LOCK_TEST_DATABASE_URL`,
+which is what CI sets. Without either they skip, and the tests that actually
+demonstrate the per-game lock do not run.
 
 Notes:
 - **Default `DATABASE_URL` is the local `db` container** (`.env.docker.example`
