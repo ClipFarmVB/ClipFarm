@@ -369,9 +369,11 @@ queue only once it has been unacked for the broker `visibility_timeout`
 (`celery_visibility_timeout`, 2h) — and `restore_visible` runs only while a
 worker is polling the broker, which a `--pool=solo` worker busy on another game
 is not. So a killed game can sit in `processing` for the 2h timeout *plus*
-however long the surviving worker spends on other jobs first. This is the reason
-the timeout is deliberately not raised to cover the CPU-fallback worst case
-(CF-192): raising it only stretches this recovery window.
+however long the surviving worker spends on other jobs first. This is why the
+timeout is kept low rather than raised (CF-192): in the deployed image every
+model runs on Modal (CF-164, no local-CPU path), so no job approaches 2h and
+there is no worst case to size up for — raising it would only stretch this
+recovery window.
 
 **How immediate "released" is.** A Render deploy stops the container, the socket
 closes, and the lock goes within milliseconds. The slow case is a connection
