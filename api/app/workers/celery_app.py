@@ -8,7 +8,11 @@ if _project_root not in sys.path:
 
 from celery import Celery
 from celery.signals import celeryd_init
-from app.config import settings
+from app.config import (
+    REQUIRED_IN_PRODUCTION_WORKER,
+    production_config_error,
+    settings,
+)
 from app.observability import init_sentry
 
 celery_app = Celery(
@@ -68,6 +72,28 @@ def _init_worker_monitoring(**_kwargs):
     import) keeps the worker's CeleryIntegration out of the api process, which
     imports celery_app only to enqueue tasks."""
     init_sentry("worker")
+
+
+@celeryd_init.connect
+def _check_worker_production_config(**_kwargs):
+    """Refuse to boot a production worker without its Modal tokens (CF-172).
+
+    The rest of the production config guard is a validator on `Settings`
+    (app/config.py). These two cannot live there: `Settings` is imported by the
+    api as well, and the api never calls Modal — failing the web service over a
+    worker credential would be a worse outage than the one being fixed. This
+    signal fires only in the worker daemon, so the check lands on the process
+    that actually needs them.
+
+    Why it is a hard failure rather than a warning: since CF-164 no model ships
+    in this image, so blank tokens do not mean "slow local CPU" any more. Every
+    game completes with trajectory-only labels — output that looks like a
+    successful run and is not. Registered after Sentry above so the refusal is
+    reported before the process dies.
+    """
+    missing = settings.missing_in_production(REQUIRED_IN_PRODUCTION_WORKER)
+    if missing:
+        raise RuntimeError(production_config_error(missing))
 
 
 if settings.debug:

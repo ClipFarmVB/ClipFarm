@@ -202,6 +202,12 @@ services:
       # the pose-first fallback refuses its local path, because without
       # ultralytics run_detection() returns fabricated stub clips and this
       # pipeline would persist them as real highlights.
+      #
+      # Enforced since CF-172, not merely documented: with ENVIRONMENT=production
+      # the worker refuses to boot without both tokens, naming them. They are
+      # checked at worker boot rather than in the shared Settings validator —
+      # the api imports the same config and never calls Modal, so failing the
+      # web service over a worker credential would be the worse outage.
       - key: MODAL_TOKEN_ID
         sync: false
       - key: MODAL_TOKEN_SECRET

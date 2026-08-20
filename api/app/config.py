@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 LOCAL_DATABASE_URL = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
 
 
-# ── Production config guard (CF-172) ─────────────────────────────────────────
+# ── Production config guard (CF-172) ───────────────────────────────
 # Render's env group only creates keys that carry a literal `value:`; every
 # `sync: false` key is invisible until a human pastes it in. So on a fresh
 # blueprint apply these are simply absent, and each one fails late and
@@ -16,17 +16,52 @@ LOCAL_DATABASE_URL = "postgresql+asyncpg://postgres:password@localhost:5432/clip
 # which reads as a Supabase outage; a blank R2 or Supabase credential
 # survives boot and fails at the first upload or auth check instead.
 #
-# Named here, once, at startup. Not `sentry_dsn` — blank there means
-# "monitoring off", which is a supported production state.
-_REQUIRED_IN_PRODUCTION = (
-    "DATABASE_URL",
-    "SUPABASE_URL",
-    "SUPABASE_SERVICE_ROLE_KEY",
-    "R2_ACCOUNT_ID",
-    "R2_ACCESS_KEY_ID",
-    "R2_SECRET_ACCESS_KEY",
-    "R2_PUBLIC_URL",
+# FIELD names, not env names — `Settings.env_name_for()` derives the variable to
+# print, so a field that ever grows an alias keeps reporting the right one.
+# test_config.py pins every entry against `model_fields`, which is what turns a
+# typo here into a CI failure rather than an AttributeError on a production box.
+#
+# Not `sentry_dsn` — blank there means "monitoring off", a supported
+# production state.
+REQUIRED_IN_PRODUCTION = (
+    "database_url",
+    "supabase_url",
+    "supabase_service_role_key",
+    "r2_account_id",
+    "r2_access_key_id",
+    "r2_secret_access_key",
+    "r2_public_url",
 )
+
+# Required of the WORKER only, and therefore not checked by the validator below:
+# `Settings` is shared config that the api imports too, and the api never calls
+# Modal — refusing to boot the whole web service over a worker credential would
+# be a worse failure than the one being fixed. Checked at worker boot instead
+# (app/workers/celery_app.py), which is the process that needs them.
+#
+# They belong in the same guard rather than in a comment: since CF-164 no model
+# ships in the worker image, so blank tokens are not "slow local CPU" any more.
+# Every game comes out with trajectory-only labels — plausible, persisted, and
+# wrong — which is the CF-172 failure mode one layer up.
+REQUIRED_IN_PRODUCTION_WORKER = (
+    "modal_token_id",
+    "modal_token_secret",
+)
+
+
+def production_config_error(missing: list[str]) -> str:
+    """The message both checks raise. Names the variables, and says where they
+    come from — the whole point of CF-172 is that the old symptom named
+    neither."""
+    return (
+        "ENVIRONMENT=production but these required settings are not set: "
+        + ", ".join(missing)
+        + ". On Render they are `sync: false` keys in the clipfarm-shared env "
+        "group — Render does not create them, so they stay absent until "
+        "someone adds them in the dashboard "
+        "(DEPLOY_RENDER.md § Fill the secrets)."
+    )
+
 
 
 class Settings(BaseSettings):
@@ -224,29 +259,42 @@ class Settings(BaseSettings):
     # Delete raw uploads after N days (0 = keep forever)
     raw_upload_retention_days: int = 7
 
-    @model_validator(mode="after")
-    def _check_production_settings(self) -> "Settings":
+    @classmethod
+    def env_name_for(cls, field: str) -> str:
+        """The environment variable that sets `field`.
+
+        pydantic-settings derives it by upper-casing the field name, unless the
+        field declares an alias. Asking the model rather than assuming
+        `field.upper()` keeps the error message honest if one ever does.
+        """
+        info = cls.model_fields[field]
+        alias = info.validation_alias or info.alias
+        return alias if isinstance(alias, str) else field.upper()
+
+    def missing_in_production(self, fields: tuple[str, ...]) -> list[str]:
+        """Env names of `fields` that production has not set. Empty elsewhere,
+        so callers do not repeat the environment test."""
         if self.environment.strip().lower() != "production":
-            return self
+            return []
 
         missing = [
-            name for name in _REQUIRED_IN_PRODUCTION
-            if not str(getattr(self, name.lower())).strip()
+            self.env_name_for(field)
+            for field in fields
+            if not str(getattr(self, field)).strip()
         ]
         # An unset DATABASE_URL is not blank, it is the local default — same
         # cause, so report it in the same list rather than as a second error.
-        if self.database_url == LOCAL_DATABASE_URL and "DATABASE_URL" not in missing:
-            missing.insert(0, "DATABASE_URL")
+        if "database_url" in fields and self.database_url == LOCAL_DATABASE_URL:
+            name = self.env_name_for("database_url")
+            if name not in missing:
+                missing.insert(0, name)
+        return missing
 
+    @model_validator(mode="after")
+    def _check_production_settings(self) -> "Settings":
+        missing = self.missing_in_production(REQUIRED_IN_PRODUCTION)
         if missing:
-            raise ValueError(
-                "ENVIRONMENT=production but these required settings are not set: "
-                + ", ".join(missing)
-                + ". On Render they are `sync: false` keys in the clipfarm-shared "
-                "env group — Render does not create them, so they stay absent "
-                "until someone adds them in the dashboard "
-                "(DEPLOY_RENDER.md § Fill the secrets)."
-            )
+            raise ValueError(production_config_error(missing))
         return self
 
 

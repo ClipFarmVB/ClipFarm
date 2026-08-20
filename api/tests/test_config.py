@@ -19,7 +19,12 @@ import pytest
 
 pytest.importorskip("pydantic_settings")
 
-from app.config import LOCAL_DATABASE_URL, Settings  # noqa: E402
+from app.config import (  # noqa: E402
+    LOCAL_DATABASE_URL,
+    REQUIRED_IN_PRODUCTION,
+    REQUIRED_IN_PRODUCTION_WORKER,
+    Settings,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -152,3 +157,98 @@ def test_vps_compose_turns_the_guard_on_for_both_services():
             f"docker-compose.prod.yml must pin ENVIRONMENT for {service} — that "
             "box is production and .env.docker carries dev defaults"
         )
+
+
+def test_empty_database_url_counts_as_missing(clean_env):
+    """The literal Render shape: a key added to the group and left blank.
+
+    Distinct from the localhost-default path above — there the variable is
+    absent and pydantic supplies the default; here it is present and empty, so
+    the sentinel comparison never fires and only the emptiness check catches it.
+    This is the case the deploy docs lean on hardest, so pin it.
+    """
+    env = dict(PRODUCTION_ENV, DATABASE_URL="")
+
+    with pytest.raises(Exception) as exc:
+        _settings(**{k.lower(): v for k, v in env.items()})
+
+    assert "DATABASE_URL" in str(exc.value)
+    assert str(exc.value).count("DATABASE_URL") == 1, (
+        "an empty DATABASE_URL must be reported once, not once per detection path"
+    )
+
+
+def test_required_names_are_real_fields_with_the_expected_env_names(clean_env):
+    """The guard stores field names and derives env names from the model.
+
+    Both halves need pinning. A typo'd field name would otherwise surface as an
+    AttributeError inside the validator — on a production box, at boot, which is
+    exactly the situation this whole change exists to make legible. And the env
+    names are what operators paste into the dashboard, so they must match the
+    ones documented in render.yaml.
+    """
+    for field in REQUIRED_IN_PRODUCTION + REQUIRED_IN_PRODUCTION_WORKER:
+        assert field in Settings.model_fields, f"{field} is not a Settings field"
+        assert Settings.env_name_for(field) == field.upper()
+
+    assert set(PRODUCTION_ENV) - {"ENVIRONMENT"} == {
+        Settings.env_name_for(f) for f in REQUIRED_IN_PRODUCTION
+    }
+
+
+def test_modal_tokens_are_required_of_the_worker_only(clean_env):
+    """Scoping, deliberately (CF-172 review).
+
+    Modal is a worker dependency and `Settings` is shared config the api
+    imports, so requiring the tokens in the validator would take the web service
+    down over a credential it never uses. They are checked at worker boot
+    instead — but they ARE checked: since CF-164 the image ships no model, so
+    blank tokens mean every game completes with trajectory-only labels rather
+    than running slowly.
+    """
+    settings = _settings(**{k.lower(): v for k, v in PRODUCTION_ENV.items()})
+
+    # The api half is satisfied without them...
+    assert settings.modal_token_id == ""
+    # ...and the worker half is not.
+    assert settings.missing_in_production(REQUIRED_IN_PRODUCTION_WORKER) == [
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+    ]
+    assert settings.missing_in_production(REQUIRED_IN_PRODUCTION) == []
+
+
+def test_worker_boot_refuses_a_production_worker_without_modal(clean_env, monkeypatch):
+    """The check has to be wired to something. `celeryd_init` fires in the
+    worker daemon and not in the api process that imports celery_app to enqueue,
+    which is what makes the scoping above hold in practice.
+    """
+    pytest.importorskip("celery")
+    from app.workers import celery_app as worker_module
+
+    production = _settings(**{k.lower(): v for k, v in PRODUCTION_ENV.items()})
+    monkeypatch.setattr(worker_module, "settings", production)
+
+    with pytest.raises(RuntimeError) as exc:
+        worker_module._check_worker_production_config()
+
+    assert "MODAL_TOKEN_ID" in str(exc.value)
+    assert "MODAL_TOKEN_SECRET" in str(exc.value)
+
+
+def test_worker_boot_is_silent_when_configured_or_local(clean_env, monkeypatch):
+    """And a configured production worker — like every dev worker, which is not
+    in production mode at all — must boot untouched."""
+    pytest.importorskip("celery")
+    from app.workers import celery_app as worker_module
+
+    configured = _settings(
+        **{k.lower(): v for k, v in PRODUCTION_ENV.items()},
+        modal_token_id="token-id",
+        modal_token_secret="token-secret",
+    )
+    monkeypatch.setattr(worker_module, "settings", configured)
+    worker_module._check_worker_production_config()
+
+    monkeypatch.setattr(worker_module, "settings", _settings())
+    worker_module._check_worker_production_config()
