@@ -1,5 +1,6 @@
 """Cloudflare R2 (or AWS S3) object storage helpers."""
 import uuid
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import boto3
@@ -241,6 +242,45 @@ def presign_from_stored_url(
 
 def delete_file(key: str) -> None:
     _client().delete_object(Bucket=settings.r2_bucket_name, Key=key)
+
+
+def list_objects(prefix: str) -> Iterator[dict]:
+    """
+    Yield {"key", "last_modified"} for every object under `prefix`.
+
+    Paginated, so a prefix with more than 1000 objects is walked in full rather
+    than silently truncated at the first page. Blocking API calls — a caller on
+    the event loop must go through run_in_threadpool.
+    """
+    paginator = _client().get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=settings.r2_bucket_name, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            yield {"key": obj["Key"], "last_modified": obj["LastModified"]}
+
+
+def delete_files(keys: Sequence[str]) -> list[str]:
+    """
+    Delete many objects in batches of 1000 (the S3/R2 per-request maximum).
+
+    Returns the keys that were NOT deleted, so a caller can log or retry them;
+    a batch that fails outright is reported the same way rather than raising,
+    since one bad batch must not abandon the rest. Deleting a missing key is
+    not an error — S3 and R2 both report it as deleted.
+    """
+    failed: list[str] = []
+    client = _client()
+    for i in range(0, len(keys), 1000):
+        batch = list(keys[i:i + 1000])
+        try:
+            resp = client.delete_objects(
+                Bucket=settings.r2_bucket_name,
+                Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True},
+            )
+        except Exception:
+            failed.extend(batch)
+            continue
+        failed.extend(err["Key"] for err in resp.get("Errors", []))
+    return failed
 
 
 def plan_part_count(size_bytes: int, part_size: int) -> int:

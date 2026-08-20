@@ -1,6 +1,7 @@
 """Synchronous DB helpers for use inside Celery tasks (no asyncio event loop)."""
 import uuid
 from datetime import datetime
+from urllib.parse import urlparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -200,3 +201,56 @@ def sync_delete_game_clips(game_id: uuid.UUID) -> list[str]:
             s.delete(clip)
         s.commit()
     return urls
+
+
+def sync_expired_raw_uploads(cutoff: datetime) -> list[tuple[uuid.UUID, str]]:
+    """
+    (game_id, raw_video_url) for every game whose raw upload predates `cutoff`
+    and is safe to purge (CF-194).
+
+    Restricted to terminal states: a queued or processing game still needs its
+    source, and the retention window is far longer than any run, so excluding
+    them costs nothing.
+    """
+    with Session(_engine) as s:
+        rows = (
+            s.query(Game.id, Game.raw_video_url)
+            .filter(
+                Game.raw_video_url.isnot(None),
+                Game.created_at < cutoff,
+                Game.status.in_((GameStatus.ready, GameStatus.failed)),
+            )
+            .all()
+        )
+        return [(gid, url) for gid, url in rows]
+
+
+def sync_referenced_raw_keys() -> set[str]:
+    """
+    Every R2 key still referenced by a game row, across all statuses.
+
+    The safety guard for the retention sweep's reconciliation pass: an object
+    in this set is live and must never be deleted, whatever its age. `uploading`
+    rows are included deliberately — an upload in flight is referenced from the
+    moment its ticket is issued (CF-163).
+    """
+    with Session(_engine) as s:
+        rows = s.query(Game.raw_video_url).filter(Game.raw_video_url.isnot(None)).all()
+    return {urlparse(url).path.lstrip("/") for (url,) in rows if url}
+
+
+def sync_clear_raw_video_url(game_id: uuid.UUID, expected_url: str) -> bool:
+    """
+    Null a game's raw pointer, but only while it still holds `expected_url`.
+
+    False means the row changed underneath us (deleted, or the pointer moved)
+    and the caller must NOT delete the object — it may no longer be the one
+    this sweep looked at.
+    """
+    with Session(_engine) as s:
+        game = s.get(Game, game_id)
+        if not game or game.raw_video_url != expected_url:
+            return False
+        game.raw_video_url = None
+        s.commit()
+        return True

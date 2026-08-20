@@ -22,6 +22,10 @@ class ClipOut(BaseModel):
     thumbnail_url: str | None
     labels: list[str] = []
     created_at: datetime
+    # False once the game's raw upload has been purged by the retention sweep
+    # (CF-194) — the clip still plays, but it can no longer be re-cut, so the
+    # UI disables trimming instead of firing a request that 400s.
+    source_available: bool = True
 
 
 class ClipTagRequest(BaseModel):
