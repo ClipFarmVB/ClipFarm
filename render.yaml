@@ -21,6 +21,18 @@
 envVarGroups:
   - name: clipfarm-shared
     envVars:
+      # Turns on the required-settings check in api/app/config.py (CF-172): with
+      # this set, api and worker refuse to start when any `sync: false` key
+      # below is still absent, naming the ones that are missing. Without it a
+      # blank DATABASE_URL falls back to a localhost default and the pre-deploy
+      # migration dies with `Connect call failed ('127.0.0.1', 5432)` — which
+      # reads as a Supabase outage, not as a missing variable.
+      #
+      # A literal `value:`, deliberately: Render only creates keys that carry
+      # one, so this arrives on its own. A `sync: false` guard would be absent
+      # in exactly the situation it exists to catch.
+      - key: ENVIRONMENT
+        value: production
       - key: DATABASE_URL              # Supabase pooler URL, postgresql+asyncpg://…  (Pro tier — see CF-18)
         sync: false
       # The worker's per-game lock is a session-scoped Postgres advisory lock
@@ -121,6 +133,10 @@ services:
         generateValue: true
       - key: API_BASE_URL             # this service's own public URL (custom domain or *.onrender.com)
         sync: false
+      # Required since CF-172, and checked at startup like the shared-group
+      # secrets: left unset the api boots clean, passes its health check, and
+      # CORS-blocks every request from the real web origin — an outage with no
+      # server-side symptom at all.
       - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.ca
         sync: false
       - key: REDIS_URL
@@ -190,6 +206,12 @@ services:
       # the pose-first fallback refuses its local path, because without
       # ultralytics run_detection() returns fabricated stub clips and this
       # pipeline would persist them as real highlights.
+      #
+      # Enforced since CF-172, not merely documented: with ENVIRONMENT=production
+      # the worker refuses to boot without both tokens, naming them. They are
+      # checked at worker boot rather than in the shared Settings validator —
+      # the api imports the same config and never calls Modal, so failing the
+      # web service over a worker credential would be the worse outage.
       - key: MODAL_TOKEN_ID
         sync: false
       - key: MODAL_TOKEN_SECRET
