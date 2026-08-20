@@ -31,6 +31,11 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
   const [trimLoading, setTrimLoading] = useState(false);
   const [labelLoading, setLabelLoading] = useState(false);
 
+  // CF-194: the raw upload is deleted after its retention window, and a re-cut
+  // reads from it. Undefined means an older payload without the field — treat
+  // that as available so trimming isn't hidden on a stale response.
+  const canTrim = clip.source_available !== false;
+
   async function handleTag(playerId: string) {
     setTagging(false);
     const updated = await tagClip(clip.id, playerId);
@@ -213,9 +218,12 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
 
             <button
               onClick={() => { setTrimming(!trimming); setLabeling(false); }}
+              disabled={!canTrim}
+              title={canTrim ? undefined : "Source video expired — this clip can no longer be re-cut"}
               className={cn(
                 "flex items-center gap-0.5 rounded px-1.5 py-1 text-[10px] font-medium transition-colors",
-                trimming ? "text-brand bg-brand/8" : "text-subtle hover:text-muted hover:bg-surface-hover"
+                trimming ? "text-brand bg-brand/8" : "text-subtle hover:text-muted hover:bg-surface-hover",
+                !canTrim && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-subtle"
               )}
             >
               <ChevronLeft size={9} /><ChevronRight size={9} className="-ml-1" />
@@ -280,7 +288,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
         )}
 
         {/* Trim panel */}
-        {trimming && (
+        {trimming && canTrim && (
           <div className="mt-2 pt-2 border-t border-border">
             <div className="flex items-center justify-between gap-2">
               {/* Start controls */}

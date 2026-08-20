@@ -268,7 +268,7 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `abandoned_upload_hours` | `24` | Upload tickets never completed are swept (row deleted, multipart aborted) on the owner's next presign. |
 | `max_upload_duration_seconds` | `14400` (4 h) | Longest single video accepted. Checked at presign against the client-declared length, then again by the worker against the probed one. |
 | `quota_window_hours` / `quota_max_games_per_window` / `quota_max_minutes_per_window` | `24` / `5` / `360` | Per-user rolling processing quota (cost guardrail — GPU inference is ~$0.25 per hour of footage). Both caps apply. Counted from the `upload_events` ledger, so deleting a game does not refund a slot. A duration the file size contradicts (missing, `0`, or physically impossible for the byte count) is priced from the size instead of trusted, and settled to the probed value by the worker. `GET /games/upload-config` returns the limits plus the caller's remaining allowance. |
-| `raw_upload_retention_days` | `7` | Intended raw-upload TTL (enforcement is a backlog item). |
+| `raw_upload_retention_days` | `7` | Raw uploads are deleted this many days after upload (`0` = keep forever). Clips outlive the source; trimming a clip needs it, so this is also how long trims stay available. |
 
 Secrets go in `.env.docker` (gitignored) for the stack, `api/.env` and `web/.env.local` for
 local non-Docker runs. Never commit credentials.
