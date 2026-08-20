@@ -13,6 +13,7 @@ from app.models.clip import Clip
 from app.models.collection import Collection, CollectionClip
 from app.models.correction import Correction
 from app.models.post import Post
+from app.models.upload_event import UploadEvent
 
 __all__ = [
     "User",
@@ -24,4 +25,5 @@ __all__ = [
     "CollectionClip",
     "Correction",
     "Post",
+    "UploadEvent",
 ]

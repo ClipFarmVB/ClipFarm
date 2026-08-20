@@ -1,12 +1,23 @@
 #!/bin/sh
 # ClipFarm pre-commit hook
-# Mirrors exactly what GitHub Actions CI runs so failures are caught locally.
+# Runs the same checks GitHub Actions CI runs, so failures are caught locally.
+# Not a byte-for-byte mirror: CI uses two Python environments (ruff/mypy in a
+# dependency-light one, then api/tests after installing the app deps), while the
+# hook has one. See the mypy note below.
 #
 # Install for your clone:
 #   git config core.hooksPath .hooks
 #
-# Requirements: ruff, mypy, pytest, and npm must be on PATH.
-# In the api/ virtualenv: pip install ruff mypy pytest
+# Requirements: ruff, mypy, pytest, and npm on PATH. For the full api/tests step:
+#   pip install -r api/requirements-dev.txt     # app deps + pytest + fakeredis
+# Install that and every step runs. With only `pip install ruff mypy pytest`,
+# the api/tests step skips (loudly) rather than erroring — the app-importing
+# tests can't collect without the app's own deps.
+#
+# One consequence of the single environment: with the api deps installed, the
+# mypy step below sees stubs CI's dependency-light run does not, so it can report
+# findings CI never will. Those are not regressions — CI installs those deps only
+# after it has already run mypy, on purpose.
 # For npm: it should already be available.
 
 set -e
@@ -40,6 +51,33 @@ if ! _pytest_out=$(python -m pytest ml/tests/ -q --no-header 2>&1); then
 fi
 echo "ok"
 
+# ── API: unit tests ───────────────────────────────────────────────────────────
+# Runs from api/ (in a subshell, so later steps stay at the repo root) because
+# the tests do `from app... import ...`.
+#
+# Unlike ml/tests these need the application's own dependencies, plus the
+# test-only ones. The probe is `fakeredis`, not an app runtime dep: it is the one
+# importorskip target that lives only in requirements-dev.txt, so importing it
+# proves the whole dev set is present. (pytest is pinned there too, but it is
+# already assumed on PATH for the ml/tests step above, so it can't discriminate a
+# dev install from a plain one.) Probing a runtime dep (pydantic-settings, etc.)
+# would pass after a plain `pip install -r requirements.txt` and then let
+# test_worker_safety.py's CF-65a Redis-lock test silently importorskip — the
+# exact passing-without-executing failure the requirements-dev install exists to
+# end. Treat a set without fakeredis as "not runnable here" and leave it to CI
+# rather than blocking the commit on a setup step nobody was told to do.
+printf "  pytest api/tests ... "
+if ! python -c "import fakeredis" >/dev/null 2>&1; then
+  echo "skipped (pip install -r api/requirements-dev.txt to run these locally)"
+  _api_tests_skipped=1
+elif ! _api_pytest_out=$(cd api && python -m pytest tests/ -q --no-header 2>&1); then
+  echo "FAIL"
+  echo "$_api_pytest_out"
+  exit 1
+else
+  echo "ok"
+fi
+
 # ── Web: ESLint ───────────────────────────────────────────────────────────────
 printf "  eslint (web) ...     "
 npm run lint --workspace=web --silent
@@ -59,4 +97,8 @@ if ! _vitest_out=$(npm run test --workspace=web --silent 2>&1); then
 fi
 echo "ok"
 
-echo "pre-commit: all checks passed."
+if [ -n "$_api_tests_skipped" ]; then
+  echo "pre-commit: all checks passed (api/tests skipped — pip install -r api/requirements-dev.txt to run them)."
+else
+  echo "pre-commit: all checks passed."
+fi

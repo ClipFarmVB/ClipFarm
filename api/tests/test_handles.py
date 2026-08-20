@@ -69,7 +69,7 @@ def test_suggestion_disambiguates_with_a_suffix():
 
 
 def test_suggestion_never_returns_a_reserved_handle():
-    """`admin@clipfarm.app` must not be handed the `admin` handle."""
+    """`admin@example.com` must not be handed the `admin` handle."""
     assert handles.suggest_from_email("admin@example.com") != "admin"
 
 
