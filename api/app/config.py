@@ -1,10 +1,110 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Zero-config local defaults, and the sentinels the production check below looks
+# for. A blank-string check cannot see these settings go missing: the variable is
+# absent, pydantic supplies the default, and the process runs on it. Nobody
+# points production at localhost on purpose, so reaching one of these values in
+# production means the variable was never set.
+LOCAL_DATABASE_URL = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
+LOCAL_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+
+
+# ── Production config guard (CF-172) ───────────────────────────────
+# Render's env group only creates keys that carry a literal `value:`; every
+# `sync: false` key is invisible until a human pastes it in. So on a fresh
+# blueprint apply these are simply absent, and each one fails late and
+# unrecognisably: DATABASE_URL falls back to the local default and the
+# pre-deploy migration dies with `Connect call failed ('127.0.0.1', 5432)`,
+# which reads as a Supabase outage; a blank R2 or Supabase credential
+# survives boot and fails at the first upload or auth check instead.
+#
+# FIELD names, not env names — `Settings.env_name_for()` derives the variable to
+# print, so a field that ever grows an alias keeps reporting the right one.
+# test_config.py pins every entry against `model_fields`, which is what turns a
+# typo here into a CI failure rather than an AttributeError on a production box.
+#
+# Not `sentry_dsn` — blank there means "monitoring off", a supported
+# production state.
+REQUIRED_IN_PRODUCTION = (
+    "database_url",
+    # Not a credential, and it fails in a place no server log shows: with the
+    # localhost default the api boots clean and passes its health check, then
+    # every request from the real web origin is CORS-blocked. A total frontend
+    # outage whose only symptom is in the browser console.
+    "cors_origins",
+    "supabase_url",
+    "supabase_service_role_key",
+    "r2_account_id",
+    "r2_access_key_id",
+    "r2_secret_access_key",
+    "r2_public_url",
+)
+
+# Required of the WORKER only, and therefore not checked by the validator below:
+# `Settings` is shared config that the api imports too, and the api never calls
+# Modal — refusing to boot the whole web service over a worker credential would
+# be a worse failure than the one being fixed. Checked at worker boot instead
+# (app/workers/celery_app.py), which is the process that needs them.
+#
+# They belong in the same guard rather than in a comment: since CF-164 no model
+# ships in the worker image, so blank tokens are not "slow local CPU" any more.
+# Every game comes out with trajectory-only labels — plausible, persisted, and
+# wrong — which is the CF-172 failure mode one layer up.
+REQUIRED_IN_PRODUCTION_WORKER = (
+    "modal_token_id",
+    "modal_token_secret",
+    # Same bar as the Modal tokens, and it is the primary detection signal:
+    # unset, run_detection() falls through to the pose-first path (tasks.py),
+    # which persists clips with weaker boundaries and reports the run a success.
+    "roboflow_api_key",
+)
+
+
+# Fields whose local default is indistinguishable from "never set". Checked in
+# addition to emptiness, not instead of it — a key added to the Render group and
+# left blank arrives as "" and never reaches the default at all, so both paths
+# have to be covered.
+LOCAL_DEFAULT_SENTINELS = {
+    "database_url": LOCAL_DATABASE_URL,
+    "cors_origins": LOCAL_CORS_ORIGINS,
+}
+
+
+def production_config_error(missing: list[str]) -> str:
+    """The message both checks raise. Names the variables and where they come
+    from on each deploy path — the whole point of CF-172 is that the old symptom
+    named neither, and a message that names only one path sends half its readers
+    to the wrong file.
+    """
+    return (
+        "ENVIRONMENT=production but these required settings are not set: "
+        + ", ".join(missing)
+        + ". On Render these are declared `sync: false`, which means Render "
+        "does not create them at all — they stay absent until someone adds "
+        "them in the dashboard (DEPLOY_RENDER.md § Fill the secrets). On the "
+        "VPS stack they come from .env.docker (DEPLOY.md § 4). Note that "
+        "DATABASE_URL and CORS_ORIGINS have working localhost defaults, so "
+        "\"unset\" here can mean the default is still in place."
+    )
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # Environment
+    #
+    # "production" turns on the required-settings check below (CF-172). It is
+    # NOT `debug` inverted: `debug` defaults to False because dev auth fallbacks
+    # must be off unless asked for, so gating on `not debug` would make every
+    # zero-config run — a bare `uvicorn`, CI's `pytest api/tests` — start
+    # demanding secrets. This flag defaults the other way round, so the safe
+    # default for each is its own default.
+    #
+    # Every real deployment sets it: render.yaml pins it in the clipfarm-shared
+    # group with a literal `value:` (not `sync: false`), so it arrives without a
+    # human step — the guard cannot be the thing you forgot to fill in.
+    environment: str = "development"
     debug: bool = False  # Enables dev fallbacks (DEV_USER_ID auth, etc.)
     # Whether the pose-first fallback scan may return `_stub_detections` —
     # fabricated clips at invented timestamps, which the worker PERSISTS. This
@@ -14,8 +114,12 @@ class Settings(BaseSettings):
     # invented highlights to the database. A switch that decides whether made-up
     # data reaches production deserves its own name and its own default.
     allow_stub_detections: bool = False
+    # Same localhost-default shape as cors_origins below, and deliberately NOT
+    # in the production guard: nothing reads it. It configures no client and
+    # builds no outbound URL today, so a stale value in production breaks
+    # nothing. Move it into REQUIRED_IN_PRODUCTION the day something does.
     api_base_url: str = "http://localhost:8000"
-    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"  # comma-separated
+    cors_origins: str = LOCAL_CORS_ORIGINS  # comma-separated
 
     # Upload limits
     # 8 GB (CF-167). The old 2 GB was sized for an api that proxied the bytes;
@@ -113,7 +217,7 @@ class Settings(BaseSettings):
     condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
 
     # Database
-    database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/clipfarm"
+    database_url: str = LOCAL_DATABASE_URL
     # Connection used only for the worker's per-game advisory lock (CF-184).
     # Empty = use database_url, which is right locally and for any direct or
     # session-mode connection. Set this when DATABASE_URL is a TRANSACTION-mode
@@ -169,6 +273,14 @@ class Settings(BaseSettings):
     # ever an approximation of "is the holder alive", and it was the reason a
     # hard-killed worker stranded a game in `processing`.
 
+    # Ball detection (Roboflow). Declared here for the worker's production
+    # guard; the pipeline call sites predate this class and read
+    # os.environ["ROBOFLOW_API_KEY"] directly, so the guard is only as good as
+    # the real environment — which is what both production paths set. A value
+    # reaching this field from an `.env` file alone would satisfy the check and
+    # not the call sites.
+    roboflow_api_key: str = ""
+
     # Modal
     modal_token_id: str = ""
     modal_token_secret: str = ""
@@ -183,6 +295,38 @@ class Settings(BaseSettings):
 
     # Delete raw uploads after N days (0 = keep forever)
     raw_upload_retention_days: int = 7
+
+    @classmethod
+    def env_name_for(cls, field: str) -> str:
+        """The environment variable that sets `field`.
+
+        pydantic-settings derives it by upper-casing the field name, unless the
+        field declares an alias. Asking the model rather than assuming
+        `field.upper()` keeps the error message honest if one ever does.
+        """
+        info = cls.model_fields[field]
+        alias = info.validation_alias or info.alias
+        return alias if isinstance(alias, str) else field.upper()
+
+    def missing_in_production(self, fields: tuple[str, ...]) -> list[str]:
+        """Env names of `fields` that production has not set. Empty elsewhere,
+        so callers do not repeat the environment test."""
+        if self.environment.strip().lower() != "production":
+            return []
+
+        return [
+            self.env_name_for(field)
+            for field in fields
+            if not str(getattr(self, field)).strip()
+            or getattr(self, field) == LOCAL_DEFAULT_SENTINELS.get(field)
+        ]
+
+    @model_validator(mode="after")
+    def _check_production_settings(self) -> "Settings":
+        missing = self.missing_in_production(REQUIRED_IN_PRODUCTION)
+        if missing:
+            raise ValueError(production_config_error(missing))
+        return self
 
 
 settings = Settings()

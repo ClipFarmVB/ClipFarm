@@ -42,7 +42,8 @@ production deploy existed.
   ```
 - Credentials on hand for `.env.docker`: Supabase (`DATABASE_URL` pooler string,
   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`), Cloudflare R2 (`R2_*`), Roboflow
-  (`ROBOFLOW_API_KEY`), Modal (`MODAL_TOKEN_*`), and a `JWT_SECRET`.
+  (`ROBOFLOW_API_KEY`), Modal (`MODAL_TOKEN_*`), and a `JWT_SECRET` — plus the
+  origin the site will be served from, for `CORS_ORIGINS`.
 - SSH access to a fresh Ubuntu 22.04/24.04 host.
 
 ### Box sizing
@@ -129,6 +130,9 @@ Must be set for this deploy:
 - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_PUBLIC_URL`.
 - `ROBOFLOW_API_KEY`.
 - **`MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`** — the prerequisite from §0.
+- **`CORS_ORIGINS`** → the origin(s) the site is served from, comma-separated (e.g. `https://your-site.example`). Not in the example file's active lines because the dev stack wants its localhost default; this box does not.
+
+> Since **CF-172** these are enforced, not just documented: `docker-compose.prod.yml` runs api and worker with `ENVIRONMENT=production`, so a missing one refuses the boot and names it rather than failing later at the first upload, auth check, or browser request. `CORS_ORIGINS` and `DATABASE_URL` have working localhost defaults, so the guard treats the default itself as "never set" — which is the only way their absence is visible at all.
 
 > Secrets-on-disk is the minimum for CF-41. Productionizing secret handling
 > (no plaintext `.env` files) is tracked separately in **CF-90 (#90)** and
