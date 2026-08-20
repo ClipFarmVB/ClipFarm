@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from celery.exceptions import Retry
+
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -458,6 +460,32 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 "the retry can re-acquire it"
             )
 
+    def _mark_failed_if_lock_free(message: str) -> None:
+        """Write `failed` for this game, but only if nobody else holds its lock.
+
+        Used after we have lost the lock and spent our retries: the row must not
+        strand in `processing`, but it also must not be stamped over a live run
+        another worker owns. Taking the lock proves the game is not in flight
+        anywhere — and the write happens while the probe is still held, so the
+        fact it establishes cannot lapse between the check and the write. A probe
+        that cannot answer leaves the row alone: a wrong `failed` on a live job
+        is worse than a row left behind for the next run.
+        """
+        probe = GameLock(gid)
+        try:
+            if not probe.acquire():
+                return
+        except Exception:
+            logger.warning(
+                "Could not probe the lock for game %s — leaving its row alone",
+                game_id, exc_info=True,
+            )
+            return
+        try:
+            sync_set_game_status(gid, "failed", error_message=message)
+        finally:
+            probe.release()
+
     try:
         try:
             acquired = lock.acquire()
@@ -858,6 +886,14 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         )
                     else:
                         logger.warning("Condense requested but no active windows detected — skipping")
+                except LockLost:
+                    # A lost lock is not "condense failed, carry on" — carrying
+                    # on reaches the `ready` write below and stamps it over
+                    # another worker's live `processing`. `LockLost` subclasses
+                    # RuntimeError, so without this it would be swallowed here.
+                    # Re-raise past this handler to the task-level one, which
+                    # steps aside instead.
+                    raise
                 except Exception as condense_err:
                     logger.exception("Condense stage failed (%s) — game proceeds without it", condense_err)
                 _lap("condensing")
@@ -866,6 +902,31 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             logger.info("Done: %d clips for game %s", len(rows), game_id)
             logger.info("STAGE_TIMING stage=TOTAL seconds=%.2f", _timing.perf_counter() - _run_t0)
 
+    except LockLost as lost:
+        # We no longer own this game, so we are no longer the authority on its
+        # row — the worker holding the lock is, and it may be part-way through
+        # its own run right now. The generic handler below would stamp `failed`
+        # over that live `processing`, and the retry it schedules no-ops on the
+        # held lock, so nothing would put the row right until the other worker
+        # finished. Step aside instead: log, drop the lock, and let the retry
+        # re-acquire it if it is genuinely free.
+        logger.warning("Aborting game %s: %s", game_id, lost)
+        lock.release()          # before the probe below, so we don't see ourselves
+        try:
+            raise self.retry(exc=lost)
+        except Retry:
+            raise
+        except Exception:
+            # Retries are spent. (Celery re-raises the `exc` we handed it rather
+            # than MaxRetriesExceededError, so "not a Retry" is the reliable
+            # reading of exhaustion, not the exception type.)
+            #
+            # The row must not be left in `processing` forever — that stranding
+            # is exactly what CF-184 removed. But only write it if nobody else
+            # holds the lock, and only while that proof still holds — see
+            # _mark_failed_if_lock_free.
+            _mark_failed_if_lock_free(str(lost))
+            raise
     except Exception as exc:
         # A game deleted mid-flight is the cause of the failure (missing video on
         # retry, FK violation on save), not a transient error — abandon, don't
