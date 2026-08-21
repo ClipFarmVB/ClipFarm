@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ml.pipeline.dead_time import (
     Abstained,
+    REFERENCE_FRAME_HEIGHT,
     active_windows_from_contacts,
     active_windows_from_detections,
     active_windows_guarded,
@@ -19,6 +20,18 @@ from ml.pipeline.dead_time import (
     speed_samples,
     track_is_usable,
 )
+
+
+def test_reference_frame_height_matches_ball():
+    """
+    dead_time duplicates ball.REFERENCE_FRAME_HEIGHT rather than importing it,
+    to stay dependency-light. The comment at that constant has always claimed
+    this assertion existed; the CF-174 review found it never had been written,
+    so the two could drift silently — the same class of unit mismatch CF-174 fixes.
+    """
+    from ml.pipeline.ball import REFERENCE_FRAME_HEIGHT as BALL_REFERENCE_FRAME_HEIGHT
+
+    assert REFERENCE_FRAME_HEIGHT == BALL_REFERENCE_FRAME_HEIGHT
 
 
 def contacts_at(*times: float) -> list[dict]:

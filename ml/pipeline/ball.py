@@ -123,6 +123,17 @@ CONTACT_HIT_SPEED_PXPS    = 240.0   # px/s: a real hit has speed on at least one
 MIN_CONTACT_SPACING       = 0.6     # seconds: debounce — one hit can't fire twice
 MAX_SAMPLE_GAP_SEC        = 1.0     # skip triples spanning a detection gap
 MIN_SPEED_PXPS            = 120.0   # px/s: ignore near-stationary ball (rolling / held)
+# The scale factor is capped so the scaled hit-speed floor cannot reach
+# SEG_MAX_SPEED_PXPS. _segment_track splits any pair faster than that ceiling,
+# so speed inside a segment is always below it — once CONTACT_HIT_SPEED_PXPS *
+# scale meets it the two constraints are disjoint and find_contacts returns
+# nothing at all: no keep-windows, no highlight clips, and nothing in the logs
+# saying why. Unclamped that lands at 1800p, and phones shoot 2160p by default.
+# 0.80 caps the floor at 960 px/s, i.e. scale caps at 4.0 (1440p); below that
+# nothing changes, so every fixture measured for CF-174 (<= 1080p) is unaffected.
+# This is a floor-side guard for a ceiling-side problem — the real fix is
+# scaling SEG_MAX_SPEED_PXPS, blocked on the tracking pollution documented there.
+CONTACT_SPEED_CEILING_FRAC = 0.80   # cap scaled contact speeds at this × SEG_MAX_SPEED_PXPS
 # Legacy thresholds — still used by fuse_with_ball_contacts "strong contact" check
 CONTACT_ANGLE_DEG   = 25.0  # minimum direction change (degrees)
 CONTACT_SPEED_RATIO = 0.35  # speed change fraction
@@ -464,6 +475,11 @@ def _scale_for(frame_height: int) -> float:
     reference (no scaling, i.e. pre-CF-174 behaviour) and say so, because
     silently applying 360p thresholds to a 1080p video is the bug this exists
     to prevent.
+
+    The result is capped so the scaled hit-speed floor stays clear of
+    SEG_MAX_SPEED_PXPS (see CONTACT_SPEED_CEILING_FRAC). Past the cap the
+    thresholds stop tracking resolution, which is wrong but bounded and logged;
+    without it find_contacts silently finds nothing at all at >= 1800p.
     """
     if frame_height <= 0:
         logger.warning(
@@ -472,7 +488,20 @@ def _scale_for(frame_height: int) -> float:
             REFERENCE_FRAME_HEIGHT,
         )
         return 1.0
-    return frame_height / REFERENCE_FRAME_HEIGHT
+
+    scale     = frame_height / REFERENCE_FRAME_HEIGHT
+    max_scale = CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS / CONTACT_HIT_SPEED_PXPS
+    if scale > max_scale:
+        logger.warning(
+            "frame_height %d capped for contact thresholds: scale %.2f -> %.2f so the "
+            "hit-speed floor (%.0f px/s) stays under the segmentation ceiling "
+            "SEG_MAX_SPEED_PXPS (%.0f px/s). Contact detection is under-normalized at "
+            "this resolution — scaling the ceiling is the real fix (CF-174 follow-up).",
+            frame_height, scale, max_scale,
+            CONTACT_HIT_SPEED_PXPS * max_scale, SEG_MAX_SPEED_PXPS,
+        )
+        return max_scale
+    return scale
 
 
 def _segment_track(positions: list[BallPosition]) -> list[list[BallPosition]]:
@@ -805,6 +834,19 @@ def contacts_to_rallies(
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _read_frame_height(video_path: str) -> int:
+    """
+    Frame height of a video, or 0 if it cannot be read — which _scale_for
+    already treats as "caller did not know" and warns about.
+    """
+    import cv2
+
+    cap = cv2.VideoCapture(video_path)
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    return height
+
+
 def detect_contacts(
     video_path: str,
     api_key: str | None = None,
@@ -824,7 +866,7 @@ def detect_contacts(
         raise ValueError("ROBOFLOW_API_KEY not set and api_key not provided")
 
     tracker  = track_ball(video_path, key, sample_every=sample_every)
-    contacts = find_contacts(tracker)
+    contacts = find_contacts(tracker, _read_frame_height(video_path))
     return contacts
 
 
@@ -854,6 +896,6 @@ def detect_rallies(
     video_duration = total_frames / fps
 
     tracker  = track_ball(video_path, key, sample_every=sample_every)
-    contacts = find_contacts(tracker)
+    contacts = find_contacts(tracker, frame_height)
     rallies  = contacts_to_rallies(contacts, video_duration, frame_height)
     return rallies

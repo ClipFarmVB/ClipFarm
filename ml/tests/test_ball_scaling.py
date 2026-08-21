@@ -92,6 +92,49 @@ class TestResolutionInvariance:
         assert len(find_contacts(drifting, frame_height=0)) == 1
 
 
+class TestContactCeilingClamp:
+    """
+    The scaled hit-speed floor walks into the *unscaled* SEG_MAX_SPEED_PXPS
+    ceiling. _segment_track guarantees speed stays below that ceiling inside a
+    segment, so once the floor reaches it no sample can satisfy both gates and
+    find_contacts returns nothing — no keep-windows, no clips, no error.
+    """
+
+    def test_the_collision_is_real_without_a_cap(self):
+        """The premise: unclamped, the floor meets the ceiling at 1800p."""
+        unclamped = 1800 / REFERENCE_FRAME_HEIGHT
+        assert ball.CONTACT_HIT_SPEED_PXPS * unclamped >= SEG_MAX_SPEED_PXPS
+
+    def test_scale_is_capped_and_warns(self, caplog):
+        import logging
+        cap = (
+            ball.CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS
+            / ball.CONTACT_HIT_SPEED_PXPS
+        )
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
+            assert _scale_for(2160) == pytest.approx(cap)
+        assert "capped" in caplog.text
+
+    def test_capped_floor_stays_under_the_segmentation_ceiling(self):
+        assert ball.CONTACT_HIT_SPEED_PXPS * _scale_for(2160) < SEG_MAX_SPEED_PXPS
+
+    def test_4k_footage_still_produces_contacts(self):
+        """
+        The regression this guards. A ball at 1100 px/s sits inside the band the
+        clamp preserves — under the 1200 px/s teleport split, over the capped
+        960 px/s floor. Unclamped, the floor would be 1440 px/s and this returns
+        zero contacts at every speed the segmenter admits.
+        """
+        struck = track_at_speed(1100.0, frame_height=2160)
+        assert len(find_contacts(struck, frame_height=2160)) == 1
+
+    def test_measured_resolutions_are_untouched_by_the_cap(self):
+        """Every fixture CF-174 was measured on is <= 1080p; their numbers must not move."""
+        assert _scale_for(int(REFERENCE_FRAME_HEIGHT)) == 1.0
+        assert _scale_for(720) == pytest.approx(2.0)
+        assert _scale_for(1080) == pytest.approx(3.0)
+
+
 class TestSegmentationIsNotScaled:
     def test_seg_thresholds_ignore_frame_height(self):
         """
