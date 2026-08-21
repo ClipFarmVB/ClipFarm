@@ -191,6 +191,14 @@ class Settings(BaseSettings):
     # while keeping verified highlights. Override via env without rebuild.
     highlight_score_threshold: float = 0.50  # Rallies scoring below this are dropped before pose/cutting
 
+    # ffmpeg encode/decode threads per cut (CF-224). ffmpeg reads the visible
+    # core count, which in a container is the host's — on Render's 16-core hosts
+    # x264 spawned ~24 encoder threads and its per-thread 1080p frame buffers
+    # OOM-killed the 512 MB worker. The right value follows the instance plan,
+    # not the host: 2 fits the worker's 0.5 CPU with room to spare. Raise it in
+    # the env when the box actually has cores to use.
+    ffmpeg_threads: int = 2
+
     # Pose refinement (classify_within_windows). Production defaults; the
     # Docker dev stack overrides these to lighter values for CPU speed.
     pose_model: str = "yolov8s-pose.pt"

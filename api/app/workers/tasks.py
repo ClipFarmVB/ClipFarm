@@ -174,6 +174,7 @@ def _track_ball_cached(
 @celery_app.task(bind=True, name="recut_clip", max_retries=2, default_retry_delay=30)
 def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start: float, end: float):
     """Re-cut a single clip from the source video after a trim adjustment."""
+    from app.config import settings as app_settings
     from app.workers._sync_db import sync_update_clip_url
     from app.services import storage as s3
     from ml.pipeline.clip import recut_single
@@ -189,7 +190,10 @@ def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start:
             logger.info("Downloading source video for recut of clip %s", clip_id)
             s3.download_file(r2_key, local_video)
 
-            clip_path, thumb_path = recut_single(str(local_video), start, end, tmp)
+            clip_path, thumb_path = recut_single(
+                str(local_video), start, end, tmp,
+                threads=app_settings.ffmpeg_threads,
+            )
 
             # Upload new clip + thumbnail
             clip_url = s3.upload_file(clip_path, s3.clip_key(gid, cid), "video/mp4")
@@ -857,6 +861,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             clips_data = generate_clips(
                 str(local_video), detections, tmp,
                 on_progress=lambda f: progress.update(f * 0.7),
+                threads=app_settings.ffmpeg_threads,
             )
 
             # ── 3. Upload clips and thumbnails, save to DB ────────────────
@@ -975,6 +980,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         condensed_path, condensed_duration = generate_condensed_video(
                             str(local_video), windows, tmp,
                             on_progress=progress.update,
+                            threads=app_settings.ffmpeg_threads,
                         )
                         condensed_url = s3.upload_file(
                             condensed_path, s3.condensed_key(gid), "video/mp4",
