@@ -172,6 +172,10 @@ input[type="range"]::-webkit-slider-thumb:hover {
 }
 
 /* ── Hover-revealed controls ────────────────────────────────────────── */
+/* To check these in a driven browser you must reload after resizing: CSS
+   `hover`/`pointer` queries keep their load-time value under CDP emulation
+   even though `matchMedia` in JS reports the new one, so the rule below
+   silently appears not to apply. See web/AGENTS.md. */
 /* Marks a row action that fades in on hover — the fade itself stays in the
    Tailwind classes. A touch screen never hovers, so there the control is
    shown outright; without this, delete/remove are simply unreachable on a

@@ -15,7 +15,13 @@
  * dead to clicks until hydration; guessing "desktop" costs at worst a closed
  * drawer that is briefly tabbable on a phone before hydration corrects it.
  *
- * Keep the query in step with `LG` in globals.css.
+ * Keep the query in step with the breakpoint in globals.css.
+ *
+ * Heads up when verifying this in a driven browser: resizing through CDP
+ * updates `matchMedia().matches` but never fires `change`, so the
+ * subscription below looks dead when it is fine. Reload at the target width
+ * and read the value instead. See "Verifying responsive work in a headless
+ * browser" in web/AGENTS.md.
  */
 import { useSyncExternalStore } from "react";
 
