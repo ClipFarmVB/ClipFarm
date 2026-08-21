@@ -28,16 +28,21 @@ import { useSyncExternalStore } from "react";
 /** Tailwind's `lg`. The same breakpoint the drawer's CSS uses. */
 const LG_QUERY = "(min-width: 64rem)";
 
+// One list for the module. Lazy because this file is imported during SSR,
+// where `matchMedia` does not exist — and getSnapshot runs on every render,
+// so minting a fresh MediaQueryList there is pure waste.
+let list: MediaQueryList | null = null;
+const mql = () => (list ??= window.matchMedia(LG_QUERY));
+
 function subscribe(onChange: () => void) {
-  const mql = window.matchMedia(LG_QUERY);
-  mql.addEventListener("change", onChange);
-  return () => mql.removeEventListener("change", onChange);
+  const m = mql();
+  m.addEventListener("change", onChange);
+  return () => m.removeEventListener("change", onChange);
 }
 
+const getSnapshot = () => mql().matches;
+const getServerSnapshot = () => true;
+
 export function useIsDesktopLayout(): boolean {
-  return useSyncExternalStore(
-    subscribe,
-    () => window.matchMedia(LG_QUERY).matches,
-    () => true
-  );
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }

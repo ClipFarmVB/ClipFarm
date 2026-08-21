@@ -73,7 +73,14 @@ export function Sidebar() {
       const first = items[0];
       const last = items[items.length - 1];
       const active = document.activeElement;
-      if (e.shiftKey ? active === first || !aside.contains(active) : active === last) {
+      // Focus outside the drawer wraps in *either* direction. It lands there
+      // by clicking chrome inside the drawer that cannot hold focus — the
+      // "Workspace" heading, the padding — which leaves it on <body>. Guarding
+      // only the shift branch let a forward Tab from there fall through to the
+      // hamburger behind the backdrop and walk on into <main>.
+      const outside = !aside.contains(active);
+      const leaving = e.shiftKey ? active === first : active === last;
+      if (outside || leaving) {
         e.preventDefault();
         (e.shiftKey ? last : first).focus();
       }
@@ -93,7 +100,7 @@ export function Sidebar() {
     <>
       {/* Mobile top bar — the only chrome visible until the drawer is opened.
           <main> reserves its 52px with padding, so it never covers content. */}
-      <header className="fixed inset-x-0 top-0 z-30 flex h-[52px] items-center gap-1 border-b border-border bg-background px-2 lg:hidden">
+      <header className="fixed inset-x-0 top-0 z-20 flex h-[52px] items-center gap-1 border-b border-border bg-background px-2 lg:hidden">
         <button
           ref={triggerRef}
           onClick={() => setOpen(true)}
