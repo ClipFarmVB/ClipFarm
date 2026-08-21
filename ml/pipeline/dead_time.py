@@ -22,9 +22,11 @@ logger = logging.getLogger(__name__)
 Interval = tuple[float, float]
 
 # The tracking space speed_pxps defaults were tuned in. Keep in sync with
-# ball.REFERENCE_FRAME_HEIGHT (asserted in ml/tests/test_dead_time.py) — not
-# imported from there because ball.py pulls in cv2, and this module stays
-# dependency-light so the dead-time harness runs on a laptop.
+# ball.REFERENCE_FRAME_HEIGHT — asserted by test_reference_frame_height_matches_ball
+# in ml/tests/test_dead_time.py. Not imported from there because ball.py imports
+# numpy at module scope and this module stays dependency-light so the dead-time
+# harness runs on a laptop. (The original reason given here was cv2, which CF-174
+# made lazy; numpy is the one that remains.)
 REFERENCE_FRAME_HEIGHT = 360.0
 
 
