@@ -272,7 +272,7 @@ export function UploadZone() {
         onDrop={(e) => { e.preventDefault(); if (!uploading) onDrop(e); else setDragging(false); }}
         onClick={() => !file && document.getElementById("file-input")?.click()}
         className={cn(
-          "relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-12 text-center transition-all duration-200",
+          "relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition-all duration-200 sm:p-12",
           dragging
             ? "border-brand/50 bg-brand/5 scale-[1.01]"
             : file
@@ -302,7 +302,7 @@ export function UploadZone() {
             {!uploading && (
               <button
                 onClick={() => document.getElementById("file-input")?.click()}
-                className="mt-3 text-[11px] text-subtle hover:text-muted transition-colors"
+                className="mt-2 min-h-9 px-2 text-[11px] text-subtle hover:text-muted transition-colors"
               >
                 Click to change file
               </button>
@@ -354,7 +354,7 @@ export function UploadZone() {
             checked={condense}
             onChange={(e) => setCondense(e.target.checked)}
             disabled={uploading}
-            className="mt-0.5 accent-[var(--brand,#6366f1)]"
+            className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--brand,#6366f1)]"
           />
           <span>
             <span className="block text-[13px] font-medium text-foreground">Remove dead time</span>
