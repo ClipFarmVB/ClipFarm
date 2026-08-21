@@ -49,6 +49,16 @@ export function Sidebar() {
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
 
+  const isDesktop = useIsDesktopLayout();
+
+  // Crossing into the desktop layout ends the drawer, rather than leaving it
+  // open behind a CSS-pinned column. Without this, rotating a tablet to
+  // landscape and back re-presents the drawer — and re-runs the focus effect
+  // below, stealing focus — with no user action at all. Adjusting state during
+  // render is React's documented alternative to an effect for exactly this
+  // "reset when an input changes" shape; it re-renders before committing.
+  if (open && isDesktop) setOpen(false);
+
   // Only while it is actually an overlay — the hook's CSS drops the lock by
   // itself above `lg`, where the aside is a column and there is no backdrop.
   useBodyScrollLockBelowLg(open);
@@ -57,7 +67,6 @@ export function Sidebar() {
   // focus moves in on open and back to the trigger on close, and Tab stays
   // inside rather than walking into the page behind the backdrop. None of it
   // applies from `lg`, where the aside is an ordinary column in the page.
-  const isDesktop = useIsDesktopLayout();
   useEffect(() => {
     if (!open || isDesktop) return;
     const trigger = triggerRef.current;
@@ -134,11 +143,22 @@ export function Sidebar() {
           every link in the tab order and in the accessibility tree, so a
           keyboard or screen-reader user walks through a drawer they cannot
           see. It must not be inert once it is the desktop column, which is
-          why this one thing needs the breakpoint in JS. */}
+          why this one thing needs the breakpoint in JS.
+
+          The dialog semantics are conditional for the same reason. As an
+          overlay it is a modal dialog and `aria-modal` is what keeps a screen
+          reader's swipe navigation inside it — the Tab trap only constrains
+          the keyboard, so without this a VoiceOver user swipes straight into
+          the page behind the backdrop. As the desktop column it is ordinary
+          page furniture and must go back to being a plain complementary
+          landmark, so both attributes come off. */}
       <aside
         ref={asideRef}
         id="app-sidebar"
         inert={!open && !isDesktop}
+        role={isDesktop ? undefined : "dialog"}
+        aria-modal={isDesktop ? undefined : true}
+        aria-label="Main navigation"
         className={cn(
           "fixed inset-y-0 left-0 z-40 flex w-[264px] max-w-[82vw] flex-col bg-background border-r border-border",
           "transition-transform duration-200 ease-out lg:w-[220px] lg:max-w-none lg:translate-x-0",

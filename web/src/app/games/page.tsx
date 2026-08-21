@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertCircle, ArrowRight, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowRight, Pencil, Plus, Trash2 } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
@@ -213,15 +213,16 @@ function GamesContent() {
                   maxLength={255}
                 />
               ) : (
-                <button
-                  onClick={() => startRename(game)}
-                  className="min-w-0 w-full text-left"
-                  title="Click to rename"
-                >
+                /* The title opens the game. It used to start a rename, which
+                   on a stacked mobile row meant the full-width control did the
+                   rare destructive-feeling thing and opening needed the 32px
+                   arrow — the wrong way round for the primary action. Rename
+                   now has its own button, as it already does on Collections. */
+                <Link href={`/games/${game.id}`} className="min-w-0 w-full">
                   <span className="block truncate text-[13px] font-medium text-foreground group-hover:text-brand transition-colors">
                     {game.title}
                   </span>
-                </button>
+                </Link>
               )}
 
               {/* One meta line under the title on a phone; `contents` hands
@@ -246,15 +247,25 @@ function GamesContent() {
 
                 <div className="ml-auto flex items-center gap-1 sm:ml-0 sm:justify-end">
                   <button
+                    onClick={() => startRename(game)}
+                    className="hover-reveal opacity-0 group-hover:opacity-100 flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-foreground hover:bg-surface-hover transition-all sm:h-6 sm:w-6"
+                    title="Rename game"
+                    aria-label="Rename game"
+                  >
+                    <Pencil size={11} />
+                  </button>
+                  <button
                     onClick={() => handleDelete(game.id, game.title)}
                     disabled={deleting === game.id}
                     className="hover-reveal opacity-0 group-hover:opacity-100 flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-30 sm:h-6 sm:w-6"
                     title="Delete game"
+                    aria-label="Delete game"
                   >
                     <Trash2 size={12} />
                   </button>
                   <Link
                     href={`/games/${game.id}`}
+                    aria-label={`Open ${game.title}`}
                     className="flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-foreground hover:bg-surface-hover transition-colors sm:h-6 sm:w-6"
                   >
                     <ArrowRight size={12} />

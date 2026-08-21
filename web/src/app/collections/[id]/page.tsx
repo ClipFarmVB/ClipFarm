@@ -123,16 +123,22 @@ function CollectionContent() {
                 }
                 onSave={(clipId) => setSavingClipId(clipId)}
               />
-              {/* Remove from collection. Bottom-left is the one corner the
-                  card itself leaves free — the badges own the top row and the
-                  duration owns bottom-right. */}
+              {/* Remove from collection. This button is positioned against
+                  the wrapper, which is the whole card — not the thumbnail — so
+                  a `bottom-*` offset lands on the footer, over the Label/Save
+                  row and over the trim panel's Start controls when it is open.
+                  Only the top edge of the wrapper coincides with the thumbnail.
+                  Top-right is free there: the badges sit top-left, the duration
+                  is bottom-right *inside* the thumbnail, and the selection
+                  checkbox that would otherwise own this corner is never
+                  rendered here — this page passes no `onToggleSelect`. */}
               <button
                 onClick={() => handleRemove(clip.id)}
                 disabled={removingId === clip.id}
                 title="Remove from collection"
                 aria-label="Remove from collection"
                 className={cn(
-                  "hover-reveal opacity-0 group-hover:opacity-100 absolute bottom-2 left-2 z-10 flex items-center justify-center h-7 w-7 rounded bg-black/50 text-white/70 backdrop-blur-sm transition-all hover:bg-red-500/80 hover:text-white",
+                  "hover-reveal opacity-0 group-hover:opacity-100 absolute top-2 right-2 z-10 flex items-center justify-center h-7 w-7 rounded bg-black/50 text-white/70 backdrop-blur-sm transition-all hover:bg-red-500/80 hover:text-white",
                   removingId === clip.id && "opacity-100 bg-red-500/60"
                 )}
               >

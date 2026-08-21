@@ -318,7 +318,7 @@ export default function GamePage() {
               );
             })}
 
-            <div className="flex w-full items-center gap-3 sm:ml-auto sm:w-auto">
+            <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-2 sm:ml-auto sm:w-auto sm:flex-nowrap">
               {/* Sort toggle: chronological vs highlight score */}
               <button
                 onClick={() =>
@@ -335,7 +335,7 @@ export default function GamePage() {
               </button>
 
               {/* Highlight score slider */}
-              <div className="hidden sm:flex items-center gap-2">
+              <div className="flex items-center gap-2">
                 <span className="text-[10px] text-muted">Highlights</span>
                 <input
                   type="range"
@@ -345,7 +345,7 @@ export default function GamePage() {
                   onChange={(e) =>
                     setFilters((f) => ({ ...f, min_score: Number(e.target.value) / 100 }))
                   }
-                  className="w-20"
+                  className="w-24 sm:w-20"
                 />
                 <span className="text-[10px] text-muted tabular-nums w-6 text-right">
                   {Math.round((filters.min_score ?? 0) * 100)}%
@@ -353,7 +353,7 @@ export default function GamePage() {
               </div>
 
               {/* Confidence slider */}
-              <div className="hidden sm:flex items-center gap-2">
+              <div className="flex items-center gap-2">
                 <span className="text-[10px] text-muted">Confidence</span>
                 <input
                   type="range"
@@ -363,7 +363,7 @@ export default function GamePage() {
                   onChange={(e) =>
                     setFilters((f) => ({ ...f, min_confidence: Number(e.target.value) / 100 }))
                   }
-                  className="w-20"
+                  className="w-24 sm:w-20"
                 />
                 <span className="text-[10px] text-muted tabular-nums w-6 text-right">
                   {Math.round((filters.min_confidence ?? 0) * 100)}%

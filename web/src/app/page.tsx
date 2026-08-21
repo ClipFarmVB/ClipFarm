@@ -142,8 +142,11 @@ export default function HomePage() {
       </div>
 
       {/* ── Hero: B + C + E ─────────────────────────────────────── */}
-      {/* No overflow-hidden here — it would clip the card stack shadows. */}
-      {/* Horizontal scroll is already suppressed by the page root overflow-x-hidden. */}
+      {/* No overflow-hidden here — it would clip the card stack shadows, and
+          nothing needs clipping: the negative margins below exactly cancel the
+          page container's gutters at every breakpoint, so the bleed reaches the
+          viewport edge and stops. (An earlier comment here credited a page-root
+          `overflow-x-hidden`; there has never been one.) */}
       <div className="relative -mx-4 sm:-mx-6 lg:-mx-8">
         {/* E: Dot grid — drifts diagonally */}
         <div className="dot-grid absolute inset-0 pointer-events-none" />
