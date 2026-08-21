@@ -28,19 +28,42 @@ def ball(monkeypatch):
     sys.modules.pop("ml.pipeline.ball", None)
     import ml.pipeline.ball as module
 
-    monkeypatch.setitem(sys.modules, "ml.pipeline.ball", module)
-    return module
+    try:
+        yield module
+    finally:
+        # Drop it rather than restoring it. This module object closed over the
+        # fake cv2/numpy above, so leaving it in sys.modules hands the stubs to
+        # whoever imports ml.pipeline.ball next. (A trailing `monkeypatch.setitem`
+        # cannot do this job: it snapshots the value that is *already* there,
+        # i.e. this same module, and restores it.)
+        sys.modules.pop("ml.pipeline.ball", None)
 
 
 def test_missing_inference_runtime_raises_a_named_error(ball):
-    with pytest.raises(ball.BallRuntimeUnavailable, match="no Roboflow"):
+    with pytest.raises(ball.BallRuntimeUnavailable, match="not importable in this process"):
         ball._load_model("key")
 
 
-def test_the_error_is_recognisable_as_permanent(ball):
-    """Same shape as detect.PoseRuntimeUnavailable: a RuntimeError subclass, so
-    existing broad handling still catches it, with a distinct type for callers
-    that should not retry — no retry makes `inference` appear."""
+def test_the_message_does_not_assume_which_process_it_is(ball):
+    """`_load_model` is the fallback path in the Celery worker and the PRIMARY
+    path inside the Modal GPU image (ml/modal_app.py), where `inference` IS
+    installed — so this firing there means a broken image, not a missing
+    fallback. A message phrased from the worker's vantage misdirects in exactly
+    the case that is a genuine bug."""
+    with pytest.raises(ball.BallRuntimeUnavailable) as exc:
+        ball._load_model("key")
+
+    assert "fall back" not in str(exc.value)
+    assert "clipfarm-ball-tracking" in str(exc.value), (
+        "point at where the runtime does live instead"
+    )
+
+
+def test_the_error_is_still_caught_by_existing_broad_handling(ball):
+    """A RuntimeError subclass, like detect.PoseRuntimeUnavailable. The distinct
+    type separates "no runtime here" from "tracking ran and failed"; unlike the
+    pose one it is NOT translated to PermanentPipelineError, because ball
+    tracking has the pose-first scan left to try."""
     assert issubclass(ball.BallRuntimeUnavailable, RuntimeError)
 
 

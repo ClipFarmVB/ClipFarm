@@ -28,8 +28,13 @@ def detect(monkeypatch):
     sys.modules.pop("ml.pipeline.detect", None)
     import ml.pipeline.detect as module
 
-    monkeypatch.setitem(sys.modules, "ml.pipeline.detect", module)
-    return module
+    try:
+        yield module
+    finally:
+        # See the same teardown in test_ball_runtime_guard.py: this module holds
+        # the fake cv2/numpy, and the `monkeypatch.setitem` that used to sit here
+        # restored the stub-bound module rather than removing it.
+        sys.modules.pop("ml.pipeline.detect", None)
 
 
 def test_refuses_to_fabricate_clips_by_default(detect):

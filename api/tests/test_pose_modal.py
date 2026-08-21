@@ -754,13 +754,7 @@ def fake_ball(monkeypatch, tmp_path):
     return ball
 
 
-def test_modal_failure_survives_the_missing_local_ball_runtime(monkeypatch, tmp_path, fake_ball):
-    """The Modal error is the half an operator can act on, so it has to reach
-    the log. Before CF-225 it was swallowed by the fallback attempt and the game
-    failed with `ModuleNotFoundError: inference` — which reads as a broken image,
-    not as an outage."""
-    from app.workers import tasks
-
+def _modal_down(monkeypatch, tasks):
     monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: True)
 
     def boom(*args, **kwargs):
@@ -768,17 +762,90 @@ def test_modal_failure_survives_the_missing_local_ball_runtime(monkeypatch, tmp_
 
     monkeypatch.setattr(tasks, "_track_ball_modal", boom)
 
-    with pytest.raises(fake_ball.BallRuntimeUnavailable) as exc:
+
+def test_modal_failure_survives_the_missing_local_ball_runtime(monkeypatch, tmp_path, fake_ball):
+    """The Modal error is the half an operator can act on, so it has to survive
+    the fallback attempt. Before CF-225 it was swallowed and the game failed with
+    `ModuleNotFoundError: inference` — which reads as a broken image, not as an
+    outage."""
+    from app.workers import tasks
+
+    _modal_down(monkeypatch, tasks)
+
+    with pytest.raises(RuntimeError) as exc:
         tasks._track_ball_cached(
             tmp_path / "game.mp4", tmp_path, sample_every=3,
             r2_key="raw/x.mp4", video_md5="abc",
         )
 
     assert "modal 503" in str(exc.value), "the Modal failure must survive"
-    assert "no local ball runtime" in str(exc.value)
-    assert isinstance(exc.value.__cause__, RuntimeError)
+    assert "no local ball runtime" in str(exc.value), "so must the local one"
     assert "modal 503" in str(exc.value.__cause__), (
         "chain from the Modal error, not from the missing-runtime one"
+    )
+
+
+def test_a_modal_outage_is_not_typed_as_the_permanent_condition(monkeypatch, tmp_path, fake_ball):
+    """The wrapped failure must NOT be BallRuntimeUnavailable. A missing runtime
+    is permanent; a Modal outage is a blip, and borrowing the permanent type for
+    it would eventually tell a caller to stop retrying over one."""
+    from app.workers import tasks
+
+    _modal_down(monkeypatch, tasks)
+
+    with pytest.raises(RuntimeError) as exc:
+        tasks._track_ball_cached(
+            tmp_path / "game.mp4", tmp_path, sample_every=3,
+            r2_key="raw/x.mp4", video_md5="abc",
+        )
+
+    assert not isinstance(exc.value, fake_ball.BallRuntimeUnavailable)
+
+
+def test_any_local_failure_carries_the_modal_cause(monkeypatch, tmp_path, fake_ball):
+    """Not just the missing runtime. Locally — dev, the eval harness — the local
+    attempt really runs, so it can fail on a corrupt file or a rejected Roboflow
+    key, and the Modal failure is no less relevant for that."""
+    from app.workers import tasks
+
+    _modal_down(monkeypatch, tasks)
+
+    def cannot_open(*args, **kwargs):
+        raise RuntimeError("Cannot open video: game.mp4")
+
+    monkeypatch.setattr(fake_ball, "track_ball", cannot_open)
+
+    with pytest.raises(RuntimeError) as exc:
+        tasks._track_ball_cached(
+            tmp_path / "game.mp4", tmp_path, sample_every=3,
+            r2_key="raw/x.mp4", video_md5="abc",
+        )
+
+    assert "modal 503" in str(exc.value)
+    assert "Cannot open video" in str(exc.value)
+
+
+def test_the_pose_first_fallback_reports_the_ball_failure_that_preceded_it():
+    """The end of the chain, checked at the source because there is no seam into
+    `process_game_task` (see test_worker_safety.py).
+
+    Everything above is invisible to an operator on its own: the caller catches
+    the ball failure, falls through to the pose-first scan, and that scan's
+    `PermanentPipelineError` is what reaches `error_message` and Sentry. Its
+    message is about pose. The ball failure has to be carried across that
+    boundary or the whole cause chain ends in a log line nobody kept."""
+    source = (REPO_ROOT / "api" / "app" / "workers" / "tasks.py").read_text(encoding="utf-8")
+    fallback = source.split("if not ball_ok:", 1)[1].split("pre_gate_rallies", 1)[0]
+
+    assert "except PermanentPipelineError" in fallback, (
+        "the pose-first scan's permanent failure must be caught here"
+    )
+    assert "Ball tracking failed first" in fallback and "{ball_err}" in fallback, (
+        "and re-raised carrying the ball failure that came before it"
+    )
+    warn_call = source.split("falling back to pose-first", 1)[1][:200]
+    assert "exc_info=True" in warn_call, (
+        "the ball failure itself must be logged with its traceback"
     )
 
 

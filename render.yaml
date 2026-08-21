@@ -183,10 +183,12 @@ services:
     branch: main
     region: oregon
     plan: starter
-    # One by choice, not by constraint, since the disk went (CF-225). Raising it
-    # is a queue-throughput decision (CF-65c) — every instance is another
-    # Postgres connection and another `starter` worth of cost, and the per-game
-    # advisory lock (CF-184) is what keeps two of them off the same game.
+    # Before raising this, confirm the service has no disk attached — see the
+    # note above: while one is, Render holds the service to a single instance
+    # and this field will not take. After that it is a queue-throughput
+    # decision (CF-65c): every instance is another Postgres connection and
+    # another `starter` worth of cost, and the per-game advisory lock (CF-184)
+    # is what keeps two of them off the same game.
     numInstances: 1
     dockerfilePath: ./Dockerfile.api
     dockerContext: .

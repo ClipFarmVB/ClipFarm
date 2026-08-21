@@ -149,13 +149,22 @@ class TrackedBall:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class BallRuntimeUnavailable(RuntimeError):
-    """No local Roboflow `inference` runtime in this process (CF-225).
+    """Roboflow `inference` is not importable in THIS process (CF-225).
 
-    Mirrors `detect.PoseRuntimeUnavailable`: the distinct type marks the failure
-    as PERMANENT — no retry makes `inference` appear — and lets the worker say
-    what actually went wrong. Since CF-164 the deployed image ships no ML
-    runtime at all, so this is what the local-CPU path raises in production;
-    installing `ml/requirements.txt` (dev, the eval harness) brings it back.
+    Named after `detect.PoseRuntimeUnavailable`, but claiming less than it does:
+    that type is translated to `PermanentPipelineError` at the worker boundary
+    so Celery stops retrying, and this one is not. Ball tracking has somewhere
+    left to go when it fails — the pose-first scan — so a caller that swallowed
+    the retry here would be deciding the whole run's fate on one stage.
+
+    What the distinct type is for is telling "no runtime here" apart from
+    "tracking ran and failed", which are different problems with different
+    fixes. A RuntimeError subclass, so existing broad handling still catches it.
+
+    Which process this is matters: the Modal image
+    (`ml/modal_app.py`) installs `inference` and is where tracking is *meant*
+    to run, so this firing there is a broken image. In the worker it is the
+    expected state since CF-164 — no ML runtime ships in that image at all.
     """
 
 
@@ -164,11 +173,16 @@ def _load_model(api_key: str):
     try:
         from inference import get_model
     except ImportError as import_err:
+        # Deliberately says only what is true from inside any process: this one
+        # cannot run the model. `_load_model` is the primary path on the Modal
+        # GPU worker and the fallback path in the Celery worker, so the caller
+        # — not this message — is what knows whether that is a broken image or
+        # a deployment that never intended to run it here.
         raise BallRuntimeUnavailable(
-            f"Local ball detection is unavailable ({import_err}). Ball tracking runs on "
-            "Modal (`clipfarm-ball-tracking`) and this image carries no Roboflow "
-            "`inference` runtime to fall back to — install ml/requirements.txt to run "
-            "it locally."
+            f"Roboflow `inference` is not importable in this process ({import_err}), so "
+            f"ball model {MODEL_ID} cannot run here. It is installed in the "
+            "`clipfarm-ball-tracking` Modal image and by ml/requirements.txt; the worker "
+            "image ships no ML runtime (CF-164)."
         ) from import_err
     logger.info("Loading ball detection model %s", MODEL_ID)
     return get_model(MODEL_ID, api_key=api_key)
