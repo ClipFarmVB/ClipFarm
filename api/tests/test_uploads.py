@@ -849,3 +849,31 @@ def test_a_quota_rejection_it_does_own_discards_object_and_row(
     assert fake_storage["delete_file"] == ["raw/abc.mp4"], "no orphaned object"
     assert db.deleted == [game], "and no row left to process"
     assert not fake_task.calls
+
+
+# --- CF-217: the column must not bound the multipart upload id ---------------
+
+
+def test_upload_id_column_is_unbounded():
+    """R2 issues multipart upload ids far longer than the varchar(255) this
+    column started as, so every multipart upload failed in production with
+    StringDataRightTruncationError while small single-PUT uploads kept working.
+
+    Asserted against the column type rather than by inserting, because the bug
+    needs no database to reproduce — it is a schema decision — and because the
+    thing worth preventing is someone reinstating a bound. A larger fixed width
+    would fail this too, deliberately: neither AWS nor Cloudflare documents a
+    maximum, so a bound is a guess, and the observed 343 characters is evidence
+    about one provider on one day rather than a limit.
+    """
+    from sqlalchemy import String
+
+    from app.models.game import Game
+
+    column_type = Game.__table__.c.upload_id.type
+    length = getattr(column_type, "length", None)
+
+    assert not (isinstance(column_type, String) and length is not None), (
+        f"upload_id is bounded at {length} characters; R2 multipart upload ids "
+        "are longer than that (~343 observed). Use Text."
+    )
