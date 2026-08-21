@@ -8,6 +8,7 @@ import {
   addClipToCollection,
   type Collection,
 } from "@/lib/api";
+import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -16,6 +17,13 @@ interface Props {
 }
 
 export function CollectionPickerModal({ clipId, onClose }: Props) {
+  // A full-screen overlay, so the page behind it must hold still like it does
+  // behind the clip modal. This is also the second holder that makes the
+  // lock's reference counting load-bearing rather than theoretical: the picker
+  // can open over the clip modal, and its close must not unlock the page while
+  // the modal is still up.
+  useBodyScrollLock(true);
+
   const [collections, setCollections] = useState<Collection[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);

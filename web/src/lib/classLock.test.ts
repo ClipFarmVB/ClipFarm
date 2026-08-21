@@ -23,8 +23,9 @@ describe("createClassLock", () => {
     expect(lock.held("lock")).toBe(2);
   });
 
-  // The reason the hook exists: the collection picker opening over the clip
-  // modal must not unlock the page when the picker alone closes.
+  // The reason the hook exists. Both CollectionPickerModal and ClipModal take
+  // `cf-lock-scroll`, and the picker can open over the modal — closing the
+  // picker alone must leave the page locked for the modal underneath.
   it("keeps the class until the last holder releases", () => {
     const { classes, target } = stubTarget();
     const lock = createClassLock(target);

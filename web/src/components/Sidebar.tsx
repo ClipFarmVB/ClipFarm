@@ -145,19 +145,22 @@ export function Sidebar() {
           see. It must not be inert once it is the desktop column, which is
           why this one thing needs the breakpoint in JS.
 
-          The dialog semantics are conditional for the same reason. As an
-          overlay it is a modal dialog and `aria-modal` is what keeps a screen
-          reader's swipe navigation inside it — the Tab trap only constrains
-          the keyboard, so without this a VoiceOver user swipes straight into
-          the page behind the backdrop. As the desktop column it is ordinary
-          page furniture and must go back to being a plain complementary
-          landmark, so both attributes come off. */}
+          The dialog semantics are conditional for the same reason, and on
+          `open` as well. While it is presented as an overlay it is a modal
+          dialog, and `aria-modal` is what keeps a screen reader's swipe
+          navigation inside it — the Tab trap only constrains the keyboard, so
+          without this a VoiceOver user swipes straight into the page behind
+          the backdrop. Closed, or as the desktop column, it is ordinary page
+          furniture and goes back to being a plain complementary landmark.
+          `inert` already hides the closed drawer from the a11y tree, but
+          `aria-modal` on a DOM-present element is handled inconsistently
+          across assistive tech, so it should not be sitting there at all. */}
       <aside
         ref={asideRef}
         id="app-sidebar"
         inert={!open && !isDesktop}
-        role={isDesktop ? undefined : "dialog"}
-        aria-modal={isDesktop ? undefined : true}
+        role={open && !isDesktop ? "dialog" : undefined}
+        aria-modal={open && !isDesktop ? true : undefined}
         aria-label="Main navigation"
         className={cn(
           "fixed inset-y-0 left-0 z-40 flex w-[264px] max-w-[82vw] flex-col bg-background border-r border-border",

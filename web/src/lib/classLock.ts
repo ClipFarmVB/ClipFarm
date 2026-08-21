@@ -8,10 +8,11 @@
  * stub.
  *
  * The point of counting: overlays nest. The collection picker opens over the
- * clip modal, both want the page held still, and the inner one's cleanup must
- * not unlock the page while the outer is still up. Bare add/remove happens to
- * survive that today only because the two lock classes differ, which is an
- * accident rather than a guarantee.
+ * clip modal, both take `cf-lock-scroll`, and the picker's cleanup must not
+ * unlock the page while the modal is still up. Bare add/remove would break
+ * exactly there — and before the picker took a lock at all, it survived only
+ * because no two callers happened to share a class, which is an accident
+ * rather than a guarantee.
  */
 
 export interface ClassTarget {
