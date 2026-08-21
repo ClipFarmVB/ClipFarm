@@ -163,8 +163,10 @@ services:
   # float32 is ~150 MB of PCM for a 40-minute game. CF-164 streams that through
   # a temp file instead of subprocess capture_output, which was holding the
   # finished bytes and the chunk list they were accumulated from at the same
-  # time; the peak is now one array rather than roughly two. If a long game does
-  # OOM here, that envelope is the first thing to look at, not ffmpeg.
+  # time; the peak is now one array rather than roughly two. That envelope is
+  # the largest single allocation left, but it is not the only one: ffmpeg is
+  # what actually OOM-killed this service on its first production run, and is
+  # now bounded by FFMPEG_THREADS below (CF-224).
   #
   # No disk either: the model cache it pinned (~114 MB ball model + pose
   # weights) has nothing to hold now that no weights are downloaded here. That
@@ -216,6 +218,22 @@ services:
         sync: false
       - key: MODAL_TOKEN_SECRET
         sync: false
+      # Pinned to the PLAN, not the host (CF-224). ffmpeg reads the visible core
+      # count — 16 here, the host's — while the cgroup allows 0.5 CPU, so x264
+      # defaulted to ~24 encoder threads and its 1080p frame buffers blew the
+      # 512 MB limit on the first clip. Every encode now runs with this many.
+      #
+      # 1, not the code default of 2, and measured rather than picked: under
+      # `docker run --memory=512m --cpus=0.5`, a 22 s 1080p cut peaks at 407 MB
+      # with 1 thread and 468 MB with 2, and *finishes sooner* with 1 (59 s vs
+      # 66-74 s). Half a CPU cannot run two encoder threads in parallel, so the
+      # second one buys nothing and costs 60 MB. 4 and unbounded both OOM at
+      # ~5 s — the production symptom exactly. Raise this in step with `plan`
+      # (roughly one thread per whole CPU) if this service ever grows; it is set
+      # explicitly rather than left to the code default so the coupling is
+      # visible next to the plan it depends on.
+      - key: FFMPEG_THREADS
+        value: "1"
       - key: REDIS_URL
         fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
       - key: CELERY_BROKER_URL
