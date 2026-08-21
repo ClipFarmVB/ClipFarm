@@ -93,7 +93,7 @@ function CollectionContent() {
 
       {/* Loading */}
       {loading && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 stagger">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 stagger">
           {[...Array(8)].map((_, i) => <ClipCardSkeleton key={i} />)}
         </div>
       )}
@@ -111,9 +111,9 @@ function CollectionContent() {
 
       {/* Clip grid */}
       {!loading && clips.length > 0 && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 stagger">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 stagger">
           {clips.map((clip, i) => (
-            <div key={clip.id} className="relative">
+            <div key={clip.id} className="group relative">
               <ClipCard
                 clip={clip}
                 players={players}
@@ -123,18 +123,20 @@ function CollectionContent() {
                 }
                 onSave={(clipId) => setSavingClipId(clipId)}
               />
-              {/* Remove from collection overlay button */}
+              {/* Remove from collection. Bottom-left is the one corner the
+                  card itself leaves free — the badges own the top row and the
+                  duration owns bottom-right. */}
               <button
                 onClick={() => handleRemove(clip.id)}
                 disabled={removingId === clip.id}
                 title="Remove from collection"
+                aria-label="Remove from collection"
                 className={cn(
-                  "absolute top-2 left-2 z-10 flex items-center justify-center h-5 w-5 rounded bg-black/50 text-white/70 hover:bg-red-500/80 hover:text-white transition-all opacity-0 group-hover:opacity-100",
-                  "[.group:hover_&]:opacity-100",
+                  "hover-reveal opacity-0 group-hover:opacity-100 absolute bottom-2 left-2 z-10 flex items-center justify-center h-7 w-7 rounded bg-black/50 text-white/70 backdrop-blur-sm transition-all hover:bg-red-500/80 hover:text-white",
                   removingId === clip.id && "opacity-100 bg-red-500/60"
                 )}
               >
-                <X size={10} strokeWidth={2.5} />
+                <X size={12} strokeWidth={2.5} />
               </button>
             </div>
           ))}

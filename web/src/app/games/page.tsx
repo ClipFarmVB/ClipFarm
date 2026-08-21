@@ -175,8 +175,9 @@ function GamesContent() {
       {/* Game list */}
       {!loading && !error && games.length > 0 && (
         <div className="stagger">
-          {/* Column headers */}
-          <div className="mb-1 grid grid-cols-[1fr_80px_88px_48px_56px] items-center gap-4 px-3 py-1.5">
+          {/* Column headers — the row is a stacked card below sm, so the
+              header would label nothing there. */}
+          <div className="mb-1 hidden grid-cols-[1fr_80px_88px_48px_56px] items-center gap-4 px-3 py-1.5 sm:grid">
             <span className="text-[10px] font-semibold uppercase tracking-widest text-subtle">Title</span>
             <span className="text-[10px] font-semibold uppercase tracking-widest text-subtle text-right">Date</span>
             <span className="text-[10px] font-semibold uppercase tracking-widest text-subtle text-center">Status</span>
@@ -191,7 +192,8 @@ function GamesContent() {
               onMouseEnter={() => setHovering(game.id)}
               onMouseLeave={() => setHovering(null)}
               className={cn(
-                "group grid grid-cols-[1fr_80px_88px_48px_56px] items-center gap-4 rounded-lg border px-3 py-3 mb-1 transition-all duration-150",
+                "group flex flex-col gap-2 rounded-lg border px-3 py-3 mb-1 transition-all duration-150",
+                "sm:grid sm:grid-cols-[1fr_80px_88px_48px_56px] sm:items-center sm:gap-4",
                 hovering === game.id
                   ? "border-border-strong bg-surface-high"
                   : "border-border bg-surface"
@@ -222,37 +224,42 @@ function GamesContent() {
                 </button>
               )}
 
-              <span className="text-right text-[11px] text-muted tabular-nums">
-                {new Date(game.created_at).toLocaleDateString(undefined, {
-                  month: "short",
-                  day: "numeric",
-                })}
-              </span>
+              {/* One meta line under the title on a phone; `contents` hands
+                  these four cells straight back to the grid from sm up. */}
+              <div className="flex items-center gap-3 sm:contents">
+                <span className="text-[11px] text-muted tabular-nums sm:text-right">
+                  {new Date(game.created_at).toLocaleDateString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                  })}
+                </span>
 
-              <div className="flex items-center justify-center gap-1.5">
-                <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", STATUS_DOT[game.status])} />
-                <span className="text-[11px] text-muted">{STATUS_LABEL[game.status]}</span>
-              </div>
+                <div className="flex items-center gap-1.5 sm:justify-center">
+                  <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", STATUS_DOT[game.status])} />
+                  <span className="text-[11px] text-muted">{STATUS_LABEL[game.status]}</span>
+                </div>
 
-              <span className="text-right text-[11px] text-muted tabular-nums">
-                {game.status === "ready" && game.clip_count != null ? game.clip_count : "—"}
-              </span>
+                <span className="text-[11px] text-muted tabular-nums sm:text-right">
+                  {game.status === "ready" && game.clip_count != null ? game.clip_count : "—"}
+                  <span className="sm:hidden"> clips</span>
+                </span>
 
-              <div className="flex items-center justify-end gap-1">
-                <button
-                  onClick={() => handleDelete(game.id, game.title)}
-                  disabled={deleting === game.id}
-                  className="opacity-0 group-hover:opacity-100 flex items-center justify-center h-6 w-6 rounded text-subtle hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-30"
-                  title="Delete game"
-                >
-                  <Trash2 size={12} />
-                </button>
-                <Link
-                  href={`/games/${game.id}`}
-                  className="flex items-center justify-center h-6 w-6 rounded text-subtle hover:text-foreground hover:bg-surface-hover transition-colors"
-                >
-                  <ArrowRight size={12} />
-                </Link>
+                <div className="ml-auto flex items-center gap-1 sm:ml-0 sm:justify-end">
+                  <button
+                    onClick={() => handleDelete(game.id, game.title)}
+                    disabled={deleting === game.id}
+                    className="hover-reveal opacity-0 group-hover:opacity-100 flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-30 sm:h-6 sm:w-6"
+                    title="Delete game"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                  <Link
+                    href={`/games/${game.id}`}
+                    className="flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-foreground hover:bg-surface-hover transition-colors sm:h-6 sm:w-6"
+                  >
+                    <ArrowRight size={12} />
+                  </Link>
+                </div>
               </div>
             </div>
           ))}

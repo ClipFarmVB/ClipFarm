@@ -184,7 +184,7 @@ export default function GamePage() {
           <div className="skeleton h-5 w-48 rounded" />
           <div className="skeleton h-5 w-16 rounded" />
         </div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
           {[...Array(8)].map((_, i) => <ClipCardSkeleton key={i} />)}
         </div>
       </div>
@@ -266,7 +266,7 @@ export default function GamePage() {
                   <Scissors size={13} className="text-brand" />
                   <h2 className="text-[13px] font-semibold text-foreground">Dead time removed</h2>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                   {game.original_duration != null && game.original_duration > 0 && game.condensed_duration != null && (
                     <span className="text-[11px] text-muted tabular-nums">
                       {fmtDuration(game.original_duration)} → {fmtDuration(game.condensed_duration)}
@@ -278,7 +278,7 @@ export default function GamePage() {
                       the download attribute is ignored cross-origin. */}
                   <a
                     href={game.condensed_video_url}
-                    className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted hover:border-border-strong hover:text-foreground transition-all duration-150"
+                    className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-2 text-[11px] font-medium text-muted hover:border-border-strong hover:text-foreground transition-all duration-150 sm:py-1"
                   >
                     <Download size={11} />
                     Download
@@ -309,7 +309,7 @@ export default function GamePage() {
                   key={action}
                   onClick={() => toggleActionFilter(action)}
                   className={cn(
-                    "transition-all duration-150 press",
+                    "flex min-h-9 items-center py-1 transition-all duration-150 press sm:min-h-0 sm:py-0",
                     active ? "opacity-100" : "opacity-25 hover:opacity-50"
                   )}
                 >
@@ -318,14 +318,14 @@ export default function GamePage() {
               );
             })}
 
-            <div className="ml-auto flex items-center gap-3">
+            <div className="flex w-full items-center gap-3 sm:ml-auto sm:w-auto">
               {/* Sort toggle: chronological vs highlight score */}
               <button
                 onClick={() =>
                   setFilters((f) => ({ ...f, sort: f.sort === "score" ? "time" : "score" }))
                 }
                 className={cn(
-                  "flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-all duration-150",
+                  "flex items-center gap-1.5 rounded-md border px-2.5 py-2 text-[11px] font-medium transition-all duration-150 sm:py-1",
                   filters.sort === "score"
                     ? "border-brand/30 bg-brand/5 text-brand"
                     : "border-border text-muted hover:border-border-strong hover:text-foreground"
@@ -374,7 +374,7 @@ export default function GamePage() {
               <button
                 onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
                 className={cn(
-                  "flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-all duration-150",
+                  "ml-auto flex items-center gap-1.5 rounded-md border px-2.5 py-2 text-[11px] font-medium transition-all duration-150 sm:ml-0 sm:py-1",
                   selectMode
                     ? "border-brand/30 bg-brand/5 text-brand"
                     : "border-border text-muted hover:border-border-strong hover:text-foreground"
@@ -388,13 +388,13 @@ export default function GamePage() {
 
           {/* Selection action bar */}
           {selectMode && (
-            <div className="mb-4 flex items-center gap-2 rounded-lg border border-border-strong bg-surface-high px-3 py-2">
+            <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-border-strong bg-surface-high px-3 py-2">
               <span className="text-[12px] font-medium text-foreground">
                 {selectedIds.size} selected
               </span>
               <button
                 onClick={() => setSelectedIds(new Set(clips.map((c) => c.id)))}
-                className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-muted hover:text-foreground hover:bg-surface-hover transition-colors"
+                className="flex items-center gap-1 rounded px-2 py-1.5 text-[11px] text-muted hover:text-foreground hover:bg-surface-hover transition-colors"
               >
                 <CheckSquare size={11} />
                 All ({clips.length})
@@ -402,7 +402,7 @@ export default function GamePage() {
               <button
                 onClick={() => setSelectedIds(new Set())}
                 disabled={selectedIds.size === 0}
-                className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-muted hover:text-foreground hover:bg-surface-hover transition-colors disabled:opacity-30"
+                className="flex items-center gap-1 rounded px-2 py-1.5 text-[11px] text-muted hover:text-foreground hover:bg-surface-hover transition-colors disabled:opacity-30"
               >
                 <Square size={11} />
                 Clear
@@ -419,7 +419,8 @@ export default function GamePage() {
                 </Button>
                 <button
                   onClick={exitSelectMode}
-                  className="flex items-center justify-center h-6 w-6 rounded text-subtle hover:text-foreground hover:bg-surface-hover transition-colors"
+                  aria-label="Exit select mode"
+                  className="flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-foreground hover:bg-surface-hover transition-colors sm:h-6 sm:w-6"
                 >
                   <X size={12} />
                 </button>
@@ -429,7 +430,7 @@ export default function GamePage() {
 
           {/* Loading clips skeletons */}
           {loading && (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 stagger">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 stagger">
               {[...Array(8)].map((_, i) => <ClipCardSkeleton key={i} />)}
             </div>
           )}
@@ -443,7 +444,7 @@ export default function GamePage() {
 
           {/* Clip grid */}
           {!loading && clips.length > 0 && (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 stagger">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 stagger">
               {clips.map((clip, i) => (
                 <ClipCard
                   key={clip.id}

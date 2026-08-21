@@ -58,33 +58,33 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   return createPortal(
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-50 flex h-[100dvh] items-center justify-center bg-black/80 backdrop-blur-sm sm:h-auto sm:p-4"
       onClick={handleOverlayClick}
     >
-      <div className="relative w-full max-w-4xl rounded-xl border border-border bg-surface overflow-hidden shadow-2xl shadow-black/60">
+      <div className="relative flex h-full w-full flex-col overflow-hidden border-border bg-surface sm:h-auto sm:max-w-4xl sm:rounded-xl sm:border sm:shadow-2xl sm:shadow-black/60">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <div className="flex items-center gap-2.5">
+        <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-2.5 border-b border-border sm:px-4">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
             <Badge label={clip.action_type} action={clip.action_type} />
             {clip.player_name && (
               <span className="text-[13px] font-medium text-foreground">{clip.player_name}</span>
             )}
-            <span className="text-[11px] text-muted tabular-nums">
+            <span className="hidden text-[11px] text-muted tabular-nums sm:inline">
               {Math.round(clip.confidence * 100)}% confidence
             </span>
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
             <button
               onClick={handleShare}
-              className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-medium text-muted hover:text-foreground hover:bg-surface-high transition-colors"
+              className="flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted hover:text-foreground hover:bg-surface-high transition-colors sm:h-auto sm:py-1.5"
             >
               <Link2 size={12} />
               Copy link
             </button>
             <button
               onClick={onClose}
-              className="flex items-center justify-center h-7 w-7 rounded-md text-muted hover:text-foreground hover:bg-surface-high transition-colors"
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted hover:text-foreground hover:bg-surface-high transition-colors sm:h-7 sm:w-7"
               aria-label="Close"
             >
               <X size={14} />
@@ -93,19 +93,20 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
         </div>
 
         {/* Video */}
-        <div className="relative bg-black">
+        <div className="relative flex min-h-0 flex-1 items-center bg-black">
           <video
             ref={videoRef}
             src={clip.clip_url}
             controls
-            className="w-full max-h-[75vh] object-contain"
+            playsInline
+            className="max-h-full w-full object-contain sm:max-h-[75vh]"
             preload="auto"
           />
 
           {onPrev && (
             <button
               onClick={onPrev}
-              className="absolute left-3 top-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white/70 hover:bg-black/75 hover:text-white backdrop-blur-sm transition-all"
+              className="absolute left-2 top-1/2 -translate-y-1/2 flex h-11 w-11 items-center justify-center rounded-full bg-black/50 text-white/70 hover:bg-black/75 hover:text-white backdrop-blur-sm transition-all sm:left-3"
               aria-label="Previous clip"
             >
               <ChevronLeft size={18} />
@@ -114,7 +115,7 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           {onNext && (
             <button
               onClick={onNext}
-              className="absolute right-3 top-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white/70 hover:bg-black/75 hover:text-white backdrop-blur-sm transition-all"
+              className="absolute right-2 top-1/2 -translate-y-1/2 flex h-11 w-11 items-center justify-center rounded-full bg-black/50 text-white/70 hover:bg-black/75 hover:text-white backdrop-blur-sm transition-all sm:right-3"
               aria-label="Next clip"
             >
               <ChevronRight size={18} />
@@ -123,14 +124,14 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
         </div>
 
         {/* Footer meta */}
-        <div className="px-4 py-2 border-t border-border flex items-center gap-4">
+        <div className="flex shrink-0 items-center gap-4 border-t border-border px-3 py-2 sm:px-4">
           <span className="text-[11px] text-muted tabular-nums">
             {formatTimestamp(clip.start_time)} – {formatTimestamp(clip.end_time)}
           </span>
           <span className="text-[11px] text-subtle">
             {formatDuration(clip.end_time - clip.start_time)}
           </span>
-          <div className="ml-auto flex items-center gap-2 text-[10px] text-subtle">
+          <div className="ml-auto hidden items-center gap-2 text-[10px] text-subtle sm:flex">
             <span>← →  navigate</span>
             <span className="w-px h-3 bg-border" />
             <span>Esc  close</span>

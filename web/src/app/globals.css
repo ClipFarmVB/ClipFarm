@@ -81,6 +81,8 @@ body {
   -moz-osx-font-smoothing: grayscale;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   text-rendering: optimizeLegibility;
+  /* Suppresses the grey flash Chrome/Safari paint over tapped controls. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────────────── */
@@ -111,6 +113,11 @@ input[type="range"]::-webkit-slider-thumb {
 }
 input[type="range"]::-webkit-slider-thumb:hover {
   transform: scale(1.25);
+}
+/* A 14px thumb is a fine mouse target and a poor finger one. */
+@media (pointer: coarse) {
+  input[type="range"] { height: 5px; }
+  input[type="range"]::-webkit-slider-thumb { width: 22px; height: 22px; }
 }
 
 /* ── Skeleton loader ────────────────────────────────────────────────── */
@@ -152,6 +159,17 @@ input[type="range"]::-webkit-slider-thumb:hover {
 
 /* ── Scale-press feedback ───────────────────────────────────────────── */
 .press:active { transform: scale(0.97); }
+
+/* ── Hover-revealed controls ────────────────────────────────────────── */
+/* Marks a row action that fades in on hover — the fade itself stays in the
+   Tailwind classes. A touch screen never hovers, so there the control is
+   shown outright; without this, delete/remove are simply unreachable on a
+   phone (CF-60). The class is doubled to out-specify the `opacity-0`
+   utility without !important. On a pointer device this rule never applies,
+   so the utilities behave exactly as they did before. */
+@media (hover: none) {
+  .hover-reveal.hover-reveal { opacity: 1; }
+}
 
 /* ── Focus ring ─────────────────────────────────────────────────────── */
 .focus-ring:focus-visible {
