@@ -571,6 +571,7 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
             speed_pxps=settings.condense_bridge_speed_pxps,
             fast_fraction=settings.condense_bridge_fast_fraction,
             max_bridge_seconds=settings.condense_bridge_max_seconds,
+            frame_height=frame_h,
         )
 
         if mode == "rules":

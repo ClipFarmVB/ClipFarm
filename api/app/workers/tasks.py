@@ -226,6 +226,11 @@ def _build_condense_windows(
             speed_pxps=settings.condense_bridge_speed_pxps,
             fast_fraction=settings.condense_bridge_fast_fraction,
             max_bridge_seconds=settings.condense_bridge_max_seconds,
+            # CF-174: without this the bridge compares a 1080p track against a
+            # threshold tuned at 360p, so "fast" means a third of what it should
+            # and dead time survives the bridge. CF-187 moved this call in here;
+            # the frame height it needs is already a parameter of this function.
+            frame_height=frame_height,
         )
     return windows, built_by
 

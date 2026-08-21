@@ -30,6 +30,12 @@ from ml.pipeline.intervals import Interval, merge_intervals
 
 logger = logging.getLogger(__name__)
 
+# The tracking space speed_pxps defaults were tuned in. Keep in sync with
+# ball.REFERENCE_FRAME_HEIGHT (asserted in ml/tests/test_dead_time.py) — not
+# imported from there because ball.py pulls in cv2, and this module stays
+# dependency-light so the dead-time harness runs on a laptop.
+REFERENCE_FRAME_HEIGHT = 360.0
+
 
 class Abstained(list):
     """The whole-video window returned when the track is too sparse to judge.
@@ -193,6 +199,7 @@ def bridge_windows_by_motion(
     max_bridge_seconds: float = 20.0,
     max_sample_spacing: float = 1.5,
     min_samples: int = 3,
+    frame_height: int = 0,
 ) -> list[Interval]:
     """
     Merge adjacent windows when the tracked ball keeps moving fast through
@@ -215,9 +222,18 @@ def bridge_windows_by_motion(
     positions are dicts with "time", "x", "y" (ball-track samples). Speeds
     are taken between consecutive samples closer than max_sample_spacing,
     so a tracking dropout contributes no samples rather than a huge jump.
+
+    speed_pxps is in REFERENCE_FRAME_HEIGHT pixel space and is scaled to this
+    video's frame_height (CF-174) — the same physical motion covers ~3x more
+    pixels at 1080p, so an unscaled threshold calls ordinary handling "fast"
+    and bridges gaps that are really dead time. frame_height <= 0 keeps the
+    unscaled (360p) behaviour.
     """
     if len(windows) < 2 or not positions:
         return list(windows)
+
+    if frame_height > 0:
+        speed_pxps = speed_pxps * frame_height / REFERENCE_FRAME_HEIGHT
 
     pts = sorted((p["time"], p["x"], p["y"]) for p in positions)
     speeds: list[tuple[float, float]] = []  # (midpoint time, px/s)
