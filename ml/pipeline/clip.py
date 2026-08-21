@@ -26,6 +26,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_THREADS = 2
 
 
+def _bounded(threads: int) -> int:
+    """Refuse a thread count that is not a bound.
+
+    Settings.ffmpeg_threads rejects these at boot, but this module is called
+    directly too (eval, scripts), and the two bad values fail in ways that do
+    not look like a bad argument: 0 is ffmpeg's *auto* sentinel, so it quietly
+    restores the host-sized pool, and a negative fails every cut inside the
+    swallowing `except` below — a game with no clips and no obvious cause.
+    """
+    if threads < 1:
+        logger.warning(
+            "ffmpeg threads=%s is not a usable bound — falling back to %d",
+            threads, DEFAULT_THREADS,
+        )
+        return DEFAULT_THREADS
+    return threads
+
+
 def _report(on_progress, fraction: float) -> None:
     """Invoke a progress callback; reporting must never break the cut."""
     if on_progress is None:
@@ -60,6 +78,7 @@ def generate_clips(
         logger.warning("ffmpeg-python not installed — skipping clip generation")
         return []
 
+    threads = _bounded(threads)
     results = []
     for det_idx, det in enumerate(detections):
         clip_id = uuid.uuid4()
@@ -147,6 +166,7 @@ def generate_condensed_video(
     """
     import ffmpeg
 
+    threads = _bounded(threads)
     parts_dir = output_dir / "parts"
     parts_dir.mkdir(exist_ok=True)
     part_paths: list[Path] = []
@@ -243,6 +263,7 @@ def recut_single(
     """
     import ffmpeg
 
+    threads = _bounded(threads)
     clip_path = output_dir / "recut.mp4"
     thumb_path = output_dir / "recut.jpg"
     duration = end - start

@@ -93,3 +93,15 @@ def test_default_is_bounded_when_caller_passes_nothing(fake_ffmpeg, tmp_path):
 
     assert clip_mod.DEFAULT_THREADS > 0
     assert set(_thread_values(fake_ffmpeg)) == {clip_mod.DEFAULT_THREADS}
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_a_thread_count_that_is_not_a_bound_falls_back(fake_ffmpeg, tmp_path, bad):
+    """0 is ffmpeg's *auto* sentinel — the host-sized pool this module avoids —
+    and a negative fails every cut inside the swallowing except. Neither may
+    reach ffmpeg."""
+    detections = [{"start": 0.0, "end": 4.0, "action": "spike", "confidence": 0.5}]
+
+    clip_mod.generate_clips(str(tmp_path / "game.mp4"), detections, tmp_path, threads=bad)
+
+    assert set(_thread_values(fake_ffmpeg)) == {clip_mod.DEFAULT_THREADS}

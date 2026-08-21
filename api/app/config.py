@@ -1,4 +1,4 @@
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Zero-config local defaults, and the sentinels the production check below looks
@@ -198,7 +198,13 @@ class Settings(BaseSettings):
     # not the host. 2 is the safe default for any container; production sets 1
     # in render.yaml, where half a CPU makes a second encoder thread pure memory
     # cost. Raise it in the env when the box actually has cores to use.
-    ffmpeg_threads: int = 2
+    #
+    # ge=1 because 0 is not "no threads" to ffmpeg — it is the *auto* sentinel,
+    # which restores exactly the host-sized pool this setting exists to prevent,
+    # and would do it silently. A negative fails every cut inside the pipeline's
+    # swallowing except, yielding a game with no clips at all. Both are better
+    # caught at boot.
+    ffmpeg_threads: int = Field(default=2, ge=1)
 
     # Pose refinement (classify_within_windows). Production defaults; the
     # Docker dev stack overrides these to lighter values for CPU speed.
