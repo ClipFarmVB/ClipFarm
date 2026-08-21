@@ -37,6 +37,12 @@ def ball(monkeypatch):
         # cannot do this job: it snapshots the value that is *already* there,
         # i.e. this same module, and restores it.)
         sys.modules.pop("ml.pipeline.ball", None)
+        parent = sys.modules.get("ml.pipeline")
+        if getattr(parent, "ball", None) is module:
+            # `from ml.pipeline import ball` reads this attribute rather than
+            # sys.modules, so clearing only the latter leaves the stub-bound
+            # module reachable by that import style.
+            delattr(parent, "ball")
 
 
 def test_missing_inference_runtime_raises_a_named_error(ball):

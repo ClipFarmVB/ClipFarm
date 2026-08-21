@@ -16,6 +16,24 @@ _sync_url = settings.database_url.replace("+asyncpg", "")
 _engine = create_engine(_sync_url, pool_pre_ping=True)
 
 
+# games.error_message is String(1024). Nothing on the write path enforced that,
+# and the value is `str(exc)` from an arbitrary failure — a Modal error carrying
+# a remote traceback runs long. Overflowing raised DataError from *inside* the
+# task's own `except` handler, which escaped past the retry decision and the
+# `finally`, so the row never reached `failed` and sat in `processing` forever:
+# the CF-184 stranded-game symptom, reached by the code that exists to explain a
+# failure. Truncated here rather than at each call site so every writer is
+# covered, including the next one.
+_ERROR_MESSAGE_MAX = 1024
+
+
+def _fit_error_message(message: str) -> str:
+    """Clamp to the column width, marking the cut so it doesn't read as the end."""
+    if len(message) <= _ERROR_MESSAGE_MAX:
+        return message
+    return message[:_ERROR_MESSAGE_MAX - 1] + "…"
+
+
 def sync_get_game(game_id: uuid.UUID) -> Game | None:
     with Session(_engine) as s:
         return s.get(Game, game_id)
@@ -58,7 +76,7 @@ def sync_set_game_status(
         if processed_at:
             game.processed_at = processed_at
         if error_message:
-            game.error_message = error_message
+            game.error_message = _fit_error_message(error_message)
         s.commit()
 
 
@@ -77,7 +95,7 @@ def sync_note_game_error(game_id: uuid.UUID, message: str):
         game = s.get(Game, game_id)
         if not game:
             return
-        game.error_message = message
+        game.error_message = _fit_error_message(message)
         s.commit()
 
 
