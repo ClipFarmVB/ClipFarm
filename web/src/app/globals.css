@@ -160,6 +160,17 @@ input[type="range"]::-webkit-slider-thumb:hover {
 /* ── Scale-press feedback ───────────────────────────────────────────── */
 .press:active { transform: scale(0.97); }
 
+/* ── Scroll lock ────────────────────────────────────────────────────── */
+/* Toggled by useBodyScrollLock. The breakpoint lives here, not in JS, so a
+   viewport that crosses `lg` while the nav drawer is open releases the lock
+   on its own — see the hook for why that matters. `not all and (min-width:
+   64rem)` is the exact form Tailwind's own `max-lg:` compiles to, so the two
+   cannot drift by a fractional pixel. */
+.cf-lock-scroll { overflow: hidden; }
+@media not all and (min-width: 64rem) {
+  .cf-lock-scroll-below-lg { overflow: hidden; }
+}
+
 /* ── Hover-revealed controls ────────────────────────────────────────── */
 /* Marks a row action that fades in on hover — the fade itself stays in the
    Tailwind classes. A touch screen never hovers, so there the control is

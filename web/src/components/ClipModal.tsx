@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { X, ChevronLeft, ChevronRight, Link2 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { type Clip, getClipShareUrl } from "@/lib/api";
+import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 
 interface ClipModalProps {
   clip: Clip;
@@ -22,13 +23,8 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
     videoRef.current?.play();
   }, [clip.id]);
 
-  // Lock body scroll while modal is open — prevents background page from
-  // jumping when the modal is opened or closed
-  useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
-  }, []);
+  // Prevents the background page from jumping when the modal opens or closes.
+  useBodyScrollLock(true);
 
   // Keyboard navigation
   useEffect(() => {

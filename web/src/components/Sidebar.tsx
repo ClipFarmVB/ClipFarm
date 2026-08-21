@@ -7,6 +7,7 @@ import { Clapperboard, Upload, LayoutGrid, LogOut, Menu, Sun, Moon, FolderOpen, 
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { SOCIAL_ENABLED } from "@/lib/features";
+import { useBodyScrollLockBelowLg } from "@/lib/useBodyScrollLock";
 import { clearMe, needsHandle, useMe } from "@/lib/useMe";
 import { cn } from "@/lib/utils";
 
@@ -20,17 +21,12 @@ export function Sidebar() {
   const pathname = usePathname();
   // Below lg the sidebar is an off-canvas drawer; from lg it is a permanent
   // column and `open` stops mattering — the lg: classes pin it open.
-  //
-  // The open state is stored as the route it was opened on, so a navigation
-  // closes it by derivation: a nav tap would otherwise leave the drawer
-  // sitting over the page it just opened, and closing it from an effect on
-  // `pathname` is the cascading-render pattern React warns about.
-  const [openedOn, setOpenedOn] = useState<string | null>(null);
-  const open = openedOn === pathname;
-  const setOpen = (next: boolean) => setOpenedOn(next ? pathname : null);
-  // Derivation alone leaves one gap: tapping the link for the route you are
-  // already on does not change `pathname`, so the drawer would sit there.
-  const closeOnNavigate = () => setOpenedOn(null);
+  const [open, setOpen] = useState(false);
+  // Everything that navigates from inside the drawer closes it on the way
+  // out, so it never sits over the page it just opened. Closing on `pathname`
+  // instead would be the cascading-render pattern React warns about, and
+  // would miss a tap on the link for the route you are already on.
+  const closeOnNavigate = () => setOpen(false);
   const { user, loading, signOut } = useAuth();
   const { theme, toggle } = useTheme();
   // `enabled` false means no /users/me request at all — which is what keeps the
@@ -44,18 +40,16 @@ export function Sidebar() {
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
 
-  // While the drawer is up the page behind it must not scroll, and Escape
-  // should dismiss it — the same contract the modals keep.
+  // Only while it is actually an overlay — the hook's CSS drops the lock by
+  // itself above `lg`, where the aside is a column and there is no backdrop.
+  useBodyScrollLockBelowLg(open);
+
+  // Escape dismisses it — the same contract the modals keep.
   useEffect(() => {
     if (!open) return;
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpenedOn(null); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
     window.addEventListener("keydown", onKey);
-    return () => {
-      document.body.style.overflow = prevOverflow;
-      window.removeEventListener("keydown", onKey);
-    };
+    return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
   return (
@@ -68,7 +62,7 @@ export function Sidebar() {
           aria-label="Open navigation"
           aria-expanded={open}
           aria-controls="app-sidebar"
-          className="flex h-10 w-10 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface hover:text-foreground focus-ring"
+          className="flex h-11 w-11 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface hover:text-foreground focus-ring"
         >
           <Menu size={18} />
         </button>
@@ -112,7 +106,7 @@ export function Sidebar() {
           <button
             onClick={() => setOpen(false)}
             aria-label="Close navigation"
-            className="mr-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface hover:text-foreground focus-ring lg:hidden"
+            className="mr-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface hover:text-foreground focus-ring lg:hidden"
           >
             <X size={16} />
           </button>
