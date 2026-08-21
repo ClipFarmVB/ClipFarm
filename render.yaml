@@ -221,12 +221,19 @@ services:
       # Pinned to the PLAN, not the host (CF-224). ffmpeg reads the visible core
       # count — 16 here, the host's — while the cgroup allows 0.5 CPU, so x264
       # defaulted to ~24 encoder threads and its 1080p frame buffers blew the
-      # 512 MB limit on the first clip. Every encode now runs with this many
-      # threads. Raise it in step with `plan` if this service ever grows; it is
-      # set explicitly rather than left to the code default so the coupling is
+      # 512 MB limit on the first clip. Every encode now runs with this many.
+      #
+      # 1, not the code default of 2, and measured rather than picked: under
+      # `docker run --memory=512m --cpus=0.5`, a 22 s 1080p cut peaks at 407 MB
+      # with 1 thread and 468 MB with 2, and *finishes sooner* with 1 (59 s vs
+      # 66-74 s). Half a CPU cannot run two encoder threads in parallel, so the
+      # second one buys nothing and costs 60 MB. 4 and unbounded both OOM at
+      # ~5 s — the production symptom exactly. Raise this in step with `plan`
+      # (roughly one thread per whole CPU) if this service ever grows; it is set
+      # explicitly rather than left to the code default so the coupling is
       # visible next to the plan it depends on.
       - key: FFMPEG_THREADS
-        value: "2"
+        value: "1"
       - key: REDIS_URL
         fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
       - key: CELERY_BROKER_URL

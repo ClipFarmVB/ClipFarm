@@ -195,8 +195,9 @@ class Settings(BaseSettings):
     # core count, which in a container is the host's — on Render's 16-core hosts
     # x264 spawned ~24 encoder threads and its per-thread 1080p frame buffers
     # OOM-killed the 512 MB worker. The right value follows the instance plan,
-    # not the host: 2 fits the worker's 0.5 CPU with room to spare. Raise it in
-    # the env when the box actually has cores to use.
+    # not the host. 2 is the safe default for any container; production sets 1
+    # in render.yaml, where half a CPU makes a second encoder thread pure memory
+    # cost. Raise it in the env when the box actually has cores to use.
     ffmpeg_threads: int = 2
 
     # Pose refinement (classify_within_windows). Production defaults; the
