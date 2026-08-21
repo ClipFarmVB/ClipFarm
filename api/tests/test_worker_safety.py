@@ -683,3 +683,166 @@ def test_lock_dies_with_the_worker(pg_locks):
             pytest.fail("lock outlived the connection that held it")
     finally:
         redelivered.release()
+
+
+# ── error_message must never be what strands a game (CF-225) ──────────────
+#
+# The same stranded-in-`processing` symptom as the lock cases above, reached
+# from the opposite end: not a lock that outlives its holder, but the failure
+# *report* raising while it is written. `sync_set_game_status(…, "failed", …)`
+# runs from inside the task's own `except` handler, so a DataError there costs
+# the `failed` write and the retry decision — the `finally` still runs and the
+# lock is released, but the row never leaves `processing`. The message is
+# `str(exc)` from an arbitrary failure; a remote Modal traceback is not a rare
+# shape for it.
+
+def test_error_message_is_clamped_to_the_column_width():
+    from app.models.game import Game
+    from app.workers._sync_db import _fit_error_message
+
+    width = getattr(Game.__table__.c.error_message.type, "length", None)
+    if not width:
+        pytest.skip("error_message is unbounded (Text) — nothing to clamp")
+
+    fitted = _fit_error_message("HEAD" + "x" * (width * 5) + "TAIL")
+
+    assert len(fitted) == width
+    assert fitted.startswith("HEAD") and fitted.endswith("TAIL"), (
+        "cut the middle: the type and message lead, and the frame that actually "
+        "raised is last — a tail cut keeps the preamble and drops the answer"
+    )
+    assert "…" in fitted, "a silent cut reads as a complete message"
+    assert _fit_error_message("short") == "short", "and nothing else is touched"
+
+
+@pytest.mark.parametrize("width", [1, 2, 8, 9, 10, 64, 1024])
+def test_the_clamp_never_returns_more_than_the_width(monkeypatch, width):
+    """Including widths too small to hold the "cut" marker.
+
+    Absurd at today's 1024, and the whole contract of reading the width off the
+    column is that a column change needs no edit here — so "absurd" is not a
+    guarantee. A negative remainder ran the slices backwards and returned MORE
+    than the width, which is the DataError this exists to prevent, produced by
+    the code preventing it.
+    """
+    from app.workers import _sync_db
+
+    monkeypatch.setattr(_sync_db, "_ERROR_MESSAGE_MAX", width)
+
+    assert len(_sync_db._fit_error_message("x" * 5000)) == width
+
+
+def test_the_clamp_reads_the_width_off_the_column():
+    """Not a repeated literal. CF-226 widens this column to `Text` (as CF-217
+    did for games.upload_id after the same overflow), and that change must not
+    need a matching edit here to stay correct — the clamp no-ops on its own.
+
+    `getattr` rather than a plain attribute access, and not only to satisfy
+    mypy: `Text` genuinely has no `length`, so the direct form would break at
+    exactly the moment that card lands."""
+    from app.models.game import Game
+    from app.workers import _sync_db
+
+    assert _sync_db._ERROR_MESSAGE_MAX is getattr(
+        Game.__table__.c.error_message.type, "length", None
+    )
+
+
+def test_every_error_message_writer_goes_through_the_clamp():
+    """Pinned as an invariant over the module, not over today's two call sites.
+
+    The clamp lives in `_sync_db` precisely so a future writer inherits it; a
+    test of the two current callers would not notice the third. All three ways
+    to write the column are covered — plain assignment, `setattr`, and a Core
+    `update().values(...)` — because the point is to catch the writer nobody
+    thought to check, and that one will not be an `ast.Assign`.
+
+    This covers `_sync_db.py` only; what makes that the same thing as "every
+    writer" is the test below, which holds the column's writes to this module.
+    """
+    source = (pathlib.Path(__file__).resolve().parents[1] / "app" / "workers" / "_sync_db.py")
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+
+    def is_guarded(value) -> bool:
+        # Clearing it (a run starting fresh) is fine; anything else must be the
+        # clamp's return value.
+        if isinstance(value, ast.Constant) and value.value is None:
+            return True
+        return (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "_fit_error_message"
+        )
+
+    unguarded = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Attribute) and target.attr == "error_message":
+                    if not is_guarded(node.value):
+                        unguarded.append(node.lineno)
+        elif isinstance(node, ast.Call):
+            # setattr(game, "error_message", value)
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "setattr"
+                and len(node.args) == 3
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "error_message"
+                and not is_guarded(node.args[2])
+            ):
+                unguarded.append(node.lineno)
+            # anything(..., error_message=value) — .values(), .filter_by(), a
+            # future helper. Over-broad on purpose: a false positive here is a
+            # one-line fix, a false negative strands a game.
+            for kw in node.keywords:
+                if kw.arg == "error_message" and not is_guarded(kw.value):
+                    unguarded.append(node.lineno)
+
+    assert not unguarded, (
+        f"_sync_db.py:{sorted(set(unguarded))} writes error_message without "
+        "_fit_error_message — an over-long value raises DataError inside the "
+        "task's except handler and strands the game in `processing`"
+    )
+
+
+def test_no_module_outside_sync_db_writes_error_message_directly():
+    """What makes the clamp above a chokepoint rather than one file's habit.
+
+    Every write today goes through `sync_set_game_status` /
+    `sync_note_game_error`, which clamp. A module that set `game.error_message`
+    itself would bypass that entirely and be invisible to the AST guard, which
+    reads one file — so the guard's "every writer" claim is only true while this
+    holds. Passing the column as a keyword to those helpers is the supported
+    way and is not what this looks for.
+    """
+    app_dir = pathlib.Path(__file__).resolve().parents[1] / "app"
+
+    offenders = []
+    for path in app_dir.rglob("*.py"):
+        if path.name == "_sync_db.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            targets = []
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+                targets = [node.target]
+            for target in targets:
+                if isinstance(target, ast.Attribute) and target.attr == "error_message":
+                    offenders.append(f"{path.relative_to(app_dir)}:{node.lineno}")
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "setattr"
+                and len(node.args) == 3
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "error_message"
+            ):
+                offenders.append(f"{path.relative_to(app_dir)}:{node.lineno}")
+
+    assert not offenders, (
+        f"{offenders} writes error_message outside _sync_db.py, bypassing the clamp — "
+        "go through sync_set_game_status/sync_note_game_error instead"
+    )
