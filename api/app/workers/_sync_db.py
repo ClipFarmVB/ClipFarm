@@ -16,22 +16,39 @@ _sync_url = settings.database_url.replace("+asyncpg", "")
 _engine = create_engine(_sync_url, pool_pre_ping=True)
 
 
-# games.error_message is String(1024). Nothing on the write path enforced that,
-# and the value is `str(exc)` from an arbitrary failure — a Modal error carrying
-# a remote traceback runs long. Overflowing raised DataError from *inside* the
-# task's own `except` handler, which escaped past the retry decision and the
-# `finally`, so the row never reached `failed` and sat in `processing` forever:
-# the CF-184 stranded-game symptom, reached by the code that exists to explain a
-# failure. Truncated here rather than at each call site so every writer is
-# covered, including the next one.
-_ERROR_MESSAGE_MAX = 1024
+# games.error_message is a bounded column and nothing on the write path enforced
+# that. The value is `str(exc)` from an arbitrary failure — a Modal error
+# carrying a remote traceback runs long. Overflowing raised DataError from
+# *inside* the task's own `except` handler, which cost the `failed` write and
+# the retry decision (the `finally` still ran, so the lock was released), so the
+# row sat in `processing` forever: the CF-184 stranded-game symptom, reached by
+# the code that exists to explain a failure. Clamped here rather than at each
+# call site so every writer is covered, including the next one.
+#
+# The width is read off the model, not repeated: it is the column that imposes
+# this, so a column that changes — or one widened to Text, which is where this
+# should end up (CF-217 did exactly that for games.upload_id) — must not need a
+# matching edit here to stay correct. Unbounded means no clamp at all.
+# getattr, not a plain attribute: an unbounded column type need not carry a
+# `length` at all, and that case is exactly the one this must survive.
+_ERROR_MESSAGE_MAX = getattr(Game.__table__.c.error_message.type, "length", None)
 
 
 def _fit_error_message(message: str) -> str:
-    """Clamp to the column width, marking the cut so it doesn't read as the end."""
-    if len(message) <= _ERROR_MESSAGE_MAX:
+    """Clamp to the column width, cutting the MIDDLE and marking the cut.
+
+    The middle because both ends carry the signal: an exception's type and
+    message lead, and when the long part is a remote traceback the frame that
+    actually raised is last. A tail cut keeps the preamble and drops the answer.
+    The full text is in the worker log and Sentry either way — this column is
+    the copy an operator sees first, not the only copy.
+    """
+    if not _ERROR_MESSAGE_MAX or len(message) <= _ERROR_MESSAGE_MAX:
         return message
-    return message[:_ERROR_MESSAGE_MAX - 1] + "…"
+    marker = " …[cut]… "
+    keep = _ERROR_MESSAGE_MAX - len(marker)
+    head = keep // 2
+    return message[:head] + marker + message[len(message) - (keep - head):]
 
 
 def sync_get_game(game_id: uuid.UUID) -> Game | None:

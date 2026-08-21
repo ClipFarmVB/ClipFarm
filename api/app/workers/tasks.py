@@ -133,14 +133,16 @@ def _track_ball_cached(
 
     In the deployed image it does not (CF-164 took the ML stack out; CF-225
     took the model-cache disk that fed it), so there the local step only
-    re-raises. When Modal was tried first, what it raises names BOTH failures
-    and chains from the Modal one — that is the half an operator can act on. A
-    missing-`inference` traceback on its own reads as a packaging bug and hides
-    the outage that caused it.
+    re-raises. When Modal was tried first, what it raises names BOTH failures,
+    chains from the Modal one — that is the half an operator can act on — and
+    keeps the local failure's type. A missing-`inference` traceback on its own
+    reads as a packaging bug and hides the outage that caused it.
     """
     import os
     from app.services import storage as s3
-    from ml.pipeline.ball import track_ball, TrackedBall, BallPosition
+    from ml.pipeline.ball import (
+        BallRuntimeUnavailable, track_ball, TrackedBall, BallPosition,
+    )
 
     cache_key = _ball_cache_key(video_md5 or _file_md5(local_video), sample_every)
     cache_path = tmp / "ball_cache.json"
@@ -165,9 +167,14 @@ def _track_ball_cached(
             logger.warning("Modal ball tracking failed (%s) — falling back to local CPU", err)
 
     if tracker is None:
+        # Read outside the try: a missing key is a configuration error, and
+        # wrapped below it would surface as "…and locally ('ROBOFLOW_API_KEY')",
+        # a KeyError dressed up as a tracking failure. process_game guards on
+        # this already; the eval and diagnose paths call straight in here.
+        api_key = os.environ["ROBOFLOW_API_KEY"]
         try:
             tracker = track_ball(
-                str(local_video), os.environ["ROBOFLOW_API_KEY"],
+                str(local_video), api_key,
                 sample_every=sample_every, on_progress=on_progress,
             )
         except Exception as local_err:
@@ -176,14 +183,20 @@ def _track_ball_cached(
             # Both paths failed and only one of them is the interesting one. The
             # local attempt was the fallback, so raising *its* error alone —
             # usually a missing runtime, on an image that is meant not to have
-            # one — describes the fallback rather than the failure. Deliberately
-            # NOT BallRuntimeUnavailable: a Modal outage is transient, and typing
-            # it as the permanent condition would tell a caller to stop retrying
-            # over a blip. Every local failure is wrapped, not just the missing
-            # runtime, so the Modal cause never depends on which one came back.
-            raise RuntimeError(
-                f"Ball tracking failed on Modal ({modal_err}) and locally ({local_err})"
-            ) from modal_err
+            # one — describes the fallback rather than the failure. Every local
+            # failure is wrapped, not just the missing runtime, so the Modal
+            # cause never depends on which one came back.
+            #
+            # The TYPE still follows the local failure. "No runtime here" is
+            # true whether or not Modal was tried first, and flattening it to
+            # RuntimeError erased that in the only environment where the
+            # condition is expected — a deployed run, which always tries Modal.
+            # Nothing translates it to PermanentPipelineError (see its
+            # docstring), so it cannot suppress a retry over a Modal blip.
+            message = f"Ball tracking failed on Modal ({modal_err}) and locally ({local_err})"
+            if isinstance(local_err, BallRuntimeUnavailable):
+                raise BallRuntimeUnavailable(message) from modal_err
+            raise RuntimeError(message) from modal_err
 
     try:
         cache_path.write_text(json.dumps({"positions": [asdict(p) for p in tracker.positions]}))
@@ -400,6 +413,37 @@ def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
         # Translated at the boundary so the task handler can recognise it without
         # importing ml (and without matching on a message).
         raise PermanentPipelineError(str(exc)) from exc
+
+
+def _pose_first_fallback(video_path: str, r2_key: str, ball_err: Exception | None):
+    """The pose-first scan, reporting the ball failure that sent us here.
+
+    Split out of `process_game` for one reason: it is the only place both halves
+    of a two-stage failure are in scope, and inline there it was unreachable by
+    a test (there is no seam into `process_game_task` — see
+    test_worker_safety.py).
+
+    When both stages are down it is usually one event — no Modal — but only the
+    pose message ("Pose detection is unavailable…") reaches the game's
+    `error_message` and Sentry, and it says nothing about the stage that failed
+    first. So every failure out of the scan is re-raised carrying `ball_err`.
+
+    Every failure, not just `PermanentPipelineError`: the scan also dies on
+    `RuntimeError("Cannot open video: …")`, a decode error mid-run, or an OOM,
+    and those dropped `ball_err` exactly like the case this guard was written
+    for. The re-raise preserves permanence — a permanent failure stays
+    permanent, so the task handler still skips the retry — and nothing else
+    about the type, which no caller reads.
+    """
+    try:
+        return _run_detection(video_path, r2_key)
+    except Exception as pose_err:
+        if ball_err is None:
+            raise
+        message = f"{pose_err} Ball tracking failed first: {ball_err}"
+        if isinstance(pose_err, PermanentPipelineError):
+            raise PermanentPipelineError(message) from pose_err
+        raise RuntimeError(message) from pose_err
 
 
 def _sweep_expired_raw_uploads() -> None:
@@ -818,20 +862,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 # Fallback: pose-first full-video scan (ball tracking failed
                 # entirely or ROBOFLOW_API_KEY unset — rare path). On Modal GPU
                 # when configured; the worker image has no torch to do it here.
-                try:
-                    detections = _run_detection(str(local_video), r2_key)
-                except PermanentPipelineError as pose_err:
-                    if ball_err is None:
-                        raise
-                    # Both stages are down, which on this image is one event: no
-                    # Modal. The pose message alone ("Pose detection is
-                    # unavailable…") is what lands in the game's error_message
-                    # and in Sentry, and it says nothing about the stage that
-                    # actually failed first. Carry that here — this is the only
-                    # place both halves are in scope.
-                    raise PermanentPipelineError(
-                        f"{pose_err} Ball tracking failed first: {ball_err}"
-                    ) from pose_err
+                detections = _pose_first_fallback(str(local_video), r2_key, ball_err)
 
                 try:
                     from ml.pipeline.detect import group_into_rallies

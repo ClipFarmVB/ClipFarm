@@ -685,61 +685,98 @@ def test_lock_dies_with_the_worker(pg_locks):
         redelivered.release()
 
 
-# ── error_message must never be what strands a game (CF-225) ──────────────────
+# ── error_message must never be what strands a game (CF-225) ──────────────
 #
 # The same stranded-in-`processing` symptom as the lock cases above, reached
 # from the opposite end: not a lock that outlives its holder, but the failure
 # *report* raising while it is written. `sync_set_game_status(…, "failed", …)`
-# runs from inside the task's own `except` handler, so a DataError there escapes
-# past the retry decision and past the `finally`, and the row never leaves
-# `processing`. The message is `str(exc)` from an arbitrary failure — a remote
-# Modal traceback is not a rare shape for it.
+# runs from inside the task's own `except` handler, so a DataError there costs
+# the `failed` write and the retry decision — the `finally` still runs and the
+# lock is released, but the row never leaves `processing`. The message is
+# `str(exc)` from an arbitrary failure; a remote Modal traceback is not a rare
+# shape for it.
 
 def test_error_message_is_clamped_to_the_column_width():
     from app.models.game import Game
     from app.workers._sync_db import _fit_error_message
 
-    width = Game.__table__.c.error_message.type.length
-    assert width, "error_message must stay a bounded column for this to mean anything"
+    width = getattr(Game.__table__.c.error_message.type, "length", None)
+    if not width:
+        pytest.skip("error_message is unbounded (Text) — nothing to clamp")
 
-    fitted = _fit_error_message("x" * (width * 5))
+    fitted = _fit_error_message("HEAD" + "x" * (width * 5) + "TAIL")
 
     assert len(fitted) == width
-    assert fitted.endswith("…"), "a silent cut reads as the end of the message"
+    assert fitted.startswith("HEAD") and fitted.endswith("TAIL"), (
+        "cut the middle: the type and message lead, and the frame that actually "
+        "raised is last — a tail cut keeps the preamble and drops the answer"
+    )
+    assert "…" in fitted, "a silent cut reads as a complete message"
     assert _fit_error_message("short") == "short", "and nothing else is touched"
+
+
+def test_the_clamp_reads_the_width_off_the_column():
+    """Not a repeated literal. This column should end up `Text` (CF-217 did that
+    for games.upload_id after the same overflow), and that change must not need
+    a matching edit here to stay correct."""
+    from app.models.game import Game
+    from app.workers import _sync_db
+
+    assert _sync_db._ERROR_MESSAGE_MAX is getattr(
+        Game.__table__.c.error_message.type, "length", None
+    )
 
 
 def test_every_error_message_writer_goes_through_the_clamp():
     """Pinned as an invariant over the module, not over today's two call sites.
 
     The clamp lives in `_sync_db` precisely so a future writer inherits it; a
-    test of the two current callers would not notice the third.
+    test of the two current callers would not notice the third. All three ways
+    to write the column are covered — plain assignment, `setattr`, and a Core
+    `update().values(...)` — because the point is to catch the writer nobody
+    thought to check, and that one will not be an `ast.Assign`.
     """
     source = (pathlib.Path(__file__).resolve().parents[1] / "app" / "workers" / "_sync_db.py")
     tree = ast.parse(source.read_text(encoding="utf-8"))
 
+    def is_guarded(value) -> bool:
+        # Clearing it (a run starting fresh) is fine; anything else must be the
+        # clamp's return value.
+        if isinstance(value, ast.Constant) and value.value is None:
+            return True
+        return (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "_fit_error_message"
+        )
+
     unguarded = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if not (isinstance(target, ast.Attribute) and target.attr == "error_message"):
-                continue
-            value = node.value
-            # Clearing it (a run starting fresh) is fine; anything else must be
-            # the clamp's return value.
-            if isinstance(value, ast.Constant) and value.value is None:
-                continue
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Attribute) and target.attr == "error_message":
+                    if not is_guarded(node.value):
+                        unguarded.append(node.lineno)
+        elif isinstance(node, ast.Call):
+            # setattr(game, "error_message", value)
             if (
-                isinstance(value, ast.Call)
-                and isinstance(value.func, ast.Name)
-                and value.func.id == "_fit_error_message"
+                isinstance(node.func, ast.Name)
+                and node.func.id == "setattr"
+                and len(node.args) == 3
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "error_message"
+                and not is_guarded(node.args[2])
             ):
-                continue
-            unguarded.append(node.lineno)
+                unguarded.append(node.lineno)
+            # anything(..., error_message=value) — .values(), .filter_by(), a
+            # future helper. Over-broad on purpose: a false positive here is a
+            # one-line fix, a false negative strands a game.
+            for kw in node.keywords:
+                if kw.arg == "error_message" and not is_guarded(kw.value):
+                    unguarded.append(node.lineno)
 
     assert not unguarded, (
-        f"_sync_db.py:{unguarded} writes error_message without _fit_error_message — "
-        "an over-long value raises DataError inside the task's except handler and "
-        "strands the game in `processing`"
+        f"_sync_db.py:{sorted(set(unguarded))} writes error_message without "
+        "_fit_error_message — an over-long value raises DataError inside the "
+        "task's except handler and strands the game in `processing`"
     )
