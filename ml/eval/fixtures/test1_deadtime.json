@@ -815,5 +815,6 @@
       "tier": "N",
       "note": "Failed play"
     }
-  ]
+  ],
+  "source_frame_height": 360
 }
