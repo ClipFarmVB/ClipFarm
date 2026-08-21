@@ -177,9 +177,14 @@ input[type="range"]::-webkit-slider-thumb:hover {
    shown outright; without this, delete/remove are simply unreachable on a
    phone (CF-60). The class is doubled to out-specify the `opacity-0`
    utility without !important. On a pointer device this rule never applies,
-   so the utilities behave exactly as they did before. */
+   so the utilities behave exactly as they did before.
+
+   `scale` because these controls pair the fade with a `scale-90` that only
+   `group-hover` completes — Tailwind v4 emits that as the standalone `scale`
+   property, and without resetting it a touch device renders the play badge
+   permanently stuck at 90%, half way through a hover it can never finish. */
 @media (hover: none) {
-  .hover-reveal.hover-reveal { opacity: 1; }
+  .hover-reveal.hover-reveal { opacity: 1; scale: 1; }
 }
 
 /* ── Focus ring ─────────────────────────────────────────────────────── */

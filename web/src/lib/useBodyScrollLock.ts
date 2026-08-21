@@ -13,18 +13,37 @@
  * Expressing the breakpoint in CSS means crossing it releases the lock with no
  * resize listener and no JS media query to keep in step with the Tailwind one.
  *
- * Classes also nest safely where a single inline style does not: two overlays
- * open at once (the collection picker over the clip modal) each add and remove
- * only their own, so the inner one's cleanup cannot unlock the page while the
- * outer one is still up.
+ * Locks are reference-counted per class, so overlays nest: the collection
+ * picker opening over the clip modal takes a second lock, and releasing the
+ * inner one leaves the page locked for the outer. Counting is what makes that
+ * true — bare add/remove would only work for as long as no two callers happen
+ * to share a class, which is a trap rather than a guarantee.
  */
 import { useEffect } from "react";
+
+const holders = new Map<string, number>();
+
+function acquire(className: string) {
+  const next = (holders.get(className) ?? 0) + 1;
+  holders.set(className, next);
+  if (next === 1) document.body.classList.add(className);
+}
+
+function release(className: string) {
+  const next = (holders.get(className) ?? 1) - 1;
+  if (next > 0) {
+    holders.set(className, next);
+    return;
+  }
+  holders.delete(className);
+  document.body.classList.remove(className);
+}
 
 function useBodyClass(className: string, active: boolean) {
   useEffect(() => {
     if (!active) return;
-    document.body.classList.add(className);
-    return () => document.body.classList.remove(className);
+    acquire(className);
+    return () => release(className);
   }, [className, active]);
 }
 
