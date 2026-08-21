@@ -716,9 +716,13 @@ def test_error_message_is_clamped_to_the_column_width():
 
 
 def test_the_clamp_reads_the_width_off_the_column():
-    """Not a repeated literal. This column should end up `Text` (CF-217 did that
-    for games.upload_id after the same overflow), and that change must not need
-    a matching edit here to stay correct."""
+    """Not a repeated literal. CF-226 widens this column to `Text` (as CF-217
+    did for games.upload_id after the same overflow), and that change must not
+    need a matching edit here to stay correct — the clamp no-ops on its own.
+
+    `getattr` rather than a plain attribute access, and not only to satisfy
+    mypy: `Text` genuinely has no `length`, so the direct form would break at
+    exactly the moment that card lands."""
     from app.models.game import Game
     from app.workers import _sync_db
 

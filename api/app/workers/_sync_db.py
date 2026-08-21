@@ -26,9 +26,14 @@ _engine = create_engine(_sync_url, pool_pre_ping=True)
 # call site so every writer is covered, including the next one.
 #
 # The width is read off the model, not repeated: it is the column that imposes
-# this, so a column that changes — or one widened to Text, which is where this
-# should end up (CF-217 did exactly that for games.upload_id) — must not need a
-# matching edit here to stay correct. Unbounded means no clamp at all.
+# this, so a column that changes must not need a matching edit here to stay
+# correct. Unbounded means no clamp at all — which is how CF-226 lands. That
+# card widens the column to Text (as CF-217 did for games.upload_id, the same
+# class of overflow), and this file should not appear in its diff.
+#
+# Until then this is a mitigation, not a fix: the value that overflows is a
+# Modal remote traceback, i.e. the operator-actionable half of the failure, so
+# the clamp truncates the diagnostic someone opened the row to read.
 # getattr, not a plain attribute: an unbounded column type need not carry a
 # `length` at all, and that case is exactly the one this must survive.
 _ERROR_MESSAGE_MAX = getattr(Game.__table__.c.error_message.type, "length", None)
