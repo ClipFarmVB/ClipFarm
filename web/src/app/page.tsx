@@ -121,7 +121,7 @@ export default function HomePage() {
     <div>
 
       {/* ── A: Scrolling ticker ─────────────────────────────────── */}
-      <div className="-mx-8 overflow-hidden border-b border-border/40">
+      <div className="-mx-4 overflow-hidden border-b border-border/40 sm:-mx-6 lg:-mx-8">
         <div
           style={{
             display: "flex",
@@ -142,9 +142,12 @@ export default function HomePage() {
       </div>
 
       {/* ── Hero: B + C + E ─────────────────────────────────────── */}
-      {/* No overflow-hidden here — it would clip the card stack shadows. */}
-      {/* Horizontal scroll is already suppressed by the page root overflow-x-hidden. */}
-      <div className="-mx-8 relative">
+      {/* No overflow-hidden here — it would clip the card stack shadows, and
+          nothing needs clipping: the negative margins below exactly cancel the
+          page container's gutters at every breakpoint, so the bleed reaches the
+          viewport edge and stops. (An earlier comment here credited a page-root
+          `overflow-x-hidden`; there has never been one.) */}
+      <div className="relative -mx-4 sm:-mx-6 lg:-mx-8">
         {/* E: Dot grid — drifts diagonally */}
         <div className="dot-grid absolute inset-0 pointer-events-none" />
         {/* Fade only at the very bottom so the grid stays visible */}
@@ -156,7 +159,7 @@ export default function HomePage() {
           }}
         />
 
-        <div className="relative px-8 py-18">
+        <div className="relative px-4 py-14 sm:px-6 sm:py-18 lg:px-8">
           <div className="grid grid-cols-1 gap-12 lg:grid-cols-[1fr_auto] lg:items-center lg:gap-20">
 
             {/* Left: eyebrow + headline (B) + subtitle + CTA */}
