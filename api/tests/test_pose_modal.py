@@ -700,6 +700,103 @@ def test_dev_compose_declares_every_named_volume_it_mounts():
     )
 
 
+# ── Ball tracking fallback (CF-225) ──────────────────────────────────
+
+@pytest.fixture
+def fake_ball(monkeypatch, tmp_path):
+    """Stand in for ml.pipeline.ball, plus a storage layer that always misses.
+
+    Same reason as `fake_detect`: `ml` is not importable from the api test run,
+    and neither is a Roboflow runtime — which is the deployed worker's state for
+    ball tracking too, and the whole subject of these tests.
+    """
+    ball = types.ModuleType("ml.pipeline.ball")
+
+    class BallRuntimeUnavailable(RuntimeError):
+        pass
+
+    class BallPosition:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    class TrackedBall:
+        def __init__(self, positions=None):
+            self.positions = positions or []
+
+    def track_ball(video_path, api_key, **kwargs):
+        raise BallRuntimeUnavailable("no local ball runtime")
+
+    ball.MODEL_ID = "volleyball/3"
+    ball.BallRuntimeUnavailable = BallRuntimeUnavailable
+    ball.BallPosition = BallPosition
+    ball.TrackedBall = TrackedBall
+    ball.track_ball = track_ball
+
+    pipeline = types.ModuleType("ml.pipeline")
+    pipeline.ball = ball
+    ml = types.ModuleType("ml")
+    ml.pipeline = pipeline
+
+    storage = types.ModuleType("app.services.storage")
+
+    def download_file(key, dest):
+        raise RuntimeError("cache miss")
+
+    storage.download_file = download_file
+    storage.upload_file = lambda *a, **kw: None
+
+    for name, mod in (
+        ("ml", ml), ("ml.pipeline", pipeline), ("ml.pipeline.ball", ball),
+        ("app.services.storage", storage),
+    ):
+        monkeypatch.setitem(sys.modules, name, mod)
+    monkeypatch.setenv("ROBOFLOW_API_KEY", "rf-key")
+    return ball
+
+
+def test_modal_failure_survives_the_missing_local_ball_runtime(monkeypatch, tmp_path, fake_ball):
+    """The Modal error is the half an operator can act on, so it has to reach
+    the log. Before CF-225 it was swallowed by the fallback attempt and the game
+    failed with `ModuleNotFoundError: inference` — which reads as a broken image,
+    not as an outage."""
+    from app.workers import tasks
+
+    monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: True)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("modal 503")
+
+    monkeypatch.setattr(tasks, "_track_ball_modal", boom)
+
+    with pytest.raises(fake_ball.BallRuntimeUnavailable) as exc:
+        tasks._track_ball_cached(
+            tmp_path / "game.mp4", tmp_path, sample_every=3,
+            r2_key="raw/x.mp4", video_md5="abc",
+        )
+
+    assert "modal 503" in str(exc.value), "the Modal failure must survive"
+    assert "no local ball runtime" in str(exc.value)
+    assert isinstance(exc.value.__cause__, RuntimeError)
+    assert "modal 503" in str(exc.value.__cause__), (
+        "chain from the Modal error, not from the missing-runtime one"
+    )
+
+
+def test_missing_local_runtime_alone_raises_unwrapped(monkeypatch, tmp_path, fake_ball):
+    """No Modal attempt, no Modal context to add — the original error is the
+    clearest thing to raise. This is the dev path (no R2 key, no tokens)."""
+    from app.workers import tasks
+
+    monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: False)
+
+    with pytest.raises(fake_ball.BallRuntimeUnavailable) as exc:
+        tasks._track_ball_cached(
+            tmp_path / "game.mp4", tmp_path, sample_every=3, video_md5="abc",
+        )
+
+    assert str(exc.value) == "no local ball runtime"
+
+
 def test_worker_has_no_model_cache_disk():
     """No weights are downloaded in the worker any more, so the disk that
     pinned them is gone — and with it the single-instance constraint a Render

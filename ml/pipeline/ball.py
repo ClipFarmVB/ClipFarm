@@ -148,9 +148,28 @@ class TrackedBall:
 # 1. Detection
 # ─────────────────────────────────────────────────────────────────────────────
 
+class BallRuntimeUnavailable(RuntimeError):
+    """No local Roboflow `inference` runtime in this process (CF-225).
+
+    Mirrors `detect.PoseRuntimeUnavailable`: the distinct type marks the failure
+    as PERMANENT — no retry makes `inference` appear — and lets the worker say
+    what actually went wrong. Since CF-164 the deployed image ships no ML
+    runtime at all, so this is what the local-CPU path raises in production;
+    installing `ml/requirements.txt` (dev, the eval harness) brings it back.
+    """
+
+
 def _load_model(api_key: str):
     """Load Roboflow ball detection model (weights cached after first run)."""
-    from inference import get_model
+    try:
+        from inference import get_model
+    except ImportError as import_err:
+        raise BallRuntimeUnavailable(
+            f"Local ball detection is unavailable ({import_err}). Ball tracking runs on "
+            "Modal (`clipfarm-ball-tracking`) and this image carries no Roboflow "
+            "`inference` runtime to fall back to — install ml/requirements.txt to run "
+            "it locally."
+        ) from import_err
     logger.info("Loading ball detection model %s", MODEL_ID)
     return get_model(MODEL_ID, api_key=api_key)
 

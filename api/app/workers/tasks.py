@@ -129,11 +129,19 @@ def _track_ball_cached(
 
     When Modal is configured, tracking itself runs on a GPU worker (CF-11)
     instead of locally on CPU; Modal failures fall back to local CPU tracking
-    so a Modal outage never blocks processing.
+    where a local runtime exists.
+
+    In the deployed image it does not (CF-164 took the ML stack out; CF-225
+    took the model-cache disk that fed it), so there the local step only
+    re-raises — carrying the Modal failure as its cause, since that is the half
+    an operator can act on. A missing-`inference` traceback on its own reads as
+    a packaging bug and hides the outage that caused it.
     """
     import os
     from app.services import storage as s3
-    from ml.pipeline.ball import track_ball, TrackedBall, BallPosition
+    from ml.pipeline.ball import (
+        BallRuntimeUnavailable, track_ball, TrackedBall, BallPosition,
+    )
 
     cache_key = _ball_cache_key(video_md5 or _file_md5(local_video), sample_every)
     cache_path = tmp / "ball_cache.json"
@@ -148,18 +156,28 @@ def _track_ball_cached(
         logger.info("Ball cache miss (%s) — running tracking", cache_key)
 
     tracker: TrackedBall | None = None
+    modal_err: Exception | None = None
     if _will_attempt_modal(r2_key):
         try:
             tracker = _track_ball_modal(local_video, r2_key, sample_every, on_progress=on_progress)
             logger.info("Ball tracking ran on Modal GPU: %d positions", len(tracker.positions))
-        except Exception as modal_err:
-            logger.warning("Modal ball tracking failed (%s) — falling back to local CPU", modal_err)
+        except Exception as err:
+            modal_err = err
+            logger.warning("Modal ball tracking failed (%s) — falling back to local CPU", err)
 
     if tracker is None:
-        tracker = track_ball(
-            str(local_video), os.environ["ROBOFLOW_API_KEY"],
-            sample_every=sample_every, on_progress=on_progress,
-        )
+        try:
+            tracker = track_ball(
+                str(local_video), os.environ["ROBOFLOW_API_KEY"],
+                sample_every=sample_every, on_progress=on_progress,
+            )
+        except BallRuntimeUnavailable as local_err:
+            if modal_err is None:
+                raise
+            raise BallRuntimeUnavailable(
+                f"Modal ball tracking failed ({modal_err}) and there is no local ball "
+                f"runtime to fall back to. {local_err}"
+            ) from modal_err
 
     try:
         cache_path.write_text(json.dumps({"positions": [asdict(p) for p in tracker.positions]}))

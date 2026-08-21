@@ -170,6 +170,12 @@ services:
   # weights) has nothing to hold now that no weights are downloaded here. That
   # also un-pins the single instance a disk forced, so horizontal scaling
   # (CF-65) is a numInstances change rather than a migration.
+  #
+  # Absent here is not the same as absent on the service (CF-225): the live
+  # worker was still mounting the disk — 28 KB used of 974 MB — after this file
+  # stopped declaring one. Confirm it under Disks in the dashboard and delete it
+  # there before raising numInstances, because a service with a disk attached
+  # cannot run more than one instance. See DEPLOY_RENDER.md § Notes & gotchas.
   - type: worker
     name: clipfarm-worker
     runtime: docker
@@ -177,6 +183,10 @@ services:
     branch: main
     region: oregon
     plan: starter
+    # One by choice, not by constraint, since the disk went (CF-225). Raising it
+    # is a queue-throughput decision (CF-65c) — every instance is another
+    # Postgres connection and another `starter` worth of cost, and the per-game
+    # advisory lock (CF-184) is what keeps two of them off the same game.
     numInstances: 1
     dockerfilePath: ./Dockerfile.api
     dockerContext: .

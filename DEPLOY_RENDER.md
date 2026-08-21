@@ -478,6 +478,20 @@ same Blueprint when there are real users; that's also what would let
   put an ML runtime back into `Dockerfile.api`, size the worker back up in the
   same change**; a torch import on 512 MB OOMs the box.
   `api/tests/test_pose_modal.py` pins the two together.
+- **The worker's `model-cache` disk is gone from the blueprint — check it is gone
+  from the *service* (CF-225).** CF-164 deleted the `disk:` block when the last
+  model left the image; two days later the live instance still mounted it, with
+  28 KB used of 974 MB. Auto-deploy is off, so the worker simply had not been
+  redeployed — but Render's disk docs don't say whether a blueprint sync removes
+  a disk at all, so don't assume the deploy does it. After the next worker
+  deploy, Render Dashboard → `clipfarm-worker` → **Disks**: if one is still
+  listed, delete it there. Nothing writes under `/models` any more (the
+  ball-position cache lives in R2), so there is nothing to preserve.
+
+  This is the step that actually unlocks scaling: **a service with a disk
+  attached cannot run more than one instance**, so while it survives,
+  `numInstances: 1` is a platform constraint rather than a choice. Once it is
+  detached, CF-65c's horizontal scaling is a `numInstances` edit.
 - **Production now runs the full-quality pose config** (`yolov8s-pose` @ 1280,
   every 4th frame — `app/config.py`'s defaults), because it runs on a T4 rather
   than on the worker's CPU. The old warning here — that prod ran a light
