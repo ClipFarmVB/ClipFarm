@@ -161,10 +161,13 @@ class BallRuntimeUnavailable(RuntimeError):
     "tracking ran and failed", which are different problems with different
     fixes. A RuntimeError subclass, so existing broad handling still catches it.
 
-    Which process this is matters: the Modal image
-    (`ml/modal_app.py`) installs `inference` and is where tracking is *meant*
-    to run, so this firing there is a broken image. In the worker it is the
-    expected state since CF-164 — no ML runtime ships in that image at all.
+    Which process this is matters: the Modal image (`ml/modal_app.py`) installs
+    `inference` and is where tracking is *meant* to run, so this firing there is
+    a broken image. Everywhere else it is the expected state — the worker ships
+    no ML runtime since CF-164, and a dev checkout does not get one from
+    `ml/requirements.txt` either: that file pins `inference-sdk`, a different
+    distribution providing `inference_sdk`, not the `inference` this needs.
+    So the local-CPU path is effectively Modal-image-only in practice.
     """
 
 
@@ -180,9 +183,11 @@ def _load_model(api_key: str):
         # a deployment that never intended to run it here.
         raise BallRuntimeUnavailable(
             f"Roboflow `inference` is not importable in this process ({import_err}), so "
-            f"ball model {MODEL_ID} cannot run here. It is installed in the "
-            "`clipfarm-ball-tracking` Modal image and by ml/requirements.txt; the worker "
-            "image ships no ML runtime (CF-164)."
+            f"ball model {MODEL_ID} cannot run here. The only place it is installed is "
+            "the `clipfarm-ball-tracking` Modal image (ml/modal_app.py pins "
+            "inference==1.3.3) — note that ml/requirements.txt carries `inference-sdk`, "
+            "a different distribution (module `inference_sdk`, an HTTP client) that does "
+            "NOT provide this import."
         ) from import_err
     logger.info("Loading ball detection model %s", MODEL_ID)
     return get_model(MODEL_ID, api_key=api_key)

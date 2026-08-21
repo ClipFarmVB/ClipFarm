@@ -52,6 +52,13 @@ def _fit_error_message(message: str) -> str:
         return message
     marker = " …[cut]… "
     keep = _ERROR_MESSAGE_MAX - len(marker)
+    if keep < 2:
+        # A column too narrow to hold the marker and a character from each end.
+        # Absurd today at 1024, but this function's whole contract is that a
+        # column change needs no edit here — and a negative `keep` made the
+        # slices run backwards and returned MORE than the width, reinstating the
+        # DataError it exists to prevent. Fall back to a plain head cut.
+        return message[:_ERROR_MESSAGE_MAX]
     head = keep // 2
     return message[:head] + marker + message[len(message) - (keep - head):]
 

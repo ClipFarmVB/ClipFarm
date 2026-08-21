@@ -415,13 +415,21 @@ def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
         raise PermanentPipelineError(str(exc)) from exc
 
 
-def _pose_first_fallback(video_path: str, r2_key: str, ball_err: Exception | None):
+def _pose_first_fallback(
+    video_path: str, r2_key: str, ball_err: str | None
+) -> list[dict]:
     """The pose-first scan, reporting the ball failure that sent us here.
 
     Split out of `process_game` for one reason: it is the only place both halves
     of a two-stage failure are in scope, and inline there it was unreachable by
     a test (there is no seam into `process_game_task` — see
     test_worker_safety.py).
+
+    `ball_err` is the formatted message, not the exception: holding the
+    exception kept its traceback — and through it the failed stage's frame
+    locals, which for ball tracking means a model handle and cv2/numpy buffers
+    — alive for the rest of the run. On a 512 MB worker (CF-164) that is worth
+    avoiding for a value only ever used as text.
 
     When both stages are down it is usually one event — no Modal — but only the
     pose message ("Pose detection is unavailable…") reaches the game's
@@ -440,7 +448,9 @@ def _pose_first_fallback(video_path: str, r2_key: str, ball_err: Exception | Non
     except Exception as pose_err:
         if ball_err is None:
             raise
-        message = f"{pose_err} Ball tracking failed first: {ball_err}"
+        # Separated: `pose_err` is an arbitrary exception's str() and need not
+        # end in punctuation, so the two halves ran together into one sentence.
+        message = f"{pose_err} — ball tracking failed first: {ball_err}"
         if isinstance(pose_err, PermanentPipelineError):
             raise PermanentPipelineError(message) from pose_err
         raise RuntimeError(message) from pose_err
@@ -827,7 +837,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             progress.stage("tracking_ball")
             detections: list[dict] = []
             ball_ok = False
-            ball_err: Exception | None = None
+            ball_err: str | None = None
             ball_contacts: list[dict] = []
             ball_positions: list[dict] = []
             if _os.environ.get("ROBOFLOW_API_KEY"):
@@ -848,7 +858,10 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         ]
                     logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
                 except Exception as err:
-                    ball_err = err
+                    # The formatted message, not the exception — see
+                    # _pose_first_fallback: retaining it pins the failed stage's
+                    # traceback and frame locals for the rest of the run.
+                    ball_err = f"{type(err).__name__}: {err}"
                     # exc_info: this is the first domino, and the pose-first scan
                     # that follows usually fails too on the same outage. Without
                     # the traceback the only record of *why* ball tracking went

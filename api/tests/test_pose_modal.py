@@ -737,19 +737,22 @@ def fake_ball(monkeypatch, tmp_path):
     ml = types.ModuleType("ml")
     ml.pipeline = pipeline
 
-    storage = types.ModuleType("app.services.storage")
+    for name, mod in (("ml", ml), ("ml.pipeline", pipeline), ("ml.pipeline.ball", ball)):
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    # The real module, patched function by function. A sys.modules entry does
+    # NOT work here: `from app.services import storage` resolves the attribute
+    # the parent package gained when the submodule was first imported, so once
+    # anything in the run has imported it the stub is never consulted. These
+    # tests were passing on the real `download_file` failing for want of R2
+    # credentials — green for a reason unrelated to what they assert.
+    from app.services import storage
 
     def download_file(key, dest):
-        raise RuntimeError("cache miss")
+        raise RuntimeError("ball cache miss")
 
-    storage.download_file = download_file
-    storage.upload_file = lambda *a, **kw: None
-
-    for name, mod in (
-        ("ml", ml), ("ml.pipeline", pipeline), ("ml.pipeline.ball", ball),
-        ("app.services.storage", storage),
-    ):
-        monkeypatch.setitem(sys.modules, name, mod)
+    monkeypatch.setattr(storage, "download_file", download_file)
+    monkeypatch.setattr(storage, "upload_file", lambda *a, **kw: None)
     monkeypatch.setenv("ROBOFLOW_API_KEY", "rf-key")
     return ball
 
@@ -849,7 +852,7 @@ def test_a_missing_roboflow_key_is_not_dressed_up_as_a_tracking_failure(
 
 # ── The pose-first hand-off (CF-225) ───────────────────────────────────
 
-BALL_ERR = RuntimeError("Ball tracking failed on Modal (modal 503) and locally (no runtime)")
+BALL_ERR = "BallRuntimeUnavailable: failed on Modal (modal 503) and locally (no runtime)"
 
 
 def test_a_permanent_pose_failure_reports_the_ball_failure_before_it(monkeypatch):
@@ -869,7 +872,7 @@ def test_a_permanent_pose_failure_reports_the_ball_failure_before_it(monkeypatch
         tasks._pose_first_fallback("game.mp4", "raw/x.mp4", BALL_ERR)
 
     assert "Pose detection is unavailable" in str(exc.value)
-    assert "Ball tracking failed first" in str(exc.value)
+    assert "ball tracking failed first" in str(exc.value)
     assert "modal 503" in str(exc.value), "the whole chain, not just the last link"
 
 
@@ -891,7 +894,7 @@ def test_a_transient_pose_failure_reports_it_too_without_becoming_permanent(monk
         tasks._pose_first_fallback("game.mp4", "raw/x.mp4", BALL_ERR)
 
     assert "Cannot open video" in str(exc.value)
-    assert "Ball tracking failed first" in str(exc.value)
+    assert "ball tracking failed first" in str(exc.value)
     assert not isinstance(exc.value, tasks.PermanentPipelineError), (
         "wrapping must not turn a retryable failure into a permanent one"
     )

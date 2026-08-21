@@ -485,8 +485,12 @@ same Blueprint when there are real users; that's also what would let
   redeployed — but Render's disk docs don't say whether a blueprint sync removes
   a disk at all, so don't assume the deploy does it. After the next worker
   deploy, Render Dashboard → `clipfarm-worker` → **Disks**: if one is still
-  listed, delete it there. Nothing writes under `/models` any more (the
-  ball-position cache lives in R2), so there is nothing to preserve.
+  listed, delete it there. Nothing in the *worker* writes under `/models` any
+  more, and the ball-position cache lives in R2, so there is nothing on that
+  disk to preserve. `/models` is still a live path on both Modal images — the
+  `clipfarm-model-cache` Volume mounts there for ball tracking, and pose stages
+  its baked-in weights there — but that is Modal's storage, unrelated to this
+  disk and untouched by deleting it.
 
   This is the step that actually unlocks scaling: **a service with a disk
   attached cannot run more than one instance**, so while it survives,
