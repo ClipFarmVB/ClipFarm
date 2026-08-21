@@ -16,6 +16,53 @@ _sync_url = settings.database_url.replace("+asyncpg", "")
 _engine = create_engine(_sync_url, pool_pre_ping=True)
 
 
+# games.error_message is a bounded column and nothing on the write path enforced
+# that. The value is `str(exc)` from an arbitrary failure — a Modal error
+# carrying a remote traceback runs long. Overflowing raised DataError from
+# *inside* the task's own `except` handler, which cost the `failed` write and
+# the retry decision (the `finally` still ran, so the lock was released), so the
+# row sat in `processing` forever: the CF-184 stranded-game symptom, reached by
+# the code that exists to explain a failure. Clamped here rather than at each
+# call site so every writer is covered, including the next one.
+#
+# The width is read off the model, not repeated: it is the column that imposes
+# this, so a column that changes must not need a matching edit here to stay
+# correct. Unbounded means no clamp at all — which is how CF-226 lands. That
+# card widens the column to Text (as CF-217 did for games.upload_id, the same
+# class of overflow), and this file should not appear in its diff.
+#
+# Until then this is a mitigation, not a fix: the value that overflows is a
+# Modal remote traceback, i.e. the operator-actionable half of the failure, so
+# the clamp truncates the diagnostic someone opened the row to read.
+# getattr, not a plain attribute: an unbounded column type need not carry a
+# `length` at all, and that case is exactly the one this must survive.
+_ERROR_MESSAGE_MAX = getattr(Game.__table__.c.error_message.type, "length", None)
+
+
+def _fit_error_message(message: str) -> str:
+    """Clamp to the column width, cutting the MIDDLE and marking the cut.
+
+    The middle because both ends carry the signal: an exception's type and
+    message lead, and when the long part is a remote traceback the frame that
+    actually raised is last. A tail cut keeps the preamble and drops the answer.
+    The full text is in the worker log and Sentry either way — this column is
+    the copy an operator sees first, not the only copy.
+    """
+    if not _ERROR_MESSAGE_MAX or len(message) <= _ERROR_MESSAGE_MAX:
+        return message
+    marker = " …[cut]… "
+    keep = _ERROR_MESSAGE_MAX - len(marker)
+    if keep < 2:
+        # A column too narrow to hold the marker and a character from each end.
+        # Absurd today at 1024, but this function's whole contract is that a
+        # column change needs no edit here — and a negative `keep` made the
+        # slices run backwards and returned MORE than the width, reinstating the
+        # DataError it exists to prevent. Fall back to a plain head cut.
+        return message[:_ERROR_MESSAGE_MAX]
+    head = keep // 2
+    return message[:head] + marker + message[len(message) - (keep - head):]
+
+
 def sync_get_game(game_id: uuid.UUID) -> Game | None:
     with Session(_engine) as s:
         return s.get(Game, game_id)
@@ -58,7 +105,7 @@ def sync_set_game_status(
         if processed_at:
             game.processed_at = processed_at
         if error_message:
-            game.error_message = error_message
+            game.error_message = _fit_error_message(error_message)
         s.commit()
 
 
@@ -77,7 +124,7 @@ def sync_note_game_error(game_id: uuid.UUID, message: str):
         game = s.get(Game, game_id)
         if not game:
             return
-        game.error_message = message
+        game.error_message = _fit_error_message(message)
         s.commit()
 
 
