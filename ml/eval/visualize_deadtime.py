@@ -35,6 +35,12 @@ OUT_PATH = EVAL_DIR / "results" / "deadtime_visualization.html"
 TEST_IDS = ("test1", "test2", "test3", "test4", "test5")
 TUNED_ON = ("test2", "test4")   # the rest are held out — see module docstring
 
+# The two rows that ship, named once so the table highlight cannot drift from
+# the prose again: SHIPPING is the default the report exists to justify,
+# BASELINE is what it is measured against.
+SHIPPING = "v5"
+BASELINE = "v0"
+
 # 1s of wrongly cut play costs this many seconds of kept dead time (CF-187's
 # exchange rate).
 LIVE_CUT_COST = 4.0
@@ -72,6 +78,15 @@ def fmt_dur(seconds: float) -> str:
     if seconds < 60:
         return f"{seconds:.1f}s"
     return f"{seconds:.1f}s ({int(seconds) // 60}m{int(seconds) % 60:02d}s)"
+
+
+def _row_class(key: str) -> str:
+    """Shade the shipping default and the baseline it is measured against."""
+    if key == SHIPPING:
+        return " class=hl"
+    if key == BASELINE:
+        return " class=base"
+    return ""
 
 
 def _pct(v: float | None) -> str:
@@ -272,7 +287,7 @@ def render_game(game: Game, results: dict[str, tuple[list[Interval], DeadTimeSig
     lines.append("</svg>")
 
     rows = "".join(
-        f"<tr{' class=\"hl\"' if key == 'v0' else ''}>"
+        f"<tr{_row_class(key)}>"
         f"<td class='k'>{key}</td><td>{html.escape(label)}</td>"
         f"<td class='n'>{_pct(results[key][1].dead_removed_pct)}</td>"
         f"<td class='n'>{results[key][1].live_removed_sec:.0f}s</td>"
@@ -323,7 +338,7 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
                 f"<td class='n{cls}'>{s.live_removed_sec:.0f}s</td>"
             )
         rows.append(
-            f"<tr{' class=\"hl\"' if key == 'v0' else ''}>"
+            f"<tr{_row_class(key)}>"
             f"<td class='k'>{key}</td><td>{html.escape(label)}</td>"
             + "".join(cells)
             + f"<td class='n'>{total_live:.0f}s</td>"
@@ -331,7 +346,7 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
             f"<td class='n b'>{total_net:+.0f}s</td></tr>"
         )
     heads = "".join(
-        f"<th class='n{" ho" if tid not in TUNED_ON else ""}' colspan='2'>{tid}"
+        f"<th class='n{' ho' if tid not in TUNED_ON else ''}' colspan='2'>{tid}"
         f"{'' if tid in TUNED_ON else ' *'}</th>"
         for tid in TEST_IDS
     )
@@ -347,7 +362,9 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
         {''.join(rows)}
       </table>
       <p class="note"><b>net</b> = dead seconds removed − {LIVE_CUT_COST:.0f} × live seconds cut.
-      Higher is better; <code>v0</code> is what ships today.</p>
+      Higher is better. <code>{SHIPPING}</code> (shaded) is the shipping default,
+      <code>{BASELINE}</code> the rule-based baseline it replaced — net is a
+      summary, so read the dead and live columns per game before trusting it.</p>
       <p class="note"><b>*</b> {_join(held_out)} were never inspected while tuning —
       those columns and the <b>held-out net</b> are the only numbers here not fitted to the data.
       <b>test5</b> is the strongest of them: it was labeled after the variants were written,
@@ -385,7 +402,8 @@ table.stats td { padding: 3px 14px 3px 0; }
 table.stats td.n, table.stats th.n { text-align: right; }
 table.stats td.k { font-family: ui-monospace, Menlo, monospace; color: #666; }
 table.stats td.b { font-weight: 700; }
-table.stats tr.hl td { background: #f4f6f8; }
+table.stats tr.hl td { background: #e8eef5; font-weight: 600; }
+table.stats tr.base td { background: #f7f7f7; }
 table.stats tr.sub th { font-weight: 500; color: #888; border-bottom: 1px solid #ddd; }
 table.stats .ho { background: #fbf7ec; }
 .legend { display: flex; flex-wrap: wrap; gap: 12px 20px;

@@ -122,7 +122,7 @@ model's keep-windows; `--windows-json` needs no video, so it runs on a laptop.
 `condense_mode`, so it scores whichever builder production is set to run
 (`guarded` by default, CF-187). It records that row, then prints an unrecorded
 companion row so you can see what the mode changed: pre-bridge windows under
-`rules`, the whole rule-based path under `guarded` and `ml`. Under `guarded` the
+`rules`, the whole rule-based path under `guarded`. Under `guarded` the
 run may print `ABSTAINED` — the ball track was too sparse to condense on, which
 is a real outcome and not a failed run. It needs the worker deps (R2, cv2, app
 config) and a ball-cache hit for the video.

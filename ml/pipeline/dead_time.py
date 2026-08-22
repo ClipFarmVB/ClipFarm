@@ -413,7 +413,7 @@ def active_windows_guarded(
         merge_gap_seconds=merge_gap_seconds,
     )
     anchors = motion_anchor_windows(samples, duration, speed=anchor_speed, pad=anchor_pad)
-    merged = merge_intervals(sorted(windows + anchors), merge_gap_seconds)
+    merged = merge_intervals(windows + anchors, merge_gap_seconds)
     logger.info(
         "Guarded condense windows: %d contacts → %d after speed gate, "
         "+%d motion anchors → %d windows",

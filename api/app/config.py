@@ -236,10 +236,13 @@ class Settings(BaseSettings):
     #   "rules"    the two blocks above: contacts + motion bridge (CF-46)
     #   "guarded"  speed-gated contacts + motion anchors + tight pads, abstaining
     #              when the ball track is too sparse to judge (CF-187)
-    # Default is "guarded": across the five dead-time fixtures it removes more
-    # dead time *and* cuts less live play than "rules" on four of them, and on
-    # the fifth it abstains instead of cutting 118s of rally. Three of those five
-    # were held out while it was tuned.
+    # Default is "guarded". Across the five dead-time fixtures it removes more
+    # dead time on every one it condenses, but it is not a clean sweep on live
+    # play: it cuts less than "rules" on two (176s->116s, 83s->66s) and more on
+    # two (2s->12s, 0s->18s), and on the fifth it abstains rather than cut 118s
+    # of rally. Net at the harness' 4:1 live-cut exchange rate: +1568s vs +615s.
+    # Three of the five were held out while it was tuned. Raising the gate or
+    # anchor speeds widens those two paid trades — see ml/eval/README.md.
     condense_mode: str = "guarded"
     # Guarded-path tunables — see ml/pipeline/dead_time.active_windows_guarded.
     # Speeds are frame-heights/s, so they hold across source resolutions.

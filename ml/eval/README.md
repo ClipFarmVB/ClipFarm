@@ -165,10 +165,23 @@ lives in `ml/pipeline/dead_time.py`:
 | `rules` | `active_windows_from_contacts` + `bridge_windows_by_motion` | the CF-46 path; still the fallback when `guarded` raises |
 | `guarded` | `active_windows_guarded` | **the default.** Speed-gated contacts, motion anchors, tight pads, and an abstain when the ball track is too sparse |
 
-The guarded path became the default because it removes more dead time *and* cuts
-less live play than `rules` on four of the five fixtures, and abstains on the
-fifth instead of cutting 118s of rally. Three of those five were held out while
-it was tuned.
+The guarded path became the default on the fixture numbers below, not on a
+clean sweep — it buys dead time with live play on two of them, and that trade is
+the thing to look at before touching its tunables:
+
+| fixture | dead removed | live cut | |
+|---|---|---|---|
+| test1* | 56.2% → 56.5% | 176s → **116s** | strictly better |
+| test2 | 9.5% → **51.1%** | 2s → 12s | +10s of play for 41 points of dead time |
+| test3* | 76.5% → 0.0% | 118s → **0s** | abstains rather than cut 118s of rally |
+| test4 | 44.2% → **70.9%** | 83s → **66s** | strictly better |
+| test5* | 4.6% → **52.6%** | 0s → 18s | +18s of play for 48 points of dead time |
+
+`* = held out while the variants were tuned.` Strictly better on two, a paid
+trade on two, an abstain on one. At the 4:1 live-cut exchange rate the harness
+and trainer share, that nets +1568s against `rules`' +615s — but the two paid
+trades are real, and live play is the axis this repo protects, so a change that
+widens them needs more than a better net.
 
 **Abstaining is a real outcome, not a failure.** Below
 `condense_guard_min_track_rate` usable speed samples/s the builder returns one

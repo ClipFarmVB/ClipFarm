@@ -279,6 +279,25 @@ def run(
     return pre, post
 
 
+def _require_r2_key(raw: dict, test_id: str) -> str:
+    """
+    The fixture's source video in R2, or a readable exit.
+
+    Not every fixture has one: a video labeled from a local file (test5) is
+    pinned by md5 and duration only, and --offline has nothing to download. That
+    is a documented state, so say so instead of dying on a bare KeyError.
+    """
+    r2_key = raw.get("source_r2_key")
+    if not r2_key:
+        raise SystemExit(
+            f"{test_id}: fixture has no source_r2_key, so --offline has no video to "
+            "fetch (the clip was labeled from a local file and never uploaded). "
+            "Score a dumped keep-window list with --windows-json instead, or run "
+            "python -m ml.eval.visualize_deadtime, which reads ml/eval/ball_caches/."
+        )
+    return r2_key
+
+
 def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     """
     Re-run the detection + scoring stages against the fixture's source video,
@@ -301,7 +320,7 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     from ml.pipeline.score import score_highlights
 
     fixture = load_fixture(test_id)
-    r2_key = fixture.raw["source_r2_key"]
+    r2_key = _require_r2_key(fixture.raw, test_id)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -428,7 +447,7 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
     )
 
     fixture = load_deadtime_fixture(test_id)
-    r2_key = fixture.raw["source_r2_key"]
+    r2_key = _require_r2_key(fixture.raw, test_id)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)

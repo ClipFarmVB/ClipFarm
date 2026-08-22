@@ -25,6 +25,95 @@ RAW_PREFIX = "raw/"
 CONDENSE_MIN_TRIM_FRACTION = 0.02
 
 
+def _worth_condensing(kept_seconds: float, video_duration: float) -> bool:
+    """
+    Whether a keep-window set trims enough to be worth the re-encode.
+
+    The guarded builder abstains by returning one whole-video window, and
+    encoding that would spend minutes to upload a copy of the original. Callers
+    treat False as "ship the game without a condensed cut", which is also the
+    right answer for any other near-total keep.
+    """
+    if video_duration <= 0:
+        return False
+    return kept_seconds < video_duration * (1.0 - CONDENSE_MIN_TRIM_FRACTION)
+
+
+def _build_condense_windows(
+    mode: str,
+    contacts: list[dict],
+    positions: list[dict],
+    duration: float,
+    frame_height: int,
+    settings,
+) -> tuple[list[tuple[float, float]], str]:
+    """
+    Keep-windows for the condense stage, with the name of the builder that
+    actually produced them (for logging — the requested mode may not be the one
+    that ran).
+
+    Anything that goes wrong in a non-default builder — feature drift, a missing
+    frame height, an unknown mode name — falls back to "rules" with a warning,
+    because a degraded condense beats a failed run.
+
+    The None sentinel is load-bearing, not style: active_windows_guarded returns
+    [] on a dense track where every contact failed the speed gate and nothing
+    anchored a window, which is a real verdict of "no play here". Reading that as
+    a failure would rebuild the windows from the very contacts the gate rejected
+    — the junk the mode exists to remove. Only an exception means "fall back".
+    """
+    from ml.pipeline.dead_time import (
+        active_windows_from_contacts,
+        active_windows_guarded,
+        bridge_windows_by_motion,
+    )
+
+    windows: list[tuple[float, float]] | None = None
+    built_by = mode
+    if mode != "rules":
+        try:
+            if mode == "guarded":
+                windows = active_windows_guarded(
+                    contacts, positions, duration, frame_height,
+                    gap_seconds=settings.condense_gap_seconds,
+                    min_contacts=settings.condense_min_contacts,
+                    pad_before=settings.condense_guard_pad_before,
+                    pad_after=settings.condense_guard_pad_after,
+                    merge_gap_seconds=settings.condense_guard_merge_gap_seconds,
+                    gate_speed=settings.condense_guard_gate_speed,
+                    anchor_speed=settings.condense_guard_anchor_speed,
+                    min_track_rate=settings.condense_guard_min_track_rate,
+                )
+            else:
+                raise ValueError(f"unknown condense_mode {mode!r}")
+        except Exception as mode_err:
+            logger.warning(
+                "Condense mode %r failed (%s) — using rule-based windows",
+                mode, mode_err,
+            )
+            windows = None
+            built_by = "rules"
+
+    if windows is None:
+        built_by = "rules"
+        windows = active_windows_from_contacts(
+            contacts, duration,
+            gap_seconds=settings.condense_gap_seconds,
+            pad_before=settings.condense_pad_before,
+            pad_after=settings.condense_pad_after,
+            min_contacts=settings.condense_min_contacts,
+            merge_gap_seconds=settings.condense_merge_gap_seconds,
+        )
+        windows = bridge_windows_by_motion(
+            windows, positions,
+            speed_pxps=settings.condense_bridge_speed_pxps,
+            fast_fraction=settings.condense_bridge_fast_fraction,
+            max_bridge_seconds=settings.condense_bridge_max_seconds,
+        )
+    return windows, built_by
+
+
+
 def _file_md5(path: Path) -> str:
     """Content hash of a file (streamed, constant memory)."""
     h = hashlib.md5()
@@ -1033,65 +1122,17 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 progress.stage("condensing")
                 try:
                     from app.workers._sync_db import sync_set_condensed_result
-                    from ml.pipeline.dead_time import (
-                        active_windows_from_contacts,
-                        active_windows_from_detections,
-                        active_windows_guarded,
-                        bridge_windows_by_motion,
-                    )
+                    from ml.pipeline.dead_time import active_windows_from_detections
                     from ml.pipeline.clip import generate_condensed_video
 
                     if ball_ok:
-                        # None = "no builder has spoken yet", distinct from a
-                        # builder that ran and found nothing. active_windows_guarded
-                        # returns [] on a dense track when every contact fails the
-                        # speed gate and no motion anchors it — a real verdict of
-                        # "no play here". Falling back to the rules on that would
-                        # rebuild windows from the very contacts the gate rejected.
-                        windows = None
-                        mode = app_settings.condense_mode
-                        if mode != "rules":
-                            # Anything wrong in the selected builder (feature
-                            # drift, an unknown mode name) falls back to the
-                            # rule-based windows below.
-                            try:
-                                if mode == "guarded":
-                                    windows = active_windows_guarded(
-                                        ball_contacts, ball_positions, video_duration,
-                                        _frame_h,
-                                        gap_seconds=app_settings.condense_gap_seconds,
-                                        min_contacts=app_settings.condense_min_contacts,
-                                        pad_before=app_settings.condense_guard_pad_before,
-                                        pad_after=app_settings.condense_guard_pad_after,
-                                        merge_gap_seconds=app_settings.condense_guard_merge_gap_seconds,
-                                        gate_speed=app_settings.condense_guard_gate_speed,
-                                        anchor_speed=app_settings.condense_guard_anchor_speed,
-                                        min_track_rate=app_settings.condense_guard_min_track_rate,
-                                    )
-                                else:
-                                    raise ValueError(f"unknown condense_mode {mode!r}")
-                            except Exception as mode_err:
-                                logger.warning(
-                                    "Condense mode %r failed (%s) — using rule-based windows",
-                                    mode, mode_err,
-                                )
-                                windows = None
-                        if windows is None:
-                            windows = active_windows_from_contacts(
-                                ball_contacts, video_duration,
-                                gap_seconds=app_settings.condense_gap_seconds,
-                                pad_before=app_settings.condense_pad_before,
-                                pad_after=app_settings.condense_pad_after,
-                                min_contacts=app_settings.condense_min_contacts,
-                                merge_gap_seconds=app_settings.condense_merge_gap_seconds,
-                            )
-                            windows = bridge_windows_by_motion(
-                                windows, ball_positions,
-                                speed_pxps=app_settings.condense_bridge_speed_pxps,
-                                fast_fraction=app_settings.condense_bridge_fast_fraction,
-                                max_bridge_seconds=app_settings.condense_bridge_max_seconds,
-                            )
+                        windows, built_by = _build_condense_windows(
+                            app_settings.condense_mode,
+                            ball_contacts, ball_positions, video_duration, _frame_h,
+                            app_settings,
+                        )
                     else:
+                        built_by = "pose-fallback"
                         windows = active_windows_from_detections(
                             pre_gate_rallies, video_duration,
                             pad_before=app_settings.condense_pad_before,
@@ -1106,12 +1147,12 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     # judge. Encoding it would spend minutes to upload a copy of
                     # the original, so skip it: the game still goes ready, just
                     # without a condensed cut.
-                    trims_something = kept_seconds < video_duration * (1.0 - CONDENSE_MIN_TRIM_FRACTION)
+                    trims_something = _worth_condensing(kept_seconds, video_duration)
                     if windows and not trims_something:
                         logger.info(
                             "Condense skipped: keep-windows cover %.0fs of %.0fs "
-                            "(mode %r) — nothing meaningful to trim",
-                            kept_seconds, video_duration, app_settings.condense_mode,
+                            "(built by %r) — nothing meaningful to trim",
+                            kept_seconds, video_duration, built_by,
                         )
 
                     if windows and trims_something:
