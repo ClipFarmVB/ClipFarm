@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, tuple_, update
+from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,6 +53,19 @@ async def follow_user(handle: str, user_id: UserId, db: DB):
 
     Idempotent: following twice returns the existing state rather than erroring
     or creating a second edge (the unique constraint would reject it anyway).
+
+    **Accepted race, stated rather than hidden.** `is_private` is read here and
+    the status is decided from it, so a request already in flight when the
+    target switches to private lands as `accepted` instead of `pending` — and an
+    accepted edge is `followers`-tier access to their footage. The window is a
+    few milliseconds and closing it means locking the target's row on every
+    follow, which no comparable product does.
+
+    It is called out because it is the only race in this file that *grants*
+    access rather than miscounting, and because the fix if we ever want one is
+    not the obvious re-read: it is demoting existing accepted edges when an
+    account goes private, which is a decision about people who already have
+    access. CF-116.
     """
     target = await profiles.by_handle(handle, db)
     if target.id == user_id:
@@ -120,12 +133,24 @@ async def unfollow_user(handle: str, user_id: UserId, db: DB):
     ).scalar_one_or_none()
 
     if existing is not None:
-        was_accepted = existing.status is FollowStatus.accepted
-        await db.delete(existing)
-        if was_accepted:
+        # Conditional DELETE, counters behind its rowcount — the same guard
+        # accept_follow_request uses, for the same reason. Read-check-then-write
+        # let two concurrent unfollows both see `accepted`, both delete, and
+        # both decrement, leaving follower_count at -1 for an edge that existed
+        # once. Nothing surfaced it either: SQLAlchemy's ORM delete only warns
+        # that it matched no rows and commits the decrement regardless, so the
+        # request pair returned 200/200 with a corrupt count behind them.
+        removed = await db.execute(
+            delete(Follow).where(
+                Follow.id == existing.id, Follow.status == existing.status
+            )
+        )
+        if removed.rowcount == 1 and existing.status is FollowStatus.accepted:
             await _adjust_counts(db, user_id, target.id, -1)
         await db.commit()
 
+    # Either way the edge is gone, so the answer is the same — the loser of a
+    # double-tap still describes the world correctly.
     return FollowStateOut(status=None, following=False)
 
 
@@ -327,8 +352,15 @@ async def reject_follow_request(request_id: uuid.UUID, user_id: UserId, db: DB):
     requester can ask again later — and so a rejection isn't a permanent record
     of who was turned down."""
     follow = await _own_pending_request(request_id, user_id, db)
-    # No counters here — a pending edge was never counted — so a plain delete is
-    # safe against a concurrent duplicate: the second finds nothing and the
-    # 404 from _own_pending_request is the correct answer.
-    await db.delete(follow)
+    # Conditional, like unfollow. There is no counter to corrupt here, so this
+    # is the mild version — but the shape is identical and the previous comment
+    # claimed a safety it did not have: under real concurrency both callers pass
+    # _own_pending_request while the row still reads `pending`, and the second
+    # deleted nothing while returning 204 as though it had. Symmetric guards so
+    # the next person doesn't have to work out which of the three is different.
+    await db.execute(
+        delete(Follow).where(
+            Follow.id == follow.id, Follow.status == FollowStatus.pending
+        )
+    )
     await db.commit()
