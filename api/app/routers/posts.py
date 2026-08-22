@@ -3,7 +3,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user_id, get_optional_user_id
@@ -14,7 +14,7 @@ from app.models.post import Post
 from app.models.user import User
 from app.models.visibility import Visibility
 from app.schemas.post import PostAuthor, PostCreate, PostOut, PostPlayback, PostUpdate
-from app.services import access, storage
+from app.services import access, handles, storage
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,34 @@ async def _load_for_read(
     return post, clip, author
 
 
+async def _findable_author(username: str, db: AsyncSession) -> User:
+    """Resolve a **publicly findable** handle, or 404.
+
+    Two rules, both borrowed from CF-107's `get_profile` rather than reinvented:
+
+    * `handles.normalize`, not `.lower()` — it also strips, so `" matt "`
+      resolves here exactly as it does at `/u/{handle}`. Two endpoints
+      disagreeing about whether a handle exists is its own small bug.
+    * a **generated** handle 404s. The CF-107 backfill derives handles from
+      email local parts, so answering for them turns this into an existence
+      oracle keyed to real addresses — `john.smith@…` becomes `johnsmith` —
+      for accounts that never chose to be findable. `get_profile` refuses them
+      for that reason and this route reaches the same rows by another door.
+
+    CF-110 lifts this into `services/profiles.py` once a third caller needs it;
+    until then the rule is duplicated rather than absent, which is the safer of
+    the two failure modes.
+    """
+    author = (
+        await db.execute(
+            select(User).where(func.lower(User.username) == handles.normalize(username))
+        )
+    ).scalar_one_or_none()
+    if author is None or author.username_is_generated:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return author
+
+
 @router.post("", response_model=PostOut, status_code=status.HTTP_201_CREATED)
 async def create_post(body: PostCreate, user_id: UserId, db: DB):
     """Publish one of your own clips.
@@ -151,12 +179,14 @@ async def list_user_posts(
 
     Not a feed: the feed (CF-111) spans everyone you follow and is cursor
     paginated. This is scoped to a single handle.
+
+    Capped rather than paged, deliberately for now — a profile grid shows the
+    recent ones and the card scopes it there. When it does need paging it wants
+    CF-111's keyset cursor over `(created_at, id)`, not `offset`: OFFSET
+    re-counts from the top on every page, so a post published mid-scroll
+    duplicates one row at the boundary and skips another.
     """
-    author = (
-        await db.execute(select(User).where(User.username == username.lower()))
-    ).scalar_one_or_none()
-    if author is None:
-        raise HTTPException(status_code=404, detail="Profile not found")
+    author = await _findable_author(username, db)
 
     # One joined query, not a fetch per post: the clip is needed to resolve
     # playback and the game to resolve inherited visibility, so loading them per

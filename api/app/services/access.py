@@ -29,6 +29,21 @@ lookup *and* the list filters for an EXISTS; a router-local predicate would have
 picked up the first half and silently missed the second, leaving the followers
 tier for posts filtering in Python.
 
+**`users.is_private` does not enter into any of this**, and that is a decision
+rather than an oversight. Visibility is a property of the content: a private
+account's `public` post is readable by a signed-out stranger, because the author
+chose `public` for that post. The account flag governs one thing only — whether
+following requires approval.
+
+The alternative reading is that the account switch should be an outer bound
+clamping every post beneath it, and CF-110 took that view for follower *lists*
+(owner-only when the account is private, because who follows you is information
+about you). The two are reconcilable — a list is about other people, a post is
+about the thing you deliberately published — but the asymmetry is worth knowing
+before either is changed. `test_account_privacy_does_not_clamp_post_visibility`
+pins the current behaviour so flipping it has to be deliberate; CF-116 is where
+that argument belongs if it is had.
+
 Writes are NOT covered here. Creating, editing and deleting stay owner-only, and
 the routers keep their own ownership checks for those paths.
 
