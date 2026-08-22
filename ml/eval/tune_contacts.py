@@ -9,6 +9,15 @@ only the dump from diagnose_detection.py, which the container mounts.
 Step 0 reproduces the recorded container baseline. If that row doesn't match
 exactly, nothing below it is trustworthy, so it prints the expected values.
 
+CF-174 — read the labels as REFERENCE (360p) values, not effective ones. The
+three px/s tunables (CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS,
+MIN_SPEED_PXPS) are multiplied by ball._scale_for(frame_height) at use, and
+SEG_MAX_SPEED_PXPS additionally feeds that function's cap, so a row sweeping it
+moves the clamp underneath itself. The default fixture is test1 at 360p, where
+the scale is exactly 1.0 and label == effective, which is why the pinned
+baseline still reproduces; on the 1080p fixtures a row reading
+"CONTACT_HIT_SPEED_PXPS=360" is applying 1080. main() prints the active scale.
+
   docker compose run --rm --no-deps worker python -m ml.eval.tune_contacts
 """
 from __future__ import annotations
@@ -80,6 +89,11 @@ def main() -> None:
             label, r["contacts"], r["windows"], r["hit"],
             r["live"], 100 * r["dead"], 100 * r["recall"], 100 * r["cond"]))
 
+    scale = B._scale_for(frame_h)
+    units = ("labels below are effective px/s" if scale == 1.0
+             else "labels below are REFERENCE px/s — multiply by the scale")
+    print(f"fixture frame_height={frame_h} -> CF-174 threshold scale {scale:.2f}"
+          f"  ({units})\n")
     print("%-34s %5s %5s %8s %8s %9s %9s %9s" % (
         "config", "cont", "win", "rally", "live-lost", "dead-rm", "recall", "condense"))
     show("BASELINE (shipping defaults)", score())

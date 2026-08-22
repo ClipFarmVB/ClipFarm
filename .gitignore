@@ -55,4 +55,3 @@ runs/
 # Misc
 .turbo/
 .claude/
-ml/eval/ball_caches/

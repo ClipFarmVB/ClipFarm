@@ -53,9 +53,13 @@ jobs:
           cache: pip
       # numpy is for ml/tests: CF-174's threshold scaling is unit-tested against
       # ml/pipeline/ball.py, which does its trajectory maths in numpy at module
-      # scope, so test_ball_scaling.py cannot import without it. (cv2 is *not*
-      # needed — CF-174 made that import lazy precisely so this job stays light.)
-      # Everything else here stays dependency-free.
+      # scope. (cv2 is *not* needed — CF-174 made that import lazy precisely so
+      # this job stays light.) Everything else here stays dependency-free.
+      #
+      # test_ball_scaling.py guards that import with pytest.importorskip so a
+      # missing numpy skips one file instead of aborting collection for the
+      # whole suite. That skip cannot hide here: this step installs numpy as its
+      # own command, so an unavailable numpy fails the job before pytest runs.
       - run: pip install ruff mypy pytest numpy
       - run: ruff check api/
       - run: mypy api/app --ignore-missing-imports

@@ -439,6 +439,20 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval]]
         # dead-time complement); fall back to the decoded frame count.
         duration = fixture.duration or (n_frames / fps)
 
+        # CF-174: contact thresholds scale with this number, so a source that is
+        # not the labeled one scores against thresholds the fixture never meant.
+        # Same guard role as the pinned source_video_md5, one failure earlier —
+        # a re-encode that changed resolution shifts every threshold silently.
+        declared_h = fixture.raw.get("source_frame_height")
+        if declared_h is not None and int(declared_h) != frame_h:
+            raise SystemExit(
+                f"Offline deadtime: {test_id} declares source_frame_height="
+                f"{int(declared_h)} but {r2_key} decodes at {frame_h}px. CF-174 "
+                "thresholds scale with frame height, so this run would not be "
+                "comparable to the fixture's recorded numbers. Re-upload the "
+                "labeled file, or re-label against this one."
+            )
+
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
         # Pass r2_key so the ball-cache lookup hits; without it this silently
         # falls through to a ~30-minute local CPU re-track (see _run_offline).
