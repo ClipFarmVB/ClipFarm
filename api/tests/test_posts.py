@@ -119,8 +119,14 @@ def test_followers_tier_now_admits_an_accepted_follower():
     post = _Post(Visibility.followers)
     post.clip_id = clip.id
     assert access.can_view_post(STRANGER, post, clip, game) is False
+    # The post's own tier is the author's to grant, so the *author* flag is what
+    # opens it. Passing only the owner flag must not — that conflation is what
+    # the CF-110 review found, and this is the assertion that keeps it fixed.
     assert access.can_view_post(
         STRANGER, post, clip, game, viewer_follows_owner=True
+    ) is False
+    assert access.can_view_post(
+        STRANGER, post, clip, game, viewer_follows_author=True
     ) is True
 
 
@@ -247,3 +253,31 @@ def test_the_profile_posts_route_does_not_lowercase_by_hand():
     import inspect
 
     assert "username.lower()" not in inspect.getsource(posts_router)
+
+
+def test_the_two_principals_are_not_interchangeable():
+    """A post is gated on its author's tier and its clip's owner's, and those
+    are the same person only by convention (`create_post` refuses to publish
+    someone else's footage) rather than by any constraint. So the predicate
+    takes two flags, and neither one answers the other's question."""
+    import inspect
+
+    game = _Game(Visibility.public, owner_id=STRANGER)   # owner != author
+    clip = _Clip(game, visibility=Visibility.followers)  # clip tier is the owner's
+    post = _Post(Visibility.public)                      # post tier is the author's
+    post.clip_id = clip.id
+
+    # Following the author opens the post but not the footage behind it, which
+    # belongs to a different account.
+    viewer = uuid.uuid4()
+    assert access.can_view_post(
+        viewer, post, clip, game, viewer_follows_author=True
+    ) is False
+    # Following both is what it takes.
+    assert access.can_view_post(
+        viewer, post, clip, game, viewer_follows_author=True, viewer_follows_owner=True
+    ) is True
+
+    sig = inspect.signature(access.can_view_post)
+    assert sig.parameters["viewer_follows_author"].default is False
+    assert sig.parameters["viewer_follows_owner"].default is False

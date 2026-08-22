@@ -78,7 +78,22 @@ def upgrade() -> None:
     )
 
 
+    # Counters can only ever be wrong downward through a bug, and the review
+    # that found one showed the failure is otherwise silent — SQLAlchemy warned
+    # and committed. A CHECK makes the next variant an error at the write that
+    # causes it rather than a number nobody audits. Cheap: two constraints on a
+    # table written once per follow.
+    op.create_check_constraint(
+        "ck_users_follower_count_non_negative", "users", "follower_count >= 0"
+    )
+    op.create_check_constraint(
+        "ck_users_following_count_non_negative", "users", "following_count >= 0"
+    )
+
+
 def downgrade() -> None:
+    op.drop_constraint("ck_users_following_count_non_negative", "users", type_="check")
+    op.drop_constraint("ck_users_follower_count_non_negative", "users", type_="check")
     # IF EXISTS throughout — dev databases drift (the 008 lesson).
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS following_count")
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS follower_count")

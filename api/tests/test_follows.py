@@ -123,17 +123,24 @@ def test_resolve_follow_never_queries_for_anonymous_or_self():
         _ExplodingSession(), me, me, Visibility.followers)) is False
 
 
-def test_a_post_read_resolves_the_edge_once():
-    """A post is gated on two levels — its own and its clip's — and its author
-    is always the owner of the game behind it. Asking twice was two round trips
-    for one fact."""
+def test_a_post_read_resolves_one_edge_when_the_principals_coincide():
+    """A post's tier belongs to its author, its clip's to the game's owner.
+
+    Those are the same person for every post today, so the second lookup is
+    short-circuited rather than skipped — the earlier version assumed they were
+    always identical and reused one answer for both questions, which would have
+    authorized against the wrong follow edge the moment a game changed hands.
+    The assertion is that the reuse stays *conditional*, not that it stays a
+    single call.
+    """
     import inspect
 
     from app.routers import posts as posts_router
 
     src = inspect.getsource(posts_router._load_for_read)
-    assert src.count("follow_graph.resolve_follow(") == 1, "one lookup, not two"
-    assert "is_accepted_follower" not in src
+    assert "if post.author_id == game.owner_id" in src, "reuse must stay conditional"
+    assert src.count("follow_graph.resolve_follow(") == 2, "a fallback for the split case"
+    assert "is_accepted_follower" not in src, "go through resolve_follow's short-circuit"
 
 
 def test_the_counter_update_is_inside_the_integrity_guard():
@@ -218,3 +225,59 @@ def test_follow_endpoints_cannot_resolve_a_generated_handle():
     src = inspect.getsource(follows_router)
     assert "profiles.by_handle" in src
     assert "func.lower(User.username)" not in src, "no second, unguarded lookup"
+
+
+def test_all_three_mutations_guard_their_write_symmetrically():
+    """The review finding, generalised.
+
+    `accept` was hardened with a conditional UPDATE in an earlier round and its
+    two siblings were left as read-check-then-write. That asymmetry is what let
+    a concurrent unfollow decrement `follower_count` twice — silently, because
+    SQLAlchemy's ORM delete only *warns* when it matches no rows and commits the
+    decrement anyway.
+
+    Asserted as a set rather than one test per endpoint so a fourth mutation
+    can't be added without the guard, which is exactly how the third one slipped.
+    """
+    import inspect
+
+    from app.routers import follows as follows_router
+
+    for fn in (
+        follows_router.unfollow_user,
+        follows_router.reject_follow_request,
+        follows_router.accept_follow_request,
+    ):
+        src = inspect.getsource(fn)
+        assert "Follow.status ==" in src, (
+            f"{fn.__name__} must scope its write to the status it read — "
+            "otherwise two concurrent callers both act on the same row"
+        )
+        assert "await db.delete(" not in src, (
+            f"{fn.__name__} uses an unconditional ORM delete, which matches "
+            "zero rows and warns rather than failing"
+        )
+
+
+def test_only_a_write_that_matched_moves_the_counters():
+    """`x = x + n` prevents lost updates, not duplicate ones. The counters have
+    to sit behind the rowcount of the write that earned them."""
+    import inspect
+
+    from app.routers import follows as follows_router
+
+    for fn in (follows_router.unfollow_user, follows_router.accept_follow_request):
+        src = inspect.getsource(fn)
+        assert "rowcount == 1" in src, f"{fn.__name__} adjusts counts unconditionally"
+
+
+def test_the_database_refuses_a_negative_counter():
+    """Belt to the code's braces. The failure this review found was silent —
+    a CHECK makes the next variant an error at the write that causes it."""
+    import pathlib
+    import re
+
+    versions = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
+    sql = (versions / "015_follow_graph.py").read_text(encoding="utf-8")
+    for col in ("follower_count", "following_count"):
+        assert re.search(rf"{col}\s*>=\s*0", sql), f"no CHECK guarding {col}"
