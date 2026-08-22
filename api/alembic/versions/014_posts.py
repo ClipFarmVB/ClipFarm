@@ -63,10 +63,17 @@ def upgrade() -> None:
             server_default=sa.func.now(),
         ),
     )
-    op.create_index("ix_posts_author_id", "posts", ["author_id"])
+    # clip_id earns its own: the ON DELETE CASCADE from `clips` has to find
+    # posts by it, and Postgres does not index a foreign key for you.
     op.create_index("ix_posts_clip_id", "posts", ["clip_id"])
     # The feed's ordering (CF-111) is (created_at DESC, id DESC) scoped by
     # author. Added here so the feed query has its index the day it lands.
+    #
+    # No separate ix_posts_author_id: a btree on (author_id, created_at) already
+    # serves a lookup on author_id alone, and the planner picks it — checked
+    # over 20k rows, where a bare `WHERE author_id = $1` chose this index and
+    # never touched the single-column one. That index would have been pure
+    # write cost on a table the pipeline appends to per post.
     op.create_index("ix_posts_author_created", "posts", ["author_id", "created_at"])
     op.create_index("ix_posts_created_at", "posts", ["created_at"])
 

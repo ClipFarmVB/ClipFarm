@@ -14,7 +14,7 @@ from app.models.post import Post
 from app.models.user import User
 from app.models.visibility import Visibility
 from app.schemas.post import PostAuthor, PostCreate, PostOut, PostPlayback, PostUpdate
-from app.services import access, follow_graph, storage
+from app.services import access, follow_graph, profiles, storage
 
 logger = logging.getLogger(__name__)
 
@@ -159,12 +159,16 @@ async def list_user_posts(
 
     Not a feed: the feed (CF-111) spans everyone you follow and is cursor
     paginated. This is scoped to a single handle.
+
+    Capped rather than paged, deliberately for now — a profile grid shows the
+    recent ones and the card scopes it there. When it does need paging it wants
+    CF-111's keyset cursor over `(created_at, id)`, not `offset`: OFFSET
+    re-counts from the top on every page, so a post published mid-scroll
+    duplicates one row at the boundary and skips another.
     """
-    author = (
-        await db.execute(select(User).where(User.username == username.lower()))
-    ).scalar_one_or_none()
-    if author is None:
-        raise HTTPException(status_code=404, detail="Profile not found")
+    # Shared resolver: normalizes like every other handle route and 404s a
+    # generated handle, so the email-derived backfill can't be probed here.
+    author = await profiles.by_handle(username, db)
 
     # One joined query, not a fetch per post: the clip is needed to resolve
     # playback and the game to resolve inherited visibility, so loading them per

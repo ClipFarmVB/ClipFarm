@@ -32,8 +32,11 @@ class Post(Base):
     __tablename__ = "posts"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # No index=True: the composite (author_id, created_at) in migration 014
+    # covers author lookups, and declaring one here would have autogenerate
+    # keep proposing the redundant single-column index back.
     author_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     # CASCADE, not SET NULL: a post whose clip is gone has nothing to play, so
     # deleting the clip must remove the post rather than leave a dead card.
