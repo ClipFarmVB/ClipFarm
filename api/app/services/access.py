@@ -244,6 +244,7 @@ def can_view_post(
     clip: Clip | None,
     game: Game | None,
     *,
+    viewer_follows_author: bool = False,
     viewer_follows_owner: bool = False,
 ) -> bool:
     """Two gates, both required.
@@ -255,8 +256,15 @@ def can_view_post(
     """
     if post is None or clip is None or post.clip_id != clip.id:
         return False
+    # Two principals, two flags. The post's tier belongs to its author and the
+    # clip's to the game's owner, and they are the same person only because
+    # create_post refuses to publish someone else's footage — an invariant held
+    # by one write path and by nothing in the schema. Collapsing them into one
+    # boolean was correct today and silently wrong the moment anything transfers
+    # a game, which would authorize a post read against a follow edge to the
+    # wrong account. Callers that know they coincide pass the same value twice.
     return may_read(
-        viewer_id, post.author_id, post.visibility, viewer_follows_owner
+        viewer_id, post.author_id, post.visibility, viewer_follows_author
     ) and can_view_clip(viewer_id, clip, game, viewer_follows_owner=viewer_follows_owner)
 
 
