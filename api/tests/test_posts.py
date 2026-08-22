@@ -192,3 +192,58 @@ def test_author_reads_their_own_private_post():
     game = _Game(Visibility.private)
     clip = _Clip(game)
     assert access.can_view_clip(AUTHOR, clip, game) is True
+
+
+# ── account privacy vs content visibility ───────────────────────────────────
+
+
+def test_account_privacy_does_not_clamp_post_visibility():
+    """Pins a decision, not a preference.
+
+    `users.is_private` governs whether *following* needs approval; it is not an
+    outer bound on content. So a private account's `public` post stays readable
+    by a stranger, because the author picked `public` for that post.
+
+    Worth pinning because CF-110 read the same flag the other way for follower
+    lists, and because the failure mode if it silently changed is the expensive
+    direction: a user who set their account private and reasonably assumed it
+    covered everything underneath. If this test ever fails, that is the argument
+    being had — make sure it is being had on purpose.
+    """
+    game = _Game(Visibility.public)
+    clip = _Clip(game)
+    post = _Post(Visibility.public)
+    post.clip_id = clip.id
+
+    # The predicate never receives the User at all, which is the structural
+    # reason the flag cannot leak in by accident.
+    import inspect
+
+    assert "is_private" not in inspect.getsource(access.can_view_post)
+    assert access.can_view_post(STRANGER, post, clip, game) is True
+
+
+def test_the_profile_posts_route_hides_generated_handles():
+    """Review finding: `GET /posts?username=...` resolved the email-derived
+    handles that `/u/{handle}` deliberately 404s, which is the same existence
+    oracle through a second door.
+
+    CF-109 fixed it with a local resolver because services/profiles.py did not
+    exist yet; CF-110 lifted that module, so the assertion is that this route
+    uses the shared one rather than keeping a second copy of the rule.
+    """
+    import inspect
+
+    from app.services import profiles as profile_service
+
+    assert "username_is_generated" in inspect.getsource(profile_service.by_handle)
+    assert "profiles.by_handle" in inspect.getsource(posts_router.list_user_posts)
+    assert not hasattr(posts_router, "_findable_author"), "the duplicate should be gone"
+
+
+def test_the_profile_posts_route_does_not_lowercase_by_hand():
+    """`.lower()` misses the strip that `handles.normalize` does, so the two
+    routes disagreed about whether `' matt '` is a handle."""
+    import inspect
+
+    assert "username.lower()" not in inspect.getsource(posts_router)
