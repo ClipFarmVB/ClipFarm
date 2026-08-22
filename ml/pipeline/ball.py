@@ -127,13 +127,24 @@ MIN_SPEED_PXPS            = 120.0   # px/s: ignore near-stationary ball (rolling
 # SEG_MAX_SPEED_PXPS. _segment_track splits any pair faster than that ceiling,
 # so speed inside a segment is always below it — once CONTACT_HIT_SPEED_PXPS *
 # scale meets it the two constraints are disjoint and find_contacts returns
-# nothing at all: no keep-windows, no highlight clips, and nothing in the logs
-# saying why. Unclamped that lands at 1800p, and phones shoot 2160p by default.
-# 0.80 caps the floor at 960 px/s, i.e. scale caps at 4.0 (1440p); below that
-# nothing changes, so every fixture measured for CF-174 (<= 1080p) is unaffected.
-# This is a floor-side guard for a ceiling-side problem — the real fix is
+# nothing at all. Unclamped that lands at 1800p, and phones shoot 2160p.
+#
+# Read the cap as damage control, NOT as 4K support. It moves the floor and
+# cannot move the ceiling, so the admissible band keeps closing with resolution:
+#
+#     360p   floor 0.667  ceiling 3.333 frame-heights/s   band 5.00x
+#     720p   floor 0.667  ceiling 1.667                   band 2.50x
+#    1080p   floor 0.667  ceiling 1.111                   band 1.67x
+#    1440p   floor 0.667  ceiling 0.833                   band 1.25x
+#    2160p   floor 0.444  ceiling 0.556  (capped)         band 1.25x
+#
+# A swept synthetic track finds zero contacts at 2160p at every physical speed
+# from 0.4 to 3.0 frame-heights/s; only the 1.25x sliver survives, and real play
+# is not in it. So above MAX_VALIDATED_FRAME_HEIGHT the cap buys a loud log line
+# and little else — the ceiling is the binding constraint, and the real fix is
 # scaling SEG_MAX_SPEED_PXPS, blocked on the tracking pollution documented there.
 CONTACT_SPEED_CEILING_FRAC = 0.80   # cap scaled contact speeds at this × SEG_MAX_SPEED_PXPS
+MAX_VALIDATED_FRAME_HEIGHT = 1080   # tallest footage CF-174 was measured on
 # Legacy thresholds — still used by fuse_with_ball_contacts "strong contact" check
 CONTACT_ANGLE_DEG   = 25.0  # minimum direction change (degrees)
 CONTACT_SPEED_RATIO = 0.35  # speed change fraction
@@ -415,6 +426,10 @@ def classify_contact_action(
     Uses the velocity vectors immediately before and after the contact point,
     plus the ball's height in the frame, to determine what kind of hit occurred.
 
+    frame_height is required, not decorative: it normalizes both the contact
+    height and the velocities into REFERENCE_FRAME_HEIGHT space, so the same
+    physical hit gets the same label at any resolution (CF-174).
+
     In image coordinates Y increases downward:
       vy > 0  = ball falling
       vy < 0  = ball rising
@@ -436,12 +451,23 @@ def classify_contact_action(
     dt = b.time - a.time
     v_after = ((b.x - a.x) / dt, (b.y - a.y) / dt) if dt > 0 else (0.0, 0.0)
 
-    sp_before = np.hypot(*v_before)
-    sp_after  = np.hypot(*v_after)
-    vy_before = v_before[1]
-    vy_after  = v_after[1]
+    # CF-174: the thresholds below are px/s in REFERENCE_FRAME_HEIGHT space, so
+    # normalize this video's velocities into it rather than scaling six
+    # constants. Without this the same physical hit changes label with
+    # resolution — measured, a 0.10 -> 0.25 frame-heights/s redirect reads as
+    # "set" at 360p and "spike" at 1080p — and the scaled gate in find_contacts
+    # makes it worse than an independent bug: at 1080p that gate admits nothing
+    # under 720 px/s, so the SET band (45-240) below is unreachable by
+    # construction. Normalizing, not clamping: unlike the contact gates this has
+    # no ceiling to collide with, so the true ratio is used at every resolution.
+    to_ref    = REFERENCE_FRAME_HEIGHT / max(frame_height, 1)
+    sp_before = np.hypot(*v_before) * to_ref
+    sp_after  = np.hypot(*v_after)  * to_ref
+    vy_before = v_before[1] * to_ref
+    vy_after  = v_after[1]  * to_ref
 
-    # Thresholds in px/s (tuned values × 30 from the original 30fps px/frame)
+    # Thresholds in px/s at REFERENCE_FRAME_HEIGHT (tuned values × 30 from the
+    # original 30fps px/frame)
     # SPIKE: high contact in frame, ball driven hard downward
     if y_frac < 0.45 and vy_after > 60.0 and sp_after > 180.0:
         conf = min(0.88, 0.65 + sp_after / 1500.0)
@@ -477,9 +503,10 @@ def _scale_for(frame_height: int) -> float:
     to prevent.
 
     The result is capped so the scaled hit-speed floor stays clear of
-    SEG_MAX_SPEED_PXPS (see CONTACT_SPEED_CEILING_FRAC). Past the cap the
-    thresholds stop tracking resolution, which is wrong but bounded and logged;
-    without it find_contacts silently finds nothing at all at >= 1800p.
+    SEG_MAX_SPEED_PXPS (see CONTACT_SPEED_CEILING_FRAC). The cap keeps the two
+    gates from becoming disjoint, but it does not make tall footage work — past
+    MAX_VALIDATED_FRAME_HEIGHT the surviving speed band is too narrow for real
+    play, so that case logs at error level rather than pretending to be handled.
     """
     if frame_height <= 0:
         logger.warning(
@@ -491,16 +518,24 @@ def _scale_for(frame_height: int) -> float:
 
     scale     = frame_height / REFERENCE_FRAME_HEIGHT
     max_scale = CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS / CONTACT_HIT_SPEED_PXPS
-    if scale > max_scale:
-        logger.warning(
-            "frame_height %d capped for contact thresholds: scale %.2f -> %.2f so the "
-            "hit-speed floor (%.0f px/s) stays under the segmentation ceiling "
-            "SEG_MAX_SPEED_PXPS (%.0f px/s). Contact detection is under-normalized at "
-            "this resolution — scaling the ceiling is the real fix (CF-174 follow-up).",
-            frame_height, scale, max_scale,
-            CONTACT_HIT_SPEED_PXPS * max_scale, SEG_MAX_SPEED_PXPS,
+    scale     = min(scale, max_scale)
+
+    if frame_height > MAX_VALIDATED_FRAME_HEIGHT:
+        # Not "under-normalized" — quantify it, because the number is the point.
+        # SEG_MAX_SPEED_PXPS does not scale, so what is left between the scaled
+        # floor and the fixed ceiling is the entire band this detector can see.
+        floor = CONTACT_HIT_SPEED_PXPS * scale
+        logger.error(
+            "frame_height %d is above the %dp CF-174 was measured on. Contact "
+            "detection admits only %.3f-%.3f frame-heights/s here (%.0f-%.0f px/s, a "
+            "%.2fx band vs 5.00x at %.0fp) because SEG_MAX_SPEED_PXPS does not scale; "
+            "expect few or no contacts, hence no keep-windows and no clips. Scaling "
+            "the ceiling is the real fix (CF-174 follow-up).",
+            frame_height, MAX_VALIDATED_FRAME_HEIGHT,
+            floor / frame_height, SEG_MAX_SPEED_PXPS / frame_height,
+            floor, SEG_MAX_SPEED_PXPS,
+            SEG_MAX_SPEED_PXPS / floor, REFERENCE_FRAME_HEIGHT,
         )
-        return max_scale
     return scale
 
 
@@ -606,6 +641,14 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
 
     segments = _segment_track(tracker.positions)
     if not segments:
+        # Every segment was rejected as flicker or near-stationary. Downstream
+        # this looks identical to "no ball in the video" and condense then cuts
+        # everything, so name the filter that ate the track.
+        logger.warning(
+            "find_contacts: _segment_track kept no segments from %d positions "
+            "(SEG_MIN_POSITIONS=%d, SEG_MIN_MEDIAN_SPEED_PXPS=%.0f, both unscaled)",
+            len(tracker.positions), SEG_MIN_POSITIONS, SEG_MIN_MEDIAN_SPEED_PXPS,
+        )
         return []
 
     g_px = _estimate_gravity(segments)
@@ -681,6 +724,18 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
         "Found %d contacts in trajectory of %d positions",
         len(contacts), len(tracker.positions),
     )
+    if not contacts:
+        # An empty return is indistinguishable downstream from "no ball in this
+        # video": condense falls back, highlights emit nothing, and neither says
+        # why. Print the gates that rejected everything so the resolution case
+        # (CF-174) is readable in a worker log instead of needing a repro.
+        logger.warning(
+            "find_contacts found nothing in %d segments (%d positions) at "
+            "frame_height=%d: scale %.2f, gates min_speed %.0f / hit_speed %.0f / "
+            "residual_min %.0f px/s against a segmentation ceiling of %.0f px/s",
+            len(segments), len(tracker.positions), frame_height, scale,
+            min_speed, hit_speed, residual_min, SEG_MAX_SPEED_PXPS,
+        )
     return contacts
 
 
@@ -838,13 +893,20 @@ def _read_frame_height(video_path: str) -> int:
     """
     Frame height of a video, or 0 if it cannot be read — which _scale_for
     already treats as "caller did not know" and warns about.
+
+    The 0 return is reachable in practice only for a file that opens but
+    reports no height; detect_contacts runs track_ball first, which raises on
+    a file that will not open at all.
     """
     import cv2
 
     cap = cv2.VideoCapture(video_path)
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
-    return height
+    try:
+        if not cap.isOpened():
+            return 0
+        return int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    finally:
+        cap.release()
 
 
 def detect_contacts(
