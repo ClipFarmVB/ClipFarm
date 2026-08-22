@@ -70,6 +70,16 @@ jobs:
       # one below, which has to run after mypy and is pinned in place. What the
       # guard forbids is an install target with no `==`, wherever it appears.
       - run: pip install -r requirements-tooling.txt
+      # numpy is for ml/tests: CF-174's threshold scaling is unit-tested against
+      # ml/pipeline/ball.py, which does its trajectory maths in numpy at module
+      # scope. (cv2 is *not* needed — CF-174 made that import lazy precisely so
+      # this job stays light.) Everything else here stays dependency-free.
+      #
+      # test_ball_scaling.py guards that import with pytest.importorskip so a
+      # missing numpy skips one file instead of aborting collection for the
+      # whole suite. That skip cannot hide here: this step installs numpy as its
+      # own command, so an unavailable numpy fails the job before pytest runs.
+      - run: pip install ruff mypy pytest numpy
       - run: ruff check api/
       - run: mypy api/app --ignore-missing-imports
       # ml/eval is pure, unit-tested logic — lint it too (rest of ml/ is not yet covered).
