@@ -394,16 +394,21 @@ def load_windows_json(path: Path) -> list[Interval]:
     return [(parse_timestamp(w["start"]), parse_timestamp(w["end"])) for w in items]
 
 
-def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval]]:
+def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval], str, str]:
     """
     Derive the condense keep-windows from the fixture's source video, mirroring
     process_game_task's stage-5 condense path (dead_time.py). Ball positions load
     from the R2 cache (free unless model/sample-rate changed), so no re-tracking.
 
-    Returns (pre_bridge, post_bridge): keep-windows before and after CF-46 motion
-    bridging. post_bridge is what the condense stage actually ships; pre_bridge is
-    returned alongside so the harness can attribute any over-cut/re-admitted dead
-    time to the bridge step specifically.
+    Follows `condense_mode`, so this scores the builder production actually runs
+    rather than a fixed one — the whole point of the offline path is that its
+    numbers transfer.
+
+    Returns (companion, shipped, comparison_title, companion_tag). `shipped` is
+    what the condense stage would produce under the current mode; `companion` is
+    the one-step-back configuration it is worth attributing the difference to —
+    pre-bridge windows under "rules", the whole rule-based path under the modes
+    that replace it.
 
     Runs impure edges (R2, ffmpeg, cv2, app config) behind lazy imports — must be
     invoked where those deps live (the worker container).
@@ -418,6 +423,7 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval]]
     from ml.pipeline.ball import find_contacts
     from ml.pipeline.dead_time import (
         active_windows_from_contacts,
+        active_windows_guarded,
         bridge_windows_by_motion,
     )
 
@@ -465,7 +471,10 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval]]
             min_contacts=settings.condense_min_contacts,
             merge_gap_seconds=settings.condense_merge_gap_seconds,
         )
-        positions = [{"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions]
+        # Mirrors what process_game_task keeps for the condense stage.
+        positions = [
+            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+        ]
         post_bridge = bridge_windows_by_motion(
             pre_bridge, positions,
             speed_pxps=settings.condense_bridge_speed_pxps,
@@ -473,11 +482,41 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval]]
             max_bridge_seconds=settings.condense_bridge_max_seconds,
         )
 
-        print(
-            f"Offline deadtime: {len(contacts)} contacts → "
-            f"{len(pre_bridge)} windows → {len(post_bridge)} after motion bridge"
-        )
-        return pre_bridge, post_bridge
+        mode = settings.condense_mode
+        if mode == "rules":
+            print(
+                f"Offline deadtime [mode=rules]: {len(contacts)} contacts → "
+                f"{len(pre_bridge)} windows → {len(post_bridge)} after motion bridge"
+            )
+            return pre_bridge, post_bridge, "MOTION BRIDGE (CF-46)", "nobridge"
+
+        if mode == "guarded":
+            shipped = active_windows_guarded(
+                contacts, positions, duration, frame_h,
+                gap_seconds=settings.condense_gap_seconds,
+                min_contacts=settings.condense_min_contacts,
+                pad_before=settings.condense_guard_pad_before,
+                pad_after=settings.condense_guard_pad_after,
+                merge_gap_seconds=settings.condense_guard_merge_gap_seconds,
+                gate_speed=settings.condense_guard_gate_speed,
+                anchor_speed=settings.condense_guard_anchor_speed,
+                min_track_rate=settings.condense_guard_min_track_rate,
+            )
+            title = "GUARDED vs RULES (CF-187)"
+        else:
+            raise SystemExit(f"Unknown condense_mode {mode!r} — expected rules or guarded")
+
+        # The abstain (one whole-video window) is a real outcome worth seeing in
+        # the report, not an error — say so, because a 0% dead-removed row
+        # otherwise reads as a broken run.
+        if shipped == [(0.0, duration)]:
+            print(f"Offline deadtime [mode={mode}]: ABSTAINED — ball track too sparse to condense")
+        else:
+            print(
+                f"Offline deadtime [mode={mode}]: {len(contacts)} contacts → "
+                f"{len(shipped)} windows (rule-based path: {len(post_bridge)})"
+            )
+        return post_bridge, shipped, title, "rules"
 
 
 def format_deadtime(s: DeadTimeSignals) -> str:
@@ -647,42 +686,42 @@ def main() -> None:
                 record=not args.no_record, audit_limit=args.audit_limit,
             )
         elif args.offline:
-            pre_bridge, post_bridge = _run_offline_deadtime(args.test)
+            companion, shipped, title, tag = _run_offline_deadtime(args.test)
             if args.dump_windows:
                 # keep = shipping windows, the ones --windows-json reads back.
-                # pre_bridge rides along under a key the loader ignores, so the
-                # CF-46 comparison can be reconstructed from the dump too.
+                # The companion rides along under a key the loader ignores, so
+                # the comparison can be reconstructed from the dump too.
                 spans_of = lambda ws: [  # noqa: E731
                     {"start": round(a, 3), "end": round(b, 3)} for a, b in ws
                 ]
                 args.dump_windows.write_text(
                     json.dumps(
-                        {"keep": spans_of(post_bridge), "keep_pre_bridge": spans_of(pre_bridge)},
+                        {"keep": spans_of(shipped), f"keep_{tag}": spans_of(companion)},
                         indent=2,
                     ) + "\n",
                     encoding="utf-8",
                 )
                 print(f"Dumped keep-windows -> {args.dump_windows}")
-            # Report + record the shipping (post-bridge) windows — that's the
-            # configuration under test. Then score pre-bridge silently and show
-            # only what CF-46's motion bridge moved: a second full report would
-            # double an already long audit to say very little.
+            # Report + record the shipping windows — that's the configuration
+            # under test. Then score the companion silently and show only what
+            # the mode moved: a second full report would double an already long
+            # audit to say very little.
             post = run_deadtime(
-                args.test, args.version, post_bridge,
+                args.test, args.version, shipped,
                 record=not args.no_record, audit_limit=args.audit_limit,
             )
-            if pre_bridge != post_bridge:
+            if companion != shipped:
                 pre = run_deadtime(
-                    args.test, f"{args.version}-nobridge", pre_bridge,
+                    args.test, f"{args.version}-{tag}", companion,
                     record=False, report=False,
                 )
                 print()
                 print(format_deadtime_comparison(
-                    "MOTION BRIDGE (CF-46) - not recorded",
-                    "bridge off", pre, "shipping", post,
+                    f"{title} - not recorded",
+                    tag, pre, "shipping", post,
                 ))
             else:
-                print("\n(motion bridge changed nothing this run)")
+                print(f"\n({title} changed nothing this run)")
         else:
             ap.error("--mode deadtime needs --windows-json or --offline")
         return

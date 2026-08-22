@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 # retention sweep can treat every object here as a raw upload.
 RAW_PREFIX = "raw/"
 
+# Condense below this much trimming is not worth the re-encode — see the
+# condense stage in process_game_task.
+CONDENSE_MIN_TRIM_FRACTION = 0.02
+
 
 def _file_md5(path: Path) -> str:
     """Content hash of a file (streamed, constant memory)."""
@@ -1032,25 +1036,61 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     from ml.pipeline.dead_time import (
                         active_windows_from_contacts,
                         active_windows_from_detections,
+                        active_windows_guarded,
                         bridge_windows_by_motion,
                     )
                     from ml.pipeline.clip import generate_condensed_video
 
                     if ball_ok:
-                        windows = active_windows_from_contacts(
-                            ball_contacts, video_duration,
-                            gap_seconds=app_settings.condense_gap_seconds,
-                            pad_before=app_settings.condense_pad_before,
-                            pad_after=app_settings.condense_pad_after,
-                            min_contacts=app_settings.condense_min_contacts,
-                            merge_gap_seconds=app_settings.condense_merge_gap_seconds,
-                        )
-                        windows = bridge_windows_by_motion(
-                            windows, ball_positions,
-                            speed_pxps=app_settings.condense_bridge_speed_pxps,
-                            fast_fraction=app_settings.condense_bridge_fast_fraction,
-                            max_bridge_seconds=app_settings.condense_bridge_max_seconds,
-                        )
+                        # None = "no builder has spoken yet", distinct from a
+                        # builder that ran and found nothing. active_windows_guarded
+                        # returns [] on a dense track when every contact fails the
+                        # speed gate and no motion anchors it — a real verdict of
+                        # "no play here". Falling back to the rules on that would
+                        # rebuild windows from the very contacts the gate rejected.
+                        windows = None
+                        mode = app_settings.condense_mode
+                        if mode != "rules":
+                            # Anything wrong in the selected builder (feature
+                            # drift, an unknown mode name) falls back to the
+                            # rule-based windows below.
+                            try:
+                                if mode == "guarded":
+                                    windows = active_windows_guarded(
+                                        ball_contacts, ball_positions, video_duration,
+                                        _frame_h,
+                                        gap_seconds=app_settings.condense_gap_seconds,
+                                        min_contacts=app_settings.condense_min_contacts,
+                                        pad_before=app_settings.condense_guard_pad_before,
+                                        pad_after=app_settings.condense_guard_pad_after,
+                                        merge_gap_seconds=app_settings.condense_guard_merge_gap_seconds,
+                                        gate_speed=app_settings.condense_guard_gate_speed,
+                                        anchor_speed=app_settings.condense_guard_anchor_speed,
+                                        min_track_rate=app_settings.condense_guard_min_track_rate,
+                                    )
+                                else:
+                                    raise ValueError(f"unknown condense_mode {mode!r}")
+                            except Exception as mode_err:
+                                logger.warning(
+                                    "Condense mode %r failed (%s) — using rule-based windows",
+                                    mode, mode_err,
+                                )
+                                windows = None
+                        if windows is None:
+                            windows = active_windows_from_contacts(
+                                ball_contacts, video_duration,
+                                gap_seconds=app_settings.condense_gap_seconds,
+                                pad_before=app_settings.condense_pad_before,
+                                pad_after=app_settings.condense_pad_after,
+                                min_contacts=app_settings.condense_min_contacts,
+                                merge_gap_seconds=app_settings.condense_merge_gap_seconds,
+                            )
+                            windows = bridge_windows_by_motion(
+                                windows, ball_positions,
+                                speed_pxps=app_settings.condense_bridge_speed_pxps,
+                                fast_fraction=app_settings.condense_bridge_fast_fraction,
+                                max_bridge_seconds=app_settings.condense_bridge_max_seconds,
+                            )
                     else:
                         windows = active_windows_from_detections(
                             pre_gate_rallies, video_duration,
@@ -1059,11 +1099,25 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                             merge_gap_seconds=app_settings.condense_merge_gap_seconds,
                         )
 
-                    if windows:
+                    kept_seconds = sum(end - start for start, end in windows)
+                    # A condense that keeps ~everything is a no-op, and the
+                    # guarded builder abstains by returning exactly that (one
+                    # whole-video window) when the ball track is too sparse to
+                    # judge. Encoding it would spend minutes to upload a copy of
+                    # the original, so skip it: the game still goes ready, just
+                    # without a condensed cut.
+                    trims_something = kept_seconds < video_duration * (1.0 - CONDENSE_MIN_TRIM_FRACTION)
+                    if windows and not trims_something:
+                        logger.info(
+                            "Condense skipped: keep-windows cover %.0fs of %.0fs "
+                            "(mode %r) — nothing meaningful to trim",
+                            kept_seconds, video_duration, app_settings.condense_mode,
+                        )
+
+                    if windows and trims_something:
                         # Re-price the condensing span now that kept-seconds is
                         # known: its cost tracks kept footage, not video length,
                         # so the static weight can be well off (29-43% observed).
-                        kept_seconds = sum(end - start for start, end in windows)
                         progress.rebudget_final_stage(
                             "condensing", kept_seconds * CONDENSE_SECS_PER_KEPT_SEC,
                         )
@@ -1096,7 +1150,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                             "Condensed video: %.0fs → %.0fs (%d windows)",
                             video_duration, condensed_duration, len(windows),
                         )
-                    else:
+                    elif not windows:
                         logger.warning("Condense requested but no active windows detected — skipping")
                 except LockLost:
                     # A lost lock is not "condense failed, carry on" — carrying

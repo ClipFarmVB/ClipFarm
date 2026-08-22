@@ -230,6 +230,28 @@ class Settings(BaseSettings):
     condense_bridge_speed_pxps: float = 150.0   # a speed sample this fast counts as in-play
     condense_bridge_fast_fraction: float = 0.35  # bridge when ≥ this fraction of samples are fast
     condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
+    # Which keep-window builder the condense stage uses. A failure in "guarded"
+    # falls back to "rules", so a feature mismatch degrades the condense rather
+    # than failing the run.
+    #   "rules"    the two blocks above: contacts + motion bridge (CF-46)
+    #   "guarded"  speed-gated contacts + motion anchors + tight pads, abstaining
+    #              when the ball track is too sparse to judge (CF-187)
+    # Default is "guarded": across the five dead-time fixtures it removes more
+    # dead time *and* cuts less live play than "rules" on four of them, and on
+    # the fifth it abstains instead of cutting 118s of rally. Three of those five
+    # were held out while it was tuned.
+    condense_mode: str = "guarded"
+    # Guarded-path tunables — see ml/pipeline/dead_time.active_windows_guarded.
+    # Speeds are frame-heights/s, so they hold across source resolutions.
+    condense_guard_gate_speed: float = 0.25       # min median speed around a credible contact
+    condense_guard_anchor_speed: float = 0.30     # a speed sample this fast counts toward an anchor
+    # Pads apply to contact-derived windows only — anchor windows already span
+    # the motion they found and keep their own pad (dead_time.ANCHOR_PAD), so
+    # raising these does not widen a rally recovered purely by the anchor.
+    condense_guard_pad_before: float = 3.0        # seconds kept before a window
+    condense_guard_pad_after: float = 2.0         # seconds kept after a window
+    condense_guard_merge_gap_seconds: float = 3.0  # merge windows closer than this
+    condense_guard_min_track_rate: float = 1.0    # usable speed samples/s below which we abstain
 
     # Database
     database_url: str = LOCAL_DATABASE_URL

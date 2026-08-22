@@ -11,15 +11,54 @@ contact minimum, because dropping a real rally from a condensed game video
 is much worse than including a marginal one.
 
 Pure functions, no models, no I/O — tunables arrive as kwargs from the task.
+
+Two keep-window builders ship here (`condense_mode` picks between them):
+
+  "rules"    active_windows_from_contacts + bridge_windows_by_motion (CF-46)
+  "guarded"  active_windows_guarded (CF-187) — the default: contacts are
+             speed-gated, sustained motion opens windows of its own, pads are
+             tight, and a track too sparse to judge abstains instead of guessing
 """
 from __future__ import annotations
 
 import logging
 import math
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 Interval = tuple[float, float]
+
+# ── guarded-path constants (CF-187) ────────────────────────────────────────
+# Speeds here are in frame-heights/s, not px/s, so 360p and 1080p games share
+# one set of thresholds. The px/s thresholds above predate this and stay px/s
+# to avoid rescaling a tuned path that is still reachable via
+# condense_mode="rules".
+
+MAX_SAMPLE_SPACING = 1.5   # a longer gap is a tracking dropout, not motion
+
+# Displacement faster than this is the tracker hopping between two different
+# objects, not one ball flying: measured on the dead-time fixtures, samples
+# above it land inside labeled play only 33-53% of the time, *worse* than the
+# 0.40-1.10 band (58-77%). Treating them as motion is what makes a between-rally
+# stretch of spare-ball flicker look like a rally. Matches ball.py's
+# SEG_MAX_SPEED_PXPS (1200 px/s = 1.11 frame-heights/s at 1080p).
+MAX_PLAUSIBLE_SPEED_FH = 1.11
+
+CONTACT_SPEED_HALF_WINDOW = 1.5   # median speed is taken over ±this around a contact
+
+ANCHOR_HALF_WINDOW = 3.0
+ANCHOR_MIN_FRACTION = 0.4
+ANCHOR_PAD = 2.0
+ANCHOR_MIN_SECONDS = 2.0
+# Below this many speed samples in the window the fast-fraction is noise, not
+# evidence — test2 tracks at 1.5 samples/s, so a couple of stray fast samples
+# would otherwise open a window over dead time. Same guard as
+# bridge_windows_by_motion's min_samples.
+ANCHOR_MIN_SAMPLES = 6
+
+SpeedSamples = tuple[np.ndarray, np.ndarray]   # (midpoint times, speeds in fh/s)
 
 
 def merge_intervals(intervals: list[Interval], merge_gap_seconds: float = 0.0) -> list[Interval]:
@@ -154,6 +193,233 @@ def bridge_windows_by_motion(
             len(windows), len(bridged), len(windows) - len(bridged),
         )
     return bridged
+
+
+# ── guarded path (CF-187) ──────────────────────────────────────────────────
+
+def speed_samples(
+    positions: list[dict],
+    frame_height: int,
+    *,
+    max_sample_spacing: float = MAX_SAMPLE_SPACING,
+    max_speed: float = MAX_PLAUSIBLE_SPEED_FH,
+) -> SpeedSamples:
+    """
+    Ball speeds between consecutive track samples, in frame-heights/s.
+
+    Two classes of sample are dropped rather than measured: pairs further apart
+    than max_sample_spacing (a tracking dropout, where the displacement says
+    nothing about how fast the ball moved) and speeds above max_speed (the
+    tracker jumping between two objects). Both would otherwise read as fast
+    motion, which is exactly the signal the guarded path trusts.
+
+    Returns sorted (times, speeds); empty arrays when there is nothing usable.
+    """
+    if frame_height <= 0:
+        return np.empty(0), np.empty(0)
+
+    pts = sorted((p["time"], p["x"], p["y"]) for p in positions)
+    times: list[float] = []
+    vals: list[float] = []
+    for (t0, x0, y0), (t1, x1, y1) in zip(pts, pts[1:]):
+        dt = t1 - t0
+        if not 0 < dt <= max_sample_spacing:
+            continue
+        v = math.hypot(x1 - x0, y1 - y0) / dt / frame_height
+        if v > max_speed:
+            continue  # track hop — not a measurement of the ball's motion
+        times.append((t0 + t1) / 2)
+        vals.append(v)
+    return np.array(times), np.array(vals)
+
+
+def track_is_usable(samples: SpeedSamples, duration: float, *, min_rate: float = 1.0) -> bool:
+    """
+    Whether the ball track is dense enough for any of this to mean anything.
+
+    Below min_rate usable speed samples per second there is no basis for a
+    judgement about play: on fixture test3 the track runs at 0.52/s (vs
+    1.47-2.63 on the other four) and 21 of its 32 rallies produce no contact at
+    all, so every builder — the rule-based one included — cuts more than half
+    its live play. The density also sits under what ANCHOR_MIN_SAMPLES needs, so
+    the motion anchor cannot recover those rallies either.
+    """
+    times, _ = samples
+    return duration > 0 and len(times) / duration >= min_rate
+
+
+def speed_gate_contacts(
+    contacts: list[dict],
+    samples: SpeedSamples,
+    *,
+    min_speed: float = 0.25,
+    half_window: float = CONTACT_SPEED_HALF_WINDOW,
+) -> list[dict]:
+    """
+    Drop contacts whose surrounding ball motion is too slow to be real play.
+
+    A contact is a bend in the trajectory; on a track locked to a stationary
+    spare ball, detector jitter produces bends indistinguishable from hits. On
+    the tuning fixtures 24-48% of contacts fire during dead time, and those are
+    the dominant false-positive class. Requiring motion around the contact
+    separates the two without touching find_contacts' own thresholds.
+
+    With no speed samples there is nothing to gate on, so every contact stands —
+    the caller's abstain guard is what handles a track that thin.
+    """
+    times, speeds = samples
+    if not len(times):
+        return list(contacts)
+
+    kept = []
+    for c in contacts:
+        lo, hi = np.searchsorted(times, [c["time"] - half_window, c["time"] + half_window])
+        if hi > lo and float(np.median(speeds[lo:hi])) >= min_speed:
+            kept.append(c)
+    return kept
+
+
+def motion_anchor_windows(
+    samples: SpeedSamples,
+    duration: float,
+    *,
+    speed: float = 0.30,
+    half_window: float = ANCHOR_HALF_WINDOW,
+    min_fraction: float = ANCHOR_MIN_FRACTION,
+    pad: float = ANCHOR_PAD,
+    min_seconds: float = ANCHOR_MIN_SECONDS,
+    min_samples: int = ANCHOR_MIN_SAMPLES,
+) -> list[Interval]:
+    """
+    Windows from sustained fast ball motion, independent of contacts.
+
+    Contacts are the only thing that can *open* a window in the rule-based path,
+    so a rally the detector never sees is cut outright — 19 of fixture test4's
+    46 rallies produce no contact at all, the single largest source of removed
+    live play. Rally flight is fast and sustained; between-rally handling is not.
+
+    Unlike bridge_windows_by_motion this creates windows rather than joining
+    them, so the evidence bar is higher: a full second must sit inside a
+    ±half_window stretch that is min_fraction fast over at least min_samples
+    samples, and the resulting run must last min_seconds.
+    """
+    times, speeds = samples
+    if not len(times) or duration <= 0:
+        return []
+
+    n = max(1, int(math.ceil(duration)))
+    centers = np.arange(n) + 0.5
+    lo = np.searchsorted(times, centers - half_window)
+    hi = np.searchsorted(times, centers + half_window)
+    cum = np.concatenate(([0.0], np.cumsum((speeds >= speed).astype(float))))
+    count = (hi - lo).astype(float)
+    frac = np.where(count > 0, (cum[hi] - cum[lo]) / np.maximum(count, 1), 0.0)
+    on_mask = (frac >= min_fraction) & (count >= min_samples)
+
+    windows: list[Interval] = []
+    start: int | None = None
+    for i, on in enumerate(on_mask):
+        if on and start is None:
+            start = i
+        elif not on and start is not None:
+            windows.append((float(start), float(i)))
+            start = None
+    if start is not None:
+        windows.append((float(start), float(n)))
+
+    return [
+        (max(0.0, s - pad), min(duration, e + pad))
+        for s, e in windows
+        if e - s >= min_seconds
+    ]
+
+
+def active_windows_guarded(
+    contacts: list[dict],
+    positions: list[dict],
+    duration: float,
+    frame_height: int,
+    *,
+    gap_seconds: float = 10.0,
+    min_contacts: int = 1,
+    pad_before: float = 3.0,
+    pad_after: float = 2.0,
+    merge_gap_seconds: float = 3.0,
+    gate_speed: float = 0.25,
+    anchor_speed: float = 0.30,
+    anchor_pad: float = ANCHOR_PAD,
+    min_track_rate: float = 1.0,
+) -> list[Interval]:
+    """
+    Keep-windows from speed-gated contacts plus motion anchors, or the whole
+    video when the ball track is too sparse to judge (CF-187's v5).
+
+    Three changes from the rule-based path, each measured on the dead-time
+    fixtures and none safe alone:
+
+      - contacts fired over a near-stationary ball are rejected (speed_gate)
+      - sustained motion opens its own windows, so a rally the contact detector
+        misses is no longer cut outright (motion_anchor)
+      - pads shrink to 3.0/2.0 with merge 3.0. pad_before + pad_after +
+        merge_gap is the gap a real break must exceed to survive, and the median
+        inter-rally gap is 13-14s against the rule-based path's 14s budget — so
+        half of all true dead gaps were being erased by arithmetic before
+        detection quality mattered. Only safe once the anchor has given every
+        rally its own window.
+
+    pad_before/pad_after apply to the contact-derived windows only; anchor
+    windows carry their own `anchor_pad` and do **not** follow them. The two pad
+    different things: a contact window is anchored at points and has to reach
+    back over the untracked serve, while an anchor window already spans the
+    motion it found, so the contact pads would double-count it. Raising
+    pad_before therefore has no effect on a rally recovered purely by the anchor.
+
+    Abstaining returns a single whole-video window: on a track that thin every
+    builder buys dead time by cutting play, so declining to condense is both the
+    better score and the honest answer. The caller sees a normal window list and
+    ships an uncondensed video.
+
+    Raises on a missing frame height rather than abstaining on one: every speed
+    here is normalized by it, so a zero would silently turn every game into an
+    abstain. The condense stage catches and falls back to the rule-based windows,
+    which need no frame height at all.
+    """
+    if frame_height <= 0:
+        raise ValueError(
+            f"active_windows_guarded needs a real frame height, got {frame_height!r} — "
+            "every speed threshold is normalized by it"
+        )
+    if duration <= 0:
+        return []
+
+    samples = speed_samples(positions, frame_height)
+    if not track_is_usable(samples, duration, min_rate=min_track_rate):
+        times, _ = samples
+        logger.info(
+            "Condense abstain: %.2f usable speed samples/s over %.0fs is below "
+            "%.2f/s — keeping the whole video rather than condensing on a track "
+            "this sparse",
+            len(times) / duration if duration else 0.0, duration, min_track_rate,
+        )
+        return [(0.0, duration)]
+
+    gated = speed_gate_contacts(contacts, samples, min_speed=gate_speed)
+    windows = active_windows_from_contacts(
+        gated, duration,
+        gap_seconds=gap_seconds,
+        pad_before=pad_before,
+        pad_after=pad_after,
+        min_contacts=min_contacts,
+        merge_gap_seconds=merge_gap_seconds,
+    )
+    anchors = motion_anchor_windows(samples, duration, speed=anchor_speed, pad=anchor_pad)
+    merged = merge_intervals(sorted(windows + anchors), merge_gap_seconds)
+    logger.info(
+        "Guarded condense windows: %d contacts → %d after speed gate, "
+        "+%d motion anchors → %d windows",
+        len(contacts), len(gated), len(anchors), len(merged),
+    )
+    return merged
 
 
 def active_windows_from_detections(

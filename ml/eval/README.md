@@ -155,16 +155,76 @@ wrong — so copy the dead-time format rather than adapting the highlight one.
 **content MD5**, not `game_id` — game rows get deleted; the hash identifies the
 exact bytes forever and matches the ball-cache key.
 
+## Which condense builder runs (CF-187)
+
+`condense_mode` in `app.config` picks the keep-window builder, and every mode
+lives in `ml/pipeline/dead_time.py`:
+
+| mode | builder | notes |
+|---|---|---|
+| `rules` | `active_windows_from_contacts` + `bridge_windows_by_motion` | the CF-46 path; still the fallback when `guarded` raises |
+| `guarded` | `active_windows_guarded` | **the default.** Speed-gated contacts, motion anchors, tight pads, and an abstain when the ball track is too sparse |
+
+The guarded path became the default because it removes more dead time *and* cuts
+less live play than `rules` on four of the five fixtures, and abstains on the
+fifth instead of cutting 118s of rally. Three of those five were held out while
+it was tuned.
+
+**Abstaining is a real outcome, not a failure.** Below
+`condense_guard_min_track_rate` usable speed samples/s the builder returns one
+whole-video window; the condense stage sees that nothing meaningful would be
+trimmed and ships the game with no condensed cut at all. A 0.0% dead-removed row
+in the harness means this, and the offline runner prints `ABSTAINED` so it can't
+be mistaken for a broken run.
+
+## Comparing condense variants (CF-187)
+
+`deadtime_variants.py` holds the ladder that produced the guarded path. Its two
+endpoints ship — `v0` is `mode=rules`, `v5` is `mode=guarded` — and both call
+`ml/pipeline/dead_time.py` rather than reimplementing it, so a row here is
+production's behaviour and not a lookalike. `v1`–`v4` are the intermediate rungs,
+kept so the next change can be judged against them. `visualize_deadtime.py`
+scores them all against every dead-time fixture and writes a standalone HTML
+timeline.
+
+```bash
+python -m ml.eval.visualize_deadtime   # -> results/deadtime_visualization.html
+```
+
+The HTML is **gitignored** — it is ~1MB of inline SVG that would re-churn its
+whole diff on every run. Regenerate it rather than looking for it in git, and
+note that doing so needs the ball caches (also gitignored, `ml/eval/ball_caches/`):
+a fresh clone cannot rebuild it until those are in place.
+
+Two things to read carefully, because both invert a number's meaning:
+
+- **The padding ceiling** shown per game is the most dead time removable at the
+  `rules` pads with *zero* live cut. It bounds `v0`–`v3`. It does **not** bound
+  `v4`/`v5`, which shrink the pads to 3/2 with merge 3 — an 8s budget against the
+  14s one — so they clear it legitimately rather than by cutting play.
+- **A variant can beat the ceiling by cutting real play.** `v4` removes 90.6% of
+  test3's dead time against a 23.2% ceiling by cutting 162s of rally. Read the
+  dead-removed column against the live-cut column, never alone.
+
+`TUNED_ON` marks which fixtures the variants were designed against (test2 and
+test4); every other column is held out and is starred in the summary. test5 is
+the strongest of those — it was labeled after the variants were written, so it
+could not have shaped them even indirectly.
+
 ## Files
 ```
 metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
 harness.py             fixture load, model-clip acquisition, report, results append
 diagnose_detection.py  why a rally was missed: BLIND / SPARSE / GATED breakdown
 tune_contacts.py       sweep find_contacts tunables over a dumped ball track
+deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187)
+visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 fixtures/              one JSON per test case (ground truth)
                        {test_id}.json          highlights (CF-55)
                        {test_id}_deadtime.json ball-in-play spans (CF-98)
                        README_deadtime.md      dead-time fixture format
+ball_caches/           gitignored: {md5}.json ball tracks, for visualize_deadtime.py
 results/               {test_id}.jsonl and {test_id}_deadtime.jsonl —
                        one row per tagged run, committed
+                       deadtime_visualization.html — generated, gitignored
 ```

@@ -88,6 +88,19 @@ local CPU pose. Each level catches and falls through.
 - **Pre-gate signal, deliberately.** The condensed video must keep *every* rally,
   not just the ones the highlight gate scored well — so it consumes the stage-1
   output snapshot, not the post-gate survivors.
+- **Two builders, one switch** (`condense_mode`, CF-187). `rules` is the
+  original contacts + motion-bridge path and stays the fallback: `guarded` runs
+  inside a try/except that drops back to it, so an unknown mode degrades the
+  condense instead of failing the run. `guarded` is the default — it rejects
+  contacts fired over a near-stationary ball, opens windows on sustained motion
+  so a rally the contact detector never sees isn't cut outright, and pads
+  tighter.
+- **Abstaining beats guessing.** When the ball track is too sparse to judge (below
+  ~1 usable speed sample/s, measured on fixture test3 at 0.52/s), every builder
+  buys dead time by cutting real play. `guarded` detects that and declines: it
+  returns the whole video, the stage sees nothing worth trimming, and the game
+  ships with clips but no condensed cut. Scoring nothing is better than scoring
+  negative, and it is visible in the logs rather than silent.
 - **Stitching: per-window re-encode + concat demuxer with `-c copy`.**
   Alternative considered: single `filter_complex` trim/concat graph. Rejected because
   it decodes the discarded footage too, builds a huge filtergraph for many windows,
