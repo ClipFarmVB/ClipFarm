@@ -102,17 +102,40 @@ def _tag(session, clip, player_id, user_id=OWNER):
 # ── the boundary ─────────────────────────────────────────────────────────────
 
 def test_clip_tag_rejects_foreign_player():
-    """The IDOR. Own clip, another tenant's player — 404, and nothing written."""
+    """The IDOR. Own clip, another tenant's player — 404, and nothing written.
+
+    The team must be the *same object* the player points at and the one the
+    session hands back: build two and `db.get(Team, player.team_id)` misses,
+    the 404 comes from the dangling-FK branch instead, and the test passes
+    against a build with the owner comparison removed. That case is worth
+    covering — it has its own test below — but not in place of this one."""
     game = _Game(OWNER)
     clip = _Clip(game)
-    foreign = _Player(_Team(OTHER_TENANT))
-    session = _FakeSession(game, clip, foreign, _Team(OTHER_TENANT))
+    foreign_team = _Team(OTHER_TENANT)
+    foreign = _Player(foreign_team)
+    session = _FakeSession(game, clip, foreign, foreign_team)
 
     with pytest.raises(HTTPException) as exc:
         _tag(session, clip, foreign.id)
 
     assert exc.value.status_code == 404
     assert clip.player_id is None, "a rejected tag must not reach the row"
+    assert session.committed is False
+
+
+def test_player_whose_team_is_missing_is_rejected():
+    """A player row pointing at a team that isn't there. No owner to read, so
+    the walk must fail closed rather than fall through to the write."""
+    game = _Game(OWNER)
+    clip = _Clip(game)
+    dangling = _Player(_Team(OTHER_TENANT))  # team deliberately not in session
+    session = _FakeSession(game, clip, dangling)
+
+    with pytest.raises(HTTPException) as exc:
+        _tag(session, clip, dangling.id)
+
+    assert exc.value.status_code == 404
+    assert clip.player_id is None
     assert session.committed is False
 
 
@@ -131,19 +154,29 @@ def test_rejection_is_404_so_the_endpoint_is_not_an_existence_oracle():
     assert "not found" in str(exc.value.detail).lower()
 
 
-def test_foreign_player_name_never_reaches_the_response():
-    """The disclosure half: the route echoes player_name, so a leak here is the
-    name itself, not just a write."""
+def test_foreign_player_is_indistinguishable_from_one_that_does_not_exist():
+    """The disclosure half. Asserting only that the name is absent from the
+    404 detail proves nothing — that detail is a constant, so the assertion
+    cannot fail once anything is raised at all. The property with teeth is
+    that the two rejections are *identical*: a caller holding an id cannot
+    tell "belongs to someone else" from "no such row", and no part of the
+    foreign player leaks into the difference."""
     game = _Game(OWNER)
     clip = _Clip(game)
     foreign_team = _Team(OTHER_TENANT)
     foreign = _Player(foreign_team, name="Confidential Name")
     session = _FakeSession(game, clip, foreign, foreign_team)
 
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(HTTPException) as foreign_exc:
         _tag(session, clip, foreign.id)
 
-    assert "Confidential Name" not in str(exc.value.detail)
+    with pytest.raises(HTTPException) as absent_exc:
+        _tag(_FakeSession(game, clip), clip, uuid.uuid4())
+
+    assert foreign_exc.value.status_code == absent_exc.value.status_code
+    assert foreign_exc.value.detail == absent_exc.value.detail
+    assert "Confidential Name" not in str(foreign_exc.value.detail)
+    assert clip.player_id is None
 
 
 # ── the positive case, so the fix can't pass by rejecting everything ─────────
@@ -175,6 +208,7 @@ def test_orphan_player_is_rejected():
 
     assert exc.value.status_code == 404
     assert clip.player_id is None
+    assert session.committed is False
 
 
 def test_clip_ownership_is_still_checked_first():
@@ -191,3 +225,4 @@ def test_clip_ownership_is_still_checked_first():
 
     assert exc.value.status_code == 404
     assert foreign_clip.player_id is None
+    assert session.committed is False
