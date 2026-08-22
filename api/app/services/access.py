@@ -20,7 +20,12 @@ Both list forms filter **in SQL**. Post-filtering a page in Python silently
 breaks pagination (ask for 50, get 11) and reads rows the viewer may not see.
 
 Writes are NOT covered here. Creating, editing and deleting stay owner-only, and
-the routers keep their own ownership checks for those paths.
+the routers keep their own ownership checks for those paths. One of those checks
+is now shared between routers rather than restated — `players.get_owned_player`,
+which clips.py calls when tagging (CF-234). That is the exception, not a second
+front door: the read rule still lives here, and a write-side helper that grows a
+third caller belongs in a services/ module rather than in whichever router
+happened to define it first.
 
 **Unauthenticated surface.** Allowing anonymous reads means ``GET /games/{id}``,
 ``GET /games/{id}/clips`` and ``GET /clips/{id}/share`` now reach the database
