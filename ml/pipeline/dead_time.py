@@ -249,6 +249,17 @@ def bridge_windows_by_motion(
 
     if frame_height > 0:
         speed_pxps = speed_pxps * frame_height / REFERENCE_FRAME_HEIGHT
+    else:
+        # Same failure and same reasoning as ball._scale_for's warning: silently
+        # applying a 360p threshold to a 1080p video is the bug this parameter
+        # exists to prevent, and of the two call paths this is the one that
+        # would otherwise never say so.
+        logger.warning(
+            "bridge_windows_by_motion called without frame_height — assuming a "
+            "%.0fpx tracking space; speed_pxps=%.0f will read as 'fast' for "
+            "ordinary ball handling on taller footage and over-bridge dead time",
+            REFERENCE_FRAME_HEIGHT, speed_pxps,
+        )
 
     pts = sorted((p["time"], p["x"], p["y"]) for p in positions)
     speeds: list[tuple[float, float]] = []  # (midpoint time, px/s)
