@@ -161,6 +161,26 @@ def test_clearing_a_different_nullable_field_is_still_allowed():
     assert session.committed
 
 
+def test_a_valid_team_id_alongside_another_null_still_patches():
+    """The same specificity check, but with `team_id` actually present.
+
+    The test above never enters the `"team_id" in updates` branch, so it says
+    nothing about an over-broad condition written *inside* it. This request —
+    a valid reassignment that also clears the jersey number — is the one that
+    distinguishes `updates["team_id"] is None` from `any(v is None ...)`, and
+    it is an ordinary request a client would make.
+    """
+    old_team, new_team = _Team(), _Team()
+    player = _Player(team_id=old_team.id, jersey_number=7)
+    session = _FakeSession(player, [old_team, new_team])
+
+    _patch(session, player.id, {"name": "Rosa", "team_id": str(new_team.id), "jersey_number": None})
+
+    assert player.team_id == new_team.id
+    assert player.jersey_number is None
+    assert session.committed
+
+
 def test_reassigning_to_another_owned_team_still_works():
     old, new = _Team(), _Team()
     player = _Player(team_id=old.id)
