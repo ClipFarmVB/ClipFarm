@@ -310,12 +310,151 @@ def test_stored_avatar_url_has_no_query_string(monkeypatch):
     monkeypatch.setattr(storage, "LimitedReader", lambda f, cap: f)
     monkeypatch.setattr(storage, "presign_from_stored_url", lambda url, **kw: "signed")
 
-    class _Upload:
-        content_type = "image/png"
-        file = object()
-
     user = _FakeUser()
-    asyncio.run(profiles.upload_avatar(user.id, _FakeSession(user), _Upload()))
+    asyncio.run(
+        profiles.upload_avatar(user.id, _FakeSession(user), _upload(PNG, "image/png"))
+    )
 
     assert user.avatar_url == stored
     assert "?" not in user.avatar_url
+
+
+# ── CF-236: the bytes decide, not the declared type ─────────────────────────
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 40
+JPEG_EXIF = b"\xff\xd8\xff\xe1" + b"\x00" * 40
+WEBP = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"\x00" * 40
+
+
+def _upload(payload: bytes, content_type: str):
+    """An UploadFile-shaped stub over real bytes.
+
+    `starlette.UploadFile` wraps a SpooledTemporaryFile and exposes async
+    read/seek; the route uses those, so the stub does too.
+    """
+    import io
+
+    class _Upload:
+        def __init__(self):
+            self.content_type = content_type
+            self.file = io.BytesIO(payload)
+
+        async def read(self, n=-1):
+            return self.file.read(n)
+
+        async def seek(self, pos):
+            return self.file.seek(pos)
+
+    return _Upload()
+
+
+def _upload_avatar(payload, declared, monkeypatch, stored="https://pub.r2.dev/avatars/abc"):
+    """Drive the route with R2 stubbed, returning (user, recorded_content_type)."""
+    seen = {}
+
+    def _fake_upload(fileobj, key, content_type=None):
+        seen["content_type"] = content_type
+        seen["body"] = fileobj.read()
+        return stored
+
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+    monkeypatch.setattr(storage, "LimitedReader", lambda f, cap: f)
+    monkeypatch.setattr(storage, "upload_fileobj", _fake_upload)
+    monkeypatch.setattr(storage, "presign_from_stored_url", lambda url, **kw: "signed")
+
+    user = _FakeUser()
+    asyncio.run(profiles.upload_avatar(user.id, _FakeSession(user), _upload(payload, declared)))
+    return user, seen
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [(PNG, "image/png"), (JPEG, "image/jpeg"), (JPEG_EXIF, "image/jpeg"), (WEBP, "image/webp")],
+)
+def test_the_three_real_formats_still_upload(payload, expected, monkeypatch):
+    """Acceptance: the legitimate formats keep working. JPEG is covered twice
+    because JFIF and EXIF differ at the fourth byte and only the first three
+    are the signature."""
+    _, seen = _upload_avatar(payload, expected, monkeypatch)
+    assert seen["content_type"] == expected
+
+
+def test_a_non_image_declared_as_png_is_rejected(monkeypatch):
+    """The hole this closes: nothing inspected the bytes, so any payload could
+    claim image/png."""
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+    user = _FakeUser()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            profiles.upload_avatar(
+                user.id,
+                _FakeSession(user),
+                _upload(b"<svg xmlns=\'http://www.w3.org/2000/svg\'><script/></svg>", "image/png"),
+            )
+        )
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"",                                   # empty
+        b"\x89PNG",                            # truncated PNG signature
+        b"RIFF\x00\x00\x00\x00AVI " + b"\x00" * 20,  # RIFF, but not WebP
+        b"\xff\xd8\x00" + b"\x00" * 40,          # FF D8 but not the third FF
+        b"GIF89a" + b"\x00" * 40,              # a real image, still not allowed
+        b"<!doctype html><html></html>",       # HTML
+    ],
+)
+def test_bytes_that_are_not_one_of_the_three_are_rejected(payload, monkeypatch):
+    """RIFF is the one ASCII-clean prefix, so the fourcc at offset 8 is what
+    stops a WAV or an AVI passing. GIF is a real image and still rejected —
+    the sniffer must not widen the allowlist."""
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+    user = _FakeUser()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            profiles.upload_avatar(user.id, _FakeSession(user), _upload(payload, "image/png"))
+        )
+    assert exc.value.status_code == 400
+
+
+def test_a_png_named_dot_jpg_is_accepted_and_stored_as_png(monkeypatch):
+    """The browser fills File.type from the extension, so a screenshot saved as
+    photo.jpg arrives declared image/jpeg with PNG bytes. Rejecting that would
+    fail a legitimate upload; instead the sniffed type is what gets stored, so
+    R2 serves the right ContentType on an extensionless key."""
+    _, seen = _upload_avatar(PNG, "image/jpeg", monkeypatch)
+    assert seen["content_type"] == "image/png"
+
+
+def test_the_whole_file_is_uploaded_after_sniffing(monkeypatch):
+    """The sniff reads 12 bytes off the stream. LimitedReader exposes only
+    read(), so s3transfer never seeks — without the rewind every avatar would
+    reach R2 with its first bytes missing, and nothing would raise."""
+    _, seen = _upload_avatar(PNG, "image/png", monkeypatch)
+    assert seen["body"] == PNG
+
+
+def test_an_unsupported_declared_type_is_still_rejected_before_any_read():
+    """The declared-type check stays first: it is cheaper, and its message
+    names the allowlist. A file object is never touched on this path."""
+    class _Upload:
+        content_type = "image/gif"
+        file = None
+
+    user = _FakeUser()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(profiles.upload_avatar(user.id, _FakeSession(user), _Upload()))
+    assert exc.value.status_code == 400
+
+
+def test_the_sniffer_recognises_exactly_the_allowlist():
+    """A sniffer that returns a type the route would then reject, or that adds
+    one the allowlist does not carry, is a bug in one direction or the other."""
+    recognised = {
+        profiles._sniff_image_type(p) for p in (PNG, JPEG, JPEG_EXIF, WEBP)
+    }
+    assert recognised == profiles.ALLOWED_AVATAR_TYPES
+    assert profiles._sniff_image_type(b"<svg/>") is None

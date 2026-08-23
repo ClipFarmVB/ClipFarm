@@ -39,6 +39,36 @@ USERNAME_CHANGE_COOLDOWN = timedelta(days=30)
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
+# CF-236: the declared Content-Type is the client's word for it, so the bytes
+# get the final say. Not a dependency — python-magic pulls in a C library to
+# recognise hundreds of formats when three are permitted, and `imghdr` was
+# removed from the stdlib in 3.13, so leaning on it would break on upgrade.
+#
+# Deliberately no SVG entry. SVG is the type that carries script, and a sniffer
+# that *added* formats would be a regression rather than a hardening.
+#
+# The prefixes are per-format rather than a fixed window: JPEG's is three bytes,
+# and requiring twelve would reject a valid (if absurd) tiny file for the wrong
+# reason. Twelve is only what WebP needs.
+AVATAR_SIGNATURE_BYTES = 12
+
+
+def _sniff_image_type(header: bytes) -> str | None:
+    """The content type `header` actually is, or None if it is not one we allow.
+
+    JPEG: every variant — JFIF, EXIF, Adobe, quantization-table-first — shares
+    `FF D8 FF`. PNG's signature is fixed by the spec. WebP is a RIFF container,
+    so the fourcc at offset 8 is what distinguishes it from a WAV or an AVI;
+    VP8, VP8L and VP8X all carry it and differ only at offset 12.
+    """
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
 
 _Schema = TypeVar("_Schema", bound=ProfileOut)
 
@@ -229,6 +259,35 @@ async def upload_avatar(user_id: UserId, db: DB, file: UploadFile = File(...)):
         )
     if not storage.r2_configured():
         raise HTTPException(status_code=503, detail="Storage is not configured")
+
+    # The bytes decide, not the header (CF-236). Read through UploadFile's async
+    # wrappers rather than touching `file.file` directly: on a payload large
+    # enough to have rolled to disk they hop to a threadpool, which is the same
+    # reason the upload below is offloaded (CF-63).
+    #
+    # The seek matters more than it looks. LimitedReader exposes only read(), so
+    # s3transfer treats the stream as non-seekable and uploads from wherever the
+    # position happens to be — without this, every avatar would arrive at R2
+    # with its first bytes missing and nothing would raise.
+    header = await file.read(AVATAR_SIGNATURE_BYTES)
+    await file.seek(0)
+
+    sniffed = _sniff_image_type(header)
+    if sniffed is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "That file isn't a JPEG, PNG or WebP image. "
+                f"Allowed: {', '.join(sorted(ALLOWED_AVATAR_TYPES))}"
+            ),
+        )
+
+    # Store what it *is*, not what the client called it. A PNG saved as
+    # `photo.jpg` arrives declared image/jpeg, because the browser fills
+    # File.type in from the extension — refusing that would reject a perfectly
+    # good avatar. It matters downstream too: avatar_key is deliberately
+    # extensionless, so the object's ContentType is the only record of format.
+    content_type = sniffed
 
     key = storage.avatar_key(user.id)
     try:
