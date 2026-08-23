@@ -85,8 +85,9 @@ most expensive kind of surprise in an unattended run.
 - **Never** run the local stack against a `DATABASE_URL` pointing at Supabase.
   Confirm `.env.docker` names the local `db` container first.
 - **Never** read, echo, or commit `.env.docker` or any credential.
-- Open PRs **ready for review**, not as drafts — they exist to be reviewed,
-  including by you. You still never merge and never deploy.
+- Every PR opens as a **draft**. It is work nobody has vetted yet, and draft is
+  the honest signal for that. You still review your own PRs (step 1) — a draft
+  reviews and takes pushes exactly like any other. You never merge, never deploy.
 - **Maximum 5 new PRs** and **6 new cards** per run.
 - **No attribution stamps.** Do not add "Generated with Claude Code", a
   `Co-Authored-By` trailer, a session link, or any similar footer to commits, PR
@@ -184,10 +185,10 @@ looping on one PR all night.
    and drop this caveat.**
 
    Do not open a PR if any gate fails — log it and move on.
-5. **Open the PR** — ready for review, not a draft — following
-   `.github/pull_request_template.md`, including the bare `Closes #<issue>` line
-   `CLAUDE.md` requires. Then go back to step 1: a PR you just opened has no
-   review yet, and reviewing it is your job.
+5. **Open a draft PR** following `.github/pull_request_template.md`, including
+   the bare `Closes #<issue>` line `CLAUDE.md` requires. Then go back to step 1:
+   a PR you just opened has no review yet, and reviewing it is your job. Draft
+   status does not exempt it.
 
 **Size discipline.** If a ticket would produce a diff too large to review in one
 sitting, do not implement it. Write the plan into the log instead — a good plan
