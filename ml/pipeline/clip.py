@@ -20,9 +20,12 @@ logger = logging.getLogger(__name__)
 # production run (CF-224). Every encode and decode below pins the count.
 #
 # Callers pass the deployed value (api Settings.ffmpeg_threads), since the right
-# number depends on the instance plan — production runs 1 on a 0.5-CPU box. This
-# is the fallback for a bare pipeline call: low enough for any container, since
-# the whole failure mode is a default sized by the wrong machine.
+# number depends on the instance plan. Production runs 1 on a whole CPU
+# (`standard`, CF-240) — that 1 was measured at 0.5 CPU under CF-224 and carried
+# over unchanged when the plan grew, so it is a known-safe value rather than a
+# tuned one; CF-223 re-measures it at the new size. This is the fallback for a
+# bare pipeline call: low enough for any container, since the whole failure mode
+# is a default sized by the wrong machine.
 DEFAULT_THREADS = 2
 
 
