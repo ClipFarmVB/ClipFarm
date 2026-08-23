@@ -34,6 +34,7 @@ pytest.importorskip("asyncpg")
 pytest.importorskip("jwt")
 
 from fastapi import HTTPException  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from app.routers import players  # noqa: E402
 from app.schemas.player import PlayerCreate  # noqa: E402
@@ -140,6 +141,26 @@ def test_omitting_team_id_still_patches():
     assert session.committed
 
 
+def test_clearing_a_different_nullable_field_is_still_allowed():
+    """The guard rejects a null `team_id`, not a null.
+
+    `jersey_number` is nullable on both the schema and the column, and clearing
+    it is legitimate — a player whose number is not known yet. Without this,
+    nothing in the suite distinguishes the branch above from an over-broad
+    `if any(v is None for v in updates.values())`, which is a plausible reading
+    of "reject the null" and would break a valid request.
+    """
+    team = _Team()
+    player = _Player(team_id=team.id, jersey_number=7)
+    session = _FakeSession(player, [team])
+
+    _patch(session, player.id, {"name": "Rosa", "jersey_number": None})
+
+    assert player.jersey_number is None
+    assert player.team_id == team.id
+    assert session.committed
+
+
 def test_reassigning_to_another_owned_team_still_works():
     old, new = _Team(), _Team()
     player = _Player(team_id=old.id)
@@ -212,5 +233,6 @@ def test_a_body_without_a_name_never_reaches_the_handler():
     default (or update_player takes a PlayerUpdate), the bare body starts
     reaching the handler and the guard above becomes the only thing stopping it.
     """
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError) as exc:
         PlayerCreate.model_validate({"team_id": None})
+    assert [e["type"] for e in exc.value.errors()] == ["missing"]
