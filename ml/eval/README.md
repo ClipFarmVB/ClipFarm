@@ -68,7 +68,10 @@ box itself (encode timings, memory headroom); a correctness sweep held to 1 CPU
 is just a slower sweep.
 
 `eval` is profile-gated, so `docker compose up` never starts it and every
-invocation below is a one-shot `run --rm`.
+invocation below is a one-shot `run --rm`. It has no default command — a bare
+`run eval` prints usage and exits 64 rather than starting a stray uvicorn. Its
+encode width is `EVAL_FFMPEG_THREADS` (default 4), separate from the worker's
+`FFMPEG_THREADS` so that retuning one never silently retunes the other.
 
 ```bash
 # Offline: replay detection + scoring from the R2 ball-cache (no re-tracking).

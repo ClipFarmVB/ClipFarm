@@ -239,18 +239,34 @@ Notes:
   `plan: standard` in `render.yaml`, with `FFMPEG_THREADS=1` to match (CF-241).
   Unconstrained it could not reproduce CF-224's OOM, because that bug needs the
   gap between the cores a container *advertises* and the CPU it is *allowed*, and
-  a dev machine never lies about its own hardware. Lower the cap to reproduce a
-  smaller instance on purpose:
+  a dev machine never lies about its own hardware. `memswap_limit` matches, which
+  is how you say *no swap* — Docker otherwise grants swap equal to the limit
+  again, and Render has none, so the repro would quietly decline to fail.
+
+  Both directions are sanctioned, and both are one line — **prefix the command**
+  rather than setting these in `.env.docker`, which is loaded into the container
+  but loses to the `environment:` block and is not what compose interpolates:
 
   ```bash
   WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 FFMPEG_THREADS=4 docker compose up worker
   ```
+  ```bash
+  WORKER_MEM_LIMIT=8g WORKER_CPUS=4 FFMPEG_THREADS=4 docker compose up worker
+  ```
+
+  The first reproduces the production OOM; the second is the **fast path for
+  local end-to-end runs**, for when the question is "does the pipeline work" and
+  waiting on one core is just waiting. It costs you the fidelity the defaults
+  exist for, so no timing or memory claim may come from a run like that — those
+  need default limits.
 
   Anything CPU-bound and *not* about production's box — the eval harness, the
-  tuning scripts — belongs on the `eval` service, which is the same image with no
-  limits and is profile-gated so `up` never starts it:
+  tuning scripts — belongs on the `eval` service: same image, no limits, its own
+  `EVAL_FFMPEG_THREADS`, and profile-gated so `up` never starts it.
   `docker compose run --rm --no-deps eval python -m ml.eval.harness --help`.
-  See `ml/eval/README.md`.
+  It is not a second worker — no broker deps and no celery command, so it cannot
+  take queued work; to process a real game faster, raise the worker's limits
+  above. See `ml/eval/README.md`.
 - Modal GPU is optional **for the dev stack only**, and the deployed image has no
   torch to fall back to (CF-164) — see `DEPLOY_RENDER.md`. Without `MODAL_TOKEN_*`
   in Docker Compose, ball tracking and pose have no local runtime and the pipeline

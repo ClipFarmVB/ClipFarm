@@ -100,9 +100,26 @@ services:
     # Track `clipfarm-worker`'s `plan` in render.yaml: `standard` = 2 GB / 1 CPU
     # since CF-240. api/tests/test_dev_prod_parity.py pins the two together.
     #
-    # Overridable on purpose — reproduce a smaller instance deliberately:
-    #   WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 FFMPEG_THREADS=4     #     docker compose up worker      # CF-224's OOM, on your laptop
+    # Overridable in BOTH directions, and both are sanctioned — one command,
+    # no continuations, so it survives a copy-paste:
+    #
+    #   Smaller, to reproduce CF-224's OOM on your laptop:
+    #     WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 FFMPEG_THREADS=4 docker compose up worker
+    #
+    #   Bigger, to iterate on a local end-to-end run without waiting on
+    #   production's single core (see README § Local Development):
+    #     WORKER_MEM_LIMIT=8g WORKER_CPUS=4 FFMPEG_THREADS=4 docker compose up worker
+    #
+    # Going bigger costs you the fidelity these limits exist for, so it is for
+    # "does the pipeline work", never for "does it fit". Any timing or memory
+    # claim has to come from a default-limits run.
+    #
+    # memswap_limit equal to mem_limit means NO swap. Docker's default is
+    # double, i.e. 2 GB of RAM plus 2 GB of swap — under which the repro above
+    # can decline to OOM while the same encode is killed on Render, which has
+    # no swap at all. An unfaithful repro is worse than none: it says "fixed".
     mem_limit: ${WORKER_MEM_LIMIT:-2g}
+    memswap_limit: ${WORKER_MEM_LIMIT:-2g}
     cpus: ${WORKER_CPUS:-1.0}
     environment:
       <<: *worker-env
@@ -110,6 +127,12 @@ services:
       # the point: the limits above are worth little if the thing that OOMs
       # under them is configured differently here. Raise it together with
       # WORKER_CPUS, never on its own.
+      #
+      # This is an `environment:` value, which BEATS `env_file:` — so setting
+      # FFMPEG_THREADS in .env.docker does nothing. The interpolation above
+      # reads the shell, or `.env`, or whatever `--env-file` names: the README's
+      # `docker compose --env-file .env.docker up` does pick it up from there,
+      # a bare `docker compose up` does not. Prefix the command to be sure.
       FFMPEG_THREADS: "${FFMPEG_THREADS:-1}"
       # No POSE_* or MODEL_* vars since CF-164: this image carries no torch, so
       # nothing here loads a model or downloads weights. Ball tracking and pose
@@ -147,15 +170,34 @@ services:
   # If you are eval-ing something whose *cost* matters — encode timings, memory
   # headroom — use `worker`, not this. Correctness sweeps belong here; anything
   # measuring the production box does not.
+  #
+  # It is NOT a second worker: no broker `depends_on` and no celery command, so
+  # it cannot take queued work. To run a real game faster, raise the worker's
+  # own limits (see its comment above) rather than reaching for this.
   eval:
     <<: *worker-image
     profiles: ["eval"]
     environment:
       <<: *worker-env
-      # Wider than the worker on purpose (see above), but still bounded: this
-      # container sees the host's core count, and an unpinned x264 sizes its
-      # pool from that (CF-224).
-      FFMPEG_THREADS: "${FFMPEG_THREADS:-4}"
+      # Its own variable, deliberately not the worker's. Sharing FFMPEG_THREADS
+      # would mean `FFMPEG_THREADS=4 docker compose ...` retunes eval as a side
+      # effect of retuning the worker — the silent-mis-benchmark this service
+      # exists to prevent, reintroduced through the back door.
+      #
+      # Wider than the worker on purpose, but still bounded: this container sees
+      # the host's core count, and an unpinned x264 sizes its pool from it (CF-224).
+      FFMPEG_THREADS: "${EVAL_FFMPEG_THREADS:-4}"
+    # Every real invocation passes its own command. Without this, a bare
+    # `run eval` or `--profile eval up` would inherit Dockerfile.api's CMD and
+    # quietly start a *second uvicorn* — a running web server where you asked
+    # for a sweep. Fail with usage instead.
+    command:
+      - sh
+      - -c
+      - >-
+        echo "eval is a one-shot runner, not a service: pass a command, e.g.
+        docker compose run --rm --no-deps eval python -m ml.eval.harness --help" >&2;
+        exit 64
 
   web:
     build:
