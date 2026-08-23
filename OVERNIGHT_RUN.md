@@ -23,42 +23,28 @@ that has to survive is posted as an issue — see [Reporting](#reporting).
 
 ## This run
 
-**Last updated: 2026-08-22.** If that date is not recent, stop and ask before
+**Last updated: 2026-08-24.** If that date is not recent, stop and ask before
 running.
 
-### In scope, in this order
+### In scope
 
-| Card | Issue | |
-| --- | --- | --- |
-| CF-235 | #235 | Reject wildcard `CORS_ORIGINS` in production |
-| CF-236 | #236 | Validate avatar magic bytes |
-| CF-186 | #189 | Public profile enumeration — rate limit or accept |
+Work issues carrying the **`overnight-ok`** label:
 
-Once those are done or blocked, use your judgement on other `Todo` items in the
-current sprint. A draft PR that turns out to be wrong costs review time, not
-damage — so prefer well-specified, independently testable tickets, and prefer
-finishing one to starting three.
+```
+gh issue list --state open --label overnight-ok --json number,title,labels
+```
 
-### Out of scope, and why
+That label means a human has judged the ticket safe to implement unattended —
+well-specified, no design or legal decision, no production data, no credentials.
+It is the selection gate. **Do not take an issue that does not carry it**, however
+appealing it looks; if you think one deserves it, argue for it in the report
+instead of taking it.
 
-Each of these fails for a specific reason, not merely for being large. If you
-think one is worth doing, write the argument in the log instead of starting it.
+Work highest priority first (`P0` > `P1` > `P2` > unlabelled). One ticket per
+iteration. If a ticket turns out to need a decision after all, say so in the log,
+drop it, and move on — do not guess.
 
-- **CF-223 (#223)** — profiling needs `STAGE_TIMING` from a production run.
-  Render is suspended, so that data does not exist yet.
-- **CF-215 (#215)** — is the deployment itself.
-- **CF-75 (#88)** — Terms of Service and Privacy Policy. Generated legal text
-  that ships to real users is a real liability, and this card gates public
-  signups, so there is pressure to merge it as-is. Draft *notes on what the
-  documents must cover* into the log if useful; do not open a PR containing the
-  documents.
-- **CF-64 (#72)** — Stripe payments. Unattended changes to a payment flow are a
-  bad trade even with review.
-- **CF-73 (#85)** — UI rebuild, explicitly design-led.
-- **CF-77 (#90)** — production secret management. You may not read credentials,
-  so you cannot finish it. Structure and documentation are fine.
-- **CF-112 (#142)** — PR #214 is already open for it.
-- **#216, #220** — titled "placeholder". Flag them in the log.
+If nothing carries the label, or everything that does is done, **stop the loop**.
 
 ### Environment notes for this run
 
@@ -69,16 +55,43 @@ think one is worth doing, write the argument in the log instead of starting it.
 
 ## Standing policy
 
+### First: establish what you can actually do
+
+Before relying on any capability, check it, and record the result in the log in
+one block. The first run discovered three gaps separately, mid-work.
+
+- **Projects v2** — `gh project item-list 1 --owner ClipFarmVB --format json`.
+  Needs the `project` token scope, which is often absent. This does **not** gate
+  any work: selection is by label, which plain repo scope reads fine. It only
+  affects board hygiene — without it you cannot remove the report issue from the
+  project. Note the gap in the report and carry on.
+- **Docker** — `docker info`. If absent, the local stack and the eval harness
+  cannot run at all.
+- **Gate tool versions** — read the versions `ci.yml` installs and compare with
+  what is installed here. See the gate step below.
+
+State every gap in the report. A capability you assumed and did not have is the
+most expensive kind of surprise in an unattended run.
+
 ### Hard rules
 
 - **Never** push to `main`, merge a PR, or force-push anything.
+- **Only push to branches this run created.** Pushing to an existing PR's branch
+  needs prior sign-off — the harness requires permission and the brief must not
+  contradict it. If a fix belongs on someone else's branch, describe it in a
+  review comment instead.
 - **Never** deploy, unsuspend a hosting service, or touch production
   infrastructure.
 - **Never** run the local stack against a `DATABASE_URL` pointing at Supabase.
   Confirm `.env.docker` names the local `db` container first.
 - **Never** read, echo, or commit `.env.docker` or any credential.
-- Every PR opens as a **draft**. You never merge and never deploy.
+- Open PRs **ready for review**, not as drafts — they exist to be reviewed,
+  including by you. You still never merge and never deploy.
 - **Maximum 5 new PRs** and **6 new cards** per run.
+- **No attribution stamps.** Do not add "Generated with Claude Code", a
+  `Co-Authored-By` trailer, a session link, or any similar footer to commits, PR
+  bodies, review comments, or issues. Local settings suppress these but a sandbox
+  does not inherit them, so this is on you.
 - If a command fails because of usage limits, **stop the loop** — do not retry.
 - If nothing in scope is actionable, **stop the loop**. A run that reviews two
   PRs and opens nothing is a fine outcome.
@@ -94,7 +107,9 @@ only thing that survives.
 
 Finish work already in flight before starting anything new.
 
-**1 — Review open PRs that changed since their last review.**
+**1 — Review open PRs that need one.** A PR needs a review if it has **no
+review at all** — including one you opened earlier in this run — or if it has
+commits since its most recent review.
 
 Compare each PR's head commit against the commit of its most recent review. If
 there are commits since, run `/code-review` and post the findings as one review
@@ -111,10 +126,20 @@ finding confirmed without checking it.
 
 Do not use `/code-review ultra`; it is billed separately and user-triggered.
 
-**2 — Address review findings on PRs owned by whoever started this run**
-(`gh api user -q .login`). If a fix needs no human decision, implement it, push
-to that PR's branch, and reply on the thread saying what changed. If it needs a
-judgement call, log it and leave it.
+**2 — Address review findings on PRs you own** (`gh api user -q .login`, which
+includes every PR you opened during this run). If a fix needs no human decision,
+implement it, push to that PR's branch, and reply on the thread saying what
+changed. If it needs a judgement call, log it and leave it.
+
+**This is a cycle, and closing it is the point.** Open a PR, review it, fix what
+the review found, then review again to confirm the fix holds and introduced
+nothing new. The first run opened three PRs and reviewed none of them, because
+step 1 only covered PRs that had *changed since* a review and these had none at
+all. A PR nobody looked at is half the value of the work that produced it.
+
+Bound it: **at most two review-and-fix rounds per PR per run.** If findings
+remain after the second round, write them in the log for a human rather than
+looping on one PR all night.
 
 **3 — Only when 1 and 2 are clear**, take one ticket from "This run".
 
@@ -128,12 +153,41 @@ judgement call, log it and leave it.
    anything the plan asserts without verifying. Record what it said — including
    when it disagreed and you proceeded anyway, with your reasoning.
 3. **Implement** on a branch named for the card.
-4. **Run the gate**: `ruff check api/`, `mypy api/app --ignore-missing-imports`,
-   `cd api && python -m pytest tests/`, `python -m pytest ml/tests/`, and for web
-   changes `npm run lint --workspace=web && npm run typecheck --workspace=web`.
-   Do not open a PR if any fail — log it and move on.
-5. **Open a draft PR** following `.github/pull_request_template.md`, including the
-   bare `Closes #<issue>` line `CLAUDE.md` requires.
+4. **Run the full gate.** Every step `ci.yml` runs:
+
+   ```
+   ruff check api/
+   mypy api/app --ignore-missing-imports
+   ruff check ml/eval
+   mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
+   python -m pytest ml/tests/
+   cd api && python -m pytest tests/
+   ```
+
+   For web changes, all three — the test step is easy to forget:
+
+   ```
+   npm run lint --workspace=web
+   npm run typecheck --workspace=web
+   npm run test --workspace=web
+   ```
+
+   **On tool versions.** `ci.yml` installs `ruff mypy pytest` **unpinned**, so CI
+   resolves whatever is latest on the day it runs. That means there is no pinned
+   version to match — the closest you can get is installing the same unpinned way
+   CI does, which the environment's setup script now handles. Do not claim a gate
+   matches CI's tooling; state the versions you actually ran in the report.
+
+   This is not a detail. The first run's reviews were checked with different
+   `ruff`/`mypy` than CI used, which the agent flagged against its own work —
+   CF-92 (#255) exists to pin them. **Once that lands, match the pinned versions
+   and drop this caveat.**
+
+   Do not open a PR if any gate fails — log it and move on.
+5. **Open the PR** — ready for review, not a draft — following
+   `.github/pull_request_template.md`, including the bare `Closes #<issue>` line
+   `CLAUDE.md` requires. Then go back to step 1: a PR you just opened has no
+   review yet, and reviewing it is your job.
 
 **Size discipline.** If a ticket would produce a diff too large to review in one
 sitting, do not implement it. Write the plan into the log instead — a good plan
