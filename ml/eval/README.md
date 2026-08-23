@@ -70,10 +70,17 @@ is just a slower sweep.
 `eval` is profile-gated, so `docker compose up` never starts it and every
 invocation below is a one-shot `run --rm`. It has no default command — a bare
 `run eval` prints usage and exits 64 rather than starting a stray uvicorn. It
-pins no `FFMPEG_THREADS` and no broker URLs: nothing on an eval path encodes
-or queues — the entry points stop at `_track_ball_cached` and the condense
-arithmetic — so neither is read here, and `eval` cannot take real work off the
-Celery queue even if asked to.
+pins no `FFMPEG_THREADS` and no broker URLs, because neither is read on an eval
+path: `Settings.ffmpeg_threads` reaches only `recut_clip_task` and
+`process_game_task`, and nothing here imports `ml.pipeline.clip`. Pinning either
+would be config that looks load-bearing and is not. `eval` also cannot take real
+work off the Celery queue even if asked to.
+
+Not the same as "eval never runs ffmpeg": `--offline` calls
+`compute_audio_energy`, which shells out to ffmpeg to pull mono PCM
+(`ml/pipeline/audio.py`). That is a `-vn` decode, not CF-224's x264 encode, and
+it reads no thread setting — but it is a real subprocess, so measure with it in
+mind.
 
 ```bash
 # Offline: replay detection + scoring from the R2 ball-cache (no re-tracking).

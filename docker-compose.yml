@@ -206,12 +206,18 @@ services:
     <<: *worker-image
     profiles: ["eval"]
     # No FFMPEG_THREADS pin, deliberately. Settings.ffmpeg_threads is read only
-    # by recut_clip_task and process_game_task; every eval entry point stops at
-    # _track_ball_cached and the condense arithmetic, so nothing here encodes and
-    # the setting is never consulted. A value pinned here would be config that
-    # looks load-bearing and is not. If eval ever grows an encode, give it its
-    # own variable then — sharing the worker's would mean retuning one silently
-    # retunes the other.
+    # by recut_clip_task and process_game_task, and nothing under ml/eval imports
+    # ml.pipeline.clip, so the setting is never consulted on an eval path. A
+    # value pinned here would be config that looks load-bearing and is not.
+    #
+    # That is narrower than "eval never runs ffmpeg", which would be false:
+    # harness.py --offline calls compute_audio_energy, which shells out to ffmpeg
+    # for a -vn decode to mono PCM (ml/pipeline/audio.py). It passes no -threads
+    # and reads nothing from here, so there is no knob to pin — but it is a real
+    # subprocess, and claiming otherwise is the CF-192 failure with the sign
+    # flipped. If eval ever grows an encode of its own, give it its own variable
+    # then — sharing the worker's would mean retuning one silently retunes the
+    # other.
     #
     # Every real invocation passes its own command. Without this, a bare
     # `run eval` or `--profile eval up` would inherit Dockerfile.api's CMD and

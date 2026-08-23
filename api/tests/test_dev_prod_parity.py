@@ -85,6 +85,29 @@ def _load_compose(path: Path):
     return yaml.load(path.read_text(encoding="utf-8"), Loader=ComposeLoader)
 
 
+def _env_map(service) -> dict[str, str]:
+    """A service's `environment:` as a dict, whichever syntax it was written in.
+
+    Compose takes either a mapping or a `KEY=value` list and treats them as the
+    same thing. A membership test against the raw YAML does not: given the list
+    form, `"REDIS_URL" in env` compares against `"REDIS_URL=redis://..."` and is
+    False, so every guard below would pass while Compose resolved exactly the
+    configuration they forbid (verified against `compose config`). The guards are
+    the only thing making "eval cannot take the queue" true rather than merely
+    intended, so they must not depend on which of two equivalent spellings
+    someone reached for.
+    """
+    env = service.get("environment") or {}
+    if isinstance(env, dict):
+        return {str(k): str(v) for k, v in env.items()}
+    # List form: `KEY=value`, or a bare `KEY` meaning "pass through from the host"
+    # — which is still the key being set, so it counts for these assertions.
+    return dict(
+        (item.split("=", 1) + [""])[:2] if isinstance(item, str) else (str(item), "")
+        for item in env
+    )
+
+
 def _render_worker():
     yaml = pytest.importorskip("yaml")
 
@@ -215,19 +238,20 @@ def test_eval_service_is_unconstrained_and_not_started_by_default():
         "eval must stay profile-gated so `docker compose up` does not start a "
         "second, unlimited copy of the worker image alongside the real one"
     )
-    assert "FFMPEG_THREADS" not in evaluation.get("environment", {}), (
+    reachable = _env_map(evaluation)
+    assert "FFMPEG_THREADS" not in reachable, (
         "eval pins FFMPEG_THREADS, which nothing on any eval path reads: "
         "Settings.ffmpeg_threads reaches only recut_clip_task and "
-        "process_game_task, and the eval entry points stop at _track_ball_cached. "
-        "Config that looks load-bearing and is not is worse than none. If eval "
-        "grows an encode, give it its own variable rather than the worker's"
+        "process_game_task, whose callers are both in tasks.py, and nothing "
+        "under ml/eval imports ml.pipeline.clip. Config that looks load-bearing "
+        "and is not is worse than none. If eval grows an encode of its own, give "
+        "it its own variable rather than the worker's"
     )
     assert evaluation.get("command"), (
         "eval needs an explicit command: without one it inherits Dockerfile.api's "
         "CMD, so a bare `run eval` starts a second uvicorn instead of failing"
     )
 
-    reachable = evaluation.get("environment") or {}
     assert not {"CELERY_BROKER_URL", "REDIS_URL"} & set(reachable), (
         "eval must not carry the broker URLs: with them, `run --rm eval celery ...` "
         "drains the real queue and runs those games unconstrained. Nothing on an "
@@ -279,7 +303,7 @@ def test_the_vps_overlay_pins_its_own_ffmpeg_threads():
     demanded the two differ would fail the correct config.
     """
     vps = _load_compose(REPO_ROOT / "docker-compose.prod.yml")["services"]["worker"]
-    env = vps.get("environment") or {}
+    env = _env_map(vps)
 
     assert "FFMPEG_THREADS" in env, (
         "docker-compose.prod.yml must pin FFMPEG_THREADS: the dev file defaults it "
