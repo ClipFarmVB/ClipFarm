@@ -87,7 +87,8 @@ class _FakeSession:
 
 
 def _patch(session, player_id, body):
-    return asyncio.run(players.update_player(player_id, PlayerCreate.model_validate(body), session, OWNER))
+    parsed = PlayerCreate.model_validate(body)
+    return asyncio.run(players.update_player(player_id, parsed, session, OWNER))
 
 
 # ── the new guard ───────────────────────────────────────────────────────────
@@ -187,8 +188,9 @@ def test_the_two_routes_agree_that_a_null_team_id_is_invalid():
     agreement, rather than each route alone, is what fails if a later change
     relaxes one of them."""
     session = _FakeSession(None, [])
+    body = PlayerCreate.model_validate({"name": "Rosa", "team_id": None})
     with pytest.raises(HTTPException) as created:
-        asyncio.run(players.create_player(PlayerCreate.model_validate({"name": "Rosa", "team_id": None}), session, OWNER))
+        asyncio.run(players.create_player(body, session, OWNER))
     assert created.value.status_code == 400
     assert not session.added
 
