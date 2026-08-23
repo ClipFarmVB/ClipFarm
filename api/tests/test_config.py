@@ -367,3 +367,96 @@ def test_the_error_message_points_at_both_deploy_paths():
     assert "DEPLOY_RENDER.md" in message
     assert "DEPLOY.md" in message
     assert ".env.docker" in message
+
+
+# ── CF-92: the tools CI runs on are pinned ─────────────────────────────────
+#
+# Not a config-guard like the ones above, but the same failure shape: a value
+# that lives in a file nobody re-reads, and whose drift shows up as an
+# unrelated-looking red build.
+
+TOOLING_TXT = REPO_ROOT / "requirements-tooling.txt"
+CI_YML = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+
+
+def _pins(path):
+    """`name -> version` for the `==` requirements in a requirements file."""
+    out = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        name, _, version = line.partition("==")
+        out[name.strip().lower()] = version.strip()
+    return out
+
+
+def test_every_tool_ci_installs_is_pinned():
+    """An unpinned entry here is the whole bug: ruff 0.16.0 widened its default
+    rule set and turned #77 red with nine findings in code nobody had touched.
+    """
+    unpinned = [
+        line.strip()
+        for line in TOOLING_TXT.read_text(encoding="utf-8").splitlines()
+        if (stripped := line.split("#", 1)[0].strip())
+        and not stripped.startswith("-")
+        and "==" not in stripped
+    ]
+    assert not unpinned, (
+        f"requirements-tooling.txt has unpinned entries: {unpinned}. "
+        "A floating version means an upstream release can change CI's answer "
+        "on a branch nobody touched, which is what CF-92 exists to stop."
+    )
+    assert _pins(TOOLING_TXT), "no pins found — did the file format change?"
+
+
+def test_ci_installs_the_tooling_file_rather_than_naming_tools_inline():
+    """The durable half. Nothing else in the repo parses the workflow, so
+    without this a later PR can quietly restore `pip install ruff mypy pytest`
+    and the pins stop applying while every check stays green.
+
+    Written against the raw text rather than the parsed YAML: what matters is
+    the command string, and a `run:` step is a string either way.
+    """
+    ci = CI_YML.read_text(encoding="utf-8")
+
+    assert "pip install -r requirements-tooling.txt" in ci, (
+        "ci.yml no longer installs requirements-tooling.txt — if the tooling "
+        "step moved, point this test at it; if it was inlined, the CF-92 pins "
+        "are no longer in effect"
+    )
+
+    # `run:` steps only. A comment may legitimately quote the old command while
+    # explaining why it changed, and flagging that would make the test a
+    # tripwire on prose rather than on what CI executes.
+    inline = [
+        stripped
+        for line in ci.splitlines()
+        if (stripped := line.strip()).startswith("- run:")
+        and "pip install" in stripped
+        and "-r " not in stripped
+        and any(tool in stripped for tool in ("ruff", "mypy", "pytest"))
+    ]
+    assert not inline, (
+        f"a lint/type/test tool is installed inline in ci.yml: {inline}. "
+        "Add it to requirements-tooling.txt with a `==` pin instead — an "
+        "inline name resolves to whatever is current on the day."
+    )
+
+
+def test_the_two_pytest_pins_agree():
+    """`pytest ml/tests` runs on the tooling install; `pytest api/tests` runs
+    after requirements-dev is installed. If the two disagree, pip downgrades
+    mid-job and the suites run on different versions — which is the state this
+    change fixed, so it is worth keeping fixed.
+    """
+    tooling = _pins(TOOLING_TXT)
+    dev = _pins(REPO_ROOT / "api" / "requirements-dev.txt")
+
+    assert "pytest" in tooling and "pytest" in dev, "both files must pin pytest"
+    assert tooling["pytest"] == dev["pytest"], (
+        f"requirements-tooling.txt pins pytest=={tooling['pytest']} but "
+        f"api/requirements-dev.txt pins pytest=={dev['pytest']}. pip will "
+        "downgrade at the second install and the two test steps will run on "
+        "different versions."
+    )

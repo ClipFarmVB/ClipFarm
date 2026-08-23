@@ -8,11 +8,18 @@
 # Install for your clone:
 #   git config core.hooksPath .hooks
 #
-# Requirements: ruff, mypy, pytest, and npm on PATH. For the full api/tests step:
-#   pip install -r api/requirements-dev.txt     # app deps + pytest + fakeredis
-# Install that and every step runs. With only `pip install ruff mypy pytest`,
-# the api/tests step skips (loudly) rather than erroring — the app-importing
-# tests can't collect without the app's own deps.
+# Requirements: ruff, mypy, pytest, and npm on PATH.
+#
+#   pip install -r requirements-tooling.txt     # ruff + mypy + pytest, pinned
+#   pip install -r api/requirements-dev.txt     # app deps, for the api/tests step
+#
+# Use the tooling file rather than `pip install ruff mypy pytest`: those are the
+# versions CI runs (CF-92), so a finding here is a finding there. Unpinned, a
+# fresh install can disagree with CI in either direction — ruff 0.16.0 widened
+# its default rule set and reddened a branch nobody had touched.
+#
+# With only the tooling file, the api/tests step skips (loudly) rather than
+# erroring — the app-importing tests can't collect without the app's own deps.
 #
 # One consequence of the single environment: with the api deps installed, the
 # mypy step below sees stubs CI's dependency-light run does not, so it can report
