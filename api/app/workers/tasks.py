@@ -432,8 +432,10 @@ def _pose_first_fallback(
     `ball_err` is the formatted message, not the exception: holding the
     exception kept its traceback — and through it the failed stage's frame
     locals, which for ball tracking means a model handle and cv2/numpy buffers
-    — alive for the rest of the run. On a 512 MB worker (CF-164) that is worth
-    avoiding for a value only ever used as text.
+    — alive for the rest of the run. Worth avoiding for a value only ever used
+    as text: it was written against the 512 MB worker (CF-164), and while
+    CF-240 has since bought real headroom, cutting still runs libx264 next to
+    it.
 
     When both stages are down it is usually one event — no Modal — but only the
     pose message ("Pose detection is unavailable…") reaches the game's

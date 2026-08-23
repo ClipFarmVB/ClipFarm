@@ -337,9 +337,9 @@ they weigh SPF/DKIM alignment differently.
 4. **GPU offload** — the worker log should say `Ball tracking ran on Modal GPU`
    and `Pose refinement ran on Modal GPU`, and both `clipfarm-ball-tracking` and
    `clipfarm-pose` should show a run on the Modal dashboard. A `falling back to
-   local CPU` line means the tokens or the deploy are missing; on a `starter`
-   worker that fallback finds no torch and quietly degrades the labels, so this
-   check is the one that catches it.
+   local CPU` line means the tokens or the deploy are missing; no torch ships
+   in this image at any plan, so that fallback finds none and quietly degrades
+   the labels — this check is the one that catches it.
 
    There is no model-cache disk to verify any more — CF-164 removed it along
    with the last model in this image. Pose weights are baked into the
@@ -471,13 +471,19 @@ same Blueprint when there are real users; that's also what would let
   prepared statements. If you hit `prepared statement already exists`, use the
   session-mode pooler port or append the appropriate asyncpg options. (The dev
   stack already runs against the pooler, so the working URL format carries over.)
-- **Worker sizing** is the main cost lever, and CF-164 spent it: the worker runs
-  on `starter` (512 MB), down from `standard` (2 GB). That is affordable only
-  because no model ships in the image — ball tracking and pose are both on
-  Modal, so torch, ultralytics and Roboflow `inference` are gone. **If you ever
-  put an ML runtime back into `Dockerfile.api`, size the worker back up in the
-  same change**; a torch import on 512 MB OOMs the box.
-  `api/tests/test_pose_modal.py` pins the two together.
+- **Worker sizing** is the main cost lever, and it is back on `standard` (2 GB /
+  1 CPU) as of CF-240. CF-164 had taken it down to `starter` (512 MB) once ball
+  tracking and pose both moved to Modal and torch, ultralytics and Roboflow
+  `inference` left the image — but no game ever finished processing on 512 MB.
+  `libx264` peaks at ~407 MB even at `FFMPEG_THREADS=1` (CF-224) against a
+  process already holding ~95 MB, so `cutting_clips` OOM-killed the worker on
+  every production attempt. CF-239 removes the re-encode for browser-safe
+  sources, but HEVC, VP9 and ProRes still need libx264 and the same ~400 MB, so
+  the headroom stays. Worker cost is $7 → $25/mo; $31.25 → $49.25/mo in total.
+  **If you ever put an ML runtime back into `Dockerfile.api`, do not size this
+  back down**; a torch import on 512 MB OOMs the box, and
+  `api/tests/test_pose_modal.py` pins the two together whenever the plan reads
+  `starter`.
 - **The worker's `model-cache` disk is gone from the blueprint — check it is gone
   from the *service* (CF-225).** CF-164 deleted the `disk:` block when the last
   model left the image; two days later the live instance still mounted it, with

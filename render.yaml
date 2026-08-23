@@ -147,26 +147,35 @@ services:
         fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
 
   # ── Worker (Celery) ────────────────────────────────────────────────────────
-  # `starter` (512 MB) since CF-164. It was on `standard` (2 GB) because torch +
-  # ultralytics + Roboflow `inference` sat in the image; with ball tracking
-  # (CF-11) and pose (CF-164) both on Modal, none of them ship any more and what
-  # is left in this process is ffmpeg, opencv, numpy and boto3.
+  # `standard` (2 GB / 1 CPU) since CF-240 — measured, not assumed. It ran on
+  # `starter` (512 MB / 0.5 CPU) from CF-164, once ball tracking (CF-11) and
+  # pose (CF-164) both moved to Modal and torch + ultralytics + Roboflow
+  # `inference` stopped shipping in the image; what is left in this process is
+  # ffmpeg, opencv, numpy and boto3.
   #
-  # If a future change puts a model back in the image, put this back to
-  # `standard` in the same commit — a torch import on 512 MB OOMs the box.
-  # api/tests/test_pose_modal.py pins the two together, following `pip install -r`
-  # so the check isn't fooled by a requirements file.
+  # 512 MB was still not enough, and no game ever finished in production on it.
+  # `libx264` peaks at ~407 MB even at threads=1 (CF-224) and this process holds
+  # ~95 MB before ffmpeg starts — 502 MB against a 512 MB ceiling, which is noise
+  # rather than headroom. The worker OOM-killed during cutting_clips on every
+  # attempt: 5.5 s in on 20 Aug, and ~9 min in on 22 Aug pegged at 511.9/512 MB
+  # the whole way.
   #
-  # Headroom, since 512 MB is not a lot and this has NOT been measured on a real
-  # game yet (the card's acceptance is exactly that check, on deploy): the
-  # largest remaining allocation is the audio energy envelope — 16 kHz mono
+  # CF-239 stream-copies browser-safe sources and removes the re-encode for the
+  # common case, but not for HEVC, VP9 or ProRes, which still need libx264 and
+  # the same ~400 MB. So this is the prerequisite that makes CF-239 safe to
+  # ship, not something CF-239 replaces. Revisit `starter` only once the
+  # re-encode path is rare *and* peak memory has been measured on a real game.
+  #
+  # The other large allocation is the audio energy envelope — 16 kHz mono
   # float32 is ~150 MB of PCM for a 40-minute game. CF-164 streams that through
   # a temp file instead of subprocess capture_output, which was holding the
   # finished bytes and the chunk list they were accumulated from at the same
-  # time; the peak is now one array rather than roughly two. That envelope is
-  # the largest single allocation left, but it is not the only one: ffmpeg is
-  # what actually OOM-killed this service on its first production run, and is
-  # now bounded by FFMPEG_THREADS below (CF-224).
+  # time; the peak is now one array rather than roughly two.
+  #
+  # An ML runtime back in the image would need `standard` anyway — a torch
+  # import on 512 MB OOMs the box. api/tests/test_pose_modal.py pins the two
+  # together, following `pip install -r` so the check isn't fooled by a
+  # requirements file; it binds only while this says `starter`.
   #
   # No disk either: the model cache it pinned (~114 MB ball model + pose
   # weights) has nothing to hold now that no weights are downloaded here. That
@@ -184,12 +193,12 @@ services:
     repo: https://github.com/ClipFarmVB/ClipFarm
     branch: main
     region: oregon
-    plan: starter
+    plan: standard
     # Before raising this, confirm the service has no disk attached — see the
     # note above: while one is, Render holds the service to a single instance
     # and this field will not take. After that it is a queue-throughput
     # decision (CF-65c): every instance is another Postgres connection and
-    # another `starter` worth of cost, and the per-game advisory lock (CF-184)
+    # another `standard` worth of cost, and the per-game advisory lock (CF-184)
     # is what keeps two of them off the same game.
     numInstances: 1
     dockerfilePath: ./Dockerfile.api
@@ -240,10 +249,14 @@ services:
       # with 1 thread and 468 MB with 2, and *finishes sooner* with 1 (59 s vs
       # 66-74 s). Half a CPU cannot run two encoder threads in parallel, so the
       # second one buys nothing and costs 60 MB. 4 and unbounded both OOM at
-      # ~5 s — the production symptom exactly. Raise this in step with `plan`
-      # (roughly one thread per whole CPU) if this service ever grows; it is set
-      # explicitly rather than left to the code default so the coupling is
-      # visible next to the plan it depends on.
+      # ~5 s — the production symptom exactly.
+      #
+      # Deliberately still 1 after CF-240 took the plan to a whole CPU, where
+      # 2 would plausibly win. That measurement was taken at 0.5 CPU and does
+      # not carry over, so it gets re-run under CF-223 rather than guessed at
+      # here — CF-240 changes one variable. It is set explicitly rather than
+      # left to the code default so the coupling is visible next to the plan it
+      # depends on.
       - key: FFMPEG_THREADS
         value: "1"
       - key: REDIS_URL

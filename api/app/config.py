@@ -194,10 +194,13 @@ class Settings(BaseSettings):
     # ffmpeg encode/decode threads per cut (CF-224). ffmpeg reads the visible
     # core count, which in a container is the host's — on Render's 16-core hosts
     # x264 spawned ~24 encoder threads and its per-thread 1080p frame buffers
-    # OOM-killed the 512 MB worker. The right value follows the instance plan,
-    # not the host. 2 is the safe default for any container; production sets 1
-    # in render.yaml, where half a CPU makes a second encoder thread pure memory
-    # cost. Raise it in the env when the box actually has cores to use.
+    # OOM-killed the worker on its then-512 MB plan. The right value follows the
+    # instance plan, not the host. 2 is the safe default for any container;
+    # production sets 1 in render.yaml. That 1 was measured at 0.5 CPU, where a
+    # second encoder thread was pure memory cost; the worker is on a whole CPU
+    # since CF-240 and 1 was carried over deliberately rather than re-tuned in
+    # the same change (CF-223 measures it). Raise it in the env when the box
+    # actually has cores to use.
     #
     # ge=1 because 0 is not "no threads" to ffmpeg — it is the *auto* sentinel,
     # which restores exactly the host-sized pool this setting exists to prevent,
