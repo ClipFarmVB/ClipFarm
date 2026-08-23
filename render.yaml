@@ -194,6 +194,12 @@ services:
     branch: main
     region: oregon
     plan: standard
+    # Changing this plan is a two-file change (CF-241): docker-compose.yml pins
+    # the dev worker's `mem_limit` and `cpus` to whatever this says, so that a
+    # laptop can reproduce the production box. Move them together or the dev
+    # environment quietly stops being able to catch the next CF-224.
+    # api/tests/test_dev_prod_parity.py fails the pair apart.
+    #
     # Before raising this, confirm the service has no disk attached — see the
     # note above: while one is, Render holds the service to a single instance
     # and this field will not take. After that it is a queue-throughput

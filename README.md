@@ -109,7 +109,7 @@ ml/modal_pose.py           Modal GPU deployment of pose  (deploy: modal deploy m
 
 Dockerfile.api             image for api + worker (shared)
 Dockerfile.web             image for web
-docker-compose.yml         db · redis · api · worker · web  (project name: clipfarm)
+docker-compose.yml         db · redis · api · worker · web (+ `eval`, profile-gated)
 .hooks/pre-commit          runs the exact CI checks locally
 ```
 
@@ -235,6 +235,22 @@ Notes:
 - `docker compose restart` does **not** reload env files. To pick up `.env.docker` changes:
   `docker compose up -d --force-recreate <service>`.
 - The worker mounts `./api` and `./ml`, so Python changes are picked up on worker restart.
+- **The dev worker is capped at production's size** — 2 GB / 1 CPU, tracking
+  `plan: standard` in `render.yaml`, with `FFMPEG_THREADS=1` to match (CF-241).
+  Unconstrained it could not reproduce CF-224's OOM, because that bug needs the
+  gap between the cores a container *advertises* and the CPU it is *allowed*, and
+  a dev machine never lies about its own hardware. Lower the cap to reproduce a
+  smaller instance on purpose:
+
+  ```bash
+  WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 FFMPEG_THREADS=4 docker compose up worker
+  ```
+
+  Anything CPU-bound and *not* about production's box — the eval harness, the
+  tuning scripts — belongs on the `eval` service, which is the same image with no
+  limits and is profile-gated so `up` never starts it:
+  `docker compose run --rm --no-deps eval python -m ml.eval.harness --help`.
+  See `ml/eval/README.md`.
 - Modal GPU is optional **for the dev stack only**, and the deployed image has no
   torch to fall back to (CF-164) — see `DEPLOY_RENDER.md`. Without `MODAL_TOKEN_*`
   in Docker Compose, ball tracking and pose have no local runtime and the pipeline

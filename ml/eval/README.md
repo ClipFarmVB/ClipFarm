@@ -61,13 +61,19 @@ These need opposite fixes, so always compare the two.
 ## Running it
 
 Both modes need a *processed* game (the model's clips must exist). Run from the
-repo root; the `--offline` mode must run where the pipeline deps live (the
-worker container).
+repo root; the `--offline` mode must run where the pipeline deps live — the
+**`eval` service**, which is the worker's image without the worker's resource
+limits (CF-241). Use `worker` only when what you are measuring is the production
+box itself (encode timings, memory headroom); a correctness sweep held to 1 CPU
+is just a slower sweep.
+
+`eval` is profile-gated, so `docker compose up` never starts it and every
+invocation below is a one-shot `run --rm`.
 
 ```bash
 # Offline: replay detection + scoring from the R2 ball-cache (no re-tracking).
-docker compose exec -e GIT_COMMIT=$(git rev-parse --short HEAD) worker \
-  python -m ml.eval.harness --test test1 --version my-change --offline
+docker compose run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
+  eval python -m ml.eval.harness --test test1 --version my-change --offline
 
 # Clips-json: score a pre-dumped {pre_gate, post_gate} window list.
 python -m ml.eval.harness --test test1 --version my-change --clips-json dump.json
@@ -80,7 +86,7 @@ python -m ml.eval.harness --mode deadtime --test test1 --version my-change \
 # Dead-time, offline: derive the windows from the real video via the R2
 # ball-cache, mirroring the pipeline's stage-5 condense path.
 docker compose run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
-  worker python -m ml.eval.harness --mode deadtime --test test1 \
+  eval python -m ml.eval.harness --mode deadtime --test test1 \
   --version my-change --offline
 ```
 

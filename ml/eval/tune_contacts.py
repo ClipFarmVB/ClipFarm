@@ -9,7 +9,7 @@ only the dump from diagnose_detection.py, which the container mounts.
 Step 0 reproduces the recorded container baseline. If that row doesn't match
 exactly, nothing below it is trustworthy, so it prints the expected values.
 
-  docker compose run --rm --no-deps worker python -m ml.eval.tune_contacts
+  docker compose run --rm --no-deps eval python -m ml.eval.tune_contacts
 """
 from __future__ import annotations
 
