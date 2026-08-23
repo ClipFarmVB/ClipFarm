@@ -161,6 +161,14 @@ def _origin_problem(origin: str) -> str | None:
         return "port must be a number in 1-65535"
     if parts.netloc.endswith(":"):
         return "trailing `:` with no port — write the host alone, or host:port"
+    # Last, because the checks above have peeled off userinfo and port and this
+    # is what should be left. `https://:8443` gets this far with a non-empty
+    # netloc, no userinfo and a valid port — every earlier check passes and the
+    # host is simply absent.
+    if not parts.hostname:
+        return "no host — an Origin is scheme://host[:port]"
+    if any(c.isspace() for c in parts.hostname):
+        return "host contains whitespace — no browser can send this as an Origin"
     return None
 
 

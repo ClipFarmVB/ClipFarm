@@ -502,6 +502,26 @@ def test_production_rejects_a_host_with_a_trailing_colon(clean_env):
     assert "trailing `:`" in str(exc.value)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://:8443",          # port but no host
+        "https://clip farm.ca",   # space in the host
+    ],
+)
+def test_production_rejects_an_entry_with_no_usable_host(clean_env, value):
+    """What is left once userinfo and port are peeled off has to be a host.
+
+    `https://:8443` is the one that needs saying: its netloc is non-empty, it
+    carries no userinfo, and its port is valid, so it clears every other check
+    in the function and arrives here with the host simply missing.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    assert "host" in str(exc.value)
+
+
 def test_production_rejects_a_mixed_case_origin(clean_env):
     """Starlette matches origins as exact strings, so this is as broken as a
     trailing slash — and looks even more correct in a dashboard."""
@@ -518,6 +538,7 @@ def test_production_rejects_a_mixed_case_origin(clean_env):
         "https://clipfarm.ca,https://www.clipfarm.ca",
         "https://clipfarm.ca,http://localhost:3000",   # port must stay valid
         "http://127.0.0.1:3000",
+        "http://[::1]:3000",           # IPv6 — the host checks must not break it
         "https://clipfarm.ca:1",       # boundary — the port checks must not
         "https://clipfarm.ca:65535",   # narrow the range they validate
 
