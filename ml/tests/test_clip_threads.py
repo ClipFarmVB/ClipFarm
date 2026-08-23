@@ -1,8 +1,9 @@
 """ffmpeg thread bounding in ml/pipeline/clip.py (CF-224).
 
-The container's cgroup allows half a CPU while `nproc` reports the host's 16, so
-an unpinned x264 spawns ~24 encoder threads and its frame buffers OOM-kill the
-worker. Every encode and decode must therefore carry an explicit `-threads`.
+The container's cgroup allows a fraction of the host's cores while `nproc`
+reports all 16 of them, so an unpinned x264 spawns ~24 encoder threads and its
+frame buffers OOM-kill the worker. Every encode and decode must therefore carry
+an explicit `-threads`.
 
 ffmpeg-python is stubbed rather than skipped-around: the assertion is about the
 arguments clip.py builds, and a real ffmpeg would only make the test slow and

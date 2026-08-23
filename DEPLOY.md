@@ -58,11 +58,12 @@ A **Hetzner CPX21 (3 vCPU / 4 GB, ~€8/mo)** or a DigitalOcean / EC2 equivalent
 is plenty; the older 8 GB recommendation here was sized for torch. No GPU on
 this box — Modal owns every model.
 
-> This asks for more RAM than the Render worker's `starter` (512 MB) plan, which
-> is not a contradiction: **this box runs all three services in one place**
+> This is in the same range as the Render worker's `standard` (2 GB) plan, and
+> asks for more because **this box runs all three services in one place**
 > (redis, api and the worker), where Render splits them across instances. For
-> the worker process alone the peak is the ~150 MB audio energy envelope; see
-> the headroom note in `render.yaml`.
+> the worker process alone the peak is `libx264` during cutting at ~400 MB, with
+> the ~150 MB audio energy envelope behind it; see the headroom note in
+> `render.yaml`.
 
 ---
 
