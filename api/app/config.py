@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -86,6 +88,74 @@ def production_config_error(missing: list[str]) -> str:
         "VPS stack they come from .env.docker (DEPLOY.md § 4). Note that "
         "DATABASE_URL and CORS_ORIGINS have working localhost defaults, so "
         "\"unset\" here can mean the default is still in place."
+    )
+
+
+# ── CORS origin shape guard (CF-235) ───────────────────────────────
+# CF-172 above catches CORS_ORIGINS *unset*. It cannot catch it being *wrong*,
+# and the value is `sync: false` — pasted by a human into the Render dashboard,
+# never reviewed as code.
+#
+# Why a wildcard is not merely untidy: main.py sets allow_credentials=True. With
+# "*" in allow_origins Starlette sets preflight_explicit_allow_origin, so a
+# preflight response echoes the requesting origin *and* Access-Control-Allow-
+# Credentials: true. The browser rule that normally defuses "* with credentials"
+# does not apply, because the wildcard never reaches the browser. Every request
+# here carries an Authorization header, so every request is preflighted.
+#
+# The other shapes fail the opposite way — silently allowing nobody, with a
+# value that looks right in the dashboard:
+#   CORS_ORIGINS=","            -> cors_origins_list is [] and no origin matches
+#   CORS_ORIGINS=https://x.ca/  -> Starlette compares strings, so the trailing
+#                                  slash matches nothing. Same for a path, and
+#                                  same for HTTPS://X.ca, which is compared
+#                                  case-sensitively (infra/README.md makes the
+#                                  identical point about the R2 bucket policy).
+_ALLOWED_ORIGIN_SCHEMES = ("http", "https")
+
+
+def _origin_problem(origin: str) -> str | None:
+    """Why `origin` cannot work as a CORS allow-list entry, or None if it can.
+
+    Deliberately not pydantic's AnyHttpUrl: in 2.x that *appends* a trailing
+    slash while normalizing, which would quietly undo the check below rather
+    than enforce it.
+    """
+    if origin == "*":
+        return (
+            "`*` — with allow_credentials=True this lets any site make "
+            "credentialed cross-origin calls (main.py)"
+        )
+
+    parts = urlsplit(origin)
+    # scheme and netloc must BOTH be present: `clipfarm.ca` parses to an empty
+    # scheme with the whole string in .path, and a bare `https://` parses to an
+    # empty netloc. Checking only path/query/fragment would misreport the first
+    # and accept the second.
+    if parts.scheme not in _ALLOWED_ORIGIN_SCHEMES or not parts.netloc:
+        return "not a scheme://host origin — expected http:// or https:// and a host"
+    if parts.path or parts.query or parts.fragment:
+        return (
+            "an Origin is scheme://host[:port] with nothing after it; a trailing "
+            "slash, path, query or fragment matches no browser Origin header"
+        )
+    if origin != origin.lower():
+        return "must be lower-case — origins are compared as exact strings"
+    return None
+
+
+def cors_origins_error(problems: list[str]) -> str:
+    """The CF-235 message. Separate from production_config_error() on purpose:
+    that one says "not set" and explains that a localhost default may still be
+    in place, which is the wrong sentence for a value someone did set.
+    """
+    return (
+        "ENVIRONMENT=production but CORS_ORIGINS is not usable: "
+        + "; ".join(problems)
+        + ". It is a comma-separated list of bare origins, e.g. "
+        "`https://clipfarm.ca,https://www.clipfarm.ca`. On Render it is "
+        "`sync: false` and pasted by hand (DEPLOY_RENDER.md § Fill the "
+        "secrets); on the VPS it comes from .env.docker (DEPLOY.md § 4)."
     )
 
 
@@ -376,7 +446,7 @@ class Settings(BaseSettings):
     def missing_in_production(self, fields: tuple[str, ...]) -> list[str]:
         """Env names of `fields` that production has not set. Empty elsewhere,
         so callers do not repeat the environment test."""
-        if self.environment.strip().lower() != "production":
+        if not self.is_production:
             return []
 
         return [
@@ -386,11 +456,50 @@ class Settings(BaseSettings):
             or getattr(self, field) == LOCAL_DEFAULT_SENTINELS.get(field)
         ]
 
+    @property
+    def is_production(self) -> bool:
+        """The one place the environment string is interpreted. Normalized the
+        same way `missing_in_production` always has, so `Production` and a
+        stray-space ` production` turn the guards on rather than off."""
+        return self.environment.strip().lower() == "production"
+
     @model_validator(mode="after")
     def _check_production_settings(self) -> "Settings":
         missing = self.missing_in_production(REQUIRED_IN_PRODUCTION)
         if missing:
             raise ValueError(production_config_error(missing))
+        return self
+
+    # Defined AFTER _check_production_settings on purpose. Pydantic runs
+    # `mode="after"` validators in definition order and the first to raise
+    # short-circuits the rest, so on a box where a secret is missing *and*
+    # CORS_ORIGINS is malformed the operator is told about the missing secret
+    # first. That is the right order — "you have not finished configuring this"
+    # before "one of the values you did set is wrong" — but it is an ordering,
+    # not an accident, and a test pins it.
+    @model_validator(mode="after")
+    def _check_cors_origins_shape(self) -> "Settings":
+        if not self.is_production:
+            return self
+
+        if not self.cors_origins.strip():
+            return self  # emptiness is CF-172's to report, not this guard's
+
+        origins = self.cors_origins_list
+        if not origins:
+            raise ValueError(
+                cors_origins_error(
+                    [f"{self.cors_origins!r} contains no origins, so nothing is allowed"]
+                )
+            )
+
+        problems = [
+            f"{origin!r} is {why}"
+            for origin in origins
+            if (why := _origin_problem(origin)) is not None
+        ]
+        if problems:
+            raise ValueError(cors_origins_error(problems))
         return self
 
 

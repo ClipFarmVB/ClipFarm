@@ -19,12 +19,15 @@ import pytest
 
 pytest.importorskip("pydantic_settings")
 
+from pydantic import ValidationError  # noqa: E402
+
 from app.config import (  # noqa: E402
     LOCAL_CORS_ORIGINS,
     LOCAL_DATABASE_URL,
     REQUIRED_IN_PRODUCTION,
     REQUIRED_IN_PRODUCTION_WORKER,
     Settings,
+    cors_origins_error,
     production_config_error,
 )
 
@@ -363,6 +366,158 @@ def test_the_error_message_points_at_both_deploy_paths():
     a mechanism that does not exist on their box.
     """
     message = production_config_error(["DATABASE_URL"])
+
+    assert "DEPLOY_RENDER.md" in message
+    assert "DEPLOY.md" in message
+    assert ".env.docker" in message
+
+
+# ── CF-235: CORS_ORIGINS set, but wrong ────────────────────────────
+#
+# CF-172 above catches the variable being unset. Everything below is a value
+# someone did paste, which the guard used to accept.
+
+
+def _production_with_cors(value):
+    return _settings(
+        **{**{k.lower(): v for k, v in PRODUCTION_ENV.items()}, "cors_origins": value}
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "*",
+        "https://clipfarm.ca,*",
+        "*,https://clipfarm.ca",
+    ],
+)
+def test_production_rejects_a_wildcard_origin(clean_env, value):
+    """The headline case. main.py sets allow_credentials=True, and Starlette
+    echoes the requesting origin with credentials allowed rather than sending a
+    literal `*` — so the browser rule that normally defuses this never applies.
+    Rejected wherever it appears in the list, not just alone.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    assert "CORS_ORIGINS" in str(exc.value)
+    assert "allow_credentials" in str(exc.value)
+
+
+def test_production_rejects_a_value_that_parses_to_no_origins(clean_env):
+    """`,` is not empty, is not the localhost default, and yields []. CF-172's
+    guard sees a non-blank string and passes it; the app then boots allowing no
+    origin at all, health check green and every browser request blocked.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(",")
+
+    assert "contains no origins" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://clipfarm.ca/",          # trailing slash
+        "https://clipfarm.ca/app",       # path
+        "https://clipfarm.ca?x=1",       # query
+        "https://clipfarm.ca#frag",      # fragment
+    ],
+)
+def test_production_rejects_an_origin_that_is_not_bare(clean_env, value):
+    """None of these is a browser Origin, and Starlette compares strings, so
+    each silently matches nothing while looking right in the dashboard."""
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    assert "trailing" in str(exc.value) or "scheme://host" in str(exc.value)
+
+
+@pytest.mark.parametrize("value", ["clipfarm.ca", "https://", "ftp://clipfarm.ca"])
+def test_production_rejects_an_entry_that_is_not_scheme_and_host(clean_env, value):
+    """Both halves have to be checked. `clipfarm.ca` parses to an empty scheme
+    with the whole string in .path, and a bare `https://` parses to an empty
+    netloc — a check that only looked at path/query/fragment would misreport the
+    first and accept the second.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    assert "scheme://host" in str(exc.value)
+
+
+def test_production_rejects_a_mixed_case_origin(clean_env):
+    """Starlette matches origins as exact strings, so this is as broken as a
+    trailing slash — and looks even more correct in a dashboard."""
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors("HTTPS://ClipFarm.ca")
+
+    assert "lower-case" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://clipfarm.ca",
+        "https://clipfarm.ca,https://www.clipfarm.ca",
+        "https://clipfarm.ca,http://localhost:3000",   # port must stay valid
+        "http://127.0.0.1:3000",
+        "https://clipfarm.ca ,  https://www.clipfarm.ca",  # entries are stripped
+    ],
+)
+def test_production_accepts_ordinary_origin_lists(clean_env, value):
+    """The guard must not be the thing that breaks a correct deploy."""
+    settings = _production_with_cors(value)
+    assert settings.cors_origins_list
+
+
+def test_the_shape_guard_is_production_only(clean_env):
+    """A wildcard outside production is someone's local experiment. The guard
+    exists for the value pasted into a dashboard, not to police a laptop."""
+    assert _settings(cors_origins="*").cors_origins_list == ["*"]
+    assert _settings(environment="development", cors_origins="*").cors_origins_list == ["*"]
+
+
+def test_the_shape_guard_follows_the_same_environment_spelling_as_cf_172(clean_env):
+    """`missing_in_production` normalizes with .strip().lower(); a guard that
+    compared the raw string would silently not fire for these.
+    """
+    for spelling in ("Production", " production", "PRODUCTION"):
+        with pytest.raises(ValidationError):
+            _settings(
+                **{
+                    **{k.lower(): v for k, v in PRODUCTION_ENV.items()},
+                    "environment": spelling,
+                    "cors_origins": "*",
+                }
+            )
+
+
+def test_the_unset_guard_reports_before_the_shape_guard(clean_env):
+    """Pydantic runs `mode="after"` validators in definition order and the first
+    raise short-circuits the rest, so on a box that is both unconfigured and
+    misconfigured only one message is ever seen. "You have not finished setting
+    this up" is the more useful one, so CF-172's validator is defined first —
+    pinned here because source order is doing real work.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _settings(
+            **{
+                **{k.lower(): v for k, v in PRODUCTION_ENV.items()},
+                "supabase_url": "",
+                "cors_origins": "*",
+            }
+        )
+
+    assert "SUPABASE_URL" in str(exc.value)
+    assert "allow_credentials" not in str(exc.value)
+
+
+def test_the_cors_message_points_at_both_deploy_paths():
+    """Same requirement as CF-172's message, for the same reason: this one is
+    read on Render and on the VPS."""
+    message = cors_origins_error(["'*' is bad"])
 
     assert "DEPLOY_RENDER.md" in message
     assert "DEPLOY.md" in message
