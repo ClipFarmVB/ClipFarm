@@ -435,11 +435,16 @@ def _pip_install_targets(script):
     """
     import re
 
+    # `pip`, `pip3`, `pip3.11` — all of which install into the same environment
+    # and all of which are things people write in a workflow. Not `pipenv`.
+    is_pip = re.compile(r"pip3?(\.\d+)?$").fullmatch
+
     for command in re.split(r"[\n;]|&&|\|\|", script):
         words = command.split()
-        if "pip" not in words or "install" not in words:
+        pip_at = next((i for i, w in enumerate(words) if is_pip(w)), None)
+        if pip_at is None or "install" not in words:
             continue
-        if words.index("install") < words.index("pip"):
+        if words.index("install") < pip_at:
             continue
         rest = words[words.index("install") + 1:]
         skip_next = False
@@ -567,6 +572,37 @@ def test_an_unpinned_inline_install_is_detected_in_every_step_shape(shape):
 
     assert "numpy" in targets, f"{shape}: the inline install was not seen at all"
     assert [t for t in targets if "==" not in t] == ["numpy"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pip install numpy",
+        "pip3 install numpy",
+        "pip3.11 install numpy",
+        "python -m pip install numpy",
+        "uv pip install numpy",
+    ],
+)
+def test_every_spelling_of_pip_is_recognised(command):
+    """`pip3` was missed by the first version of this parser.
+
+    It matched the bare word `pip`, so `pip3 install numpy` — the same install
+    into the same environment — read as not-a-pip-command and returned nothing.
+    A guard that depends on which of two interchangeable names someone typed is
+    the same shape of hole as the tool-name list this replaced.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(f"jobs:\n  api:\n    steps:\n      - run: {command}\n")
+    assert [t for s in _run_steps(workflow) for t in _pip_install_targets(s)] == ["numpy"]
+
+
+def test_pipenv_is_not_read_as_pip():
+    """The name check has to be exact at the end — `pipenv install` manages a
+    Pipfile and is not what this guard is about."""
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load("jobs:\n  api:\n    steps:\n      - run: pipenv install numpy\n")
+    assert not [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
 
 
 def test_a_pinned_inline_install_is_allowed():
