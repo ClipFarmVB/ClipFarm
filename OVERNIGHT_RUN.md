@@ -136,15 +136,35 @@ judgement call, log it and leave it.
    anything the plan asserts without verifying. Record what it said — including
    when it disagreed and you proceeded anyway, with your reasoning.
 3. **Implement** on a branch named for the card.
-4. **Run the gate at CI's versions**: `ruff check api/`,
-   `mypy api/app --ignore-missing-imports`, `cd api && python -m pytest tests/`,
-   `python -m pytest ml/tests/`, and for web changes
-   `npm run lint --workspace=web && npm run typecheck --workspace=web`.
+4. **Run the full gate.** Every step `ci.yml` runs:
 
-   Read the `ruff` and `mypy` versions from `.github/workflows/ci.yml` and match
-   them. A review or a PR checked with different tools than CI runs is not
-   evidence of anything — the first run flagged exactly this against its own
-   work. If you cannot match them, say so on every PR and review you produce.
+   ```
+   ruff check api/
+   mypy api/app --ignore-missing-imports
+   ruff check ml/eval
+   mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
+   python -m pytest ml/tests/
+   cd api && python -m pytest tests/
+   ```
+
+   For web changes, all three — the test step is easy to forget:
+
+   ```
+   npm run lint --workspace=web
+   npm run typecheck --workspace=web
+   npm run test --workspace=web
+   ```
+
+   **On tool versions.** `ci.yml` installs `ruff mypy pytest` **unpinned**, so CI
+   resolves whatever is latest on the day it runs. That means there is no pinned
+   version to match — the closest you can get is installing the same unpinned way
+   CI does, which the environment's setup script now handles. Do not claim a gate
+   matches CI's tooling; state the versions you actually ran in the report.
+
+   This is not a detail. The first run's reviews were checked with different
+   `ruff`/`mypy` than CI used, which the agent flagged against its own work —
+   CF-92 (#255) exists to pin them. **Once that lands, match the pinned versions
+   and drop this caveat.**
 
    Do not open a PR if any gate fails — log it and move on.
 5. **Open a draft PR** following `.github/pull_request_template.md`, including the
