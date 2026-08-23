@@ -154,3 +154,12 @@ def test_eval_service_is_unconstrained_and_not_started_by_default():
         "eval needs an explicit command: without one it inherits Dockerfile.api's "
         "CMD, so a bare `run eval` starts a second uvicorn instead of failing"
     )
+
+    worker = compose["services"]["worker"]
+    assert evaluation.get("image") and evaluation["image"] == worker.get("image"), (
+        "eval and worker must name the same `image:`. Sharing only `build:` makes "
+        "Compose tag them separately and build them independently, from whatever "
+        "the tree held at each build — two images that merely look alike in "
+        "docker-compose.yml. `eval` is only a fair stand-in for the worker while "
+        "it is literally the same image"
+    )
