@@ -23,42 +23,25 @@ that has to survive is posted as an issue — see [Reporting](#reporting).
 
 ## This run
 
-**Last updated: 2026-08-22.** If that date is not recent, stop and ask before
+**Last updated: 2026-08-24.** If that date is not recent, stop and ask before
 running.
 
 ### In scope, in this order
 
-| Card | Issue | |
-| --- | --- | --- |
-| CF-235 | #235 | Reject wildcard `CORS_ORIGINS` in production |
-| CF-236 | #236 | Validate avatar magic bytes |
-| CF-186 | #189 | Public profile enumeration — rate limit or accept |
+The three tickets from the first run are done or answered:
 
-Once those are done or blocked, use your judgement on other `Todo` items in the
-current sprint. A draft PR that turns out to be wrong costs review time, not
-damage — so prefer well-specified, independently testable tickets, and prefer
-finishing one to starting three.
+- **CF-235** — draft PR #252 open
+- **CF-236** — draft PR #253 open
+- **CF-186** — deliberately not implemented. Its deliverable is a judgement about
+  acceptable exposure on a youth-sports product, and its central premise is no
+  longer true: `get_profile` already 404s every generated handle, which is the
+  guessable-from-email cohort the card worries about. Needs a human decision, not
+  an implementation.
 
-### Out of scope, and why
-
-Each of these fails for a specific reason, not merely for being large. If you
-think one is worth doing, write the argument in the log instead of starting it.
-
-- **CF-223 (#223)** — profiling needs `STAGE_TIMING` from a production run.
-  Render is suspended, so that data does not exist yet.
-- **CF-215 (#215)** — is the deployment itself.
-- **CF-75 (#88)** — Terms of Service and Privacy Policy. Generated legal text
-  that ships to real users is a real liability, and this card gates public
-  signups, so there is pressure to merge it as-is. Draft *notes on what the
-  documents must cover* into the log if useful; do not open a PR containing the
-  documents.
-- **CF-64 (#72)** — Stripe payments. Unattended changes to a payment flow are a
-  bad trade even with review.
-- **CF-73 (#85)** — UI rebuild, explicitly design-led.
-- **CF-77 (#90)** — production secret management. You may not read credentials,
-  so you cannot finish it. Structure and documentation are fine.
-- **CF-112 (#142)** — PR #214 is already open for it.
-- **#216, #220** — titled "placeholder". Flag them in the log.
+So this run starts at the judgement clause. Use it on `Todo` items in the current
+sprint, preferring well-specified, independently testable tickets. **Only if you
+can read the Sprint field** — see the preflight below. If you cannot, work only
+on tickets named explicitly here, and if none are named, stop.
 
 ### Environment notes for this run
 
@@ -69,9 +52,30 @@ think one is worth doing, write the argument in the log instead of starting it.
 
 ## Standing policy
 
+### First: establish what you can actually do
+
+Before relying on any capability, check it, and record the result in the log in
+one block. The first run discovered three gaps separately, mid-work.
+
+- **Projects v2** — `gh project item-list 1 --owner ClipFarmVB --format json`.
+  Needs the `project` token scope. If this fails you cannot read the Sprint field
+  or set fields on cards you file: say so in the report, and do not use the
+  judgement clause.
+- **Docker** — `docker info`. If absent, the local stack and the eval harness
+  cannot run at all.
+- **Gate tool versions** — read the versions `ci.yml` installs and compare with
+  what is installed here. See the gate step below.
+
+State every gap in the report. A capability you assumed and did not have is the
+most expensive kind of surprise in an unattended run.
+
 ### Hard rules
 
 - **Never** push to `main`, merge a PR, or force-push anything.
+- **Only push to branches this run created.** Pushing to an existing PR's branch
+  needs prior sign-off — the harness requires permission and the brief must not
+  contradict it. If a fix belongs on someone else's branch, describe it in a
+  review comment instead.
 - **Never** deploy, unsuspend a hosting service, or touch production
   infrastructure.
 - **Never** run the local stack against a `DATABASE_URL` pointing at Supabase.
@@ -79,6 +83,10 @@ think one is worth doing, write the argument in the log instead of starting it.
 - **Never** read, echo, or commit `.env.docker` or any credential.
 - Every PR opens as a **draft**. You never merge and never deploy.
 - **Maximum 5 new PRs** and **6 new cards** per run.
+- **No attribution stamps.** Do not add "Generated with Claude Code", a
+  `Co-Authored-By` trailer, a session link, or any similar footer to commits, PR
+  bodies, review comments, or issues. Local settings suppress these but a sandbox
+  does not inherit them, so this is on you.
 - If a command fails because of usage limits, **stop the loop** — do not retry.
 - If nothing in scope is actionable, **stop the loop**. A run that reviews two
   PRs and opens nothing is a fine outcome.
@@ -128,10 +136,17 @@ judgement call, log it and leave it.
    anything the plan asserts without verifying. Record what it said — including
    when it disagreed and you proceeded anyway, with your reasoning.
 3. **Implement** on a branch named for the card.
-4. **Run the gate**: `ruff check api/`, `mypy api/app --ignore-missing-imports`,
-   `cd api && python -m pytest tests/`, `python -m pytest ml/tests/`, and for web
-   changes `npm run lint --workspace=web && npm run typecheck --workspace=web`.
-   Do not open a PR if any fail — log it and move on.
+4. **Run the gate at CI's versions**: `ruff check api/`,
+   `mypy api/app --ignore-missing-imports`, `cd api && python -m pytest tests/`,
+   `python -m pytest ml/tests/`, and for web changes
+   `npm run lint --workspace=web && npm run typecheck --workspace=web`.
+
+   Read the `ruff` and `mypy` versions from `.github/workflows/ci.yml` and match
+   them. A review or a PR checked with different tools than CI runs is not
+   evidence of anything — the first run flagged exactly this against its own
+   work. If you cannot match them, say so on every PR and review you produce.
+
+   Do not open a PR if any gate fails — log it and move on.
 5. **Open a draft PR** following `.github/pull_request_template.md`, including the
    bare `Closes #<issue>` line `CLAUDE.md` requires.
 
