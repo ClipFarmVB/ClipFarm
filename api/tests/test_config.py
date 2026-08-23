@@ -410,38 +410,207 @@ def test_every_tool_ci_installs_is_pinned():
     assert _pins(TOOLING_TXT), "no pins found — did the file format change?"
 
 
+def _run_steps(workflow):
+    """Every `run:` script in a workflow, as strings.
+
+    Parsed rather than grepped. The previous version of this test matched lines
+    starting `- run:`, which is only one of the several shapes a step can take:
+    a `- name:` step puts `run:` on its own line, and `run: |` puts the command
+    on the lines *after* it. Both were invisible to it, and both are ordinary
+    GitHub Actions syntax rather than anything exotic.
+    """
+    for job in (workflow.get("jobs") or {}).values():
+        for step in job.get("steps") or []:
+            if isinstance(step, dict) and isinstance(step.get("run"), str):
+                yield step["run"]
+
+
+def _pip_install_targets(script):
+    """Package arguments of every `pip install` in a shell script.
+
+    `-r file` pairs, bare flags, and the pip/python words themselves are
+    dropped; what is left is what pip would resolve. Commands are split on
+    newlines, `&&`, `;` and `|` so a multi-command `run: |` block is read as
+    the several commands it is.
+    """
+    import re
+
+    for command in re.split(r"[\n;]|&&|\|\|", script):
+        words = command.split()
+        if "pip" not in words or "install" not in words:
+            continue
+        if words.index("install") < words.index("pip"):
+            continue
+        rest = words[words.index("install") + 1:]
+        skip_next = False
+        for word in rest:
+            if skip_next:
+                skip_next = False
+                continue
+            if word in ("-r", "--requirement", "-c", "--constraint", "-e"):
+                skip_next = True
+                continue
+            if word.startswith("-"):
+                continue
+            yield word
+
+
 def test_ci_installs_the_tooling_file_rather_than_naming_tools_inline():
     """The durable half. Nothing else in the repo parses the workflow, so
     without this a later PR can quietly restore `pip install ruff mypy pytest`
     and the pins stop applying while every check stays green.
 
-    Written against the raw text rather than the parsed YAML: what matters is
-    the command string, and a `run:` step is a string either way.
+    Now checks the *shape* of every install rather than looking for three tool
+    names in `- run:` lines. The name list was the weaker half of the two: it
+    could only ever catch the tools someone thought to list, so an inline
+    `pip install numpy` — equally unpinned, equally able to change CI's answer
+    on a branch nobody touched — went through. Anything pip resolves without a
+    `==` is the actual problem, whatever it is called.
     """
-    ci = CI_YML.read_text(encoding="utf-8")
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(CI_YML.read_text(encoding="utf-8"))
 
-    assert "pip install -r requirements-tooling.txt" in ci, (
+    installs = [
+        (script, target)
+        for script in _run_steps(workflow)
+        for target in _pip_install_targets(script)
+    ]
+    unpinned = sorted({target for _, target in installs if "==" not in target})
+
+    assert not unpinned, (
+        f"ci.yml installs {unpinned} inline without a `==` pin. Add it to "
+        "requirements-tooling.txt with a pin instead — an unpinned name "
+        "resolves to whatever is current on the day the job runs, which is "
+        "what CF-92 exists to stop."
+    )
+
+
+def test_ci_still_installs_the_tooling_file():
+    """Separate from the shape check above, because the two fail for opposite
+    reasons: that one fires when something extra is installed, this one when
+    the pinned install is gone. Collapsed into one test, a PR that deleted the
+    tooling step entirely would leave nothing unpinned and read as a pass.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(CI_YML.read_text(encoding="utf-8"))
+
+    targets = [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
+    requirement_files = [
+        word
+        for script in _run_steps(workflow)
+        for word in script.split()
+        if word.endswith(".txt")
+    ]
+
+    assert "requirements-tooling.txt" in requirement_files, (
         "ci.yml no longer installs requirements-tooling.txt — if the tooling "
         "step moved, point this test at it; if it was inlined, the CF-92 pins "
-        "are no longer in effect"
+        f"are no longer in effect. Inline install targets seen: {targets}"
     )
 
-    # `run:` steps only. A comment may legitimately quote the old command while
-    # explaining why it changed, and flagging that would make the test a
-    # tripwire on prose rather than on what CI executes.
-    inline = [
-        stripped
-        for line in ci.splitlines()
-        if (stripped := line.strip()).startswith("- run:")
-        and "pip install" in stripped
-        and "-r " not in stripped
-        and any(tool in stripped for tool in ("ruff", "mypy", "pytest"))
-    ]
-    assert not inline, (
-        f"a lint/type/test tool is installed inline in ci.yml: {inline}. "
-        "Add it to requirements-tooling.txt with a `==` pin instead — an "
-        "inline name resolves to whatever is current on the day."
-    )
+
+# The four step shapes below are the ones the previous text-matching guard let
+# through. Asserted against synthetic workflows rather than by editing ci.yml,
+# so the coverage survives any later reshuffle of the real file.
+
+_SYNTHETIC = {
+    "-r file plus an inline package": """
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt numpy
+""",
+    "a separate inline install step": """
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt
+      - run: pip install numpy
+""",
+    "the `- name:` / `run:` two-line form": """
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt
+      - name: extra tooling
+        run: pip install numpy
+""",
+    "a `run: |` block scalar": """
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt
+      - run: |
+          pip install numpy
+""",
+    "chained with && inside one run": """
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt && pip install numpy
+""",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_SYNTHETIC))
+def test_an_unpinned_inline_install_is_detected_in_every_step_shape(shape):
+    """Each of these passed the old `- run:`-prefix-and-tool-name check.
+
+    The first is the one that matters most: it is what a maintainer would write
+    to add a package alongside the pinned file, and the old exclusion of any
+    line containing `-r ` swallowed the whole line.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(_SYNTHETIC[shape])
+
+    targets = [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
+
+    assert "numpy" in targets, f"{shape}: the inline install was not seen at all"
+    assert [t for t in targets if "==" not in t] == ["numpy"]
+
+
+def test_a_pinned_inline_install_is_allowed():
+    """The guard is about drift, not about where a package is declared. Pinning
+    inline is worse style than the tooling file, but it cannot change CI's
+    answer on a branch nobody touched, so it is not this test's business.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load("""
+jobs:
+  api:
+    steps:
+      - run: pip install numpy==1.26.4
+""")
+    targets = [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
+    assert targets == ["numpy==1.26.4"]
+    assert not [t for t in targets if "==" not in t]
+
+
+def test_a_non_pip_install_is_not_mistaken_for_one():
+    """`npm ci --workspace=web` and `npm install` are in this same workflow."""
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load("""
+jobs:
+  web:
+    steps:
+      - run: npm install left-pad
+      - run: npm ci --workspace=web
+""")
+    assert not [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
+
+
+def test_requirement_and_constraint_files_are_not_read_as_packages():
+    """`-r`/`-c` take the next word. Without consuming it the filename itself
+    reads as an unpinned package and every correct workflow fails.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load("""
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt -c constraints.txt --upgrade
+""")
+    assert not [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
 
 
 def test_the_two_pytest_pins_agree():
