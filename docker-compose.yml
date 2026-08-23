@@ -108,20 +108,26 @@ services:
     # no continuations, so it survives a copy-paste:
     #
     #   Smaller, to reproduce CF-224's OOM on your laptop:
-    #     WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 FFMPEG_THREADS=4 docker compose up worker
+    #     WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 WORKER_FFMPEG_THREADS=4 docker compose up worker
     #
     #   Bigger, to iterate on a local end-to-end run without waiting on
     #   production's single core (see README § Local Development):
-    #     WORKER_MEM_LIMIT=8g WORKER_CPUS=4 FFMPEG_THREADS=4 docker compose up worker
+    #     WORKER_MEM_LIMIT=8g WORKER_CPUS=4 WORKER_FFMPEG_THREADS=4 docker compose up worker
     #
     # Going bigger costs you the fidelity these limits exist for, so it is for
     # "does the pipeline work", never for "does it fit". Any timing or memory
     # claim has to come from a default-limits run.
     #
-    # memswap_limit equal to mem_limit means NO swap. Docker's default is
+    # memswap_limit equal to mem_limit asks for NO swap. Docker's default is
     # double, i.e. 2 GB of RAM plus 2 GB of swap — under which the repro above
     # can decline to OOM while the same encode is killed on Render, which has
     # no swap at all. An unfaithful repro is worse than none: it says "fixed".
+    #
+    # "Asks", because the kernel has to be accounting for swap for this to bind.
+    # Docker warns and ignores both fields on a host without swap accounting
+    # enabled (common on stock Linux; Docker Desktop's VM has it). If a 512 MB
+    # repro run refuses to OOM, check `docker info` for that warning before
+    # believing the result — the limit may simply not have applied.
     # Both read WORKER_MEM_LIMIT, and must keep reading the *same* variable:
     # giving swap its own knob is how you end up with `WORKER_MEM_LIMIT=8g`
     # asking for 8 GB of memory inside a 2 GB memory+swap ceiling, which Docker
@@ -136,12 +142,15 @@ services:
       # under them is configured differently here. Raise it together with
       # WORKER_CPUS, never on its own.
       #
-      # This is an `environment:` value, which BEATS `env_file:` — so setting
-      # FFMPEG_THREADS in .env.docker does nothing. The interpolation above
-      # reads the shell, or `.env`, or whatever `--env-file` names: the README's
-      # `docker compose --env-file .env.docker up` does pick it up from there,
-      # a bare `docker compose up` does not. Prefix the command to be sure.
-      FFMPEG_THREADS: "${FFMPEG_THREADS:-1}"
+      # The knob is WORKER_FFMPEG_THREADS, deliberately not FFMPEG_THREADS.
+      # Same name on both sides would mean the app's own variable doubles as
+      # the compose knob: setting FFMPEG_THREADS in .env.docker would then be
+      # ignored under a bare `docker compose up` (this `environment:` value
+      # beats `env_file:`) and honoured under the README's
+      # `--env-file .env.docker` start command, which is what interpolation
+      # reads. Namespacing it, like WORKER_MEM_LIMIT and WORKER_CPUS, deletes
+      # the difference instead of documenting it.
+      FFMPEG_THREADS: "${WORKER_FFMPEG_THREADS:-1}"
       # No POSE_* or MODEL_* vars since CF-164: this image carries no torch, so
       # nothing here loads a model or downloads weights. Ball tracking and pose
       # both run on Modal — set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in
@@ -179,11 +188,14 @@ services:
   # headroom — use `worker`, not this. Correctness sweeps belong here; anything
   # measuring the production box does not.
   #
-  # It is NOT a second worker — no `depends_on` and no celery command, so
-  # `up` cannot give it queued work. It does inherit the broker URLs from
-  # x-worker-env, so `run --rm eval celery ...` would take real jobs and run
-  # them unconstrained; don't. To process a game faster, raise the worker's own
-  # limits (see its comment above) rather than reaching for this.
+  # It is NOT a second worker, and deliberately cannot become one: no
+  # `depends_on`, no celery command, and — note the absent `environment:` — no
+  # broker URLs. `run --rm eval celery ...` would otherwise take real jobs off
+  # the queue and run them unconstrained; without the URLs, Settings falls back
+  # to localhost:6379 inside a container that has no redis, so it connects to
+  # nothing. Made impossible rather than discouraged, for the same reason
+  # EVAL_FFMPEG_THREADS was deleted. To process a game faster, raise the
+  # worker's own limits (see its comment above).
   eval:
     <<: *worker-image
     profiles: ["eval"]
@@ -194,8 +206,7 @@ services:
     # looks load-bearing and is not. If eval ever grows an encode, give it its
     # own variable then — sharing the worker's would mean retuning one silently
     # retunes the other.
-    environment:
-      <<: *worker-env
+    #
     # Every real invocation passes its own command. Without this, a bare
     # `run eval` or `--profile eval up` would inherit Dockerfile.api's CMD and
     # quietly start a *second uvicorn* — a running web server where you asked

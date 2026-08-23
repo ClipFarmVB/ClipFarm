@@ -70,9 +70,10 @@ is just a slower sweep.
 `eval` is profile-gated, so `docker compose up` never starts it and every
 invocation below is a one-shot `run --rm`. It has no default command — a bare
 `run eval` prints usage and exits 64 rather than starting a stray uvicorn. It
-pins no `FFMPEG_THREADS`: nothing on an eval path encodes — the entry points
-stop at `_track_ball_cached` and the condense arithmetic — so the setting is
-never read here.
+pins no `FFMPEG_THREADS` and no broker URLs: nothing on an eval path encodes
+or queues — the entry points stop at `_track_ball_cached` and the condense
+arithmetic — so neither is read here, and `eval` cannot take real work off the
+Celery queue even if asked to.
 
 ```bash
 # Offline: replay detection + scoring from the R2 ball-cache (no re-tracking).

@@ -89,7 +89,7 @@ services:
       # exists to keep the VPS as it was, and picking a number for a 2-3 vCPU
       # box sharing itself with redis and the api is a sizing question (CF-223),
       # not a side effect of a dev-parity change. Still overridable per-run.
-      FFMPEG_THREADS: "${FFMPEG_THREADS:-4}"
+      FFMPEG_THREADS: "${WORKER_FFMPEG_THREADS:-4}"
       # Same production config check as the api above (CF-172) — the worker
       # reads the same credentials and fails just as quietly without them.
       ENVIRONMENT: production

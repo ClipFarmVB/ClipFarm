@@ -241,21 +241,21 @@ Notes:
   gap between the cores a container *advertises* and the CPU it is *allowed*, and
   a dev machine never lies about its own hardware. `memswap_limit` matches, which
   is how you say *no swap* — Docker otherwise grants swap equal to the limit
-  again, and Render has none, so the repro would quietly decline to fail.
+  again, and Render has none, so the repro would quietly decline to fail. Both
+  fields need kernel swap accounting to bind at all; if a 512 MB run refuses to
+  OOM, check `docker info` for the "No swap limit support" warning before
+  believing it.
 
-  Both directions are sanctioned, and both are one line. Prefixing the command
-  always works; `.env.docker` works only for the start command documented above,
-  the one that passes `--env-file .env.docker` — that flag is what compose
-  interpolates `${WORKER_CPUS}` and friends from. Under a bare `docker compose
-  up`, `.env.docker` is still loaded *into* the container by `env_file:`, but
-  `FFMPEG_THREADS` set there loses to the `environment:` block and the limits
-  fall back to their defaults. Prefix the command and none of that matters:
+  Both directions are sanctioned, and both are one line. All three knobs are
+  namespaced — `WORKER_*`, never the app's own `FFMPEG_THREADS` — so they are
+  unambiguously compose's, read from the shell you prefix or from the file
+  `--env-file` names:
 
   ```bash
-  WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 FFMPEG_THREADS=4 docker compose up worker
+  WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 WORKER_FFMPEG_THREADS=4 docker compose up worker
   ```
   ```bash
-  WORKER_MEM_LIMIT=8g WORKER_CPUS=4 FFMPEG_THREADS=4 docker compose up worker
+  WORKER_MEM_LIMIT=8g WORKER_CPUS=4 WORKER_FFMPEG_THREADS=4 docker compose up worker
   ```
 
   The first reproduces the production OOM; the second is the **fast path for
@@ -268,11 +268,10 @@ Notes:
   tuning scripts — belongs on the `eval` service: same image, no limits, and
   profile-gated so `up` never starts it.
   `docker compose run --rm --no-deps eval python -m ml.eval.harness --help`.
-  It is not a second worker: no `depends_on` and no celery command, so `up`
-  cannot hand it queued work. It *does* inherit the broker URLs, so
-  `run --rm eval celery ...` would take real jobs and run them unconstrained —
-  don't; to process a real game faster, raise the worker's limits above. See
-  `ml/eval/README.md`.
+  It is not a second worker and cannot become one: no `depends_on`, no celery
+  command, and no broker URLs — `run --rm eval celery ...` finds `localhost:6379`
+  in a container with no redis and connects to nothing. To process a real game
+  faster, raise the worker's limits above. See `ml/eval/README.md`.
 - Modal GPU is optional **for the dev stack only**, and the deployed image has no
   torch to fall back to (CF-164) — see `DEPLOY_RENDER.md`. Without `MODAL_TOKEN_*`
   in Docker Compose, ball tracking and pose have no local runtime and the pipeline

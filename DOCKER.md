@@ -4,8 +4,12 @@ This setup runs the full local stack with one command:
 - PostgreSQL
 - Redis
 - FastAPI API
-- Celery worker
+- Celery worker — **capped at production's box** (2 GB / 1 CPU / no swap,
+  `FFMPEG_THREADS=1`), so a laptop can reproduce a production OOM (CF-241)
 - Next.js web app
+
+A sixth service, `eval`, is profile-gated and never starts with the stack — see
+[step 4](#4-going-faster-or-smaller) and `ml/eval/README.md`.
 
 ## 1) Create env file
 
@@ -50,7 +54,33 @@ Open:
 Note: Postgres is not published to a host port to avoid `5432` conflicts.
 Use `docker compose exec db psql -U postgres -d clipfarm` if you need a DB shell.
 
-## 3) Stop everything
+## 4) Going faster, or smaller
+
+The worker runs at production's size by default, which is the point — but it
+also means a local game processes at production's speed. Both directions are one
+prefixed command:
+
+```bash
+WORKER_MEM_LIMIT=8g WORKER_CPUS=4 WORKER_FFMPEG_THREADS=4 docker compose up worker
+```
+```bash
+WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 WORKER_FFMPEG_THREADS=4 docker compose up worker
+```
+
+The first is the fast path for "does the pipeline work" — it costs the fidelity
+the defaults exist for, so no timing or memory claim may come from such a run.
+The second reproduces the CF-224 OOM.
+
+CPU-bound work that is *not* about production's box — the eval harness, the
+tuning scripts — goes on the unconstrained `eval` service instead:
+
+```bash
+docker compose run --rm --no-deps eval python -m ml.eval.harness --help
+```
+
+Full detail in `README.md` § Local Development.
+
+## 5) Stop everything
 
 ```bash
 docker compose down

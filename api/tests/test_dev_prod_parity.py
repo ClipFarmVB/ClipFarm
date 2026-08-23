@@ -24,15 +24,84 @@ RENDER_PLANS = {
 }
 
 
-def _worker_services():
+# Every Compose field that caps a container's resources. The dev worker sets
+# some of these; the VPS overlay must clear whichever it sets. Adding a new one
+# to docker-compose.yml means adding it here, which is the point — the list is
+# what makes "did you reset it" answerable rather than remembered.
+RESOURCE_KEYS = (
+    "mem_limit",
+    "memswap_limit",
+    "mem_reservation",
+    "mem_swappiness",
+    "cpus",
+    "cpu_count",
+    "cpu_percent",
+    "cpu_shares",
+    "cpu_period",
+    "cpu_quota",
+    "cpuset",
+    "pids_limit",
+    "shm_size",
+    "oom_kill_disable",
+    "blkio_config",
+    "ulimits",
+    "deploy",
+)
+
+
+class _Reset:
+    """A `!reset` tag, kept distinct from a plain `null`.
+
+    They parse to the same value and mean different things: `!reset` clears the
+    base file's value, a bare null does not.
+    """
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "!reset"
+
+
+def _load_compose(path: Path):
+    """Parse a Compose file, keeping its `!override` / `!reset` merge tags.
+
+    `yaml.safe_load` refuses unknown tags outright, and the passthrough in
+    test_pose_modal.py drops which tag was used — here that distinction is the
+    whole assertion.
+    """
+    yaml = pytest.importorskip("yaml")
+
+    class ComposeLoader(yaml.SafeLoader):
+        pass
+
+    def passthrough(loader, tag_suffix, node):
+        if tag_suffix == "reset":
+            return _Reset()
+        if isinstance(node, yaml.SequenceNode):
+            return loader.construct_sequence(node, deep=True)
+        if isinstance(node, yaml.MappingNode):
+            return loader.construct_mapping(node, deep=True)
+        return loader.construct_scalar(node)
+
+    ComposeLoader.add_multi_constructor("!", passthrough)
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=ComposeLoader)
+
+
+def _render_worker():
     yaml = pytest.importorskip("yaml")
 
     render = yaml.safe_load((REPO_ROOT / "render.yaml").read_text(encoding="utf-8"))
-    prod = next(s for s in render["services"] if s["name"] == "clipfarm-worker")
-
-    compose = yaml.safe_load(
-        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    worker = next(
+        (s for s in render["services"] if s.get("name") == "clipfarm-worker"), None
     )
+    assert worker is not None, (
+        "render.yaml has no service named `clipfarm-worker` — it was renamed or "
+        "removed, and every parity check in this file keys off that name"
+    )
+    return worker
+
+
+def _worker_services():
+    prod = _render_worker()
+    compose = _load_compose(REPO_ROOT / "docker-compose.yml")
     return prod, compose["services"]["worker"]
 
 
@@ -70,6 +139,10 @@ def _default(expr: str) -> str:
 def test_dev_worker_memory_and_cpu_track_the_render_plan():
     prod, dev = _worker_services()
 
+    assert "plan" in prod, (
+        "render.yaml no longer gives clipfarm-worker a `plan` — Render then picks "
+        "its own default and the dev worker has nothing to track (CF-241)"
+    )
     plan = prod["plan"]
     assert plan in RENDER_PLANS, (
         f"render.yaml puts clipfarm-worker on an unmapped plan `{plan}` — add its "
@@ -128,16 +201,15 @@ def test_eval_service_is_unconstrained_and_not_started_by_default():
     """CF-241's known tension, resolved: correctness sweeps get the whole host,
     but only on request, so nobody benchmarks at one core by accident.
     """
-    yaml = pytest.importorskip("yaml")
-
-    compose = yaml.safe_load(
-        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    )
+    compose = _load_compose(REPO_ROOT / "docker-compose.yml")
     evaluation = compose["services"]["eval"]
 
-    assert "mem_limit" not in evaluation and "cpus" not in evaluation, (
-        "the eval service exists precisely to run unconstrained (CF-241) — if it "
-        "needs production's limits, run the sweep on `worker` instead"
+    constrained = [k for k in RESOURCE_KEYS if k in evaluation]
+    assert not constrained, (
+        f"the eval service sets {', '.join(constrained)}; it exists precisely to run "
+        "unconstrained (CF-241) — if a sweep needs production's limits, run it on "
+        "`worker` instead. A stray memswap_limit without mem_limit is worse still: "
+        "Docker refuses to create the container"
     )
     assert "eval" in evaluation.get("profiles", []), (
         "eval must stay profile-gated so `docker compose up` does not start a "
@@ -155,6 +227,14 @@ def test_eval_service_is_unconstrained_and_not_started_by_default():
         "CMD, so a bare `run eval` starts a second uvicorn instead of failing"
     )
 
+    reachable = evaluation.get("environment") or {}
+    assert not {"CELERY_BROKER_URL", "REDIS_URL"} & set(reachable), (
+        "eval must not carry the broker URLs: with them, `run --rm eval celery ...` "
+        "drains the real queue and runs those games unconstrained. Nothing on an "
+        "eval path reads them, and without them Settings falls back to localhost "
+        "inside a container with no redis — impossible beats discouraged"
+    )
+
     worker = compose["services"]["worker"]
     assert evaluation.get("image") and evaluation["image"] == worker.get("image"), (
         "eval and worker must name the same `image:`. Sharing only `build:` makes "
@@ -162,4 +242,48 @@ def test_eval_service_is_unconstrained_and_not_started_by_default():
         "the tree held at each build — two images that merely look alike in "
         "docker-compose.yml. `eval` is only a fair stand-in for the worker while "
         "it is literally the same image"
+    )
+
+
+def test_the_vps_overlay_clears_every_dev_resource_limit():
+    """The dev worker's limits must not reach the VPS — the bug this branch
+    shipped and had to fix.
+
+    `docker-compose.prod.yml` layers over the dev file, and Compose carries any
+    field the overlay does not mention. The VPS is a 2-3 vCPU / 2-4 GB box
+    running redis, api and worker together (DEPLOY.md), so inheriting Render's
+    2 GB / 1 CPU caps holds the whole backend to one core. Asserted rather than
+    left to the overlay's comment, because the failure is silent: it looks like
+    a slow box, not a misconfiguration.
+    """
+    dev = _load_compose(REPO_ROOT / "docker-compose.yml")["services"]["worker"]
+    vps = _load_compose(REPO_ROOT / "docker-compose.prod.yml")["services"]["worker"]
+
+    for key in RESOURCE_KEYS:
+        if key not in dev:
+            continue
+        assert isinstance(vps.get(key), _Reset), (
+            f"docker-compose.yml caps the dev worker's `{key}` and "
+            "docker-compose.prod.yml does not clear it, so the VPS inherits it. "
+            f"Add `{key}: !reset null` to the prod overlay's worker — a plain null "
+            "will not do it, only the tag clears a base value"
+        )
+
+
+def test_the_vps_overlay_pins_its_own_ffmpeg_threads():
+    """The dev default is Render's 1. The VPS is a different box and was running
+    4 before CF-241, so the overlay has to say so or the dev pin silently
+    retunes it.
+    """
+    vps = _load_compose(REPO_ROOT / "docker-compose.prod.yml")["services"]["worker"]
+    env = vps.get("environment") or {}
+
+    assert "FFMPEG_THREADS" in env, (
+        "docker-compose.prod.yml must pin FFMPEG_THREADS: the dev file now defaults "
+        "it to Render's 1, and the VPS would inherit that silently"
+    )
+    dev_threads = _default(str(_worker_services()[1]["environment"]["FFMPEG_THREADS"]))
+    assert _default(str(env["FFMPEG_THREADS"])) != dev_threads, (
+        "the VPS pin matches the dev worker's, which makes it indistinguishable from "
+        "having inherited it — if they really should be equal, say so here"
     )
