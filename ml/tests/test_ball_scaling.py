@@ -196,6 +196,44 @@ class TestInvarianceBreaksDownAbove1080p:
         )
         assert "frame-heights/s" in caplog.text, "say how narrow the band actually is"
 
+    def test_severity_splits_at_the_clamp_point_not_the_validated_ceiling(self, caplog):
+        """
+        The band closes continuously — 1080p leaves 1.67x and 1081p leaves 1.666x,
+        the same footage in every practical sense — so error level one pixel above
+        MAX_VALIDATED_FRAME_HEIGHT would page someone about a video that behaves
+        like the validated case. Error is for clamped footage, where the band has
+        bottomed out at 1.25x; in between, the printed numbers are the warning.
+        """
+        import logging
+
+        clamp_height = int(
+            ball.CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS
+            / ball.CONTACT_HIT_SPEED_PXPS * REFERENCE_FRAME_HEIGHT
+        )
+        assert clamp_height > MAX_VALIDATED_FRAME_HEIGHT, (
+            "with no gap between the two there is nothing to warn about, and this "
+            "test would pass by never exercising the warning branch"
+        )
+
+        # Unvalidated but unclamped: must still speak up, must not page.
+        for height in (MAX_VALIDATED_FRAME_HEIGHT + 1, clamp_height):
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
+                _scale_for(height)
+            assert caplog.records, f"{height}px is unmeasured — it must say so"
+            assert all(r.levelno < logging.ERROR for r in caplog.records), (
+                f"{height}px is not clamped, so its band is no worse than 1440p's "
+                f"1.25x — error level overstates it"
+            )
+
+        # One pixel past the clamp, the scale stops tracking resolution at all.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
+            _scale_for(clamp_height + 1)
+        assert any(r.levelno >= logging.ERROR for r in caplog.records), (
+            "clamped footage is the case that genuinely finds nothing"
+        )
+
     def test_an_empty_return_names_the_gates_that_rejected_everything(self, caplog):
         """
         Zero contacts is indistinguishable downstream from "no ball in this
