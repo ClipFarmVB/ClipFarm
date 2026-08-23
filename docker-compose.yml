@@ -2,10 +2,14 @@ name: clipfarm
 
 # The worker and the eval container are the same image with the same mounts and
 # the same broker; they differ only in whether production's resource limits
-# apply (see the `worker` and `eval` services below). Anchored rather than
-# duplicated so the two cannot drift into being different environments — which
-# is the whole failure mode CF-241 exists to close.
+# apply (see the `worker` and `eval` services below).
+#
+# `image:` is what makes that literally true, not just visually: sharing only
+# `build:` would have Compose tag the two services separately and build them
+# independently, from whatever the tree held at each build — two images that
+# merely look alike in this file. A shared tag means one build, reused.
 x-worker-image: &worker-image
+  image: clipfarm-worker
   build:
     context: .
     dockerfile: Dockerfile.api
@@ -118,6 +122,10 @@ services:
     # double, i.e. 2 GB of RAM plus 2 GB of swap — under which the repro above
     # can decline to OOM while the same encode is killed on Render, which has
     # no swap at all. An unfaithful repro is worse than none: it says "fixed".
+    # Both read WORKER_MEM_LIMIT, and must keep reading the *same* variable:
+    # giving swap its own knob is how you end up with `WORKER_MEM_LIMIT=8g`
+    # asking for 8 GB of memory inside a 2 GB memory+swap ceiling, which Docker
+    # rejects at container create. The fast path below would stop working.
     mem_limit: ${WORKER_MEM_LIMIT:-2g}
     memswap_limit: ${WORKER_MEM_LIMIT:-2g}
     cpus: ${WORKER_CPUS:-1.0}
@@ -171,22 +179,23 @@ services:
   # headroom — use `worker`, not this. Correctness sweeps belong here; anything
   # measuring the production box does not.
   #
-  # It is NOT a second worker: no broker `depends_on` and no celery command, so
-  # it cannot take queued work. To run a real game faster, raise the worker's
-  # own limits (see its comment above) rather than reaching for this.
+  # It is NOT a second worker — no `depends_on` and no celery command, so
+  # `up` cannot give it queued work. It does inherit the broker URLs from
+  # x-worker-env, so `run --rm eval celery ...` would take real jobs and run
+  # them unconstrained; don't. To process a game faster, raise the worker's own
+  # limits (see its comment above) rather than reaching for this.
   eval:
     <<: *worker-image
     profiles: ["eval"]
+    # No FFMPEG_THREADS pin, deliberately. Settings.ffmpeg_threads is read only
+    # by recut_clip_task and process_game_task; every eval entry point stops at
+    # _track_ball_cached and the condense arithmetic, so nothing here encodes and
+    # the setting is never consulted. A value pinned here would be config that
+    # looks load-bearing and is not. If eval ever grows an encode, give it its
+    # own variable then — sharing the worker's would mean retuning one silently
+    # retunes the other.
     environment:
       <<: *worker-env
-      # Its own variable, deliberately not the worker's. Sharing FFMPEG_THREADS
-      # would mean `FFMPEG_THREADS=4 docker compose ...` retunes eval as a side
-      # effect of retuning the worker — the silent-mis-benchmark this service
-      # exists to prevent, reintroduced through the back door.
-      #
-      # Wider than the worker on purpose, but still bounded: this container sees
-      # the host's core count, and an unpinned x264 sizes its pool from it (CF-224).
-      FFMPEG_THREADS: "${EVAL_FFMPEG_THREADS:-4}"
     # Every real invocation passes its own command. Without this, a bare
     # `run eval` or `--profile eval up` would inherit Dockerfile.api's CMD and
     # quietly start a *second uvicorn* — a running web server where you asked

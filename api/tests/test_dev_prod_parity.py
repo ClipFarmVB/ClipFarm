@@ -36,20 +36,23 @@ def _worker_services():
     return prod, compose["services"]["worker"]
 
 
-_UNITS = {"b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
+# Compose accepts `2g`, `2gb`, `2048m`, and a bare byte count.
+_UNITS = {"k": 1024, "m": 1024**2, "g": 1024**3}
 
 
 def _bytes(size: str) -> int:
-    """`2g` / `2048m` / `2147483648` -> bytes.
+    """`2g` / `2gb` / `2048m` / `2147483648` -> bytes.
 
     Compared as a size rather than a string on purpose: `2048m` is the same
     ceiling as `2g`, and a test that fails on the spelling teaches people to
     match the spelling instead of the size.
     """
-    size = size.strip().lower().rstrip("b") or "0"
-    if size[-1] in _UNITS:
+    size = size.strip().lower()
+    if size.endswith("b") and len(size) > 1 and size[-2] in _UNITS:
+        size = size[:-1]          # `2gb` -> `2g`; a bare `1024b` keeps its digits
+    if size and size[-1] in _UNITS:
         return int(float(size[:-1]) * _UNITS[size[-1]])
-    return int(size)
+    return int(size.rstrip("b"))
 
 
 def _default(expr: str) -> str:
@@ -83,11 +86,12 @@ def test_dev_worker_memory_and_cpu_track_the_render_plan():
         f"{memory} of memory PLUS {memory} of swap. Render has no swap, so the OOM "
         "this environment exists to reproduce would not fire here (docker-compose.yml)"
     )
-    assert _bytes(_default(str(dev["memswap_limit"]))) == _bytes(
-        _default(str(dev["mem_limit"]))
-    ), (
-        "memswap_limit must equal mem_limit — that is how you say `no swap` to "
-        "Docker. Anything larger hands the container swap production does not have"
+    assert str(dev["memswap_limit"]) == str(dev["mem_limit"]), (
+        "memswap_limit and mem_limit must be the *same expression*, not merely the "
+        "same default — that is how you say `no swap` to Docker, and it has to hold "
+        "under override too. Split onto separate variables, `WORKER_MEM_LIMIT=8g` "
+        "asks for 8 GB of memory inside a 2 GB memory+swap ceiling and Docker "
+        "refuses to create the container (docker-compose.yml)"
     )
     assert float(_default(str(dev["cpus"]))) == float(cpus), (
         f"clipfarm-worker is on `{plan}` ({cpus} CPU) but the dev worker's cpus "
@@ -139,12 +143,12 @@ def test_eval_service_is_unconstrained_and_not_started_by_default():
         "eval must stay profile-gated so `docker compose up` does not start a "
         "second, unlimited copy of the worker image alongside the real one"
     )
-    assert "FFMPEG_THREADS" not in str(
-        evaluation["environment"]["FFMPEG_THREADS"]
-    ).replace("EVAL_FFMPEG_THREADS", ""), (
-        "eval must read its own EVAL_FFMPEG_THREADS, not the worker's "
-        "FFMPEG_THREADS — sharing the variable means retuning the worker silently "
-        "retunes eval, which is the mis-benchmark this service exists to prevent"
+    assert "FFMPEG_THREADS" not in evaluation.get("environment", {}), (
+        "eval pins FFMPEG_THREADS, which nothing on any eval path reads: "
+        "Settings.ffmpeg_threads reaches only recut_clip_task and "
+        "process_game_task, and the eval entry points stop at _track_ball_cached. "
+        "Config that looks load-bearing and is not is worse than none. If eval "
+        "grows an encode, give it its own variable rather than the worker's"
     )
     assert evaluation.get("command"), (
         "eval needs an explicit command: without one it inherits Dockerfile.api's "
