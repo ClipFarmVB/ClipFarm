@@ -9,7 +9,7 @@ This setup runs the full local stack with one command:
 - Next.js web app
 
 A sixth service, `eval`, is profile-gated and never starts with the stack — see
-[step 4](#4-going-faster-or-smaller) and `ml/eval/README.md`.
+[step 3](#3-going-faster-or-smaller) and `ml/eval/README.md`.
 
 ## 1) Create env file
 
@@ -54,7 +54,7 @@ Open:
 Note: Postgres is not published to a host port to avoid `5432` conflicts.
 Use `docker compose exec db psql -U postgres -d clipfarm` if you need a DB shell.
 
-## 4) Going faster, or smaller
+## 3) Going faster, or smaller
 
 The worker runs at production's size by default, which is the point — but it
 also means a local game processes at production's speed. Both directions are one
@@ -80,7 +80,7 @@ docker compose run --rm --no-deps eval python -m ml.eval.harness --help
 
 Full detail in `README.md` § Local Development.
 
-## 5) Stop everything
+## 4) Stop everything
 
 ```bash
 docker compose down

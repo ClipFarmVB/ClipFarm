@@ -1,13 +1,14 @@
 name: clipfarm
 
-# The worker and the eval container are the same image with the same mounts and
-# the same broker; they differ only in whether production's resource limits
-# apply (see the `worker` and `eval` services below).
+# The image, mounts and env file behind both `worker` and `eval`. What they do
+# NOT share is deliberate and lives on each service: the worker carries
+# production's resource limits and the broker URLs, eval carries neither.
 #
-# `image:` is what makes that literally true, not just visually: sharing only
-# `build:` would have Compose tag the two services separately and build them
-# independently, from whatever the tree held at each build — two images that
-# merely look alike in this file. A shared tag means one build, reused.
+# `image:` is what makes the shared half literally true, not just visually:
+# sharing only `build:` would have Compose tag the two services separately and
+# build them independently, from whatever the tree held at each build — two
+# images that merely look alike in this file. A shared tag means one build,
+# reused.
 x-worker-image: &worker-image
   image: clipfarm-worker
   build:
@@ -18,13 +19,6 @@ x-worker-image: &worker-image
   volumes:
     - ./api:/app/api
     - ./ml:/app/ml
-
-x-worker-env: &worker-env
-  # DATABASE_URL comes from .env.docker (local db container by default,
-  # shared Supabase as a deliberate opt-in) — do not override here
-  REDIS_URL: redis://redis:6379/0
-  CELERY_BROKER_URL: redis://redis:6379/0
-  CELERY_RESULT_BACKEND: redis://redis:6379/1
 
 services:
   db:
@@ -136,7 +130,15 @@ services:
     memswap_limit: ${WORKER_MEM_LIMIT:-2g}
     cpus: ${WORKER_CPUS:-1.0}
     environment:
-      <<: *worker-env
+      # DATABASE_URL comes from .env.docker (local db container by default,
+      # shared Supabase as a deliberate opt-in) — do not override here.
+      #
+      # The broker URLs sit on this service rather than in the shared anchor
+      # above so that `eval` cannot pick them up: this is the one that takes
+      # queued work.
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
       # 1, matching render.yaml, not the code default of 2 (CF-224). Parity is
       # the point: the limits above are worth little if the thing that OOMs
       # under them is configured differently here. Raise it together with
@@ -179,7 +181,8 @@ services:
   # holding it to one core would make every sweep several times slower for no
   # fidelity gained. Rather than teaching people an env-var incantation they
   # would forget (and then silently benchmark at 1 CPU), eval gets its own
-  # service. Same image, same mounts, same broker — only the limits differ.
+  # service: same image and same mounts, no resource limits, and none of the
+  # worker's broker wiring (see below).
   #
   # Profile-gated, so `docker compose up` never starts it. Run one-shot:
   #   docker compose run --rm --no-deps eval python -m ml.eval.harness --help
@@ -191,11 +194,14 @@ services:
   # It is NOT a second worker, and deliberately cannot become one: no
   # `depends_on`, no celery command, and — note the absent `environment:` — no
   # broker URLs. `run --rm eval celery ...` would otherwise take real jobs off
-  # the queue and run them unconstrained; without the URLs, Settings falls back
-  # to localhost:6379 inside a container that has no redis, so it connects to
-  # nothing. Made impossible rather than discouraged, for the same reason
-  # EVAL_FFMPEG_THREADS was deleted. To process a game faster, raise the
-  # worker's own limits (see its comment above).
+  # the queue and run them unconstrained; with nothing in this repo setting
+  # them, Settings falls back to localhost:6379 inside a container that has no
+  # redis, so it connects to nothing.
+  #
+  # "Nothing in this repo": eval still loads `.env.docker`, which is yours, so a
+  # CELERY_BROKER_URL set there does reach it and no test can see that. The
+  # claim is that this file never hands eval the queue — not that you cannot.
+  # To process a game faster, raise the worker's own limits (see above).
   eval:
     <<: *worker-image
     profiles: ["eval"]

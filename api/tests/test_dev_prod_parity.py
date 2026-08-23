@@ -271,19 +271,18 @@ def test_the_vps_overlay_clears_every_dev_resource_limit():
 
 
 def test_the_vps_overlay_pins_its_own_ffmpeg_threads():
-    """The dev default is Render's 1. The VPS is a different box and was running
-    4 before CF-241, so the overlay has to say so or the dev pin silently
-    retunes it.
+    """The dev default is Render's 1. The VPS is a different box, so the overlay
+    has to state a value rather than inherit one.
+
+    Only that it is *stated*, not what it is: CF-223 may well conclude 1 is right
+    for a 2-3 vCPU box sharing itself with redis and the api, and a test that
+    demanded the two differ would fail the correct config.
     """
     vps = _load_compose(REPO_ROOT / "docker-compose.prod.yml")["services"]["worker"]
     env = vps.get("environment") or {}
 
     assert "FFMPEG_THREADS" in env, (
-        "docker-compose.prod.yml must pin FFMPEG_THREADS: the dev file now defaults "
-        "it to Render's 1, and the VPS would inherit that silently"
-    )
-    dev_threads = _default(str(_worker_services()[1]["environment"]["FFMPEG_THREADS"]))
-    assert _default(str(env["FFMPEG_THREADS"])) != dev_threads, (
-        "the VPS pin matches the dev worker's, which makes it indistinguishable from "
-        "having inherited it — if they really should be equal, say so here"
+        "docker-compose.prod.yml must pin FFMPEG_THREADS: the dev file defaults it "
+        "to Render's 1 (CF-241), and the VPS would inherit that silently. Pin it "
+        "there — including if the right answer turns out to be the same number"
     )
