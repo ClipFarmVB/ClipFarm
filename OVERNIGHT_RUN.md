@@ -26,22 +26,25 @@ that has to survive is posted as an issue — see [Reporting](#reporting).
 **Last updated: 2026-08-24.** If that date is not recent, stop and ask before
 running.
 
-### In scope, in this order
+### In scope
 
-The three tickets from the first run are done or answered:
+Work issues carrying the **`overnight-ok`** label:
 
-- **CF-235** — draft PR #252 open
-- **CF-236** — draft PR #253 open
-- **CF-186** — deliberately not implemented. Its deliverable is a judgement about
-  acceptable exposure on a youth-sports product, and its central premise is no
-  longer true: `get_profile` already 404s every generated handle, which is the
-  guessable-from-email cohort the card worries about. Needs a human decision, not
-  an implementation.
+```
+gh issue list --state open --label overnight-ok --json number,title,labels
+```
 
-So this run starts at the judgement clause. Use it on `Todo` items in the current
-sprint, preferring well-specified, independently testable tickets. **Only if you
-can read the Sprint field** — see the preflight below. If you cannot, work only
-on tickets named explicitly here, and if none are named, stop.
+That label means a human has judged the ticket safe to implement unattended —
+well-specified, no design or legal decision, no production data, no credentials.
+It is the selection gate. **Do not take an issue that does not carry it**, however
+appealing it looks; if you think one deserves it, argue for it in the report
+instead of taking it.
+
+Work highest priority first (`P0` > `P1` > `P2` > unlabelled). One ticket per
+iteration. If a ticket turns out to need a decision after all, say so in the log,
+drop it, and move on — do not guess.
+
+If nothing carries the label, or everything that does is done, **stop the loop**.
 
 ### Environment notes for this run
 
@@ -58,9 +61,10 @@ Before relying on any capability, check it, and record the result in the log in
 one block. The first run discovered three gaps separately, mid-work.
 
 - **Projects v2** — `gh project item-list 1 --owner ClipFarmVB --format json`.
-  Needs the `project` token scope. If this fails you cannot read the Sprint field
-  or set fields on cards you file: say so in the report, and do not use the
-  judgement clause.
+  Needs the `project` token scope, which is often absent. This does **not** gate
+  any work: selection is by label, which plain repo scope reads fine. It only
+  affects board hygiene — without it you cannot remove the report issue from the
+  project. Note the gap in the report and carry on.
 - **Docker** — `docker info`. If absent, the local stack and the eval harness
   cannot run at all.
 - **Gate tool versions** — read the versions `ci.yml` installs and compare with
@@ -81,7 +85,8 @@ most expensive kind of surprise in an unattended run.
 - **Never** run the local stack against a `DATABASE_URL` pointing at Supabase.
   Confirm `.env.docker` names the local `db` container first.
 - **Never** read, echo, or commit `.env.docker` or any credential.
-- Every PR opens as a **draft**. You never merge and never deploy.
+- Open PRs **ready for review**, not as drafts — they exist to be reviewed,
+  including by you. You still never merge and never deploy.
 - **Maximum 5 new PRs** and **6 new cards** per run.
 - **No attribution stamps.** Do not add "Generated with Claude Code", a
   `Co-Authored-By` trailer, a session link, or any similar footer to commits, PR
@@ -102,7 +107,9 @@ only thing that survives.
 
 Finish work already in flight before starting anything new.
 
-**1 — Review open PRs that changed since their last review.**
+**1 — Review open PRs that need one.** A PR needs a review if it has **no
+review at all** — including one you opened earlier in this run — or if it has
+commits since its most recent review.
 
 Compare each PR's head commit against the commit of its most recent review. If
 there are commits since, run `/code-review` and post the findings as one review
@@ -119,10 +126,20 @@ finding confirmed without checking it.
 
 Do not use `/code-review ultra`; it is billed separately and user-triggered.
 
-**2 — Address review findings on PRs owned by whoever started this run**
-(`gh api user -q .login`). If a fix needs no human decision, implement it, push
-to that PR's branch, and reply on the thread saying what changed. If it needs a
-judgement call, log it and leave it.
+**2 — Address review findings on PRs you own** (`gh api user -q .login`, which
+includes every PR you opened during this run). If a fix needs no human decision,
+implement it, push to that PR's branch, and reply on the thread saying what
+changed. If it needs a judgement call, log it and leave it.
+
+**This is a cycle, and closing it is the point.** Open a PR, review it, fix what
+the review found, then review again to confirm the fix holds and introduced
+nothing new. The first run opened three PRs and reviewed none of them, because
+step 1 only covered PRs that had *changed since* a review and these had none at
+all. A PR nobody looked at is half the value of the work that produced it.
+
+Bound it: **at most two review-and-fix rounds per PR per run.** If findings
+remain after the second round, write them in the log for a human rather than
+looping on one PR all night.
 
 **3 — Only when 1 and 2 are clear**, take one ticket from "This run".
 
@@ -167,8 +184,10 @@ judgement call, log it and leave it.
    and drop this caveat.**
 
    Do not open a PR if any gate fails — log it and move on.
-5. **Open a draft PR** following `.github/pull_request_template.md`, including the
-   bare `Closes #<issue>` line `CLAUDE.md` requires.
+5. **Open the PR** — ready for review, not a draft — following
+   `.github/pull_request_template.md`, including the bare `Closes #<issue>` line
+   `CLAUDE.md` requires. Then go back to step 1: a PR you just opened has no
+   review yet, and reviewing it is your job.
 
 **Size discipline.** If a ticket would produce a diff too large to review in one
 sitting, do not implement it. Write the plan into the log instead — a good plan
