@@ -141,6 +141,26 @@ def _origin_problem(origin: str) -> str | None:
         )
     if origin != origin.lower():
         return "must be lower-case — origins are compared as exact strings"
+    # netloc must be a bare host[:port]. The checks above constrain the parts
+    # AROUND it and say nothing about its shape, so userinfo and a malformed
+    # port both sail through — and neither can ever equal a browser's Origin
+    # header, which is what an allow-list entry is compared against.
+    if parts.username is not None or parts.password is not None:
+        return (
+            "an Origin carries no user:password — RFC 6454 discards userinfo, so "
+            "this entry can never match a browser Origin header (and a password "
+            "in CORS_ORIGINS would be echoed by the error above)"
+        )
+    try:
+        port = parts.port
+    except ValueError:
+        # urlsplit only raises here — it does not validate on parse.
+        return "port must be a number in 1-65535"
+    # 0 is in urlsplit's accepted range but is not a port a browser can send.
+    if port == 0:
+        return "port must be a number in 1-65535"
+    if parts.netloc.endswith(":"):
+        return "trailing `:` with no port — write the host alone, or host:port"
     return None
 
 

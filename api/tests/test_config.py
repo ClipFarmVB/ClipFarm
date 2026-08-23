@@ -447,6 +447,61 @@ def test_production_rejects_an_entry_that_is_not_scheme_and_host(clean_env, valu
     assert "scheme://host" in str(exc.value)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://user:pass@clipfarm.ca",   # userinfo
+        "https://user@clipfarm.ca",        # username only
+        "https://@clipfarm.ca",            # empty userinfo, still an `@`
+    ],
+)
+def test_production_rejects_an_origin_carrying_userinfo(clean_env, value):
+    """RFC 6454 reduces a URL to scheme://host[:port] before sending it, so a
+    browser never puts credentials in an Origin header and an entry containing
+    them matches nothing — the same silent failure as a trailing slash.
+
+    There is a second reason to reject rather than strip: `cors_origins_error`
+    echoes every bad entry back, so a password left in CORS_ORIGINS would be
+    reprinted into the boot log. Refusing it is what keeps the error message
+    safe to print.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    assert "userinfo" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://clipfarm.ca:99999",   # out of range
+        "https://clipfarm.ca:abc",     # not a number
+        "https://clipfarm.ca:0",       # in urlsplit's range, not a real port
+    ],
+)
+def test_production_rejects_a_malformed_port(clean_env, value):
+    """`urlsplit` does not validate on parse — it raises only when `.port` is
+    read, so a check that never reads it accepts all three. `:0` is the one
+    that needs saying out loud: it is inside the range `.port` accepts, so it
+    raises nothing and has to be rejected explicitly.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    assert "port" in str(exc.value)
+
+
+def test_production_rejects_a_host_with_a_trailing_colon(clean_env):
+    """`https://clipfarm.ca:` — `.port` returns None rather than raising, so
+    this is not caught by reading the port, and the netloc is not empty, so it
+    is not caught by the scheme/host check either. It falls between both.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors("https://clipfarm.ca:")
+
+    assert "trailing `:`" in str(exc.value)
+
+
 def test_production_rejects_a_mixed_case_origin(clean_env):
     """Starlette matches origins as exact strings, so this is as broken as a
     trailing slash — and looks even more correct in a dashboard."""
@@ -463,6 +518,9 @@ def test_production_rejects_a_mixed_case_origin(clean_env):
         "https://clipfarm.ca,https://www.clipfarm.ca",
         "https://clipfarm.ca,http://localhost:3000",   # port must stay valid
         "http://127.0.0.1:3000",
+        "https://clipfarm.ca:1",       # boundary — the port checks must not
+        "https://clipfarm.ca:65535",   # narrow the range they validate
+
         "https://clipfarm.ca ,  https://www.clipfarm.ca",  # entries are stripped
     ],
 )
