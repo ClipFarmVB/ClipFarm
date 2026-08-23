@@ -505,8 +505,8 @@ def _scale_for(frame_height: int) -> float:
     The result is capped so the scaled hit-speed floor stays clear of
     SEG_MAX_SPEED_PXPS (see CONTACT_SPEED_CEILING_FRAC). The cap keeps the two
     gates from becoming disjoint, but it does not make tall footage work — past
-    MAX_VALIDATED_FRAME_HEIGHT the surviving speed band is too narrow for real
-    play, so that case logs at error level rather than pretending to be handled.
+    MAX_VALIDATED_FRAME_HEIGHT the surviving speed band narrows until real play
+    is no longer in it, so that case logs rather than pretending to be handled.
     """
     if frame_height <= 0:
         logger.warning(
@@ -516,25 +516,41 @@ def _scale_for(frame_height: int) -> float:
         )
         return 1.0
 
-    scale     = frame_height / REFERENCE_FRAME_HEIGHT
-    max_scale = CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS / CONTACT_HIT_SPEED_PXPS
-    scale     = min(scale, max_scale)
+    scale        = frame_height / REFERENCE_FRAME_HEIGHT
+    max_scale    = CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS / CONTACT_HIT_SPEED_PXPS
+    clamp_height = max_scale * REFERENCE_FRAME_HEIGHT
+    scale        = min(scale, max_scale)
 
     if frame_height > MAX_VALIDATED_FRAME_HEIGHT:
         # Not "under-normalized" — quantify it, because the number is the point.
         # SEG_MAX_SPEED_PXPS does not scale, so what is left between the scaled
         # floor and the fixed ceiling is the entire band this detector can see.
+        #
+        # Severity splits at the clamp point, not at MAX_VALIDATED_FRAME_HEIGHT,
+        # because the band closes continuously: 1080p leaves 1.67x and 1081p
+        # leaves 1.666x — the same footage in every practical sense. Error is a
+        # paging-grade level in most setups, so it is reserved for clamped
+        # footage, where the band has bottomed out at 1.25x and a swept track
+        # really does find nothing. In between, the printed numbers are the point.
         floor = CONTACT_HIT_SPEED_PXPS * scale
-        logger.error(
+        if frame_height > clamp_height:
+            log, outlook = logger.error, (
+                "expect few or no contacts, hence no keep-windows and no clips"
+            )
+        else:
+            log, outlook = logger.warning, (
+                "this height is unmeasured and contacts get scarcer as the band closes"
+            )
+        log(
             "frame_height %d is above the %dp CF-174 was measured on. Contact "
             "detection admits only %.3f-%.3f frame-heights/s here (%.0f-%.0f px/s, a "
             "%.2fx band vs 5.00x at %.0fp) because SEG_MAX_SPEED_PXPS does not scale; "
-            "expect few or no contacts, hence no keep-windows and no clips. Scaling "
-            "the ceiling is the real fix (CF-174 follow-up).",
+            "%s. Scaling the ceiling is the real fix (CF-174 follow-up).",
             frame_height, MAX_VALIDATED_FRAME_HEIGHT,
             floor / frame_height, SEG_MAX_SPEED_PXPS / frame_height,
             floor, SEG_MAX_SPEED_PXPS,
             SEG_MAX_SPEED_PXPS / floor, REFERENCE_FRAME_HEIGHT,
+            outlook,
         )
     return scale
 
