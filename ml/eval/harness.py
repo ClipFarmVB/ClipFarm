@@ -208,9 +208,32 @@ def config_snapshot() -> dict:
     return snap
 
 
+# results/*.jsonl is committed so runs can be diffed across versions, and raw
+# float tails defeat that: `59.99999999999943` vs `60.00000000000012` is the
+# same number twice and reads as a change (CF-94). 4dp is 0.01% on the ratios
+# and 0.1 ms on the seconds — finer than anything either measures.
+#
+# The interval lists below stay at 3dp. Different unit, different natural
+# floor: 1 ms is already well under a frame at any frame rate this pipeline
+# sees, so more digits there would be recording jitter, not signal.
+RESULT_FLOAT_PLACES = 4
+
+
+def _round(value: float | None, places: int = RESULT_FLOAT_PLACES) -> float | None:
+    """`round`, but None survives.
+
+    captured_pct, auc, dead_removed_pct and the rest are legitimately None —
+    no human clips, or no positive/negative windows to separate — and round()
+    raises TypeError on None rather than passing it through.
+    """
+    return None if value is None else round(value, places)
+
+
 def _signals_to_dict(s: EvalSignals) -> dict:
     return {
-        "captured_pct": s.captured_pct,
+        "captured_pct": _round(s.captured_pct),
+        # Counts, not measurements — left alone. Rounding an int is a no-op
+        # that invites the next reader to wonder what it is guarding against.
         "buckets": {
             "well_captured": s.buckets.well_captured,
             "butchered": s.buckets.butchered,
@@ -218,15 +241,15 @@ def _signals_to_dict(s: EvalSignals) -> dict:
             "total": s.buckets.total,
         },
         "incorrect_seconds": {
-            "junk": s.incorrect.junk,
-            "lead_slop": s.incorrect.lead_slop,
-            "tail_slop": s.incorrect.tail_slop,
-            "bridge": s.incorrect.bridge,
-            "total": s.incorrect.total,
+            "junk": _round(s.incorrect.junk),
+            "lead_slop": _round(s.incorrect.lead_slop),
+            "tail_slop": _round(s.incorrect.tail_slop),
+            "bridge": _round(s.incorrect.bridge),
+            "total": _round(s.incorrect.total),
         },
-        "auc": s.auc,
-        "human_seconds": s.human_seconds,
-        "model_seconds": s.model_seconds,
+        "auc": _round(s.auc),
+        "human_seconds": _round(s.human_seconds),
+        "model_seconds": _round(s.model_seconds),
     }
 
 
@@ -652,15 +675,15 @@ def format_deadtime_comparison(
 
 def _deadtime_to_dict(s: DeadTimeSignals) -> dict:
     return {
-        "dead_removed_pct": s.dead_removed_pct,
-        "live_removed_sec": s.live_removed_sec,
-        "live_removed_pct": s.live_removed_pct,
-        "kept_play_pct": s.kept_play_pct,
-        "condense_ratio": s.condense_ratio,
-        "human_keep_sec": s.human_keep_sec,
-        "human_dead_sec": s.human_dead_sec,
-        "model_keep_sec": s.model_keep_sec,
-        "duration": s.duration,
+        "dead_removed_pct": _round(s.dead_removed_pct),
+        "live_removed_sec": _round(s.live_removed_sec),
+        "live_removed_pct": _round(s.live_removed_pct),
+        "kept_play_pct": _round(s.kept_play_pct),
+        "condense_ratio": _round(s.condense_ratio),
+        "human_keep_sec": _round(s.human_keep_sec),
+        "human_dead_sec": _round(s.human_dead_sec),
+        "model_keep_sec": _round(s.model_keep_sec),
+        "duration": _round(s.duration),
         "over_cut_live": [[round(a, 3), round(b, 3)] for a, b in s.over_cut_live],
         "missed_dead": [[round(a, 3), round(b, 3)] for a, b in s.missed_dead],
     }
