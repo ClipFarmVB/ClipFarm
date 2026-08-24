@@ -416,29 +416,38 @@ def test_the_vps_overlay_states_every_dev_resource_limit():
     left to the overlay's comment, because the failure is silent: it looks like
     a slow box, not a misconfiguration.
     """
-    dev = _compose_service(REPO_ROOT / "docker-compose.yml", "worker")
-    vps = _compose_service(REPO_ROOT / "docker-compose.prod.yml", "worker")
-
-    assert not _has_deploy_resources(dev) or _has_deploy_resources(vps), (
-        "docker-compose.yml caps the dev worker under `deploy.resources` and "
-        "docker-compose.prod.yml is silent about it, so the VPS inherits it"
+    dev_services = _load_compose(REPO_ROOT / "docker-compose.yml").get("services") or {}
+    vps_services = (
+        _load_compose(REPO_ROOT / "docker-compose.prod.yml").get("services") or {}
     )
 
-    for key in RESOURCE_KEYS:
-        if key not in dev:
-            continue
-        assert key in vps, (
-            f"docker-compose.yml caps the dev worker's `{key}` and "
-            "docker-compose.prod.yml is silent about it, so the VPS inherits a "
-            "number chosen for Render's box. Say what this box should do: "
-            f"`{key}: !reset null` for no limit, or a value of its own — a plain "
-            "null is neither, and does not clear a base value"
+    # Every service the VPS actually runs, not just the worker. docker-compose.yml
+    # says api and web are capped later (CF-241 left them out of scope); when that
+    # lands, an overlay silent about them inherits Render-sized caps on a box that
+    # is not Render — which is the bug this branch already shipped once.
+    for name, vps in vps_services.items():
+        dev = dev_services.get(name) or {}
+
+        assert not _has_deploy_resources(dev) or _has_deploy_resources(vps), (
+            f"docker-compose.yml caps `{name}` under `deploy.resources` and "
+            "docker-compose.prod.yml is silent about it, so the VPS inherits it"
         )
-        assert isinstance(vps.get(key), _Reset) or vps.get(key) is not None, (
-            f"docker-compose.prod.yml sets `{key}` to a bare null, which does not "
-            "clear the dev value — the VPS still inherits it. Use `!reset null`, "
-            "or give the key a real value"
-        )
+
+        for key in RESOURCE_KEYS:
+            if key not in dev:
+                continue
+            assert key in vps, (
+                f"docker-compose.yml caps `{name}`'s `{key}` and "
+                "docker-compose.prod.yml is silent about it, so the VPS inherits a "
+                "number chosen for Render's box. Say what this box should do: "
+                f"`{key}: !reset null` for no limit, or a value of its own — a "
+                "plain null is neither, and does not clear a base value"
+            )
+            assert isinstance(vps.get(key), _Reset) or vps.get(key) is not None, (
+                f"docker-compose.prod.yml sets `{name}`'s `{key}` to a bare null, "
+                "which does not clear the dev value — the VPS still inherits it. "
+                "Use `!reset null`, or give the key a real value"
+            )
 
 
 def test_the_vps_overlay_pins_its_own_ffmpeg_threads():
@@ -474,21 +483,25 @@ def test_the_repro_overlay_still_reproduces_the_oom():
     _assert_no_interpolation("docker-compose.repro.yml", repro)
     _assert_sets("docker-compose.repro.yml", repro, ("mem_limit", "memswap_limit", "cpus"))
 
-    # The box CF-224 died on is Render's `starter`, so take the numbers from the
-    # same table the parity checks use rather than restating them here.
-    memory, cpus = RENDER_PLANS["starter"]
+    # Deliberately NOT RENDER_PLANS["starter"], though the numbers coincide today.
+    # That table tracks what Render sells *now* and its docstring says to update
+    # it when the pricing page changes; these are a measurement of the box CF-224
+    # died on in August 2026, which no vendor edit can revise. Sourcing them from
+    # there would let a `starter` re-spec silently resize the repro — and a
+    # resized repro completes, which reads as "already fixed".
+    memory, cpus = "512m", 0.5
 
     assert _bytes(str(repro["mem_limit"])) == _bytes(memory), (
-        f"the repro overlay must cap memory at {memory} — Render's `starter`, the "
-        "box CF-224 actually died on"
+        f"the repro overlay must cap memory at {memory} — the box CF-224 actually "
+        "died on, whatever Render currently calls that size"
     )
     assert str(repro["memswap_limit"]) == str(repro["mem_limit"]), (
         "the repro overlay must leave no swap: 512 MB of it is enough to carry the "
         "encode that killed production, and the run comes back green"
     )
-    assert float(repro["cpus"]) == float(cpus), (
-        f"the repro overlay must run on {cpus} CPU — `starter`'s share, and half "
-        "the reason x264 oversubscribed its thread pool in the first place"
+    assert float(repro["cpus"]) == cpus, (
+        f"the repro overlay must run on {cpus} CPU — half the reason x264 "
+        "oversubscribed its thread pool in the first place"
     )
 
     repro_env = _env_map(repro)
@@ -513,7 +526,7 @@ def test_the_fast_overlay_is_faster_than_the_default_and_still_swapless():
     dev = _compose_service(REPO_ROOT / "docker-compose.yml", "worker")
     fast = _compose_service(REPO_ROOT / "docker-compose.fast.yml", "worker")
 
-    _assert_no_interpolation("docker-compose.fast.yml", fast, prefix="FAST_")
+    _assert_no_interpolation("docker-compose.fast.yml", fast, prefix="WORKER_")
     _assert_sets("docker-compose.fast.yml", fast, ("mem_limit", "memswap_limit", "cpus"))
 
     assert float(_default(str(fast["cpus"]))) > float(_default(str(dev["cpus"]))), (
@@ -531,3 +544,28 @@ def test_the_fast_overlay_is_faster_than_the_default_and_still_swapless():
         "even the fast path stays swapless: swap makes `did it work` unreliable "
         "in a different way than it makes `did it fit` unreliable"
     )
+
+
+def test_no_overlay_hands_out_more_ffmpeg_threads_than_cpus():
+    """CF-224 in miniature: a thread the container cannot schedule costs memory
+    and buys nothing, which is the whole reason FFMPEG_THREADS is pinned at all.
+
+    The repro overlay is the deliberate exception — 4 threads on half a CPU is
+    how it provokes the OOM — so it is not checked here. Everything that is
+    *supposed* to run well has to keep the two in step, including the escape
+    hatch the docs suggest: lowering WORKER_CPUS without lowering
+    WORKER_FFMPEG_THREADS is the same oversubscription, one variable at a time.
+    """
+    for filename in ("docker-compose.yml", "docker-compose.fast.yml"):
+        worker = _compose_service(REPO_ROOT / filename, "worker")
+        env = _env_map(worker)
+        if "FFMPEG_THREADS" not in env or "cpus" not in worker:
+            continue
+
+        threads = int(_default(env["FFMPEG_THREADS"]))
+        cpus = float(_default(str(worker["cpus"])))
+        assert threads <= max(1, round(cpus)), (
+            f"{filename} gives the worker {threads} ffmpeg threads on {cpus} CPU. "
+            "Roughly one thread per whole CPU (CF-224 measured 2 threads at 0.5 CPU "
+            "as both slower and 60 MB heavier); raise or lower them together"
+        )

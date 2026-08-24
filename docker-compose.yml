@@ -98,44 +98,41 @@ services:
     # Track `clipfarm-worker`'s `plan` in render.yaml: `standard` = 2 GB / 1 CPU
     # since CF-240. api/tests/test_dev_prod_parity.py pins the two together.
     #
-    # WHY THE DEFAULT IS CAPPED, now that docker-compose.repro.yml exists and can
-    # supply CF-224's 512 MB / 0.5 CPU on demand. It is a fair question: 2 GB /
-    # 1 CPU reproduces no OOM we know of, and the cap is paid on every local run.
+    # WHY THE DEFAULT IS CAPPED, now that docker-compose.repro.yml can supply
+    # CF-224's 512 MB / 0.5 CPU on demand. 2 GB / 1 CPU reproduces no OOM we know
+    # of, and the cap is paid on every local run — so the case has to be made.
     #
-    # Because an opt-in repro only helps someone who already suspects. CF-224 is
-    # the third bug of this shape here, after pose silently failing on every game
-    # and the `inference` resolver picking a pre-RF-DETR version, and in all three
-    # nobody suspected — that is what environment divergence is. The default is
-    # what decides whether the *next* one is caught, and repro.yml is for
-    # confirming a divergence you have already thought of.
+    # An opt-in repro only helps someone who already suspects, and CF-224 is the
+    # third bug of this shape here where nobody did. The default decides whether
+    # the *next* one is caught; the overlay confirms a divergence you have
+    # already thought of.
     #
-    # What this default buys, stated narrowly: a local run that fits is evidence
-    # about production, and a local run on 16 cores and 64 GB is not. It does NOT
-    # claim to reproduce CF-224 — that box was half this size, and reproducing it
-    # is what the overlay is for. Two honest limits: `api` and `web` are still
-    # unconstrained (out of scope per CF-241), so this is parity for one of three
-    # services; and `--pool=solo` means the cost lands on every local game, which
-    # docker-compose.fast.yml exists to hand back when the question is only
-    # \"does the pipeline work\".
+    # Stated narrowly, because it is easy to overclaim: a local run that FITS is
+    # evidence about production; a local run on 16 cores and 64 GB is not. This
+    # does not reproduce CF-224 — that box was half this size.
     #
-    # Both directions are sanctioned, and both are an overlay FILE rather than
-    # a remembered prefix — docker-compose.repro.yml (512 MB / 0.5 CPU, to make
-    # CF-224's OOM happen on your laptop) and docker-compose.fast.yml (8 GB /
-    # 4 CPU, to answer "does the pipeline work" without waiting on one core).
-    # Each carries its own rule; read the file before using it.
+    # Three honest limits. `api` and `web` are still unconstrained (out of scope
+    # per CF-241), so this is parity for one of three services. `--pool=solo`
+    # means the cost lands on every local game. And the fast overlay that hands
+    # that cost back has exactly the discoverability problem the cap was chosen
+    # to avoid: you have to know it exists. The cap is the default because being
+    # wrong about speed is recoverable and being wrong about fit is not — not
+    # because the trade is free.
+    #
+    # Two overlay files sit either side of this default, each with its own rule;
+    # read the file before using it. docker-compose.repro.yml (512 MB / 0.5 CPU)
+    # and docker-compose.fast.yml (8 GB / 4 CPU):
     #
     #   docker compose --env-file .env.docker \
     #     -f docker-compose.yml -f docker-compose.repro.yml up worker
     #
-    # Going bigger costs you the fidelity these limits exist for, so the fast
-    # overlay is for "does the pipeline work", never for "does it fit". Any
-    # timing or memory claim has to come from a default-limits run.
-    #
-    # The WORKER_MEM_LIMIT / WORKER_CPUS / WORKER_FFMPEG_THREADS knobs below
-    # remain, for a one-off size the overlays do not cover. Note they are read
-    # from `.env.docker` too, not just from a prefix, since every documented
-    # command passes `--env-file .env.docker` — so a value parked in that file
-    # applies to *every* run, silently. Prefer the prefix.
+    # The WORKER_MEM_LIMIT / WORKER_CPUS / WORKER_FFMPEG_THREADS knobs below are
+    # the ad-hoc path, and the fast overlay reads the same three — it only moves
+    # their defaults. They are interpolation, so Compose reads them from the
+    # shell, from `--env-file`, or from a `./.env` you may not remember writing;
+    # a value parked in any of those applies to every run without appearing in
+    # the command. Prefer the prefix. (docker-compose.repro.yml reads none of
+    # them, on purpose: its numbers are the measurement.)
     #
     # memswap_limit equal to mem_limit asks for NO swap. Docker's default is
     # double, i.e. 2 GB of RAM plus 2 GB of swap — under which the repro overlay

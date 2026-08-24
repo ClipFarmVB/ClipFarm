@@ -5,48 +5,38 @@
 #
 # A file rather than a remembered env-var prefix, for the same reason `eval` is
 # a service rather than a documented override: an incantation people have to
-# remember is one they will get wrong, and the way this one goes wrong is that
-# a number measured on a 4-CPU box gets reported as production's.
+# remember is one they will get wrong.
 #
-# THE RULE, and it is the whole reason this file is separate: **no timing or
-# memory claim may come from a run under this overlay.** Not "was it fast", not
-# "did it fit in 2 GB", not a STAGE_TIMING line worth quoting. This overlay
-# answers exactly one question — *does the pipeline work end to end* — and
-# waiting on production's single core to answer it is just waiting. Anything
-# about cost, headroom or duration needs the default limits, which is what
-# `docker compose --env-file .env.docker up worker` already gives you.
+# THE RULE: **no timing or memory claim may come from a run under this overlay.**
+# Not "was it fast", not "did it fit in 2 GB", not a STAGE_TIMING line worth
+# quoting. This overlay answers exactly one question — *does the pipeline work
+# end to end* — and waiting on production's single core to answer it is just
+# waiting. Anything about cost, headroom or duration needs the default limits.
 #
-# Sized for a developer laptop, and **4 CPUs is more than some Docker engines
-# have**. Docker refuses to create a container asking for more than the engine
-# owns — `range of CPUs is from 0.01 to 2.00` on a 2-CPU Docker Desktop VM — so
-# this file keeps an escape hatch:
+# It reads the same WORKER_* knobs as docker-compose.yml, deliberately: they
+# mean "the worker's size" wherever the worker is defined, and this file only
+# moves their defaults. **Raise threads in step with CPUs** — a thread the
+# container cannot schedule costs memory and buys nothing (CF-224), so on an
+# engine with fewer cores lower both:
 #
-#   FAST_CPUS=2 FAST_MEM_LIMIT=4g docker compose --env-file .env.docker \
+#   WORKER_CPUS=2 WORKER_FFMPEG_THREADS=2 WORKER_MEM_LIMIT=4g \
+#     docker compose --env-file .env.docker \
 #     -f docker-compose.yml -f docker-compose.fast.yml up worker
 #
-# `docker info --format '{{.NCPU}}'` is the number to stay under.
-#
-# FAST_*, not the base file's WORKER_*, and that distinction is the point.
-# Every documented command passes `--env-file .env.docker`, which makes that
-# file an interpolation source, so a WORKER_MEM_LIMIT parked there for an
-# earlier experiment would otherwise reach in here. Namespacing gives this
-# overlay a knob nothing else writes.
+# You will need that: Docker refuses a container asking for more CPU than the
+# engine owns — `range of CPUs is from 0.01 to 2.00` on a 2-CPU Docker Desktop
+# VM. `docker info --format '{{.NCPU}}'` is the number to stay under.
 #
 # docker-compose.repro.yml takes the opposite line and allows no interpolation
-# at all, because its numbers are the measurement. These are only a speed, and
-# nothing may be claimed from a run under this file anyway — so being able to
-# fit it to your machine costs nothing.
-#
-# `memswap_limit` tracks `mem_limit` here as it does in the base file — swap
-# would make even the "does it work" answer unreliable.
+# at all, because its numbers are a measurement rather than a convenience.
 services:
   worker:
-    mem_limit: ${FAST_MEM_LIMIT:-8g}
-    memswap_limit: ${FAST_MEM_LIMIT:-8g}
-    cpus: ${FAST_CPUS:-4}
+    # memswap tracks mem as it does in the base file — no swap, or even the
+    # "does it work" answer stops meaning anything.
+    mem_limit: ${WORKER_MEM_LIMIT:-8g}
+    memswap_limit: ${WORKER_MEM_LIMIT:-8g}
+    cpus: ${WORKER_CPUS:-4}
     # A map, so Compose merges rather than replaces: the broker URLs and every
-    # other value the base file sets on this service survive, and only the
-    # thread count changes. Raised in step with `cpus` above — threads a
-    # container cannot schedule cost memory and buy nothing (CF-224).
+    # other value the base file sets on this service survive.
     environment:
-      FFMPEG_THREADS: "${FAST_FFMPEG_THREADS:-4}"
+      FFMPEG_THREADS: "${WORKER_FFMPEG_THREADS:-4}"

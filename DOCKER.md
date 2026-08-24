@@ -73,10 +73,12 @@ docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.re
 
 If `docker compose` refuses the fast overlay with `range of CPUs is from 0.01
 to N.00`, your engine has fewer than 4 — check `docker info --format
-'{{.NCPU}}'` and set `FAST_CPUS` (and `FAST_MEM_LIMIT` if needed) to fit:
+'{{.NCPU}}'` and lower it. **Lower the thread count with it**: 4 x264 threads on
+2 CPUs is CF-224's oversubscription in miniature, costing memory and buying
+nothing.
 
 ```bash
-FAST_CPUS=2 FAST_MEM_LIMIT=4g docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.fast.yml up worker
+WORKER_CPUS=2 WORKER_FFMPEG_THREADS=2 WORKER_MEM_LIMIT=4g docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.fast.yml up worker
 ```
 
 The first is the fast path for "does the pipeline work". It costs the fidelity
@@ -85,9 +87,10 @@ run** — the rule is written in the file. The second reproduces the CF-224 OOM,
 and a run under it that *completes* is the interesting result.
 
 **Keep `--env-file .env.docker`** on every one of these, exactly as in step 2.
-It is what Compose interpolates `${...}` from, so without it `POSTGRES_HOST_PORT`
-and friends silently fall back to their defaults — and the db container tries to
-bind 5432 whatever your `.env.docker` says.
+It is what Compose interpolates `${...}` from. Without it, `POSTGRES_HOST_PORT`
+and friends come from a `./.env` if you happen to have one and from the built-in
+defaults otherwise — either way not from `.env.docker`, and the db container
+tries to bind 5432 whatever that file says.
 
 CPU-bound work that is *not* about production's box — the eval harness, the
 tuning scripts — goes on the unconstrained `eval` service instead:
