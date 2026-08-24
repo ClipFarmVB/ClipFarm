@@ -254,7 +254,15 @@ class Settings(BaseSettings):
     condense_guard_pad_before: float = 3.0        # seconds kept before a window
     condense_guard_pad_after: float = 2.0         # seconds kept after a window
     condense_guard_merge_gap_seconds: float = 3.0  # merge windows closer than this
-    condense_guard_min_track_rate: float = 1.0    # usable speed samples/s below which we abstain
+    # Usable speed samples/s below which the builder abstains and keeps the whole
+    # video. The fixtures observe 0.52/s on the one game that must abstain and
+    # 1.47-2.63/s on the four that must not, so 1.0 sits in a wide clean gap — but
+    # that also means the boundary is UNCONSTRAINED, not tuned: nothing has been
+    # measured between 0.52 and 1.47, and a game landing in there flips between
+    # condensing normally and shipping no condensed video at all, the most
+    # user-visible outcome on this path. Revisit with a real game in the gap
+    # before moving it.
+    condense_guard_min_track_rate: float = 1.0
 
     # Database
     database_url: str = LOCAL_DATABASE_URL

@@ -379,6 +379,12 @@ def active_windows_guarded(
     better score and the honest answer. The caller sees a normal window list and
     ships an uncondensed video.
 
+    `min_track_rate` says *that* an abstain region exists; it does not say where
+    its edge belongs. The fixtures sit at 0.52 samples/s (the game that must
+    abstain) and 1.47-2.63 (the four that must not), so the default 1.0 stands in
+    a wide clean gap with nothing observed inside it. Treat the boundary as
+    unconstrained rather than tuned.
+
     Raises on a missing frame height rather than abstaining on one: every speed
     here is normalized by it, so a zero would silently turn every game into an
     abstain. The condense stage catches and falls back to the rule-based windows,

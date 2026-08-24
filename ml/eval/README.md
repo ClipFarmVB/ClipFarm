@@ -190,6 +190,14 @@ trimmed and ships the game with no condensed cut at all. A 0.0% dead-removed row
 in the harness means this, and the offline runner prints `ABSTAINED` so it can't
 be mistaken for a broken run.
 
+**The abstain threshold is unconstrained, not tuned.** Only test3 is below it
+(0.52 usable speed samples/s); the other four sit at 1.47-2.63. The default 1.0
+stands in that gap, but nothing has been measured inside it, and a game landing
+between 0.52 and 1.47 flips between condensing normally and shipping no condensed
+video — the most user-visible outcome on this path. A fixture in the gap is what
+would settle it; until one exists, treat a move of
+`condense_guard_min_track_rate` as unevidenced in either direction.
+
 ## Comparing condense variants (CF-187)
 
 `deadtime_variants.py` holds the ladder that produced the guarded path. Its two

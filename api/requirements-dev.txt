@@ -11,3 +11,14 @@ pytest==8.3.4
 # it those tests importorskip themselves into a silent pass, which is the exact
 # failure mode requirements-dev exists to prevent.
 PyYAML==6.0.2
+
+# The condense stage's signal work is numpy, so api/tests/test_condense_windows.py
+# opens with `pytest.importorskip("numpy")`. numpy is installed by Dockerfile.api,
+# not by requirements.txt, so without this line the documented contributor
+# workflow (`pip install -r api/requirements-dev.txt && pytest tests`) skips that
+# whole file and still reports green — the CF-187 `[]`-is-a-verdict regression
+# included. CI only covers it by side effect of a numpy it installs for ml/tests.
+# PINNED to match Dockerfile.api: an unpinned dev install would hand local tests
+# numpy 2 while the image runs 1.26.4, across the pickle boundary that file
+# documents.
+numpy==1.26.4
