@@ -363,8 +363,18 @@ async def complete_upload(
     # discarding it over a storage hiccup costs the user far more than letting a
     # mislabelled file through to a worker that will fail to decode it anyway.
     # The cheaper wrong answer differs between the two, so the direction does.
-    header = await run_in_threadpool(storage.head_bytes, key, VIDEO_SIGNATURE_BYTES)
-    if header is not None and _sniff_video_container(header) is None:
+    # Decided from the size we already have rather than from the read below.
+    # An object too short to carry a container header is definitively not a
+    # video, and a ranged read is the wrong instrument for it: `bytes=0-15` on a
+    # zero-length object is unsatisfiable, so R2 answers 416, head_bytes returns
+    # None, and the fail-open path waves it through. Reading the size keeps the
+    # verdict independent of how storage chooses to answer that request — and
+    # saves the request entirely.
+    too_short = head["size"] < VIDEO_SIGNATURE_BYTES
+    header = None if too_short else await run_in_threadpool(
+        storage.head_bytes, key, VIDEO_SIGNATURE_BYTES
+    )
+    if too_short or (header is not None and _sniff_video_container(header) is None):
         logger.warning(
             "Upload for game %s is not a video container — discarding", game_id
         )
@@ -393,7 +403,7 @@ async def complete_upload(
                 f"{', '.join(sorted(settings.allowed_content_types_set))}."
             ),
         )
-    if header is None:
+    if header is None and not too_short:
         logger.warning(
             "Could not read the header of game %s to check its container — "
             "allowing the upload through", game_id,

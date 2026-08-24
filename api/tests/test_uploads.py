@@ -593,6 +593,42 @@ def test_a_non_video_upload_is_deleted_and_rejected(fake_storage, fake_task):
     assert fake_task.calls == [], "a rejected upload must never reach the worker"
 
 
+def test_a_zero_byte_upload_is_rejected(fake_storage, fake_task):
+    """The case the fail-open path would otherwise hide.
+
+    `bytes=0-15` on a zero-length object is unsatisfiable, so R2 answers 416,
+    `head_bytes` returns None, and "unreadable header" waves it through — an
+    empty file all the way to a GPU job. Decided from `head["size"]` instead,
+    which also keeps the verdict independent of exactly how storage answers an
+    unsatisfiable range.
+    """
+    fake_storage["_head"]["value"] = {"size": 0, "content_type": "video/mp4"}
+    fake_storage["_header"]["value"] = None
+    game = _uploading_game()
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert exc.value.status_code == 415
+    assert fake_storage["delete_file"] == ["raw/abc.mp4"]
+    assert fake_task.calls == []
+
+
+def test_an_object_too_short_to_sniff_is_not_read_at_all(fake_storage, fake_task, monkeypatch):
+    """Rejecting on size saves the ranged request rather than making one that
+    cannot succeed."""
+    reads: list = []
+    monkeypatch.setattr(storage, "head_bytes", lambda k, n: reads.append((k, n)))
+    fake_storage["_head"]["value"] = {"size": 4, "content_type": "video/mp4"}
+    game = _uploading_game()
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert exc.value.status_code == 415
+    assert reads == [], "no point asking storage for 16 bytes of a 4-byte object"
+
+
 def test_an_unreadable_header_allows_the_upload_through(fake_storage, fake_task):
     """Fails OPEN, which is the opposite of what a None from head_object does
     four lines above it — and deliberately.
