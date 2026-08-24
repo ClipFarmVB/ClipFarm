@@ -142,12 +142,27 @@ reviewer*, which is why a fresh pass keeps finding real things after both sides
 agreed a PR was ready. In this loop one session writes the code, opens the PR,
 reviews it and fixes it; nothing in that chain is cold unless you make it so.
 
-What "cold" withholds is **how the diff came to be**: the plan, the reasoning,
-the summary of what was built, and what any earlier round found. Give the
-subagent the PR number and let it read the repository itself. Re-deriving that
-context from cold is what a subagent normally costs you; here that cost is the
-point. Step 2 of [Working a ticket](#working-a-ticket) already spawns one to
-cross-check plans — same mechanism, pointed at a diff.
+**There are two kinds of round, and they do different jobs.**
+
+A **cold** round gets the PR number and nothing about how the diff came to be:
+no plan, no reasoning, no summary of what was built, no earlier findings. It
+reads the repository itself. Re-deriving that context is what a subagent
+normally costs you; here that cost is the point. Step 2 of
+[Working a ticket](#working-a-ticket) already spawns one to cross-check plans —
+same mechanism, pointed at a diff. **The first round on a PR is always cold**,
+and so is the round that awards `review-settled`.
+
+A **semi-cold** round is for checking a fix. It gets the finding it is checking,
+the commit that claims to address it, and the reply you posted — and it is asked
+to judge whether that finding is actually closed, then review the new head for
+anything the change introduced. It is anchored by construction: it will check
+the delta rather than re-derive the whole diff. That is the trade, and it buys
+the one thing a cold round cannot do — someone other than the author confirming
+the fix does what the finding asked.
+
+**Never let a semi-cold round settle a PR.** It was handed the previous
+reviewer's conclusions, so its silence inherits their blind spots; treating that
+as the terminal state is the anchored judgement stamped final, one remove away.
 
 **It is cold to this session, not to the PR.** Given a number it will read the
 body you wrote and every thread on it, including the "what changed" replies step
@@ -185,22 +200,17 @@ includes every PR you opened during this run). If a fix needs no human decision,
 implement it, push to that PR's branch, and reply on the thread saying what
 changed. If it needs a judgement call, log it and leave it.
 
-**This is a cycle, and the order matters.** A cold subagent posts the review.
-*Then* you push the fix. *Then* a **new** subagent, spawned just as cold, posts
-a separate review of the new head.
+**This is a cycle, and the order matters.** A cold subagent posts the first
+review. *Then* you push the fix and reply saying what changed. *Then* a
+**semi-cold** subagent checks that fix against the finding it claims to close.
+*Then*, once nothing is left open, a fresh **cold** round decides whether the PR
+settles.
 
-That second review is a **full review of the PR as it now stands**, not a
-verification of your fix — it cannot check that the fix holds, because it is not
-told a fix happened. That is the trade: you give up a targeted check on the
-patch and get an unanchored pass over the whole diff instead.
-
-**So a later round's silence is not evidence.** A round that does not re-raise a
-finding is exactly what you would expect from a reviewer that found *different*
-things this time — which the closing paragraph says is the norm. Closing a
-finding is **your** job, not a reviewer's: check your own fix against what the
-finding actually said, and reply on the thread with the commit that does it.
-That is a fair use of this session — verifying a specific claim against specific
-lines is the one thing anchoring does not spoil.
+**A cold round's silence is not evidence a fix landed.** A round that does not
+re-raise a finding is exactly what you would expect from a reviewer that found
+*different* things this time — which the closing paragraph says is the norm.
+That is why fixes are closed by a semi-cold round that was pointed at them, and
+why the settle verdict still needs a cold one.
 
 **Never describe a fix inside the review that found it.** Two of the five PRs in
 the second run did exactly that — found something, fixed it, and posted one
@@ -210,23 +220,23 @@ PR forever. The next round is not ceremony: it is a fresh reviewer over code
 that changed *after* the previous one formed its judgement.
 
 **Cycle until a cold round produces no Critical and no Medium finding.** Not a
-fixed number of rounds: each round is a new subagent reading the diff without
-the last one's conclusions, so it is a genuinely different pass, and stopping at
-two stops while that is still paying. Nits may remain — requiring zero findings
-would review forever.
+fixed number of rounds: each cold round is a new subagent reading the diff
+without the last one's conclusions, so it is a genuinely different pass, and
+stopping at two stops while that is still paying. Nits may remain — requiring
+zero findings would review forever.
 
 **When a cold round clears that bar, label the PR `review-settled`.** That is
 the terminal state, and it is what stops future runs re-reviewing finished work.
 
 **The bar spans every round, not just the last one.** Settle only when the most
-recent cold round raised no Critical or Medium finding **and** every Critical
-and Medium from earlier rounds has a fix you can point at — a commit, and a
-reply saying so. A quiet round on top of an unfixed Critical is a reviewer
-looking elsewhere, and treating it as the terminal state buries the finding
-under a label that stops anyone looking again.
+recent **cold** round raised no Critical or Medium finding **and** every Critical
+and Medium from earlier rounds has been closed by a semi-cold check. A quiet
+round on top of an unfixed Critical is a reviewer looking elsewhere, and treating
+it as the terminal state buries the finding under a label that stops anyone
+looking again.
 
-**Only a cold reviewer's verdict earns the label.** This session labelling its
-own work settled is the anchored judgement stamped final.
+**Only a cold reviewer's verdict earns the label** — never this session's, and
+never a semi-cold round's.
 
 **Label last.** Fix or drop the remaining nits *before* applying it. A commit
 after the label lands re-opens the PR for review under the rule above, which is
@@ -244,36 +254,41 @@ code, so it re-derives the same blocked finding off the same unchanged lines.
 consume the whole night. Hitting it is the same outcome: fix what you can,
 label `unsettled`, record, move on.
 
-**Two passes, in this order.**
+**Take one PR all the way through before opening the next.** Review it, fix it,
+check the fix, settle or label it — then move on. Do not run a pass over every
+open PR and come back for a second lap.
 
-*First pass — breadth.* Give every PR that has no review at all one cold round.
-At twenty open PRs that is twenty reviews, and it is the highest-value spend in
-the run: a PR nobody has looked at once benefits more from a first pass than a
-reviewed PR does from a fourth.
+The reason is that this loop gets interrupted: context is compacted between
+iterations, and a usage limit stops the run outright, at no point of your
+choosing. Finishing PRs one at a time means whenever that happens, everything
+touched so far is in a terminal state — `review-settled`, `unsettled`, or
+untouched — and the next run can tell those apart. A breadth-first pass that is
+cut off leaves every PR half-cycled, which is precisely the "abandoned
+mid-cycle looks identical to reviewed clean" condition these labels exist to
+prevent. It also keeps the state you carry small: one PR's findings, not twenty.
 
-*Second pass — depth.* Then pick **at most three PRs** to carry through the
-fix-and-re-review cycle, preferring ones this run opened, since those are the
-ones you may push to. Cycle each to the clean bar or the four-round ceiling.
+The cost is real: if the run dies early, PRs at the back of the queue got
+nothing at all. So the order matters. Take them: PRs this run opened, then
+`overnight-ok` work by priority, then oldest first.
 
-**Run budget: 32 cold reviews**, which covers both passes with room over. The
-ceiling alone would permit eighty — a whole night of nothing but reviewing,
-which together with "stop on usage limits" means step 3 never happens. Note that
-the first pass deliberately eats most of a night when the queue is this deep;
-that is a real outcome to report, not a failure.
+**Run budget: 32 reviews per run**, cold and semi-cold together. Four rounds
+across twenty PRs would permit far more — a whole night of nothing but
+reviewing, which together with "stop on usage limits" means step 3 never
+happens. When the budget is spent, stop reviewing and say so in the report.
 
 If the budget runs out with findings open on a PR, it gets the same treatment as
 the ceiling: `unsettled`, recorded, move on. Never leave a PR with open findings
 carrying no label — unlabelled and unreviewed are indistinguishable to the next
 run, which is the whole reason these labels exist.
 
-**Log every round as you finish it** — `PR #<n> — cold round <k>/4, budget
-<used>/32` plus the tiers found. Neither bound is enforceable unless the count
-survives: context may be compacted mid-run, and counts you hold in your head
-reset to zero when it is. Recover both from the log at the start of every
+**Log every round as you finish it** — `PR #<n> — <cold|semi-cold> round <k>/4,
+budget <used>/32` plus the tiers found. Neither bound is enforceable unless the
+count survives: context may be compacted mid-run, and counts you hold in your
+head reset to zero when it is. Recover both from the log at the start of every
 iteration, and cross-check the per-PR count against the review comments already
 on the PR.
 
-None of this proves a PR clean. A fresh subagent is unanchored but still the
+None of this proves a PR clean. A cold subagent is unanchored but still the
 same model with the same priors, so a new round is a different pass, not an
 independent one: it finds *different* things, not *all* things, and the returns
 diminish across rounds without reaching zero. That is exactly why there is a
@@ -387,11 +402,13 @@ Put the same summary at the top of `.claude/overnight-log.md`.
 
 The report contains:
 
-- PRs reviewed, how many cold rounds each took, and findings by tier
+- PRs reviewed, how many rounds each took and of which kind, and findings by
+  tier
 - PRs labelled `unsettled`, why — human decision needed, branch you cannot push
   to, four-round ceiling, or review budget exhausted — and what is still
   outstanding on each
-- Whether the review budget ran out, and how many PRs never got a first round
+- Whether the review budget ran out, and which PRs never got a first round at
+  all — with a deep queue this is the expected shape of a run, not a failure
 - PRs opened, with card and branch — and **what to test to verify each one**
 - Cards filed, one sentence each on why
 - Tickets attempted but abandoned, and why
