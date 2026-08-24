@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """CF-234: count clips carrying a player their game's owner does not own.
 
 The IDOR in `tag_clip` is closed, but closing a write path does nothing about
@@ -22,11 +21,20 @@ that returns "clean", which is indistinguishable from a real all-clear. Hence
 the target banner below: every run says what it queried, so the answer can be
 read against the right database rather than assumed.
 
-    cd api && python scripts/audit_cross_tenant_tags.py
+    cd api && python scripts/audit_cross_tenant_tags.py   # POSIX
+    cd api; py scripts/audit_cross_tenant_tags.py         # Windows
 
 PowerShell has no inline env-var prefix, so `DATABASE_URL=... python ...` does
 not work there; either rely on api/.env as above or set `$env:DATABASE_URL`
 first.
+
+**No shebang on purpose.** The `py` launcher reads one and dispatches on it, so
+`#!/usr/bin/env python` sends it hunting for a `python` on PATH — and where that
+is the Microsoft Store alias rather than a real interpreter, `py <script>` dies
+with "Python was not found" while `py -c` works fine. Nothing here is executed
+directly: docker-compose.yml calls `python scripts/auto_migrate.py` with an
+explicit interpreter, and so does every documented invocation of this script.
+The line bought nothing and cost the documented Windows command.
 
 Exit codes: 0 clean, 1 rows found, 2 could not complete the check. 2 is
 deliberately wider than "could not connect" — the handler catches a missing
@@ -91,7 +99,10 @@ async def main() -> int:
     # Before the query, so it is on the record even when the run fails: an
     # exit 2 that names the host it could not reach is diagnosable, and an
     # exit 0 is only meaningful once you can see it was not localhost.
-    print(f"querying {target(engine.url)}")
+    # flush: stdout is block-buffered into a pipe while stderr is not, so
+    # without this the "could not query" line below overtakes the banner in
+    # exactly the case the banner is for — someone capturing output to paste.
+    print(f"querying {target(engine.url)}", flush=True)
 
     try:
         async with AsyncSessionLocal() as db:
