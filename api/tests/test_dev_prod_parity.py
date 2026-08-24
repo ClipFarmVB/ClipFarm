@@ -169,7 +169,14 @@ def _assert_no_interpolation(filename: str, service) -> None:
     branch keeps calling worse than none, because the run then *passes* and the
     pass gets read as evidence. Ad-hoc sizes belong on the base file's knobs.
     """
-    fields = {k: service.get(k) for k in ("mem_limit", "memswap_limit", "cpus")}
+    # RESOURCE_KEYS, not a hand-list: an overlay reopens this hole on whichever
+    # field it interpolates, so the guard has to cover every field that caps
+    # anything, not the three we happen to use today. `str()` on the whole node
+    # is what makes the nested ones (`ulimits`, `blkio_config`,
+    # `deploy.resources`) count — a `${...}` anywhere inside stringifies too.
+    fields = {k: service.get(k) for k in RESOURCE_KEYS if k in service}
+    if "deploy" in service:
+        fields["deploy"] = service["deploy"]
     fields.update(_env_map(service))
     for key, value in fields.items():
         assert "${" not in str(value), (
