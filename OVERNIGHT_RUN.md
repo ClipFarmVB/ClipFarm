@@ -89,8 +89,8 @@ most expensive kind of surprise in an unattended run.
   the honest signal for that. Your PRs still get reviewed (step 1) — by a cold
   subagent, never by you — and a draft reviews and takes pushes exactly like any
   other. You never merge, never deploy.
-- **Never review any PR from this session** — not only the diffs you wrote.
-  Every review is spawned cold; see step 1.
+- **You are never the reviewer.** Every PR still gets reviewed — by a cold
+  subagent, spawned per step 1, whether or not this session wrote the diff.
 - **Maximum 5 new PRs** and **6 new cards** per run.
 - **No attribution stamps.** Do not add "Generated with Claude Code", a
   `Co-Authored-By` trailer, a session link, or any similar footer to commits, PR
@@ -121,10 +121,13 @@ below — no Critical and no Medium finding, nits permitted. Without it, "alread
 reviewed" has to be inferred from timestamps, and a PR abandoned mid-cycle looks
 identical to one reviewed clean.
 
-**Skip PRs labelled `unsettled` for the rest of this run.** That label is the
-opposite record: rounds were spent and Critical or Medium findings are still
-open. A later run may pick it up again with its round count reset — a human
-removing the label says it has been dealt with.
+**Skip PRs labelled `unsettled`** unless commits have landed since the label was
+applied — the same carve-out `review-settled` gets, and for the same reason: a
+PR nobody can push a fix to and a PR that has since been fixed must not look
+alike. The label is the opposite record to `review-settled`: Critical or Medium
+findings are open and a human is wanted. New commits make it eligible again with
+its round count reset; without them it stays skipped until a human removes the
+label.
 
 Compare each PR's head commit against the commit of its most recent review. If
 there are commits since, it needs another round.
@@ -146,10 +149,22 @@ context from cold is what a subagent normally costs you; here that cost is the
 point. Step 2 of [Working a ticket](#working-a-ticket) already spawns one to
 cross-check plans — same mechanism, pointed at a diff.
 
+**It is cold to this session, not to the PR.** Given a number it will read the
+body you wrote and every thread on it, including the "what changed" replies step
+2 requires — so your framing reaches it anyway, through GitHub rather than
+through the prompt. That leak is not fully closable while reviews happen on a
+PR. Narrow it: write PR bodies and thread replies to state *what changed*, not
+to argue the change is right. A body that pre-empts objections anchors every
+reviewer who ever reads it, cold or not.
+
 What "cold" does **not** withhold is how to do the job. Give it the review
-instructions below in full, and the [Hard rules](#hard-rules) — a subagent in a
-sandbox inherits none of your local settings, so the no-attribution-stamps rule
-has to travel with it or its review comment arrives stamped.
+instructions below in full, plus the rules that bind it as an agent: **no
+attribution stamps** on its comment, never push, never merge, never deploy,
+never echo a credential. Pass those rules explicitly — do **not** hand it the
+[Hard rules](#hard-rules) section wholesale, which would tell the reviewer you
+just spawned that it is never the reviewer. A subagent in a sandbox inherits
+none of your local settings, so the no-stamp rule has to travel with it or its
+review arrives signed.
 
 Its brief: run `/code-review` on that PR and post the findings as one review
 comment, in tiers:
@@ -177,9 +192,15 @@ a separate review of the new head.
 That second review is a **full review of the PR as it now stands**, not a
 verification of your fix — it cannot check that the fix holds, because it is not
 told a fix happened. That is the trade: you give up a targeted check on the
-patch and get an unanchored pass over the whole diff instead. A finding counts
-as resolved when a later cold round stops raising it, not because a reviewer
-signed it off.
+patch and get an unanchored pass over the whole diff instead.
+
+**So a later round's silence is not evidence.** A round that does not re-raise a
+finding is exactly what you would expect from a reviewer that found *different*
+things this time — which the closing paragraph says is the norm. Closing a
+finding is **your** job, not a reviewer's: check your own fix against what the
+finding actually said, and reply on the thread with the commit that does it.
+That is a fair use of this session — verifying a specific claim against specific
+lines is the one thing anchoring does not spoil.
 
 **Never describe a fix inside the review that found it.** Two of the five PRs in
 the second run did exactly that — found something, fixed it, and posted one
@@ -197,34 +218,60 @@ would review forever.
 **When a cold round clears that bar, label the PR `review-settled`.** That is
 the terminal state, and it is what stops future runs re-reviewing finished work.
 
-**Only a cold reviewer's verdict earns the label.** This session labelling its
-own work settled is the anchored judgement stamped final, and that label is
-precisely what stops anyone looking again. Do not apply it while Critical or
-Medium findings are outstanding.
+**The bar spans every round, not just the last one.** Settle only when the most
+recent cold round raised no Critical or Medium finding **and** every Critical
+and Medium from earlier rounds has a fix you can point at — a commit, and a
+reply saying so. A quiet round on top of an unfixed Critical is a reviewer
+looking elsewhere, and treating it as the terminal state buries the finding
+under a label that stops anyone looking again.
 
-**A finding you cannot fix ends the cycle immediately — it does not spend
-rounds.** If a Critical or Medium finding needs a human decision, or sits on a
-branch you may not push to, stop cycling that PR now: further rounds are cold to
-your reasoning but not to the code, so every one of them re-derives the same
-finding off the same unchanged lines. Label it `unsettled`, write the finding in
-the log and the report, and move on.
+**Only a cold reviewer's verdict earns the label.** This session labelling its
+own work settled is the anchored judgement stamped final.
+
+**Label last.** Fix or drop the remaining nits *before* applying it. A commit
+after the label lands re-opens the PR for review under the rule above, which is
+the opposite of what the label is for.
+
+**A finding you cannot fix stops the *cycling*, not the work.** If a Critical or
+Medium needs a human decision, or sits on a branch you may not push to, first
+fix everything else that round raised and push it — those findings are real and
+abandoning them wastes the round that found them. *Then* label the PR
+`unsettled`, record what is left in the log and the report, and move on. Do not
+spend further rounds on it: a new round is cold to your reasoning but not to the
+code, so it re-derives the same blocked finding off the same unchanged lines.
 
 **Ceiling: four cold rounds per PR per run**, so a pathological PR cannot
-consume the whole night. Hitting it is the same outcome as above: `unsettled`,
-findings recorded, move on.
+consume the whole night. Hitting it is the same outcome: fix what you can,
+label `unsettled`, record, move on.
 
-**Log every round as you finish it** — `PR #<n> — cold round <k>/4` plus the
-tiers found. The ceiling is only enforceable if the count survives; context may
-be compacted mid-run, and a count you are holding in your head resets to zero
-when it is. Recover it from the log at the start of each iteration, and check it
-against the review comments already on the PR.
+**Two passes, in this order.**
 
-**Run budget: 20 cold reviews.** Twenty PRs are open at four rounds each, so the
-ceiling alone permits eighty reviews — a whole run of nothing but reviewing,
-which combined with "stop on usage limits" means step 3 never happens. So:
-**give every PR that has no review at all one cold round before any PR gets a
-second.** Breadth first. When the budget is spent, stop reviewing, say so in the
-report, and go to step 3 if anything is left.
+*First pass — breadth.* Give every PR that has no review at all one cold round.
+At twenty open PRs that is twenty reviews, and it is the highest-value spend in
+the run: a PR nobody has looked at once benefits more from a first pass than a
+reviewed PR does from a fourth.
+
+*Second pass — depth.* Then pick **at most three PRs** to carry through the
+fix-and-re-review cycle, preferring ones this run opened, since those are the
+ones you may push to. Cycle each to the clean bar or the four-round ceiling.
+
+**Run budget: 32 cold reviews**, which covers both passes with room over. The
+ceiling alone would permit eighty — a whole night of nothing but reviewing,
+which together with "stop on usage limits" means step 3 never happens. Note that
+the first pass deliberately eats most of a night when the queue is this deep;
+that is a real outcome to report, not a failure.
+
+If the budget runs out with findings open on a PR, it gets the same treatment as
+the ceiling: `unsettled`, recorded, move on. Never leave a PR with open findings
+carrying no label — unlabelled and unreviewed are indistinguishable to the next
+run, which is the whole reason these labels exist.
+
+**Log every round as you finish it** — `PR #<n> — cold round <k>/4, budget
+<used>/32` plus the tiers found. Neither bound is enforceable unless the count
+survives: context may be compacted mid-run, and counts you hold in your head
+reset to zero when it is. Recover both from the log at the start of every
+iteration, and cross-check the per-PR count against the review comments already
+on the PR.
 
 None of this proves a PR clean. A fresh subagent is unanchored but still the
 same model with the same priors, so a new round is a different pass, not an
@@ -341,8 +388,10 @@ Put the same summary at the top of `.claude/overnight-log.md`.
 The report contains:
 
 - PRs reviewed, how many cold rounds each took, and findings by tier
-- PRs labelled `unsettled`, why (human decision needed, or round ceiling hit),
-  and what is still outstanding on each
+- PRs labelled `unsettled`, why — human decision needed, branch you cannot push
+  to, four-round ceiling, or review budget exhausted — and what is still
+  outstanding on each
+- Whether the review budget ran out, and how many PRs never got a first round
 - PRs opened, with card and branch — and **what to test to verify each one**
 - Cards filed, one sentence each on why
 - Tickets attempted but abandoned, and why
