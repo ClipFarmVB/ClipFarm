@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from ml.eval import harness, metrics
 from ml.eval.harness import (
     _seconds_to_ts,
     format_deadtime_audit,
@@ -90,3 +91,100 @@ class TestLoadWindowsJson:
         p.write_text('{"windows": []}', encoding="utf-8")
         with pytest.raises(SystemExit, match="keep"):
             load_windows_json(p)
+
+
+def _floats(obj, path=""):
+    """Every float in a nested result row, with its path."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _floats(v, f"{path}.{k}")
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            yield from _floats(v, f"{path}[{i}]")
+    elif isinstance(obj, float):
+        yield path, obj
+
+
+def _noisy_signals(empty: bool = False):
+    """EvalSignals carrying the exact float tails the committed baseline has."""
+    return metrics.EvalSignals(
+        captured_pct=None if empty else 0.18506944444444462,
+        buckets=metrics.CaptureBuckets(well_captured=3, butchered=1, missed=2, total=6),
+        # `total` is a property, not a field — it sums the four below, which is
+        # exactly how the noisy tail in the committed baseline arises.
+        incorrect=metrics.IncorrectTime(
+            junk=59.99999999999943,
+            lead_slop=5.000000000000014,
+            tail_slop=11.833333333333414,
+            bridge=0.0,
+        ),
+        auc=None if empty else 0.8312500000000003,
+        human_seconds=415.16666666666663,
+        model_seconds=302.3333333333335,
+        per_clip=[],
+        per_window=[],
+    )
+
+
+def _noisy_deadtime(empty: bool = False):
+    return metrics.DeadTimeSignals(
+        dead_removed_pct=None if empty else 0.6843121036669423,
+        live_removed_sec=516.6666666666663,
+        live_removed_pct=None if empty else 0.415995705850778,
+        kept_play_pct=None if empty else 0.5840042941492221,
+        condense_ratio=None if empty else 0.4067395264116576,
+        human_keep_sec=1241.6666666666665,
+        human_dead_sec=2418.333333333333,
+        model_keep_sec=1488.666666666667,
+        duration=3660.0,
+        over_cut_live=[(1.23456789, 2.3456789)],
+        missed_dead=[(10.111111111, 20.222222222)],
+    )
+
+# ── CF-94: result rows are rounded on write ─────────────────────────────────
+#
+# results/*.jsonl is committed so runs can be diffed across versions. Raw float
+# tails defeat that — `59.99999999999943` against `60.00000000000012` is the
+# same number twice and reads as a change.
+
+
+class TestResultRounding:
+    def test_every_float_in_a_result_row_is_rounded(self):
+        """Both serialisers, because there are two result files and the card
+        named one. `test1_deadtime.jsonl` was as noisy as `test1.jsonl`."""
+        signals = harness._signals_to_dict(_noisy_signals())
+        dead = harness._deadtime_to_dict(_noisy_deadtime())
+
+        for name, row in (("pre_gate", signals), ("deadtime", dead)):
+            for path, value in _floats(row):
+                places = len(repr(value).split(".")[-1])
+                assert places <= harness.RESULT_FLOAT_PLACES, (
+                    f"{name}{path} = {value!r} kept {places} decimal places"
+                )
+
+    def test_none_survives_rounding(self):
+        """captured_pct and auc are None when undefined — no human clips, or no
+        positive/negative windows to separate. `round(None, 4)` is a TypeError,
+        so a rounder that forgets this crashes the run that records the result
+        rather than the one that computes it."""
+        assert harness._round(None) is None
+        assert harness._signals_to_dict(_noisy_signals(empty=True))["captured_pct"] is None
+        assert harness._signals_to_dict(_noisy_signals(empty=True))["auc"] is None
+        assert harness._deadtime_to_dict(_noisy_deadtime(empty=True))["dead_removed_pct"] is None
+
+    def test_counts_are_left_as_integers(self):
+        """The buckets are counts, not measurements. A round() there would be a
+        no-op that reads as a guard against something."""
+        buckets = harness._signals_to_dict(_noisy_signals())["buckets"]
+
+        assert all(isinstance(v, int) for v in buckets.values()), buckets
+
+    def test_rounding_does_not_move_a_value_meaningfully(self):
+        """The point is readability, not precision loss. 4dp is 0.01% on a
+        ratio and 0.1 ms on a second — if this ever fails, the places constant
+        has been dropped far enough to change what the metric says."""
+        raw = _noisy_signals()
+        row = harness._signals_to_dict(raw)
+
+        assert abs(row["incorrect_seconds"]["total"] - raw.incorrect.total) < 1e-3
+        assert abs(row["captured_pct"] - raw.captured_pct) < 1e-3
