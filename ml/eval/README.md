@@ -78,7 +78,7 @@ would be config that looks load-bearing and is not.
 Nothing in the repo hands `eval` the queue — which is not the same as it being
 unable to reach one. `eval` still loads your `.env.docker`, so a
 `CELERY_BROKER_URL` set there does arrive, and `run --rm eval celery ...` would
-then take real jobs and run them unconstrained. Don'''t.
+then take real jobs and run them unconstrained. Don't.
 
 Not the same as "eval never runs ffmpeg": `--offline` calls
 `compute_audio_energy`, which shells out to ffmpeg to pull mono PCM
