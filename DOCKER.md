@@ -57,25 +57,31 @@ Use `docker compose exec db psql -U postgres -d clipfarm` if you need a DB shell
 ## 3) Going faster, or smaller
 
 The worker runs at production's size by default, which is the point — but it
-also means a local game processes at production's speed. Both directions are one
-prefixed command:
+also means a local game processes at production's speed. Both directions are an
+overlay file, not a remembered env-var prefix:
 
 ```bash
-WORKER_MEM_LIMIT=8g WORKER_CPUS=4 WORKER_FFMPEG_THREADS=4 docker compose up worker
+docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.fast.yml up worker
 ```
 ```bash
-WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 WORKER_FFMPEG_THREADS=4 docker compose up worker
+docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.repro.yml up worker
 ```
 
-The first is the fast path for "does the pipeline work" — it costs the fidelity
-the defaults exist for, so no timing or memory claim may come from such a run.
-The second reproduces the CF-224 OOM.
+The first is the fast path for "does the pipeline work". It costs the fidelity
+the defaults exist for, so **no timing or memory claim may come from such a
+run** — the rule is written in the file. The second reproduces the CF-224 OOM,
+and a run under it that *completes* is the interesting result.
+
+**Keep `--env-file .env.docker`** on every one of these, exactly as in step 2.
+It is what Compose interpolates `${...}` from, so without it `POSTGRES_HOST_PORT`
+and friends silently fall back to their defaults — and the db container tries to
+bind 5432 whatever your `.env.docker` says.
 
 CPU-bound work that is *not* about production's box — the eval harness, the
 tuning scripts — goes on the unconstrained `eval` service instead:
 
 ```bash
-docker compose run --rm --no-deps eval python -m ml.eval.harness --help
+docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.harness --help
 ```
 
 Full detail in `README.md` § Local Development.

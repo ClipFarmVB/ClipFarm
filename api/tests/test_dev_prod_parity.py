@@ -15,8 +15,15 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Render plan → (memory, CPUs). Only the plans this repo actually uses; an
-# unknown one should fail loudly rather than silently skip the check.
+# Render plan → (memory, CPUs), from https://render.com/pricing, checked
+# 2026-08-24. Only the plans this repo actually uses; an unknown one fails
+# loudly rather than silently skipping the check.
+#
+# This table is a copy of a vendor's spec sheet, which is the one kind of drift
+# this file cannot detect: if Render redefines `standard`, every assertion below
+# stays green while the dev worker stops matching the real box. Nothing here can
+# fix that — re-read the pricing page when a plan changes, or when a local run
+# and a production run disagree about memory for no reason either can explain.
 RENDER_PLANS = {
     "starter": ("512m", "0.5"),
     "standard": ("2g", "1.0"),
@@ -45,8 +52,19 @@ RESOURCE_KEYS = (
     "oom_kill_disable",
     "blkio_config",
     "ulimits",
-    "deploy",
 )
+
+# `deploy` is deliberately NOT in that tuple. It is a container for unrelated
+# things — `replicas`, `restart_policy`, `labels` — and only `deploy.resources`
+# caps anything, so treating the whole key as a limit would report "the VPS
+# inherits a resource limit" at a worker that had merely gained a restart
+# policy. Checked separately, by the one sub-key that means what RESOURCE_KEYS
+# means.
+DEPLOY_RESOURCES = ("deploy", "resources")
+
+
+def _has_deploy_resources(service) -> bool:
+    return bool((service.get("deploy") or {}).get("resources"))
 
 
 class _Reset:
@@ -185,6 +203,12 @@ def test_dev_worker_memory_and_cpu_track_the_render_plan():
     )
     memory, cpus = RENDER_PLANS[plan]
 
+    for key in ("mem_limit", "cpus"):
+        assert key in dev, (
+            f"the dev worker no longer sets `{key}`, so it runs on the whole host "
+            "and cannot reproduce a production OOM — which is the entire point of "
+            "CF-241 (docker-compose.yml)"
+        )
     assert _bytes(_default(str(dev["mem_limit"]))) == _bytes(memory), (
         f"clipfarm-worker is on `{plan}` ({memory}) but the dev worker's mem_limit "
         "defaults to a different size — move them together (docker-compose.yml)"
@@ -235,6 +259,10 @@ def test_dev_worker_ffmpeg_threads_match_production():
         "to close (docker-compose.yml)"
     )
     dev_threads = _default(dev_env["FFMPEG_THREADS"])
+    # str() on both sides: render.yaml quotes its value today, but YAML would
+    # hand back an int the moment someone unquotes it, and `"1" == 1` is False.
+    # The test would then fail with a message reading `1 != 1`.
+    prod_threads = str(prod_threads)
 
     assert dev_threads == prod_threads, (
         f"production runs FFMPEG_THREADS={prod_threads} and the dev worker defaults "
@@ -250,6 +278,8 @@ def test_eval_service_is_unconstrained_and_not_started_by_default():
     evaluation = _compose_service(REPO_ROOT / "docker-compose.yml", "eval")
 
     constrained = [k for k in RESOURCE_KEYS if k in evaluation]
+    if _has_deploy_resources(evaluation):
+        constrained.append("deploy.resources")
     assert not constrained, (
         f"the eval service sets {', '.join(constrained)}; it exists precisely to run "
         "unconstrained (CF-241) — if a sweep needs production's limits, run it on "
@@ -310,6 +340,11 @@ def test_the_vps_overlay_states_every_dev_resource_limit():
     dev = _compose_service(REPO_ROOT / "docker-compose.yml", "worker")
     vps = _compose_service(REPO_ROOT / "docker-compose.prod.yml", "worker")
 
+    assert not _has_deploy_resources(dev) or _has_deploy_resources(vps), (
+        "docker-compose.yml caps the dev worker under `deploy.resources` and "
+        "docker-compose.prod.yml is silent about it, so the VPS inherits it"
+    )
+
     for key in RESOURCE_KEYS:
         if key not in dev:
             continue
@@ -342,4 +377,48 @@ def test_the_vps_overlay_pins_its_own_ffmpeg_threads():
         "docker-compose.prod.yml must pin FFMPEG_THREADS: the dev file defaults it "
         "to Render's 1 (CF-241), and the VPS would inherit that silently. Pin it "
         "there — including if the right answer turns out to be the same number"
+    )
+
+
+def test_the_repro_overlay_still_reproduces_the_oom():
+    """docker-compose.repro.yml exists to fail. Every number in it is
+    load-bearing, and getting one wrong makes the run *succeed* — which reads as
+    "already fixed" rather than as a broken repro. That is the failure mode this
+    whole branch calls worse than none, so it is pinned.
+    """
+    repro = _compose_service(REPO_ROOT / "docker-compose.repro.yml", "worker")
+
+    assert _bytes(_default(str(repro["mem_limit"]))) == _bytes("512m"), (
+        "the repro overlay must cap memory at 512m — Render's `starter`, the box "
+        "CF-224 actually died on"
+    )
+    assert str(repro["memswap_limit"]) == str(repro["mem_limit"]), (
+        "the repro overlay must leave no swap: 512 MB of it is enough to carry the "
+        "encode that killed production, and the run comes back green"
+    )
+    assert float(_default(str(repro["cpus"]))) == 0.5
+
+    threads = int(_default(_env_map(repro)["FFMPEG_THREADS"]))
+    assert threads >= 4, (
+        f"the repro overlay runs FFMPEG_THREADS={threads}. CF-224 measured the "
+        "ceiling: 1 thread peaks at 407 MB and survives, 2 at 468 MB, and only "
+        "4-or-unbounded exceeds 512 MB. Below 4 this overlay reproduces nothing "
+        "and reports success"
+    )
+
+
+def test_the_fast_overlay_is_faster_than_the_default_and_still_swapless():
+    """The fast path has to actually be one — an overlay that quietly matches the
+    defaults is a file people invoke for nothing.
+    """
+    dev = _compose_service(REPO_ROOT / "docker-compose.yml", "worker")
+    fast = _compose_service(REPO_ROOT / "docker-compose.fast.yml", "worker")
+
+    assert float(_default(str(fast["cpus"]))) > float(_default(str(dev["cpus"]))), (
+        "docker-compose.fast.yml gives the worker no more CPU than the default "
+        "does, so it is a file that buys nothing"
+    )
+    assert str(fast["memswap_limit"]) == str(fast["mem_limit"]), (
+        "even the fast path stays swapless: swap makes `did it work` unreliable "
+        "in a different way than it makes `did it fit` unreliable"
     )

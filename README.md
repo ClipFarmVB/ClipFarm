@@ -246,32 +246,41 @@ Notes:
   OOM, check `docker info` for the "No swap limit support" warning before
   believing it.
 
-  Both directions are sanctioned, and both are one line. All three knobs are
-  namespaced — `WORKER_*`, never the app's own `FFMPEG_THREADS` — so they are
-  unambiguously compose's, read from the shell you prefix or from the file
-  `--env-file` names:
+  Both directions are sanctioned, and both are a **file** rather than a
+  remembered prefix — the same reasoning that gave `eval` its own service:
 
   ```bash
-  WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 WORKER_FFMPEG_THREADS=4 docker compose up worker
+  docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.repro.yml up worker
   ```
   ```bash
-  WORKER_MEM_LIMIT=8g WORKER_CPUS=4 WORKER_FFMPEG_THREADS=4 docker compose up worker
+  docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.fast.yml up worker
   ```
 
-  The first reproduces the production OOM; the second is the **fast path for
-  local end-to-end runs**, for when the question is "does the pipeline work" and
-  waiting on one core is just waiting. It costs you the fidelity the defaults
-  exist for, so no timing or memory claim may come from a run like that — those
-  need default limits.
+  The first reproduces the production OOM — every number in it is load-bearing,
+  which is why they are pinned in the file and in `api/tests/`. The second is the
+  **fast path for local end-to-end runs**, for when the question is "does the
+  pipeline work" and waiting on one core is just waiting. It costs you the
+  fidelity the defaults exist for, so no timing or memory claim may come from a
+  run like that — those need default limits.
+
+  **Keep `--env-file .env.docker`.** It is what Compose interpolates from, and
+  dropping it does not fall back to `.env.docker` — it falls back to the
+  defaults, so `POSTGRES_HOST_PORT` is ignored and the db container fights
+  whatever is already on 5432. For a one-off size the overlays do not cover,
+  the `WORKER_MEM_LIMIT` / `WORKER_CPUS` / `WORKER_FFMPEG_THREADS` knobs still
+  work as a prefix; they are namespaced (never the app's own `FFMPEG_THREADS`)
+  so it is unambiguous which side reads them.
 
   Anything CPU-bound and *not* about production's box — the eval harness, the
   tuning scripts — belongs on the `eval` service: same image, no limits, and
   profile-gated so `up` never starts it.
-  `docker compose run --rm --no-deps eval python -m ml.eval.harness --help`.
-  It is not a second worker and cannot become one: no `depends_on`, no celery
-  command, and no broker URLs — `run --rm eval celery ...` finds `localhost:6379`
-  in a container with no redis and connects to nothing. To process a real game
-  faster, raise the worker's limits above. See `ml/eval/README.md`.
+  `docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.harness --help`.
+  Nothing in the repo hands it the queue: no `depends_on`, no celery command,
+  and no broker URLs, so `run --rm eval celery ...` looks for `localhost:6379` in
+  a container with no redis. That is not the same as it being unable to reach
+  one — `eval` still loads your `.env.docker`, so a `CELERY_BROKER_URL` set there
+  does arrive, and those jobs would then run unconstrained. Don't. To process a
+  real game faster, use the fast overlay above. See `ml/eval/README.md`.
 - Modal GPU is optional **for the dev stack only**, and the deployed image has no
   torch to fall back to (CF-164) — see `DEPLOY_RENDER.md`. Without `MODAL_TOKEN_*`
   in Docker Compose, ball tracking and pose have no local runtime and the pipeline

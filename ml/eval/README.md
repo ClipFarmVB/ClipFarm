@@ -68,7 +68,9 @@ box itself (encode timings, memory headroom); a correctness sweep held to 1 CPU
 is just a slower sweep.
 
 `eval` is profile-gated, so `docker compose up` never starts it and every
-invocation below is a one-shot `run --rm`. It has no default command — a bare
+invocation below is a one-shot `run --rm`. Keep the `--env-file .env.docker`:
+Compose interpolates `${...}` from it, and without it the stack's ports and
+limits silently fall back to their defaults. It has no default command — a bare
 `run eval` prints usage and exits 64 rather than starting a stray uvicorn. It
 pins no `FFMPEG_THREADS` and no broker URLs, because neither is read on an eval
 path: `Settings.ffmpeg_threads` reaches only `recut_clip_task` and
@@ -88,7 +90,7 @@ mind.
 
 ```bash
 # Offline: replay detection + scoring from the R2 ball-cache (no re-tracking).
-docker compose run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
+docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
   eval python -m ml.eval.harness --test test1 --version my-change --offline
 
 # Clips-json: score a pre-dumped {pre_gate, post_gate} window list.
@@ -101,7 +103,7 @@ python -m ml.eval.harness --mode deadtime --test test1 --version my-change \
 
 # Dead-time, offline: derive the windows from the real video via the R2
 # ball-cache, mirroring the pipeline's stage-5 condense path.
-docker compose run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
+docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
   eval python -m ml.eval.harness --mode deadtime --test test1 \
   --version my-change --offline
 ```

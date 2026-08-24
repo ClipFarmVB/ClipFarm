@@ -24,7 +24,7 @@ way --dump-windows lets the harness re-score offline runs.
 Run it where the worker deps live — the `eval` service, not `worker`, which
 carries production's 1-CPU limit since CF-241:
 
-  docker compose run --rm --no-deps eval \
+  docker compose --env-file .env.docker run --rm --no-deps eval \
     python -m ml.eval.diagnose_detection --test test1
 """
 from __future__ import annotations

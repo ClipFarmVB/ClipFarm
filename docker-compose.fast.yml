@@ -1,0 +1,34 @@
+# docker-compose.fast.yml — CF-241: the sanctioned fast path for local runs.
+#
+#   docker compose --env-file .env.docker \
+#     -f docker-compose.yml -f docker-compose.fast.yml up worker
+#
+# A file rather than a remembered env-var prefix, for the same reason `eval` is
+# a service rather than a documented override: an incantation people have to
+# remember is one they will get wrong, and the way this one goes wrong is that
+# a number measured on a 4-CPU box gets reported as production's.
+#
+# THE RULE, and it is the whole reason this file is separate: **no timing or
+# memory claim may come from a run under this overlay.** Not "was it fast", not
+# "did it fit in 2 GB", not a STAGE_TIMING line worth quoting. This overlay
+# answers exactly one question — *does the pipeline work end to end* — and
+# waiting on production's single core to answer it is just waiting. Anything
+# about cost, headroom or duration needs the default limits, which is what
+# `docker compose --env-file .env.docker up worker` already gives you.
+#
+# Sized for a developer laptop, not for any real box; override per-run if yours
+# is bigger or smaller. `memswap_limit` tracks `mem_limit` here as it does in
+# the base file — swap would make even the "does it work" answer unreliable.
+#
+# The opposite direction lives in docker-compose.repro.yml.
+services:
+  worker:
+    mem_limit: ${WORKER_MEM_LIMIT:-8g}
+    memswap_limit: ${WORKER_MEM_LIMIT:-8g}
+    cpus: ${WORKER_CPUS:-4}
+    # A map, so Compose merges rather than replaces: the broker URLs and every
+    # other value the base file sets on this service survive, and only the
+    # thread count changes. Raised in step with `cpus` above — threads a
+    # container cannot schedule cost memory and buy nothing (CF-224).
+    environment:
+      FFMPEG_THREADS: "${WORKER_FFMPEG_THREADS:-4}"

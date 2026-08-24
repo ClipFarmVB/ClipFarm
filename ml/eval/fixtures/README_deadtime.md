@@ -102,7 +102,7 @@ python -m ml.eval.harness --mode deadtime --test test1 --version my-change \
   --windows-json keep_dump.json
 
 # in the eval container: derive keep-windows from the real video (R2 ball-cache)
-# (`docker compose run --rm --no-deps eval ...` — not `worker`, which carries
+# (`docker compose --env-file .env.docker run --rm --no-deps eval ...` — not `worker`, which carries
 #  production's resource limits since CF-241)
 python -m ml.eval.harness --mode deadtime --test test1 --version my-change --offline
 ```

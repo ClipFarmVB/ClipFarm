@@ -77,7 +77,7 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 # tuning this further.
 #
 # Re-tune by scoring, not by inspecting a trajectory:
-#   docker compose run --rm --no-deps eval python -m ml.eval.tune_contacts
+#   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
 CONTACT_RESIDUAL_RATIO    = 0.50    # residual must exceed this fraction of ball speed
 CONTACT_RESIDUAL_MIN_PXPS = 240.0   # ...and this absolute floor (px/s, above noise)
 CONTACT_HIT_SPEED_PXPS    = 240.0   # px/s: a real hit has speed on at least one side
