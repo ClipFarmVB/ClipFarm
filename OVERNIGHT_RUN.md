@@ -120,20 +120,40 @@ step 2 is the breadth-first pass ruled out below.
 review at all** — including one you opened earlier in this run — or if it has
 commits since its most recent review.
 
-**A PR mid-cycle always needs another round, whatever its timestamps say.** If
-the most recent review on a PR is a **semi-cold verdict**, the cycle was
-interrupted between checking a fix and settling the PR — a run can die at any
-moment, including there. That verdict is newer than the head commit, so the
-"commits since the most recent review" test above would skip such a PR forever,
-which is the abandoned-mid-cycle state these labels exist to prevent. Pick it up
-and give it a cold round.
+**Every round leaves one marker comment, and selection reads it.** Timestamps
+alone cannot tell a PR stopped mid-cycle from one nobody has touched: a run can
+die at any moment, including between a fix and the round that would settle it,
+and at those points nothing changes on the PR. No new commit, so the
+commits-since test above does not select it; no label yet, so neither skip rule
+applies. It would be skipped forever — the abandoned-mid-cycle state these
+labels exist to prevent.
 
-That is why the semi-cold verdict opens with the literal word `semi-cold:` —
-it is the marker that makes this recoverable:
+So every round posts **exactly one comment**, opening with one of four markers:
+
+- `cold: findings` — a cold round raised a Critical or Medium. Next: step 2,
+  fix them.
+- `cold: clean` — a cold round raised nothing above a nit. Next: settle it, or,
+  if the PR has never had a finding, one more cold round (see the settle bar).
+- `semi-cold: closes` — a fix was checked and closes the finding it claimed to.
+  Next: a cold round.
+- `semi-cold: does not close` — it does not. Next: step 2, fix it again. A cold
+  round cannot rescue this one: the settle bar requires a semi-cold check to
+  close a finding, and a cold round posted on top would make its own marker the
+  latest and hide the open finding from this very rule.
+
+**Post them with `gh pr comment`, never `gh pr review`.** A review body does not
+appear in `gh pr view --json comments` at all — #191 carries three comments and
+one review, and that query returns only the three — so a verdict submitted as a
+review strands the PR on whatever the previous comment said.
+
+Read the latest marker, and route on it:
 
 ```
-gh pr view <n> --json comments --jq '[.comments[].body | select(startswith("semi-cold:"))] | length'
+gh pr view <n> --json comments --jq '[.comments[] | select(.body | test("^(cold|semi-cold):"))] | sort_by(.createdAt) | last | .body[0:32]'
 ```
+
+**A PR whose latest marker is anything but `cold: clean` is mid-cycle** and
+needs the round that marker names, whatever its timestamps say.
 
 **Skip PRs labelled `review-settled`** unless commits have landed since the
 label was applied. That label is the record that a cold round cleared the bar
@@ -158,11 +178,13 @@ else records it:
   unchanged lines.
 
 **Both carve-outs need the moment the label was applied**, which `gh pr view`
-does not carry. Read it off the timeline, and compare it with the head commit's
-date:
+does not carry. Read it off the timeline and compare it with the head commit's
+date. Paginate — the event is often past the first page of 30 — filter to the
+label you are testing, and take the **last** one, since a label removed and
+re-applied leaves several:
 
 ```
-gh api repos/ClipFarmVB/ClipFarm/issues/<n>/timeline --jq '.[] | select(.event=="labeled") | "\(.created_at) \(.label.name)"'
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/timeline --jq '[.[] | select(.event=="labeled" and .label.name=="review-settled") | .created_at] | last'
 ```
 
 Compare each PR's head commit against the commit of its most recent review. If
@@ -196,13 +218,12 @@ the delta rather than re-derive the whole diff. That is the trade, and it buys
 the one thing a cold round cannot do — someone other than the author confirming
 the fix does what the finding asked.
 
-**It posts its verdict as exactly one comment**, in the same shape every round
-uses — one comment per round, never one per finding. It opens with the literal
-word `semi-cold:`, then gives each finding it checked a *closes* or *does not
-close* with the reason, then anything the fix introduced, tiered as below. An
-unposted verdict is not a review: rules downstream count rounds by counting
-comments on the PR, and a round that posts several would inflate that count as
-surely as one that posts none.
+**It posts one marker comment like every other round** — `semi-cold: closes` or
+`semi-cold: does not close`, then each finding it checked with the reason, then
+anything the fix introduced, tiered as below. One comment per round, never one
+per finding: the rules that recover state after a compaction count marker
+comments, and a round posting several inflates that count as surely as one
+posting none.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, treat it as blocked: `unsettled`,
@@ -229,8 +250,8 @@ just spawned that it is never the reviewer. A subagent in a sandbox inherits
 none of your local settings, so the no-stamp rule has to travel with it or its
 review arrives signed.
 
-Its brief: run `/code-review` on that PR and post the findings as one review
-comment, in tiers:
+Its brief: run `/code-review` on that PR and post one marker comment —
+`cold: findings` or `cold: clean` — with the findings in tiers:
 
 - **Critical** — correctness, security, data loss
 - **Medium** — should fix before merge
@@ -282,17 +303,23 @@ recent **cold** round raised no Critical or Medium finding **and** every Critica
 and Medium raised in any earlier round — by a cold reviewer or by a semi-cold one
 reviewing a fix — has been closed by a semi-cold check.
 
-**A PR that has never had a finding needs two clean cold rounds, not one.**
-Everywhere else, settling rests on something a reviewer confirmed: a semi-cold
-round said this fix closes this finding. A PR clean on its first look has no
-such confirmation anywhere — one reviewer's silence would be carrying the whole
+A quiet round on top of an unfixed Critical is a reviewer looking elsewhere, and
+treating it as the terminal state buries the finding under a label that stops
+anyone looking again.
+
+**A PR that has never had a finding needs two `cold: clean` markers in a row,
+not one.** Everywhere else, settling rests on something a reviewer confirmed: a
+semi-cold round said this fix closes this finding. A PR clean on its first look
+has no such confirmation anywhere — one reviewer's silence would carry the whole
 terminal state, and silence is the evidence this document rejects everywhere
-else. Two independent cold passes is the weakest form of confirmation available
-when there is nothing concrete to check, and it is the least that label should
-cost. A quiet
-round on top of an unfixed Critical is a reviewer looking elsewhere, and treating
-it as the terminal state buries the finding under a label that stops anyone
-looking again.
+else. Two independent cold passes is the weakest confirmation available when
+there is nothing concrete to check, and it is the least that label should cost.
+
+The gap between those two rounds is a mid-cycle window like any other: no
+commit, no label, nothing for the timestamp test to see. The first round's
+`cold: clean` marker is what closes it — a PR sitting on one of those, with no
+`review-settled` label and no finding in its history, is waiting for its second
+round. Prefer to run both inside the same carry, so the window never opens.
 
 **Only a cold reviewer's verdict earns the label** — never this session's, and
 never a semi-cold round's.
@@ -361,11 +388,16 @@ carrying no label — unlabelled and unreviewed are indistinguishable to the nex
 run, which is the whole reason these labels exist.
 
 **Log every round as you finish it** — `PR #<n> — <cold|semi-cold>, round
-<k>/6, budget <used>/32` plus the tiers found. Neither bound is enforceable unless the
-count survives: context may be compacted mid-run, and counts you hold in your
-head reset to zero when it is. Recover both from the log at the start of every
-iteration, and cross-check the per-PR count against the review comments already
-on the PR.
+<k>/6, budget <used>/32` plus the tiers found. Neither bound is enforceable
+unless the count survives: context may be compacted mid-run, and counts you hold
+in your head reset to zero when it is. Recover both from the log at the start of
+every iteration, and cross-check the per-PR count by counting **marker
+comments** — not comments, which also carry your step 2 fix replies and anything
+a human wrote:
+
+```
+gh pr view <n> --json comments --jq '[.comments[] | select(.body | test("^(cold|semi-cold):"))] | length'
+```
 
 **What this costs, plainly.** A PR clean on its first look costs two reviews. A
 PR with one round of findings costs three — cold, semi-cold on the fix, cold to
@@ -386,8 +418,9 @@ PR) exists for fairness: it stops one pathological PR eating a night that twenty
 others are queued for. The **budget** (32 reviews per run) sets total depth
 across the queue. If runs are finding real problems and you want more review,
 raise the budget — raising the ceiling only buys more passes over whichever PR
-is already the worst-behaved, and hitting the ceiling is cheap anyway, since it
-costs a label rather than the findings.
+is already the worst-behaved. Hitting the ceiling is cheap anyway: the findings
+are still written into the log, the report and the PR's marker comments, and
+only the *settling* is deferred to a human or a later run.
 
 None of this proves a PR clean. A cold subagent is unanchored but still the
 same model with the same priors, so a new round is a different pass, not an
@@ -505,8 +538,9 @@ The report contains:
 
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
-- PRs labelled `unsettled`, why — human decision needed, branch you cannot push
-  to, four-round ceiling, or review budget exhausted — and what is still
+- PRs labelled `unsettled`, split by the two prefixes the label carries —
+  `blocked` (human decision needed, or a branch you cannot push to) and `ran out
+  of rounds` (six-round ceiling or review budget) — and what is still
   outstanding on each
 - Whether the review budget ran out, and which PRs never got a first round at
   all — with a deep queue this is the expected shape of a run, not a failure
