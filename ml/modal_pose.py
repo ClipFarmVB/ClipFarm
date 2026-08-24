@@ -192,3 +192,44 @@ def detect_actions_remote(
         return run_detection(
             local_path, model_name=model_name, imgsz=imgsz, skip_frames=skip_frames,
         )
+
+
+@app.function(image=image, gpu="T4", timeout=3600)
+def extract_keypoints_remote(
+    video_url: str,
+    model_name: str,
+    imgsz: int,
+    sample_fps: float,
+    max_seconds: float | None = None,
+) -> dict:
+    """
+    Full-video keypoint pass on GPU, for the condense stage (CF-198).
+
+    Drop-in for `ml.pipeline.detect.extract_keypoints`, and the only way that
+    pass can run in production: the worker image dropped torch in CF-164, so
+    `pose_available()` is False there and the local branch is a development
+    path only.
+
+    Downloads rather than reading in place, for the same reason
+    `detect_actions_remote` does: this samples the whole video end to end, so
+    there is no unread footage for range requests to save and seeking would
+    only add round trips to a transfer that has to happen anyway.
+
+    `max_seconds` exists to time this without paying for a whole game — see the
+    cost table in ml/eval/README.md. It is not used by the pipeline.
+    """
+    import os
+    import tempfile
+
+    from ml.pipeline.detect import extract_keypoints
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_path = os.path.join(tmpdir, "video.mp4")
+        _download(video_url, local_path)
+        return extract_keypoints(
+            local_path,
+            model_name=model_name,
+            imgsz=imgsz,
+            sample_fps=sample_fps,
+            max_seconds=max_seconds,
+        )

@@ -142,3 +142,77 @@ class TestWorthCondensing:
 
     def test_zero_duration_never_encodes(self):
         assert _worth_condensing(0.0, 0.0) is False
+
+
+class TestPoseIsOptIn:
+    """
+    CF-198: the pose signal reaches the builder only when it is supplied, and
+    the thresholds only when there is a signal to apply them to.
+    """
+
+    def pose_activity(self, active=(10.0, 30.0), duration=DURATION, step=0.33):
+        """Activity samples: busy during `active`, still otherwise."""
+        import numpy as np
+
+        times, vals, t = [], [], 0.0
+        while t <= duration:
+            times.append(t)
+            vals.append(2.0 if active[0] <= t <= active[1] else 0.05)
+            t += step
+        return np.array(times), np.array(vals)
+
+    def test_no_pose_activity_is_the_cf187_behaviour(self):
+        contacts, positions = contacts_at(12.0, 15.0, 18.0), track()
+        with_none, built_by = _build_condense_windows(
+            "guarded", contacts, positions, DURATION, FRAME_H, settings,
+            pose_activity=None,
+        )
+        baseline, _ = _build_condense_windows(
+            "guarded", contacts, positions, DURATION, FRAME_H, settings,
+        )
+        assert with_none == baseline
+        assert built_by == "guarded"
+
+    def test_supplying_pose_is_named_in_the_builder_label(self):
+        """The log line has to distinguish a pose-assisted run from a plain one."""
+        _, built_by = _build_condense_windows(
+            "guarded", contacts_at(12.0, 15.0, 18.0), track(),
+            DURATION, FRAME_H, settings, pose_activity=self.pose_activity(),
+        )
+        assert built_by == "guarded+pose"
+
+    def test_pose_anchor_opens_a_window_with_no_contacts(self, monkeypatch):
+        """
+        The rally the ball detector never saw — CF-187's largest single source
+        of removed live play.
+        """
+        monkeypatch.setattr(settings, "condense_pose_anchor_activity", 0.80, raising=False)
+        windows, _ = _build_condense_windows(
+            "guarded", [], track(rally_speed=20.0), DURATION, FRAME_H, settings,
+            pose_activity=self.pose_activity(active=(40.0, 60.0)),
+        )
+        assert covers(windows, 50.0), "sustained player activity should open a window"
+
+    def test_a_disabled_threshold_leaves_the_signal_inert(self, monkeypatch):
+        """Both thresholds None is 'pose measured but not acted on'."""
+        monkeypatch.setattr(settings, "condense_pose_anchor_activity", None, raising=False)
+        monkeypatch.setattr(settings, "condense_pose_gate_activity", None, raising=False)
+        contacts, positions = contacts_at(12.0, 15.0, 18.0), track()
+        windows, _ = _build_condense_windows(
+            "guarded", contacts, positions, DURATION, FRAME_H, settings,
+            pose_activity=self.pose_activity(),
+        )
+        baseline, _ = _build_condense_windows(
+            "guarded", contacts, positions, DURATION, FRAME_H, settings,
+        )
+        assert windows == baseline
+
+    def test_pose_defaults_are_off_and_conservative(self):
+        """
+        The gate scored positive on the fixtures it was tuned on and negative on
+        the held-out ones, so it ships disabled while the anchor ships armed —
+        and the stage itself stays off until condense_use_pose is set.
+        """
+        assert settings.condense_use_pose is False
+        assert settings.condense_pose_gate_activity is None
+        assert settings.condense_pose_anchor_activity == 0.80

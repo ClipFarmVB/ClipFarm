@@ -60,6 +60,47 @@ ANCHOR_MIN_SAMPLES = 6
 
 SpeedSamples = tuple[np.ndarray, np.ndarray]   # (midpoint times, speeds in fh/s)
 
+# ── pose-signal constants (CF-198) ─────────────────────────────────────────
+# Player activity is normalized by frame height too, so it shares the
+# frame-heights/s unit with the ball speeds above and the same thresholds work
+# at 360p and 1080p.
+
+# COCO-17 wrist indices, duplicated from detect.py rather than imported: that
+# module imports cv2 at module scope, and this one is deliberately dependency-
+# free so the condense stage can build windows without a vision runtime.
+L_WRIST, R_WRIST = 9, 10
+
+# Wrists only, following detect.py's own MOTION_THRESHOLD gate. Ankles were the
+# obvious addition and are the wrong one: walking between rallies moves ankles
+# as much as playing does, while the arm swing of a dig, set or spike has no
+# between-rally equivalent.
+POSE_ACTIVITY_KEYPOINTS = (L_WRIST, R_WRIST)
+
+# A body centre travelling further than this between two samples is a different
+# person, not a sprint: at 3 samples/s it allows 0.75 frame-heights/s of travel,
+# which is faster than anyone crosses a court. Same posture as
+# MAX_PLAUSIBLE_SPEED_FH — an implausible displacement is a tracking artifact,
+# and counting it as motion is what makes dead time look like play.
+POSE_MATCH_MAX_SHIFT_FH = 0.25
+
+POSE_MIN_KP_CONF = 0.5   # below this the keypoint is a guess, so it measures nothing
+
+# Rallies are played by a few people while the rest of the court stands and
+# watches, so a median over everyone present reads as idle during real play and
+# a max reads as noisy. The mean of the top-k is the compromise; k=4 measured
+# best on the tuning fixtures, which is about the number of players actually
+# engaged in a rally at any instant.
+POSE_ACTIVITY_TOP_K = 4
+
+# Wrist travel is divided by the player's own bounding-box height, not the frame
+# height: a far-court player's swing covers a fraction of the pixels a near-court
+# one's does, and normalizing by the frame would read the far player as idle.
+# Body-normalized, both are the same motion. Measured on the tuning fixtures this
+# is worth ~0.03 AUC over frame normalization, and it is what makes one threshold
+# work across the depth of a court. Activity is therefore in *body*-heights/s,
+# unlike every ball speed above.
+POSE_NORMALIZE_BY = "body"
+
 
 def merge_intervals(intervals: list[Interval], merge_gap_seconds: float = 0.0) -> list[Interval]:
     """Sort intervals and merge any pair closer than merge_gap_seconds."""
@@ -334,6 +375,155 @@ def motion_anchor_windows(
     ]
 
 
+# ── pose signal (CF-198) ───────────────────────────────────────────────────
+# Everything here produces the same (times, values) shape as speed_samples, so
+# the two primitives above — speed_gate_contacts and motion_anchor_windows —
+# work on player activity unchanged. They are threshold-and-fraction arithmetic
+# over a scalar series and never look at what the scalar measures, so pose gets
+# a gate and an anchor without a second implementation of either.
+
+
+def _person_center(person: dict) -> tuple[float, float]:
+    x1, y1, x2, y2 = person["box"]
+    return (x1 + x2) / 2, (y1 + y2) / 2
+
+
+def _keypoint(person: dict, index: int, min_conf: float) -> tuple[float, float] | None:
+    """A keypoint's position, or None when the model was not confident in it."""
+    conf = person.get("conf")
+    if conf is not None and conf[index] < min_conf:
+        return None
+    x, y = person["kps"][index]
+    return float(x), float(y)
+
+
+def _matched_person_speeds(
+    prev_persons: list[dict],
+    cur_persons: list[dict],
+    frame_height: int,
+    dt: float,
+    *,
+    match_max_shift: float,
+    min_kp_conf: float,
+    keypoints: tuple[int, ...],
+    normalize: str,
+) -> list[float]:
+    """
+    Per-person keypoint speed between two pose samples, in body-heights/s.
+
+    People are matched between samples by nearest bounding-box centre, greedily
+    and closest-first, with anything beyond match_max_shift left unmatched. The
+    detector emits no identities, and the index order it does emit is not one —
+    it reorders between frames, so differencing keypoints by position in the
+    list measures people swapping places rather than people moving.
+
+    An unmatched person contributes nothing rather than a fabricated speed, for
+    the same reason speed_samples drops a track dropout: the absence of a
+    measurement is not a measurement of zero.
+    """
+    if not prev_persons or not cur_persons:
+        return []
+
+    max_shift_px = match_max_shift * frame_height
+    prev_centers = [_person_center(p) for p in prev_persons]
+    cur_centers = [_person_center(p) for p in cur_persons]
+
+    candidates = sorted(
+        (
+            (math.hypot(cx - px, cy - py), i, j)
+            for i, (cx, cy) in enumerate(cur_centers)
+            for j, (px, py) in enumerate(prev_centers)
+        ),
+        key=lambda c: c[0],
+    )
+
+    speeds: list[float] = []
+    taken_cur: set[int] = set()
+    taken_prev: set[int] = set()
+    for dist, i, j in candidates:
+        if dist > max_shift_px:
+            break   # sorted, so nothing further can match either
+        if i in taken_cur or j in taken_prev:
+            continue
+        taken_cur.add(i)
+        taken_prev.add(j)
+
+        if normalize == "body":
+            x1, y1, x2, y2 = cur_persons[i]["box"]
+            scale = max(y2 - y1, 1.0)
+        else:
+            scale = frame_height
+
+        displacements = []
+        for k in keypoints:
+            before = _keypoint(prev_persons[j], k, min_kp_conf)
+            after = _keypoint(cur_persons[i], k, min_kp_conf)
+            if before is None or after is None:
+                continue
+            displacements.append(
+                math.hypot(after[0] - before[0], after[1] - before[1]) / dt / scale
+            )
+        if displacements:
+            # Max over the two wrists: one arm swings in almost every volleyball
+            # action, and averaging it against the idle arm halves the signal.
+            speeds.append(max(displacements))
+    return speeds
+
+
+def pose_activity_samples(
+    poses: list[dict],
+    frame_height: int,
+    *,
+    max_sample_spacing: float = MAX_SAMPLE_SPACING,
+    match_max_shift: float = POSE_MATCH_MAX_SHIFT_FH,
+    min_kp_conf: float = POSE_MIN_KP_CONF,
+    top_k: int = POSE_ACTIVITY_TOP_K,
+    keypoints: tuple[int, ...] = POSE_ACTIVITY_KEYPOINTS,
+    normalize: str = POSE_NORMALIZE_BY,
+) -> SpeedSamples:
+    """
+    Per-sample player activity in body-heights/s, shaped like speed_samples.
+
+    The ball signal answers "is the ball moving like it is in play"; this
+    answers "is anyone moving like they are playing". Both failure modes CF-187
+    left open are invisible to the first question and not to the second: a rally
+    the ball detector never sees still has players swinging at something, and a
+    contact fired over a stationary spare ball has nobody swinging at all.
+
+    `poses` are the samples from extract_keypoints: {"time", "persons"}, each
+    person carrying a pixel-space "box", 17 COCO "kps" and optional "conf".
+    Pairs further apart than max_sample_spacing are skipped exactly as in
+    speed_samples — a gap in the pose pass says nothing about what happened
+    inside it.
+
+    Returns sorted (times, activity); empty arrays when there is nothing usable.
+    """
+    if frame_height <= 0 or not poses:
+        return np.empty(0), np.empty(0)
+
+    ordered = sorted(poses, key=lambda s: s["time"])
+    times: list[float] = []
+    vals: list[float] = []
+    for prev, cur in zip(ordered, ordered[1:]):
+        dt = cur["time"] - prev["time"]
+        if not 0 < dt <= max_sample_spacing:
+            continue
+        speeds = _matched_person_speeds(
+            prev["persons"], cur["persons"], frame_height, dt,
+            match_max_shift=match_max_shift,
+            min_kp_conf=min_kp_conf,
+            keypoints=keypoints,
+            normalize=normalize,
+        )
+        if not speeds:
+            continue
+        speeds.sort(reverse=True)
+        k = min(top_k, len(speeds))
+        times.append((prev["time"] + cur["time"]) / 2)
+        vals.append(sum(speeds[:k]) / k)
+    return np.array(times), np.array(vals)
+
+
 def active_windows_guarded(
     contacts: list[dict],
     positions: list[dict],
@@ -349,6 +539,9 @@ def active_windows_guarded(
     anchor_speed: float = 0.30,
     anchor_pad: float = ANCHOR_PAD,
     min_track_rate: float = 1.0,
+    pose_activity: SpeedSamples | None = None,
+    pose_gate_activity: float | None = None,
+    pose_anchor_activity: float | None = None,
 ) -> list[Interval]:
     """
     Keep-windows from speed-gated contacts plus motion anchors, or the whole
@@ -383,6 +576,14 @@ def active_windows_guarded(
     here is normalized by it, so a zero would silently turn every game into an
     abstain. The condense stage catches and falls back to the rule-based windows,
     which need no frame height at all.
+
+    The three pose_* arguments are CF-198's opt-in player-activity signal, and
+    each is independent: `pose_gate_activity` additionally requires player
+    motion around a contact before it is believed, and `pose_anchor_activity`
+    lets sustained player motion open a window of its own. Both default to None,
+    which is off — with no `pose_activity` series supplied this function is the
+    CF-187 builder exactly, so the setting that switches pose on defaults off and
+    the shipping path is unchanged until it is deliberately flipped.
     """
     if frame_height <= 0:
         raise ValueError(
@@ -403,7 +604,16 @@ def active_windows_guarded(
         )
         return [(0.0, duration)]
 
+    has_pose = pose_activity is not None and len(pose_activity[0]) > 0
+
     gated = speed_gate_contacts(contacts, samples, min_speed=gate_speed)
+    speed_gated = len(gated)
+    if has_pose and pose_gate_activity is not None:
+        # Applied after the ball gate, not instead of it: the two reject
+        # different false contacts (a stationary ball vs a still court), and a
+        # contact needs both kinds of evidence to survive.
+        gated = speed_gate_contacts(gated, pose_activity, min_speed=pose_gate_activity)
+
     windows = active_windows_from_contacts(
         gated, duration,
         gap_seconds=gap_seconds,
@@ -413,11 +623,17 @@ def active_windows_guarded(
         merge_gap_seconds=merge_gap_seconds,
     )
     anchors = motion_anchor_windows(samples, duration, speed=anchor_speed, pad=anchor_pad)
-    merged = merge_intervals(windows + anchors, merge_gap_seconds)
+    pose_anchors: list[Interval] = []
+    if has_pose and pose_anchor_activity is not None:
+        pose_anchors = motion_anchor_windows(
+            pose_activity, duration, speed=pose_anchor_activity, pad=anchor_pad
+        )
+
+    merged = merge_intervals(windows + anchors + pose_anchors, merge_gap_seconds)
     logger.info(
-        "Guarded condense windows: %d contacts → %d after speed gate, "
-        "+%d motion anchors → %d windows",
-        len(contacts), len(gated), len(anchors), len(merged),
+        "Guarded condense windows: %d contacts → %d after speed gate → %d after "
+        "pose gate, +%d motion anchors +%d pose anchors → %d windows",
+        len(contacts), speed_gated, len(gated), len(anchors), len(pose_anchors), len(merged),
     )
     return merged
 

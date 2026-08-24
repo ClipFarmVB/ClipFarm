@@ -25,7 +25,7 @@ import html
 import logging
 from pathlib import Path
 
-from ml.eval.deadtime_variants import VARIANTS, Game, load_game
+from ml.eval.deadtime_variants import VARIANTS, Game, PoseUnavailable, load_game
 from ml.eval.metrics import DeadTimeSignals, evaluate_deadtime, subtract, union
 from ml.eval.tune_contacts import COND
 from ml.pipeline.dead_time import active_windows_from_contacts
@@ -253,10 +253,11 @@ def render_game(game: Game, results: dict[str, tuple[list[Interval], DeadTimeSig
     human_dead = complement(game.human_keep, duration)
     ceiling = padding_ceiling(game)
 
-    n_rows = 2 + 2 * len(VARIANTS)
+    scored = [k for k in VARIANTS if results.get(k) is not None]
+    n_rows = 2 + 2 * len(scored)
     svg_h = (
         PAD_TOP + (ROW_H + ROW_GAP) * n_rows
-        + GROUP_GAP * (len(VARIANTS) + 1) + PAD_BOT
+        + GROUP_GAP * (len(scored) + 1) + PAD_BOT
     )
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {SVG_W} {svg_h}" '
@@ -269,6 +270,8 @@ def render_game(game: Game, results: dict[str, tuple[list[Interval], DeadTimeSig
     y += ROW_H + ROW_GAP
 
     for key, (_label, _) in VARIANTS.items():
+        if results.get(key) is None:
+            continue
         keep, s = results[key]
         y += GROUP_GAP
         lines.append(render_row(
@@ -286,13 +289,23 @@ def render_game(game: Game, results: dict[str, tuple[list[Interval], DeadTimeSig
     lines.append(render_axis(y, duration))
     lines.append("</svg>")
 
+    def _cells(key: str) -> str:
+        if results.get(key) is None:
+            # Deliberately not a zero or a dash-shaped number: an unscored rung
+            # must not read as a measured one. See PoseUnavailable.
+            return "<td class='n' colspan='4'>no pose cache — not scored</td>"
+        s_ = results[key][1]
+        return (
+            f"<td class='n'>{_pct(s_.dead_removed_pct)}</td>"
+            f"<td class='n'>{s_.live_removed_sec:.0f}s</td>"
+            f"<td class='n'>{_pct(s_.kept_play_pct)}</td>"
+            f"<td class='n'>{net_seconds(s_):+.0f}s</td>"
+        )
+
     rows = "".join(
         f"<tr{_row_class(key)}>"
         f"<td class='k'>{key}</td><td>{html.escape(label)}</td>"
-        f"<td class='n'>{_pct(results[key][1].dead_removed_pct)}</td>"
-        f"<td class='n'>{results[key][1].live_removed_sec:.0f}s</td>"
-        f"<td class='n'>{_pct(results[key][1].kept_play_pct)}</td>"
-        f"<td class='n'>{net_seconds(results[key][1]):+.0f}s</td></tr>"
+        f"{_cells(key)}</tr>"
         for key, (label, _) in VARIANTS.items()
     )
 
@@ -325,21 +338,31 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
         total_net = 0.0
         total_live = 0.0
         held_net = 0.0
+        missing = 0
         for tid in TEST_IDS:
-            s = all_results[tid][key][1]
+            cls = " ho" if tid in held_out else ""
+            r = all_results[tid].get(key)
+            if r is None:
+                missing += 1
+                cells.append(f"<td class='n{cls}' colspan='2'>—</td>")
+                continue
+            s = r[1]
             net = net_seconds(s)
             total_net += net
             total_live += s.live_removed_sec
             if tid in held_out:
                 held_net += net
-            cls = " ho" if tid in held_out else ""
             cells.append(
                 f"<td class='n{cls}'>{_pct(s.dead_removed_pct)}</td>"
                 f"<td class='n{cls}'>{s.live_removed_sec:.0f}s</td>"
             )
+        # A rung scored on fewer fixtures has a smaller total for a reason that
+        # has nothing to do with its quality, so say so in the cell rather than
+        # letting the two totals be read side by side as comparable.
+        note = "" if not missing else f" <span class='ho'>({len(TEST_IDS) - missing}/{len(TEST_IDS)})</span>"
         rows.append(
             f"<tr{_row_class(key)}>"
-            f"<td class='k'>{key}</td><td>{html.escape(label)}</td>"
+            f"<td class='k'>{key}</td><td>{html.escape(label)}{note}</td>"
             + "".join(cells)
             + f"<td class='n'>{total_live:.0f}s</td>"
             f"<td class='n'>{held_net:+.0f}s</td>"
@@ -481,11 +504,19 @@ def main() -> None:
     games = [load_game(tid) for tid in TEST_IDS]
     all_results: dict[str, dict[str, tuple[list[Interval], DeadTimeSignals]]] = {}
     for g in games:
-        all_results[g.test_id] = {
-            key: (windows, evaluate_deadtime(g.human_keep, windows, g.duration))
-            for key, (_, fn) in VARIANTS.items()
-            for windows in [fn(g)]
-        }
+        scored: dict[str, tuple[list[Interval], DeadTimeSignals] | None] = {}
+        for key, (_, fn) in VARIANTS.items():
+            try:
+                windows = fn(g)
+            except PoseUnavailable as err:
+                # One fixture at a time, not the whole run: test1's source video
+                # was deleted from R2 after labeling, so its pose rungs can never
+                # be scored, and the ball-only rungs still can.
+                print(f"  {g.test_id} {key}: skipped — {err}")
+                scored[key] = None
+                continue
+            scored[key] = (windows, evaluate_deadtime(g.human_keep, windows, g.duration))
+        all_results[g.test_id] = scored
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(build_html(games, all_results), encoding="utf-8")
@@ -494,12 +525,20 @@ def main() -> None:
     header = f"{'variant':<46}{'net':>8}   " + "".join(f"{t:>28}" for t in TEST_IDS)
     print(header)
     for key, (label, _) in VARIANTS.items():
-        total = sum(net_seconds(all_results[t][key][1]) for t in TEST_IDS)
+        scored_ids = [t for t in TEST_IDS if all_results[t].get(key) is not None]
+        total = sum(net_seconds(all_results[t][key][1]) for t in scored_ids)
         cells = ""
         for t in TEST_IDS:
-            s = all_results[t][key][1]
+            r = all_results[t].get(key)
+            if r is None:
+                cells += f"{'— not scored':>28}"
+                continue
+            s = r[1]
             cells += f"{'dead ' + _pct(s.dead_removed_pct) + '  live -' + f'{s.live_removed_sec:.0f}s':>28}"
-        print(f"{key + ' ' + label:<46}{total:>+7.0f}s   {cells}")
+        # The total sums only the fixtures this rung could be scored on, so a
+        # rung missing a fixture is not comparable to one that has them all.
+        partial = "" if len(scored_ids) == len(TEST_IDS) else f" ({len(scored_ids)}/{len(TEST_IDS)})"
+        print(f"{key + ' ' + label:<46}{total:>+7.0f}s{partial:<6}{cells}")
 
 
 if __name__ == "__main__":

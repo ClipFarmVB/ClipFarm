@@ -6,13 +6,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import numpy as np
+
 from ml.pipeline.dead_time import (
+    L_WRIST,
+    R_WRIST,
     active_windows_from_contacts,
     active_windows_from_detections,
     active_windows_guarded,
     bridge_windows_by_motion,
     merge_intervals,
     motion_anchor_windows,
+    pose_activity_samples,
     speed_gate_contacts,
     speed_samples,
     track_is_usable,
@@ -385,3 +390,203 @@ class TestActiveWindowsGuarded:
 
     def test_no_positions_abstains(self):
         assert active_windows_guarded(contacts_at(5.0), [], 60.0, FRAME_H) == [(0.0, 60.0)]
+
+
+def person(cx: float, cy: float, wrist_dx: float = 0.0, conf: float = 0.9) -> dict:
+    """
+    One detected player, centred at (cx, cy), with both wrists offset by
+    wrist_dx from the body centre. Moving the wrists between two samples is how
+    these tests inject activity; moving the box centre is how they move a person.
+    """
+    kps = [[cx, cy] for _ in range(17)]
+    kps[L_WRIST] = [cx + wrist_dx, cy]
+    kps[R_WRIST] = [cx + wrist_dx, cy]
+    return {
+        "box": [cx - 20, cy - 100, cx + 20, cy + 100],
+        "kps": kps,
+        "conf": [conf] * 17,
+    }
+
+
+def pose_frames(*frames: list[dict], step: float = 0.33) -> list[dict]:
+    return [{"time": i * step, "persons": persons} for i, persons in enumerate(frames)]
+
+
+class TestPoseActivitySamples:
+    def test_still_players_produce_no_activity(self):
+        poses = pose_frames([person(500, 500)], [person(500, 500)], [person(500, 500)])
+        _, activity = pose_activity_samples(poses, frame_height=1000)
+        assert list(activity) == pytest.approx([0.0, 0.0])
+
+    def test_wrist_motion_is_measured_in_body_heights_per_second(self):
+        """100px of wrist travel over 0.5s by a 200px-tall player = 1.0 body-height/s."""
+        poses = [
+            {"time": 0.0, "persons": [person(500, 500, wrist_dx=0)]},
+            {"time": 0.5, "persons": [person(500, 500, wrist_dx=100)]},
+        ]
+        _, activity = pose_activity_samples(poses, frame_height=1000)
+        assert activity[0] == pytest.approx(1.0)
+
+    def test_a_distant_player_reads_the_same_as_a_near_one(self):
+        """
+        The reason activity is normalized by body height rather than frame
+        height: the same swing covers fewer pixels at the far end of the court,
+        and frame-normalizing would score that player as idle.
+        """
+        def swing(scale: float) -> float:
+            small = lambda cx, dx: {                          # noqa: E731
+                "box": [cx - 10 * scale, 500 - 100 * scale, cx + 10 * scale, 500 + 100 * scale],
+                "kps": [[cx, 500]] * 9 + [[cx + dx, 500]] * 2 + [[cx, 500]] * 6,
+                "conf": [0.9] * 17,
+            }
+            _, a = pose_activity_samples(
+                [{"time": 0.0, "persons": [small(500, 0)]},
+                 {"time": 0.5, "persons": [small(500, 100 * scale)]}],
+                frame_height=1000,
+            )
+            return float(a[0])
+
+        assert swing(1.0) == pytest.approx(swing(0.4))
+
+    def test_activity_rises_with_the_number_of_players_moving(self):
+        """
+        Top-k over k=4 measures how *many* people are playing as well as how
+        hard: a rally engages several players at once while a between-rally
+        court has one person walking. Idle bystanders sit below the top of the
+        list and pull the mean down until enough people are actually moving —
+        which is the discrimination this signal is built on, not a defect.
+        """
+        idle = [person(100 * i, 500) for i in range(6)]
+
+        def with_movers(n: int) -> float:
+            before = [person(700 + 50 * i, 500, wrist_dx=0) for i in range(n)] + idle
+            after = [person(700 + 50 * i, 500, wrist_dx=100) for i in range(n)] + idle
+            _, a = pose_activity_samples(
+                [{"time": 0.0, "persons": before}, {"time": 0.5, "persons": after}],
+                frame_height=1000,
+            )
+            return float(a[0])
+
+        assert with_movers(2) == pytest.approx(0.5)
+        assert with_movers(4) == pytest.approx(1.0)
+        assert with_movers(1) < with_movers(2) < with_movers(4)
+
+    def test_people_are_matched_by_position_not_list_order(self):
+        """
+        The detector reorders its output between frames, so differencing by
+        index measures the reordering rather than the motion.
+        """
+        a, b = person(200, 500), person(800, 500)
+        _, activity = pose_activity_samples(
+            [{"time": 0.0, "persons": [a, b]}, {"time": 0.5, "persons": [b, a]}],
+            frame_height=1000,
+        )
+        assert activity[0] == pytest.approx(0.0)
+
+    def test_an_unmatchable_person_contributes_nothing(self):
+        """A body that teleports is a different person, not a sprinter."""
+        _, activity = pose_activity_samples(
+            [
+                {"time": 0.0, "persons": [person(100, 500)]},
+                {"time": 0.33, "persons": [person(900, 500, wrist_dx=100)]},
+            ],
+            frame_height=1000,
+        )
+        assert len(activity) == 0
+
+    def test_low_confidence_keypoints_measure_nothing(self):
+        poses = [
+            {"time": 0.0, "persons": [person(500, 500, wrist_dx=0, conf=0.1)]},
+            {"time": 0.5, "persons": [person(500, 500, wrist_dx=100, conf=0.1)]},
+        ]
+        _, activity = pose_activity_samples(poses, frame_height=1000)
+        assert len(activity) == 0
+
+    def test_gap_in_the_pose_pass_contributes_no_sample(self):
+        poses = [
+            {"time": 0.0, "persons": [person(500, 500, wrist_dx=0)]},
+            {"time": 9.0, "persons": [person(500, 500, wrist_dx=100)]},
+        ]
+        _, activity = pose_activity_samples(poses, frame_height=1000)
+        assert len(activity) == 0
+
+    def test_empty_input_and_missing_frame_height(self):
+        assert len(pose_activity_samples([], frame_height=1000)[0]) == 0
+        assert len(pose_activity_samples(pose_frames([person(1, 1)]), frame_height=0)[0]) == 0
+
+    def test_samples_are_sorted_by_time(self):
+        poses = [
+            {"time": 0.66, "persons": [person(500, 500)]},
+            {"time": 0.0, "persons": [person(500, 500)]},
+            {"time": 0.33, "persons": [person(500, 500)]},
+        ]
+        times, _ = pose_activity_samples(poses, frame_height=1000)
+        assert list(times) == sorted(times)
+
+
+class TestGuardedWithPose:
+    """
+    The pose_* arguments are opt-in. Each test pins one half of that: the
+    signal changes the windows when asked to, and nothing at all when not.
+    """
+
+    def rally_pose(self, t0: float, t1: float, moving: bool) -> list[dict]:
+        """Pose samples over [t0, t1] where the players are or aren't swinging."""
+        out, t, phase = [], t0, 0
+        while t <= t1:
+            dx = 120.0 * (phase % 2) if moving else 0.0
+            out.append({"time": round(t, 2), "persons": [person(500, 500, wrist_dx=dx)]})
+            t += 0.33
+            phase += 1
+        return out
+
+    def test_absent_pose_is_the_cf187_builder_exactly(self):
+        contacts = contacts_at(30.0, 31.0, 32.0)
+        positions = ball_path(29.0, 33.0, speed_pxps=600)
+        baseline = active_windows_guarded(contacts, positions, 60.0, 1000)
+        with_pose_off = active_windows_guarded(
+            contacts, positions, 60.0, 1000,
+            pose_activity=pose_activity_samples(self.rally_pose(0.0, 60.0, moving=True), 1000),
+        )
+        assert with_pose_off == baseline
+
+    def test_pose_gate_rejects_a_contact_nobody_was_playing(self):
+        contacts = contacts_at(30.0, 31.0, 32.0)
+        positions = ball_path(0.0, 60.0, speed_pxps=600)   # ball moves; court is still
+        still = pose_activity_samples(self.rally_pose(0.0, 60.0, moving=False), 1000)
+        gated = active_windows_guarded(
+            contacts, positions, 60.0, 1000,
+            anchor_speed=99.0,          # isolate the gate from the ball anchor
+            pose_activity=still, pose_gate_activity=0.10,
+        )
+        assert gated == []
+
+    def test_pose_anchor_opens_a_window_with_no_contacts_at_all(self):
+        """CF-187's largest loss: a rally the contact detector never sees."""
+        positions = ball_path(0.0, 60.0, speed_pxps=10)    # tracked, but never fast
+        active = pose_activity_samples(self.rally_pose(20.0, 35.0, moving=True), 1000)
+        windows = active_windows_guarded(
+            [], positions, 60.0, 1000,
+            pose_activity=active, pose_anchor_activity=0.10,
+        )
+        assert windows, "sustained player motion should open a window on its own"
+        start, end = windows[0]
+        assert start <= 22.0 and end >= 33.0
+
+    def test_pose_anchor_stays_shut_over_a_still_court(self):
+        positions = ball_path(0.0, 60.0, speed_pxps=10)
+        still = pose_activity_samples(self.rally_pose(0.0, 60.0, moving=False), 1000)
+        assert active_windows_guarded(
+            [], positions, 60.0, 1000,
+            pose_activity=still, pose_anchor_activity=0.10,
+        ) == []
+
+    def test_an_empty_pose_series_is_treated_as_no_signal(self):
+        """A pose pass that returned nothing must not gate every contact away."""
+        contacts = contacts_at(30.0, 31.0, 32.0)
+        positions = ball_path(29.0, 33.0, speed_pxps=600)
+        assert active_windows_guarded(
+            contacts, positions, 60.0, 1000,
+            pose_activity=(np.empty(0), np.empty(0)),
+            pose_gate_activity=0.10, pose_anchor_activity=0.10,
+        ) == active_windows_guarded(contacts, positions, 60.0, 1000)

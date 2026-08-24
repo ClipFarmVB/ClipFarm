@@ -24,6 +24,7 @@ REPO = Path(__file__).resolve().parents[2]
 CONFIG_PY = REPO / "api" / "app" / "config.py"
 TUNE_PY = REPO / "ml" / "eval" / "tune_contacts.py"
 DEAD_TIME_PY = REPO / "ml" / "pipeline" / "dead_time.py"
+VARIANTS_PY = REPO / "ml" / "eval" / "deadtime_variants.py"
 
 # tune_contacts constant -> the app.config setting it copies.
 COND_TO_SETTING = {
@@ -50,10 +51,30 @@ GUARD_TO_KWARG = {
     "condense_guard_merge_gap_seconds": "merge_gap_seconds",
     "condense_guard_min_track_rate": "min_track_rate",
 }
+# app.config setting -> the deadtime_variants constant the eval ladder scores it
+# through (CF-198). Same drift risk as GUARD_TO_KWARG, one layer out: the v7/v8
+# rows are only a statement about production if the ladder runs production's
+# threshold.
+#
+# Only the anchor is pinned. The gate is deliberately *unequal* — the ladder
+# scores v6 at 0.80 to show what the gate does, production ships it disabled
+# because that number lost on the held-out fixtures — so pinning it would
+# enforce an agreement that is not supposed to hold.
+POSE_TO_VARIANT = {
+    "condense_pose_anchor_activity": "POSE_ANCHOR_ACTIVITY",
+}
 # Mode switches, not tunables: not copied into tune_contacts, which sweeps the
 # rule-based path only. Listed here so the coverage test stays a conscious
 # checkpoint for every new condense_* knob.
-SWITCH_SETTINGS = {"condense_mode"}
+SWITCH_SETTINGS = {
+    "condense_mode",
+    # CF-198. condense_use_pose gates the whole pose pass; sample_fps is a cost
+    # lever with no eval-side twin (the caches are built at 3.0 by
+    # build_pose_cache's own default); gate_activity ships disabled, see above.
+    "condense_use_pose",
+    "condense_pose_sample_fps",
+    "condense_pose_gate_activity",
+}
 
 
 def _settings_defaults() -> dict[str, object]:
@@ -68,6 +89,21 @@ def _settings_defaults() -> dict[str, object]:
                         out[node.target.id] = ast.literal_eval(node.value)
                     except ValueError:
                         pass  # non-literal default (Field(...), env lookup) — not ours
+    return out
+
+
+def _module_constants(module_py: Path) -> dict[str, object]:
+    """Literal module-level assignments, without importing (see the docstring)."""
+    tree = ast.parse(module_py.read_text(encoding="utf-8"))
+    out: dict[str, object] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                try:
+                    out[target.id] = ast.literal_eval(node.value)
+                except ValueError:
+                    pass
     return out
 
 
@@ -142,12 +178,40 @@ class TestTuneContactsMatchesProduction:
             set(COND_TO_SETTING.values())
             | set(BRIDGE_TO_SETTING.values())
             | set(GUARD_TO_KWARG)
+            | set(POSE_TO_VARIANT)
             | SWITCH_SETTINGS
         )
         assert condense_settings == mapped, (
             f"unmapped condense settings: {sorted(condense_settings - mapped)} - "
             "add them to tune_contacts and to the maps in this test"
         )
+
+
+class TestPoseLadderMatchesProduction:
+    """
+    CF-198: the pose rungs must score the threshold production would run, for
+    the same reason v5 must — otherwise the README's table describes a
+    configuration nothing ships.
+    """
+
+    def test_anchor_threshold_matches(self):
+        settings = _settings_defaults()
+        variants = _module_constants(VARIANTS_PY)
+        for setting, const in POSE_TO_VARIANT.items():
+            assert const in variants, f"deadtime_variants lost {const}"
+            assert variants[const] == settings[setting], (
+                f"deadtime_variants {const}={variants[const]} but app.config "
+                f"{setting}={settings[setting]} - the ladder is scoring a "
+                "threshold production does not run"
+            )
+
+    def test_the_gate_ships_disabled(self):
+        """
+        Pinned as an intent, not an accident: the gate beat v5 on the two
+        fixtures it was tuned on and lost on both held-out ones, so it ships off.
+        Re-arming it should be a deliberate edit that fails this test first.
+        """
+        assert _settings_defaults()["condense_pose_gate_activity"] is None
 
 
 class TestGuardedDefaultsMatchProduction:

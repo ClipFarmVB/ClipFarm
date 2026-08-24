@@ -256,6 +256,27 @@ class Settings(BaseSettings):
     condense_guard_merge_gap_seconds: float = 3.0  # merge windows closer than this
     condense_guard_min_track_rate: float = 1.0    # usable speed samples/s below which we abstain
 
+    # Pose-assisted condense (CF-198). Default OFF: switching it on adds a
+    # full-video pose pass to the condense stage, which is a real cost — stage 3
+    # only ever runs pose inside the windows that survived the highlight gate,
+    # while this has to see the rallies the gate dropped.
+    #
+    # Activity thresholds are in *body*-heights/s (each player's wrist travel
+    # over their own bounding-box height), not the frame-heights/s the ball
+    # speeds above use. The two units are not interchangeable.
+    condense_use_pose: bool = False
+    condense_pose_sample_fps: float = 3.0          # pose samples/s; this is the cost lever
+    # Sustained player activity opens a keep-window of its own, which is the
+    # only signal that reaches a rally the ball detector never saw. Measured on
+    # four fixtures this cuts 39% less live play than the ball signal alone at
+    # roughly equal net seconds — see ml/eval/README.md.
+    condense_pose_anchor_activity: float | None = 0.80
+    # Requiring player motion around a contact as well. Off by default: it
+    # scored well on the two fixtures it was tuned on and *negative* on the
+    # held-out ones, while cutting more live play. Kept as a knob so the next
+    # fixture can re-test it, not because it is ready.
+    condense_pose_gate_activity: float | None = None
+
     # Database
     database_url: str = LOCAL_DATABASE_URL
     # Connection used only for the worker's per-game advisory lock (CF-184).

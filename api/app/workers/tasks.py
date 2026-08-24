@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import tempfile
+import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -39,6 +40,56 @@ def _worth_condensing(kept_seconds: float, video_duration: float) -> bool:
     return kept_seconds < video_duration * (1.0 - CONDENSE_MIN_TRIM_FRACTION)
 
 
+def _condense_pose_activity(local_video, duration: float, frame_height: int, settings):
+    """
+    Player-activity samples for the condense stage, or None (CF-198).
+
+    Returns None on anything that goes wrong — no pose runtime, an unreadable
+    video, an inference error — because the caller's fallback is the CF-187
+    ball-only builder, which is the shipping default and needs none of this. A
+    pose pass that fails should cost a little window quality, never the
+    condensed video.
+
+    Unlike stage 3 this scans the *whole* video: the rallies it exists to
+    recover are exactly the ones no contact opened a window for, so restricting
+    it to the already-found windows would look identical to not running it.
+    That is the cost the condense_use_pose default-off posture is about.
+    """
+    try:
+        from ml.pipeline.dead_time import pose_activity_samples
+        from ml.pipeline.detect import extract_keypoints, pose_available
+
+        if not pose_available():
+            logger.warning(
+                "condense_use_pose is on but no pose runtime is available — "
+                "condensing on the ball signal alone",
+            )
+            return None
+
+        started = time.monotonic()
+        cache = extract_keypoints(
+            str(local_video),
+            model_name=settings.pose_model,
+            imgsz=settings.pose_imgsz,
+            sample_fps=settings.condense_pose_sample_fps,
+        )
+        activity = pose_activity_samples(cache["samples"], frame_height)
+        elapsed = time.monotonic() - started
+        logger.info(
+            "Condense pose pass: %d samples over %.0fs of video in %.0fs (%.2fx realtime), "
+            "%d activity samples",
+            len(cache["samples"]), duration, elapsed,
+            elapsed / duration if duration else 0.0, len(activity[0]),
+        )
+        return activity
+    except Exception as pose_err:
+        logger.warning(
+            "Condense pose pass failed (%s) — condensing on the ball signal alone",
+            pose_err,
+        )
+        return None
+
+
 def _build_condense_windows(
     mode: str,
     contacts: list[dict],
@@ -46,6 +97,7 @@ def _build_condense_windows(
     duration: float,
     frame_height: int,
     settings,
+    pose_activity=None,
 ) -> tuple[list[tuple[float, float]], str]:
     """
     Keep-windows for the condense stage, with the name of the builder that
@@ -69,7 +121,7 @@ def _build_condense_windows(
     )
 
     windows: list[tuple[float, float]] | None = None
-    built_by = mode
+    built_by = f"{mode}+pose" if pose_activity is not None else mode
     if mode != "rules":
         try:
             if mode == "guarded":
@@ -83,6 +135,13 @@ def _build_condense_windows(
                     gate_speed=settings.condense_guard_gate_speed,
                     anchor_speed=settings.condense_guard_anchor_speed,
                     min_track_rate=settings.condense_guard_min_track_rate,
+                    pose_activity=pose_activity,
+                    pose_gate_activity=(
+                        settings.condense_pose_gate_activity if pose_activity else None
+                    ),
+                    pose_anchor_activity=(
+                        settings.condense_pose_anchor_activity if pose_activity else None
+                    ),
                 )
             else:
                 raise ValueError(f"unknown condense_mode {mode!r}")
@@ -1126,10 +1185,18 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     from ml.pipeline.clip import generate_condensed_video
 
                     if ball_ok:
+                        pose_activity = (
+                            _condense_pose_activity(
+                                local_video, video_duration, _frame_h, app_settings,
+                            )
+                            if app_settings.condense_use_pose
+                            else None
+                        )
                         windows, built_by = _build_condense_windows(
                             app_settings.condense_mode,
                             ball_contacts, ball_positions, video_duration, _frame_h,
                             app_settings,
+                            pose_activity=pose_activity,
                         )
                     else:
                         built_by = "pose-fallback"

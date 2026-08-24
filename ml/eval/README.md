@@ -224,14 +224,116 @@ test4); every other column is held out and is starred in the summary. test5 is
 the strongest of those — it was labeled after the variants were written, so it
 could not have shaped them even indirectly.
 
+## The pose signal for condense (CF-198)
+
+`v6`-`v8` add a player-activity signal to the guarded builder. It answers a
+question the ball signal structurally cannot — *is anyone moving like they are
+playing* — which is what CF-187's two residual failure modes both turn on: a
+rally the ball detector never sees still has players swinging, and a contact
+fired over a spare ball has nobody swinging at all.
+
+`pose_activity_samples` in `dead_time.py` produces the same `(times, values)`
+shape as `speed_samples`, so `speed_gate_contacts` and `motion_anchor_windows`
+apply to it unchanged — pose gets a gate and an anchor with no second
+implementation of either.
+
+**The unit is body-heights/s, not the frame-heights/s of every ball speed.**
+Wrist travel is divided by each player's own bounding-box height, so a far-court
+swing and a near-court one read the same. The two units are not interchangeable
+and a threshold moved between them will silently mean something else.
+
+### Building the caches
+
+Pose inference is the expensive part and the fixtures never change, so it is
+cached per video like the ball tracks, keyed by `source_video_md5` and
+gitignored:
+
+```bash
+python -m ml.eval.build_pose_cache --all --device mps   # or --device cuda
+```
+
+Raw keypoints are cached rather than a derived scalar: occupancy geometry and
+player-count are the obvious next features, and deriving those from a cache is
+free while re-running inference is a GPU pass per idea.
+
+**test1 cannot be built.** Its source video was deleted from R2 after labeling,
+and the fixture pins content by MD5, so the YouTube original would not be the
+same bytes. `load_game` yields a game with no poses, the pose rungs raise
+`PoseUnavailable`, and the runner prints `— not scored` for those cells. That is
+deliberate: with an empty activity series those builders would score *identically
+to v5*, which reads as "pose changes nothing here" and is indistinguishable from
+a measurement. A four-fixture total is not comparable to a five-fixture one, so
+the summary marks the rung `(4/5)`.
+
+### Results
+
+Scored on test2-test5. `*` = held out; thresholds were tuned on test2 + test4
+only, against net seconds rather than AUC.
+
+| rung | test2 | test3* | test4 | test5* | tuned | held-out* | live cut |
+|---|---|---|---|---|---|---|---|
+| `v5` guarded (default) | 51% / -12s | abstains | 71% / -66s | 53% / -18s | +545s | +121s | 97s |
+| `v6` + pose gate | 61% / -14s | abstains | 81% / -81s | 61% / -42s | **+614s** | **+58s** | 137s |
+| `v7` + pose anchor | 49% / -12s | abstains | 61% / -32s | 50% / -15s | +581s | **+125s** | **59s** |
+| `v8` + both | 58% / -14s | abstains | 69% / -38s | 58% / -36s | **+664s** | **+73s** | 88s |
+
+Cells are `dead removed % / live play cut`. Deltas against `v5`:
+
+| rung | tuned | held-out | live cut |
+|---|---|---|---|
+| `v6` | +68s | **-63s** | +40s |
+| `v7` | +36s | +4s | **-38s** |
+| `v8` | +118s | **-49s** | -9s |
+
+**The gate does not generalize and the anchor does.** `v6` is the best rung on
+the two fixtures it was tuned on and the worst on the two it was not, while
+cutting 40s *more* live play — a textbook overfit, and `v8`'s large tuned gain is
+that same overfit carried along. Read the tuned column alone and `v8` looks like
+the winner; it is the held-out column that says otherwise.
+
+`v7`'s held-out net gain of +4s is noise, and the honest claim is not that it
+raises net. It is that it reaches the same net while cutting **39% less live
+play** (97s → 59s), and on test4 it halves the loss outright (66s → 32s) by
+opening windows over the 19-of-46 rallies that produce no ball contact at all.
+Live play is the axis this repo protects, so a change that buys it back at flat
+net is worth having.
+
+test3 abstains under every rung: the abstain check runs on the ball track before
+any pose window is built, so pose cannot reach it. Letting pose override the
+abstain is a separate question and deliberately not part of this card.
+
+### Cost
+
+Measured on a Modal T4 over 300s of 1080p30 footage, including the download and
+a cold start: **0.26x realtime**, or ~15.6 min of GPU per 60-minute game. Locally
+an M4 GPU runs the same pass at 0.48-0.77x realtime.
+
+That is per *whole video*, and it is the reason `condense_use_pose` defaults off.
+Stage 3 only ever runs pose inside the windows that survived the highlight gate;
+this pass has to see the rallies the gate dropped, so its cost tracks footage
+length rather than surviving rallies. `condense_pose_sample_fps` (default 3.0,
+matching the ball track's rate) is the lever — every sample is a forward pass.
+
+### What ships
+
+`condense_use_pose = False`. With it on, the anchor is armed
+(`condense_pose_anchor_activity = 0.80`) and the gate is not
+(`condense_pose_gate_activity = None`) — the gate is kept as a knob so the next
+labeled fixture can re-test it, not because it is ready. The pipeline reaches
+GPU pose through `extract_keypoints_remote`; the worker image has no torch
+(CF-164), so a local run degrades to ball-only windows rather than failing.
+
 ## Files
 ```
 metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
 harness.py             fixture load, model-clip acquisition, report, results append
 diagnose_detection.py  why a rally was missed: BLIND / SPARSE / GATED breakdown
 tune_contacts.py       sweep find_contacts tunables over a dumped ball track
-deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187)
+deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187),
+                       v6-v8 = the pose rungs (CF-198)
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
+build_pose_cache.py    cache a full-video keypoint pass per fixture (CF-198)
+pose_caches/           {source_video_md5}.json keypoint passes — gitignored
 fixtures/              one JSON per test case (ground truth)
                        {test_id}.json          highlights (CF-55)
                        {test_id}_deadtime.json ball-in-play spans (CF-98)

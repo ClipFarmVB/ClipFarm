@@ -241,6 +241,134 @@ def run_detection(
             for d in detections]
 
 
+def extract_keypoints(
+    video_path: str,
+    *,
+    model_name: str = "yolov8s-pose.pt",
+    imgsz: int = 1280,
+    sample_fps: float = 3.0,
+    device: str | None = None,
+    max_seconds: float | None = None,
+    progress_every: float = 60.0,
+) -> dict:
+    """
+    Raw court-region keypoints, sampled at a fixed rate (CF-198).
+
+    `run_detection` also runs pose over a whole video, but it returns *action*
+    labels — the skeleton heuristics have already collapsed each frame to a
+    class and thrown the geometry away. The dead-time condense stage wants the
+    geometry: whether anyone is moving like a player, which is a question
+    `classify_action` cannot answer and `MIN_CONFIDENCE` would filter away.
+    So this is a second reader of the same model, not a rewrite of that path —
+    deliberately, because regressing the shipping pose path to serve a
+    dead-time experiment would be a bad trade.
+
+    Two filters are shared with `run_detection` rather than re-invented, so the
+    signal sees the same people the shipping path does: boxes shorter than 7% of
+    the frame are seated crowd, and boxes centred outside the SPECTATOR_ZONE
+    margins are line judges and officials.
+
+    `sample_fps` is the cost lever. Stage 3 runs at 30/SKIP_FRAMES = 7.5/s to
+    catch the instant of a spike; per-second player activity needs nothing like
+    that, and the ball track this signal sits beside runs at 0.5-2.6 samples/s.
+    Every sample is a GPU forward pass, so this number *is* the price.
+
+    Returns a cache dict: metadata plus `samples`, one entry per sampled frame
+    with every surviving person's box and 17 COCO keypoints. Coordinates stay in
+    pixels — the consumer normalizes by `frame_height`, as the ball signal does.
+    """
+    from ultralytics import YOLO
+    model = YOLO(_model_path(model_name))
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
+    duration = total_frames / fps if fps else 0.0
+
+    # Round to whole frames: a fractional stride would drift the sample times
+    # apart over an hour of footage, and the consumer takes differences between
+    # consecutive samples.
+    stride = max(1, int(round(fps / sample_fps))) if sample_fps > 0 else 1
+    court_x_left = frame_w * SPECTATOR_ZONE
+    court_x_right = frame_w * (1.0 - SPECTATOR_ZONE)
+    logger.info(
+        "Keypoint pass: %.1f fps, %dx%dpx, %.0fs — every %d frames (%.2f samples/s)",
+        fps, frame_w, frame_h, duration, stride, fps / stride,
+    )
+
+    samples: list[dict] = []
+    frame_idx = 0
+    next_log = progress_every
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if frame_idx % stride != 0:
+            frame_idx += 1
+            continue
+
+        t = frame_idx / fps
+        if max_seconds is not None and t > max_seconds:
+            break
+        if t >= next_log:
+            logger.info("  ... %.0fs / %.0fs (%d samples)", t, duration, len(samples))
+            next_log += progress_every
+
+        persons: list[dict] = []
+        for result in model(frame, imgsz=imgsz, device=device, verbose=False):
+            if result.keypoints is None:
+                continue
+            kps = result.keypoints.xy.cpu().numpy()          # (N, 17, 2)
+            confs = result.keypoints.conf.cpu().numpy() if result.keypoints.conf is not None else None
+            boxes = result.boxes.xyxy.cpu().numpy() if result.boxes is not None else None
+
+            for i in range(len(kps)):
+                person_kps = kps[i]
+                if person_kps.shape[0] < 17:  # model can emit boxes with empty keypoints
+                    continue
+                if boxes is None or i >= len(boxes):
+                    continue
+                x1, y1, x2, y2 = (float(v) for v in boxes[i])
+                if (y2 - y1) < frame_h * 0.07:               # seated crowd
+                    continue
+                if not court_x_left <= (x1 + x2) / 2 <= court_x_right:  # sideline official
+                    continue
+                persons.append({
+                    # 1dp is well under the noise floor of a 1280px inference
+                    # resize, and halves the cache on a full game.
+                    "box": [round(v, 1) for v in (x1, y1, x2, y2)],
+                    "kps": [[round(float(x), 1), round(float(y), 1)] for x, y in person_kps],
+                    "conf": (
+                        [round(float(c), 3) for c in confs[i]]
+                        if confs is not None and i < len(confs) else None
+                    ),
+                })
+
+        samples.append({"time": round(t, 3), "persons": persons})
+        frame_idx += 1
+
+    cap.release()
+    logger.info(
+        "Keypoint pass done: %d samples, %d person-detections",
+        len(samples), sum(len(s["persons"]) for s in samples),
+    )
+    return {
+        "model_name": model_name,
+        "imgsz": imgsz,
+        "sample_fps": fps / stride if stride else 0.0,
+        "frame_width": frame_w,
+        "frame_height": frame_h,
+        "video_fps": fps,
+        "duration": duration,
+        "samples": samples,
+    }
+
 def classify_action(
     kps: np.ndarray,
     confs: np.ndarray | None,
