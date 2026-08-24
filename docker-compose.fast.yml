@@ -16,19 +16,25 @@
 # about cost, headroom or duration needs the default limits, which is what
 # `docker compose --env-file .env.docker up worker` already gives you.
 #
-# Sized for a developer laptop, not for any real box; override per-run if yours
-# is bigger or smaller. `memswap_limit` tracks `mem_limit` here as it does in
-# the base file — swap would make even the "does it work" answer unreliable.
+# Sized for a developer laptop, not for any real box. Literals rather than
+# `${WORKER_CPUS:-4}`, for the same reason docker-compose.repro.yml uses them:
+# every documented command passes `--env-file .env.docker`, so that file is an
+# interpolation source and a value parked in it would silently redefine this
+# overlay. For a size this does not suit, use the WORKER_* knobs on the base
+# file directly — an overlay is a fixed profile, the knobs are the ad-hoc path.
+#
+# `memswap_limit` tracks `mem_limit` here as it does in the base file — swap
+# would make even the "does it work" answer unreliable.
 #
 # The opposite direction lives in docker-compose.repro.yml.
 services:
   worker:
-    mem_limit: ${WORKER_MEM_LIMIT:-8g}
-    memswap_limit: ${WORKER_MEM_LIMIT:-8g}
-    cpus: ${WORKER_CPUS:-4}
+    mem_limit: 8g
+    memswap_limit: 8g
+    cpus: 4
     # A map, so Compose merges rather than replaces: the broker URLs and every
     # other value the base file sets on this service survive, and only the
     # thread count changes. Raised in step with `cpus` above — threads a
     # container cannot schedule cost memory and buy nothing (CF-224).
     environment:
-      FFMPEG_THREADS: "${WORKER_FFMPEG_THREADS:-4}"
+      FFMPEG_THREADS: "4"

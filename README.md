@@ -271,6 +271,14 @@ Notes:
   work as a prefix; they are namespaced (never the app's own `FFMPEG_THREADS`)
   so it is unambiguous which side reads them.
 
+  **As a prefix, not parked in `.env.docker`.** Because every command above
+  passes `--env-file .env.docker`, a value left in that file is read on *every*
+  run, and you will not see it in the command you typed. The two overlays are
+  hardcoded specifically so this cannot reach them — a stale `WORKER_MEM_LIMIT`
+  silently resizing the repro would make it pass, and a passing repro reads as
+  "already fixed". `api/tests/test_dev_prod_parity.py` fails either overlay that
+  reintroduces a `${...}`.
+
   Anything CPU-bound and *not* about production's box — the eval harness, the
   tuning scripts — belongs on the `eval` service: same image, no limits, and
   profile-gated so `up` never starts it.

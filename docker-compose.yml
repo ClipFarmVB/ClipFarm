@@ -98,22 +98,27 @@ services:
     # Track `clipfarm-worker`'s `plan` in render.yaml: `standard` = 2 GB / 1 CPU
     # since CF-240. api/tests/test_dev_prod_parity.py pins the two together.
     #
-    # Overridable in BOTH directions, and both are sanctioned — one command,
-    # no continuations, so it survives a copy-paste:
+    # Both directions are sanctioned, and both are an overlay FILE rather than
+    # a remembered prefix — docker-compose.repro.yml (512 MB / 0.5 CPU, to make
+    # CF-224's OOM happen on your laptop) and docker-compose.fast.yml (8 GB /
+    # 4 CPU, to answer "does the pipeline work" without waiting on one core).
+    # Each carries its own rule; read the file before using it.
     #
-    #   Smaller, to reproduce CF-224's OOM on your laptop:
-    #     WORKER_MEM_LIMIT=512m WORKER_CPUS=0.5 WORKER_FFMPEG_THREADS=4 docker compose up worker
+    #   docker compose --env-file .env.docker \
+    #     -f docker-compose.yml -f docker-compose.repro.yml up worker
     #
-    #   Bigger, to iterate on a local end-to-end run without waiting on
-    #   production's single core (see README § Local Development):
-    #     WORKER_MEM_LIMIT=8g WORKER_CPUS=4 WORKER_FFMPEG_THREADS=4 docker compose up worker
+    # Going bigger costs you the fidelity these limits exist for, so the fast
+    # overlay is for "does the pipeline work", never for "does it fit". Any
+    # timing or memory claim has to come from a default-limits run.
     #
-    # Going bigger costs you the fidelity these limits exist for, so it is for
-    # "does the pipeline work", never for "does it fit". Any timing or memory
-    # claim has to come from a default-limits run.
+    # The WORKER_MEM_LIMIT / WORKER_CPUS / WORKER_FFMPEG_THREADS knobs below
+    # remain, for a one-off size the overlays do not cover. Note they are read
+    # from `.env.docker` too, not just from a prefix, since every documented
+    # command passes `--env-file .env.docker` — so a value parked in that file
+    # applies to *every* run, silently. Prefer the prefix.
     #
     # memswap_limit equal to mem_limit asks for NO swap. Docker's default is
-    # double, i.e. 2 GB of RAM plus 2 GB of swap — under which the repro above
+    # double, i.e. 2 GB of RAM plus 2 GB of swap — under which the repro overlay
     # can decline to OOM while the same encode is killed on Render, which has
     # no swap at all. An unfaithful repro is worse than none: it says "fixed".
     #
@@ -146,10 +151,11 @@ services:
       # Raising it as a *speed* knob means raising WORKER_CPUS with it — threads
       # a container cannot schedule cost memory and buy nothing (CF-224 measured
       # 2 threads at 0.5 CPU as both slower and 60 MB heavier). Raising it to
-      # *provoke* the OOM is the opposite move and deliberately unbalanced: the
-      # repro above pairs 4 threads with 0.5 CPU precisely because only 4-or-
-      # unbounded blows the 512 MB ceiling. Follow the "raise them together"
-      # rule there and the run completes at ~408 MB, reading as "already fixed".
+      # *provoke* the OOM is the opposite move and deliberately unbalanced:
+      # docker-compose.repro.yml pairs 4 threads with 0.5 CPU precisely because
+      # only 4-or-unbounded blows the 512 MB ceiling. Follow the "raise them
+      # together" rule there and the run completes at ~408 MB, reading as
+      # "already fixed".
       #
       # The knob is WORKER_FFMPEG_THREADS, deliberately not FFMPEG_THREADS.
       # Same name on both sides would mean the app's own variable doubles as
@@ -191,8 +197,10 @@ services:
   # service: same image and same mounts, no resource limits, and none of the
   # worker's broker wiring (see below).
   #
-  # Profile-gated, so `docker compose up` never starts it. Run one-shot:
-  #   docker compose run --rm --no-deps eval python -m ml.eval.harness --help
+  # Profile-gated, so `docker compose up` never starts it. Run one-shot — keep
+  # the `--env-file`, it is what Compose interpolates from:
+  #   docker compose --env-file .env.docker \
+  #     run --rm --no-deps eval python -m ml.eval.harness --help
   #
   # If you are eval-ing something whose *cost* matters — encode timings, memory
   # headroom — use `worker`, not this. Correctness sweeps belong here; anything
@@ -235,7 +243,8 @@ services:
       - -c
       - >-
         echo "eval is a one-shot runner, not a service: pass a command, e.g.
-        docker compose run --rm --no-deps eval python -m ml.eval.harness --help" >&2;
+        docker compose --env-file .env.docker run --rm --no-deps eval
+        python -m ml.eval.harness --help" >&2;
         exit 64
 
   web:

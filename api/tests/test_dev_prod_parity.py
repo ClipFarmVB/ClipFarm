@@ -64,7 +64,14 @@ DEPLOY_RESOURCES = ("deploy", "resources")
 
 
 def _has_deploy_resources(service) -> bool:
-    return bool((service.get("deploy") or {}).get("resources"))
+    """Walk DEPLOY_RESOURCES rather than hardcoding the path, so the tuple above
+    is the definition and not a comment that happens to agree with the code."""
+    node = service
+    for key in DEPLOY_RESOURCES:
+        if not isinstance(node, dict):
+            return False
+        node = node.get(key)
+    return bool(node)
 
 
 class _Reset:
@@ -150,6 +157,27 @@ def _compose_service(path: Path, name: str):
         "the check"
     )
     return services[name]
+
+
+def _assert_no_interpolation(filename: str, service) -> None:
+    """An override overlay must hold literals, never `${VAR}`.
+
+    Every documented command passes `--env-file .env.docker`, which makes that
+    file an interpolation source — so a `WORKER_MEM_LIMIT` parked there for some
+    earlier experiment would silently resize these overlays. For the fast one
+    that is merely confusing; for the repro one it is the whole failure this
+    branch keeps calling worse than none, because the run then *passes* and the
+    pass gets read as evidence. Ad-hoc sizes belong on the base file's knobs.
+    """
+    fields = {k: service.get(k) for k in ("mem_limit", "memswap_limit", "cpus")}
+    fields.update(_env_map(service))
+    for key, value in fields.items():
+        assert "${" not in str(value), (
+            f"{filename} interpolates `{key}`: {value!r}. Every documented command "
+            "passes --env-file .env.docker, so a value set there would silently "
+            "redefine this overlay and the run would prove nothing. Hardcode it, "
+            "and use the WORKER_* knobs on docker-compose.yml for a one-off size"
+        )
 
 
 def _worker_services():
@@ -388,7 +416,9 @@ def test_the_repro_overlay_still_reproduces_the_oom():
     """
     repro = _compose_service(REPO_ROOT / "docker-compose.repro.yml", "worker")
 
-    assert _bytes(_default(str(repro["mem_limit"]))) == _bytes("512m"), (
+    _assert_no_interpolation("docker-compose.repro.yml", repro)
+
+    assert _bytes(str(repro["mem_limit"])) == _bytes("512m"), (
         "the repro overlay must cap memory at 512m — Render's `starter`, the box "
         "CF-224 actually died on"
     )
@@ -396,9 +426,9 @@ def test_the_repro_overlay_still_reproduces_the_oom():
         "the repro overlay must leave no swap: 512 MB of it is enough to carry the "
         "encode that killed production, and the run comes back green"
     )
-    assert float(_default(str(repro["cpus"]))) == 0.5
+    assert float(repro["cpus"]) == 0.5
 
-    threads = int(_default(_env_map(repro)["FFMPEG_THREADS"]))
+    threads = int(_env_map(repro)["FFMPEG_THREADS"])
     assert threads >= 4, (
         f"the repro overlay runs FFMPEG_THREADS={threads}. CF-224 measured the "
         "ceiling: 1 thread peaks at 407 MB and survives, 2 at 468 MB, and only "
@@ -414,7 +444,9 @@ def test_the_fast_overlay_is_faster_than_the_default_and_still_swapless():
     dev = _compose_service(REPO_ROOT / "docker-compose.yml", "worker")
     fast = _compose_service(REPO_ROOT / "docker-compose.fast.yml", "worker")
 
-    assert float(_default(str(fast["cpus"]))) > float(_default(str(dev["cpus"]))), (
+    _assert_no_interpolation("docker-compose.fast.yml", fast)
+
+    assert float(fast["cpus"]) > float(_default(str(dev["cpus"]))), (
         "docker-compose.fast.yml gives the worker no more CPU than the default "
         "does, so it is a file that buys nothing"
     )
