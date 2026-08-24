@@ -64,9 +64,9 @@ printf "  mypy api/app ...     "
 "$PY" -m mypy api/app --ignore-missing-imports
 echo "ok"
 
-# ── ML eval: ruff + mypy ──────────────────────────────────────────────────────
-printf "  ruff check ml/eval . "
-"$PY" -m ruff check ml/eval
+# ── ML: ruff over all of ml/, mypy over ml/eval ───────────────────────────────
+printf "  ruff check ml/ ...   "
+"$PY" -m ruff check ml/
 echo "ok"
 printf "  mypy ml/eval ...     "
 "$PY" -m mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
