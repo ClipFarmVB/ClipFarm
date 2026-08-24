@@ -18,8 +18,12 @@ shared instance, unlike anything under alembic/. Run it before merging #239:
 
     DATABASE_URL=<pooler-uri> python api/scripts/audit_cross_tenant_tags.py
 
-Exit codes: 0 clean, 1 rows found, 2 could not connect. The non-zero exit on
-findings is so this can gate a deploy step later without being reworded.
+Exit codes: 0 clean, 1 rows found, 2 could not complete the check. 2 is
+deliberately wider than "could not connect" — the handler catches a missing
+table, a permissions error and a malformed query too, and a gate should read
+all of those as "this did not answer the question", never as clean. The
+non-zero exit on findings is so this can gate a deploy step later without
+being reworded.
 
 Two shapes count as suspect, matching what `players.get_owned_player` now
 rejects on the write side:
