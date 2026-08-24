@@ -112,6 +112,11 @@ Finish work already in flight before starting anything new.
 review at all** — including one you opened earlier in this run — or if it has
 commits since its most recent review.
 
+**Skip PRs labelled `review-settled`** unless commits have landed since the
+label was applied. That label is the record that a review round found nothing
+actionable; without it, "already reviewed" has to be inferred from timestamps,
+and a PR abandoned mid-cycle looks identical to one reviewed clean.
+
 Compare each PR's head commit against the commit of its most recent review. If
 there are commits since, run `/code-review` and post the findings as one review
 comment, in tiers:
@@ -132,15 +137,26 @@ includes every PR you opened during this run). If a fix needs no human decision,
 implement it, push to that PR's branch, and reply on the thread saying what
 changed. If it needs a judgement call, log it and leave it.
 
-**This is a cycle, and closing it is the point.** Open a PR, review it, fix what
-the review found, then review again to confirm the fix holds and introduced
-nothing new. The first run opened three PRs and reviewed none of them, because
-step 1 only covered PRs that had *changed since* a review and these had none at
-all. A PR nobody looked at is half the value of the work that produced it.
+**This is a cycle, and the order matters.** Post the review. *Then* push the
+fix. *Then* post a separate re-review against the new head, confirming the fix
+holds and introduced nothing new.
+
+**Never describe a fix inside the review that found it.** Two of the five PRs in
+the second run did exactly that — found something, fixed it, and posted one
+review narrating both. Nothing independently looked at the fix, and because the
+fix commit predated the review, step 1 saw no commits after it and skipped the
+PR forever. Round two is not ceremony: it is a second pass over code that changed
+*after* the first pass formed its judgement.
+
+**When a review round finds nothing actionable, label the PR `review-settled`.**
+That is the terminal state, and it is what stops future runs re-reviewing
+finished work. Do not apply it while findings are outstanding — including
+findings you deferred to a human. If a human removes it, the PR wants another
+look.
 
 Bound it: **at most two review-and-fix rounds per PR per run.** If findings
-remain after the second round, write them in the log for a human rather than
-looping on one PR all night.
+remain after the second round, leave the PR unlabelled, write them in the log,
+and move on rather than looping on one PR all night.
 
 **3 — Only when 1 and 2 are clear**, take one ticket from "This run".
 
