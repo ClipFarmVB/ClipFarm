@@ -126,8 +126,11 @@ separate motion pass.
   declared type and size, hands back presigned URLs, and confirms the object with a
   HEAD before enqueueing — so the limit is enforced *before* the transfer rather
   than while proxying it, and a failed upload never becomes a job. Content type is
-  signed into the URL, so R2 itself rejects a mismatch. Size cannot be signed
-  (S3/R2 ignore Content-Length as a query parameter), which is why the HEAD exists.
+  signed into the URL, so R2 rejects a PUT whose Content-Type *header* differs —
+  but that binds the header, not the bytes, so the HEAD is followed by a ranged
+  read that checks the stored object really is a video container (CF-244). Size
+  cannot be signed at all (S3/R2 ignore Content-Length as a query parameter),
+  which is why the HEAD checks it against the real object.
   Files over 100 MiB use multipart — not for the 5 GiB single-PUT ceiling, which the
   100 MiB threshold keeps out of reach, but so a dropped connection retries one part
   instead of the whole file. XHR (not fetch) on the frontend for upload progress.

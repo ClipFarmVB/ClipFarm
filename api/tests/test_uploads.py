@@ -185,6 +185,16 @@ class FakeTask:
         self.calls.append((args, kwargs))
 
 
+# Container headers, hand-built rather than sliced off a fixture video: the
+# check reads 16 bytes, so a real file would add megabytes to the repo to
+# exercise the same twelve.
+ISO_BMFF_HEADER = b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00"   # .mp4
+QUICKTIME_HEADER = b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00"   # .mov
+FRAGMENTED_MP4_HEADER = b"\x00\x00\x00\x18stypmsdh\x00\x00\x00\x00"
+EBML_HEADER = b"\x1a\x45\xdf\xa3\x93\x42\x82\x88matroska"       # .mkv / .webm
+ZIP_HEADER = b"PK\x03\x04\x14\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00"
+
+
 @pytest.fixture
 def fake_storage(monkeypatch):
     """Stub every R2 call the handlers make, recording what was asked for."""
@@ -193,6 +203,11 @@ def fake_storage(monkeypatch):
         "complete_multipart": [], "abort_multipart": [], "delete_file": [],
     }
     head: dict[str, dict | None] = {"value": {"size": 1024, "content_type": "video/mp4"}}
+    # CF-244: complete_upload now reads the object's first bytes to check the
+    # container. Defaulted to a valid ISO-BMFF header so every test that merely
+    # passes *through* completion keeps testing what it was written to test;
+    # the tests that care set `_header["value"]` themselves.
+    header: dict[str, bytes | None] = {"value": ISO_BMFF_HEADER}
 
     def presign_put(key, content_type, expires_in):
         calls["presign_put"].append((key, content_type, expires_in))
@@ -216,8 +231,10 @@ def fake_storage(monkeypatch):
     monkeypatch.setattr(storage, "delete_file",
                         lambda k: calls["delete_file"].append(k))
     monkeypatch.setattr(storage, "head_object", lambda _k: head["value"])
+    monkeypatch.setattr(storage, "head_bytes", lambda _k, _n: header["value"])
 
     calls["_head"] = head  # type: ignore[assignment]
+    calls["_header"] = header  # type: ignore[assignment]
     return calls
 
 
@@ -380,9 +397,16 @@ def test_large_file_gets_multipart_with_one_url_per_part(fake_storage, monkeypat
     assert db.added[0].upload_id == "upload-id-123"
 
 
-def test_content_type_is_signed_into_the_url(fake_storage, monkeypatch):
-    """R2 enforces the signed Content-Type, which is what makes the file-type
-    check a real control rather than an advisory one."""
+def test_the_declared_content_type_is_signed_into_the_url(fake_storage, monkeypatch):
+    """R2 rejects a PUT whose Content-Type header differs from the signed value.
+
+    Renamed from `test_content_type_is_signed_into_the_url`, whose name read as
+    a claim that the file-type check was a real control over the upload. It
+    binds the header only (CF-244) — a client that sends the header it signed
+    can put anything behind it. What this pins is that the *declared* type
+    reaches the signature, which is still worth pinning; the bytes are checked
+    in test_a_non_video_upload_is_deleted_and_rejected.
+    """
     monkeypatch.setattr(settings, "single_put_max_bytes", 10_000)
     asyncio.run(games_router.create_upload(_create(100, "video/webm"), USER, FakeDB()))
     _key, content_type, _ttl = fake_storage["presign_put"][0]
@@ -519,6 +543,107 @@ def test_multipart_completion_requires_its_parts(fake_storage, fake_task):
         asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
     assert exc.value.status_code == 400
     assert fake_task.calls == []
+
+
+# ── CF-244: the stored bytes, not the declared type ─────────────────────────
+#
+# The presigned PUT binds the declared Content-Type to the signature as a
+# HEADER. A client that sends the header it signed can put anything behind it,
+# so these cover the only look the api takes at what was actually stored.
+
+
+@pytest.mark.parametrize(
+    "name,header",
+    [
+        ("mp4", ISO_BMFF_HEADER),
+        ("mov (QuickTime brand)", QUICKTIME_HEADER),
+        ("fragmented mp4 (styp)", FRAGMENTED_MP4_HEADER),
+        ("matroska / webm", EBML_HEADER),
+    ],
+)
+def test_every_allowed_container_family_completes(name, header, fake_storage, fake_task):
+    """The guard must not be the thing that breaks a legitimate upload.
+
+    The QuickTime case is the one to watch: browsers fill `File.type` from the
+    file extension, so a .mov declared `video/mp4` is ordinary rather than
+    adversarial, and a strict declared-vs-sniffed check would reject it.
+    """
+    fake_storage["_header"]["value"] = header
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert fake_storage["delete_file"] == []
+    assert len(fake_task.calls) == 1
+
+
+def test_a_non_video_upload_is_deleted_and_rejected(fake_storage, fake_task):
+    """The bug CF-244 is about. The declared type passed the allowlist at
+    presign and the signature verified, so nothing before this point looked at
+    the bytes at all."""
+    fake_storage["_header"]["value"] = ZIP_HEADER
+    game = _uploading_game()
+    db = FakeDB(game)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
+
+    assert exc.value.status_code == 415
+    assert fake_storage["delete_file"] == ["raw/abc.mp4"]
+    assert fake_task.calls == [], "a rejected upload must never reach the worker"
+
+
+def test_an_unreadable_header_allows_the_upload_through(fake_storage, fake_task):
+    """Fails OPEN, which is the opposite of what a None from head_object does
+    four lines above it — and deliberately.
+
+    No object at all means there is nothing to accept, so 400 is the only
+    answer. A header that cannot be read means R2 would not hand over 16 bytes
+    of an object it has already confirmed: the transfer completed, possibly 8 GB
+    of it, and discarding that over a storage hiccup costs the user far more
+    than letting a mislabelled file reach a worker that will fail to decode it.
+    The cheaper wrong answer differs, so the direction does.
+
+    It does mean the check is bypassable by anyone who can make the ranged read
+    fail. That is the accepted cost, recorded here rather than left implicit.
+    """
+    fake_storage["_header"]["value"] = None
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert fake_storage["delete_file"] == []
+    assert len(fake_task.calls) == 1
+
+
+def test_a_truncated_or_misaligned_header_is_not_a_container():
+    """Straight at the sniffer: driving these through the handler would only
+    prove the fake returned what it was told to."""
+    assert games_router._sniff_video_container(b"") is None
+    assert games_router._sniff_video_container(b"\x00\x00\x00\x20fty") is None
+    # `ftyp` present but not at offset 4 — a prefix check without the offset
+    # would accept this.
+    assert games_router._sniff_video_container(b"ftyp\x00\x00\x00\x20isom") is None
+
+
+def test_the_sniff_reads_only_the_signature_window(fake_storage, fake_task, monkeypatch):
+    """A ranged read, not a download. These objects run to 8 GB."""
+    seen: list[tuple] = []
+
+    def recording_head_bytes(key, count):
+        seen.append((key, count))
+        return ISO_BMFF_HEADER
+
+    monkeypatch.setattr(storage, "head_bytes", recording_head_bytes)
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert seen == [("raw/abc.mp4", games_router.VIDEO_SIGNATURE_BYTES)]
+    assert games_router.VIDEO_SIGNATURE_BYTES <= 64, (
+        "the window only has to reach the ISO-BMFF brand at offset 8; a large "
+        "read here is bytes transferred on every completion for nothing"
+    )
 
 
 def test_oversize_object_is_deleted_and_rejected(fake_storage, fake_task, monkeypatch):
