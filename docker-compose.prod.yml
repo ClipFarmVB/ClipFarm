@@ -88,8 +88,14 @@ services:
       # production's 1. Carried over rather than re-derived: this override
       # exists to keep the VPS as it was, and picking a number for a 2-3 vCPU
       # box sharing itself with redis and the api is a sizing question (CF-223),
-      # not a side effect of a dev-parity change. Still overridable per-run.
-      FFMPEG_THREADS: "${WORKER_FFMPEG_THREADS:-4}"
+      # not a side effect of a dev-parity change.
+      #
+      # A literal, not ${WORKER_FFMPEG_THREADS:-4}. That knob is the DEV one, and
+      # this file is layered with --env-file too, so a stray value in the VPS's
+      # .env or in a deploying shell would silently re-tune production — exactly
+      # the hazard that made docker-compose.repro.yml drop its interpolation.
+      # Production is not a thing you tune by prefix; edit this line.
+      FFMPEG_THREADS: "4"
       # Same production config check as the api above (CF-172) — the worker
       # reads the same credentials and fails just as quietly without them.
       ENVIRONMENT: production

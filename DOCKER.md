@@ -51,8 +51,12 @@ Open:
 - Web: http://localhost:3000
 - API health: http://localhost:8000/health
 
-Note: Postgres is not published to a host port to avoid `5432` conflicts.
-Use `docker compose exec db psql -U postgres -d clipfarm` if you need a DB shell.
+Note: Postgres **is** published, on `${POSTGRES_HOST_PORT:-5432}` — tests and
+tools outside the stack need to reach it (`api/tests`' advisory-lock tests
+auto-detect it and skip without one). If 5432 is already taken by a Postgres on
+your host, set `POSTGRES_HOST_PORT=5433` in `.env.docker`; that is interpolated,
+so it only applies to commands passing `--env-file .env.docker`. For a shell
+inside the container, `docker compose exec db psql -U postgres -d clipfarm`.
 
 ## 3) Going faster, or smaller
 
@@ -65,6 +69,14 @@ docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.fa
 ```
 ```bash
 docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.repro.yml up worker
+```
+
+If `docker compose` refuses the fast overlay with `range of CPUs is from 0.01
+to N.00`, your engine has fewer than 4 — check `docker info --format
+'{{.NCPU}}'` and set `FAST_CPUS` (and `FAST_MEM_LIMIT` if needed) to fit:
+
+```bash
+FAST_CPUS=2 FAST_MEM_LIMIT=4g docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.fast.yml up worker
 ```
 
 The first is the fast path for "does the pipeline work". It costs the fidelity

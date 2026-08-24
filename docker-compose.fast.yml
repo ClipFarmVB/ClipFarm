@@ -16,25 +16,37 @@
 # about cost, headroom or duration needs the default limits, which is what
 # `docker compose --env-file .env.docker up worker` already gives you.
 #
-# Sized for a developer laptop, not for any real box. Literals rather than
-# `${WORKER_CPUS:-4}`, for the same reason docker-compose.repro.yml uses them:
-# every documented command passes `--env-file .env.docker`, so that file is an
-# interpolation source and a value parked in it would silently redefine this
-# overlay. For a size this does not suit, use the WORKER_* knobs on the base
-# file directly — an overlay is a fixed profile, the knobs are the ad-hoc path.
+# Sized for a developer laptop, and **4 CPUs is more than some Docker engines
+# have**. Docker refuses to create a container asking for more than the engine
+# owns — `range of CPUs is from 0.01 to 2.00` on a 2-CPU Docker Desktop VM — so
+# this file keeps an escape hatch:
+#
+#   FAST_CPUS=2 FAST_MEM_LIMIT=4g docker compose --env-file .env.docker \
+#     -f docker-compose.yml -f docker-compose.fast.yml up worker
+#
+# `docker info --format '{{.NCPU}}'` is the number to stay under.
+#
+# FAST_*, not the base file's WORKER_*, and that distinction is the point.
+# Every documented command passes `--env-file .env.docker`, which makes that
+# file an interpolation source, so a WORKER_MEM_LIMIT parked there for an
+# earlier experiment would otherwise reach in here. Namespacing gives this
+# overlay a knob nothing else writes.
+#
+# docker-compose.repro.yml takes the opposite line and allows no interpolation
+# at all, because its numbers are the measurement. These are only a speed, and
+# nothing may be claimed from a run under this file anyway — so being able to
+# fit it to your machine costs nothing.
 #
 # `memswap_limit` tracks `mem_limit` here as it does in the base file — swap
 # would make even the "does it work" answer unreliable.
-#
-# The opposite direction lives in docker-compose.repro.yml.
 services:
   worker:
-    mem_limit: 8g
-    memswap_limit: 8g
-    cpus: 4
+    mem_limit: ${FAST_MEM_LIMIT:-8g}
+    memswap_limit: ${FAST_MEM_LIMIT:-8g}
+    cpus: ${FAST_CPUS:-4}
     # A map, so Compose merges rather than replaces: the broker URLs and every
     # other value the base file sets on this service survive, and only the
     # thread count changes. Raised in step with `cpus` above — threads a
     # container cannot schedule cost memory and buy nothing (CF-224).
     environment:
-      FFMPEG_THREADS: "4"
+      FFMPEG_THREADS: "${FAST_FFMPEG_THREADS:-4}"

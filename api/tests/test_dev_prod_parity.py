@@ -9,6 +9,7 @@ saying so is exactly the kind of thing that rots, so it is a test instead.
 These read the two files as text/YAML rather than starting anything; there is
 no Docker in CI.
 """
+import re
 from pathlib import Path
 
 import pytest
@@ -159,15 +160,35 @@ def _compose_service(path: Path, name: str):
     return services[name]
 
 
-def _assert_no_interpolation(filename: str, service) -> None:
-    """An override overlay must hold literals, never `${VAR}`.
+def _assert_sets(filename: str, service, keys) -> None:
+    """Presence, before anything indexes these.
+
+    Without it a deleted `mem_limit` reports `KeyError: 'mem_limit'` and the
+    message written for exactly that case never prints — the failure mode
+    `_compose_service` and `_render_worker` exist to remove.
+    """
+    for key in keys:
+        assert key in service, (
+            f"{filename} no longer sets `{key}` on the worker, so the overlay "
+            "silently inherits the base file's value and stops being the profile "
+            "it exists to be"
+        )
+
+
+def _assert_no_interpolation(filename: str, service, prefix: str | None = None) -> None:
+    """An override overlay may not read variables another file also reads.
 
     Every documented command passes `--env-file .env.docker`, which makes that
     file an interpolation source — so a `WORKER_MEM_LIMIT` parked there for some
-    earlier experiment would silently resize these overlays. For the fast one
-    that is merely confusing; for the repro one it is the whole failure this
-    branch keeps calling worse than none, because the run then *passes* and the
-    pass gets read as evidence. Ad-hoc sizes belong on the base file's knobs.
+    earlier experiment reaches any overlay that reads the same name.
+
+    Two strictnesses, because the two overlays are different kinds of thing.
+    `prefix=None` forbids interpolation outright: docker-compose.repro.yml's
+    numbers *are* the measurement, and a resized repro passes, which gets read
+    as "already fixed". A `prefix` instead requires every variable to be that
+    overlay's own — docker-compose.fast.yml needs a real escape hatch, because
+    `cpus: 4` cannot be created on an engine with two, and nothing may be
+    claimed from a fast run anyway.
     """
     # RESOURCE_KEYS, not a hand-list: an overlay reopens this hole on whichever
     # field it interpolates, so the guard has to cover every field that caps
@@ -179,11 +200,20 @@ def _assert_no_interpolation(filename: str, service) -> None:
         fields["deploy"] = service["deploy"]
     fields.update(_env_map(service))
     for key, value in fields.items():
-        assert "${" not in str(value), (
-            f"{filename} interpolates `{key}`: {value!r}. Every documented command "
-            "passes --env-file .env.docker, so a value set there would silently "
-            "redefine this overlay and the run would prove nothing. Hardcode it, "
-            "and use the WORKER_* knobs on docker-compose.yml for a one-off size"
+        names = re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", str(value))
+        if prefix is None:
+            assert not names, (
+                f"{filename} interpolates `{key}`: {value!r}. Every documented "
+                "command passes --env-file .env.docker, so a value set there would "
+                "silently redefine this overlay and the run would prove nothing. "
+                "Hardcode it, and use the base file's knobs for a one-off size"
+            )
+            continue
+        stray = [n for n in names if not n.startswith(prefix)]
+        assert not stray, (
+            f"{filename} reads {', '.join(stray)} for `{key}`. Names this overlay "
+            f"does not own reach it from .env.docker; use {prefix}* so only a "
+            "deliberate override of this file changes it"
         )
 
 
@@ -406,6 +436,10 @@ def test_the_vps_overlay_pins_its_own_ffmpeg_threads():
     demanded the two differ would fail the correct config.
     """
     vps = _compose_service(REPO_ROOT / "docker-compose.prod.yml", "worker")
+    # Production is not tunable by prefix. The VPS is layered with --env-file
+    # too, so any variable this file reads can be set in the box's .env or in a
+    # deploying shell - and FFMPEG_THREADS is the one setting CF-224 turned on.
+    _assert_no_interpolation('docker-compose.prod.yml', vps)
     env = _env_map(vps)
 
     assert "FFMPEG_THREADS" in env, (
@@ -424,16 +458,24 @@ def test_the_repro_overlay_still_reproduces_the_oom():
     repro = _compose_service(REPO_ROOT / "docker-compose.repro.yml", "worker")
 
     _assert_no_interpolation("docker-compose.repro.yml", repro)
+    _assert_sets("docker-compose.repro.yml", repro, ("mem_limit", "memswap_limit", "cpus"))
 
-    assert _bytes(str(repro["mem_limit"])) == _bytes("512m"), (
-        "the repro overlay must cap memory at 512m — Render's `starter`, the box "
-        "CF-224 actually died on"
+    # The box CF-224 died on is Render's `starter`, so take the numbers from the
+    # same table the parity checks use rather than restating them here.
+    memory, cpus = RENDER_PLANS["starter"]
+
+    assert _bytes(str(repro["mem_limit"])) == _bytes(memory), (
+        f"the repro overlay must cap memory at {memory} — Render's `starter`, the "
+        "box CF-224 actually died on"
     )
     assert str(repro["memswap_limit"]) == str(repro["mem_limit"]), (
         "the repro overlay must leave no swap: 512 MB of it is enough to carry the "
         "encode that killed production, and the run comes back green"
     )
-    assert float(repro["cpus"]) == 0.5
+    assert float(repro["cpus"]) == float(cpus), (
+        f"the repro overlay must run on {cpus} CPU — `starter`'s share, and half "
+        "the reason x264 oversubscribed its thread pool in the first place"
+    )
 
     threads = int(_env_map(repro)["FFMPEG_THREADS"])
     assert threads >= 4, (
@@ -451,11 +493,19 @@ def test_the_fast_overlay_is_faster_than_the_default_and_still_swapless():
     dev = _compose_service(REPO_ROOT / "docker-compose.yml", "worker")
     fast = _compose_service(REPO_ROOT / "docker-compose.fast.yml", "worker")
 
-    _assert_no_interpolation("docker-compose.fast.yml", fast)
+    _assert_no_interpolation("docker-compose.fast.yml", fast, prefix="FAST_")
+    _assert_sets("docker-compose.fast.yml", fast, ("mem_limit", "memswap_limit", "cpus"))
 
-    assert float(fast["cpus"]) > float(_default(str(dev["cpus"]))), (
+    assert float(_default(str(fast["cpus"]))) > float(_default(str(dev["cpus"]))), (
         "docker-compose.fast.yml gives the worker no more CPU than the default "
         "does, so it is a file that buys nothing"
+    )
+    assert _bytes(_default(str(fast["mem_limit"]))) >= _bytes(
+        _default(str(dev["mem_limit"]))
+    ), (
+        "docker-compose.fast.yml gives the worker LESS memory than the default — "
+        "it would be slower and tighter, which is neither of the two things this "
+        "repo has a file for"
     )
     assert str(fast["memswap_limit"]) == str(fast["mem_limit"]), (
         "even the fast path stays swapless: swap makes `did it work` unreliable "
