@@ -14,9 +14,19 @@ credential on any viewable game. This script answers the only question that
 decides whether a backfill is needed: how many such rows exist.
 
 READ ONLY. It issues one SELECT and writes nothing — safe to point at the
-shared instance, unlike anything under alembic/. Run it before merging #239:
+shared instance, unlike anything under alembic/. Run it before merging #239,
+**from the api/ directory** — `Settings` loads `.env` relative to the working
+directory, so from the repo root `database_url` falls back to its localhost
+default (CF-172's failure shape). Against a local dev database with this schema
+that returns "clean", which is indistinguishable from a real all-clear. Hence
+the target banner below: every run says what it queried, so the answer can be
+read against the right database rather than assumed.
 
-    DATABASE_URL=<pooler-uri> python api/scripts/audit_cross_tenant_tags.py
+    cd api && python scripts/audit_cross_tenant_tags.py
+
+PowerShell has no inline env-var prefix, so `DATABASE_URL=... python ...` does
+not work there; either rely on api/.env as above or set `$env:DATABASE_URL`
+first.
 
 Exit codes: 0 clean, 1 rows found, 2 could not complete the check. 2 is
 deliberately wider than "could not connect" — the handler catches a missing
@@ -63,7 +73,26 @@ QUERY = text("""
 """)
 
 
+def target(url) -> str:
+    """Where this run actually pointed, credentials stripped.
+
+    SQLAlchemy's own renderer rather than a hand-parsed host: `hide_password`
+    is what makes this safe to print, and splitting on the last `@` drops the
+    user info with it. A URL carrying no credentials has no `@` and renders
+    whole, which is still the right answer. Deliberately not reusing
+    auto_migrate.database_host — that one backs a safety gate and has to
+    resolve libpq's `?host=` override; this one only has to be legible, and a
+    second caller is not a reason to couple two scripts.
+    """
+    return url.render_as_string(hide_password=True).rsplit("@", 1)[-1]
+
+
 async def main() -> int:
+    # Before the query, so it is on the record even when the run fails: an
+    # exit 2 that names the host it could not reach is diagnosable, and an
+    # exit 0 is only meaningful once you can see it was not localhost.
+    print(f"querying {target(engine.url)}")
+
     try:
         async with AsyncSessionLocal() as db:
             rows = (await db.execute(QUERY)).mappings().all()
