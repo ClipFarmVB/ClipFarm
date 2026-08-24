@@ -92,6 +92,15 @@ POSE_MIN_KP_CONF = 0.5   # below this the keypoint is a guess, so it measures no
 # engaged in a rally at any instant.
 POSE_ACTIVITY_TOP_K = 4
 
+# How long a run of above-threshold activity must last to open a pose window.
+# ANCHOR_MIN_SECONDS (2.0) governs the ball anchor and was tuned against ball
+# speeds, which stay high for the whole flight of a rally. Player activity is
+# burstier — a dig or a swing is well under a second — so a 2s minimum discarded
+# exactly the evidence this signal exists to catch. Halving it is worth +32s of
+# net and 11s *less* live play cut on the tuning fixtures, better on both axes at
+# once, and 0.5 scores identically, so 1.0 is a plateau rather than a cliff edge.
+POSE_ANCHOR_MIN_SECONDS = 1.0
+
 # Wrist travel is divided by the player's own bounding-box height, not the frame
 # height: a far-court player's swing covers a fraction of the pixels a near-court
 # one's does, and normalizing by the frame would read the far player as idle.
@@ -542,6 +551,7 @@ def active_windows_guarded(
     pose_activity: SpeedSamples | None = None,
     pose_gate_activity: float | None = None,
     pose_anchor_activity: float | None = None,
+    pose_anchor_min_seconds: float = POSE_ANCHOR_MIN_SECONDS,
 ) -> list[Interval]:
     """
     Keep-windows from speed-gated contacts plus motion anchors, or the whole
@@ -580,8 +590,10 @@ def active_windows_guarded(
     The three pose_* arguments are CF-198's opt-in player-activity signal, and
     each is independent: `pose_gate_activity` additionally requires player
     motion around a contact before it is believed, and `pose_anchor_activity`
-    lets sustained player motion open a window of its own. Both default to None,
-    which is off — with no `pose_activity` series supplied this function is the
+    lets sustained player motion open a window of its own; `pose_anchor_min_seconds`
+    is how long that motion must last, and is shorter than the ball anchor's
+    equivalent because player activity is burstier than ball flight. The two
+    thresholds default to None, which is off — with no `pose_activity` series supplied this function is the
     CF-187 builder exactly, so the setting that switches pose on defaults off and
     the shipping path is unchanged until it is deliberately flipped.
     """
@@ -626,7 +638,8 @@ def active_windows_guarded(
     pose_anchors: list[Interval] = []
     if has_pose and pose_anchor_activity is not None:
         pose_anchors = motion_anchor_windows(
-            pose_activity, duration, speed=pose_anchor_activity, pad=anchor_pad
+            pose_activity, duration, speed=pose_anchor_activity, pad=anchor_pad,
+            min_seconds=pose_anchor_min_seconds,
         )
 
     merged = merge_intervals(windows + anchors + pose_anchors, merge_gap_seconds)

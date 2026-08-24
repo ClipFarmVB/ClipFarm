@@ -63,6 +63,12 @@ GUARD_TO_KWARG = {
 POSE_TO_VARIANT = {
     "condense_pose_anchor_activity": "POSE_ANCHOR_ACTIVITY",
 }
+# app.config setting -> the dead_time.py module constant it copies. Same drift
+# risk again: the eval ladder picks these up as kwarg defaults while production
+# passes the setting, so the two must agree.
+POSE_TO_DEAD_TIME_CONST = {
+    "condense_pose_anchor_min_seconds": "POSE_ANCHOR_MIN_SECONDS",
+}
 # Mode switches, not tunables: not copied into tune_contacts, which sweeps the
 # rule-based path only. Listed here so the coverage test stays a conscious
 # checkpoint for every new condense_* knob.
@@ -179,6 +185,7 @@ class TestTuneContactsMatchesProduction:
             | set(BRIDGE_TO_SETTING.values())
             | set(GUARD_TO_KWARG)
             | set(POSE_TO_VARIANT)
+            | set(POSE_TO_DEAD_TIME_CONST)
             | SWITCH_SETTINGS
         )
         assert condense_settings == mapped, (
@@ -204,6 +211,26 @@ class TestPoseLadderMatchesProduction:
                 f"{setting}={settings[setting]} - the ladder is scoring a "
                 "threshold production does not run"
             )
+
+    def test_anchor_shape_constants_match(self):
+        settings = _settings_defaults()
+        consts = _module_constants(DEAD_TIME_PY)
+        for setting, const in POSE_TO_DEAD_TIME_CONST.items():
+            assert const in consts, f"dead_time lost {const}"
+            assert consts[const] == settings[setting], (
+                f"dead_time {const}={consts[const]} but app.config "
+                f"{setting}={settings[setting]}"
+            )
+
+    def test_the_pose_anchor_is_shorter_than_the_ball_anchor(self):
+        """
+        The whole point of the separate constant: player activity is burstier
+        than ball flight, so reusing ANCHOR_MIN_SECONDS discards the sub-second
+        bursts this signal exists to catch. If someone collapses the two back
+        into one constant, this fails.
+        """
+        consts = _module_constants(DEAD_TIME_PY)
+        assert consts["POSE_ANCHOR_MIN_SECONDS"] < consts["ANCHOR_MIN_SECONDS"]
 
     def test_the_gate_ships_disabled(self):
         """

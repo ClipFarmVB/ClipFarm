@@ -271,6 +271,10 @@ class Settings(BaseSettings):
     # four fixtures this cuts 39% less live play than the ball signal alone at
     # roughly equal net seconds — see ml/eval/README.md.
     condense_pose_anchor_activity: float | None = 0.80
+    # Shorter than the ball anchor's 2.0s: a swing or a dig is well under a
+    # second, so the ball-tuned minimum was throwing away the bursts this signal
+    # is for. Worth +32s net and 11s less live play cut on the tuning fixtures.
+    condense_pose_anchor_min_seconds: float = 1.0
     # Requiring player motion around a contact as well. Off by default: it
     # scored well on the two fixtures it was tuned on and *negative* on the
     # held-out ones, while cutting more live play. Kept as a knob so the next

@@ -274,16 +274,16 @@ only, against net seconds rather than AUC.
 |---|---|---|---|---|---|---|---|
 | `v5` guarded (default) | 51% / -12s | abstains | 71% / -66s | 53% / -18s | +545s | +121s | 97s |
 | `v6` + pose gate | 61% / -14s | abstains | 81% / -81s | 61% / -42s | **+614s** | **+58s** | 137s |
-| `v7` + pose anchor | 49% / -12s | abstains | 61% / -32s | 50% / -15s | +581s | **+125s** | **59s** |
-| `v8` + both | 58% / -14s | abstains | 69% / -38s | 58% / -36s | **+664s** | **+73s** | 88s |
+| `v7` + pose anchor | 49% / -12s | abstains | 59% / -21s | 49% / -15s | +613s | **+124s** | **48s** |
+| `v8` + both | 58% / -14s | abstains | 67% / -27s | 58% / -36s | **+693s** | **+72s** | 77s |
 
 Cells are `dead removed % / live play cut`. Deltas against `v5`:
 
 | rung | tuned | held-out | live cut |
 |---|---|---|---|
 | `v6` | +68s | **-63s** | +40s |
-| `v7` | +36s | +4s | **-38s** |
-| `v8` | +118s | **-49s** | -9s |
+| `v7` | +68s | +3s | **-49s** |
+| `v8` | +147s | **-50s** | -20s |
 
 **The gate does not generalize and the anchor does.** `v6` is the best rung on
 the two fixtures it was tuned on and the worst on the two it was not, while
@@ -291,12 +291,40 @@ cutting 40s *more* live play — a textbook overfit, and `v8`'s large tuned gain
 that same overfit carried along. Read the tuned column alone and `v8` looks like
 the winner; it is the held-out column that says otherwise.
 
-`v7`'s held-out net gain of +4s is noise, and the honest claim is not that it
-raises net. It is that it reaches the same net while cutting **39% less live
-play** (97s → 59s), and on test4 it halves the loss outright (66s → 32s) by
+`v7`'s held-out net gain of +3s is noise, and the honest claim is not that it
+raises net. It is that it reaches the same net while cutting **half as much live
+play** (97s → 48s), and on test4 it cuts the loss by two thirds (66s → 21s) by
 opening windows over the 19-of-46 rallies that produce no ball contact at all.
 Live play is the axis this repo protects, so a change that buys it back at flat
 net is worth having.
+
+Read the per-fixture cells before the totals, though: `v7` is flat on test2,
+flat on test5, and wins on test4 — the fixture with the worst ball-contact
+coverage, and one of the two it was tuned on. That is the mechanism behaving as
+designed (pose pays off where contacts fail), but it means the rung rests on one
+non-independent game. Tuning can sharpen it; only a second fixture with poor
+contact coverage can show the effect is real.
+
+### Tuning the anchor's window shape
+
+The pose anchor reuses `motion_anchor_windows`, whose constants were tuned
+against *ball* speeds. Sweeping them against the pose series on test2 + test4
+found one change worth making and several worth refusing:
+
+- **`min_seconds` 2.0 → 1.0** (`POSE_ANCHOR_MIN_SECONDS`). Ball speed stays high
+  for a whole rally; a dig or a swing is well under a second, so a 2s minimum run
+  discarded the bursts this signal exists to catch. Worth +32s net *and* 11s less
+  live play cut — better on both axes from one parameter, with 0.5s scoring
+  identically, so it is a plateau and not a cliff edge.
+- **`min_samples` does nothing.** 4, 6 and 9 score identically: at 3 pose
+  samples/s a ±3s window always clears the bar, so the guard that protects the
+  ball anchor from a sparse track never binds here.
+- **`pad`, `half_window`, `min_fraction` and the activity threshold were left
+  alone.** `pad` 2.0 → 1.0 buys +9s of net for 8s more live play — a trade, not an
+  improvement, and the wrong direction for this repo. The other three are spiky
+  rather than flat under sweep (the threshold runs +482 / +544 / +632 / +595 /
+  +613 across 0.65-1.00), which is the shape of noise being fitted on two
+  fixtures, not a signal. `v6` is what that looks like when you ship it.
 
 test3 abstains under every rung: the abstain check runs on the ball track before
 any pose window is built, so pose cannot reach it. Letting pose override the
@@ -317,7 +345,8 @@ matching the ball track's rate) is the lever — every sample is a forward pass.
 ### What ships
 
 `condense_use_pose = False`. With it on, the anchor is armed
-(`condense_pose_anchor_activity = 0.80`) and the gate is not
+(`condense_pose_anchor_activity = 0.80`,
+`condense_pose_anchor_min_seconds = 1.0`) and the gate is not
 (`condense_pose_gate_activity = None`) — the gate is kept as a knob so the next
 labeled fixture can re-test it, not because it is ready. The pipeline reaches
 GPU pose through `extract_keypoints_remote`; the worker image has no torch

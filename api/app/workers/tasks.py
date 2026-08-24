@@ -142,6 +142,7 @@ def _build_condense_windows(
                     pose_anchor_activity=(
                         settings.condense_pose_anchor_activity if pose_activity else None
                     ),
+                    pose_anchor_min_seconds=settings.condense_pose_anchor_min_seconds,
                 )
             else:
                 raise ValueError(f"unknown condense_mode {mode!r}")
