@@ -197,11 +197,21 @@ def test_clip_tag_accepts_own_player():
 
 
 def test_orphan_player_is_rejected():
-    """team_id NULL has no owner to check, so it cannot be proven safe."""
+    """team_id NULL has no owner to check, so it cannot be proven safe.
+
+    The owned team parked under the NULL key is what makes this discriminate.
+    Without it, removing the guard still yields 404 — `db.get(Team, None)`
+    misses and `if not team` fires, same status and same detail — so the test
+    would pass either way. With it, the guard is the only thing that can
+    produce the rejection. (SQLAlchemy answers `Session.get(Team, None)` with
+    None today, but warns it may raise in a future release; the explicit guard
+    is what keeps this a deterministic 404 rather than a later 500.)"""
     game = _Game(OWNER)
     clip = _Clip(game)
     orphan = _Player(None)
-    session = _FakeSession(game, clip, orphan)
+    owned = _Team(OWNER)
+    owned.id = None
+    session = _FakeSession(game, clip, orphan, owned)
 
     with pytest.raises(HTTPException) as exc:
         _tag(session, clip, orphan.id)
