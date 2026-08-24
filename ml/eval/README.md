@@ -73,8 +73,12 @@ invocation below is a one-shot `run --rm`. It has no default command — a bare
 pins no `FFMPEG_THREADS` and no broker URLs, because neither is read on an eval
 path: `Settings.ffmpeg_threads` reaches only `recut_clip_task` and
 `process_game_task`, and nothing here imports `ml.pipeline.clip`. Pinning either
-would be config that looks load-bearing and is not. `eval` also cannot take real
-work off the Celery queue even if asked to.
+would be config that looks load-bearing and is not.
+
+Nothing in the repo hands `eval` the queue — which is not the same as it being
+unable to reach one. `eval` still loads your `.env.docker`, so a
+`CELERY_BROKER_URL` set there does arrive, and `run --rm eval celery ...` would
+then take real jobs and run them unconstrained. Don'''t.
 
 Not the same as "eval never runs ffmpeg": `--offline` calls
 `compute_audio_energy`, which shells out to ffmpeg to pull mono PCM

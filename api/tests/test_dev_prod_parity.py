@@ -122,10 +122,22 @@ def _render_worker():
     return worker
 
 
+def _compose_service(path: Path, name: str):
+    """One service out of a Compose file, saying which file and which name when
+    it is not there — a bare KeyError names neither."""
+    services = _load_compose(path).get("services") or {}
+    assert name in services, (
+        f"{path.name} has no `{name}` service. Every parity check in this file keys "
+        "off that name; if it was renamed, rename it here too rather than deleting "
+        "the check"
+    )
+    return services[name]
+
+
 def _worker_services():
     prod = _render_worker()
-    compose = _load_compose(REPO_ROOT / "docker-compose.yml")
-    return prod, compose["services"]["worker"]
+    dev = _compose_service(REPO_ROOT / "docker-compose.yml", "worker")
+    return prod, dev
 
 
 # Compose accepts `2g`, `2gb`, `2048m`, and a bare byte count.
@@ -201,6 +213,11 @@ def test_dev_worker_ffmpeg_threads_match_production():
     """
     prod, dev = _worker_services()
 
+    assert "envVars" in prod, (
+        "render.yaml's clipfarm-worker has no envVars block at all — FFMPEG_THREADS "
+        "cannot be pinned there, and CF-224's whole point is that the value must be "
+        "chosen rather than inherited from the code default"
+    )
     prod_threads = next(
         (v["value"] for v in prod["envVars"] if v.get("key") == "FFMPEG_THREADS"),
         None,
@@ -211,7 +228,13 @@ def test_dev_worker_ffmpeg_threads_match_production():
         "Set it there again, or drop the pin here and retire this test — CF-224's "
         "whole point is that the value must be chosen, not inherited"
     )
-    dev_threads = _default(str(dev["environment"]["FFMPEG_THREADS"]))
+    dev_env = _env_map(dev)
+    assert "FFMPEG_THREADS" in dev_env, (
+        "the dev worker no longer pins FFMPEG_THREADS, so it falls back to the code "
+        "default (2) while production pins its own — the divergence CF-241 exists "
+        "to close (docker-compose.yml)"
+    )
+    dev_threads = _default(dev_env["FFMPEG_THREADS"])
 
     assert dev_threads == prod_threads, (
         f"production runs FFMPEG_THREADS={prod_threads} and the dev worker defaults "
@@ -224,8 +247,7 @@ def test_eval_service_is_unconstrained_and_not_started_by_default():
     """CF-241's known tension, resolved: correctness sweeps get the whole host,
     but only on request, so nobody benchmarks at one core by accident.
     """
-    compose = _load_compose(REPO_ROOT / "docker-compose.yml")
-    evaluation = compose["services"]["eval"]
+    evaluation = _compose_service(REPO_ROOT / "docker-compose.yml", "eval")
 
     constrained = [k for k in RESOURCE_KEYS if k in evaluation]
     assert not constrained, (
@@ -259,7 +281,7 @@ def test_eval_service_is_unconstrained_and_not_started_by_default():
         "inside a container with no redis — impossible beats discouraged"
     )
 
-    worker = compose["services"]["worker"]
+    worker = _compose_service(REPO_ROOT / "docker-compose.yml", "worker")
     assert evaluation.get("image") and evaluation["image"] == worker.get("image"), (
         "eval and worker must name the same `image:`. Sharing only `build:` makes "
         "Compose tag them separately and build them independently, from whatever "
@@ -269,9 +291,14 @@ def test_eval_service_is_unconstrained_and_not_started_by_default():
     )
 
 
-def test_the_vps_overlay_clears_every_dev_resource_limit():
-    """The dev worker's limits must not reach the VPS — the bug this branch
-    shipped and had to fix.
+def test_the_vps_overlay_states_every_dev_resource_limit():
+    """The dev worker's limits must not reach the VPS by accident — the bug this
+    branch shipped and had to fix.
+
+    "States", not "clears": today the overlay resets all three, but a VPS that
+    wants a cap of its own is a legitimate answer (CF-223 may well want one).
+    What is forbidden is silence, which is indistinguishable from having thought
+    about it.
 
     `docker-compose.prod.yml` layers over the dev file, and Compose carries any
     field the overlay does not mention. The VPS is a 2-3 vCPU / 2-4 GB box
@@ -280,17 +307,23 @@ def test_the_vps_overlay_clears_every_dev_resource_limit():
     left to the overlay's comment, because the failure is silent: it looks like
     a slow box, not a misconfiguration.
     """
-    dev = _load_compose(REPO_ROOT / "docker-compose.yml")["services"]["worker"]
-    vps = _load_compose(REPO_ROOT / "docker-compose.prod.yml")["services"]["worker"]
+    dev = _compose_service(REPO_ROOT / "docker-compose.yml", "worker")
+    vps = _compose_service(REPO_ROOT / "docker-compose.prod.yml", "worker")
 
     for key in RESOURCE_KEYS:
         if key not in dev:
             continue
-        assert isinstance(vps.get(key), _Reset), (
+        assert key in vps, (
             f"docker-compose.yml caps the dev worker's `{key}` and "
-            "docker-compose.prod.yml does not clear it, so the VPS inherits it. "
-            f"Add `{key}: !reset null` to the prod overlay's worker — a plain null "
-            "will not do it, only the tag clears a base value"
+            "docker-compose.prod.yml is silent about it, so the VPS inherits a "
+            "number chosen for Render's box. Say what this box should do: "
+            f"`{key}: !reset null` for no limit, or a value of its own — a plain "
+            "null is neither, and does not clear a base value"
+        )
+        assert isinstance(vps.get(key), _Reset) or vps.get(key) is not None, (
+            f"docker-compose.prod.yml sets `{key}` to a bare null, which does not "
+            "clear the dev value — the VPS still inherits it. Use `!reset null`, "
+            "or give the key a real value"
         )
 
 
@@ -302,7 +335,7 @@ def test_the_vps_overlay_pins_its_own_ffmpeg_threads():
     for a 2-3 vCPU box sharing itself with redis and the api, and a test that
     demanded the two differ would fail the correct config.
     """
-    vps = _load_compose(REPO_ROOT / "docker-compose.prod.yml")["services"]["worker"]
+    vps = _compose_service(REPO_ROOT / "docker-compose.prod.yml", "worker")
     env = _env_map(vps)
 
     assert "FFMPEG_THREADS" in env, (

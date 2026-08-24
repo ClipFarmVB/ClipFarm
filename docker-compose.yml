@@ -141,8 +141,15 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       # 1, matching render.yaml, not the code default of 2 (CF-224). Parity is
       # the point: the limits above are worth little if the thing that OOMs
-      # under them is configured differently here. Raise it together with
-      # WORKER_CPUS, never on its own.
+      # under them is configured differently here.
+      #
+      # Raising it as a *speed* knob means raising WORKER_CPUS with it — threads
+      # a container cannot schedule cost memory and buy nothing (CF-224 measured
+      # 2 threads at 0.5 CPU as both slower and 60 MB heavier). Raising it to
+      # *provoke* the OOM is the opposite move and deliberately unbalanced: the
+      # repro above pairs 4 threads with 0.5 CPU precisely because only 4-or-
+      # unbounded blows the 512 MB ceiling. Follow the "raise them together"
+      # rule there and the run completes at ~408 MB, reading as "already fixed".
       #
       # The knob is WORKER_FFMPEG_THREADS, deliberately not FFMPEG_THREADS.
       # Same name on both sides would mean the app's own variable doubles as
