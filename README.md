@@ -266,18 +266,30 @@ Notes:
   **Keep `--env-file .env.docker`.** It is what Compose interpolates from, and
   dropping it does not fall back to `.env.docker` — it falls back to the
   defaults, so `POSTGRES_HOST_PORT` is ignored and the db container fights
-  whatever is already on 5432. For a one-off size the overlays do not cover,
-  the `WORKER_MEM_LIMIT` / `WORKER_CPUS` / `WORKER_FFMPEG_THREADS` knobs still
-  work as a prefix; they are namespaced (never the app's own `FFMPEG_THREADS`)
-  so it is unambiguous which side reads them.
+  whatever is already on 5432.
 
-  **As a prefix, not parked in `.env.docker`.** Because every command above
-  passes `--env-file .env.docker`, a value left in that file is read on *every*
-  run, and you will not see it in the command you typed. The two overlays are
-  hardcoded specifically so this cannot reach them — a stale `WORKER_MEM_LIMIT`
-  silently resizing the repro would make it pass, and a passing repro reads as
-  "already fixed". `api/tests/test_dev_prod_parity.py` fails either overlay that
-  reintroduces a `${...}`.
+  **Which knob belongs to which file.** `WORKER_MEM_LIMIT` / `WORKER_CPUS` /
+  `WORKER_FFMPEG_THREADS` size the **default** worker in `docker-compose.yml`,
+  for a one-off the overlays do not cover. They do *not* reach the fast overlay,
+  which has its own `FAST_MEM_LIMIT` / `FAST_CPUS` / `FAST_FFMPEG_THREADS` —
+  needed because `cpus: 4` cannot be created on an engine with fewer than four,
+  which Docker reports as `range of CPUs is from 0.01 to N.00`:
+
+  ```bash
+  FAST_CPUS=2 FAST_MEM_LIMIT=4g docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.fast.yml up worker
+  ```
+
+  `docker info --format '{{.NCPU}}'` is the number to stay under. The repro
+  overlay takes no variables at all: its numbers *are* the measurement, and a
+  resized repro completes, which reads as "already fixed".
+
+  **Pass these as a prefix, not parked in `.env.docker`.** Because every command
+  above passes `--env-file .env.docker`, a value left in that file is read on
+  *every* run and you will not see it in the command you typed. The namespacing
+  is what stops that reaching an overlay it was not meant for;
+  `api/tests/test_dev_prod_parity.py` fails the repro overlay for reading any
+  variable, and the fast overlay for reading one outside `FAST_*` — in either
+  spelling, `${VAR}` or `$VAR`.
 
   Anything CPU-bound and *not* about production's box — the eval harness, the
   tuning scripts — belongs on the `eval` service: same image, no limits, and

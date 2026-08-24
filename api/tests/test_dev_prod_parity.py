@@ -160,6 +160,20 @@ def _compose_service(path: Path, name: str):
     return services[name]
 
 
+def _interpolated_names(value: str) -> list[str]:
+    """Every variable Compose would substitute into `value`.
+
+    Both spellings, because Compose takes both: `${VAR}`, with or without a
+    `:-default`, and a bare `$VAR`. Matching only the braced form is how this
+    guard first shipped, and `FFMPEG_THREADS: "$WORKER_FFMPEG_THREADS"` slid
+    straight past it into the production overlay.
+
+    `$$` is Compose's escape for a literal dollar, so it is removed before the
+    scan rather than read as the start of a name.
+    """
+    return re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", value.replace("$$", ""))
+
+
 def _assert_sets(filename: str, service, keys) -> None:
     """Presence, before anything indexes these.
 
@@ -200,7 +214,7 @@ def _assert_no_interpolation(filename: str, service, prefix: str | None = None) 
         fields["deploy"] = service["deploy"]
     fields.update(_env_map(service))
     for key, value in fields.items():
-        names = re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", str(value))
+        names = _interpolated_names(str(value))
         if prefix is None:
             assert not names, (
                 f"{filename} interpolates `{key}`: {value!r}. Every documented "
@@ -477,7 +491,13 @@ def test_the_repro_overlay_still_reproduces_the_oom():
         "the reason x264 oversubscribed its thread pool in the first place"
     )
 
-    threads = int(_env_map(repro)["FFMPEG_THREADS"])
+    repro_env = _env_map(repro)
+    assert "FFMPEG_THREADS" in repro_env, (
+        "docker-compose.repro.yml no longer pins FFMPEG_THREADS, so the repro "
+        "inherits the base file's 1 — at which CF-224's encode peaks at 407 MB, "
+        "fits inside 512 MB, and the repro passes"
+    )
+    threads = int(repro_env["FFMPEG_THREADS"])
     assert threads >= 4, (
         f"the repro overlay runs FFMPEG_THREADS={threads}. CF-224 measured the "
         "ceiling: 1 thread peaks at 407 MB and survives, 2 at 468 MB, and only "
