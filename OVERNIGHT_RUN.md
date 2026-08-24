@@ -86,8 +86,11 @@ most expensive kind of surprise in an unattended run.
   Confirm `.env.docker` names the local `db` container first.
 - **Never** read, echo, or commit `.env.docker` or any credential.
 - Every PR opens as a **draft**. It is work nobody has vetted yet, and draft is
-  the honest signal for that. You still review your own PRs (step 1) — a draft
-  reviews and takes pushes exactly like any other. You never merge, never deploy.
+  the honest signal for that. Your PRs still get reviewed (step 1) — by a cold
+  subagent, never by you — and a draft reviews and takes pushes exactly like any
+  other. You never merge, never deploy.
+- **Never review a diff this session wrote.** Reviews are spawned cold; see
+  step 1.
 - **Maximum 5 new PRs** and **6 new cards** per run.
 - **No attribution stamps.** Do not add "Generated with Claude Code", a
   `Co-Authored-By` trailer, a session link, or any similar footer to commits, PR
@@ -113,12 +116,31 @@ review at all** — including one you opened earlier in this run — or if it ha
 commits since its most recent review.
 
 **Skip PRs labelled `review-settled`** unless commits have landed since the
-label was applied. That label is the record that a review round found nothing
-actionable; without it, "already reviewed" has to be inferred from timestamps,
-and a PR abandoned mid-cycle looks identical to one reviewed clean.
+label was applied. That label is the record that a cold review round found
+nothing actionable; without it, "already reviewed" has to be inferred from
+timestamps, and a PR abandoned mid-cycle looks identical to one reviewed clean.
 
 Compare each PR's head commit against the commit of its most recent review. If
-there are commits since, run `/code-review` and post the findings as one review
+there are commits since, it needs another round.
+
+**Never review from this session. Spawn a subagent and let it review cold.**
+The session that wrote the code is the most anchored possible reviewer: once it
+has judged a file fine it checks the delta rather than re-deriving that
+judgement, so everything already blessed becomes invisible. A long context also
+spends attention on conversation history that a cold reviewer spends entirely on
+the diff. Clearing the context is not a retry — it produces a *different
+reviewer*, which is why a fresh pass keeps finding real things after both sides
+agreed a PR was ready. In this loop one session writes the code, opens the PR,
+reviews it and fixes it; nothing in that chain is cold unless you make it so.
+
+Hand the subagent the PR number and nothing else. Not the plan, not the
+reasoning, not a summary of what was built, not what an earlier round found. It
+reads the repository itself. Re-deriving context from cold is what a subagent
+normally costs you; here that cost is the point. Step 2 of
+[Working a ticket](#working-a-ticket) already spawns one to cross-check plans —
+same mechanism, pointed at a diff.
+
+Its brief: run `/code-review` on that PR and post the findings as one review
 comment, in tiers:
 
 - **Critical** — correctness, security, data loss
@@ -137,26 +159,42 @@ includes every PR you opened during this run). If a fix needs no human decision,
 implement it, push to that PR's branch, and reply on the thread saying what
 changed. If it needs a judgement call, log it and leave it.
 
-**This is a cycle, and the order matters.** Post the review. *Then* push the
-fix. *Then* post a separate re-review against the new head, confirming the fix
-holds and introduced nothing new.
+**This is a cycle, and the order matters.** A cold subagent posts the review.
+*Then* you push the fix. *Then* a **new** subagent, spawned just as cold, posts
+a separate re-review against the new head — confirming the fix holds and
+introduced nothing new.
 
 **Never describe a fix inside the review that found it.** Two of the five PRs in
 the second run did exactly that — found something, fixed it, and posted one
 review narrating both. Nothing independently looked at the fix, and because the
 fix commit predated the review, step 1 saw no commits after it and skipped the
-PR forever. Round two is not ceremony: it is a second pass over code that changed
-*after* the first pass formed its judgement.
+PR forever. The next round is not ceremony: it is a fresh reviewer over code
+that changed *after* the previous one formed its judgement.
 
-**When a review round finds nothing actionable, label the PR `review-settled`.**
-That is the terminal state, and it is what stops future runs re-reviewing
-finished work. Do not apply it while findings are outstanding — including
-findings you deferred to a human. If a human removes it, the PR wants another
-look.
+**Cycle until a cold reviewer produces no Critical and no Medium finding.** Not
+for a fixed number of rounds — every round is a new subagent, so every round is
+a different reviewer, and stopping at two just stops early. Nits may remain;
+requiring zero findings would review forever.
 
-Bound it: **at most two review-and-fix rounds per PR per run.** If findings
-remain after the second round, leave the PR unlabelled, write them in the log,
-and move on rather than looping on one PR all night.
+**When a cold round clears that bar, label the PR `review-settled`.** That is
+the terminal state, and it is what stops future runs re-reviewing finished work.
+
+**Only a cold reviewer's verdict earns the label.** This session labelling its
+own work settled is the anchored judgement stamped final, and that label is
+precisely what stops anyone looking again. Do not apply it while Critical or
+Medium findings are outstanding — including findings deferred to a human. If a
+human removes it, the PR wants another look.
+
+**Ceiling: four cold rounds per PR per run**, so a pathological PR cannot
+consume the whole night. If Critical or Medium findings remain when the ceiling
+is hit, leave the PR unlabelled and record it as **unsettled**, with the
+outstanding findings, in both the log and the report.
+
+None of this proves a PR clean. A fresh subagent is cold but still the same
+model with the same priors: it finds *different* things, not *all* things. The
+returns across repeated clears diminish without reaching zero. This cuts how
+many rounds a human has to run by hand; it does not answer when a PR is
+actually done.
 
 **3 — Only when 1 and 2 are clear**, take one ticket from "This run".
 
@@ -203,8 +241,8 @@ and move on rather than looping on one PR all night.
    Do not open a PR if any gate fails — log it and move on.
 5. **Open a draft PR** following `.github/pull_request_template.md`, including
    the bare `Closes #<issue>` line `CLAUDE.md` requires. Then go back to step 1:
-   a PR you just opened has no review yet, and reviewing it is your job. Draft
-   status does not exempt it.
+   a PR you just opened has no review yet, and getting it reviewed — by a cold
+   subagent, never by you — is your job. Draft status does not exempt it.
 
 **Size discipline.** If a ticket would produce a diff too large to review in one
 sitting, do not implement it. Write the plan into the log instead — a good plan
@@ -265,7 +303,8 @@ Put the same summary at the top of `.claude/overnight-log.md`.
 
 The report contains:
 
-- PRs reviewed, and findings by tier
+- PRs reviewed, how many cold rounds each took, and findings by tier
+- PRs left **unsettled** at the round ceiling, with what is still outstanding
 - PRs opened, with card and branch — and **what to test to verify each one**
 - Cards filed, one sentence each on why
 - Tickets attempted but abandoned, and why
