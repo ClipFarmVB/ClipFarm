@@ -75,6 +75,17 @@ def _has_deploy_resources(service) -> bool:
     return bool(node)
 
 
+# Services the VPS does not run, and why. docker-compose.prod.yml's header brings
+# up exactly `redis api worker`; everything else here has to be justified rather
+# than merely absent, because "absent from the overlay" is how a limit reaches
+# production unnoticed.
+NOT_ON_THE_VPS = {
+    "db",    # Postgres is Supabase there, not a container (docker-compose.prod.yml)
+    "web",   # the frontend is on Render; that box is the backend only (DEPLOY.md)
+    "eval",  # profile-gated, so no `up` on any box ever starts it
+}
+
+
 class _Reset:
     """A `!reset` tag, kept distinct from a plain `null`.
 
@@ -421,11 +432,20 @@ def test_the_vps_overlay_states_every_dev_resource_limit():
         _load_compose(REPO_ROOT / "docker-compose.prod.yml").get("services") or {}
     )
 
-    # Every service the VPS actually runs, not just the worker. docker-compose.yml
-    # says api and web are capped later (CF-241 left them out of scope); when that
-    # lands, an overlay silent about them inherits Render-sized caps on a box that
-    # is not Render — which is the bug this branch already shipped once.
-    for name, vps in vps_services.items():
+    # The UNION of both files, not just what the overlay declares. Iterating the
+    # overlay's own services makes the worst case invisible: a service the
+    # overlay never mentions inherits everything, silently, and silence is the
+    # thing this test exists to forbid. docker-compose.prod.yml declares only
+    # `api` and `worker`, but its header brings up `redis` too — so a cap added
+    # to redis in the base file would have reached the VPS with nothing to catch
+    # it, which is the original bug's exact shape.
+    #
+    # Anything genuinely not on that box is skipped BY NAME, so leaving a service
+    # out is a decision someone wrote down rather than an omission.
+    for name in sorted(set(dev_services) | set(vps_services)):
+        if name in NOT_ON_THE_VPS:
+            continue
+        vps = vps_services.get(name) or {}
         dev = dev_services.get(name) or {}
 
         assert not _has_deploy_resources(dev) or _has_deploy_resources(vps), (
@@ -551,10 +571,13 @@ def test_no_overlay_hands_out_more_ffmpeg_threads_than_cpus():
     and buys nothing, which is the whole reason FFMPEG_THREADS is pinned at all.
 
     The repro overlay is the deliberate exception — 4 threads on half a CPU is
-    how it provokes the OOM — so it is not checked here. Everything that is
-    *supposed* to run well has to keep the two in step, including the escape
-    hatch the docs suggest: lowering WORKER_CPUS without lowering
-    WORKER_FFMPEG_THREADS is the same oversubscription, one variable at a time.
+    how it provokes the OOM — so it is not checked here.
+
+    Defaults only: these are the values in the YAML, and an override supplied at
+    runtime is out of reach of any test reading files. Lowering WORKER_CPUS
+    without lowering WORKER_FFMPEG_THREADS is the same oversubscription one
+    variable at a time, and the only guard against that is that every documented
+    invocation moves both.
     """
     for filename in ("docker-compose.yml", "docker-compose.fast.yml"):
         worker = _compose_service(REPO_ROOT / filename, "worker")

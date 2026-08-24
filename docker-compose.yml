@@ -134,6 +134,15 @@ services:
     # the command. Prefer the prefix. (docker-compose.repro.yml reads none of
     # them, on purpose: its numbers are the measurement.)
     #
+    # That is a trade, taken deliberately rather than dodged. These briefly had
+    # their own FAST_* namespace, which did buy something real: a stale
+    # WORKER_MEM_LIMIT could not resize the fast overlay. It cost a third
+    # interpolation policy across three points on one axis, and a rule nobody
+    # would remember. One knob set meaning "the worker's size, wherever the
+    # worker is defined" is the coherent version, and it is affordable precisely
+    # because no claim may come from a fast run in the first place. The overlay
+    # that must NOT be resizable is the repro, and that one reads nothing.
+    #
     # memswap_limit equal to mem_limit asks for NO swap. Docker's default is
     # double, i.e. 2 GB of RAM plus 2 GB of swap — under which the repro overlay
     # can decline to OOM while the same encode is killed on Render, which has
