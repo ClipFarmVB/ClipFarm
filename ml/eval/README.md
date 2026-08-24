@@ -171,17 +171,32 @@ the thing to look at before touching its tunables:
 
 | fixture | dead removed | live cut | |
 |---|---|---|---|
-| test1* | 56.2% → 56.5% | 176s → **116s** | strictly better |
-| test2 | 9.5% → **51.1%** | 2s → 12s | +10s of play for 41 points of dead time |
-| test3* | 76.5% → 0.0% | 118s → **0s** | abstains rather than cut 118s of rally |
-| test4 | 44.2% → **70.9%** | 83s → **66s** | strictly better |
-| test5* | 4.6% → **52.6%** | 0s → 18s | +18s of play for 48 points of dead time |
+| test1*† | 56.2% → 53.4% | 176s → **97s** | strictly better |
+| test2 | 9.5% → **48.3%** | 2s → 10s | +8s of play for 39 points of dead time |
+| test3*† | 76.5% → 0.0% | 118s → **0s** | abstains rather than cut 118s of rally |
+| test4 | 44.2% → **62.7%** | 83s → **48s** | strictly better |
+| test5* | 4.6% → **39.3%** | 0s → 10s | +10s of play for 35 points of dead time |
 
-`* = held out while the variants were tuned.` Strictly better on two, a paid
-trade on two, an abstain on one. At the 4:1 live-cut exchange rate the harness
-and trainer share, that nets +1568s against `rules`' +615s — but the two paid
-trades are real, and live play is the axis this repo protects, so a change that
-widens them needs more than a better net.
+`* = held out while the variants were tuned.`
+`† = excluded from the headline net` — see `EXCLUDED_FROM_TOTALS` in
+`visualize_deadtime.py`. test1 is a different labeler on 360p-space footage and
+test3 is a game the ball tracker cannot follow, so both measure something other
+than which builder is better.
+
+Strictly better on two, a paid trade on two, an abstain on one. At the 4:1
+live-cut exchange rate the harness and trainer share, that nets **+649s against
+`rules`' +116s** over the three comparable fixtures. Counting all five gives
++1552s against +615s, and that larger figure is the misleading one: test1 and
+test3 supply 404s of the 937s gap, so nearly half of it comes from the two games
+excluded from cross-game comparison. The paid trades are real either way, and
+live play is the axis this repo protects, so a change that widens them needs more
+than a better net.
+
+**On the comparable fixtures `v4` and `v5` score identically (+649s each).**
+Their only difference is the abstain, and the abstain fires only on test3. The
+shipping default's one advantage over the aggressive rung is therefore evidenced
+by a single excluded fixture — worth knowing before treating `min_track_rate` as
+settled.
 
 **Abstaining is a real outcome, not a failure.** Below
 `condense_guard_min_track_rate` usable speed samples/s the builder returns one
@@ -191,7 +206,8 @@ in the harness means this, and the offline runner prints `ABSTAINED` so it can't
 be mistaken for a broken run.
 
 **The abstain threshold is unconstrained, not tuned.** Only test3 is below it
-(0.52 usable speed samples/s); the other four sit at 1.47-2.63. The default 1.0
+(0.57 usable speed samples/s — its fixture note records 0.76, which is the *raw*
+track rate, a different measure); the other four sit at 1.51-2.99. The default 1.0
 stands in that gap, but nothing has been measured inside it, and a game landing
 between 0.52 and 1.47 flips between condensing normally and shipping no condensed
 video — the most user-visible outcome on this path. A fixture in the gap is what

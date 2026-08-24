@@ -262,6 +262,10 @@ class Settings(BaseSettings):
     # condensing normally and shipping no condensed video at all, the most
     # user-visible outcome on this path. Revisit with a real game in the gap
     # before moving it.
+    # Units: *usable speed samples*/s (speed_samples() output), not raw track
+    # points. test3 is 0.57 usable/s but 0.76 raw/s, and its fixture note records
+    # the raw one — quoting the wrong figure against this threshold compares two
+    # different measurements.
     condense_guard_min_track_rate: float = 1.0
 
     # Database

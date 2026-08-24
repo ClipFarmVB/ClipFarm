@@ -175,15 +175,20 @@ def sync_settle_upload_charge(game_id: uuid.UUID, actual_seconds: float):
 def sync_set_condensed_result(
     game_id: uuid.UUID,
     *,
-    condensed_video_url: str,
-    condensed_duration: float,
+    condensed_video_url: str | None,
+    condensed_duration: float | None,
 ):
-    """Record the condense stage's output.
+    """Record the condense stage's output, or clear it with None.
 
     `original_duration` is deliberately not set here: it is written for every
     run as soon as the video is probed (see sync_set_original_duration), so
     re-writing the same measurement on the condense path only created a second
     place that had to agree.
+
+    None clears. A re-run that abstains, or whose builder returns no windows,
+    produces no cut — and leaving the previous run's URL in place would serve a
+    condensed video that no longer corresponds to any decision this pipeline
+    made. The row has to reflect this run.
     """
     with Session(_engine) as s:
         game = s.get(Game, game_id)

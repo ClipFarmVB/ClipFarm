@@ -7,6 +7,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ml.pipeline.dead_time import (
+    MAX_PLAUSIBLE_SPEED_FH,
     active_windows_from_contacts,
     active_windows_from_detections,
     active_windows_guarded,
@@ -262,11 +263,21 @@ class TestSpeedSamples:
         times, speeds = speed_samples(positions, FRAME_H)
         assert times.size == 0 and speeds.size == 0
 
-    def test_track_hop_is_discarded_not_measured(self):
+    def test_track_hop_is_clamped_not_discarded(self):
         # 900 px/s = 2.5 frame-heights/s, above MAX_PLAUSIBLE_SPEED_FH: the
-        # tracker jumped to another object, so this is not the ball's speed.
+        # tracker jumped to another object, so the *magnitude* is not the ball's
+        # speed. The sample still exists, though, and dropping it would both
+        # throw away real rally evidence (32-63% of over-ceiling samples fall
+        # inside labeled play) and thin the count track_is_usable reads — so it
+        # is clamped to the ceiling instead.
         _, speeds = speed_samples(ball_path(0, 5, 900.0), FRAME_H)
-        assert speeds.size == 0
+        assert speeds.size > 0
+        assert speeds.max() == pytest.approx(MAX_PLAUSIBLE_SPEED_FH)
+
+    def test_a_believable_speed_is_left_alone(self):
+        # 300 px/s = 0.83 fh/s at FRAME_H, comfortably under the ceiling.
+        _, speeds = speed_samples(ball_path(0, 5, 300.0), FRAME_H)
+        assert speeds.max() == pytest.approx(300.0 / FRAME_H)
 
     def test_missing_frame_height_yields_nothing(self):
         times, speeds = speed_samples(ball_path(0, 5, 180.0), 0)
@@ -300,9 +311,21 @@ class TestSpeedGateContacts:
         empty = speed_samples([], FRAME_H)
         assert speed_gate_contacts(contacts_at(5.0), empty) == contacts_at(5.0)
 
-    def test_contact_outside_the_tracked_stretch_is_dropped(self):
+    def test_contact_outside_the_tracked_stretch_is_unjudged_not_dropped(self):
+        """
+        No usable sample near the contact means no evidence, and no evidence is
+        not evidence of a stationary ball. The abstain guard cannot cover this:
+        it tests the whole-video average, so a track that is dense overall and
+        drops out for one rally passes the guard and would then lose that
+        rally's contacts to a gate that never measured them.
+        """
         samples = speed_samples(ball_path(0, 20, 300.0), FRAME_H)
-        assert speed_gate_contacts(contacts_at(200.0), samples) == []
+        assert speed_gate_contacts(contacts_at(200.0), samples) == contacts_at(200.0)
+
+    def test_a_measured_but_slow_contact_is_still_dropped(self):
+        """The gate's actual job survives: measured-and-slow is still rejected."""
+        samples = speed_samples(ball_path(0, 20, 10.0), FRAME_H)
+        assert speed_gate_contacts(contacts_at(10.0), samples) == []
 
 
 class TestMotionAnchorWindows:

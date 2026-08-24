@@ -81,6 +81,10 @@ class TestEveryDeadtimeFixture:
             data = json.loads(
                 (FIXTURES_DIR / f"{test_id}_deadtime.json").read_text(encoding="utf-8"))
             spans = data.get("spans", data.get("keep", []))
+            # Guarded rather than max()'d directly: an empty span list is a
+            # broken fixture, and a bare max() reports it as a ValueError from
+            # inside a test about over-running timestamps.
+            assert spans, f"{test_id}: fixture has no spans"
             if max(parse_timestamp(s["end"]) for s in spans) > data["video_duration_sec"]:
                 over_running.add(test_id)
         assert over_running == known_bad

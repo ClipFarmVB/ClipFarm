@@ -1192,7 +1192,33 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                             video_duration, condensed_duration, len(windows),
                         )
                     elif not windows:
-                        logger.warning("Condense requested but no active windows detected — skipping")
+                        # Not a warning: for the guarded builder [] is a verdict
+                        # ("nothing here is play"), which _build_condense_windows
+                        # deliberately passes through rather than treating as a
+                        # failure. Logging it as a fault contradicts that and
+                        # trains readers to ignore the line.
+                        logger.info(
+                            "Condense produced no keep-windows (built by %r) — "
+                            "shipping the game without a condensed cut", built_by,
+                        )
+
+                    if not (windows and trims_something):
+                        # No cut was produced this run. Clear any previous one:
+                        # re-processing a game that now abstains would otherwise
+                        # keep serving a condensed video built from a decision
+                        # this run did not make. Wrapped because a reporting
+                        # write must never break the stage.
+                        try:
+                            _require_lock()
+                            sync_set_condensed_result(
+                                gid, condensed_video_url=None, condensed_duration=None,
+                            )
+                        except LockLost:
+                            raise
+                        except Exception as clear_err:
+                            logger.warning(
+                                "Could not clear a previous condensed cut (%s)", clear_err,
+                            )
                 except LockLost:
                     # A lost lock is not "condense failed, carry on" — carrying
                     # on reaches the `ready` write below and stamps it over

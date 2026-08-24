@@ -35,6 +35,23 @@ OUT_PATH = EVAL_DIR / "results" / "deadtime_visualization.html"
 TEST_IDS = ("test1", "test2", "test3", "test4", "test5")
 TUNED_ON = ("test2", "test4")   # the rest are held out — see module docstring
 
+# Fixtures their own notes exclude from cross-game comparison, for reasons that
+# have nothing to do with which builder is better:
+#   test1 — labeled by a different labeler than test2/test4, off 360p-space
+#           footage unlike the 1080p the app receives. Boundary-style differences
+#           between labelers score as false over-cut.
+#   test3 — the gym uses a ball the tracker cannot follow (0.76 raw track
+#           samples/s against 1.6-3.0 elsewhere). It is a labeled repro case for
+#           CF-171, and it is also the game the abstain was built against, so a
+#           builder that abstains books its entire dead-time loss as a gain here.
+# Both are still rendered and still scored — they are the regression cases that
+# make those failures visible. They are kept out of the *headline* net, which is
+# the number quoted as "builder A beats builder B by N seconds". Counting them
+# there folds a labeling artifact and a tracker failure into that claim: on this
+# ladder they supply 404s of the 937s gap between v0 and v5.
+EXCLUDED_FROM_TOTALS = ("test1", "test3")
+COMPARABLE = tuple(t for t in TEST_IDS if t not in EXCLUDED_FROM_TOTALS)
+
 # The two rows that ship, named once so the table highlight cannot drift from
 # the prose again: SHIPPING is the default the report exists to justify,
 # BASELINE is what it is measured against.
@@ -323,12 +340,15 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
     for key, (label, _) in VARIANTS.items():
         cells = []
         total_net = 0.0
+        comparable_net = 0.0
         total_live = 0.0
         held_net = 0.0
         for tid in TEST_IDS:
             s = all_results[tid][key][1]
             net = net_seconds(s)
             total_net += net
+            if tid in COMPARABLE:
+                comparable_net += net
             total_live += s.live_removed_sec
             if tid in held_out:
                 held_net += net
@@ -343,7 +363,8 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
             + "".join(cells)
             + f"<td class='n'>{total_live:.0f}s</td>"
             f"<td class='n'>{held_net:+.0f}s</td>"
-            f"<td class='n b'>{total_net:+.0f}s</td></tr>"
+            f"<td class='n b'>{comparable_net:+.0f}s</td>"
+            f"<td class='n ho'>{total_net:+.0f}s</td></tr>"
         )
     heads = "".join(
         f"<th class='n{' ho' if tid not in TUNED_ON else ''}' colspan='2'>{tid}"
@@ -355,16 +376,24 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
       <h2>Summary</h2>
       <table class="stats wide">
         <tr><th></th><th>variant</th>{heads}
-            <th class="n">live cut</th><th class="n">held-out</th><th class="n">net</th></tr>
+            <th class="n">live cut</th><th class="n">held-out</th>
+            <th class="n">net</th><th class="n">net</th></tr>
         <tr class="sub"><th></th><th></th>
             {'<th class="n">dead</th><th class="n">live</th>' * len(TEST_IDS)}
-            <th class="n">total</th><th class="n">net</th><th class="n">score</th></tr>
+            <th class="n">total</th><th class="n">net</th>
+            <th class="n">comparable</th><th class="n">all {len(TEST_IDS)}</th></tr>
         {''.join(rows)}
       </table>
       <p class="note"><b>net</b> = dead seconds removed − {LIVE_CUT_COST:.0f} × live seconds cut.
       Higher is better. <code>{SHIPPING}</code> (shaded) is the shipping default,
       <code>{BASELINE}</code> the rule-based baseline it replaced — net is a
       summary, so read the dead and live columns per game before trusting it.</p>
+      <p class="note">The bold <b>net</b> covers {_join(list(COMPARABLE))} only.
+      {_join(list(EXCLUDED_FROM_TOTALS))} are scored and shown, but their own fixture
+      notes exclude them from cross-game comparison — one is a different labeler on
+      360p-space footage, the other a game the ball tracker cannot follow and the
+      one the abstain was built for. The greyed <b>all {len(TEST_IDS)}</b> column keeps
+      the older figure so the two can be told apart rather than silently swapped.</p>
       <p class="note"><b>*</b> {_join(held_out)} were never inspected while tuning —
       those columns and the <b>held-out net</b> are the only numbers here not fitted to the data.
       <b>test5</b> is the strongest of them: it was labeled after the variants were written,
@@ -491,15 +520,20 @@ def main() -> None:
     OUT_PATH.write_text(build_html(games, all_results), encoding="utf-8")
     print(f"Wrote {OUT_PATH}\n")
 
-    header = f"{'variant':<46}{'net':>8}   " + "".join(f"{t:>28}" for t in TEST_IDS)
+    print(f"Headline net covers {'+'.join(COMPARABLE)}; "
+          f"{'+'.join(EXCLUDED_FROM_TOTALS)} are shown but excluded from it "
+          f"(see EXCLUDED_FROM_TOTALS).\n")
+    header = (f"{'variant':<46}{'net':>8}{'all5':>9}   "
+              + "".join(f"{t:>28}" for t in TEST_IDS))
     print(header)
     for key, (label, _) in VARIANTS.items():
-        total = sum(net_seconds(all_results[t][key][1]) for t in TEST_IDS)
+        total = sum(net_seconds(all_results[t][key][1]) for t in COMPARABLE)
+        all_total = sum(net_seconds(all_results[t][key][1]) for t in TEST_IDS)
         cells = ""
         for t in TEST_IDS:
             s = all_results[t][key][1]
             cells += f"{'dead ' + _pct(s.dead_removed_pct) + '  live -' + f'{s.live_removed_sec:.0f}s':>28}"
-        print(f"{key + ' ' + label:<46}{total:>+7.0f}s   {cells}")
+        print(f"{key + ' ' + label:<46}{total:>+7.0f}s{all_total:>+8.0f}s   {cells}")
 
 
 if __name__ == "__main__":

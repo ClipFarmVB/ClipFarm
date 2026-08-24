@@ -38,12 +38,15 @@ Interval = tuple[float, float]
 
 MAX_SAMPLE_SPACING = 1.5   # a longer gap is a tracking dropout, not motion
 
-# Displacement faster than this is the tracker hopping between two different
-# objects, not one ball flying: measured on the dead-time fixtures, samples
-# above it land inside labeled play only 33-53% of the time, *worse* than the
-# 0.40-1.10 band (58-77%). Treating them as motion is what makes a between-rally
-# stretch of spare-ball flicker look like a rally. Matches ball.py's
-# SEG_MAX_SPEED_PXPS (1200 px/s = 1.11 frame-heights/s at 1080p).
+# Displacement faster than this is usually the tracker hopping between two
+# different objects rather than one ball flying, so its *magnitude* means
+# nothing. It is clamped to this ceiling rather than discarded: 32-63% of the
+# samples above it (measured per fixture) fall inside labeled play, so dropping
+# them throws away real rally evidence and, because the abstain guard counts
+# samples, penalises exactly the fast well-tracked games it should trust.
+# Clamping keeps the sample's existence — which is what the density and
+# fast-fraction tests read — while refusing to believe its size. Matches
+# ball.py's SEG_MAX_SPEED_PXPS (1200 px/s = 1.11 frame-heights/s at 1080p).
 MAX_PLAUSIBLE_SPEED_FH = 1.11
 
 CONTACT_SPEED_HALF_WINDOW = 1.5   # median speed is taken over ±this around a contact
@@ -207,11 +210,12 @@ def speed_samples(
     """
     Ball speeds between consecutive track samples, in frame-heights/s.
 
-    Two classes of sample are dropped rather than measured: pairs further apart
-    than max_sample_spacing (a tracking dropout, where the displacement says
-    nothing about how fast the ball moved) and speeds above max_speed (the
-    tracker jumping between two objects). Both would otherwise read as fast
-    motion, which is exactly the signal the guarded path trusts.
+    Pairs further apart than max_sample_spacing are dropped rather than measured:
+    across a tracking dropout the displacement says nothing about how fast the
+    ball moved. Speeds above max_speed are *clamped* instead — the tracker
+    jumping between two objects still tells us a sample exists at that instant,
+    and discarding it would both lose real rally evidence and thin the sample
+    count the abstain guard counts.
 
     Returns sorted (times, speeds); empty arrays when there is nothing usable.
     """
@@ -226,10 +230,10 @@ def speed_samples(
         if not 0 < dt <= max_sample_spacing:
             continue
         v = math.hypot(x1 - x0, y1 - y0) / dt / frame_height
-        if v > max_speed:
-            continue  # track hop — not a measurement of the ball's motion
+        # Clamped, not dropped — see MAX_PLAUSIBLE_SPEED_FH. A track hop still
+        # happened at this instant; only its size is untrustworthy.
         times.append((t0 + t1) / 2)
-        vals.append(v)
+        vals.append(min(v, max_speed))
     return np.array(times), np.array(vals)
 
 
@@ -237,12 +241,19 @@ def track_is_usable(samples: SpeedSamples, duration: float, *, min_rate: float =
     """
     Whether the ball track is dense enough for any of this to mean anything.
 
-    Below min_rate usable speed samples per second there is no basis for a
-    judgement about play: on fixture test3 the track runs at 0.52/s (vs
-    1.47-2.63 on the other four) and 21 of its 32 rallies produce no contact at
-    all, so every builder — the rule-based one included — cuts more than half
-    its live play. The density also sits under what ANCHOR_MIN_SAMPLES needs, so
-    the motion anchor cannot recover those rallies either.
+    Below min_rate **usable speed samples** per second there is no basis for a
+    judgement about play. The unit matters and is easy to get wrong: this counts
+    the output of speed_samples(), which is pairs of track points close enough
+    together to measure — not raw track points. On fixture test3 those are 0.57/s
+    and 0.76/s respectively, and its own fixture note records the raw figure, so
+    the two numbers describe the same game and are not interchangeable. Against
+    min_rate only the usable rate is meaningful.
+
+    test3 runs at 0.57 usable/s (vs 1.51-2.99 on the other four) and 21 of its 32
+    rallies produce no contact at all, so every builder — the rule-based one
+    included — cuts more than half its live play. The density also sits under
+    what ANCHOR_MIN_SAMPLES needs, so the motion anchor cannot recover those
+    rallies either.
     """
     times, _ = samples
     return duration > 0 and len(times) / duration >= min_rate
@@ -264,8 +275,13 @@ def speed_gate_contacts(
     the dominant false-positive class. Requiring motion around the contact
     separates the two without touching find_contacts' own thresholds.
 
-    With no speed samples there is nothing to gate on, so every contact stands —
-    the caller's abstain guard is what handles a track that thin.
+    With no speed samples there is nothing to gate on, so every contact stands.
+    That holds *locally* as well as globally: a contact with no usable sample
+    within half_window is unjudged, not rejected. The abstain guard cannot cover
+    this case, because it tests the whole-video average rate — a track that is
+    dense overall but drops out for one rally passes the guard and would then
+    lose that rally's contacts to a gate that never measured them. Absence of
+    evidence is not evidence of a stationary ball.
     """
     times, speeds = samples
     if not len(times):
@@ -274,7 +290,7 @@ def speed_gate_contacts(
     kept = []
     for c in contacts:
         lo, hi = np.searchsorted(times, [c["time"] - half_window, c["time"] + half_window])
-        if hi > lo and float(np.median(speeds[lo:hi])) >= min_speed:
+        if hi <= lo or float(np.median(speeds[lo:hi])) >= min_speed:
             kept.append(c)
     return kept
 
@@ -380,10 +396,15 @@ def active_windows_guarded(
     ships an uncondensed video.
 
     `min_track_rate` says *that* an abstain region exists; it does not say where
-    its edge belongs. The fixtures sit at 0.52 samples/s (the game that must
-    abstain) and 1.47-2.63 (the four that must not), so the default 1.0 stands in
-    a wide clean gap with nothing observed inside it. Treat the boundary as
-    unconstrained rather than tuned.
+    its edge belongs. In usable samples/s the fixtures sit at 0.57 (the game that
+    must abstain) and 1.51-2.99 (the four that must not), so the default 1.0
+    stands in a wide clean gap with nothing observed inside it. Treat the boundary
+    as unconstrained rather than tuned — and note the evidence is one game, which
+    is also the game excluded from cross-game comparison (see
+    EXCLUDED_FROM_TOTALS in ml/eval/visualize_deadtime.py). On the comparable
+    fixtures the abstain never fires, so v4 and v5 score identically there: this
+    switch is supported by a single excluded fixture, and a per-region degrade
+    would be a better shape than an all-or-nothing flip.
 
     Raises on a missing frame height rather than abstaining on one: every speed
     here is normalized by it, so a zero would silently turn every game into an
