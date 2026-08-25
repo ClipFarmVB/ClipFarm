@@ -234,26 +234,35 @@ count in this section is scoped by `SINCE`; this one must not be, or a PR whose
 findings were raised and closed last night reads as never-had-a-finding tonight
 and settles a round early.
 
-**On a re-opened PR, count only from the re-open.** New commits nothing has
-confirmed anything about are the condition the two-clean rule exists for, and
-the PR's older history is evidence about code that has since changed. So the
-window is the whole life of the PR, *or* since it was last re-opened if it was
-— add the `select(.createdAt > …)` clause from the round-counting query, bounded
-by the same label event.
+**Set `FINDINGS` in the shell you ask from**, for the reason the `MARKERS`
+warning gives: unset, it becomes `test("")`, matches every comment, returns
+nonzero, and a PR that has never had a finding settles on one clean round
+instead of two. That failure runs toward *less* review, which is the direction
+this document guards hardest against everywhere else.
 
-Ask it like this — and **set `FINDINGS` in this shell**, for the reason the
-`MARKERS` warning gives: unset, it becomes `test("")`, matches every comment,
-returns nonzero, and a PR that has never had a finding settles on one clean
-round instead of two. That failure runs toward *less* review, which is the
-direction this document guards hardest against everywhere else.
+For a PR that has never been re-opened, ask over its whole life:
 
 ```
 FINDINGS='^(cold: findings|semi-cold:)'
 gh pr view <n> --json comments --jq "[.comments[] | select(.body | test(\"$FINDINGS\"; \"i\"))] | length"
 ```
 
-Zero means nothing has ever been found on this PR — a semi-cold round only
-exists because a finding did — so it is the case that needs two clean rounds.
+**On a re-opened PR, count only from the re-open.** New commits nothing has
+confirmed anything about are the condition the two-clean rule exists for, and
+the PR's older history is evidence about code that has since changed. That
+window is **not** `SINCE` — the run start is the bound this section just ruled
+out — but the `labeled` event you already read off the timeline:
+
+```
+FINDINGS='^(cold: findings|semi-cold:)'
+REOPENED=<the `labeled` timestamp for the label that was removed — UTC, Z-suffixed>
+gh pr view <n> --json comments --jq "[.comments[] | select(.createdAt > \"$REOPENED\") | select(.body | test(\"$FINDINGS\"; \"i\"))] | length"
+```
+
+Zero from the first form means nothing has ever been found on this PR; zero from
+the second means nothing has been found since it was re-opened. Either way it is
+the case that needs two clean cold rounds — a semi-cold round only exists
+because a finding did, so no marker means no finding.
 
 **Skip PRs labelled `review-settled`** unless commits have landed since the
 label was applied. That label is the record that a cold round cleared the bar
