@@ -17,24 +17,9 @@ from __future__ import annotations
 import logging
 import math
 
+from ml.pipeline.intervals import Interval, merge_intervals
+
 logger = logging.getLogger(__name__)
-
-Interval = tuple[float, float]
-
-
-def merge_intervals(intervals: list[Interval], merge_gap_seconds: float = 0.0) -> list[Interval]:
-    """Sort intervals and merge any pair closer than merge_gap_seconds."""
-    if not intervals:
-        return []
-    ordered = sorted(intervals)
-    merged: list[Interval] = [ordered[0]]
-    for start, end in ordered[1:]:
-        last_start, last_end = merged[-1]
-        if start - last_end <= merge_gap_seconds:
-            merged[-1] = (last_start, max(last_end, end))
-        else:
-            merged.append((start, end))
-    return merged
 
 
 def _pad_and_clamp(

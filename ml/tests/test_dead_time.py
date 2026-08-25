@@ -8,7 +8,6 @@ from ml.pipeline.dead_time import (
     active_windows_from_contacts,
     active_windows_from_detections,
     bridge_windows_by_motion,
-    merge_intervals,
 )
 
 
@@ -23,26 +22,6 @@ def ball_path(t_start: float, t_end: float, speed_pxps: float, step: float = 0.3
         out.append({"time": t, "x": (t - t_start) * speed_pxps, "y": 0.0})
         t += step
     return out
-
-
-class TestMergeIntervals:
-    def test_empty(self):
-        assert merge_intervals([]) == []
-
-    def test_disjoint_stay_separate(self):
-        assert merge_intervals([(0, 1), (5, 6)], merge_gap_seconds=1.0) == [(0, 1), (5, 6)]
-
-    def test_within_gap_merge(self):
-        assert merge_intervals([(0, 1), (2, 3)], merge_gap_seconds=1.5) == [(0, 3)]
-
-    def test_overlapping_merge(self):
-        assert merge_intervals([(0, 5), (3, 8)]) == [(0, 8)]
-
-    def test_contained_interval_absorbed(self):
-        assert merge_intervals([(0, 10), (2, 4)]) == [(0, 10)]
-
-    def test_unsorted_input(self):
-        assert merge_intervals([(5, 6), (0, 1)], merge_gap_seconds=0.5) == [(0, 1), (5, 6)]
 
 
 class TestActiveWindowsFromContacts:
