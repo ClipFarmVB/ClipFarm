@@ -92,10 +92,13 @@ class TestScaleFor:
         assert _scale_for(720) == pytest.approx(2.0)
 
     def test_unknown_height_falls_back_to_reference_and_warns(self, caplog):
+        """The warning has to name the space it assumed — that is the actionable
+        part. It must not name a caller: tune_contacts reaches _scale_for too."""
         import logging
         with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
             assert _scale_for(0) == 1.0
-        assert "frame_height" in caplog.text
+        assert f"{REFERENCE_FRAME_HEIGHT:.0f}px" in caplog.text
+        assert "find_contacts" not in caplog.text
 
 
 class TestResolutionInvariance:
@@ -152,9 +155,13 @@ class TestInvarianceBreaksDownAbove1080p:
     *ceiling*, so the admissible band closes as resolution rises:
 
         360p  0.667-3.333 fh/s (5.00x)   1080p  0.667-1.111 (1.67x)
-        720p  0.667-1.667     (2.50x)    2160p  0.444-0.556 (1.25x, capped)
+        720p  0.667-1.667     (2.50x)    1440p  0.667-0.833 (1.25x)
 
-    These tests pin that, so nobody reads the class above as "resolution
+    Past 1440p — the clamp point — the scale would freeze and the band would
+    slide below real play, so _scale_for reverts to unscaled instead. 2160p
+    therefore behaves as `main` does: 0.111-0.556 fh/s, wrong but not narrower.
+
+    These tests pin all of that, so nobody reads the class above as "resolution
     independent" full stop. Deleting them requires scaling SEG_MAX_SPEED_PXPS,
     which is the actual fix and is blocked on the tracking pollution documented
     at that constant.
@@ -433,11 +440,15 @@ class TestLazyOpenCV:
             if isinstance(getattr(parent, "ball", None), types.ModuleType):
                 delattr(parent, "ball")
 
-    def test_the_video_decoding_entry_points_still_import_it(self):
-        """Lazy, not removed — track_ball and friends must still get a real cv2."""
-        import inspect
-        source = inspect.getsource(ball.track_ball)
-        assert "import cv2" in source
+    def test_the_video_decoding_entry_points_still_need_it(self, monkeypatch):
+        """
+        Lazy, not removed. With cv2 unimportable, track_ball must fail on that
+        import rather than getting further — which is what proves the import is
+        real and reached, without asserting on source text.
+        """
+        monkeypatch.setitem(sys.modules, "cv2", None)
+        with pytest.raises(ImportError):
+            ball.track_ball("nonexistent.mp4", api_key="k")
 
 
 if __name__ == "__main__":
