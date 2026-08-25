@@ -71,11 +71,18 @@ one block. The first run discovered three gaps separately, mid-work.
 
 - **Projects v2** — `gh project item-list 1 --owner ClipFarmVB --format json`.
   Needs the `project` token scope, which is often absent. This does **not** gate
-  any work: selection is by label, which plain repo scope reads fine. It only
-  affects board hygiene — without it you cannot remove the report issue from the
-  project. Note the gap in the report and carry on.
+  any work, and it does **not** stop cards reaching the board — see below. It
+  only affects *editing* the board: without it you cannot remove the report
+  issue or change a field. Note that, and carry on.
 - **Docker** — `docker info`. If absent, the local stack and the eval harness
   cannot run at all.
+- **`gh` against this repo** — `gh api repos/ClipFarmVB/ClipFarm --jq .full_name`.
+  Every command in this document is written for `gh`, and each was verified
+  against this repo in the exact form given. A cloud runner may have no `gh`
+  credentials at all — the first unattended run got 403 on every repo endpoint
+  with GraphQL disabled, and did the whole night through MCP tools instead.
+  **That works, and is not a reason to stop.** But say in the report which tool
+  you actually used, because the next point depends on it.
 - **Gate tool versions** — read the versions `ci.yml` installs and compare with
   what is installed here. See the gate step below.
 
@@ -180,6 +187,22 @@ that is what tells a round's review from a human's — but every selection and
 counting rule here is phrased against marker **comments**, and a rule phrased
 against reviews would be counting an artifact that is deliberately outside the
 budget and the ceiling.
+
+**If you are not running `gh`, these commands are specifications.** Whatever
+tool you use must give you the same four things, and the failure if it does not
+is silent rather than loud:
+
+1. **Every** comment on a PR, not the first page. GitHub's own PR-comments
+   shortcut caps at 100 and does not paginate; a capped read returns a stale
+   marker and the machine routes on it confidently.
+2. The comment **body verbatim**, so the first line and its SHA survive.
+3. `created_at` per comment, for the run-scoped counts.
+4. Review bodies and ids separately from comments — they are different objects
+   and a tool that merges them breaks the marker/review split.
+
+**Confirm your tool paginates before you trust a marker read**, and name the
+tool in the report. A run that cannot establish point 1 should say so and treat
+every marker read as unverified rather than assuming it saw the newest.
 
 **Every round leaves one marker comment, and selection reads it.** Timestamps
 alone cannot tell a PR stopped mid-cycle from one nobody has touched: a run can
@@ -1256,8 +1279,18 @@ inline in under a minute.
   file and line references, options where there is a real choice, acceptance.
   CF-224 (#224) and CF-239 (#242) are good models.
 - Labels from the existing set, including a priority.
-- Add to the `ClipFarm Backlog` project with the **Sprint field left unset** —
-  these are for triage, not for silently joining the current sprint.
+- **Do not try to add the card to the `ClipFarm Backlog` project — a project
+  workflow adds new issues automatically, with `Status: Todo`.** Verified: every
+  card the first unattended run filed reached the board this way, without the
+  `project` scope. Nor is there anything to do about **Sprint**: iteration
+  fields are untouched by GitHub's built-in workflows, so it starts unset, which
+  is what these cards want — they are for triage, not for silently joining the
+  current sprint.
+
+  So **do not report cards as missing from the board.** Every run so far has
+  reported that, and it has been wrong each time. If you want to check rather
+  than assume, `gh project item-list` reads with `project` scope; if you do not
+  have it, say the board was unverified rather than saying the cards are off it.
 - Open the body with: `Filed unattended during an overnight run — needs triage.`
 
 ### When a command is not available
