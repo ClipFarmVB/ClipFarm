@@ -41,11 +41,13 @@ this paragraph is an index, and if it disagrees with the rule it names, the rule
 wins. Deliberately no count: an index that promises a number goes stale the
 moment an amendment is added, and this one already did.
 
-What is amended: the scope subsection of [This run](#this-run); the step-3
-reserve, and the arithmetic that sizes it; what a spent budget does; step 3
-itself and everything under [Working a ticket](#working-a-ticket); two report
-bullets that go empty, one that is added (which PRs the scope filter excluded);
-the report's required first line; and the report's title.
+What is amended: the stop rule in [Choosing work](#choosing-work), which
+decides whether a `review-only` run proceeds at all; the scope subsection of
+[This run](#this-run); the step-3 reserve, and the arithmetic that sizes it;
+what a spent budget does; step 3 itself and everything under [Working a
+ticket](#working-a-ticket); two report bullets that go empty, one that is added
+(which PRs the scope filter excluded); the report's required first line; and
+the report's title.
 
 | mode | steps 1 and 2 — review, fix | step 3 — ticket work |
 |---|---|---|
@@ -75,6 +77,15 @@ itself.
 against that possibility even on nights when it never arrives. `review-only`
 spends the whole night on the queue.
 
+**With one qualification that belongs here rather than in a budget note: at the
+default `review scope: own`, "the queue" means this account's PRs.** That is
+currently 10 of 23 open. So the mode does not, by default, address the backlog
+the paragraph above describes — it addresses this account's share of it. That is
+a deliberate call (reviewing other people's work unattended is a social change,
+not a technical one) and it is defensible, but it means `review-only` at `own`
+is a narrower instrument than "the queue is the bottleneck" implies. Run
+`review scope: all` when the whole queue is what you actually want cleared.
+
 ### It cannot push, and that is a consequence rather than a rule
 
 The hard rule is [only push to branches this run created](#hard-rules). A
@@ -94,7 +105,11 @@ Two things follow, and both matter more than they look.
 - **Step 2 collapses to its non-push branches** — describe the fix in a comment,
   apply `unsettled`, and post the reason that fits: `not our branch @ <sha>` when
   the fix is straightforward but unpushable, `needs a decision @ <sha>` when the
-  finding needs a judgement nobody unattended should make. The second is not
+  finding needs a judgement nobody unattended should make. These two are what
+  *step 2* produces; they are not the whole reason set. A PR stopped by the
+  ceiling or the budget still takes `ran out of rounds @ <sha>`, in this mode as
+  in `build` — reading this bullet as exhaustive would label a budget-stopped PR
+  with a reason chosen for a different cause. The second is not
   optional tidiness. Only `needs a decision` routes a PR to a human; giving a
   judgement call the `not our branch` reason means the next unrelated push clears
   it and the question is never asked.
@@ -112,6 +127,15 @@ What a single night in this mode delivers is **findings written where the author
 will act on them**, plus `review-settled` on PRs clean across two cold rounds.
 What the mode delivers *over several nights* is the full cycle, with the authors
 supplying the commits this run may not.
+
+**Note the tension with the default scope.** That multi-night cycle turns on an
+author pushing a fix in response to a review — and at `review scope: own`, the
+queue is PRs this account opened, where "the author" is usually the same account
+the run uses. The mechanism is real, but it is strongest exactly where the
+default does not look. At `own`, expect more PRs reaching `review-settled` or
+`needs a decision` and fewer completing the push-and-re-open loop; at `all`,
+expect the reverse. Neither is a defect, but a run reporting "no PRs re-opened"
+means different things under the two scopes.
 
 ### Scope: whose PRs get reviewed
 
@@ -280,9 +304,9 @@ one block. The first run discovered three gaps separately, mid-work.
   credentials at all — the first unattended run got 403 on every repo endpoint
   with GraphQL disabled, and did the whole night through MCP tools instead.
   **That works, and is not a reason to stop.** But say in the report which tool
-  you actually used. The four data requirements a non-`gh` tool must meet are
-  written against that answer — they are in [Priority order](#priority-order),
-  under "these commands are specifications", not in the bullet below this one.
+  you actually used. The data requirements a non-`gh` tool must meet are written
+  against that answer — they are in [Priority order](#priority-order), under
+  "these commands are specifications", not in the bullet below this one.
 - **Gate tool versions** — read the versions `ci.yml` installs and compare with
   what is installed here. See the gate step below.
 
@@ -421,9 +445,11 @@ against reviews would be counting an artifact that is deliberately outside the
 budget and the ceiling.
 
 **If you are not running `gh`, these commands are specifications.** Whatever
-tool you use must give you **every** item below — four reads and one write, and
-the write is the one a check done by counting reads would skip. The failure if
-it does not is silent rather than loud:
+tool you use must give you **every numbered item below**, to the end of the
+list. Deliberately not a count: this sentence has already been wrong once, when
+an item was appended and the tally was not, and a run checking against the tally
+stops one short of the requirement it most needs. Count the list, not this
+sentence. The failure if any item is missing is silent rather than loud:
 
 1. **Every** comment on a PR, not the first page. GitHub's own PR-comments
    shortcut caps at 100 and does not paginate; a capped read returns a stale
@@ -437,9 +463,20 @@ it does not is silent rather than loud:
    step 2's review read finds nothing and exits, and the night's work never
    reaches the contribution graph. If your tool cannot submit a review, say so
    in the report — that is a real capability gap, not a detail.
-6. **The PR's author login**, which the `review scope` filter tests. On REST
-   that is `.user.login`; `.author` is `null` there and populated only by
-   `gh pr view --json`. A tool returning `null` under the default `own` scope
+6. **The PR's author login, and your own**, which the `review scope` filter
+   compares. On REST the PR's is `.user.login`; `.author` is `null` there and
+   populated only by `gh pr view --json`. Your own is `.login` from the
+   authenticated-user endpoint:
+
+   ```
+   gh api user --jq ".login"
+   ```
+
+   A tool without `gh` needs both halves, and the second is the one with no
+   fallback elsewhere in this document — if it cannot tell you which account it
+   is authenticated as, the `own` scope is not computable and you must run
+   `review scope: all` and say so in the report, rather than comparing against
+   a guess. A tool returning `null` for either under the default `own` scope
    excludes every PR, and the run reports a full queue as a deliberate scoping
    decision having reviewed nothing. Confirm you get a login, not a null, before
    trusting the filter — the first unattended run had no `gh` at all, so this is
@@ -1448,8 +1485,11 @@ though it does.
 **That arithmetic assumes `review scope: all`.** It was written when there was no
 scope filter, and the filter roughly halves it: with scope `own`, a queue of
 twenty-odd is closer to ten, and most of a first pass fits inside the budget.
-(That budget is 28 in `build` mode, once the reserve below is taken out, and 32 in
-`review-only`, where there is no step 3 to reserve for.) So the two conclusions
+(The budget is **32 in both modes**. What differs is where reviewing stops: at
+28 in `build`, leaving the four-round reserve for step 3, and at 32 in
+`review-only`, where there is no step 3 to reserve for. The reserve is a
+stop-reviewing threshold, not a smaller budget — the log still counts against
+32.) So the two conclusions
 below — that step 3 does not happen, and that the 5-PR cap is
 unreachable — stop following. **Re-derive both for the scope you are actually
 running**, rather than reading the worst case as a standing fact.
