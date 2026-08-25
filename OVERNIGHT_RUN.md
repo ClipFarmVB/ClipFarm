@@ -444,11 +444,27 @@ step 2 is the breadth-first pass ruled out below.
 **And one filter in front of that test: the run's `review scope`.** With scope
 `own`, a PR whose author is not this account is out of scope and gets no round —
 it is not skipped-because-settled, it is not in the queue at all. With scope
-`all`, every open PR is in the queue. The value comes from the `review scope:`
-line in [This run](#this-run) — **read it there, and if it is missing or holds a
-value you do not recognise, stop and ask** rather than assuming `own`. This is
-the enforcement point, so a run reaching it without having re-read that block
-would otherwise default silently; see [Scope](#scope-whose-prs-get-reviewed).
+`all`, every open PR is in the queue.
+
+**Out of scope means untouched: no round, and also no label and no comment.**
+The only place such a PR appears is the report's excluded list. This is the
+sentence read at the moment the filter is applied, so it carries the whole rule
+rather than pointing at it — the run of 2026-08-25 applied
+`unsettled: needs a decision` to 13 out-of-scope PRs it had never reviewed, with
+the forbidding sentence sitting 250 lines away under
+[Scope](#scope-whose-prs-get-reviewed).
+
+**And the general form, which is not scope-specific: an `unsettled` label needs
+a round marker at the current head behind it.** The label asserts that findings
+are open and this run cannot close them. With no round, nothing looked, so
+there are no findings to be open — and `needs a decision` in particular has no
+commit carve-out, so it parks the PR on a human indefinitely on the strength of
+a review that never happened. No marker at the head, no label. The value comes
+from the `review scope:` line in [This run](#this-run) — **read it there, and
+if it is missing or holds a value you do not recognise, stop and ask** rather
+than assuming `own`. This is the enforcement point, so a run reaching it
+without having re-read that block would otherwise default silently; see
+[Scope](#scope-whose-prs-get-reviewed).
 
 **The author field is `.user.login`, not `.author.login`.** On the REST `pulls`
 endpoint this document uses everywhere, `.author` is `null` — verified on #291,
