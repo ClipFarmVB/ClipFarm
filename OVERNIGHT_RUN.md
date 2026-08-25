@@ -219,9 +219,8 @@ ticket work; it stops on the condition in [Mode](#mode) instead.
 
 The stop rule that would otherwise fire — *if nothing carries the label, stop the
 loop* — is amended where it lives, in [Choosing work](#choosing-work), not
-disabled from here. Turning off a Standing
-policy rule from a section the next operator rewrites is the thing this section
-is forbidden from doing.
+disabled from here. Turning off a Standing policy rule from a section the next
+operator rewrites is the thing this section is forbidden from doing.
 
 ### Environment notes for this run
 
