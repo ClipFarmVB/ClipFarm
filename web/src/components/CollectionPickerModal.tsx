@@ -9,6 +9,7 @@ import {
   type Collection,
 } from "@/lib/api";
 import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
+import { useFocusTrap } from "@/lib/useFocusTrap";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -33,6 +34,11 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   const [createLoading, setCreateLoading] = useState(false);
   const newNameRef = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+
+  // The third overlay in the same position (CF-227). No onEscape: this modal
+  // uses Escape for its inline "new collection" field, and taking it here would
+  // close the whole picker mid-typing.
+  useFocusTrap(overlayRef, true);
 
   useEffect(() => {
     getCollections()

@@ -6,6 +6,7 @@ import { X, ChevronLeft, ChevronRight, Link2 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { type Clip, getClipShareUrl } from "@/lib/api";
 import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
+import { useFocusTrap } from "@/lib/useFocusTrap";
 
 interface ClipModalProps {
   clip: Clip;
@@ -25,6 +26,15 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
 
   // Prevents the background page from jumping when the modal opens or closes.
   useBodyScrollLock(true);
+
+  // Focus handling, shared with the drawer and the collection picker (CF-227):
+  // focus moves into the player on open, returns to the clip card that opened
+  // it on close, and Tab cycles inside rather than walking into the grid behind
+  // the backdrop.
+  //
+  // No onEscape — the handler below already owns Escape for this overlay, and
+  // passing it here too would close the modal twice.
+  useFocusTrap(overlayRef, true);
 
   // Keyboard navigation
   useEffect(() => {
