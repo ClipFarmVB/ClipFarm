@@ -259,8 +259,19 @@ class TestCondensedDownloadFilename:
         # and produce a filename Windows rejects.
         assert ":" not in condensed_download_filename("Semi: the rematch")
 
-    def test_a_long_title_is_capped(self):
-        assert len(condensed_download_filename("x" * 500)) <= MAX_FILENAME_CHARS
+    def test_a_long_title_is_capped_but_not_at_the_component_budget(self):
+        """Capping at 80 would silently shorten a name users already receive.
+
+        This is a single-component filename, so the title gets the whole budget
+        rather than the per-component share the four-part clip scheme uses.
+        """
+        out = condensed_download_filename("x" * 500)
+        assert len(out) <= MAX_FILENAME_CHARS
+        assert len(out) > MAX_COMPONENT_CHARS + len(" (condensed).mp4")
+
+    def test_a_title_longer_than_a_component_survives_whole(self):
+        title = "y" * 120
+        assert condensed_download_filename(title) == f"{title} (condensed).mp4"
 
     def test_an_unusable_title_still_yields_a_name(self):
         assert condensed_download_filename("Матч") == "condensed.mp4"
@@ -296,3 +307,14 @@ class TestLeadingCharacters:
     def test_a_leading_dash_is_stripped(self):
         # A name starting with `-` reads as a flag to any CLI it is passed to.
         assert not clip_download_filename("--rf", None, None, 0).startswith("-")
+
+
+class TestLeadingDotIsAnAcceptedCost:
+    def test_a_legitimate_leading_dot_is_stripped(self):
+        """Documented trade-off, pinned so nobody restores it by accident.
+
+        A downloaded file the user cannot see in Finder is worse than a name
+        missing its first character — but the cost is real, so it is on the
+        record rather than a surprise.
+        """
+        assert sanitize_component(".38 Special") == "38 Special"

@@ -37,8 +37,12 @@ MAX_COMPONENT_CHARS = 80
 MAX_FILENAME_CHARS = 255
 
 
-def sanitize_component(value: str | None) -> str:
+def sanitize_component(value: str | None, max_chars: int = MAX_COMPONENT_CHARS) -> str:
     """One filename component: printable ASCII, no separators, length-capped.
+
+    `max_chars` defaults to the per-component budget of the multi-part clip
+    scheme. A single-component name has the whole filename to itself and should
+    say so rather than inherit a cap sized for four.
 
     Non-ASCII is dropped rather than transliterated. That loses information for
     a title written in a non-Latin script, which is why the caller must cope
@@ -62,9 +66,12 @@ def sanitize_component(value: str | None) -> str:
     while ".." in text:
         text = text.replace("..", ".")
     # A leading dash makes the name look like a flag to any CLI it is later
-    # passed to; a leading dot hides the file on Unix.
+    # passed to; a leading dot hides the file on Unix — a downloaded clip the
+    # user cannot see in Finder is worse than a slightly wrong name. This does
+    # mangle a title that legitimately starts with a dot (".38 Special" becomes
+    # "38 Special"), which is the accepted cost rather than an oversight.
     collapsed = " ".join(text.split()).lstrip(". -")
-    return collapsed[:MAX_COMPONENT_CHARS].strip()
+    return collapsed[:max_chars].strip()
 
 
 def format_timestamp(seconds: float) -> str:
@@ -119,5 +126,9 @@ def condensed_download_filename(game_title: str | None) -> str:
     parenthetical qualifier, not a field list — and collapsing them would change
     a filename users already receive.
     """
-    title = sanitize_component(game_title)
-    return f"{title} (condensed).mp4" if title else "condensed.mp4"
+    # The whole filename budget, not the four-component one: this name has a
+    # single variable part, and capping it at 80 would silently shorten a
+    # filename users already receive for long-titled games.
+    suffix = " (condensed).mp4"
+    title = sanitize_component(game_title, max_chars=MAX_FILENAME_CHARS - len(suffix))
+    return f"{title}{suffix}" if title else "condensed.mp4"
