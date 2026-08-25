@@ -3,7 +3,8 @@
 import { useCallback, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Clapperboard, Upload, LayoutGrid, LogOut, Menu, Sun, Moon, FolderOpen, X } from "lucide-react";
+import { Upload, LayoutGrid, LogOut, Menu, Sun, Moon, FolderOpen, X } from "lucide-react";
+import { BrandMark } from "@/components/BrandMark";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { SOCIAL_ENABLED } from "@/lib/features";
@@ -97,12 +98,7 @@ export function Sidebar() {
           <Menu size={18} />
         </button>
         <Link href="/" className="group flex items-center gap-2.5">
-          <div className="flex h-[26px] w-[26px] items-center justify-center rounded-md bg-brand/10 transition-colors group-hover:bg-brand/20">
-            <Clapperboard size={13} className="text-brand" strokeWidth={2.5} />
-          </div>
-          <span className="text-[14px] font-semibold tracking-tight text-foreground">
-            ClipFarm
-          </span>
+          <BrandMark />
         </Link>
       </header>
 
@@ -157,12 +153,7 @@ export function Sidebar() {
         {/* Logo */}
         <div className="flex h-[52px] shrink-0 items-center border-b border-border">
           <Link href="/" onClick={closeOnNavigate} className="group flex min-w-0 flex-1 items-center gap-2.5 px-4">
-            <div className="flex h-[26px] w-[26px] items-center justify-center rounded-md bg-brand/10 transition-colors group-hover:bg-brand/20">
-              <Clapperboard size={13} className="text-brand" strokeWidth={2.5} />
-            </div>
-            <span className="text-[14px] font-semibold tracking-tight text-foreground">
-              ClipFarm
-            </span>
+            <BrandMark />
           </Link>
           <button
             ref={closeRef}
