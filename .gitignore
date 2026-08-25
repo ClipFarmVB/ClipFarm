@@ -44,6 +44,12 @@ ball-track/
 # belong in results/*.jsonl; the raw track does not.
 ml/eval/results/*_ball_track.json
 
+# Local mirror of the R2 ball-cache. Nothing on main writes here yet — the
+# eval tooling that reads it arrives with CF-103 (#182), which is based on this
+# branch, so removing this line would leave that PR's cache files untracked and
+# showing in `git status`. Regenerable from R2 either way.
+ml/eval/ball_caches/
+
 # ML / data
 *.pt
 *.pth
