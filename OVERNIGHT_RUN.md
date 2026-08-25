@@ -118,8 +118,16 @@ run start: 2026-08-25T04:12:09Z
 whichever is written last owns the first line:
 
 ```
-SINCE=$(grep -m1 '^run start: ' .claude/overnight-log.md | cut -d' ' -f3)
+SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
+[ -n "$SINCE" ] || { echo "no run start in log — stop and write one"; }
 ```
+
+`tail -1`, not `grep -m1`: nothing truncates this log, so the first match is the
+*oldest* run's start and the newest is what you want. And guard the empty case —
+an unset `SINCE` makes `.created_at > ""` true for every comment, which turns
+every per-run bound into an all-time one silently. Both failures point the same
+way as the `$(date …)` trap below: they widen the window rather than narrowing
+it, so nothing errors and the ceiling arrives early.
 
 A resolved timestamp, UTC and `Z`-suffixed — produce it with
 `date -u +%Y-%m-%dT%H:%M:%SZ` and write the **result**. Writing the command
@@ -140,14 +148,22 @@ through review and fix and re-review until it reaches a terminal state, then
 pick the next one. Running step 1 across every open PR and only then starting
 step 2 is the breadth-first pass ruled out below.
 
-**1 — Review open PRs that need one.** A PR needs a review if it has **no
-marker comment at all** — including one you opened earlier in this run — or if
-it has commits since its most recent marker.
+**1 — Review open PRs that need one.** One test, not two:
 
-Read that as *marker*, not *review object*: every round posts with
-`gh pr comment`, so a PR that has been reviewed a dozen times still has zero
-reviews in GitHub's sense, and a test phrased against reviews reads every PR as
-never reviewed.
+> **A PR needs a round unless it carries `review-settled` or `unsettled` and
+> that label's carve-out has not fired.**
+
+The obvious phrasing — "no marker at all, or commits since the last marker" —
+leaves a hole. A PR sitting on its first `cold: clean` with no new commits has a
+marker *and* no new commits, so neither clause selects it; yet that is precisely
+the PR owing a second clean round before it may be labelled, and it would sit
+there forever. **Unlabelled means unfinished.** What it needs next comes from
+the routing table below.
+
+Note also that "reviewed" here never means a GitHub review object: every round
+posts with `gh pr comment`, so a PR reviewed a dozen times still has zero
+reviews in GitHub's sense, and any test phrased against reviews reads every PR
+as untouched.
 
 **Every round leaves one marker comment, and selection reads it.** Timestamps
 alone cannot tell a PR stopped mid-cycle from one nobody has touched: a run can
@@ -167,8 +183,16 @@ guard against loosely.
 `cold: findings @ 2c1a865`. That SHA is what makes this scheme survive a
 compaction: it records not just what happened but *what it happened to*, so a
 later iteration can tell a verdict about the current code from one about code
-that has since been replaced. Use the short SHA from
-`gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq .head.sha`.
+that has since been replaced.
+
+**Seven characters, from this command, everywhere.** `.head.sha` returns the
+full forty, so it must be sliced — and sliced identically when writing a marker
+and when testing one, or every comparison reports "differs", no SHA-matches row
+can ever fire, and nothing settles:
+
+```
+gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]"
+```
 
 Routing reads the latest marker **and** compares its SHA with the PR's current
 head:
@@ -193,11 +217,32 @@ head:
   this one: the settle bar requires a semi-cold check to close a finding, and a
   cold round posted on top would make its own marker the latest and hide the
   open finding from this very rule.
-- `reopened: <sha>` — not a round and not a verdict; it consumes no budget. It
-  records that a settled or unsettled PR came back with new code, and it is what
-  bounds the counting windows below. Next: a cold round.
-- *no marker at all* — the query below prints nothing. The PR has never had a
-  round. Next: a cold round, the first-look case.
+- `semi-cold: does not close`, SHA **differs** — another fix has landed since.
+  Next: another semi-cold round against the new head. Without this row a
+  compaction after a second fix routes back to step 2 forever, exactly as the
+  `cold: findings` case would.
+- *no round marker at all* — the query below prints nothing. The PR has never
+  had a round. Next: a cold round, the first-look case.
+
+**Routing reads the latest `cold:` or `semi-cold:` marker — a round.** Two other
+prefixes are written to the same stream and are deliberately *not* routed on:
+
+- `reopened: <sha>` — records that a settled or unsettled PR came back with new
+  code. It is not a round, consumes no budget, and decides nothing; it exists
+  only to bound the counting windows below. Routing skips past it to the last
+  real round, which is what makes the re-open rule and this table agree: an
+  author who fixes a `unsettled: not our branch` PR leaves it on
+  `cold: findings` with a differing SHA, which is the semi-cold row, not a cold
+  one.
+- `unsettled: <reason> @ <sha>` — the comment that records *why* the `unsettled`
+  label went on. A later run reads it back to tell `needs a decision`, which
+  wants a human, from `not our branch` and `ran out of rounds`, which do not.
+  Nothing else records that distinction, so read it before deciding whether a
+  labelled PR is eligible again:
+
+  ```
+  gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"^unsettled:\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1
+  ```
 
 **Routing is a prefix test on the first line, folded to lowercase.** The
 selection query returns that whole line, and a reviewer will naturally write
@@ -215,10 +260,10 @@ that prefix matching separates `semi-cold: closes` from `semi-cold: does not
 close` only because neither is a prefix of the other — preserve that if you ever
 add a fifth marker.
 
-Note what is deliberately *not* a marker: the `unsettled: …` comment that
-records why that label went on. It is a label rationale, not a round — it
-consumes no budget and routes nothing — and the pattern below excludes it by
-matching only the two round kinds. Keep it that way if you add prefixes.
+**Use `ROUNDS` wherever something is counted** — the six-round ceiling, the
+32-review budget, the clean-marker test — and `MARKERS` only where you want the
+latest machine-written comment of any kind. Counting with `MARKERS` charges a
+`reopened:` or `unsettled:` comment against the ceiling, and neither is a round.
 
 Every rule below that reads markers uses the same pattern. `gh`'s built-in
 `--jq` takes a filter string only — it has no `--arg` — so the pattern is
@@ -227,7 +272,8 @@ interpolated by the shell and the filter's own quotes are escaped. Match it
 not strand the PR:
 
 ```
-MARKERS='^(cold|semi-cold|reopened):'
+MARKERS='^(cold|semi-cold|reopened|unsettled):'   # anything machine-readable
+ROUNDS='^(cold|semi-cold):'                       # rounds only — what counts
 ```
 
 **Set it in every shell that uses it**, including the round-counting query
@@ -246,7 +292,7 @@ that reason.
 Read the latest marker, and route on it:
 
 ```
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$MARKERS\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1
 ```
 
 Empty output means the PR has never had a round.
@@ -355,24 +401,35 @@ identical to one reviewed clean.
 
 **Skip PRs labelled `unsettled`.** It is the opposite record to
 `review-settled`: Critical or Medium findings are open and this run cannot close
-them. When you apply it, open the same comment with one of three prefixes — that
-prefix decides what re-opens the PR, and nothing else records it. Only one of
-the three needs a human to clear it:
+them.
 
-- *Ran out of rounds* (ceiling or budget). Commits since the label make it
-  eligible again, round count reset — the same carve-out `review-settled` gets,
-  and for the same reason: a PR that has since been fixed must not look like one
-  nobody touched.
-- `unsettled: not our branch` — the findings are fixable, but this run did not
-  create the branch and may not push to it. **Commits since the label re-open
-  it**, round count reset. A commit is exactly what resolves this one: the
-  author reading the review and pushing a fix is the intended path, and it must
-  not need a human to also clear a label by hand.
-- `unsettled: needs a decision` — a finding requires a judgement nobody
-  unattended should make. Only a human removing the label re-opens it. Commits
-  do not, because the decision is not something a commit clears; the author
-  pushing something unrelated would otherwise buy fresh rounds to re-derive the
-  same finding off the same unchanged lines.
+**The label is bare `unsettled`. The reason goes in the comment, never in the
+label name.** Only two labels exist on this repo — `review-settled` and
+`unsettled` — and `gh pr edit --add-label unsettled:\ blocked` fails against a
+label that does not exist, leaving the PR unlabelled with open Criticals, which
+is the one state this document forbids. So: apply `unsettled`, and post a
+comment opening `unsettled: <reason> @ <sha>`. That comment is the only record
+of which reason applies, and it is what a later run reads back:
+
+- `unsettled: not our branch @ <sha>`
+- `unsettled: needs a decision @ <sha>`
+- `unsettled: ran out of rounds @ <sha>`
+
+Only one of the three needs a human to clear it:
+
+- `ran out of rounds` — the ceiling or the budget stopped it. New commits
+  re-open it, round count reset: a PR that has since been fixed must not look
+  like one nobody touched.
+- `not our branch` — the findings are fixable, but this run did not create the
+  branch and may not push to it. **New commits re-open it**, round count reset.
+  A commit is exactly what resolves this one: the author reading the review and
+  pushing a fix is the intended path, and it must not need a human to also clear
+  a label by hand.
+- `needs a decision` — a finding requires a judgement nobody unattended should
+  make. Only a human removing the label re-opens it. Commits do not, because the
+  decision is not something a commit clears; the author pushing something
+  unrelated would otherwise buy fresh rounds to re-derive the same finding off
+  the same unchanged lines.
 
 **When a carve-out re-opens a PR, take the label off and start cold.** The
 routing table above reads the latest marker, and on a re-opened PR that marker
@@ -409,7 +466,7 @@ means code has landed that no round has seen:
 
 ```
 gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha"
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$MARKERS\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1
 ```
 
 **Compare SHAs, never dates.** A commit's `committer.date` is when it was
@@ -454,7 +511,8 @@ the one thing a cold round cannot do — someone other than the author confirmin
 the fix does what the finding asked.
 
 **It posts one marker comment like every other round** — body starting with the
-literal `semi-cold: closes` or `semi-cold: does not close`, before any heading,
+literal `semi-cold: closes @ <sha>` or `semi-cold: does not close @ <sha>`,
+carrying the same head SHA the cold brief specifies, before any heading,
 then each finding it checked with the reason, then anything the fix introduced,
 tiered as below. A same-line summary after the marker is welcome here too. Tell
 it, as you tell the cold reviewer, to post with `gh pr comment` — never
@@ -464,9 +522,9 @@ comments, and a round posting several inflates that count as surely as one
 posting none.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
-another semi-cold round, or, if you cannot, label it `unsettled` with the
-prefix that fits — `not our branch` or `needs a decision` — record it, and move
-on. It does not become closed by being argued with.
+another semi-cold round, or, if you cannot, apply the `unsettled` label with a
+comment naming the reason that fits — `not our branch` or `needs a decision` —
+record it, and move on. It does not become closed by being argued with.
 
 **Never let a semi-cold round settle a PR.** It was handed the previous
 reviewer's conclusions, so its silence inherits their blind spots; treating that
@@ -489,12 +547,15 @@ just spawned that it is never the reviewer. A subagent in a sandbox inherits
 none of your local settings, so the no-stamp rule has to travel with it or its
 review arrives signed.
 
-Its brief: run `/code-review high` on that PR and post one marker comment — its body
-**starting** with the literal text `cold: findings` or `cold: clean`, before any
-heading or formatting, since that is what selection matches on. A one-line
-summary after the marker on the same line is welcome (`cold: findings — 2
-Critical, 1 Medium`); anything before it strands the PR. Then the findings, in
-tiers:
+Its brief: run `/code-review high` on that PR and post one marker comment. Give
+it the head SHA — `gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq
+".head.sha[0:7]"` — and require the comment's body to **start** with the literal
+`cold: findings @ <sha>` or `cold: clean @ <sha>`, before any heading or
+formatting, since that whole line is what selection matches and routes on. A
+summary may follow on the same line
+(`cold: findings @ 2c1a865 — 2 Critical, 1 Medium`); nothing may precede the
+marker, and the SHA is not optional — the routing table is keyed on it, and a
+marker without one can never match a head. Then the findings, in tiers:
 
 - **Critical** — correctness, security, data loss
 - **Medium** — should fix before merge
@@ -504,9 +565,9 @@ tiers:
 `/code-review --comment`.** This belongs in the brief you hand over, not only in
 the selection rules above, because the skill you just told it to run documents
 `--comment` as its own way to publish findings — inline review comments, which
-is the move a reviewer holding the skill reaches for first. Both mechanisms are
-invisible to `gh pr view --json comments`, which is the query that routes this
-PR, so either one strands it on its previous marker.
+is the move a reviewer holding the skill reaches for first. Neither shows up as
+a comment in the REST comments listing that selection reads, so either one
+strands the PR on its previous marker.
 
 Challenge the design where warranted, not only the code; say so when a premise
 looks wrong. **Verify claims against the repository** rather than trusting the PR
@@ -533,9 +594,9 @@ and user-triggered, so an unattended run must not reach for it.
 created its branch. Not merely if the account matches: `gh api user -q .login`
 also returns PRs this account opened on earlier nights, and pushing to those is
 what the hard rule against pushing to branches this run did not create forbids.
-For a PR you may not push to, describe the fix in a comment and label the PR
-`unsettled: not our branch`. That is the cheap terminal state, not a dead end:
-the author pushing a fix re-opens it on its own.
+For a PR you may not push to, describe the fix in a comment, apply `unsettled`
+and post `unsettled: not our branch @ <sha>`. That is the cheap terminal state,
+not a dead end: the author pushing a fix re-opens it on its own.
 
 If a fix needs no human decision, implement it, push to that PR's branch, and
 reply on the thread saying what changed. If it needs a judgement call, log it
@@ -615,28 +676,29 @@ means depends on why you cannot fix it, and the two cases part company here:
 - *A branch this run did not create.* You cannot push anything, so the work is
   writing the findings down where the author will act on them: **all** of them,
   including the ones that would have been a one-line fix, in the review comment
-  and in a reply describing what you would have changed. Then label the PR
-  `unsettled: not our branch`. The author's next push re-opens it.
+  and in a reply describing what you would have changed. Then apply `unsettled`
+  with an `unsettled: not our branch @ <sha>` comment. The author's next push
+  re-opens it.
 - *A finding needing a human decision, on a branch you may push to.* First fix
   everything else that round raised and push it — those findings are real and
-  abandoning them wastes the round that found them. *Then* label the PR
-  `unsettled: needs a decision`.
+  abandoning them wastes the round that found them. *Then* apply `unsettled`
+  with an `unsettled: needs a decision @ <sha>` comment.
 
 Either way, record what is left in the log and the report, and move on. Do not
 spend further rounds on it: a new round is cold to your reasoning but not to the
 code, so it re-derives the same finding off the same unchanged lines.
 
-**Always apply the prefix.** A bare `unsettled` says a PR is stuck without
-saying what unsticks it, and the difference is whether the label clears itself
-on the author's next commit or waits for a human who has not been told they are
-needed.
+**Always post the reason comment.** The label alone says a PR is stuck without
+saying what unsticks it, and the difference is whether it clears itself on the
+author's next commit or waits for a human who has not been told they are needed.
 
 **Ceiling: six rounds per PR per run, cold and semi-cold together**, so a
 pathological PR cannot consume the whole night. Counting only cold rounds would
 leave the semi-cold ones unbounded — every fix buys another check — and half of
 a ceiling is not a ceiling. Six covers a PR with two rounds of findings and the
 cold round that settles it. Hitting it is the same outcome: fix what you can,
-label `unsettled: ran out of rounds`, record, move on.
+apply `unsettled` with an `unsettled: ran out of rounds @ <sha>` comment,
+record, move on.
 
 **Take one PR all the way through before opening the next.** Review it, fix it,
 check the fix, settle or label it — then move on. Do not run a pass over every
@@ -686,19 +748,20 @@ a human wrote.
 the ceiling is six rounds *per run*, and an `unsettled: ran out of rounds` PR is
 promised a reset when new commits land. A raw count undoes both — a PR that
 spent six rounds last night would read as already at the ceiling before this run
-touched it. So record the run's start time in the log's first line, and count
-markers newer than it.
+touched it. So count markers newer than the run's start time, which the
+[logging rule](#log-before-you-finish-each-iteration) puts on its own
+`run start: ` line — found by matching that line, never by position.
 
-**When a PR was re-opened mid-run by new commits, count from the event for the
-label that was removed — `unsettled` or `review-settled`, whichever it was —
-instead, and only if that event falls inside this run.** Three states carry a
-commits-since carve-out — `review-settled`, `unsettled: ran out of rounds` and
-`unsettled: not our branch` — and each needs the bound; naming only one leaves a
-mid-run re-opened PR counting from `SINCE` and hitting the ceiling early.
-(`unsettled: needs a decision` has no carve-out, so it never needs this.) The
-bound you want is the *later* of the two. A label applied last night is older than the
-run start, so counting from it sweeps in markers this run has already spent, and
-the ceiling arrives early on a PR that was just promised a reset.
+**When a PR was re-opened mid-run, count from the `reopened:` marker instead —
+but only if that marker falls inside this run.** There is no label event to read
+here; re-opening writes that marker precisely so this bound survives the label
+being removed. Three states carry a commits-since carve-out — `review-settled`,
+and the `ran out of rounds` and `not our branch` reasons for `unsettled` — and
+each re-opens the same way, so each gets the same bound. (`needs a decision` has
+no carve-out and never needs it.) The bound you want is the *later* of the run
+start and that marker: a `reopened:` marker from last night is older than the
+run start, so counting from it sweeps in markers this run has already spent and
+the ceiling arrives early on a PR just promised a reset.
 
 `.created_at > "$SINCE"` is a lexicographic string compare against GitHub's
 `2026-08-24T23:08:57Z`, so `SINCE` must be UTC with the `Z` suffix and nothing
@@ -708,8 +771,8 @@ sorts wrong against it and the count comes back low or zero — which reads as "
 rounds this run" and hands the PR a fresh six-round ceiling:
 
 ```
-SINCE=$(grep -m1 '^run start: ' .claude/overnight-log.md | cut -d' ' -f3)
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.created_at > \"$SINCE\") | select(.body | test(\"$MARKERS\"; \"i\")) | .id" | wc -l
+SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.created_at > \"$SINCE\") | select(.body | test(\"$ROUNDS\"; \"i\")) | .id" | wc -l
 ```
 
 **What this costs, plainly — and it depends on who owns the branch.**
@@ -741,7 +804,10 @@ this run owns and keeps finding things in, since a PR from an earlier night
 stops after one or two rounds regardless.
 
 Reserve budget before opening anything: **do not open a new PR in step 3 unless
-at least two reviews remain**, since a PR this run opens must be reviewable by
+at least **three** reviews remain — two is the clean case only, and a PR with a
+single round of findings costs three, so a smaller reserve guarantees the PR it
+just opened ends `unsettled: ran out of rounds` by construction. A PR this run
+opens must be reviewable by
 this run — a draft nobody has looked at is exactly what the hard rules forbid
 leaving behind. If the budget cannot cover a review, step 3 writes the plan into
 the log instead of opening a PR.
@@ -882,10 +948,10 @@ The report contains:
 
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
-- PRs labelled `unsettled`, split by the three prefixes the label carries —
-  `needs a decision` (only these want a human), `not our branch` (the author's
-  next push re-opens it), and `ran out of rounds` (six-round ceiling or review
-  budget) — and what is still outstanding on each
+- PRs labelled `unsettled`, split by the three reasons their `unsettled:`
+  comment gives — `needs a decision` (only these want a human), `not our branch`
+  (the author's next push re-opens it), and `ran out of rounds` (six-round
+  ceiling or review budget) — and what is still outstanding on each
 - Whether the review budget ran out, and which PRs never got a first round at
   all — with a deep queue this is the expected shape of a run, not a failure
 - PRs opened, with card and branch — and **what to test to verify each one**
