@@ -68,9 +68,9 @@ class TestFormatTimestamp:
         assert ":" not in format_timestamp(252.0)
 
     def test_minutes_and_seconds(self):
-        assert format_timestamp(0) == "00-00"
-        assert format_timestamp(9.9) == "00-09"
-        assert format_timestamp(252.0) == "04-12"
+        assert format_timestamp(0) == "0-00-00"
+        assert format_timestamp(9.9) == "0-00-09"
+        assert format_timestamp(252.0) == "0-04-12"
 
     def test_rolls_into_hours_like_the_ui_does(self):
         """Uploads are capped at four hours.
@@ -80,30 +80,30 @@ class TestFormatTimestamp:
         moment in the game.
         """
         assert format_timestamp(3661) == "1-01-01"
-        assert format_timestamp(3599) == "59-59"
+        assert format_timestamp(3599) == "0-59-59"
         assert format_timestamp(3600) == "1-00-00"
         assert format_timestamp(14399) == "3-59-59"
 
     def test_negative_clamps_to_zero(self):
-        assert format_timestamp(-5) == "00-00"
+        assert format_timestamp(-5) == "0-00-00"
 
 
 class TestClipDownloadFilename:
     def test_all_components(self):
         assert clip_download_filename("Match", "spike", "Rosa", 252.0) == (
-            "Match - spike - Rosa - 04-12.mp4"
+            "Match - spike - Rosa - 0-04-12.mp4"
         )
 
     def test_missing_player_leaves_no_empty_separator(self):
         assert clip_download_filename("Match", "spike", None, 252.0) == (
-            "Match - spike - 04-12.mp4"
+            "Match - spike - 0-04-12.mp4"
         )
 
     def test_everything_stripped_still_yields_a_usable_name(self):
         # A non-Latin title and player with no action: the timestamp is what
         # survives, and the name must still end .mp4 rather than being bare.
         out = clip_download_filename("Матч", None, "Ирина", 65)
-        assert out == "01-05.mp4"
+        assert out == "0-01-05.mp4"
 
     def test_always_ends_with_the_extension(self):
         assert clip_download_filename(None, None, None, 0).endswith(".mp4")
@@ -200,7 +200,7 @@ class TestDownloadEndpoint:
 
         assert out == {"url": "https://r2.example/signed"}
         assert presigned["download_filename"] == (
-            "Panthers vs Sharks - spike - Rosa Diaz - 04-12.mp4"
+            "Panthers vs Sharks - spike - Rosa Diaz - 0-04-12.mp4"
         )
 
     def test_expiry_matches_share(self, presigned):
@@ -230,7 +230,7 @@ class TestDownloadEndpoint:
         clip = _Clip(game)
         _download(_FakeSession(game, clip), clip.id, OWNER)
         assert presigned["download_filename"] == (
-            "Panthers vs Sharks - spike - 04-12.mp4"
+            "Panthers vs Sharks - spike - 0-04-12.mp4"
         )
         assert " -  - " not in presigned["download_filename"]
 
@@ -270,7 +270,7 @@ class TestDownloadEndpoint:
         assert "Under-14" not in name and "County" not in name
         assert "Rosa" not in name and "Diaz" not in name
         # Still useful, still identifies the moment.
-        assert name == "spike - 04-12.mp4"
+        assert name == "spike - 0-04-12.mp4"
 
     def test_the_owner_still_gets_the_identifying_name(self, presigned):
         # The guard must not cost the person entitled to the information.
@@ -279,7 +279,7 @@ class TestDownloadEndpoint:
         clip = _Clip(game, player=player, visibility=Visibility.public)
         _download(_FakeSession(game, player, clip), clip.id, OWNER)
         assert presigned["download_filename"] == (
-            "Under-14 County Final - spike - Rosa Diaz - 04-12.mp4"
+            "Under-14 County Final - spike - Rosa Diaz - 0-04-12.mp4"
         )
 
     def test_a_stranger_never_causes_the_player_row_to_be_read(self, presigned):
@@ -355,18 +355,18 @@ class TestFilenameLengthBound:
         # Trimmed from the front on purpose: the timestamp is what keeps two
         # clips from one game apart once a long title has eaten the budget.
         out = clip_download_filename("g" * 200, "a" * 200, "p" * 200, 252.0)
-        assert out.endswith("04-12.mp4")
+        assert out.endswith("0-04-12.mp4")
 
 
 class TestTimestampEdgeCases:
     def test_nan_does_not_raise(self):
         # int(float("nan")) is a ValueError; a corrupt start_time should cost
         # the position in the name, not turn the download into a 500.
-        assert format_timestamp(float("nan")) == "00-00"
+        assert format_timestamp(float("nan")) == "0-00-00"
 
     def test_infinity_does_not_raise(self):
-        assert format_timestamp(float("inf")) == "00-00"
-        assert format_timestamp(float("-inf")) == "00-00"
+        assert format_timestamp(float("inf")) == "0-00-00"
+        assert format_timestamp(float("-inf")) == "0-00-00"
 
 
 class TestLeadingCharacters:
@@ -384,3 +384,18 @@ class TestLeadingDotIsAnAcceptedCost:
         record rather than a surprise.
         """
         assert sanitize_component(".38 Special") == "38 Special"
+
+
+class TestNamesSortChronologically:
+    def test_a_late_clip_does_not_sort_before_an_early_one(self):
+        """These land in one downloads folder and are sorted as strings.
+
+        Mixing `59-59` with `1-00-00` put the 59-minute clip *after* the
+        three-hour one, because "5" sorts after "1". Always carrying the hour
+        fixes it, which is why a four-minute clip reads `0-04-12`.
+        """
+        names = [
+            clip_download_filename("Match", "spike", None, s)
+            for s in (252.0, 3599, 3600, 14399)
+        ]
+        assert names == sorted(names)

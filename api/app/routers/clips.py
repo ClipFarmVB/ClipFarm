@@ -406,10 +406,15 @@ async def download_clip(
     # A public clip inside a private game is reachable by direct link — the
     # asymmetry access.py documents. There, /share discloses nothing and
     # list_clips is gated on the game, so the game's title and the tagged
-    # player's real name are unreachable without a credential. Naming the file
-    # after them would hand both to an anonymous caller, on footage of a named
-    # young person. The override publishes *that clip*, not the game it came
-    # from or who is in it.
+    # player's real name are unreachable *anonymously*. Naming the file after
+    # them would hand both to an anonymous caller, on footage of a named young
+    # person. The override publishes *that clip*, not the game it came from or
+    # who is in it.
+    #
+    # "Anonymously" is exact rather than pedantic: collections.py already hands
+    # player_name to any signed-in viewer who saved that public clip, so this
+    # gate is stricter than that neighbour. Reconciling the two is a separate
+    # question and does not belong in a download endpoint.
     identify = access.can_view_game(viewer_id, game)
 
     # Explicit fetch, not clip.player: the relationship is not eagerly loaded

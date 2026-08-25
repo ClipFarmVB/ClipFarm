@@ -75,15 +75,21 @@ def sanitize_component(value: str | None, max_chars: int = MAX_COMPONENT_CHARS) 
 
 
 def format_timestamp(seconds: float) -> str:
-    """`mm-ss`, or `h-mm-ss` past the hour. Dashes, not colons.
+    """`h-mm-ss`, always, with dashes rather than colons.
 
     A colon is illegal in a Windows filename, which is why this does not read
-    `mm:ss` the way the UI does.
+    `h:mm:ss` the way the UI does.
 
-    It rolls into hours for the same reason the UI does: uploads are capped at
-    four hours, so a late clip without the rollover reads `239-59` where
-    ClipCard and ClipModal both show `3:59:59`, and a reader has to divide to
-    find the moment in the game.
+    **The hour is always present, even when it is zero**, and that is the whole
+    point rather than verbosity. These names land together in one downloads
+    folder, so they are sorted as strings — and mixing `59-59` with `1-00-00`
+    puts the 59-minute clip *after* the three-hour one, because "5" sorts after
+    "1". `0-59-59` and `1-00-00` order correctly. Uploads cap at four hours, so
+    a single hour digit is enough and never needs padding of its own.
+
+    It carries hours at all for the same reason the UI does: without the
+    rollover a late clip reads `239-59` where ClipCard and ClipModal both show
+    `3:59:59`, and a reader has to divide to find the moment in the game.
 
     NaN and the infinities are treated as 0 rather than allowed to raise:
     `int(float("nan"))` is a ValueError, and a corrupt start_time should cost a
@@ -94,9 +100,7 @@ def format_timestamp(seconds: float) -> str:
     total = max(0, int(seconds))
     hours, rest = divmod(total, 3600)
     minutes, secs = divmod(rest, 60)
-    if hours:
-        return f"{hours}-{minutes:02d}-{secs:02d}"
-    return f"{minutes:02d}-{secs:02d}"
+    return f"{hours}-{minutes:02d}-{secs:02d}"
 
 
 def clip_download_filename(
