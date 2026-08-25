@@ -40,6 +40,21 @@ changes that break rally boundaries.
 `pytest api/tests` (when the dev set is installed — see below), plus eslint,
 tsc and vitest for `web/`.
 
+- **The hook is not installed by default — wire it up once per clone:**
+
+  ```bash
+  git config core.hooksPath .hooks
+  ```
+
+  Nothing does this for you, so a clone that skips it commits with no local
+  checks at all and only finds out on the PR. `git config core.hooksPath`
+  printing nothing means you are in that state.
+- **The hook picks its own Python; don't assume `python` works.** It probes
+  `python`, then `py`, then `python3`, and uses the first that actually *runs* —
+  on Windows the Microsoft Store ships `python`/`python3` stubs that resolve on
+  PATH and then fail (CF-259). Whichever it picks, ruff/mypy/pytest must be
+  installed into *that* interpreter; the steps invoke them as `-m` modules
+  because Python's `Scripts/` directory is often not on PATH.
 - **A fresh worktree needs `npm ci` at the repo root first.** Without
   `node_modules`, the hook's eslint/tsc/vitest steps fail or hang, and the failure
   looks like a code problem rather than a missing install. This bites every new
@@ -52,7 +67,7 @@ tsc and vitest for `web/`.
 
   ```bash
   pip install -r api/requirements-dev.txt   # once — includes the test-only deps
-  cd api && python -m pytest tests/
+  cd api && python -m pytest tests/   # or `py -m pytest` — see the note above
   ```
 
   **Install `requirements-dev.txt`, not `requirements.txt`.** Several tests guard
