@@ -227,7 +227,12 @@ class Settings(BaseSettings):
     # play (far-court possessions, occlusions). Bridges a gap when enough of
     # the tracked ball's speed samples inside it are fast — in-play flight is
     # fast, between-rally ball handling is mostly slow.
-    condense_bridge_speed_pxps: float = 150.0   # a speed sample this fast counts as in-play
+    # CF-174: this is a REFERENCE value, in 360p pixel space. bridge_windows_by_motion
+    # multiplies it by frame_height / 360 at use, so the effective threshold on a
+    # 1080p upload is 450 px/s, not 150. Tune it against 360p footage, or divide
+    # what you observe by (frame_height / 360) before setting it — setting 150
+    # here from a 1080p observation applies 450 and the bridge stops firing.
+    condense_bridge_speed_pxps: float = 150.0   # px/s at 360p; scaled at use
     condense_bridge_fast_fraction: float = 0.35  # bridge when ≥ this fraction of samples are fast
     condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
 
