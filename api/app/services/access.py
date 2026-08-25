@@ -23,9 +23,11 @@ Writes are NOT covered here. Creating, editing and deleting stay owner-only, and
 the routers keep their own ownership checks for those paths.
 
 **Unauthenticated surface.** Allowing anonymous reads means ``GET /games/{id}``,
-``GET /games/{id}/clips`` and ``GET /clips/{id}/share`` now reach the database
-without a credential, joining ``GET /users/{handle}`` from CF-107 — four
-unthrottled endpoints where there were none. Nothing can be public yet, so all
+``GET /games/{id}/clips``, ``GET /clips/{id}/share`` and ``GET /clips/{id}/download``
+now reach the database without a credential, joining ``GET /users/{handle}`` from
+CF-107 — five unthrottled endpoints where there were none. The download one is the
+most expensive of them: it mints an attachment URL for the full clip, so an
+unthrottled caller can pull the bytes rather than just a row. Nothing can be public yet, so all
 of that traffic 404s today, making this a load question rather than a disclosure
 one. Rate limiting is tracked in CF-186 (#189) and needs to land before anything
 is actually publishable; the 404-not-403 choice below means none of them is an

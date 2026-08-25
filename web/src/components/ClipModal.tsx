@@ -2,9 +2,9 @@
 
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { X, ChevronLeft, ChevronRight, Link2 } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Link2, Download } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
-import { type Clip, getClipShareUrl } from "@/lib/api";
+import { type Clip, getClipDownloadUrl, getClipShareUrl } from "@/lib/api";
 import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 
 interface ClipModalProps {
@@ -51,6 +51,19 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
     }
   }
 
+  async function handleDownload() {
+    try {
+      const { url } = await getClipDownloadUrl(clip.id);
+      // Navigate rather than using <a download>: that attribute is ignored for
+      // cross-origin URLs and R2 is a different origin, so the file is named by
+      // the Content-Disposition header the api asked R2 to send. Because that
+      // header says `attachment`, this downloads instead of navigating away.
+      window.location.href = url;
+    } catch {
+      alert("Could not prepare the download.");
+    }
+  }
+
   return createPortal(
     <div
       ref={overlayRef}
@@ -71,6 +84,13 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
+            <button
+              onClick={handleDownload}
+              className="flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted hover:text-foreground hover:bg-surface-high transition-colors sm:h-auto sm:py-1.5"
+            >
+              <Download size={12} />
+              Download
+            </button>
             <button
               onClick={handleShare}
               className="flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted hover:text-foreground hover:bg-surface-high transition-colors sm:h-auto sm:py-1.5"

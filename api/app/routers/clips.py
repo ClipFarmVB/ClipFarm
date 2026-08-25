@@ -21,6 +21,7 @@ from app.schemas.clip import (
     ClipTrimRequest,
 )
 from app.services import access, storage
+from app.services.filenames import clip_download_filename
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -371,3 +372,52 @@ async def share_clip(
     # short expiry is user-hostile, while a long one is a bearer token nobody
     # can revoke. Left as-is here rather than changed without a decision.
     return {"url": storage.presign_from_stored_url(clip.clip_url, expires_in=3600)}
+
+
+@router.get("/clips/{clip_id}/download")
+async def download_clip(
+    clip_id: uuid.UUID,
+    db: DB,
+    viewer_id: ViewerId = None,
+):
+    """The same object as /share, under a name a human can read (CF-100).
+
+    A sibling endpoint rather than a flag on /share, because the two mint
+    genuinely different URLs: /share's is meant to be passed around and to play
+    inline, and this one carries Content-Disposition: attachment. Folding them
+    together would mean one caller's query parameter deciding whether the other
+    caller's link plays or downloads.
+
+    Authorization is /share's, via the same helper — downloading is a read, and
+    the deliberate asymmetry access.py documents (a public clip inside a private
+    game is reachable by direct link) applies here for the same reason.
+
+    Same 3600s expiry as /share, deliberately: that expiry is an open question
+    flagged there, and answering it differently in two places would settle it by
+    accident.
+    """
+    clip, game = await _get_viewable_clip(clip_id, viewer_id, db)
+
+    # Explicit fetch, not clip.player: the relationship is not eagerly loaded
+    # anywhere, and touching it here would lazy-load inside the event loop and
+    # raise MissingGreenlet. list_clips and tag_clip both fetch the same way.
+    player = await db.get(Player, clip.player_id) if clip.player_id else None
+
+    # Prefer a human correction over the model's guess. ClipCard badges the clip
+    # with clip.labels when it has any, so naming the file after action_type
+    # would hand back a file called "spike" for a clip the UI shows as "dig".
+    # updateClipLabels never writes back to action_type, so the two really can
+    # disagree.
+    label = next((lbl for lbl in (clip.labels or []) if lbl != "not_an_action"), None)
+
+    filename = clip_download_filename(
+        game_title=game.title,
+        action=label or clip.action_type.value,
+        player_name=player.name if player else None,
+        start_seconds=clip.start_time,
+    )
+    return {
+        "url": storage.presign_from_stored_url(
+            clip.clip_url, expires_in=3600, download_filename=filename
+        )
+    }

@@ -219,6 +219,21 @@ export function getClipShareUrl(clipId: string): Promise<{ url: string }> {
   return request<{ url: string }>(`/clips/${clipId}/share`);
 }
 
+/**
+ * A URL for the same clip that saves under a readable name (CF-100).
+ *
+ * Separate from getClipShareUrl because the two URLs differ: this one carries
+ * Content-Disposition: attachment, which the share link must not — a shared
+ * link is meant to play.
+ *
+ * Note the browser does the naming from that header, not from an <a download>
+ * attribute: download is ignored for cross-origin URLs, and R2 is a different
+ * origin. So the caller navigates to this URL and lets the header do the work.
+ */
+export function getClipDownloadUrl(clipId: string): Promise<{ url: string }> {
+  return request<{ url: string }>(`/clips/${clipId}/download`);
+}
+
 // ─── Players ──────────────────────────────────────────────────────────────────
 
 export interface Player {

@@ -1,0 +1,91 @@
+"""
+Human-readable download filenames (CF-100).
+
+Pure string work, no I/O — its own module because CF-101's bulk zip needs the
+same names for its archive entries, and a scheme that lives in one router is a
+scheme the next caller reimplements slightly differently.
+
+**Deliberately not shared with `games._sanitize_filename`.** That one guards a
+*storage key*: it neutralises `/`, `\\` and `..` so a crafted upload name cannot
+escape the key prefix. This one guards a *header value* and the file a browser
+then writes to disk, which is a wider problem — it must also survive
+`Content-Disposition: attachment; filename="..."` unescaped, and land on Windows
+and macOS filesystems. Merging them would mean one set of rules serving two
+threat models, and the looser of the two would win.
+"""
+from __future__ import annotations
+
+# Windows rejects all of these in a filename; `:` is the one that actually bites
+# here, because a mm:ss timestamp is the obvious way to write the position in
+# the game and it is illegal on Windows and awkward on macOS. `"`, `;` and `\`
+# additionally have to go so the value cannot break out of the quoted string in
+# Content-Disposition — storage.presign_url strips those again as a second line
+# of defence, but a value that only becomes safe downstream is one nobody can
+# reason about here.
+_FORBIDDEN = set('";\\/:*?<>|')
+
+# Game titles and player names are both String(255). Concatenated with the
+# separators they would comfortably exceed 500 bytes of header, so each part is
+# capped rather than the whole — truncating the joined string would silently
+# drop the timestamp, which is the component that makes two clips from one game
+# distinguishable.
+MAX_COMPONENT_CHARS = 80
+
+
+def sanitize_component(value: str | None) -> str:
+    """One filename component: printable ASCII, no separators, length-capped.
+
+    Non-ASCII is dropped rather than transliterated. That loses information for
+    a title written in a non-Latin script, which is why the caller must cope
+    with an empty result instead of assuming every component survives.
+    """
+    if not value:
+        return ""
+    # Whitespace becomes a space *before* the printable filter, not after. A tab
+    # is not printable, so filtering first deletes it and welds the words either
+    # side together — "Semi\tFinal" would come out "SemiFinal".
+    spaced = "".join(" " if c.isspace() else c for c in value)
+    kept = [
+        c for c in spaced
+        if c.isascii() and c.isprintable() and c not in _FORBIDDEN
+    ]
+    # Collapse runs of dots. Stripping `/` out of `../../etc/passwd` leaves
+    # `....etcpasswd`, which cannot traverse anything once the separators are
+    # gone but is an ugly thing to hand someone as a filename — and a leading
+    # dot hides the file on Unix.
+    text = "".join(kept)
+    while ".." in text:
+        text = text.replace("..", ".")
+    collapsed = " ".join(text.split()).lstrip(". ")
+    return collapsed[:MAX_COMPONENT_CHARS].strip()
+
+
+def format_timestamp(seconds: float) -> str:
+    """`mm-ss`, not `mm:ss` — a colon is illegal in a Windows filename."""
+    total = max(0, int(seconds))
+    return f"{total // 60:02d}-{total % 60:02d}"
+
+
+def clip_download_filename(
+    game_title: str | None,
+    action: str | None,
+    player_name: str | None,
+    start_seconds: float,
+) -> str:
+    """`{game} - {action} - {player} - {mm-ss}.mp4`, minus whatever is missing.
+
+    Components that sanitise away entirely are dropped rather than left as empty
+    separators, so an untagged clip is `Match - spike - 04-12.mp4` and not
+    `Match - spike -  - 04-12.mp4`. The timestamp always survives, which is what
+    keeps two clips from one game apart when everything else is stripped.
+    """
+    parts = [
+        sanitize_component(game_title),
+        sanitize_component(action),
+        sanitize_component(player_name),
+        format_timestamp(start_seconds),
+    ]
+    name = " - ".join(p for p in parts if p)
+    # Only reachable if the timestamp were somehow empty, which it cannot be —
+    # belt and braces, because the alternative is a bare ".mp4".
+    return f"{name}.mp4" if name else "clip.mp4"
