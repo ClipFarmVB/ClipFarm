@@ -33,8 +33,8 @@ import json
 from pathlib import Path
 
 from ml.eval.harness import RESULTS_DIR, _seconds_to_ts, load_deadtime_fixture
+from ml.pipeline.intervals import Interval
 
-Interval = tuple[float, float]
 
 
 def _count_in(spans: list[Interval], times: list[float]) -> list[int]:
