@@ -16,7 +16,9 @@ pytest.importorskip("fastapi")
 
 from app.services.filenames import (  # noqa: E402
     MAX_COMPONENT_CHARS,
+    MAX_FILENAME_CHARS,
     clip_download_filename,
+    condensed_download_filename,
     format_timestamp,
     sanitize_component,
 )
@@ -113,6 +115,7 @@ class TestClipDownloadFilename:
 from app.models.clip import ActionType  # noqa: E402
 from app.models.visibility import Visibility  # noqa: E402
 from app.routers.clips import download_clip  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 
 OWNER = uuid.uuid4()
 STRANGER = uuid.uuid4()
@@ -197,19 +200,18 @@ class TestDownloadEndpoint:
         _download(_FakeSession(game, clip), clip.id, OWNER)
         assert presigned["expires_in"] == 3600
 
-    def test_a_human_label_beats_the_model_guess(self, presigned):
-        # action_type stays `spike` while the UI badges the clip `dig`;
-        # updateClipLabels never writes back, so the file must follow the label.
-        game = _Game()
-        clip = _Clip(game, labels=["dig"])
-        _download(_FakeSession(game, clip), clip.id, OWNER)
-        assert " - dig - " in presigned["download_filename"]
+    def test_the_name_follows_action_type_not_labels(self, presigned):
+        """`labels` is detector output, not a human correction.
 
-    def test_not_an_action_is_not_used_as_a_label(self, presigned):
+        ml/pipeline/detect.py writes it on every clip in first-seen order, and
+        update_clip_labels stores it through list(set(...)), so its order is not
+        stable across restarts. action_type is the primary action by
+        construction and is rewritten from a correction, so it is the field a
+        filename can rely on — and it is what ClipModal badges.
+        """
         game = _Game()
-        clip = _Clip(game, labels=["not_an_action"])
+        clip = _Clip(game, labels=["dig", "block"])
         _download(_FakeSession(game, clip), clip.id, OWNER)
-        assert "not_an_action" not in presigned["download_filename"]
         assert " - spike - " in presigned["download_filename"]
 
     def test_untagged_clip_has_no_empty_separator(self, presigned):
@@ -225,9 +227,9 @@ class TestDownloadEndpoint:
         # Authorization parity with /share: same helper, same 404-not-403.
         game = _Game(visibility=Visibility.private)
         clip = _Clip(game)
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(HTTPException) as exc:
             _download(_FakeSession(game, clip), clip.id, STRANGER)
-        assert getattr(exc.value, "status_code", None) == 404
+        assert exc.value.status_code == 404
         assert presigned == {}, "must not mint a URL for a refused viewer"
 
     def test_a_stranger_may_download_a_public_clip(self, presigned):
@@ -239,6 +241,58 @@ class TestDownloadEndpoint:
 
     def test_a_missing_clip_is_404_not_500(self, presigned):
         game = _Game()
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(HTTPException) as exc:
             _download(_FakeSession(game), uuid.uuid4(), OWNER)
-        assert getattr(exc.value, "status_code", None) == 404
+        assert exc.value.status_code == 404
+
+
+class TestCondensedDownloadFilename:
+    """The pre-existing game-download name, now routed through the sanitiser."""
+
+    def test_keeps_the_shape_users_already_receive(self):
+        assert condensed_download_filename("Panthers vs Sharks") == (
+            "Panthers vs Sharks (condensed).mp4"
+        )
+
+    def test_a_colon_no_longer_reaches_the_disk(self):
+        # presign_url strips only `";\` — a `:` used to survive into the header
+        # and produce a filename Windows rejects.
+        assert ":" not in condensed_download_filename("Semi: the rematch")
+
+    def test_a_long_title_is_capped(self):
+        assert len(condensed_download_filename("x" * 500)) <= MAX_FILENAME_CHARS
+
+    def test_an_unusable_title_still_yields_a_name(self):
+        assert condensed_download_filename("Матч") == "condensed.mp4"
+        assert condensed_download_filename(None) == "condensed.mp4"
+
+
+class TestFilenameLengthBound:
+    def test_the_whole_name_fits_a_filesystem(self):
+        # Four capped components plus separators reach 258 — over the 255-byte
+        # limit most filesystems impose on a single name.
+        out = clip_download_filename("g" * 200, "a" * 200, "p" * 200, 252.0)
+        assert len(out) <= MAX_FILENAME_CHARS
+
+    def test_the_timestamp_survives_truncation(self):
+        # Trimmed from the front on purpose: the timestamp is what keeps two
+        # clips from one game apart once a long title has eaten the budget.
+        out = clip_download_filename("g" * 200, "a" * 200, "p" * 200, 252.0)
+        assert out.endswith("04-12.mp4")
+
+
+class TestTimestampEdgeCases:
+    def test_nan_does_not_raise(self):
+        # int(float("nan")) is a ValueError; a corrupt start_time should cost
+        # the position in the name, not turn the download into a 500.
+        assert format_timestamp(float("nan")) == "00-00"
+
+    def test_infinity_does_not_raise(self):
+        assert format_timestamp(float("inf")) == "00-00"
+        assert format_timestamp(float("-inf")) == "00-00"
+
+
+class TestLeadingCharacters:
+    def test_a_leading_dash_is_stripped(self):
+        # A name starting with `-` reads as a flag to any CLI it is passed to.
+        assert not clip_download_filename("--rf", None, None, 0).startswith("-")

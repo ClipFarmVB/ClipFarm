@@ -403,16 +403,17 @@ async def download_clip(
     # raise MissingGreenlet. list_clips and tag_clip both fetch the same way.
     player = await db.get(Player, clip.player_id) if clip.player_id else None
 
-    # Prefer a human correction over the model's guess. ClipCard badges the clip
-    # with clip.labels when it has any, so naming the file after action_type
-    # would hand back a file called "spike" for a clip the UI shows as "dig".
-    # updateClipLabels never writes back to action_type, so the two really can
-    # disagree.
-    label = next((lbl for lbl in (clip.labels or []) if lbl != "not_an_action"), None)
-
+    # action_type, not labels[0]. `labels` is written by the detector on every
+    # clip — first-seen action types within the rally (ml/pipeline/detect.py) —
+    # so it is not a human-correction marker, and update_clip_labels stores it
+    # through `list(set(...))`, which makes its order non-deterministic across
+    # restarts. `action_type` is the primary action by construction: the
+    # detector sets it to the dominant action by summed confidence, and
+    # update_clip_labels rewrites it from the corrected labels, so a correction
+    # already reaches it. It is also what ClipModal badges beside this button.
     filename = clip_download_filename(
         game_title=game.title,
-        action=label or clip.action_type.value,
+        action=clip.action_type.value,
         player_name=player.name if player else None,
         start_seconds=clip.start_time,
     )

@@ -31,6 +31,11 @@ _FORBIDDEN = set('";\\/:*?<>|')
 # distinguishable.
 MAX_COMPONENT_CHARS = 80
 
+# Most filesystems cap a single name at 255 bytes. Four capped components plus
+# their separators reach 258, so the joined stem is capped too — otherwise the
+# one input that overflows is the one nobody tests.
+MAX_FILENAME_CHARS = 255
+
 
 def sanitize_component(value: str | None) -> str:
     """One filename component: printable ASCII, no separators, length-capped.
@@ -56,12 +61,21 @@ def sanitize_component(value: str | None) -> str:
     text = "".join(kept)
     while ".." in text:
         text = text.replace("..", ".")
-    collapsed = " ".join(text.split()).lstrip(". ")
+    # A leading dash makes the name look like a flag to any CLI it is later
+    # passed to; a leading dot hides the file on Unix.
+    collapsed = " ".join(text.split()).lstrip(". -")
     return collapsed[:MAX_COMPONENT_CHARS].strip()
 
 
 def format_timestamp(seconds: float) -> str:
-    """`mm-ss`, not `mm:ss` — a colon is illegal in a Windows filename."""
+    """`mm-ss`, not `mm:ss` — a colon is illegal in a Windows filename.
+
+    NaN and the infinities are treated as 0 rather than allowed to raise:
+    `int(float("nan"))` is a ValueError, and a corrupt start_time should cost a
+    reader the position in the filename, not turn a download into a 500.
+    """
+    if seconds != seconds or seconds in (float("inf"), float("-inf")):
+        seconds = 0.0
     total = max(0, int(seconds))
     return f"{total // 60:02d}-{total % 60:02d}"
 
@@ -86,6 +100,24 @@ def clip_download_filename(
         format_timestamp(start_seconds),
     ]
     name = " - ".join(p for p in parts if p)
+    # Trim from the front so the timestamp survives: it is what keeps two clips
+    # from one game apart once a long title has eaten the budget.
+    stem = name[-(MAX_FILENAME_CHARS - len(".mp4")):].lstrip(". -")
     # Only reachable if the timestamp were somehow empty, which it cannot be —
     # belt and braces, because the alternative is a bare ".mp4".
-    return f"{name}.mp4" if name else "clip.mp4"
+    return f"{stem}.mp4" if stem else "clip.mp4"
+
+
+def condensed_download_filename(game_title: str | None) -> str:
+    """`{game} (condensed).mp4` — the shape already shipped for game downloads.
+
+    Routed through the same sanitiser rather than interpolated raw, which is the
+    whole reason this module exists: `presign_url`'s own strip drops only `";\\`,
+    so a title carrying `:` or a path separator reached the header and then the
+    disk. Kept as its own function rather than folded into
+    clip_download_filename because the two schemes are genuinely different — a
+    parenthetical qualifier, not a field list — and collapsing them would change
+    a filename users already receive.
+    """
+    title = sanitize_component(game_title)
+    return f"{title} (condensed).mp4" if title else "condensed.mp4"
