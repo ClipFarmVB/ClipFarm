@@ -163,9 +163,11 @@ the routing table below.
 
 Note also that "needs a round" is never decided from GitHub review objects. A
 round does submit one — the two artifacts are described below — but the review
-is not what selection reads, and it carries no marker and no SHA. Every test
-here is phrased against marker comments; one phrased against reviews would be
-reading the artifact that deliberately holds no state.
+is not what *selection* reads. The review does open with the same marker line —
+that is what tells a round's review from a human's — but every selection and
+counting rule here is phrased against marker **comments**, and a rule phrased
+against reviews would be counting an artifact that is deliberately outside the
+budget and the ceiling.
 
 **Every round leaves one marker comment, and selection reads it.** Timestamps
 alone cannot tell a PR stopped mid-cycle from one nobody has touched: a run can
@@ -324,10 +326,17 @@ EOF
 ```
 
 The comment is **only** the marker line — the prefix, the SHA, and at most a
-one-line count. The review holds the tiered findings in full. Writing them into
-both would mean two copies of the same text that can drift apart, and the graph
-credit comes from the review *existing*, not from what the comment contains, so
-the duplication buys nothing.
+one-line count. The review **repeats that marker line and then holds the tiered
+findings in full**. Repeating one line is not duplication worth avoiding; the
+findings appear once. Writing those into both would mean two copies of the same
+text that can drift apart, and the graph credit comes from the review
+*existing*, not from what the comment contains, so duplicating them buys
+nothing.
+
+**The review needs that line to be findable.** A round's review and a
+maintainer's are both `state: "COMMENTED"`, and on this repo they come from the
+same login, so nothing else distinguishes them — see step 2, which reads
+findings back out.
 
 The graph counts commits, issues opened, PRs opened and submitted reviews —
 **not** conversation comments — so a loop that posts only comments does a night
@@ -674,7 +683,8 @@ the reason, and anything the fix introduced, goes in its **review**, tiered as
 below — not in the comment. Tell it, as you tell the cold reviewer, to post the
 marker with `gh pr comment` — never `gh pr review`, never
 `/code-review --comment` — and then to submit that write-up as a review with
-`gh pr review <n> --comment --body "…"`. One
+`gh pr review <n> --comment --body "…"`, **opening the review body with the same
+marker line** so step 2 can tell it from a human's review. One
 *comment* per round, never one per finding: the rules that recover state after a
 compaction count marker comments, and a round posting several inflates that
 count as surely as one posting none. The review is not a comment and is not
@@ -764,10 +774,13 @@ the marker is posted — not by letting `/code-review --comment` publish inline
 comments in place of either artifact.
 
 **Then submit the findings as a review**, `gh pr review <n> --comment
---body "…"`. Both artifacts, every round, and the findings appear in exactly one
-of them: the marker is what the run reads back, the review is what a human reads,
-what step 2 retrieves the findings from, and what the contribution graph
-counts. Self-reviews count too, which matters because most of what this run
+--body "…"`, **opening the review body with the same marker line** and putting
+the tiered findings under it. Both artifacts, every round, and the findings
+appear in exactly one of them: the marker comment is what routing reads back,
+the review is what a human reads, what step 2 retrieves the findings from, and
+what the contribution graph counts. The repeated marker line is how step 2 finds
+the right review — a maintainer's review carries none, and is otherwise
+indistinguishable. Self-reviews count too, which matters because most of what this run
 opens it will also review.
 
 Challenge the design where warranted, not only the code; say so when a premise
@@ -799,28 +812,51 @@ returns *your login*, and matching it against `.author.login` also matches PRs
 this account opened on earlier nights — pushing to those is what the hard rule
 against pushing to branches this run did not create forbids.
 
-**Read the findings out of the reviews, not the marker.** The marker carries the
-prefix, the SHA and at most a count; the findings themselves are in the review
-that round submitted. Nothing else holds them, so after a compaction this is the
-only way to recover what a round actually said:
+For a PR you may not push to, describe the fix in a comment, apply `unsettled`
+and post `unsettled: not our branch @ <sha>`. That is the cheap terminal state,
+not a dead end: the author pushing a fix re-opens it on its own.
+
+**Read the findings out of the round's review.** The marker comment carries the
+prefix, the SHA and at most a count; the findings are in the review that round
+submitted.
+
+**Which is why the review body opens with the same marker line** — the marker,
+then the findings. Not a second copy of the findings: one line, and it is what
+makes the review identifiable at all. Human reviews on this repo carry no marker
+(the existing one on #278 opens `### Critical`), and there is nothing else to
+tell them apart: a round's review and a maintainer's are both `state:
+"COMMENTED"`, and on this repo they are posted by the **same login**, so
+filtering by author would match both. Without the marker line, `tail -1` can
+hand step 2 a maintainer's review to "fix".
+
+It also solves the SHA. The review object's own `.commit_id` is the reviewed
+head, but it returns all forty characters and would have to be sliced to
+`[0:7]` to compare against anything else here; the marker line already carries
+the seven-character form every other rule uses.
 
 ```
-RID=$(gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/reviews --jq ".[] | select(.state==\"COMMENTED\") | .id" | tail -1)
+ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
+RID=$(gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/reviews --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .id" | tail -1)
+[ -n "$RID" ] || { echo "no round review on this PR — see the transitional note below"; }
 gh api repos/ClipFarmVB/ClipFarm/pulls/<n>/reviews/$RID --jq ".body"
 ```
 
 **Take the id first, then fetch the body.** Reviews come back oldest-first, so
-`tail -1` over the *ids* is the newest review — but piping bodies through
+`tail -1` over the *ids* is the newest round review — but piping bodies through
 `tail -1` returns the last **line** of the last body, because a findings
 write-up is many lines. Ids are one line each, which is what makes the two-step
-correct.
+correct. Guard the empty case too: an unset `RID` requests `…/reviews/`, which
+404s — loud rather than silent, but every other unset-variable hazard here gets
+a sentence and this one earns the same.
 
-Match the review to the marker by the SHA the marker carries: a review submitted
-against an earlier head describes findings on code that has since changed.
+Match the review to the marker comment by the SHA both carry: a review whose
+marker names an earlier head describes findings on code that has since changed.
 
-For a PR you may not push to, describe the fix in a comment, apply `unsettled`
-and post `unsettled: not our branch @ <sha>`. That is the cheap terminal state,
-not a dead end: the author pushing a fix re-opens it on its own.
+**Transitional: PRs already mid-cycle when this landed have no round review at
+all.** Their findings were posted in the marker comment under the previous
+shape. For any PR whose newest marker comment predates this change, read the
+findings from that comment; the rule above applies from the first round posted
+after it. Do not conclude a PR has no findings because it has no round review.
 
 If a fix needs no human decision, implement it, push to that PR's branch, and
 reply on the thread saying what changed. If it needs a judgement call, log it
