@@ -26,6 +26,7 @@ export function Sidebar() {
   const [open, setOpen] = useState(false);
   const asideRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   // Everything that navigates from inside the drawer closes it on the way
   // out, so it never sits over the page it just opened. Closing on `pathname`
   // instead would be the cascading-render pattern React warns about, and
@@ -65,12 +66,17 @@ export function Sidebar() {
   // where the aside is an ordinary column in the page.
   //
   // The hook restores focus to whatever held it when the trap engaged, which
-  // for this drawer is the hamburger that opened it — so triggerRef no longer
-  // has to be threaded through, and the display:none guard it needed when
-  // crossing into the desktop layout lives in restoreFocusTo.
+  // for this drawer is the hamburger that opened it. The display:none guard it
+  // needed when crossing into the desktop layout now lives in restoreFocusTo.
   const closeDrawer = useCallback(() => setOpen(false), []);
   useFocusTrap(asideRef, open && !isDesktop, {
-    initialFocusRef: closeRef,
+    initialFocus: () => closeRef.current,
+    // Explicit rather than relying on the captured activeElement: WebKit does
+    // not focus a button on click or tap, and this drawer only exists below
+    // `lg` — iOS Safari is its primary environment. The capture would be
+    // <body> there, so CF-60's restore-to-the-hamburger would quietly stop
+    // working on the one platform it was written for.
+    restoreFocusRef: triggerRef,
     onEscape: closeDrawer,
   });
 
@@ -84,6 +90,7 @@ export function Sidebar() {
           aria-label="Open navigation"
           aria-expanded={open}
           aria-controls="app-sidebar"
+          ref={triggerRef}
           className="flex h-11 w-11 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface hover:text-foreground focus-ring"
         >
           <Menu size={18} />

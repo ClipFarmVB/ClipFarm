@@ -9,7 +9,18 @@
 // got wrong once lives — so they are what gets pinned.
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { FOCUSABLE, restoreFocusTo, trapTabWithin } from "@/lib/useFocusTrap";
+import {
+  FOCUSABLE,
+  nextFocusableAfter,
+  restoreFocusTo,
+  trapTabWithin,
+} from "@/lib/useFocusTrap";
+
+/** jsdom has no layout, so getClientRects() is always empty. Make one "rendered". */
+function render(el: HTMLElement): HTMLElement {
+  el.getClientRects = () => [{}] as unknown as DOMRectList;
+  return el;
+}
 
 function overlay(html: string): HTMLElement {
   document.body.innerHTML = `<button id="behind">behind</button><div id="overlay">${html}</div>`;
@@ -26,17 +37,21 @@ beforeEach(() => {
 
 
 describe("FOCUSABLE", () => {
-  it("includes a media element with controls", () => {
-    // ClipModal's subject is a <video controls>. Browsers make it focusable, so
-    // omitting it would put the last trap stop before the player and let a
-    // forward Tab from it escape into the grid behind the backdrop.
+  it("excludes a media element, deliberately", () => {
+    // <video controls> IS focusable in a browser, but listing it makes it a
+    // wrap boundary — and Tab from the player is how a keyboard user reaches
+    // the seek bar and volume inside its shadow controls. nextFocusableAfter
+    // handles it instead; see the "focusable but unlisted" cases below.
     const el = overlay(`<button id="a">a</button><video controls></video>`);
     const tags = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].map((n) => n.tagName);
-    expect(tags).toEqual(["BUTTON", "VIDEO"]);
+    expect(tags).toEqual(["BUTTON"]);
   });
 
-  it("ignores a media element without controls", () => {
-    const el = overlay(`<button id="a">a</button><video></video>`);
+  it("excludes a hidden input, which cannot take focus", () => {
+    // It matches `input:not([disabled])`, so without the extra clause a hidden
+    // input could become `first` or `last` and the wrap target would be
+    // unfocusable.
+    const el = overlay(`<input type="hidden" /><button id="a">a</button>`);
     const tags = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].map((n) => n.tagName);
     expect(tags).toEqual(["BUTTON"]);
   });
@@ -49,8 +64,8 @@ describe("FOCUSABLE", () => {
       <div tabindex="-1">no</div>
       <button id="b">b</button>
     `);
-    const ids = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].map((n) => n.tagName);
-    expect(ids).toEqual(["A", "BUTTON"]);
+    const tags = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].map((n) => n.tagName);
+    expect(tags).toEqual(["A", "BUTTON"]);
   });
 });
 
@@ -137,13 +152,27 @@ describe("trapTabWithin", () => {
 
 
 describe("restoreFocusTo", () => {
-  it("restores focus to a connected, visible element", () => {
+  it("restores focus to a connected, rendered element", () => {
     overlay(`<button id="inside">x</button>`);
-    const behind = document.getElementById("behind")!;
+    const behind = render(document.getElementById("behind")!);
     document.getElementById("inside")!.focus();
 
     restoreFocusTo(behind);
     expect(document.activeElement?.id).toBe("behind");
+  });
+
+  it("leaves focus alone when the element is not rendered", () => {
+    // The Sidebar case: closing the drawer by crossing into the desktop layout
+    // runs the same cleanup while the hamburger is display:none. getClientRects
+    // is empty for an unrendered element — and being an ordinary method rather
+    // than a capability-gated one, it is stubbable, so this branch is testable
+    // where `checkVisibility()` and `offsetParent` were not.
+    overlay(`<button id="inside">x</button>`);
+    const behind = document.getElementById("behind")!;  // not rendered
+    document.getElementById("inside")!.focus();
+
+    restoreFocusTo(behind);
+    expect(document.activeElement?.id).toBe("inside");
   });
 
   it("does nothing for null", () => {
@@ -157,7 +186,7 @@ describe("restoreFocusTo", () => {
     // Calling focus() on a detached node drops the caller to <body>, which is
     // worse than not restoring at all.
     overlay(`<button id="inside">x</button>`);
-    const behind = document.getElementById("behind")!;
+    const behind = render(document.getElementById("behind")!);
     behind.remove();
     document.getElementById("inside")!.focus();
 
@@ -165,16 +194,45 @@ describe("restoreFocusTo", () => {
     expect(document.activeElement?.id).toBe("inside");
   });
 
-  // NOT TESTED HERE, deliberately: the hidden-element branch.
-  //
-  // restoreFocusTo also refuses an element that is connected but not rendered
-  // — the Sidebar case where closing the drawer by crossing into the desktop
-  // layout runs the same cleanup while the hamburger is display:none. That
-  // branch is `checkVisibility()`, a layout API, and jsdom implements no layout
-  // at all: no checkVisibility, offsetParent always null, getClientRects()
-  // always empty. So there is nothing here that could distinguish a hidden
-  // element from a visible one, and a test asserting it would be asserting the
-  // capability check rather than the behaviour.
-  //
-  // Saying so rather than writing a test that passes for the wrong reason.
+});
+
+
+describe("focusable but unlisted (the <video controls> case)", () => {
+  it("does not wrap when something focusable follows the video", () => {
+    // The common ClipModal shape: header buttons, the player, then prev/next.
+    // Tab from the video must fall through so the browser can walk into the
+    // player's own shadow controls.
+    const el = overlay(`
+      <button id="copy">copy</button>
+      <video id="v" controls></video>
+      <button id="next">next</button>
+    `);
+    const video = document.getElementById("v")!;
+    video.focus();
+    // jsdom will not focus a <video>; assert on the decision, not on focus.
+    expect(nextFocusableAfter(el, video)?.id).toBe("next");
+
+    const e = tab();
+    Object.defineProperty(el.ownerDocument, "activeElement", {
+      value: video, configurable: true,
+    });
+    expect(trapTabWithin(el, e)).toBe(false);
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it("wraps when the video is the last thing in the overlay", () => {
+    // A single-clip modal has no prev/next. There is nothing after the player,
+    // so a forward Tab would leave the overlay entirely — the leak that made
+    // listing <video> tempting in the first place.
+    const el = overlay(`<button id="copy">copy</button><video id="v" controls></video>`);
+    const video = document.getElementById("v")!;
+    expect(nextFocusableAfter(el, video)).toBeNull();
+
+    Object.defineProperty(el.ownerDocument, "activeElement", {
+      value: video, configurable: true,
+    });
+    const e = tab();
+    expect(trapTabWithin(el, e)).toBe(true);
+    expect(e.defaultPrevented).toBe(true);
+  });
 });

@@ -103,10 +103,29 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
         : "border-border hover:border-border-strong",
       isDiscarded && "opacity-35"
     )}>
-      {/* Thumbnail */}
+      {/* Thumbnail — the control that opens the clip.
+          Keyboard-operable rather than click-only (CF-227). It was a bare
+          `<div onClick>`, so opening a clip was unreachable by keyboard at all,
+          and — because it could not hold focus — there was nothing for the
+          modal's focus trap to return focus to on close, which is what that
+          card's acceptance asks for.
+          role/tabIndex rather than a real <button>: the selection checkbox
+          below is a button, and nesting one inside another is invalid. This
+          does add one tab stop per card to the grid, which is the correct
+          behaviour for something clickable but is a visible change. */}
       <div
-        className="relative aspect-video cursor-pointer bg-surface-high overflow-hidden"
+        role="button"
+        tabIndex={0}
+        aria-label={onToggleSelect ? "Select clip" : "Play clip"}
+        className="relative aspect-video cursor-pointer bg-surface-high overflow-hidden focus-ring"
         onClick={() => {
+          if (onToggleSelect) onToggleSelect(clip.id);
+          else onPlay(clip);
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          // Space scrolls the grid otherwise, which is the opposite of opening.
+          e.preventDefault();
           if (onToggleSelect) onToggleSelect(clip.id);
           else onPlay(clip);
         }}

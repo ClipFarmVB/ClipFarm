@@ -34,7 +34,14 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   //
   // No onEscape — the handler below already owns Escape for this overlay, and
   // passing it here too would close the modal twice.
-  useFocusTrap(overlayRef, true);
+  useFocusTrap(overlayRef, true, {
+    // The player, not the first button in the header. That default would put
+    // focus on "Copy link", where the first Space or Enter after opening any
+    // clip fires a request and overwrites the clipboard — pre-CF-227 focus sat
+    // on <body> and Space was inert, so the default would be a regression.
+    // Focusing the video also makes Space do what it should in a media dialog.
+    initialFocus: () => videoRef.current,
+  });
 
   // Keyboard navigation
   useEffect(() => {
@@ -64,6 +71,10 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   return createPortal(
     <div
       ref={overlayRef}
+      // Matching the drawer (CF-60): the Tab trap only constrains the keyboard.
+      // `aria-modal` is what stops a screen reader swiping into the grid behind.
+      role="dialog"
+      aria-modal
       className="fixed inset-0 z-50 flex h-[100dvh] items-center justify-center bg-black/80 backdrop-blur-sm sm:h-auto sm:p-4"
       onClick={handleOverlayClick}
     >

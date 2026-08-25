@@ -14,14 +14,19 @@ import { useEffect, type RefObject } from "react";
  * one-line condition that was already got wrong once — see `trapTabWithin`.
  */
 
-// Tab order inside an overlay. Deliberately the plain set — but `video[controls]`
-// earns its place: ClipModal's whole subject is one, browsers make it focusable,
-// and leaving it out puts the last real stop *before* it. A forward Tab from the
-// player would then see focus inside the container and not at `last`, decline to
-// wrap, and let the browser walk on into the grid behind the backdrop.
+// Tab order inside an overlay. Deliberately the plain set — links, buttons and
+// form controls. `input[type=hidden]` is excluded because it matches
+// `input:not([disabled])` but cannot take focus, and a hidden input becoming
+// `first` or `last` would make the wrap target unfocusable.
+//
+// `video[controls]` is NOT here, and that is deliberate: browsers make it
+// focusable, but listing it makes it a wrap boundary, and Tab from a video is
+// how a keyboard user reaches the seek bar and volume in its shadow controls.
+// `nextFocusableAfter` below handles it instead — it is focusable-but-unlisted,
+// which is exactly the case that needed solving generally.
 export const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
-  'textarea:not([disabled]), video[controls], audio[controls], ' +
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), ' +
+  'select:not([disabled]), textarea:not([disabled]), ' +
   '[tabindex]:not([tabindex="-1"])';
 
 
@@ -37,6 +42,14 @@ export const FOCUSABLE =
  * a heading, the padding — which leaves it on `<body>`. Guarding only the
  * shift branch let a forward Tab from there fall through to whatever sits
  * behind the backdrop and walk on into the page.
+ *
+ * **Inside the container, the boundary is document order rather than the
+ * FOCUSABLE list.** An element can be focusable without matching that selector
+ * — `<video controls>` is the one ClipModal cares about — and treating the last
+ * *listed* element as the boundary both traps too early (blocking the video's
+ * own controls) and too late (letting Tab off the end of an unlisted trailing
+ * element). Asking "is there anything focusable after this in the container"
+ * gets both right, and generalises to whatever the next overlay puts in.
  */
 export function trapTabWithin(container: HTMLElement, e: KeyboardEvent): boolean {
   const items = container.querySelectorAll<HTMLElement>(FOCUSABLE);
@@ -45,9 +58,16 @@ export function trapTabWithin(container: HTMLElement, e: KeyboardEvent): boolean
   const last = items[items.length - 1];
   const active = container.ownerDocument.activeElement;
 
-  const outside = !container.contains(active);
-  const leaving = e.shiftKey ? active === first : active === last;
-  if (!outside && !leaving) return false;
+  if (!container.contains(active)) {
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
+    return true;
+  }
+
+  const leaving = e.shiftKey
+    ? !previousFocusableBefore(container, active as HTMLElement)
+    : !nextFocusableAfter(container, active as HTMLElement);
+  if (!leaving) return false;
 
   e.preventDefault();
   (e.shiftKey ? last : first).focus();
@@ -55,64 +75,95 @@ export function trapTabWithin(container: HTMLElement, e: KeyboardEvent): boolean
 }
 
 
+/** The next FOCUSABLE after `el` in `container`, in document order. */
+export function nextFocusableAfter(
+  container: HTMLElement, el: HTMLElement,
+): HTMLElement | null {
+  const items = [...container.querySelectorAll<HTMLElement>(FOCUSABLE)];
+  return items.find(
+    (n) => el.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ) ?? null;
+}
+
+
+/** The previous FOCUSABLE before `el` in `container`, in document order. */
+export function previousFocusableBefore(
+  container: HTMLElement, el: HTMLElement,
+): HTMLElement | null {
+  const items = [...container.querySelectorAll<HTMLElement>(FOCUSABLE)];
+  return [...items].reverse().find(
+    (n) => el.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_PRECEDING,
+  ) ?? null;
+}
+
+
 /**
  * Restore focus to `el`, if that would actually land somewhere.
  *
- * A detached or hidden element cannot take focus, and calling focus() on one
- * drops the caller to `<body>` — worse than leaving focus alone. The Sidebar
- * case that found this: closing the drawer by crossing into the desktop layout
- * runs the same cleanup, and the hamburger is `display: none` there.
+ * A detached or unrendered element cannot take focus, and calling focus() on
+ * one drops the caller to `<body>` — worse than leaving focus alone. The
+ * Sidebar case that found this: closing the drawer by crossing into the desktop
+ * layout runs the same cleanup, and the hamburger is `display: none` there.
  *
- * **`checkVisibility()` rather than Sidebar's `offsetParent === null`.** That
- * test was correct for the hamburger and wrong in general: `offsetParent` is
- * also null for a `position: fixed` element, so lifting it unchanged would have
- * refused to restore focus to any fixed-position trigger — and this hook now
- * restores to *whatever* held focus, not to one known button. Guarded with a
- * capability check because it is a layout API: environments without layout
- * (jsdom, and so this project's tests) do not implement it, and there the
- * connected check is all that runs.
+ * **`getClientRects()` rather than `offsetParent` or `checkVisibility()`.**
+ * `offsetParent` was Sidebar's test and is correct for a hamburger but wrong in
+ * general — it is also null for a `position: fixed` element, and this restores
+ * to whatever held focus rather than to one known button. `checkVisibility()`
+ * is the modern answer but needs a capability check, and where it is missing
+ * (Safari before 17.4, Firefox before 125) the guard silently passes and the
+ * display:none bug comes back. `getClientRects()` is old, universal, empty for
+ * an unrendered element, and — being an ordinary method — stubbable, so both
+ * branches are testable.
  */
 export function restoreFocusTo(el: Element | null): void {
   const target = el as HTMLElement | null;
   if (!target?.isConnected) return;
-  if (typeof target.checkVisibility === "function" && !target.checkVisibility()) return;
+  if (target.getClientRects().length === 0) return;
   target.focus();
 }
 
 
 export interface FocusTrapOptions {
-  /** Focused on activation. Defaults to the first focusable in the container. */
-  initialFocusRef?: RefObject<HTMLElement | null>;
+  /**
+   * Focused on activation. A getter rather than a ref so a caller can hand back
+   * any element type without a cast — and so a modal can choose something that
+   * is safe to press: the default is the first focusable, which in ClipModal is
+   * "Copy link", where the first Space after opening would fire a request and
+   * overwrite the clipboard.
+   */
+  initialFocus?: () => HTMLElement | null | undefined;
+  /**
+   * Focused on deactivation, in preference to whatever held focus when the trap
+   * engaged. Needed where the capture is unreliable: WebKit does not focus a
+   * button on click or tap, so a mobile drawer opened by tapping its hamburger
+   * captures `<body>` and would restore focus to nothing.
+   */
+  restoreFocusRef?: RefObject<HTMLElement | null>;
   /** Called on Escape. Omit to leave Escape to the caller. */
   onEscape?: () => void;
 }
 
-/**
- * Trap focus within `containerRef` while `active`.
- *
- * On deactivation, focus returns to whatever held it when the trap engaged —
- * captured rather than passed in, so a caller does not have to thread a ref
- * back to its own trigger. That is what gives ClipModal "closing returns focus
- * to the clip card that opened it" without ClipModal knowing which card that
- * was.
- */
+
 export function useFocusTrap(
   containerRef: RefObject<HTMLElement | null>,
   active: boolean,
   options: FocusTrapOptions = {},
 ): void {
-  const { initialFocusRef, onEscape } = options;
+  const { initialFocus, restoreFocusRef, onEscape } = options;
 
   useEffect(() => {
     if (!active) return;
     const container = containerRef.current;
     if (!container) return;
 
-    const previouslyFocused = container.ownerDocument.activeElement;
+    // Captured now, not read in the cleanup: by the time the cleanup runs the
+    // ref may point elsewhere, and eslint is right to say so. At activation the
+    // trigger is rendered and current, which is the value we want anyway.
+    const restoreTarget =
+      restoreFocusRef?.current ?? container.ownerDocument.activeElement;
 
     const initial =
-      initialFocusRef?.current ??
-      container.querySelector<HTMLElement>(FOCUSABLE);
+      initialFocus?.() ?? container.querySelector<HTMLElement>(FOCUSABLE);
     initial?.focus();
 
     const onKey = (e: KeyboardEvent) => {
@@ -126,7 +177,7 @@ export function useFocusTrap(
     win.addEventListener("keydown", onKey);
     return () => {
       win.removeEventListener("keydown", onKey);
-      restoreFocusTo(previouslyFocused);
+      restoreFocusTo(restoreTarget);
     };
     // containerRef and initialFocusRef are refs; onEscape is read through the
     // closure and callers pass a stable handler.

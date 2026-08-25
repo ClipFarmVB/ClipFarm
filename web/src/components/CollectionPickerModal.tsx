@@ -35,10 +35,14 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   const newNameRef = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
 
-  // The third overlay in the same position (CF-227). No onEscape: this modal
-  // uses Escape for its inline "new collection" field, and taking it here would
-  // close the whole picker mid-typing.
-  useFocusTrap(overlayRef, true);
+  // The third overlay in the same position (CF-227). Escape closes the picker,
+  // except while the inline "new collection" field is open — that field already
+  // uses Escape to cancel itself, and taking it here would close the whole
+  // picker mid-typing. Without this the modal traps Tab and offers no keyboard
+  // dismissal but the Close button, which is the half-measure CF-60 named.
+  useFocusTrap(overlayRef, true, {
+    onEscape: creating ? undefined : onClose,
+  });
 
   useEffect(() => {
     getCollections()
@@ -80,6 +84,10 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   return (
     <div
       ref={overlayRef}
+      // Matching the drawer (CF-60): the Tab trap only constrains the keyboard.
+      // `aria-modal` is what stops a screen reader swiping into the page behind.
+      role="dialog"
+      aria-modal
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
