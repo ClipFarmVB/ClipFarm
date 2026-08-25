@@ -265,6 +265,17 @@ which carries a `cold: clean` from before the new commits — settle after a
 single clean round on code nothing has confirmed anything about. That is the
 exact case the rule exists for.
 
+It has its own pattern, and the same unset hazard as the others:
+
+```
+CLEAN='^cold: clean'
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$CLEAN\"; \"i\")) | .id" | wc -l
+```
+
+For a re-opened PR add the `select(.created_at > "$REOPENED")` clause, exactly
+as the finding count below does — the same `REOPENED` value, read off the same
+`labeled` event.
+
 **"Never had a finding" spans the PR's whole life, not this run.** Every other
 count in this section is scoped by `SINCE`; this one must not be, or a PR whose
 findings were raised and closed last night reads as never-had-a-finding tonight
@@ -307,20 +318,25 @@ reviewed" has to be inferred from timestamps, and a PR abandoned mid-cycle looks
 identical to one reviewed clean.
 
 **Skip PRs labelled `unsettled`.** It is the opposite record to
-`review-settled`: Critical or Medium findings are open and a human is wanted.
-When you apply it, open the same comment with `unsettled: ran out of rounds` or
-`unsettled: blocked` — that prefix decides what re-opens the PR, and nothing
-else records it:
+`review-settled`: Critical or Medium findings are open and this run cannot close
+them. When you apply it, open the same comment with one of three prefixes — that
+prefix decides what re-opens the PR, and nothing else records it. Only one of
+the three needs a human to clear it:
 
 - *Ran out of rounds* (ceiling or budget). Commits since the label make it
   eligible again, round count reset — the same carve-out `review-settled` gets,
   and for the same reason: a PR that has since been fixed must not look like one
   nobody touched.
-- *Blocked* — needs a human decision, or sits on a branch you may not push to.
-  Only a human removing the label re-opens it. Commits do not, because the block
-  is not something a commit clears; the author pushing something unrelated would
-  otherwise buy fresh rounds to re-derive the same finding off the same
-  unchanged lines.
+- `unsettled: not our branch` — the findings are fixable, but this run did not
+  create the branch and may not push to it. **Commits since the label re-open
+  it**, round count reset. A commit is exactly what resolves this one: the
+  author reading the review and pushing a fix is the intended path, and it must
+  not need a human to also clear a label by hand.
+- `unsettled: needs a decision` — a finding requires a judgement nobody
+  unattended should make. Only a human removing the label re-opens it. Commits
+  do not, because the decision is not something a commit clears; the author
+  pushing something unrelated would otherwise buy fresh rounds to re-derive the
+  same finding off the same unchanged lines.
 
 **When either carve-out re-opens a PR, take the label off and start cold.** The
 routing table above reads the latest marker, and on a re-opened PR that marker
@@ -364,7 +380,16 @@ no event, which is indistinguishable from never labelled — and that failure mo
 fails **open**, quietly re-reviewing work that was already settled.
 
 Compare each PR's head commit date against the timestamp of its most recent
-marker comment. If there are commits since, it needs another round.
+marker comment. If there are commits since, it needs another round:
+
+```
+gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq ".[] | .commit.committer.date" | tail -1
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$MARKERS\"; \"i\")) | .created_at" | tail -1
+```
+
+Both come back as `Z`-suffixed UTC, so comparing them as strings is the same
+lexicographic compare used everywhere else here. An empty second line means no
+marker at all — the PR has never had a round, and needs one.
 
 **Never review from this session. Spawn a subagent and let it review cold.**
 The session that wrote the code is the most anchored possible reviewer: once it
@@ -405,8 +430,9 @@ comments, and a round posting several inflates that count as surely as one
 posting none.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
-another semi-cold round, or, if you cannot, treat it as blocked: `unsettled`,
-recorded, move on. It does not become closed by being argued with.
+another semi-cold round, or, if you cannot, label it `unsettled` with the
+prefix that fits — `not our branch` or `needs a decision` — record it, and move
+on. It does not become closed by being argued with.
 
 **Never let a semi-cold round settle a PR.** It was handed the previous
 reviewer's conclusions, so its silence inherits their blind spots; treating that
@@ -459,8 +485,9 @@ Do not use `/code-review ultra`; it is billed separately and user-triggered.
 created its branch. Not merely if the account matches: `gh api user -q .login`
 also returns PRs this account opened on earlier nights, and pushing to those is
 what the hard rule against pushing to branches this run did not create forbids.
-For a PR you may not push to, describe the fix in a comment and treat the
-finding as blocked.
+For a PR you may not push to, describe the fix in a comment and label the PR
+`unsettled: not our branch`. That is the cheap terminal state, not a dead end:
+the author pushing a fix re-opens it on its own.
 
 If a fix needs no human decision, implement it, push to that PR's branch, and
 reply on the thread saying what changed. If it needs a judgement call, log it
@@ -619,13 +646,30 @@ SINCE=<the timestamp from the log's `run start:` line — UTC, Z-suffixed>
 gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.created_at > \"$SINCE\") | select(.body | test(\"$MARKERS\"; \"i\")) | .id" | wc -l
 ```
 
-**What this costs, plainly.** A PR clean on its first look costs two reviews. A
-PR with one round of findings costs three — cold, semi-cold on the fix, cold to
-settle. Two rounds of findings costs five, which is most of the six-round
-ceiling. Against a 32-review budget that is between six and sixteen PRs a night,
-and with twenty open PRs a run will routinely end with some never looked at.
-That is the shape of the trade: depth on the PRs it reaches, nothing for the
-ones it does not.
+**What this costs, plainly — and it depends on who owns the branch.**
+
+*PRs this run opened*, at most five, are the ones it can cycle. Clean on first
+look costs two reviews; one round of findings costs three — cold, semi-cold on
+the fix, cold to settle; two rounds costs five, which is most of the six-round
+ceiling.
+
+*PRs from earlier nights*, which is most of the queue, cost **one or two
+reviews and then stop.** The run can review them but not push to them, so a
+Critical or Medium ends in `unsettled: not our branch` after a single cold
+round, and a clean one settles after two. The fix loop does not run on them at
+all — the author's own push is what continues it, on a later night.
+
+So the ceiling and the budget mostly do not bind. Twenty PRs at one or two
+rounds each, plus five of this run's own at up to six, sits inside 32 with room
+over; the ceiling binds only on a PR this run owns and keeps finding things in.
+Both knobs are there for the pathological case, not the normal one. If a run
+ever does exhaust the budget, that is the signal something is wrong — say so in
+the report rather than treating it as routine.
+
+This is a deliberate narrowing, and it is the honest consequence of the hard
+rule against pushing to branches this run did not create. The alternative is
+sign-off to push to other people's branches, which is a decision for a human and
+not something to assume unattended.
 
 The semi-cold round is not defended on cost — it is defended on what silence
 can and cannot establish. It asks a narrow question a reviewer can actually
@@ -758,10 +802,10 @@ The report contains:
 
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
-- PRs labelled `unsettled`, split by the two prefixes the label carries —
-  `blocked` (human decision needed, or a branch you cannot push to) and `ran out
-  of rounds` (six-round ceiling or review budget) — and what is still
-  outstanding on each
+- PRs labelled `unsettled`, split by the three prefixes the label carries —
+  `needs a decision` (only these want a human), `not our branch` (the author's
+  next push re-opens it), and `ran out of rounds` (six-round ceiling or review
+  budget) — and what is still outstanding on each
 - Whether the review budget ran out, and which PRs never got a first round at
   all — with a deep queue this is the expected shape of a run, not a failure
 - PRs opened, with card and branch — and **what to test to verify each one**
