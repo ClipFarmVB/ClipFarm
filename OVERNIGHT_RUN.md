@@ -110,8 +110,8 @@ Two things follow, and both matter more than they look.
   *step 2* produces; they are not the whole reason set. A PR stopped by the
   ceiling or the budget still takes `ran out of rounds @ <sha>`, in this mode as
   in `build` — reading this bullet as exhaustive would label a budget-stopped PR
-  with a reason chosen for a different cause. The second is not
-  optional tidiness. Only `needs a decision` routes a PR to a human; giving a
+  with a reason chosen for a different cause. The second is not optional
+  tidiness. Only `needs a decision` routes a PR to a human; giving a
   judgement call the `not our branch` reason means the next unrelated push clears
   it and the question is never asked.
 
@@ -373,14 +373,13 @@ SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
 [ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
 ```
 
-`tail -1`, not `grep -m1`: nothing truncates this log, so the first match is
-the *oldest* run's start and the newest is what you want. And guard the empty
-case — an unset `SINCE` makes `.created_at > ""` true for every comment, which
-turns every per-run bound into an all-time one silently. The guard **exits**; a
-guard that only prints lets the failure it detected proceed anyway. Both
-failures point the same way as the `$(date …)` trap below: they widen the
-window rather than narrowing it, so nothing errors and the ceiling arrives
-early.
+`tail -1`, not `grep -m1`: nothing truncates this log, so the first match is the
+*oldest* run's start and the newest is what you want. And guard the empty case —
+an unset `SINCE` makes `.created_at > ""` true for every comment, which turns
+every per-run bound into an all-time one silently. The guard **exits**; a guard
+that only prints lets the failure it detected proceed anyway. Both failures point the same
+way as the `$(date …)` trap below: they widen the window rather than narrowing
+it, so nothing errors and the ceiling arrives early.
 
 A resolved timestamp, UTC and `Z`-suffixed — produce it with
 `date -u +%Y-%m-%dT%H:%M:%SZ` and write the **result**. Writing the command
@@ -810,11 +809,11 @@ them.
 **The label is bare `unsettled`. The reason goes in the comment, never in the
 label name.** There are exactly two **review-state** labels — `review-settled`
 and `unsettled` — alongside the ordinary ones the repo uses (`P1`, `api`,
-`overnight-ok` and so on). `gh pr edit --add-label "unsettled: blocked"` fails
-against a label that does not exist, leaving the PR unlabelled with open
-Criticals, which is the one state this document forbids. So: apply `unsettled`,
-and post a comment opening `unsettled: <reason> @ <sha>`. That comment is the
-only record of which reason applies, and it is what a later run reads back:
+`overnight-ok` and so on). `gh pr edit --add-label "unsettled: blocked"` fails against a
+label that does not exist, leaving the PR unlabelled with open Criticals, which
+is the one state this document forbids. So: apply `unsettled`, and post a
+comment opening `unsettled: <reason> @ <sha>`. That comment is the only record
+of which reason applies, and it is what a later run reads back:
 
 - `unsettled: not our branch @ <sha>`
 - `unsettled: needs a decision @ <sha>`
@@ -994,12 +993,12 @@ and so is the round that awards `review-settled`.
 
 A **semi-cold** round is for checking a fix — **whoever pushed it.** Usually
 that is this run; on a branch this run may not push to, it is the author
-responding to the review, and that case has to work or a `unsettled: not our
-branch` PR could never satisfy the settle bar and would burn to the ceiling on
-every visit. It gets the finding it is checking, the commits that landed since
-the marker that raised it, and any reply on the thread — and it is asked to
-judge whether that finding is actually closed, then review the new head for
-anything the change introduced. It is anchored by construction: it will check
+responding to the review, and that case has to work or a
+`unsettled: not our branch` PR could never satisfy the settle bar and would burn
+to the ceiling on every visit. It gets the finding it is checking, the commits
+that landed since the marker that raised it, and any reply on the thread — and
+it is asked to judge whether that finding is actually closed, then review the
+new head for anything the change introduced. It is anchored by construction: it will check
 the delta rather than re-derive the whole diff. That is the trade, and it buys
 the one thing a cold round cannot do — someone other than the author confirming
 the fix does what the finding asked.
@@ -1065,8 +1064,8 @@ head.
 Its brief: run `/code-review high` on that PR, post one marker comment, and
 submit its findings as a review. Give it the head SHA you captured, and require
 the comment's body to **start** with the literal `cold: findings @ <sha>` or
-`cold: clean @ <sha>`, before any heading or formatting, since that whole line
-is what selection matches and routes on.
+`cold: clean @ <sha>`, before any heading or
+formatting, since that whole line is what selection matches and routes on.
 
 **Which of the two is decided by Critical and Medium alone.** `cold: findings`
 means at least one Critical or Medium. A round that found *only* nits, or
@@ -1077,8 +1076,9 @@ actually cleared the bar. The nits go in the review, as they would for any
 other round; the comment stays a marker line either way.
 
 A summary may follow on the same line (`cold: findings @ 2c1a865 — 2 Critical,
-1 Medium`); nothing may precede the marker, and the SHA is not optional — the
-routing table is keyed on it, and a marker without one can never match a head.
+1 Medium`); nothing may precede the
+marker, and the SHA is not optional — the routing table is keyed on it, and a
+marker without one can never match a head.
 
 **That line is the whole comment.** The findings do not go in it — they go in
 the review, tiered:
@@ -1370,13 +1370,13 @@ is the intent, since the oldest have waited longest. Do not order by the
 **Run budget: 32 rounds per run**, cold and semi-cold together. *Rounds*, not
 reviews: each round now submits a GitHub review as well as posting its marker,
 so counting "reviews" would be ambiguous about which artifact is meant. The
-budget counts rounds, and a round is one marker comment. Six rounds across a
-queue this size would permit far more — a whole night of nothing but reviewing,
-which together with "stop on usage limits" means step 3 never happens. **When
-the budget is spent, stop reviewing and go to step 3** — but step 3 may then
-only plan and file, **not open PRs**, because a PR opened with no review budget
-left is a draft this run cannot review, which the hard rules forbid. Say so in
-the report. A spent budget clears steps 1 and 2 for the rest of the run;
+budget counts rounds, and a round is one marker comment. Six rounds
+across a queue this size would permit far more — a whole night of nothing but
+reviewing, which together with "stop on usage limits" means step 3 never
+happens. **When the budget is spent, stop reviewing and go to step 3** — but
+step 3 may then only plan and file, **not open PRs**, because a PR opened with
+no review budget left is a draft this run cannot review, which the hard rules
+forbid. Say so in the report. A spent budget clears steps 1 and 2 for the rest of the run;
 without that fall-through the brief would forbid reviewing and gate ticket work
 behind reviews that can no longer happen, and specify nothing to do next.
 
@@ -1488,17 +1488,16 @@ one to two reviews each — forty-odd at the upper end, since a clean PR takes t
 reviewed at all. Against 32 that does not fit, and it should not be written as
 though it does.
 
-**That arithmetic assumes `review scope: all`.** It was written when there was no
-scope filter, and the filter roughly halves it: with scope `own`, a queue of
+**That arithmetic assumes `review scope: all`.** It was written when there was
+no scope filter, and the filter roughly halves it: with scope `own`, a queue of
 twenty-odd is closer to ten, and most of a first pass fits inside the budget.
 (The budget is **32 in both modes**. What differs is where reviewing stops: at
 28 in `build`, leaving the four-round reserve for step 3, and at 32 in
 `review-only`, where there is no step 3 to reserve for. The reserve is a
 stop-reviewing threshold, not a smaller budget — the log still counts against
-32.) So the two conclusions
-below — that step 3 does not happen, and that the 5-PR cap is
-unreachable — stop following. **Re-derive both for the scope you are actually
-running**, rather than reading the worst case as a standing fact.
+32.) So the two conclusions below — that step 3 does not happen, and that the
+5-PR cap is unreachable — stop following. **Re-derive both for the scope you
+are actually running**, rather than reading the worst case as a standing fact.
 
 What follows from that: **the first night clears part of the queue and reports
 the rest**, and later nights are cheap, because a PR that reached
