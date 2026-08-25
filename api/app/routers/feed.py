@@ -48,10 +48,25 @@ def _encode_cursor(post: Post) -> str:
 
 
 def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    """Opaque token back to the sort key, or 400.
+
+    The timestamp must carry an offset. asyncpg does **not** raise when a naive
+    datetime meets a `timestamptz` column — measured, it returns the same rows
+    as the aware equivalent, because it reinterprets naive input as UTC. So an
+    unchecked naive cursor doesn't fail, it silently pages from the wrong
+    instant whenever the client meant a local time.
+
+    Matches `follows._decode_cursor`, which had the check while this didn't —
+    two sibling cursors disagreeing about what counts as malformed is its own
+    small bug.
+    """
     try:
         raw = base64.urlsafe_b64decode(cursor.encode()).decode()
         ts, _, post_id = raw.partition("|")
-        return datetime.fromisoformat(ts), uuid.UUID(post_id)
+        parsed = datetime.fromisoformat(ts)
+        if parsed.tzinfo is None:
+            raise ValueError("cursor timestamp must be timezone-aware")
+        return parsed, uuid.UUID(post_id)
     except (ValueError, binascii.Error, UnicodeDecodeError):
         raise HTTPException(status_code=400, detail="Invalid cursor")
 

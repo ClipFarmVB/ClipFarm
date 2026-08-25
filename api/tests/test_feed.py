@@ -275,3 +275,32 @@ def test_the_action_label_is_required_and_the_score_is_not():
 
     assert PostPlayback.model_fields["action_type"].is_required()
     assert not PostPlayback.model_fields["highlight_score"].is_required()
+
+def test_a_naive_cursor_timestamp_is_rejected():
+    """The feed's decoder had no timezone check while `follows` did.
+
+    asyncpg does not raise on naive-vs-timestamptz — measured, it reinterprets
+    naive input as UTC and returns rows — so the unchecked version paged from
+    the wrong instant silently rather than failing. Both cursors are strict now.
+    """
+    naive = base64.urlsafe_b64encode(
+        f"2026-01-01T00:00:00|{uuid.uuid4()}".encode()
+    ).decode()
+    with pytest.raises(HTTPException) as exc:
+        feed_router._decode_cursor(naive)
+    assert exc.value.status_code == 400
+
+
+def test_both_cursor_decoders_agree_on_what_is_malformed():
+    """Two sibling paginators disagreeing about validity is how one of them ends
+    up being the lenient door."""
+    import inspect
+
+    from app.routers import follows as follows_router
+
+    for decode in (feed_router._decode_cursor, follows_router._decode_cursor):
+        assert "tzinfo is None" in inspect.getsource(decode)
+        for bad in ("not-base64!!", base64.urlsafe_b64encode(b"garbage").decode()):
+            with pytest.raises(HTTPException) as exc:
+                decode(bad)
+            assert exc.value.status_code == 400
