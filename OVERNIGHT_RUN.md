@@ -106,6 +106,13 @@ decided and why, and anything needing a human call. **Read it at the start of
 every iteration.** Context may be compacted between iterations; the log is the
 only thing that survives.
 
+**One thing goes in at the start of the run, not the end of an iteration:** the
+run's own start time, on the log's first line, as
+`run start: $(date -u +%Y-%m-%dT%H:%M:%SZ)`. Several bounds are per-run and are
+recovered by comparing against it after a compaction — see
+[Priority order](#priority-order). Write it before the first iteration does
+anything.
+
 ### Priority order
 
 Finish work already in flight before starting anything new.
@@ -128,7 +135,11 @@ commits-since test above does not select it; no label yet, so neither skip rule
 applies. It would be skipped forever — the abandoned-mid-cycle state these
 labels exist to prevent.
 
-So every round posts **exactly one comment**, opening with one of four markers:
+So every round posts **exactly one comment** whose body **begins** with one of
+four markers — the literal first characters, before any heading, bold or blank
+line. `## cold: findings` does not match, and the house habit on this repo is to
+open a review with a markdown heading, so this is the mistake to expect rather
+than guard against loosely. The four:
 
 - `cold: findings` — a cold round raised a Critical or Medium. Next: step 2,
   fix them.
@@ -141,9 +152,16 @@ So every round posts **exactly one comment**, opening with one of four markers:
   close a finding, and a cold round posted on top would make its own marker the
   latest and hide the open finding from this very rule.
 
+Note what is deliberately *not* a marker: the `unsettled: …` comment that
+records why that label went on. It is a label rationale, not a round — it
+consumes no budget and routes nothing — and the pattern below excludes it by
+matching only the two round kinds. Keep it that way if you add prefixes.
+
 Every rule below that reads markers uses the same pattern. `gh`'s built-in
 `--jq` takes a filter string only — it has no `--arg` — so the pattern is
-interpolated by the shell and the filter's own quotes are escaped:
+interpolated by the shell and the filter's own quotes are escaped. Match it
+**case-insensitively** (`; "i"`), so that a reviewer opening with `Cold:` does
+not strand the PR:
 
 ```
 MARKERS='^(cold|semi-cold):'
@@ -165,7 +183,7 @@ that reason.
 Read the latest marker, and route on it:
 
 ```
-gh pr view <n> --json comments --jq "[.comments[] | select(.body | test(\"$MARKERS\"))] | sort_by(.createdAt) | (last | .body // \"none\") | split(\"\n\")[0]"
+gh pr view <n> --json comments --jq "[.comments[] | select(.body | test(\"$MARKERS\"; \"i\"))] | sort_by(.createdAt) | (last | .body // \"none\") | split(\"\n\")[0]"
 ```
 
 It answers `none` for a PR that has never had a round. Without the
@@ -254,8 +272,9 @@ the delta rather than re-derive the whole diff. That is the trade, and it buys
 the one thing a cold round cannot do — someone other than the author confirming
 the fix does what the finding asked.
 
-**It posts one marker comment like every other round** — `semi-cold: closes` or
-`semi-cold: does not close`, then each finding it checked with the reason, then
+**It posts one marker comment like every other round** — body starting with the
+literal `semi-cold: closes` or `semi-cold: does not close`, before any heading,
+then each finding it checked with the reason, then
 anything the fix introduced, tiered as below. Tell it, as you tell the cold
 reviewer, to post with `gh pr comment` — never `gh pr review`, never
 `/code-review --comment`. One comment per round, never one per finding: the
@@ -287,8 +306,10 @@ just spawned that it is never the reviewer. A subagent in a sandbox inherits
 none of your local settings, so the no-stamp rule has to travel with it or its
 review arrives signed.
 
-Its brief: run `/code-review` on that PR and post one marker comment — opening
-with `cold: findings` or `cold: clean` — with the findings in tiers:
+Its brief: run `/code-review` on that PR and post one marker comment — its body
+**starting** with the literal text `cold: findings` or `cold: clean`, before any
+heading or formatting, since that is what selection matches on — with the
+findings in tiers:
 
 - **Critical** — correctness, security, data loss
 - **Medium** — should fix before merge
@@ -455,13 +476,14 @@ the ceiling arrives early on a PR that was just promised a reset.
 
 `.createdAt > "$SINCE"` is a lexicographic string compare against GitHub's
 `2026-08-24T23:08:57Z`, so `SINCE` must be UTC with the `Z` suffix and nothing
-else. An offset form like `2026-08-25T01:08:57+02:00` sorts wrong against it and
-the count comes back low or zero — which reads as "no rounds this run" and hands
-the PR a fresh six-round ceiling:
+else — which is what `date -u +%Y-%m-%dT%H:%M:%SZ` produces, and why the run
+start is recorded in that form. An offset form like `2026-08-25T01:08:57+02:00`
+sorts wrong against it and the count comes back low or zero — which reads as "no
+rounds this run" and hands the PR a fresh six-round ceiling:
 
 ```
-SINCE=2026-08-24T23:08:57Z    # UTC, Z-suffixed: date -u +%Y-%m-%dT%H:%M:%SZ
-gh pr view <n> --json comments --jq "[.comments[] | select(.createdAt > \"$SINCE\") | select(.body | test(\"$MARKERS\"))] | length"
+SINCE=<this run's start, from the log's first line — UTC, Z-suffixed>
+gh pr view <n> --json comments --jq "[.comments[] | select(.createdAt > \"$SINCE\") | select(.body | test(\"$MARKERS\"; \"i\"))] | length"
 ```
 
 **What this costs, plainly.** A PR clean on its first look costs two reviews. A
