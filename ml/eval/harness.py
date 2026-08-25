@@ -482,8 +482,11 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
 
         # CF-174: contact thresholds scale with this number, so a source that is
         # not the labeled one scores against thresholds the fixture never meant.
-        # Same guard role as the pinned source_video_md5, one failure earlier —
-        # a re-encode that changed resolution shifts every threshold silently.
+        # This is the ONLY runtime check that the source is the labeled one.
+        # source_video_md5 is pinned in the fixture but verified nowhere at
+        # runtime — only fixture-to-fixture in test_eval_fixtures.py — so a
+        # re-encode that changed resolution would otherwise shift every
+        # threshold silently and still score.
         declared_h = fixture.raw.get("source_frame_height")
         if declared_h is not None and int(declared_h) != frame_h:
             raise SystemExit(

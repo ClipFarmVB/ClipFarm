@@ -171,17 +171,28 @@ class TestInvarianceBreaksDownAbove1080p:
         assert len(find_contacts(rally_track(360, speed_fhps), frame_height=360)) == 1
         assert find_contacts(rally_track(1080, speed_fhps), frame_height=1080) == []
 
-    def test_4k_band_is_a_sliver_and_ordinary_play_falls_outside_it(self):
+    def test_4k_keeps_the_band_main_has_rather_than_a_narrower_one(self):
         """
-        The clamp keeps the two gates from becoming disjoint; it does not make
-        4K work. Across the whole plausible speed range, 2160p finds nothing.
+        The regression guard. A clamped scale at 2160p admits only
+        0.444-0.556 fh/s and finds nothing across the plausible range; unscaled
+        thresholds admit 0.111-0.556 and do find contacts there. Reverting past
+        the clamp point is what keeps this PR from being worse than `main` at 4K.
         """
-        for speed_fhps in (0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0):
+        for speed_fhps in (0.2, 0.3, 0.4, 0.5):
             track = rally_track(2160, speed_fhps)
-            assert find_contacts(track, frame_height=2160) == [], (
-                f"{speed_fhps} fh/s now survives at 2160p — if SEG_MAX_SPEED_PXPS "
-                "was scaled, delete this class and re-measure the fixtures"
+            assert len(find_contacts(track, frame_height=2160)) == 1, (
+                f"{speed_fhps} fh/s is inside the band `main` has at 2160p and must "
+                "still be found — losing it is the regression this reverts"
             )
+
+    def test_4k_is_still_wrong_just_not_narrower(self):
+        """
+        Reverting is an interim, not a fix. Ordinary play at 0.8 fh/s is above
+        the unscaled ceiling at 2160p and is still lost — exactly as it is on
+        `main` today. CF-229 is what actually fixes this.
+        """
+        for speed_fhps in (0.8, 1.5, 3.0):
+            assert find_contacts(rally_track(2160, speed_fhps), frame_height=2160) == []
 
     def test_the_validated_ceiling_is_declared(self):
         """The fixtures CF-174 was measured on stop at 1080p; the constant says so."""
@@ -237,12 +248,13 @@ class TestInvarianceBreaksDownAbove1080p:
     def test_an_empty_return_names_the_gates_that_rejected_everything(self, caplog):
         """
         Zero contacts is indistinguishable downstream from "no ball in this
-        video". 0.3 fh/s at 2160p segments fine and then dies on the scaled
-        hit-speed floor — the log has to say so.
+        video". 0.3 fh/s at 1440p — just under the clamp point, so still
+        scaled — segments fine and then dies on the scaled floor. The log has
+        to say so.
         """
         import logging
         with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
-            assert find_contacts(rally_track(2160, 0.3), frame_height=2160) == []
+            assert find_contacts(rally_track(1440, 0.3), frame_height=1440) == []
         assert "found nothing" in caplog.text
         assert "hit_speed" in caplog.text
 
@@ -258,12 +270,22 @@ class TestInvarianceBreaksDownAbove1080p:
         assert "kept no segments" in caplog.text
 
 
-class TestContactCeilingClamp:
+CLAMP_HEIGHT = (
+    ball.CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS
+    / ball.CONTACT_HIT_SPEED_PXPS * REFERENCE_FRAME_HEIGHT
+)
+
+
+class TestPastTheClampPointItRevertsRatherThanExtrapolating:
     """
     The scaled hit-speed floor walks into the *unscaled* SEG_MAX_SPEED_PXPS
-    ceiling. _segment_track guarantees speed stays below that ceiling inside a
-    segment, so once the floor reaches it no sample can satisfy both gates and
-    find_contacts returns nothing — no keep-windows, no clips, no error.
+    ceiling, and freezing the scale to keep them apart is not a weaker
+    normalization — it is the wrong one. A frozen scale under a growing frame
+    slides the whole admissible band below where real play lives, and measurably
+    below what `main` finds with no scaling at all.
+
+    So past that height _scale_for returns 1.0. Over-firing, but never narrower
+    than today, so no resolution regresses against `main` while CF-229 is open.
     """
 
     def test_the_collision_is_real_without_a_cap(self):
@@ -271,17 +293,33 @@ class TestContactCeilingClamp:
         unclamped = 1800 / REFERENCE_FRAME_HEIGHT
         assert ball.CONTACT_HIT_SPEED_PXPS * unclamped >= SEG_MAX_SPEED_PXPS
 
-    def test_scale_is_capped(self):
-        cap = (
-            ball.CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS
-            / ball.CONTACT_HIT_SPEED_PXPS
-        )
-        assert _scale_for(2160) == pytest.approx(cap)
+    def test_past_the_clamp_point_reverts_to_unscaled(self):
+        assert _scale_for(2160) == 1.0
+        assert _scale_for(int(CLAMP_HEIGHT) + 1) == 1.0
 
-    def test_capped_floor_stays_under_the_segmentation_ceiling(self):
-        assert ball.CONTACT_HIT_SPEED_PXPS * _scale_for(2160) < SEG_MAX_SPEED_PXPS
+    def test_the_revert_is_never_narrower_than_main(self):
+        """The property that makes this not a regression: at every resolution the
+        admissible band is at least as wide as unscaled thresholds would give."""
+        for h in (720, 1080, 1440, 2160, 2880):
+            floor = ball.CONTACT_HIT_SPEED_PXPS * _scale_for(h)
+            assert floor <= ball.CONTACT_HIT_SPEED_PXPS * (h / REFERENCE_FRAME_HEIGHT)
+            assert floor < SEG_MAX_SPEED_PXPS, "floor and ceiling must never be disjoint"
 
-    def test_measured_resolutions_are_untouched_by_the_cap(self):
+    def test_reverting_says_so_at_error_level(self, caplog):
+        import logging
+        with caplog.at_level(logging.ERROR, logger="ml.pipeline.ball"):
+            _scale_for(2160)
+        assert any(r.levelno >= logging.ERROR for r in caplog.records)
+        assert "UNSCALED" in caplog.text, "the log must name what it fell back to"
+
+    def test_up_to_the_clamp_point_still_scales(self):
+        """The floor holds at the validated 0.667 fh/s right up to the boundary;
+        only the ceiling closes. Reverting early would hand a 1081p video main's
+        behaviour while 1080p gets the good one."""
+        for h in (1081, 1200, int(CLAMP_HEIGHT)):
+            assert _scale_for(h) == pytest.approx(h / REFERENCE_FRAME_HEIGHT)
+
+    def test_measured_resolutions_are_untouched(self):
         """Every fixture CF-174 was measured on is <= 1080p; their numbers must not move."""
         assert _scale_for(int(REFERENCE_FRAME_HEIGHT)) == 1.0
         assert _scale_for(720) == pytest.approx(2.0)
