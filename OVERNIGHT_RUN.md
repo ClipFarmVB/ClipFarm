@@ -988,7 +988,8 @@ remain.** Two is the clean case only, and a PR with a single round of findings
 costs three, so a smaller reserve guarantees the PR it just opened ends
 `unsettled: ran out of rounds` by construction. A PR this run opens must be
 reviewable by this run — a draft nobody has looked at is exactly what the hard
-rules forbid leaving behind. If the budget cannot cover a review, step 3 writes the plan into
+rules forbid leaving behind. If the budget cannot cover a review, step 3 writes
+the plan into
 the log instead of opening a PR.
 
 This is a deliberate narrowing, and it is the honest consequence of the hard
