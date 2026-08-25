@@ -65,6 +65,8 @@ printf "  mypy api/app ...     "
 echo "ok"
 
 # ── ML: ruff over all of ml/, mypy over ml/eval ───────────────────────────────
+# ruff lints the working tree, not the staged set: an untracked scratch .py
+# anywhere under ml/ blocks every commit until it is cleaned up or ignored.
 printf "  ruff check ml/ ...   "
 "$PY" -m ruff check ml/
 echo "ok"
