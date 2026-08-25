@@ -30,10 +30,164 @@ that has to survive is posted as an issue — see [Reporting](#reporting).
 
 ---
 
+## Mode
+
+A run has a **mode**, set in [This run](#this-run) before it starts. There are two,
+and what differs is *which steps run*.
+
+Rules defined in terms of a step 3 that does not run take a consequential
+adjustment in `review-only` mode. **Each is amended where it lives, not here** —
+this paragraph is an index, and if it disagrees with the rule it names, the rule
+wins. Deliberately no count: an index that promises a number goes stale the
+moment an amendment is added, and this one already did.
+
+What is amended: the scope subsection of [This run](#this-run); the step-3
+reserve; what a spent budget does; step 3 itself and everything under
+[Working a ticket](#working-a-ticket); two report bullets; and the report's
+title.
+
+| mode | steps 1 and 2 — review, fix | step 3 — ticket work |
+|---|---|---|
+| `build` — the default | yes | yes |
+| `review-only` | yes | **no** |
+
+**`review-only` restates nothing about how step 1 works.** Not ordering, not the
+ceiling, not the budget, not the marker scheme, not the settle bar. It is a switch
+on step 3, not a second brief. If anything in this section reads like a
+restatement of a step 1 rule, that is a bug in this section: go to
+[Priority order](#priority-order) and follow what is written there.
+
+**One exception, and it is deliberate: the review-scope filter below is a real
+addition to selection.** It is written into step 1's selection rule itself so that
+the authoritative statement and the enforced one are the same sentence — a filter
+described only here would be discarded by the paragraph you are reading.
+
+That warning is not decoration. The first draft of this feature restated selection
+as "every open PR carrying neither `review-settled` nor `unsettled`" and so
+silently dropped the trailing **and that label's carve-out has not fired** — which
+is the clause that lets an author's fix-in-response-to-a-review re-open the PR. A
+loop shipped with that wording would have made its own feedback path invisible to
+itself.
+
+**Why it exists.** Ticket supply is not the constraint; the open PR queue is.
+`build` mode reaches step 3 only once the queue is clear, and reserves budget
+against that possibility even on nights when it never arrives. `review-only`
+spends the whole night on the queue.
+
+### It cannot push, and that is a consequence rather than a rule
+
+The hard rule is [only push to branches this run created](#hard-rules). A
+`review-only` run opens no PRs, so it creates no branches, so **it never pushes**.
+
+Two things follow, and both matter more than they look.
+
+- **The two modes cannot produce conflicting pushes.** That is the collision
+  question answered by construction rather than by scheduling discipline — and it
+  is a claim about pushes **only**. Two runs at once would still cross-charge each
+  other's counters: the ceiling and the budget are windowed by time and by the
+  `reopened:` marker, with no notion of run identity, so markers from a concurrent
+  run are counted as this one's. In practice `mode` is a single value in
+  [This run](#this-run), so running both at once is not something the brief can
+  express — but if that ever changes, the counters are what needs an identity, not
+  the push rule.
+- **Step 2 collapses to its non-push branches** — describe the fix in a comment,
+  apply `unsettled`, and post the reason that fits: `not our branch @ <sha>` when
+  the fix is straightforward but unpushable, `needs a decision @ <sha>` when the
+  finding needs a judgement nobody unattended should make. The second is not
+  optional tidiness. Only `needs a decision` routes a PR to a human; giving a
+  judgement call the `not our branch` reason means the next unrelated push clears
+  it and the question is never asked.
+
+**A `review-only` run can still close findings — just never with its own fix.**
+The settle bar wants a semi-cold check, and a semi-cold round checks a fix
+*whoever pushed it*: on a branch this run may not push to, that is the author
+responding to the review, and [the brief requires that case to
+work](#priority-order) precisely so an `unsettled: not our branch` PR is not
+stranded. So `unsettled: not our branch` is a **waypoint, not a terminus** — the
+author's next push re-opens the PR, and the next run's semi-cold round is what
+closes the finding.
+
+What a single night in this mode delivers is **findings written where the author
+will act on them**, plus `review-settled` on PRs clean across two cold rounds.
+What the mode delivers *over several nights* is the full cycle, with the authors
+supplying the commits this run may not.
+
+### Scope: whose PRs get reviewed
+
+**The default is `own` in both modes: only PRs whose author is the account the run
+posts as. Reviewing other people's PRs is off, and turning it on is a human's
+call** — posting unattended reviews on a teammate's work overnight is a social
+change, not a technical one, and it has not been agreed.
+
+Set it in [This run](#this-run), alongside the mode:
+
+```
+review scope: own      # or: all
+```
+
+**This binds `build` too, deliberately.** The instruction not to review other
+people's work unattended is not scoped to one mode, so neither is the default.
+
+**Scope sits in front of everything, including the carve-outs.** A PR the filter
+excludes is invisible to every downstream rule, so its labels stop meaning what
+they say: a teammate's PR carrying `unsettled: needs a decision` promises that
+removing the label brings it back in, and under scope `own` that promise does not
+hold on any night. Same for `not our branch` and `ran out of rounds`, whose
+carve-outs fire on a commit that the loop will never look at.
+
+That is not an argument for scoping to `all` — it is a thing to **say out loud**.
+Un-parking someone else's PR takes a human setting `review scope: all` for that
+run, and the report's exclusion list is what tells them the PR is waiting on
+exactly that.
+
+**An out-of-scope PR is not an unreviewed one** — but be honest about what that
+means on the PR itself. Step 1's filter puts such a PR *outside the queue*
+rather than in it and skipped, so no round is owed and no label is missing. It
+does, however, receive **nothing at all**: no marker, no review, no label. On the
+PR, it is indistinguishable from one this run never saw — because that is what it
+is.
+
+That is the one place this document's own principle — state should be
+recoverable from the PR — does not hold, and it cannot: writing a marker to say
+"deliberately not reviewed" would put a non-round in the stream every rule reads.
+So the **report is the only record**, which is why naming the excluded PRs there
+is a requirement and not a courtesy. A reader who wants to know why a PR went
+untouched has exactly one place to look.
+
+**This test is by author login, and it is NOT the push test.** The two are
+different questions and use different evidence:
+
+| question | test | why |
+|---|---|---|
+| may this run *push* to the branch? | did **this run** create it? | [Hard rules](#hard-rules); step 2 spells out why an account match is not enough |
+| may this run *review* the PR? | is `.user.login` this account, or is scope `all`? | it is about whose work gets commented on, not whose branch gets written to |
+
+Do not collapse them. A PR this account opened on an earlier night is **in scope
+to review** and **out of bounds to push to** — that is the common case, not an
+edge case, and a run that conflates the two will either skip most of its queue or
+push where it must not.
+
+### When a `review-only` run is done
+
+It ends when either is true:
+
+- every in-scope PR is in a terminal state — `review-settled`, or `unsettled` with
+  a reason comment naming what unsticks it; or
+- the round budget is spent.
+
+On the second, see [the budget rule](#priority-order) — that is where the
+amendment lives, and it is the statement that governs.
+
+---
+
 ## This run
 
-**Last updated: 2026-08-24.** If that date is not recent, stop and ask before
+**Last updated: 2026-08-25.** If that date is not recent, stop and ask before
 running.
+
+**Mode: `build`.** **Review scope: `own`.** See [Mode](#mode). The mode decides
+whether ticket work happens at all; *which* tickets is governed by
+[Choosing work](#choosing-work) under Standing policy, not by the block below.
 
 ### Scope for tonight
 
@@ -41,6 +195,11 @@ Selection is governed by [Choosing work](#choosing-work) under Standing policy,
 and does not change run to run. Use this section only to *narrow* it — a subset
 of tickets, an area to avoid — never to restate or relax the gate. If there is
 nothing to narrow, say so and leave it at that.
+
+**In `review-only` mode this whole subsection does not apply**, and neither does
+that stop rule — a run with no ticket queue is not a finished run, it is a run
+that was never going to do ticket work. It stops on the condition in
+[Mode](#mode) instead.
 
 ### Environment notes for this run
 
@@ -193,6 +352,31 @@ step 2 is the breadth-first pass ruled out below.
 > **A PR needs a round unless it carries `review-settled` or `unsettled` and
 > that label's carve-out has not fired.**
 
+**And one filter in front of that test: the run's `review scope`.** With scope
+`own`, a PR whose author is not this account is out of scope and gets no round —
+it is not skipped-because-settled, it is not in the queue at all. With scope
+`all`, every open PR is in the queue. The value is set in
+[This run](#this-run) and defaults to `own`; see
+[Scope](#scope-whose-prs-get-reviewed).
+
+**The author field is `.user.login`, not `.author.login`.** On the REST `pulls`
+endpoint this document uses everywhere, `.author` is `null` — verified on #291,
+where `.author` returns `null` and `.user.login` returns the account. Only
+`gh pr view --json author` populates `.author`, and that is the GraphQL path.
+Getting this wrong is silent and fails toward *less* review: under the default
+`own` scope, `null` matches no account, every PR drops out of the queue, and the
+run reports a full queue as a deliberate scoping decision having reviewed
+nothing. It is the same REST-versus-GraphQL trap as `created_at` against
+`createdAt`.
+
+```
+gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".user.login"
+```
+
+Note this is an **author** test and the push rule is a **branch-creation** test.
+They are different questions on purpose, and the paragraph below on ownership is
+about the second — do not read it as an argument against the first.
+
 The obvious phrasing — "no marker at all, or commits since the last marker" —
 leaves a hole. A PR sitting on its first `cold: clean` with no new commits has a
 marker *and* no new commits, so neither clause selects it; yet that is precisely
@@ -296,7 +480,7 @@ prefixes are written to the same stream and are deliberately *not* routed on:
   code. It is not a round, consumes no budget, and decides nothing; it exists
   only to bound the counting windows below. Routing skips past it to the last
   real round, which is what makes the re-open rule and this table agree: an
-  author who fixes a `unsettled: not our branch` PR leaves it on
+  author who fixes an `unsettled: not our branch` PR leaves it on
   `cold: findings` with a differing SHA, which is the semi-cold row, not a cold
   one.
 - `unsettled: <reason> @ <sha>` — the comment that records *why* the `unsettled`
@@ -873,7 +1057,7 @@ for.
 
 **2 — Address the review findings on the PR you are carrying**, if **this run**
 created its branch. Not merely if the account matches: `gh api user -q .login`
-returns *your login*, and matching it against `.author.login` also matches PRs
+returns *your login*, and matching it against `.user.login` also matches PRs
 this account opened on earlier nights — pushing to those is what the hard rule
 against pushing to branches this run did not create forbids.
 
@@ -1004,7 +1188,7 @@ tolerates. Leaving one is the terminating move; file a card if it is worth more
 than that.
 
 **A finding you cannot fix stops the *cycling*, not the work.** What "the work"
-means depends on why you cannot fix it, and the two cases part company here:
+means depends on why you cannot fix it, and the three cases part company here:
 
 - *A branch this run did not create.* You cannot push anything, so the work is
   writing the findings down where the author will act on them: **all** of them,
@@ -1016,6 +1200,17 @@ means depends on why you cannot fix it, and the two cases part company here:
   everything else that round raised and push it — those findings are real and
   abandoning them wastes the round that found them. *Then* apply `unsettled`
   with an `unsettled: needs a decision @ <sha>` comment.
+- *A finding needing a human decision, on a branch you may **not** push to.*
+  **`needs a decision` wins over `not our branch`.** Both are true of this PR and
+  only one of them is load-bearing: `not our branch` clears itself on the author's
+  next push, so a judgement call given that reason is silently discharged by an
+  unrelated commit and the human is never asked. Write up every other finding as
+  in the first case, then apply `unsettled` with
+  `unsettled: needs a decision @ <sha>`.
+
+**The reason is chosen by what unsticks the PR, not by who owns the branch.** Ask
+"would the author's next push actually resolve this?" — if not, no reason whose
+carve-out fires on a commit is the right one.
 
 Either way, record what is left in the log and the report, and move on. Do not
 spend further rounds on it: a new round is cold to your reasoning but not to the
@@ -1089,6 +1284,16 @@ no review budget left is a draft this run cannot review, which the hard rules
 forbid. Say so in the report. A spent budget clears steps 1 and 2 for the rest of the run;
 without that fall-through the brief would forbid reviewing and gate ticket work
 behind reviews that can no longer happen, and specify nothing to do next.
+
+**In `review-only` mode there is no step 3 to go to, so a spent budget ends the
+run.** Do not read the fall-through above as permission to keep reviewing past the
+budget because the destination is missing.
+
+**"Ends the run" means it starts no new round — not that it stops mid-carry.**
+Everything the paragraph below requires still happens: label the PR you are
+holding, post its reason comment, and record it. A run that reads "ends" as
+immediate leaves exactly the unlabelled-with-open-findings PR that paragraph
+forbids.
 
 If the budget runs out with findings open on a PR, it gets the same treatment as
 the ceiling: `unsettled`, recorded, move on. Never leave a PR with open findings
@@ -1188,6 +1393,15 @@ one to two reviews each — forty-odd at the upper end, since a clean PR takes t
 reviewed at all. Against 32 that does not fit, and it should not be written as
 though it does.
 
+**That arithmetic assumes `review scope: all`.** It was written when there was no
+scope filter, and the filter roughly halves it: with scope `own`, a queue of
+twenty-odd is closer to ten, and most of a first pass fits inside the budget.
+(That budget is 28 in `build` mode, once the reserve below is taken out, and 32 in
+`review-only`, where there is no step 3 to reserve for.) So the two conclusions
+below — that step 3 does not happen, and that the 5-PR cap is
+unreachable — stop following. **Re-derive both for the scope you are actually
+running**, rather than reading the worst case as a standing fact.
+
 What follows from that: **the first night clears part of the queue and reports
 the rest**, and later nights are cheap, because a PR that reached
 `review-settled` or `unsettled` is skipped until its head SHA changes. The
@@ -1197,9 +1411,10 @@ The **ceiling**, by contrast, will rarely bind at all: it only applies to a PR
 this run owns and keeps finding things in, since a PR from an earlier night
 stops after one or two rounds regardless.
 
-**So on a backlogged night, step 3 does not happen, and the 5-PR cap is not
-reachable.** Twenty-odd PRs at one to two rounds is 20–40 reviews, and five new
-PRs at three each is another 15; there is no reading of a 32-round budget on
+**So on a backlogged night — at `review scope: all`, see above — step 3 does not
+happen, and the 5-PR cap is not reachable.** Twenty-odd PRs at one to two rounds
+is 20–40 reviews, and five new PRs at three each is another 15; there is no
+reading of a 32-round budget on
 which both fit. Priority order gates ticket work behind a queue this document
 says the budget cannot finish, so ticket work waits for a night that starts with
 the queue already marked. That is the intended trade — the queue is the
@@ -1210,6 +1425,13 @@ discovered at 4am.
 so a night that *does* clear the queue early can still open one ticket and cycle
 it. Without a reserve, step 1 always consumes everything and step 3 is dead by
 construction rather than by circumstance.
+
+**In `review-only` mode the reserve does not apply** — reviewing stops at 32, not
+28. The reserve exists to protect step 3, and there is no step 3 to protect; four
+rounds withheld for a step that cannot run are four rounds that simply go unspent.
+Note what this is and is not: the budget stays **32**. Nothing here raises a cap,
+and nothing here licenses raising one — if the ceilings make this mode
+impractical, say so in the report rather than widening them.
 
 Within that reserve: **do not open a new PR unless at least three reviews
 remain.** Two is the clean case only, and a PR with a single round of findings
@@ -1247,6 +1469,12 @@ ceiling and not just a clean bar. This cuts how many rounds a human has to run
 by hand; it does not answer when a PR is actually done.
 
 **3 — Only when 1 and 2 are clear**, take one ticket from "This run".
+
+**This step does not run in `review-only` mode**, and neither does anything under
+[Working a ticket](#working-a-ticket). Everything else below still does — in
+particular [Filing cards](#filing-cards-for-out-of-scope-findings), because
+reviewing is exactly when out-of-scope problems surface, and the 6-card cap
+applies in both modes.
 
 ### Working a ticket
 
@@ -1361,6 +1589,15 @@ with Sprint unset — so there is nothing to add by hand and nothing to report a
 missing. A log file in a sandbox is a report nobody reads; the issue is the
 copy that arrives.
 
+**Name the mode in the title when it is not `build`** —
+`Overnight run (review-only) — <YYYY-MM-DD>`. Two runs on one date would otherwise
+collide on a title that reads as one run, and the second would look like a
+correction of the first rather than a different job.
+
+**State the mode and the review scope in the first line of the report**, whichever
+mode ran. A reader cannot otherwise tell "reviewed nothing new" from "was not
+looking".
+
 Put the same summary at the top of `.claude/overnight-log.md`.
 
 The report contains:
@@ -1380,10 +1617,22 @@ The report contains:
   ceiling, or the run-wide budget) — and what is still outstanding on each
 - Whether the review budget ran out, and which PRs never got a first round at
   all — with a deep queue this is the expected shape of a run, not a failure
+- **Which PRs the `review scope` filter excluded**, and the scope the run used.
+  Keep this **separate from the bullet above**: "never got a first round" means
+  the run ran out before reaching it, and "out of scope" means it was never going
+  to. Collapsing the two is exactly the confusion
+  [Scope](#scope-whose-prs-get-reviewed) forbids, and that distinction is the
+  whole safety argument for defaulting the filter on
 - PRs opened, with card and branch — and **what to test to verify each one**
 - Cards filed, one sentence each on why
 - Tickets attempted but abandoned, and why
 - Every decision needing a human call
 - Anything that failed, **verbatim** — do not summarise errors away
+
+**In `review-only` mode two of those bullets are structurally empty** — PRs
+opened (with the what-to-test notes that belong to it) and tickets abandoned.
+Say "none — review-only run" rather than dropping the headings: an absent section
+reads as an oversight, and the next run's reader cannot tell which it was. Cards
+filed is **not** one of the empty ones.
 
 Be honest. A report that overstates what landed is worse than a short one.
