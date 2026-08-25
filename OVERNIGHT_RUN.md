@@ -258,9 +258,9 @@ backlog of PRs. Stopping on it would end the run before it reviewed anything,
 which is the opposite of the mode's purpose. `review-only` stops on the
 condition in [Mode](#mode) instead.
 
-These rules are rules, not scope, which is why they live here: an operator
-rewriting "This run" for tonight would otherwise discard the safety gate along
-with last night's ticket list.
+These are rules, not scope, which is why they live here: an operator rewriting
+"This run" for tonight would otherwise discard the safety gate along with last
+night's ticket list.
 
 ### First: establish what you can actually do
 
