@@ -251,7 +251,7 @@ amendment lives, and it is the statement that governs.
 running.
 
 ```
-mode: build            # or: review-only
+mode: review-only      # or: build
 review scope: own      # or: all
 ```
 
