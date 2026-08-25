@@ -668,14 +668,13 @@ the fix does what the finding asked.
 
 **It posts one marker comment like every other round** — body starting with the
 literal `semi-cold: closes @ <sha>` or `semi-cold: does not close @ <sha>`,
-carrying the same head SHA the cold brief specifies, before any heading,
-then each finding it checked with the reason, then anything the fix introduced,
-tiered as below. A same-line summary after the marker is welcome here too. Tell
-it, as you tell the cold reviewer, to post the marker with `gh pr comment` —
-never `gh pr review`, never `/code-review --comment` — and then to submit its
-findings as a review with `gh pr review <n> --comment --body "…"`. (Use
-`--body-file` only if it writes the findings to a file of its own first;
-everything else here passes `--body` directly.) One
+carrying the same head SHA the cold brief specifies, before any heading, and
+nothing after it but an optional one-line summary. Each finding it checked, with
+the reason, and anything the fix introduced, goes in its **review**, tiered as
+below — not in the comment. Tell it, as you tell the cold reviewer, to post the
+marker with `gh pr comment` — never `gh pr review`, never
+`/code-review --comment` — and then to submit that write-up as a review with
+`gh pr review <n> --comment --body "…"`. One
 *comment* per round, never one per finding: the rules that recover state after a
 compaction count marker comments, and a round posting several inflates that
 count as surely as one posting none. The review is not a comment and is not
@@ -736,12 +735,16 @@ means at least one Critical or Medium. A round that found *only* nits, or
 nothing at all, writes `cold: clean` — the settle bar permits nits, and a round
 that reports one as `cold: findings` routes the PR to a fix it does not need,
 which on a branch this run cannot push to ends as `unsettled` on a PR that had
-actually cleared the bar. Put the nits in the comment body under `cold: clean`.
+actually cleared the bar. The nits go in the review, as they would for any
+other round; the comment stays a marker line either way.
 
 A summary may follow on the same line
 (`cold: findings @ 2c1a865 — 2 Critical, 1 Medium`); nothing may precede the
 marker, and the SHA is not optional — the routing table is keyed on it, and a
-marker without one can never match a head. Then the findings, in tiers:
+marker without one can never match a head.
+
+**That line is the whole comment.** The findings do not go in it — they go in
+the review, tiered:
 
 - **Critical** — correctness, security, data loss
 - **Medium** — should fix before merge
@@ -760,9 +763,10 @@ strands the PR on its previous marker.
 the marker is posted — not by letting `/code-review --comment` publish inline
 comments in place of either artifact.
 
-**Then submit the same findings as a review**, `gh pr review <n> --comment
---body-file <file>`. Both artifacts, every round: the marker is what the run
-reads back, the review is what a human reads and what the contribution graph
+**Then submit the findings as a review**, `gh pr review <n> --comment
+--body "…"`. Both artifacts, every round, and the findings appear in exactly one
+of them: the marker is what the run reads back, the review is what a human reads,
+what step 2 retrieves the findings from, and what the contribution graph
 counts. Self-reviews count too, which matters because most of what this run
 opens it will also review.
 
@@ -794,6 +798,26 @@ created its branch. Not merely if the account matches: `gh api user -q .login`
 returns *your login*, and matching it against `.author.login` also matches PRs
 this account opened on earlier nights — pushing to those is what the hard rule
 against pushing to branches this run did not create forbids.
+
+**Read the findings out of the reviews, not the marker.** The marker carries the
+prefix, the SHA and at most a count; the findings themselves are in the review
+that round submitted. Nothing else holds them, so after a compaction this is the
+only way to recover what a round actually said:
+
+```
+RID=$(gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/reviews --jq ".[] | select(.state==\"COMMENTED\") | .id" | tail -1)
+gh api repos/ClipFarmVB/ClipFarm/pulls/<n>/reviews/$RID --jq ".body"
+```
+
+**Take the id first, then fetch the body.** Reviews come back oldest-first, so
+`tail -1` over the *ids* is the newest review — but piping bodies through
+`tail -1` returns the last **line** of the last body, because a findings
+write-up is many lines. Ids are one line each, which is what makes the two-step
+correct.
+
+Match the review to the marker by the SHA the marker carries: a review submitted
+against an earlier head describes findings on code that has since changed.
+
 For a PR you may not push to, describe the fix in a comment, apply `unsettled`
 and post `unsettled: not our branch @ <sha>`. That is the cheap terminal state,
 not a dead end: the author pushing a fix re-opens it on its own.
