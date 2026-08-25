@@ -163,10 +163,15 @@ as the operating instruction it implies:
 
 ### Scope: whose PRs get reviewed
 
-**The default is `own` in both modes: only PRs whose author is the account the run
-posts as. Reviewing other people's PRs is off, and turning it on is a human's
-call** — posting unattended reviews on a teammate's work overnight is a social
-change, not a technical one, and it has not been agreed.
+**The value to write is `own` in both modes unless a human decides otherwise:
+only PRs whose author is the account the run posts as. Reviewing other people's
+PRs is off, and turning it on is a human's call** — posting unattended reviews on
+a teammate's work overnight is a social change, not a technical one, and it has
+not been agreed.
+
+"Default" here means the value an operator should normally write, **not** a value
+to assume when none is written. An absent line is an unfinished edit, not a
+choice; see the block below.
 
 Set it in [This run](#this-run), alongside the mode:
 
@@ -439,9 +444,11 @@ step 2 is the breadth-first pass ruled out below.
 **And one filter in front of that test: the run's `review scope`.** With scope
 `own`, a PR whose author is not this account is out of scope and gets no round —
 it is not skipped-because-settled, it is not in the queue at all. With scope
-`all`, every open PR is in the queue. The value is set in
-[This run](#this-run) and defaults to `own`; see
-[Scope](#scope-whose-prs-get-reviewed).
+`all`, every open PR is in the queue. The value comes from the `review scope:`
+line in [This run](#this-run) — **read it there, and if it is missing or holds a
+value you do not recognise, stop and ask** rather than assuming `own`. This is
+the enforcement point, so a run reaching it without having re-read that block
+would otherwise default silently; see [Scope](#scope-whose-prs-get-reviewed).
 
 **The author field is `.user.login`, not `.author.login`.** On the REST `pulls`
 endpoint this document uses everywhere, `.author` is `null` — verified on #291,
