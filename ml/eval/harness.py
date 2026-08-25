@@ -343,6 +343,35 @@ def _require_r2_key(raw: dict, test_id: str) -> str:
             "python -m ml.eval.visualize_deadtime, which reads ml/eval/ball_caches/."
         )
     return r2_key
+def _assert_declared_frame_height(
+    fixture, frame_h: int, test_id: str, r2_key: str, mode: str
+) -> None:
+    """
+    Refuse to score if the decoded source is not the height the fixture declares.
+
+    CF-174 made the contact thresholds scale with frame height, so a source that
+    decodes at a different resolution is scored against thresholds the fixture
+    never meant — and the numbers still look plausible, which is what makes it
+    worth failing over.
+
+    This is the ONLY runtime check that the source is the labeled one.
+    `source_video_md5` is pinned in every fixture but verified nowhere at
+    runtime — only fixture-to-fixture in `test_eval_fixtures.py` — so without
+    this a re-encode that changed resolution would shift every threshold
+    silently and still produce a recorded row.
+
+    Opt-in per fixture: absent `source_frame_height` skips the check rather than
+    failing, so fixtures written before the key existed still run.
+    """
+    declared = fixture.raw.get("source_frame_height")
+    if declared is None or int(declared) == frame_h:
+        return
+    raise SystemExit(
+        f"Offline {mode}: {test_id} declares source_frame_height={int(declared)} "
+        f"but {r2_key} decodes at {frame_h}px. CF-174 thresholds scale with frame "
+        "height, so this run would not be comparable to the fixture's recorded "
+        "numbers. Re-upload the labeled file, or re-label against this one."
+    )
 
 
 def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
@@ -382,6 +411,9 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
         duration = n_frames / fps
+
+        # Same guard as the deadtime path: this mode scales the same thresholds.
+        _assert_declared_frame_height(fixture, frame_h, test_id, r2_key, "highlight")
 
         audio = compute_audio_energy(str(local))
 
@@ -527,22 +559,7 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         # dead-time complement); fall back to the decoded frame count.
         duration = fixture.duration or (n_frames / fps)
 
-        # CF-174: contact thresholds scale with this number, so a source that is
-        # not the labeled one scores against thresholds the fixture never meant.
-        # This is the ONLY runtime check that the source is the labeled one.
-        # source_video_md5 is pinned in the fixture but verified nowhere at
-        # runtime — only fixture-to-fixture in test_eval_fixtures.py — so a
-        # re-encode that changed resolution would otherwise shift every
-        # threshold silently and still score.
-        declared_h = fixture.raw.get("source_frame_height")
-        if declared_h is not None and int(declared_h) != frame_h:
-            raise SystemExit(
-                f"Offline deadtime: {test_id} declares source_frame_height="
-                f"{int(declared_h)} but {r2_key} decodes at {frame_h}px. CF-174 "
-                "thresholds scale with frame height, so this run would not be "
-                "comparable to the fixture's recorded numbers. Re-upload the "
-                "labeled file, or re-label against this one."
-            )
+        _assert_declared_frame_height(fixture, frame_h, test_id, r2_key, "deadtime")
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
         # Pass r2_key so the ball-cache lookup hits; without it this silently
