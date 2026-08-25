@@ -232,7 +232,20 @@ case it wants its second clean cold round first.
 **"Never had a finding" spans the PR's whole life, not this run.** Every other
 count in this section is scoped by `SINCE`; this one must not be, or a PR whose
 findings were raised and closed last night reads as never-had-a-finding tonight
-and settles a round early. Ask it without a window:
+and settles a round early.
+
+**On a re-opened PR, count only from the re-open.** New commits nothing has
+confirmed anything about are the condition the two-clean rule exists for, and
+the PR's older history is evidence about code that has since changed. So the
+window is the whole life of the PR, *or* since it was last re-opened if it was
+— add the `select(.createdAt > …)` clause from the round-counting query, bounded
+by the same label event.
+
+Ask it like this — and **set `FINDINGS` in this shell**, for the reason the
+`MARKERS` warning gives: unset, it becomes `test("")`, matches every comment,
+returns nonzero, and a PR that has never had a finding settles on one clean
+round instead of two. That failure runs toward *less* review, which is the
+direction this document guards hardest against everywhere else.
 
 ```
 FINDINGS='^(cold: findings|semi-cold:)'
@@ -276,8 +289,13 @@ findings raised against superseded code. Neither is what the PR needs. So:
   the timeline comparison to work out that it does not mean what it says.
 - **The next round is cold**, whatever the last marker says. New code that
   nothing has looked at is the first-look case.
-- **Reset the round count**, which removing the label does on its own, since the
-  count is scoped by `SINCE` and by the label event.
+- **Re-read the round count from the timeline.** Removing the label does not
+  reset anything on its own — no count lives in a label — and the `labeled`
+  event survives the removal, which is exactly what makes the reset readable.
+  Removing the label is what makes the PR *eligible*; the label event is what
+  *bounds the count*. Skip that read and the count still runs from `SINCE`,
+  which includes every round already spent on this PR earlier tonight, and the
+  ceiling arrives early on the PR just promised a fresh one.
 
 **Both carve-outs need the moment the label was applied**, which `gh pr view`
 does not carry. Read it off the timeline and compare it with the head commit's
@@ -332,8 +350,8 @@ tiered as below. A same-line summary after the marker is welcome here too. Tell
 it, as you tell the cold reviewer, to post with `gh pr comment` — never
 `gh pr review`, never `/code-review --comment`. One comment per round, never one
 per finding: the rules that recover state after a compaction count marker
-comments, and a round
-posting several inflates that count as surely as one posting none.
+comments, and a round posting several inflates that count as surely as one
+posting none.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, treat it as blocked: `unsettled`,
