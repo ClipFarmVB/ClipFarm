@@ -183,8 +183,9 @@ def test_the_edge_cursor_carries_the_tiebreaker():
 
 
 def test_a_naive_cursor_timestamp_is_a_400_not_a_500():
-    """`fromisoformat` accepts a naive string; comparing it to a timestamptz
-    column raises inside the driver, so it has to be rejected here."""
+    """`fromisoformat` accepts a naive string. asyncpg then reinterprets it as
+    UTC rather than raising — measured — so an unchecked naive cursor pages
+    from the wrong instant silently instead of erroring. Rejected here."""
     import base64
 
     from fastapi import HTTPException

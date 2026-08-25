@@ -175,10 +175,15 @@ async def get_follow_state(handle: str, user_id: UserId, db: DB):
 def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
     """`<iso timestamp>|<uuid>` → the sort key, or 400.
 
-    The timestamp must carry an offset. `fromisoformat` happily parses a naive
-    string, and comparing naive to a `timestamptz` column raises inside asyncpg
-    — a 500 for what is a malformed request, so it is rejected here as a 400
-    instead.
+    The timestamp must carry an offset, and the reason is not the one you might
+    expect. asyncpg does **not** raise when a naive datetime meets a
+    `timestamptz` column — measured, it returns the same rows as the aware
+    equivalent, because it silently reinterprets naive input as UTC. So the
+    failure mode is not a 500, it is a page that starts in the wrong place
+    whenever the client meant a local time, with no error anywhere.
+
+    A cursor this endpoint issued is always aware. A naive one is therefore
+    hand-crafted and malformed, and 400 is the honest answer.
     """
     try:
         raw = base64.urlsafe_b64decode(cursor.encode()).decode()
