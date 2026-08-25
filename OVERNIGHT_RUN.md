@@ -15,7 +15,16 @@ that has to survive is posted as an issue — see [Reporting](#reporting).
 > **Update "This run" before starting.** Everything under
 > [Standing policy](#standing-policy) holds every time. The section immediately
 > below does not, and an agent given a stale scope will work confidently on the
-> wrong things. This repository has been bitten by exactly that: CF-192's
+> wrong things.
+>
+> **Nothing that is discardable may carry a rule.** "This run" holds scope —
+> which tickets, what the environment looks like tonight — and never behaviour.
+> If a run learns something that should change how future runs act, that belongs
+> under [Standing policy](#standing-policy), even when the lesson came from
+> tonight's scope. A fix written into a section the next reader is told to
+> replace has not been made: it will be discarded unread, while whoever wrote it
+> believes it landed. That happened twice in the first real run, and one of the
+> two was reported as done. This repository has been bitten by exactly that: CF-192's
 > worst-case reasoning was invalidated by CF-224 without the text changing, and
 > CF-224 read as "fixed" while production was still failing.
 
@@ -91,10 +100,13 @@ most expensive kind of surprise in an unattended run.
 - **You are never the reviewer.** Every PR still gets reviewed — by a subagent
   spawned per step 1, whether or not this session wrote the diff.
 - **Maximum 5 new PRs** and **6 new cards** per run.
-- **No attribution stamps.** Do not add "Generated with Claude Code", a
-  `Co-Authored-By` trailer, a session link, or any similar footer to commits, PR
-  bodies, review comments, or issues. Local settings suppress these but a sandbox
-  does not inherit them, so this is on you.
+- **No attribution stamps that you write.** Do not add "Generated with Claude
+  Code", a `Co-Authored-By` trailer, a session link, or any similar footer to
+  commits, PR bodies, reviews, comments, or issues. Local settings suppress
+  these but a sandbox does not inherit them, so this is on you.
+  **Where the platform appends a footer server-side, it cannot be suppressed and
+  is not a violation** — note it once in the report rather than treating every
+  post as a breach, and never hand-edit a comment to strip it.
 - If a command fails because of usage limits, **stop the loop** — do not retry.
 - If nothing in scope is actionable, **stop the loop**. A run that reviews two
   PRs and opens nothing is a fine outcome.
@@ -970,10 +982,21 @@ author's next commit or waits for a human who has not been told they are needed.
 **Ceiling: six rounds per PR per run, cold and semi-cold together**, so a
 pathological PR cannot consume the whole night. Counting only cold rounds would
 leave the semi-cold ones unbounded — every fix buys another check — and half of
-a ceiling is not a ceiling. Six covers a PR with two rounds of findings and the
-cold round that settles it. Hitting it is the same outcome: fix what you can,
+a ceiling is not a ceiling. Hitting it is the same outcome: fix what you can,
 apply `unsettled` with an `unsettled: ran out of rounds @ <sha>` comment,
 record, move on.
+
+**One exception: a PR with nothing open may take one round past the ceiling.**
+If the sixth round leaves no Critical and no Medium outstanding, settling still
+needs a fresh cold round, and refusing it labels a converged PR
+`unsettled: ran out of rounds` on arithmetic alone. That happened on #291 in the
+first real run: six rounds ending `semi-cold: closes — 4 of 4 Mediums closed,
+nothing new above a nit`, nothing open, and the failure label applied anyway.
+
+The exception terminates, which is why it is safe: the extra round either
+settles the PR, or it raises something — and then the label is accurate rather
+than arithmetic. It is **one** round, not a reset; a PR that comes back with
+findings stops there.
 
 **Take one PR all the way through before opening the next.** Review it, fix it,
 check the fix, settle or label it — then move on. Do not run a pass over every
