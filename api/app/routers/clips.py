@@ -398,10 +398,28 @@ async def download_clip(
     """
     clip, game = await _get_viewable_clip(clip_id, viewer_id, db)
 
+    # The filename is part of the response, not just decoration: presign_url
+    # puts it in the URL's ResponseContentDisposition, in cleartext. So the
+    # question is not only "may this viewer have the bytes" but "may they have
+    # these strings", and the two differ in exactly one case.
+    #
+    # A public clip inside a private game is reachable by direct link — the
+    # asymmetry access.py documents. There, /share discloses nothing and
+    # list_clips is gated on the game, so the game's title and the tagged
+    # player's real name are unreachable without a credential. Naming the file
+    # after them would hand both to an anonymous caller, on footage of a named
+    # young person. The override publishes *that clip*, not the game it came
+    # from or who is in it.
+    identify = access.can_view_game(viewer_id, game)
+
     # Explicit fetch, not clip.player: the relationship is not eagerly loaded
     # anywhere, and touching it here would lazy-load inside the event loop and
     # raise MissingGreenlet. list_clips and tag_clip both fetch the same way.
-    player = await db.get(Player, clip.player_id) if clip.player_id else None
+    player = (
+        await db.get(Player, clip.player_id)
+        if identify and clip.player_id
+        else None
+    )
 
     # action_type, not labels[0]. `labels` is written by the detector on every
     # clip — first-seen action types within the rally (ml/pipeline/detect.py) —
@@ -412,7 +430,7 @@ async def download_clip(
     # update_clip_labels rewrites it from the corrected labels, so a correction
     # already reaches it. It is also what ClipModal badges beside this button.
     filename = clip_download_filename(
-        game_title=game.title,
+        game_title=game.title if identify else None,
         action=clip.action_type.value,
         player_name=player.name if player else None,
         start_seconds=clip.start_time,

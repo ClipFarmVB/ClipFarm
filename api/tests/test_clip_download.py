@@ -71,7 +71,18 @@ class TestFormatTimestamp:
         assert format_timestamp(0) == "00-00"
         assert format_timestamp(9.9) == "00-09"
         assert format_timestamp(252.0) == "04-12"
-        assert format_timestamp(3661) == "61-01"
+
+    def test_rolls_into_hours_like_the_ui_does(self):
+        """Uploads are capped at four hours.
+
+        Without the rollover a late clip reads `239-59` where ClipCard and
+        ClipModal both show `3:59:59`, and a reader has to divide to find the
+        moment in the game.
+        """
+        assert format_timestamp(3661) == "1-01-01"
+        assert format_timestamp(3599) == "59-59"
+        assert format_timestamp(3600) == "1-00-00"
+        assert format_timestamp(14399) == "3-59-59"
 
     def test_negative_clamps_to_zero(self):
         assert format_timestamp(-5) == "00-00"
@@ -238,6 +249,61 @@ class TestDownloadEndpoint:
         clip = _Clip(game, visibility=Visibility.public)
         _download(_FakeSession(game, clip), clip.id, STRANGER)
         assert presigned["download_filename"].endswith(".mp4")
+
+    def test_the_filename_does_not_leak_a_private_games_title(self, presigned):
+        """The filename rides in the URL, in cleartext, so it is disclosure.
+
+        A public clip inside a private game is reachable by direct link, but
+        the game's title is not — /share discloses nothing and list_clips is
+        gated on the game. Naming the file after it would hand an anonymous
+        caller the private game's title.
+
+        The earlier version of the test above asserted only `.endswith(".mp4")`
+        against this exact configuration, which is why the leak passed review.
+        """
+        game = _Game(visibility=Visibility.private, title="Under-14 County Final")
+        player = _Player(name="Rosa Diaz")
+        clip = _Clip(game, player=player, visibility=Visibility.public)
+        _download(_FakeSession(game, player, clip), clip.id, STRANGER)
+
+        name = presigned["download_filename"]
+        assert "Under-14" not in name and "County" not in name
+        assert "Rosa" not in name and "Diaz" not in name
+        # Still useful, still identifies the moment.
+        assert name == "spike - 04-12.mp4"
+
+    def test_the_owner_still_gets_the_identifying_name(self, presigned):
+        # The guard must not cost the person entitled to the information.
+        game = _Game(visibility=Visibility.private, title="Under-14 County Final")
+        player = _Player(name="Rosa Diaz")
+        clip = _Clip(game, player=player, visibility=Visibility.public)
+        _download(_FakeSession(game, player, clip), clip.id, OWNER)
+        assert presigned["download_filename"] == (
+            "Under-14 County Final - spike - Rosa Diaz - 04-12.mp4"
+        )
+
+    def test_a_stranger_never_causes_the_player_row_to_be_read(self, presigned):
+        """Not just absent from the name — not fetched at all.
+
+        Asserting only on the string would pass a version that loads the player
+        and then forgets to use it, which still reads a row the viewer has no
+        claim to.
+        """
+        game = _Game(visibility=Visibility.private, title="Match")
+        player = _Player(name="Rosa Diaz")
+        clip = _Clip(game, player=player, visibility=Visibility.public)
+        session = _FakeSession(game, player, clip)
+
+        fetched = []
+        original = session.get
+
+        async def spy(model, pk):
+            fetched.append(pk)
+            return await original(model, pk)
+
+        session.get = spy  # type: ignore[method-assign]
+        _download(session, clip.id, STRANGER)
+        assert player.id not in fetched
 
     def test_a_missing_clip_is_404_not_500(self, presigned):
         game = _Game()
