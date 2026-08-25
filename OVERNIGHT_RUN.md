@@ -42,9 +42,10 @@ wins. Deliberately no count: an index that promises a number goes stale the
 moment an amendment is added, and this one already did.
 
 What is amended: the scope subsection of [This run](#this-run); the step-3
-reserve; what a spent budget does; step 3 itself and everything under
-[Working a ticket](#working-a-ticket); two report bullets; and the report's
-title.
+reserve, and the arithmetic that sizes it; what a spent budget does; step 3
+itself and everything under [Working a ticket](#working-a-ticket); two report
+bullets that go empty, one that is added (which PRs the scope filter excluded);
+the report's required first line; and the report's title.
 
 | mode | steps 1 and 2 — review, fix | step 3 — ticket work |
 |---|---|---|
@@ -171,9 +172,20 @@ push where it must not.
 
 It ends when either is true:
 
-- every in-scope PR is in a terminal state — `review-settled`, or `unsettled` with
-  a reason comment naming what unsticks it; or
+- **no in-scope PR needs a round**, by the test in
+  [Priority order](#priority-order) — not a restatement of it, *that* test,
+  carve-outs included; or
 - the round budget is spent.
+
+**Do not paraphrase the first condition.** The obvious phrasing — "every
+in-scope PR carries `review-settled` or `unsettled`" — drops the trailing *and
+that label's carve-out has not fired*, which is the clause that lets an author's
+push re-open an `unsettled: not our branch` PR. A `review-only` run is the mode
+most likely to be running while authors are asleep and then awake; a run that
+reads a re-opened PR as terminal halts with budget in hand and the fix
+unreviewed, which is the "waypoint, not a terminus" promise broken exactly where
+it matters. This is the failure [Mode](#mode) warns about, so it gets no
+exception here.
 
 On the second, see [the budget rule](#priority-order) — that is where the
 amendment lives, and it is the statement that governs.
@@ -185,9 +197,14 @@ amendment lives, and it is the statement that governs.
 **Last updated: 2026-08-25.** If that date is not recent, stop and ask before
 running.
 
-**Mode: `build`.** **Review scope: `own`.** See [Mode](#mode). The mode decides
-whether ticket work happens at all; *which* tickets is governed by
-[Choosing work](#choosing-work) under Standing policy, not by the block below.
+```
+mode: build            # or: review-only
+review scope: own      # or: all
+```
+
+See [Mode](#mode). The mode decides whether ticket work happens at all; *which*
+tickets is governed by [Choosing work](#choosing-work) under Standing policy,
+not by the block below.
 
 ### Scope for tonight
 
@@ -196,10 +213,15 @@ and does not change run to run. Use this section only to *narrow* it — a subse
 of tickets, an area to avoid — never to restate or relax the gate. If there is
 nothing to narrow, say so and leave it at that.
 
-**In `review-only` mode this whole subsection does not apply**, and neither does
-that stop rule — a run with no ticket queue is not a finished run, it is a run
-that was never going to do ticket work. It stops on the condition in
-[Mode](#mode) instead.
+**In `review-only` mode this whole subsection does not apply.** A run with no
+ticket queue is not a finished run, it is a run that was never going to do
+ticket work; it stops on the condition in [Mode](#mode) instead.
+
+The stop rule that would otherwise fire — *if nothing carries the label, stop the
+loop* — is amended where it lives, in [Choosing work](#choosing-work), not
+disabled from here. Turning off a Standing
+policy rule from a section the next operator rewrites is the thing this section
+is forbidden from doing.
 
 ### Environment notes for this run
 
@@ -409,6 +431,13 @@ it does not is silent rather than loud:
    step 2's review read finds nothing and exits, and the night's work never
    reaches the contribution graph. If your tool cannot submit a review, say so
    in the report — that is a real capability gap, not a detail.
+6. **The PR's author login**, which the `review scope` filter tests. On REST
+   that is `.user.login`; `.author` is `null` there and populated only by
+   `gh pr view --json`. A tool returning `null` under the default `own` scope
+   excludes every PR, and the run reports a full queue as a deliberate scoping
+   decision having reviewed nothing. Confirm you get a login, not a null, before
+   trusting the filter — the first unattended run had no `gh` at all, so this is
+   the expected case rather than the unusual one.
 
 **Confirm your tool paginates before you trust a marker read**, and name the
 tool in the report. A run that cannot establish point 1 should say so and treat
@@ -1212,6 +1241,23 @@ means depends on why you cannot fix it, and the three cases part company here:
 "would the author's next push actually resolve this?" — if not, no reason whose
 carve-out fires on a commit is the right one.
 
+**That includes the ceiling and the budget.** Both tell you to apply
+`ran out of rounds`, and that reason clears on any commit — so a PR carrying a
+decision-needing finding that also happens to hit the ceiling would be silently
+discharged by the author's next unrelated push, and the human never asked. When
+both apply, **`needs a decision` wins**; note the ceiling or the budget in the
+comment as context rather than as the reason.
+
+**State the cost, because it is real.** `needs a decision` has no commit
+carve-out, so parking a PR under it parks *every* finding on that PR behind a
+human, including the ones the author could have fixed unprompted. On a branch
+this run cannot push to, that is the whole PR. In `review-only` mode, where
+almost nothing is pushable, it is potentially the whole queue. The trade is
+deliberate — a judgement call quietly dissolved by an unrelated commit is worse
+than a PR that waits — but write the other findings up in full first, so the
+human clearing the label finds everything they need in one place rather than
+just the question.
+
 Either way, record what is left in the log and the report, and move on. Do not
 spend further rounds on it: a new round is cold to your reasoning but not to the
 code, so it re-derives the same finding off the same unchanged lines.
@@ -1414,8 +1460,7 @@ stops after one or two rounds regardless.
 **So on a backlogged night — at `review scope: all`, see above — step 3 does not
 happen, and the 5-PR cap is not reachable.** Twenty-odd PRs at one to two rounds
 is 20–40 reviews, and five new PRs at three each is another 15; there is no
-reading of a 32-round budget on
-which both fit. Priority order gates ticket work behind a queue this document
+reading of a 32-round budget on which both fit. Priority order gates ticket work behind a queue this document
 says the budget cannot finish, so ticket work waits for a night that starts with
 the queue already marked. That is the intended trade — the queue is the
 bottleneck, not ticket supply — but it should be read as a consequence, not
@@ -1433,8 +1478,8 @@ Note what this is and is not: the budget stays **32**. Nothing here raises a cap
 and nothing here licenses raising one — if the ceilings make this mode
 impractical, say so in the report rather than widening them.
 
-Within that reserve: **do not open a new PR unless at least three reviews
-remain.** Two is the clean case only, and a PR with a single round of findings
+**In `build` mode, within that reserve:** do not open a new PR unless at least
+three reviews remain.** Two is the clean case only, and a PR with a single round of findings
 costs three, so a smaller reserve guarantees the PR it just opened ends
 `unsettled: ran out of rounds` by construction. A PR this run opens must be
 reviewable by this run — a draft nobody has looked at is exactly what the hard
@@ -1590,9 +1635,14 @@ missing. A log file in a sandbox is a report nobody reads; the issue is the
 copy that arrives.
 
 **Name the mode in the title when it is not `build`** —
-`Overnight run (review-only) — <YYYY-MM-DD>`. Two runs on one date would otherwise
-collide on a title that reads as one run, and the second would look like a
-correction of the first rather than a different job.
+`Overnight run (review-only) — <YYYY-MM-DD>`. The point is that the title should
+say what the run was *for*: a reader scanning issues can otherwise not tell a
+night of queue work from a night of ticket work without opening it.
+
+It also separates two runs of different modes on one date. It does **not**
+separate two runs of the *same* mode on one date — nothing here does, and if
+that happens, disambiguate in the title however makes sense at the time and say
+in the first line which run this was.
 
 **State the mode and the review scope in the first line of the report**, whichever
 mode ran. A reader cannot otherwise tell "reviewed nothing new" from "was not
