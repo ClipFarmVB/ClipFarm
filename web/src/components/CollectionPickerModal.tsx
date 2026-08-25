@@ -88,15 +88,20 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   return (
     <div
       ref={overlayRef}
-      // Matching the drawer (CF-60): the Tab trap only constrains the keyboard.
-      // `aria-modal` is what stops a screen reader swiping into the page behind.
-      role="dialog"
-      aria-modal
-      aria-label="Save clip to a collection"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
-      <div className="w-full max-w-[18rem] rounded-xl border border-border bg-background shadow-2xl">
+      <div
+        // Matching the drawer (CF-60) and ClipModal: the Tab trap only
+        // constrains the keyboard, and `aria-modal` is what stops a screen
+        // reader swiping into the page behind. On the card rather than the
+        // backdrop, because the dialog is the card — the two modals disagreed
+        // on this until CF-227 moved both.
+        role="dialog"
+        aria-modal
+        aria-label="Save clip to a collection"
+        className="w-full max-w-[18rem] rounded-xl border border-border bg-background shadow-2xl"
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="flex items-center gap-2">

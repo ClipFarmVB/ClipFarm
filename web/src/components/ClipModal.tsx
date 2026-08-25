@@ -29,9 +29,14 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   useBodyScrollLock(true);
 
   // Focus handling, shared with the drawer and the collection picker (CF-227):
-  // focus moves into the player on open, returns to the clip card that opened
-  // it on close, and Tab cycles inside rather than walking into the grid behind
-  // the backdrop.
+  // focus moves into the dialog on open and Tab cycles inside it rather than
+  // walking into the grid behind the backdrop.
+  //
+  // It does NOT return focus to the clip card on close, which is the one thing
+  // CF-227 asks for and does not get: the card's thumbnail is a bare
+  // `<div onClick>` (ClipCard.tsx), so it cannot hold focus and there is
+  // nothing to restore to. Tracked as CF-266 (#308); until that lands, closing
+  // a clip drops focus to <body>.
   //
   // No onEscape — the handler below already owns Escape for this overlay, and
   // passing it here too would close the modal twice.
@@ -50,9 +55,12 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") { onClose(); return; }
-      // Arrows belong to the player while it holds focus — they seek. Since
-      // CF-227 moves focus into the video on open, navigating clips on the same
-      // keys would scrub and change clip at once. Tab off the player first.
+      // Arrows belong to the player while it holds focus — they seek, and the
+      // shadow-DOM controls keep `activeElement` on the <video> host however
+      // deep Tab has walked, so host identity is the right test. Focus starts
+      // on the dialog card rather than the player precisely so ← → navigate
+      // from the state the modal opens in; this guard only takes them back once
+      // the user has Tabbed onto the video.
       if (document.activeElement === videoRef.current) return;
       if (e.key === "ArrowLeft")  onPrev?.();
       if (e.key === "ArrowRight") onNext?.();
