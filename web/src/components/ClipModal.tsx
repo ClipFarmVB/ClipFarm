@@ -37,7 +37,7 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   // just has nothing to restore to: the card's thumbnail is a bare
   // `<div onClick>` (ClipCard.tsx), so clicking it leaves activeElement on
   // <body>, and that is what gets captured and handed back. Tracked as
-  // CF-266 (#308); until that lands, closing a clip leaves focus at the top of
+  // CF-273 (#308); until that lands, closing a clip leaves focus at the top of
   // the page rather than near the clip.
   //
   // No onEscape — the handler below already owns Escape for this overlay, and
