@@ -78,13 +78,14 @@ against that possibility even on nights when it never arrives. `review-only`
 spends the whole night on the queue.
 
 **With one qualification that belongs here rather than in a budget note: at the
-default `review scope: own`, "the queue" means this account's PRs.** That is
-currently 10 of 23 open. So the mode does not, by default, address the backlog
-the paragraph above describes — it addresses this account's share of it. That is
-a deliberate call (reviewing other people's work unattended is a social change,
-not a technical one) and it is defensible, but it means `review-only` at `own`
-is a narrower instrument than "the queue is the bottleneck" implies. Run
-`review scope: all` when the whole queue is what you actually want cleared.
+default `review scope: own`, "the queue" means this account's PRs** — a
+fraction of the open set, and on this repo usually well under half. So the mode
+does not, by default, address the backlog the paragraph above describes; it
+addresses this account's share of it. That is a deliberate call (reviewing
+other people's work unattended is a social change, not a technical one) and it
+is defensible, but it means `review-only` at `own` is a narrower instrument
+than "the queue is the bottleneck" implies. Run `review scope: all` when the
+whole queue is what you actually want cleared.
 
 ### It cannot push, and that is a consequence rather than a rule
 
@@ -372,13 +373,14 @@ SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
 [ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
 ```
 
-`tail -1`, not `grep -m1`: nothing truncates this log, so the first match is the
-*oldest* run's start and the newest is what you want. And guard the empty case —
-an unset `SINCE` makes `.created_at > ""` true for every comment, which turns
-every per-run bound into an all-time one silently. The guard **exits**; a guard
-that only prints lets the failure it detected proceed anyway. Both failures point the same
-way as the `$(date …)` trap below: they widen the window rather than narrowing
-it, so nothing errors and the ceiling arrives early.
+`tail -1`, not `grep -m1`: nothing truncates this log, so the first match is
+the *oldest* run's start and the newest is what you want. And guard the empty
+case — an unset `SINCE` makes `.created_at > ""` true for every comment, which
+turns every per-run bound into an all-time one silently. The guard **exits**; a
+guard that only prints lets the failure it detected proceed anyway. Both
+failures point the same way as the `$(date …)` trap below: they widen the
+window rather than narrowing it, so nothing errors and the ceiling arrives
+early.
 
 A resolved timestamp, UTC and `Z`-suffixed — produce it with
 `date -u +%Y-%m-%dT%H:%M:%SZ` and write the **result**. Writing the command
@@ -472,15 +474,20 @@ sentence. The failure if any item is missing is silent rather than loud:
    gh api user --jq ".login"
    ```
 
-   A tool without `gh` needs both halves, and the second is the one with no
-   fallback elsewhere in this document — if it cannot tell you which account it
-   is authenticated as, the `own` scope is not computable and you must run
-   `review scope: all` and say so in the report, rather than comparing against
-   a guess. A tool returning `null` for either under the default `own` scope
-   excludes every PR, and the run reports a full queue as a deliberate scoping
-   decision having reviewed nothing. Confirm you get a login, not a null, before
-   trusting the filter — the first unattended run had no `gh` at all, so this is
-   the expected case rather than the unusual one.
+   A tool without `gh` needs both halves. **If it cannot tell you which account
+   it is authenticated as, `own` scope is not computable — stop the loop and
+   report the capability gap.** Do not widen to `all` to get unblocked: `all`
+   means reviewing other people's PRs unattended, which
+   [Scope](#scope-whose-prs-get-reviewed) says takes a human setting it for that
+   run. A run that grants itself that permission because it could not read its
+   own login has escalated its scope to work around a missing capability, and it
+   would do so on the *common* path, since a run without `gh` is the expected
+   case rather than the unusual one. [Hard rules](#hard-rules) already covers
+   this: if nothing in scope is actionable, stop.
+
+   Confirm you get a login and not a null before trusting the filter. A `null`
+   under `own` excludes every PR silently, and the run reports a full queue as a
+   deliberate scoping decision having reviewed nothing.
 
 **Confirm your tool paginates before you trust a marker read**, and name the
 tool in the report. A run that cannot establish point 1 should say so and treat
@@ -803,11 +810,11 @@ them.
 **The label is bare `unsettled`. The reason goes in the comment, never in the
 label name.** There are exactly two **review-state** labels — `review-settled`
 and `unsettled` — alongside the ordinary ones the repo uses (`P1`, `api`,
-`overnight-ok` and so on). `gh pr edit --add-label "unsettled: blocked"` fails against a
-label that does not exist, leaving the PR unlabelled with open Criticals, which
-is the one state this document forbids. So: apply `unsettled`, and post a
-comment opening `unsettled: <reason> @ <sha>`. That comment is the only record
-of which reason applies, and it is what a later run reads back:
+`overnight-ok` and so on). `gh pr edit --add-label "unsettled: blocked"` fails
+against a label that does not exist, leaving the PR unlabelled with open
+Criticals, which is the one state this document forbids. So: apply `unsettled`,
+and post a comment opening `unsettled: <reason> @ <sha>`. That comment is the
+only record of which reason applies, and it is what a later run reads back:
 
 - `unsettled: not our branch @ <sha>`
 - `unsettled: needs a decision @ <sha>`
@@ -987,12 +994,12 @@ and so is the round that awards `review-settled`.
 
 A **semi-cold** round is for checking a fix — **whoever pushed it.** Usually
 that is this run; on a branch this run may not push to, it is the author
-responding to the review, and that case has to work or a
-`unsettled: not our branch` PR could never satisfy the settle bar and would burn
-to the ceiling on every visit. It gets the finding it is checking, the commits
-that landed since the marker that raised it, and any reply on the thread — and
-it is asked to judge whether that finding is actually closed, then review the
-new head for anything the change introduced. It is anchored by construction: it will check
+responding to the review, and that case has to work or a `unsettled: not our
+branch` PR could never satisfy the settle bar and would burn to the ceiling on
+every visit. It gets the finding it is checking, the commits that landed since
+the marker that raised it, and any reply on the thread — and it is asked to
+judge whether that finding is actually closed, then review the new head for
+anything the change introduced. It is anchored by construction: it will check
 the delta rather than re-derive the whole diff. That is the trade, and it buys
 the one thing a cold round cannot do — someone other than the author confirming
 the fix does what the finding asked.
@@ -1058,8 +1065,8 @@ head.
 Its brief: run `/code-review high` on that PR, post one marker comment, and
 submit its findings as a review. Give it the head SHA you captured, and require
 the comment's body to **start** with the literal `cold: findings @ <sha>` or
-`cold: clean @ <sha>`, before any heading or
-formatting, since that whole line is what selection matches and routes on.
+`cold: clean @ <sha>`, before any heading or formatting, since that whole line
+is what selection matches and routes on.
 
 **Which of the two is decided by Critical and Medium alone.** `cold: findings`
 means at least one Critical or Medium. A round that found *only* nits, or
@@ -1070,9 +1077,8 @@ actually cleared the bar. The nits go in the review, as they would for any
 other round; the comment stays a marker line either way.
 
 A summary may follow on the same line (`cold: findings @ 2c1a865 — 2 Critical,
-1 Medium`); nothing may precede the
-marker, and the SHA is not optional — the routing table is keyed on it, and a
-marker without one can never match a head.
+1 Medium`); nothing may precede the marker, and the SHA is not optional — the
+routing table is keyed on it, and a marker without one can never match a head.
 
 **That line is the whole comment.** The findings do not go in it — they go in
 the review, tiered:
@@ -1364,13 +1370,13 @@ is the intent, since the oldest have waited longest. Do not order by the
 **Run budget: 32 rounds per run**, cold and semi-cold together. *Rounds*, not
 reviews: each round now submits a GitHub review as well as posting its marker,
 so counting "reviews" would be ambiguous about which artifact is meant. The
-budget counts rounds, and a round is one marker comment. Six rounds
-across a queue this size would permit far more — a whole night of nothing but
-reviewing, which together with "stop on usage limits" means step 3 never
-happens. **When the budget is spent, stop reviewing and go to step 3** — but
-step 3 may then only plan and file, **not open PRs**, because a PR opened with
-no review budget left is a draft this run cannot review, which the hard rules
-forbid. Say so in the report. A spent budget clears steps 1 and 2 for the rest of the run;
+budget counts rounds, and a round is one marker comment. Six rounds across a
+queue this size would permit far more — a whole night of nothing but reviewing,
+which together with "stop on usage limits" means step 3 never happens. **When
+the budget is spent, stop reviewing and go to step 3** — but step 3 may then
+only plan and file, **not open PRs**, because a PR opened with no review budget
+left is a draft this run cannot review, which the hard rules forbid. Say so in
+the report. A spent budget clears steps 1 and 2 for the rest of the run;
 without that fall-through the brief would forbid reviewing and gate ticket work
 behind reviews that can no longer happen, and specify nothing to do next.
 
