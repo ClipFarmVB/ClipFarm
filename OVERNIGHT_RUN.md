@@ -251,7 +251,14 @@ log, drop it, and move on — do not guess.
 
 If nothing carries the label, or everything that does is done, **stop the loop**.
 
-These four are rules, not scope, which is why they live here: an operator
+**In `review-only` mode this rule does not apply.** That mode never reaches step
+3, so an empty ticket queue says nothing about whether there is work: a night
+with no `overnight-ok` issue is a perfectly ordinary night for reviewing a
+backlog of PRs. Stopping on it would end the run before it reviewed anything,
+which is the opposite of the mode's purpose. `review-only` stops on the
+condition in [Mode](#mode) instead.
+
+These rules are rules, not scope, which is why they live here: an operator
 rewriting "This run" for tonight would otherwise discard the safety gate along
 with last night's ticket list.
 
@@ -1459,8 +1466,8 @@ stops after one or two rounds regardless.
 **So on a backlogged night — at `review scope: all`, see above — step 3 does not
 happen, and the 5-PR cap is not reachable.** Twenty-odd PRs at one to two rounds
 is 20–40 reviews, and five new PRs at three each is another 15; there is no
-reading of a 32-round budget on which both fit. Priority order gates ticket work behind a queue this document
-says the budget cannot finish, so ticket work waits for a night that starts with
+reading of a 32-round budget on which both fit. Priority order gates ticket work
+behind a queue this document says the budget cannot finish, so ticket work waits for a night that starts with
 the queue already marked. That is the intended trade — the queue is the
 bottleneck, not ticket supply — but it should be read as a consequence, not
 discovered at 4am.
@@ -1477,10 +1484,10 @@ Note what this is and is not: the budget stays **32**. Nothing here raises a cap
 and nothing here licenses raising one — if the ceilings make this mode
 impractical, say so in the report rather than widening them.
 
-**In `build` mode, within that reserve:** do not open a new PR unless at least
-three reviews remain.** Two is the clean case only, and a PR with a single round of findings
-costs three, so a smaller reserve guarantees the PR it just opened ends
-`unsettled: ran out of rounds` by construction. A PR this run opens must be
+**In `build` mode, within that reserve: do not open a new PR unless at least
+three reviews remain.** Two is the clean case only, and a PR with a single round
+of findings costs three, so a smaller reserve guarantees the PR it just opened
+ends `unsettled: ran out of rounds` by construction. A PR this run opens must be
 reviewable by this run — a draft nobody has looked at is exactly what the hard
 rules forbid leaving behind. If the budget cannot cover a review, step 3 writes
 the plan into the log instead of opening a PR.
