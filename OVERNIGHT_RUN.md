@@ -484,9 +484,33 @@ Compare the PR's current head SHA with the SHA in its latest marker. Different
 means code has landed that no round has seen:
 
 ```
-gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]"
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1
+ROUNDS='^(cold|semi-cold):'
+SHA=$(gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]")
+LATEST=$(gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1)
+MARKSHA=$(printf '%s' "$LATEST" | sed -n 's/.*@ \([0-9a-f]\{7\}\).*/\1/p')
+
+echo "head:   $SHA"
+echo "marker: $LATEST"
+[ -n "$LATEST" ]  || echo "no round yet — first look"
+[ -n "$MARKSHA" ] || echo "marker carries no SHA — treat as first look"
+[ "$MARKSHA" = "$SHA" ] && echo same || echo differs
 ```
+
+One block, because the three values are only meaningful together: the marker
+line feeds the SHA extraction, and a snippet that leaves `$LATEST` unassigned
+extracts nothing and reports `differs` for every PR.
+
+A marker with no extractable SHA is a malformed round: treat the PR as a
+first-look case and give it a cold round, rather than trusting a marker whose
+subject cannot be established.
+
+**`ROUNDS` is broader than the routed markers, so handle the gap.** It matches
+anything starting `cold:` or `semi-cold:`, while routing knows only four
+phrasings; a reviewer that writes `cold: no findings` is selected and then
+routes nowhere. **A latest marker that matches `ROUNDS` but none of the four
+routed forms is malformed: re-run the round with the brief restated, and note it
+in the report.** Do not guess what was meant, and do not treat it as clean — the
+one reading that fails safe is "this round did not happen".
 
 **Compare SHAs, never dates.** A commit's `committer.date` is when it was
 *written*, not when it was pushed: an author who committed on Tuesday and pushed
@@ -539,6 +563,14 @@ it, as you tell the cold reviewer, to post with `gh pr comment` — never
 per finding: the rules that recover state after a compaction count marker
 comments, and a round posting several inflates that count as surely as one
 posting none.
+
+**Check the marker landed, every time.** Immediately after a round posts, read
+the latest marker back and confirm it is the one that round wrote, with the SHA
+it reviewed. A round whose marker was posted as a review, prefixed with a
+heading, or phrased outside the four forms is invisible to every rule here, and
+the two bookkeeping sources — your logged round count and the marker count on
+the PR — then disagree with nothing to say which is right. If it did not land,
+re-post it correctly; that repost is not a new round and does not spend budget.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, apply the `unsettled` label with a
@@ -621,8 +653,9 @@ for.
 
 **2 — Address the review findings on the PR you are carrying**, if **this run**
 created its branch. Not merely if the account matches: `gh api user -q .login`
-also returns PRs this account opened on earlier nights, and pushing to those is
-what the hard rule against pushing to branches this run did not create forbids.
+returns *your login*, and matching it against `.author.login` also matches PRs
+this account opened on earlier nights — pushing to those is what the hard rule
+against pushing to branches this run did not create forbids.
 For a PR you may not push to, describe the fix in a comment, apply `unsettled`
 and post `unsettled: not our branch @ <sha>`. That is the cheap terminal state,
 not a dead end: the author pushing a fix re-opens it on its own.
@@ -800,7 +833,9 @@ sorts wrong against it and the count comes back low or zero — which reads as "
 rounds this run" and hands the PR a fresh six-round ceiling:
 
 ```
+ROUNDS='^(cold|semi-cold):'
 SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
+[ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
 REOPENED=$(gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"^reopened:\"; \"i\")) | .created_at" | tail -1)
 FROM=$(printf '%s\n%s\n' "$SINCE" "$REOPENED" | sort | tail -1)
 gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.created_at > \"$FROM\") | select(.body | test(\"$ROUNDS\"; \"i\")) | .id" | wc -l
@@ -842,7 +877,7 @@ this run owns and keeps finding things in, since a PR from an earlier night
 stops after one or two rounds regardless.
 
 Reserve budget before opening anything: **do not open a new PR in step 3 unless
-at least **three** reviews remain — two is the clean case only, and a PR with a
+at least three reviews remain.** Two is the clean case only, and a PR with a
 single round of findings costs three, so a smaller reserve guarantees the PR it
 just opened ends `unsettled: ran out of rounds` by construction. A PR this run
 opens must be reviewable by
