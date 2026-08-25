@@ -46,7 +46,11 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   // Keyboard navigation
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape")     onClose();
+      if (e.key === "Escape") { onClose(); return; }
+      // Arrows belong to the player while it holds focus — they seek. Since
+      // CF-227 moves focus into the video on open, navigating clips on the same
+      // keys would scrub and change clip at once. Tab off the player first.
+      if (document.activeElement === videoRef.current) return;
       if (e.key === "ArrowLeft")  onPrev?.();
       if (e.key === "ArrowRight") onNext?.();
     }
@@ -75,6 +79,7 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
       // `aria-modal` is what stops a screen reader swiping into the grid behind.
       role="dialog"
       aria-modal
+      aria-label={`${clip.action_type} clip`}
       className="fixed inset-0 z-50 flex h-[100dvh] items-center justify-center bg-black/80 backdrop-blur-sm sm:h-auto sm:p-4"
       onClick={handleOverlayClick}
     >

@@ -37,16 +37,6 @@ beforeEach(() => {
 
 
 describe("FOCUSABLE", () => {
-  it("excludes a media element, deliberately", () => {
-    // <video controls> IS focusable in a browser, but listing it makes it a
-    // wrap boundary — and Tab from the player is how a keyboard user reaches
-    // the seek bar and volume inside its shadow controls. nextFocusableAfter
-    // handles it instead; see the "focusable but unlisted" cases below.
-    const el = overlay(`<button id="a">a</button><video controls></video>`);
-    const tags = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].map((n) => n.tagName);
-    expect(tags).toEqual(["BUTTON"]);
-  });
-
   it("excludes a hidden input, which cannot take focus", () => {
     // It matches `input:not([disabled])`, so without the extra clause a hidden
     // input could become `first` or `last` and the wrap target would be
@@ -197,33 +187,41 @@ describe("restoreFocusTo", () => {
 });
 
 
-describe("focusable but unlisted (the <video controls> case)", () => {
-  it("does not wrap when something focusable follows the video", () => {
-    // The common ClipModal shape: header buttons, the player, then prev/next.
-    // Tab from the video must fall through so the browser can walk into the
-    // player's own shadow controls.
-    const el = overlay(`
-      <button id="copy">copy</button>
-      <video id="v" controls></video>
-      <button id="next">next</button>
-    `);
-    const video = document.getElementById("v")!;
-    video.focus();
-    // jsdom will not focus a <video>; assert on the decision, not on focus.
-    expect(nextFocusableAfter(el, video)?.id).toBe("next");
-
-    const e = tab();
-    Object.defineProperty(el.ownerDocument, "activeElement", {
-      value: video, configurable: true,
-    });
-    expect(trapTabWithin(el, e)).toBe(false);
-    expect(e.defaultPrevented).toBe(false);
+describe("the <video controls> case", () => {
+  // These are written to FAIL under the scheme where video is absent from
+  // FOCUSABLE. The previous pair did not: both returned the same verdict either
+  // way, so they passed while the player was unreachable.
+  it("puts the player in the Tab cycle", () => {
+    const el = overlay(`<button id="copy">copy</button><video id="v" controls></video>`);
+    const tags = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].map((n) => n.tagName);
+    expect(tags).toEqual(["BUTTON", "VIDEO"]);
   });
 
-  it("wraps when the video is the last thing in the overlay", () => {
-    // A single-clip modal has no prev/next. There is nothing after the player,
-    // so a forward Tab would leave the overlay entirely — the leak that made
-    // listing <video> tempting in the first place.
+  it("wraps backward from the first control ONTO the player", () => {
+    // The discriminating case. With video absent from FOCUSABLE, `last` is the
+    // Close button and shift-Tab from Copy lands there — leaving the player
+    // unreachable in both directions, which is what a single-clip modal did.
+    //
+    // Asserted by spying on focus() rather than reading activeElement: jsdom
+    // does not treat <video> as focusable, so calling focus() on one is a no-op
+    // there. What the trap *chose* is the behaviour under test; whether jsdom
+    // honours it is jsdom's business.
+    const el = overlay(`
+      <button id="copy">copy</button>
+      <button id="close">close</button>
+      <video id="v" controls></video>
+    `);
+    const video = document.getElementById("v")!;
+    let focused = false;
+    video.focus = () => { focused = true; };
+    document.getElementById("copy")!.focus();
+
+    const e = tab(true);
+    expect(trapTabWithin(el, e)).toBe(true);
+    expect(focused).toBe(true);
+  });
+
+  it("wraps forward from the player to the first control", () => {
     const el = overlay(`<button id="copy">copy</button><video id="v" controls></video>`);
     const video = document.getElementById("v")!;
     expect(nextFocusableAfter(el, video)).toBeNull();
@@ -234,5 +232,24 @@ describe("focusable but unlisted (the <video controls> case)", () => {
     const e = tab();
     expect(trapTabWithin(el, e)).toBe(true);
     expect(e.defaultPrevented).toBe(true);
+  });
+
+  it("lets Tab through when a control follows the player", () => {
+    // The multi-clip shape: header, player, prev/next. Document order decides,
+    // so the trap stays out of the way until there is genuinely nothing after.
+    const el = overlay(`
+      <button id="copy">copy</button>
+      <video id="v" controls></video>
+      <button id="next">next</button>
+    `);
+    const video = document.getElementById("v")!;
+    expect(nextFocusableAfter(el, video)?.id).toBe("next");
+
+    Object.defineProperty(el.ownerDocument, "activeElement", {
+      value: video, configurable: true,
+    });
+    const e = tab();
+    expect(trapTabWithin(el, e)).toBe(false);
+    expect(e.defaultPrevented).toBe(false);
   });
 });

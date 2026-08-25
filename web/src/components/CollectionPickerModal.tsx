@@ -19,10 +19,14 @@ interface Props {
 
 export function CollectionPickerModal({ clipId, onClose }: Props) {
   // A full-screen overlay, so the page behind it must hold still like it does
-  // behind the clip modal. This is also the second holder that makes the
-  // lock's reference counting load-bearing rather than theoretical: the picker
-  // can open over the clip modal, and its close must not unlock the page while
-  // the modal is still up.
+  // behind the clip modal. It is the second holder of the lock, which is what
+  // makes its reference counting matter rather than being theoretical.
+  //
+  // It does NOT open over the clip modal, despite what this comment used to
+  // say: the picker is opened from a card-footer button, and ClipModal has no
+  // save affordance to open it from. Corrected while adding the focus trap
+  // (CF-227), because if it were true the two traps would fight over the same
+  // window listener.
   useBodyScrollLock(true);
 
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -88,6 +92,7 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
       // `aria-modal` is what stops a screen reader swiping into the page behind.
       role="dialog"
       aria-modal
+      aria-label="Save clip to a collection"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >

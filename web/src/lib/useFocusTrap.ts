@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, type RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
 /**
  * Everything an overlay covering the page owes the keyboard (CF-227).
@@ -16,18 +16,26 @@ import { useEffect, type RefObject } from "react";
 
 // Tab order inside an overlay. Deliberately the plain set — links, buttons and
 // form controls. `input[type=hidden]` is excluded because it matches
-// `input:not([disabled])` but cannot take focus, and a hidden input becoming
-// `first` or `last` would make the wrap target unfocusable.
+// `input:not([disabled])` but cannot take focus, and a hidden input becoming a
+// wrap target would send focus nowhere.
 //
-// `video[controls]` is NOT here, and that is deliberate: browsers make it
-// focusable, but listing it makes it a wrap boundary, and Tab from a video is
-// how a keyboard user reaches the seek bar and volume in its shadow controls.
-// `nextFocusableAfter` below handles it instead — it is focusable-but-unlisted,
-// which is exactly the case that needed solving generally.
+// `video[controls]` IS here. It has to be: the wrap targets come from this list,
+// so an unlisted focusable is in neither Tab cycle — in a single-clip modal
+// (copy, close, video, no prev/next) Tab from Close wrapped straight back to
+// Copy and the player was unreachable in either direction.
+//
+// **Known limitation, not solved here.** A UA media control lives in a closed
+// shadow root, so `document.activeElement` stays the `<video>` host however far
+// Tab has walked inside it. Nothing in JavaScript can tell "still in the seek
+// bar" from "done with the player", so a trap that keeps focus in the overlay
+// necessarily also keeps it out of those controls. Letting Tab through instead
+// would leak focus into the grid behind the backdrop, which is worse. Real
+// remedies are our own controls or an explicit escape hatch — both larger than
+// this card.
 export const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), ' +
-  'select:not([disabled]), textarea:not([disabled]), ' +
-  '[tabindex]:not([tabindex="-1"])';
+  'select:not([disabled]), textarea:not([disabled]), video[controls], ' +
+  'audio[controls], [tabindex]:not([tabindex="-1"])';
 
 
 /**
@@ -151,6 +159,17 @@ export function useFocusTrap(
 ): void {
   const { initialFocus, restoreFocusRef, onEscape } = options;
 
+  // The effect below depends only on `active`, so everything it closes over is
+  // captured once. That silently broke CollectionPickerModal: it passes
+  // `creating ? undefined : onClose`, and the handler kept the value from the
+  // first render forever — Escape closed the picker while its "new collection"
+  // field was open, the exact thing that option existed to prevent. A ref
+  // refreshed every render is read at keypress time instead, so the contract is
+  // "pass whatever you like, it will be current" rather than an unenforced
+  // "callers pass a stable handler".
+  const onEscapeRef = useRef(onEscape);
+  onEscapeRef.current = onEscape;
+
   useEffect(() => {
     if (!active) return;
     const container = containerRef.current;
@@ -167,7 +186,8 @@ export function useFocusTrap(
     initial?.focus();
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && onEscape) { onEscape(); return; }
+      const escape = onEscapeRef.current;
+      if (e.key === "Escape" && escape) { escape(); return; }
       if (e.key !== "Tab") return;
       const el = containerRef.current;
       if (el) trapTabWithin(el, e);
@@ -179,8 +199,9 @@ export function useFocusTrap(
       win.removeEventListener("keydown", onKey);
       restoreFocusTo(restoreTarget);
     };
-    // containerRef and initialFocusRef are refs; onEscape is read through the
-    // closure and callers pass a stable handler.
+    // containerRef, initialFocus and restoreFocusRef are read at activation;
+    // onEscape is read through a ref at keypress time, so none of them belongs
+    // in the dependency array — re-running the effect would re-steal focus.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 }
