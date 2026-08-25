@@ -119,13 +119,14 @@ whichever is written last owns the first line:
 
 ```
 SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
-[ -n "$SINCE" ] || { echo "no run start in log — stop and write one"; }
+[ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
 ```
 
 `tail -1`, not `grep -m1`: nothing truncates this log, so the first match is the
 *oldest* run's start and the newest is what you want. And guard the empty case —
 an unset `SINCE` makes `.created_at > ""` true for every comment, which turns
-every per-run bound into an all-time one silently. Both failures point the same
+every per-run bound into an all-time one silently. The guard **exits**; a guard
+that only prints lets the failure it detected proceed anyway. Both failures point the same
 way as the `$(date …)` trap below: they widen the window rather than narrowing
 it, so nothing errors and the ceiling arrives early.
 
@@ -260,10 +261,10 @@ that prefix matching separates `semi-cold: closes` from `semi-cold: does not
 close` only because neither is a prefix of the other — preserve that if you ever
 add a fifth marker.
 
-**Use `ROUNDS` wherever something is counted** — the six-round ceiling, the
-32-review budget, the clean-marker test — and `MARKERS` only where you want the
-latest machine-written comment of any kind. Counting with `MARKERS` charges a
-`reopened:` or `unsettled:` comment against the ceiling, and neither is a round.
+**Use `ROUNDS` wherever something is counted or routed** — the six-round
+ceiling, the 32-review budget, the latest-round lookup. A pattern that also
+matched `reopened:` or `unsettled:` would charge those comments against the
+ceiling and route on them, and neither is a round.
 
 Every rule below that reads markers uses the same pattern. `gh`'s built-in
 `--jq` takes a filter string only — it has no `--arg` — so the pattern is
@@ -272,15 +273,18 @@ interpolated by the shell and the filter's own quotes are escaped. Match it
 not strand the PR:
 
 ```
-MARKERS='^(cold|semi-cold|reopened|unsettled):'   # anything machine-readable
-ROUNDS='^(cold|semi-cold):'                       # rounds only — what counts
+ROUNDS='^(cold|semi-cold):'
 ```
 
-**Set it in every shell that uses it**, including the round-counting query
+`reopened:` and `unsettled:` are matched by their own literal prefixes where
+they are read, and are deliberately outside `ROUNDS` — they are not rounds and
+must never be counted as any.
+
+**Set `ROUNDS` in every shell that uses it**, including the round-counting query
 hundreds of lines below, which runs in a later iteration and possibly after a
 compaction. It is a pattern to re-declare, not state that persists. An unset
-`MARKERS` makes that filter `test("")`, which matches every comment on the PR
-and returns exactly the count the marker scheme exists to avoid.
+`ROUNDS` makes that filter `test("")`, which matches every comment on the PR and
+returns exactly the count the marker scheme exists to avoid.
 
 **Post them with `gh pr comment`, never `gh pr review`.** A review body does not
 appear in `gh pr view --json comments` at all — #191 carries three comments and
@@ -335,19 +339,19 @@ A `cold: clean` marker on an unlabelled PR therefore means: apply the label now
 — settle bar permitting — unless the PR has never had a finding and carries only
 one such marker, in which case it wants its second clean cold round first.
 
-**Count those `cold: clean` markers in the same window as the finding test
-below.** Both halves of the two-clean rule have to agree on what "this PR" means
-or the rule collapses: scoping the finding count to a re-open while counting
-clean markers over the PR's whole life lets a re-opened `review-settled` PR —
-which carries a `cold: clean` from before the new commits — settle after a
-single clean round on code nothing has confirmed anything about. That is the
-exact case the rule exists for.
+**Count only `cold: clean` markers whose SHA is the current head.** The rule is
+about *this code* having been read clean twice, not about the PR's history: a
+marker written against a head that has since been replaced says nothing about
+what is there now. Windowing by the `reopened:` marker is not enough on its own,
+because an unlabelled PR can take a push mid-cycle with no re-open involved, and
+its stale `cold: clean` would still count. Matching the SHA covers both, and
+needs no window at all.
 
 It has its own pattern, and the same unset hazard as the others:
 
 ```
-CLEAN='^cold: clean'
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$CLEAN\"; \"i\")) | .id" | wc -l
+SHA=$(gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]")
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"^cold: clean @ $SHA\"; \"i\")) | .id" | wc -l
 ```
 
 For a re-opened PR add the `select(.created_at > "$REOPENED")` clause, exactly
@@ -363,7 +367,7 @@ count in this section is scoped by `SINCE`; this one must not be, or a PR whose
 findings were raised and closed last night reads as never-had-a-finding tonight
 and settles a round early.
 
-**Set `FINDINGS` in the shell you ask from**, for the reason the `MARKERS`
+**Set `FINDINGS` in the shell you ask from**, for the reason the `ROUNDS`
 warning gives: unset, it becomes `test("")`, matches every comment, returns
 nonzero, and a PR that has never had a finding settles on one clean round
 instead of two. That failure runs toward *less* review, which is the direction
@@ -404,8 +408,9 @@ identical to one reviewed clean.
 them.
 
 **The label is bare `unsettled`. The reason goes in the comment, never in the
-label name.** Only two labels exist on this repo — `review-settled` and
-`unsettled` — and `gh pr edit --add-label unsettled:\ blocked` fails against a
+label name.** There are exactly two **review-state** labels — `review-settled`
+and `unsettled` — alongside the ordinary ones the repo uses (`P1`, `api`,
+`overnight-ok` and so on). `gh pr edit --add-label unsettled:\ blocked` fails against a
 label that does not exist, leaving the PR unlabelled with open Criticals, which
 is the one state this document forbids. So: apply `unsettled`, and post a
 comment opening `unsettled: <reason> @ <sha>`. That comment is the only record
@@ -431,6 +436,13 @@ Only one of the three needs a human to clear it:
   unrelated would otherwise buy fresh rounds to re-derive the same finding off
   the same unchanged lines.
 
+**A human clearing a label leaves no `reopened:` marker**, because nothing this
+run did re-opened it. So when you pick up a PR that has an `unsettled:` comment
+but no `unsettled` label, **write the `reopened: <sha>` marker yourself before
+the first round.** Otherwise the counting windows silently revert to the PR's
+whole life, and the two-clean rule reads clean markers from before the finding
+was ever raised.
+
 **When a carve-out re-opens a PR, take the label off and start cold.** The
 routing table above reads the latest marker, and on a re-opened PR that marker
 describes a head that no longer exists: a re-opened `review-settled` PR still
@@ -446,8 +458,15 @@ findings raised against superseded code. Neither is what the PR needs. So:
   new code, which is exactly what the two-clean rule exists to prevent. The
   marker is durable; the label was not. Left on, it also advertises
   `review-settled` to humans reading a PR with unreviewed commits.
-- **The next round is cold**, whatever the last marker says. New code that
-  nothing has looked at is the first-look case.
+- **Route on the last round marker, exactly as the table does** — the
+  `reopened:` marker you just posted is not routed on. For a PR that was
+  `review-settled` that means a cold round: its last round was `cold: clean` and
+  the SHA now differs, so this is new code nothing has looked at. For a PR that
+  was `unsettled: not our branch` it means a **semi-cold** round: its last round
+  was `cold: findings`, and the author's push is a fix to check. Do not force
+  cold here. Only a semi-cold round can close a finding for the settle bar, so
+  forcing cold on an author-fixed PR makes its terminal state unreachable — on
+  exactly the PRs this document says are most of the queue.
 - **Re-read the round count, bounded by the `reopened:` marker you just
   posted.** Removing the label resets nothing on its own — no count lives in a
   label. Removing it makes the PR *eligible*; the marker *bounds the count*.
@@ -465,7 +484,7 @@ Compare the PR's current head SHA with the SHA in its latest marker. Different
 means code has landed that no round has seen:
 
 ```
-gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha"
+gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]"
 gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1
 ```
 
@@ -551,8 +570,16 @@ Its brief: run `/code-review high` on that PR and post one marker comment. Give
 it the head SHA — `gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq
 ".head.sha[0:7]"` — and require the comment's body to **start** with the literal
 `cold: findings @ <sha>` or `cold: clean @ <sha>`, before any heading or
-formatting, since that whole line is what selection matches and routes on. A
-summary may follow on the same line
+formatting, since that whole line is what selection matches and routes on.
+
+**Which of the two is decided by Critical and Medium alone.** `cold: findings`
+means at least one Critical or Medium. A round that found *only* nits, or
+nothing at all, writes `cold: clean` — the settle bar permits nits, and a round
+that reports one as `cold: findings` routes the PR to a fix it does not need,
+which on a branch this run cannot push to ends as `unsettled` on a PR that had
+actually cleared the bar. Put the nits in the comment body under `cold: clean`.
+
+A summary may follow on the same line
 (`cold: findings @ 2c1a865 — 2 Critical, 1 Medium`); nothing may precede the
 marker, and the SHA is not optional — the routing table is keyed on it, and a
 marker without one can never match a head. Then the findings, in tiers:
@@ -587,8 +614,10 @@ and a freshly spawned subagent has no last level — leaving it off makes the
 depth of every review an accident of the harness. `high` is the level that
 matches this brief: broader coverage, some uncertain findings included.
 
-Do not use `/code-review ultra`; it is a real level, but it is billed separately
-and user-triggered, so an unattended run must not reach for it.
+Do not use `/code-review ultra`. Whether or not it counts as an effort level
+alongside `low`…`max`, it launches a multi-agent review in the cloud, is billed
+separately and is user-triggered — none of which an unattended run should reach
+for.
 
 **2 — Address the review findings on the PR you are carrying**, if **this run**
 created its branch. Not merely if the account matches: `gh api user -q .login`
@@ -772,8 +801,17 @@ rounds this run" and hands the PR a fresh six-round ceiling:
 
 ```
 SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.created_at > \"$SINCE\") | select(.body | test(\"$ROUNDS\"; \"i\")) | .id" | wc -l
+REOPENED=$(gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"^reopened:\"; \"i\")) | .created_at" | tail -1)
+FROM=$(printf '%s\n%s\n' "$SINCE" "$REOPENED" | sort | tail -1)
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.created_at > \"$FROM\") | select(.body | test(\"$ROUNDS\"; \"i\")) | .id" | wc -l
 ```
+
+`FROM` is the later of the two, which is what the rule above says and what
+`$SINCE` alone does not give you: a PR re-opened earlier tonight would otherwise
+be counted from the run start, sweeping in the rounds it already spent and
+hitting the ceiling early — the failure this section exists to prevent. Sorting
+`Z`-suffixed UTC lexicographically picks the later; an empty `REOPENED` sorts
+first and leaves `SINCE`.
 
 **What this costs, plainly — and it depends on who owns the branch.**
 
