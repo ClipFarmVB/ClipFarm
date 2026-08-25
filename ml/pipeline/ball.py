@@ -138,11 +138,19 @@ MIN_SPEED_PXPS            = 120.0   # px/s: ignore near-stationary ball (rolling
 #    1440p   floor 0.667  ceiling 0.833                   band 1.25x
 #    2160p   floor 0.444  ceiling 0.556  (capped)         band 1.25x
 #
-# A swept synthetic track finds zero contacts at 2160p at every physical speed
-# from 0.4 to 3.0 frame-heights/s; only the 1.25x sliver survives, and real play
-# is not in it. So above MAX_VALIDATED_FRAME_HEIGHT the cap buys a loud log line
-# and little else — the ceiling is the binding constraint, and the real fix is
-# scaling SEG_MAX_SPEED_PXPS, blocked on the tracking pollution documented there.
+# Read the last row carefully: the floor drops to 0.444. Below the clamp the
+# scale tracks resolution and the floor stays put at the validated 0.667 while
+# only the ceiling closes — degradation, but in the right direction. Past the
+# clamp the scale is frozen under a growing frame, so the whole band slides
+# below where real play lives (0.3-0.9 fh/s). Measured on real tracks: at 2160p
+# `main`'s unscaled thresholds still find contacts and this PR's clamped ones
+# find none, so past the clamp point normalizing is worse than not.
+#
+# _scale_for therefore returns 1.0 above the clamp point rather than the capped
+# value — pre-CF-174 behaviour, which over-fires but is never narrower, so no
+# resolution regresses against `main`. That is an interim, not a fix: the real
+# one is scaling SEG_MAX_SPEED_PXPS, blocked on the tracking pollution
+# documented above (CF-229), after which the clamp is unnecessary entirely.
 CONTACT_SPEED_CEILING_FRAC = 0.80   # cap scaled contact speeds at this × SEG_MAX_SPEED_PXPS
 MAX_VALIDATED_FRAME_HEIGHT = 1080   # tallest footage CF-174 was measured on
 # Legacy thresholds — still used by fuse_with_ball_contacts "strong contact" check
@@ -502,11 +510,20 @@ def _scale_for(frame_height: int) -> float:
     silently applying 360p thresholds to a 1080p video is the bug this exists
     to prevent.
 
-    The result is capped so the scaled hit-speed floor stays clear of
-    SEG_MAX_SPEED_PXPS (see CONTACT_SPEED_CEILING_FRAC). The cap keeps the two
-    gates from becoming disjoint, but it does not make tall footage work — past
-    MAX_VALIDATED_FRAME_HEIGHT the surviving speed band narrows until real play
-    is no longer in it, so that case logs rather than pretending to be handled.
+    Three ranges, and the last one is the interesting one:
+
+      <= MAX_VALIDATED_FRAME_HEIGHT   scale normally; measured on test1/test2
+      up to the clamp point           scale normally, but warn — the floor is
+                                      still right, the ceiling is closing in
+      past the clamp point            return 1.0, i.e. pre-CF-174 behaviour
+
+    The clamp point is where CONTACT_HIT_SPEED_PXPS * scale would reach
+    CONTACT_SPEED_CEILING_FRAC of SEG_MAX_SPEED_PXPS. Freezing the scale there
+    keeps the two gates from becoming disjoint, but a frozen scale under a
+    growing frame is not a weaker normalization — it is the wrong one, and it
+    ends up narrower than no normalization at all. So past that height this
+    reverts rather than extrapolating; see the comment at the return for why
+    that is the honest interim rather than a fix.
     """
     if frame_height <= 0:
         logger.warning(
@@ -519,38 +536,63 @@ def _scale_for(frame_height: int) -> float:
     scale        = frame_height / REFERENCE_FRAME_HEIGHT
     max_scale    = CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS / CONTACT_HIT_SPEED_PXPS
     clamp_height = max_scale * REFERENCE_FRAME_HEIGHT
-    scale        = min(scale, max_scale)
+
+    if frame_height > clamp_height:
+        # Past the clamp, normalizing is worse than not normalizing, so stop.
+        #
+        # Below this height the scale still tracks resolution, which keeps the
+        # floor at a constant 0.667 frame-heights/s — the value measured good on
+        # test1/test2 — and only the ceiling closes in. Above it the scale is
+        # frozen while the frame keeps growing, so the whole band slides *down*
+        # in physical terms: 0.444-0.556 fh/s at 2160p, under the 0.3-0.9 where
+        # real play lives. A clamped scale is not a weaker normalization, it is
+        # the wrong one.
+        #
+        # Unscaled thresholds at 2160p give a band of 0.111-0.556 fh/s. Also
+        # wrong, and over-firing rather than silent — but strictly wider, and it
+        # is what `main` does today, so this cannot be a regression at any
+        # resolution. Reverting is the honest interim until SEG_MAX_SPEED_PXPS
+        # can scale (CF-229) and the clamp stops being needed at all.
+        #
+        # The discontinuity at this height is real and deliberate: thresholds
+        # jump 4x across one pixel. It is the price of refusing to extrapolate
+        # past the evidence, and it is logged rather than smoothed over.
+        logger.error(
+            "frame_height %d is past the %.0fp clamp point, where the contact scale "
+            "stops tracking resolution and the admissible band (%.3f-%.3f "
+            "frame-heights/s) drops below real play. Reverting to UNSCALED "
+            "thresholds — the pre-CF-174 behaviour, which over-fires but is not "
+            "narrower than it. Contact detection is not normalized at this "
+            "resolution; scaling SEG_MAX_SPEED_PXPS is the fix (CF-229).",
+            frame_height, clamp_height,
+            CONTACT_HIT_SPEED_PXPS * max_scale / frame_height,
+            SEG_MAX_SPEED_PXPS / frame_height,
+        )
+        return 1.0
 
     if frame_height > MAX_VALIDATED_FRAME_HEIGHT:
         # Not "under-normalized" — quantify it, because the number is the point.
         # SEG_MAX_SPEED_PXPS does not scale, so what is left between the scaled
         # floor and the fixed ceiling is the entire band this detector can see.
         #
-        # Severity splits at the clamp point, not at MAX_VALIDATED_FRAME_HEIGHT,
-        # because the band closes continuously: 1080p leaves 1.67x and 1081p
-        # leaves 1.666x — the same footage in every practical sense. Error is a
-        # paging-grade level in most setups, so it is reserved for clamped
-        # footage, where the band has bottomed out at 1.25x and a swept track
-        # really does find nothing. In between, the printed numbers are the point.
+        # Warning, not error: this range still normalizes correctly — the floor
+        # holds at 0.667 frame-heights/s, the value measured good on test1 and
+        # test2 — and only the ceiling closes in, so contacts get scarcer rather
+        # than wrong. The band closes continuously (1080p leaves 1.67x, 1081p
+        # leaves 1.666x: the same footage in every practical sense), so there is
+        # nothing here to page anyone about. The height past which normalizing
+        # is actively worse than not is the clamp point, handled above.
         floor = CONTACT_HIT_SPEED_PXPS * scale
-        if frame_height > clamp_height:
-            log, outlook = logger.error, (
-                "expect few or no contacts, hence no keep-windows and no clips"
-            )
-        else:
-            log, outlook = logger.warning, (
-                "this height is unmeasured and contacts get scarcer as the band closes"
-            )
-        log(
+        logger.warning(
             "frame_height %d is above the %dp CF-174 was measured on. Contact "
             "detection admits only %.3f-%.3f frame-heights/s here (%.0f-%.0f px/s, a "
             "%.2fx band vs 5.00x at %.0fp) because SEG_MAX_SPEED_PXPS does not scale; "
-            "%s. Scaling the ceiling is the real fix (CF-174 follow-up).",
+            "this height is unmeasured and contacts get scarcer as the band closes. "
+            "Scaling the ceiling is the real fix (CF-229).",
             frame_height, MAX_VALIDATED_FRAME_HEIGHT,
             floor / frame_height, SEG_MAX_SPEED_PXPS / frame_height,
             floor, SEG_MAX_SPEED_PXPS,
             SEG_MAX_SPEED_PXPS / floor, REFERENCE_FRAME_HEIGHT,
-            outlook,
         )
     return scale
 
