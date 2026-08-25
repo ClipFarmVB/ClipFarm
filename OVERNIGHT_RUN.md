@@ -513,6 +513,14 @@ looks wrong. **Verify claims against the repository** rather than trusting the P
 description — that has caught real errors here more than once. Never mark a
 finding confirmed without checking it.
 
+**The reviewer runs on the same model as this session.** A spawned agent takes
+its model from its definition's frontmatter when it has one, and only inherits
+the parent's otherwise — so a definition added later can quietly review at a
+different, weaker model with nothing in this brief to notice. There is no
+`.claude/agents/` directory in this repo today, so inheritance is what happens;
+if that changes, or if you spawn a type that pins its own model, **say so in the
+report**. A review's depth is not something that should vary by accident.
+
 **Pin the level explicitly.** `/code-review` reuses the level you last typed,
 and a freshly spawned subagent has no last level — leaving it off makes the
 depth of every review an accident of the harness. `high` is the level that
