@@ -188,9 +188,12 @@ describe("restoreFocusTo", () => {
 
 
 describe("the <video controls> case", () => {
-  // These are written to FAIL under the scheme where video is absent from
-  // FOCUSABLE. The previous pair did not: both returned the same verdict either
-  // way, so they passed while the player was unreachable.
+  // Two of these four discriminate — they FAIL if video[controls] is dropped
+  // from FOCUSABLE again: "puts the player in the Tab cycle" and "wraps
+  // backward ... ONTO the player". The other two pass under either scheme and
+  // are kept as documentation of the document-order boundary, not as guards.
+  // Saying which is which, because the pair they replaced claimed to cover this
+  // case and did not.
   it("puts the player in the Tab cycle", () => {
     const el = overlay(`<button id="copy">copy</button><video id="v" controls></video>`);
     const tags = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].map((n) => n.tagName);

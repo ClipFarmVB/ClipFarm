@@ -18,6 +18,7 @@ interface ClipModalProps {
 export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   const videoRef  = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   // Auto-play when clip changes
   useEffect(() => {
@@ -35,12 +36,14 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   // No onEscape — the handler below already owns Escape for this overlay, and
   // passing it here too would close the modal twice.
   useFocusTrap(overlayRef, true, {
-    // The player, not the first button in the header. That default would put
-    // focus on "Copy link", where the first Space or Enter after opening any
-    // clip fires a request and overwrites the clipboard — pre-CF-227 focus sat
-    // on <body> and Space was inert, so the default would be a regression.
-    // Focusing the video also makes Space do what it should in a media dialog.
-    initialFocus: () => videoRef.current,
+    // The dialog card, not a control inside it. Two things that rules out:
+    // the default (first FOCUSABLE) is "Copy link", where the first Space or
+    // Enter after opening fires a request and overwrites the clipboard; and
+    // focusing the player instead makes the arrow keys belong to the video, so
+    // ← → stop navigating clips until the user Tabs away — while the footer
+    // still advertises them. A tabindex="-1" container has neither problem:
+    // nothing to activate, and arrows reach the handler below.
+    initialFocus: () => cardRef.current,
   });
 
   // Keyboard navigation
@@ -75,15 +78,23 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   return createPortal(
     <div
       ref={overlayRef}
-      // Matching the drawer (CF-60): the Tab trap only constrains the keyboard.
-      // `aria-modal` is what stops a screen reader swiping into the grid behind.
-      role="dialog"
-      aria-modal
-      aria-label={`${clip.action_type} clip`}
       className="fixed inset-0 z-50 flex h-[100dvh] items-center justify-center bg-black/80 backdrop-blur-sm sm:h-auto sm:p-4"
       onClick={handleOverlayClick}
     >
-      <div className="relative flex h-full w-full flex-col overflow-hidden border-border bg-surface sm:h-auto sm:max-w-4xl sm:rounded-xl sm:border sm:shadow-2xl sm:shadow-black/60">
+      <div
+        ref={cardRef}
+        // Matching the drawer (CF-60): the Tab trap only constrains the
+        // keyboard, and `aria-modal` is what stops a screen reader swiping into
+        // the grid behind. On the card rather than the backdrop, because the
+        // dialog is the card.
+        role="dialog"
+        aria-modal
+        aria-label={`${clip.action_type} clip`}
+        // Focusable, but not a Tab stop — FOCUSABLE excludes tabindex="-1".
+        // This is where focus lands on open; see useFocusTrap below.
+        tabIndex={-1}
+        className="relative flex h-full w-full flex-col overflow-hidden border-border bg-surface sm:h-auto sm:max-w-4xl sm:rounded-xl sm:border sm:shadow-2xl sm:shadow-black/60"
+      >
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-2.5 border-b border-border sm:px-4">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">

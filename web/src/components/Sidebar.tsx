@@ -66,8 +66,9 @@ export function Sidebar() {
   // where the aside is an ordinary column in the page.
   //
   // The hook restores focus to whatever held it when the trap engaged, which
-  // for this drawer is the hamburger that opened it. The display:none guard it
-  // needed when crossing into the desktop layout now lives in restoreFocusTo.
+  // is unreliable on WebKit, so this drawer passes its trigger explicitly. The
+  // display:none guard it needed when crossing into the desktop layout now
+  // lives in restoreFocusTo.
   const closeDrawer = useCallback(() => setOpen(false), []);
   useFocusTrap(asideRef, open && !isDesktop, {
     initialFocus: () => closeRef.current,

@@ -35,7 +35,7 @@ import { useEffect, useRef, type RefObject } from "react";
 export const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), ' +
   'select:not([disabled]), textarea:not([disabled]), video[controls], ' +
-  'audio[controls], [tabindex]:not([tabindex="-1"])';
+  '[tabindex]:not([tabindex="-1"])';
 
 
 /**
@@ -168,7 +168,11 @@ export function useFocusTrap(
   // "pass whatever you like, it will be current" rather than an unenforced
   // "callers pass a stable handler".
   const onEscapeRef = useRef(onEscape);
-  onEscapeRef.current = onEscape;
+  // In an effect rather than during render: assigning to a ref while rendering
+  // is a side effect React is entitled to discard or repeat under concurrent
+  // rendering. This runs after every commit, which is soon enough — the value
+  // is only read on a keypress.
+  useEffect(() => { onEscapeRef.current = onEscape; });
 
   useEffect(() => {
     if (!active) return;
