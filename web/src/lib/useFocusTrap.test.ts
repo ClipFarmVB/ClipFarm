@@ -7,11 +7,12 @@
 // No React renderer is involved. useFocusTrap is a thin useEffect around the
 // two functions below, and those are where the behaviour that has already been
 // got wrong once lives — so they are what gets pinned.
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   FOCUSABLE,
   nextFocusableAfter,
+  previousFocusableBefore,
   restoreFocusTo,
   trapTabWithin,
 } from "@/lib/useFocusTrap";
@@ -31,8 +32,29 @@ function tab(shiftKey = false): KeyboardEvent {
   return new KeyboardEvent("keydown", { key: "Tab", shiftKey, cancelable: true });
 }
 
+/**
+ * jsdom will not focus a `<video>`, so the only way to exercise the player
+ * branch is to say what `activeElement` is. `defineProperty` puts an *own*
+ * property on `document` that shadows `Document.prototype`'s getter, and it
+ * stays there for the rest of the file unless it is removed — a stale, detached
+ * element then answers every later `document.activeElement` read. Pair every
+ * call with the `afterEach` below rather than defining the property inline.
+ */
+function setActiveElement(el: Element): void {
+  Object.defineProperty(document, "activeElement", {
+    value: el, configurable: true,
+  });
+}
+
 beforeEach(() => {
   document.body.innerHTML = "";
+});
+
+afterEach(() => {
+  // Deleting the own property unshadows the real getter. `delete` rather than
+  // re-defining it: Document.prototype's is an accessor, and defining a value
+  // back over it would leave the shadow in place.
+  Reflect.deleteProperty(document, "activeElement");
 });
 
 
@@ -229,9 +251,7 @@ describe("the <video controls> case", () => {
     const video = document.getElementById("v")!;
     expect(nextFocusableAfter(el, video)).toBeNull();
 
-    Object.defineProperty(el.ownerDocument, "activeElement", {
-      value: video, configurable: true,
-    });
+    setActiveElement(video);
     const e = tab();
     expect(trapTabWithin(el, e)).toBe(true);
     expect(e.defaultPrevented).toBe(true);
@@ -248,11 +268,50 @@ describe("the <video controls> case", () => {
     const video = document.getElementById("v")!;
     expect(nextFocusableAfter(el, video)?.id).toBe("next");
 
-    Object.defineProperty(el.ownerDocument, "activeElement", {
-      value: video, configurable: true,
-    });
+    setActiveElement(video);
     const e = tab();
     expect(trapTabWithin(el, e)).toBe(false);
     expect(e.defaultPrevented).toBe(false);
+  });
+
+  it("leaves document.activeElement alone for the tests that follow", () => {
+    // Guards the afterEach above, and is placed last on purpose: without the
+    // cleanup this reads the frozen, detached <video> from the two tests above
+    // and fails. A stubbed global that outlives its test is invisible until
+    // someone appends a suite here and cannot work out why it fails.
+    const el = overlay(`<button id="copy">copy</button>`);
+    const copy = el.querySelector<HTMLElement>("#copy")!;
+    copy.focus();
+    expect(document.activeElement).toBe(copy);
+  });
+});
+
+
+describe("previousFocusableBefore", () => {
+  // nextFocusableAfter is covered through trapTabWithin's forward-wrap tests;
+  // the backward one is only reached on shift-Tab, so it gets its own.
+  it("finds the nearest preceding control, not the first", () => {
+    const el = overlay(`
+      <button id="a">a</button>
+      <button id="b">b</button>
+      <button id="c">c</button>
+    `);
+    const c = el.querySelector<HTMLElement>("#c")!;
+    expect(previousFocusableBefore(el, c)?.id).toBe("b");
+  });
+
+  it("returns null at the start of the container", () => {
+    const el = overlay(`<button id="a">a</button><button id="b">b</button>`);
+    const a = el.querySelector<HTMLElement>("#a")!;
+    expect(previousFocusableBefore(el, a)).toBeNull();
+  });
+
+  it("returns null for an unlisted element with nothing focusable before it", () => {
+    // The ClipModal shape: a tabindex="-1" card holding focus on open, with the
+    // controls inside it. shift-Tab from there must wrap rather than fall out
+    // of the overlay, and this null is what tells trapTabWithin to do that.
+    const el = overlay(`<div id="card" tabindex="-1"><button id="copy">copy</button></div>`);
+    const card = el.querySelector<HTMLElement>("#card")!;
+    expect(previousFocusableBefore(el, card)).toBeNull();
   });
 });

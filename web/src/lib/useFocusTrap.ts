@@ -51,13 +51,18 @@ export const FOCUSABLE =
  * shift branch let a forward Tab from there fall through to whatever sits
  * behind the backdrop and walk on into the page.
  *
- * **Inside the container, the boundary is document order rather than the
- * FOCUSABLE list.** An element can be focusable without matching that selector
- * — `<video controls>` is the one ClipModal cares about — and treating the last
- * *listed* element as the boundary both traps too early (blocking the video's
- * own controls) and too late (letting Tab off the end of an unlisted trailing
- * element). Asking "is there anything focusable after this in the container"
- * gets both right, and generalises to whatever the next overlay puts in.
+ * **Inside the container, the boundary is document order rather than position
+ * in the FOCUSABLE list.** For anything the selector matches the two agree —
+ * nothing follows the last listed element, so it reduces to `active === last`.
+ * `<video controls>` is *in* the list (see FOCUSABLE) and is not the case this
+ * buys anything for.
+ *
+ * What it buys is an element holding focus that the selector does **not**
+ * match: ClipModal's `tabindex="-1"` card, focused on open. An index-based test
+ * says "not first, not last, carry on" and shift-Tab from the card falls
+ * straight out of the overlay; asking "is anything focusable before this in the
+ * container" returns null and wraps to the last control, which is right. It
+ * also generalises to whatever the next overlay puts in.
  */
 export function trapTabWithin(container: HTMLElement, e: KeyboardEvent): boolean {
   const items = container.querySelectorAll<HTMLElement>(FOCUSABLE);
