@@ -117,6 +117,14 @@ services:
       - fromGroup: clipfarm-shared
       - key: DEBUG
         value: "false"
+      # The social layer (CF-106 epic: profiles, posts, follows, feed). Off by
+      # default in app/config.py so the stack could merge to main incrementally
+      # without exposing a half-built surface; turning it on here is the
+      # deliberate act that makes it live. The web half has its own flag and
+      # BOTH must be on — with the api's off the routes 404, and a web app with
+      # only its own flag set renders a surface that cannot load anything.
+      - key: SOCIAL_ENABLED
+        value: "true"
       - key: JWT_SECRET               # legacy; Supabase JWKS is source of truth. Auto-generated.
         generateValue: true
       - key: API_BASE_URL             # this service's own public URL (custom domain or *.onrender.com)
@@ -238,6 +246,10 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "20"
+      # Must match SOCIAL_ENABLED on clipfarm-api. NEXT_PUBLIC_* is inlined at
+      # build time, so flipping this needs a redeploy, not a restart.
+      - key: NEXT_PUBLIC_SOCIAL_ENABLED
+        value: "true"
       - key: NEXT_PUBLIC_SUPABASE_URL
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
