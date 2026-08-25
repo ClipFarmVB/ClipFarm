@@ -96,8 +96,14 @@ whole queue is what you actually want cleared.
 
 ### It cannot push, and that is a consequence rather than a rule
 
-The hard rule is [only push to branches this run created](#hard-rules). A
-`review-only` run opens no PRs, so it creates no branches, so **it never pushes**.
+The hard rule is [only push to branches this account owns](#hard-rules). At
+`review scope: own` every in-scope PR is by definition this account's, so a
+`review-only` run **can** push — to fix findings on work earlier runs opened.
+That is the point of the mode: review the queue *and* clear it.
+
+At `review scope: all` the queue also contains other accounts' PRs, and those it
+still may not touch. So "it cannot push" is now a statement about *other
+people's* branches only.
 
 Two things follow, and both matter more than they look.
 
@@ -127,7 +133,7 @@ Two things follow, and both matter more than they look.
 
 **A `review-only` run can still close findings — just never with its own fix.**
 The settle bar wants a semi-cold check, and a semi-cold round checks a fix
-*whoever pushed it*: on a branch this run may not push to, that is the author
+*whoever pushed it*: on another account's branch, that is the author
 responding to the review, and [the brief requires that case to
 work](#priority-order) precisely so an `unsettled: not our branch` PR is not
 stranded. So `unsettled: not our branch` is a **waypoint, not a terminus** — the
@@ -136,30 +142,26 @@ closes the finding.
 
 What a single night in this mode delivers is **findings written where the author
 will act on them**, plus `review-settled` on PRs clean across two cold rounds.
-What the mode delivers *over several nights* is the full cycle, with the authors
-supplying the commits this run may not.
+What the mode delivers *over several nights* is the full cycle: review, fix,
+re-review, settle.
 
-**At the default scope, that cycle has no actor, and you should expect the mode
-to stall.** The multi-night loop turns on an author pushing a fix in response to
-a review. At `review scope: own` the queue is PRs *this account* opened — and
-this mode creates no branches, so it may push to none of them. The account that
-would supply the commits is the same one running, and in `review-only` it never
-pushes. So night one parks the queue at `not our branch`, and night two finds
-every in-scope PR labelled with no new commits, skips them all, and stops with
-most of its budget unspent.
+**At `review scope: own` the mode runs its own cycle end to end.** Every
+in-scope PR is this account's, so every one is pushable — the run reviews, fixes
+what needs no judgement, and re-reviews, without waiting on anyone. That is the
+mode working as intended, and it is what the push rule change on 2026-08-25
+bought.
 
-That is not a bug to fix in this section; it is what `own` means here. Take it
-as the operating instruction it implies:
+*This paragraph previously said the opposite.* Under the old rule — push only to
+branches **this run** created — a `review-only` night created no branches and so
+could push to none of them: it parked the whole queue at `not our branch` and
+the next night skipped everything. That was measured, not predicted: seven of
+eight PRs in one working set, all this account's own earlier work. Keying the
+rule on the account rather than the run is what removed it.
 
-- **`review-only` earns its keep at `review scope: all`**, where the other
-  accounts' PRs have authors who do push. That is where the push-and-re-open
-  loop actually runs.
-- **At `own`, treat it as a write-down-the-findings pass, not a cycle.** Its
-  output is reviews on the account's own PRs and `review-settled` where two cold
-  rounds are clean. Everything else waits for a human — the same human who runs
-  the loop.
-- **A second consecutive `own` night is close to worthless** unless commits
-  landed in between. Check that before starting one.
+**At `review scope: all` the older caveat still holds** for the part of the
+queue this account does not own: those PRs can be reviewed but not fixed, so
+they depend on their authors pushing, and the multi-night loop is the mechanism
+that closes them.
 
 ### Scope: whose PRs get reviewed
 
@@ -353,10 +355,19 @@ most expensive kind of surprise in an unattended run.
 ### Hard rules
 
 - **Never** push to `main`, merge a PR, or force-push anything.
-- **Only push to branches this run created.** Pushing to an existing PR's branch
-  needs prior sign-off — the harness requires permission and the brief must not
-  contradict it. If a fix belongs on someone else's branch, describe it in a
-  review comment instead.
+- **Only push to branches owned by the account this run posts as** — any run's,
+  not just this one's. If a fix belongs on **another account's** branch, describe
+  it in a review comment instead and never push.
+
+  *This was "branches this run created" until 2026-08-25.* That rule was
+  conditioned on a sign-off it never received, and the cost was measured: of the
+  eight PRs in one night's working set, seven ended `unsettled: not our branch`
+  and **all seven were this account's own work from earlier runs**. The loop
+  could review everything it had built and fix none of it. The sign-off is now
+  given: earlier runs of this account are this account.
+
+  **If the harness still refuses the push, that is a separate gate and this rule
+  does not override it.** Report the refusal rather than working around it.
 - **Never** deploy, unsuspend a hosting service, or touch production
   infrastructure.
 - **Never** run the local stack against a `DATABASE_URL` pointing at Supabase.
@@ -472,9 +483,10 @@ nothing. It is the same REST-versus-GraphQL trap as `created_at` against
 gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".user.login"
 ```
 
-Note this is an **author** test and the push rule is a **branch-creation** test.
-They are different questions on purpose, and the paragraph below on ownership is
-about the second — do not read it as an argument against the first.
+Note that scope and pushability are now the **same** test — both ask whether the
+PR's `.user.login` is this account. They were different questions while the push
+rule keyed on which run created the branch; since 2026-08-25 it keys on the
+account, so a PR that is in scope at `own` is also one this run may push to.
 
 The obvious phrasing — "no marker at all, or commits since the last marker" —
 leaves a hole. A PR sitting on its first `cold: clean` with no new commits has a
@@ -886,11 +898,15 @@ Only one of the three needs a human to clear it:
 - `ran out of rounds` — the ceiling or the budget stopped it. New commits
   re-open it, round count reset: a PR that has since been fixed must not look
   like one nobody touched.
-- `not our branch` — the findings are fixable, but this run did not create the
-  branch and may not push to it. **New commits re-open it**, round count reset.
-  A commit is exactly what resolves this one: the author reading the review and
-  pushing a fix is the intended path, and it must not need a human to also clear
-  a label by hand.
+- `not our branch` — the findings are fixable, but the branch belongs to
+  **another account**, so this run may not push to it. **New commits re-open
+  it**, round count reset. A commit is exactly what resolves this one: the author
+  reading the review and pushing a fix is the intended path, and it must not need
+  a human to also clear a label by hand.
+
+  **Only reachable at `review scope: all`.** At `own` every in-scope PR is this
+  account's and therefore pushable, so this reason cannot arise — if you find
+  yourself reaching for it on an `own` run, the branch test has gone wrong.
 - `needs a decision` — a finding requires a judgement nobody unattended should
   make. Only a human removing the label re-opens it. Commits do not, because the
   decision is not something a commit clears; the author pushing something
@@ -1054,7 +1070,7 @@ same mechanism, pointed at a diff. **The first round on a PR is always cold**,
 and so is the round that awards `review-settled`.
 
 A **semi-cold** round is for checking a fix — **whoever pushed it.** Usually
-that is this run; on a branch this run may not push to, it is the author
+that is this run; on another account's branch, it is the author
 responding to the review, and that case has to work or a
 `unsettled: not our branch` PR could never satisfy the settle bar and would burn
 to the ceiling on every visit. It gets the finding it is checking, the commits
@@ -1133,7 +1149,7 @@ formatting, since that whole line is what selection matches and routes on.
 means at least one Critical or Medium. A round that found *only* nits, or
 nothing at all, writes `cold: clean` — the settle bar permits nits, and a round
 that reports one as `cold: findings` routes the PR to a fix it does not need,
-which on a branch this run cannot push to ends as `unsettled` on a PR that had
+which on another account's branch ends as `unsettled` on a PR that had
 actually cleared the bar. The nits go in the review, as they would for any
 other round; the comment stays a marker line either way.
 
@@ -1195,15 +1211,17 @@ alongside `low`…`max`, it launches a multi-agent review in the cloud, is bille
 separately and is user-triggered — none of which an unattended run should reach
 for.
 
-**2 — Address the review findings on the PR you are carrying**, if **this run**
-created its branch. Not merely if the account matches: `gh api user -q .login`
-returns *your login*, and matching it against `.user.login` also matches PRs
-this account opened on earlier nights — pushing to those is what the hard rule
-against pushing to branches this run did not create forbids.
+**2 — Address the review findings on the PR you are carrying**, if the branch
+belongs to **this account**. That is the same test the `review scope` filter
+already runs — compare `gh api user --jq ".login"` against the PR's
+`.user.login` — so at `review scope: own` it is true of every PR in the queue,
+and step 2 always applies. A PR this account opened on an earlier night is
+pushable; only another account's is not.
 
-For a PR you may not push to, describe the fix in a comment, apply `unsettled`
-and post `unsettled: not our branch @ <sha>`. That is the cheap terminal state,
-not a dead end: the author pushing a fix re-opens it on its own.
+For a PR you may not push to — another account's, which only reaches the queue
+at `review scope: all` — describe the fix in a comment, apply `unsettled` and
+post `unsettled: not our branch @ <sha>`. That is the cheap terminal state, not
+a dead end: the author pushing a fix re-opens it on its own.
 
 **Read the findings out of the round's review.** The marker comment carries the
 prefix, the SHA and at most a count; the findings are in the review that round
@@ -1330,7 +1348,7 @@ than that.
 **A finding you cannot fix stops the *cycling*, not the work.** What "the work"
 means depends on why you cannot fix it, and the three cases part company here:
 
-- *A branch this run did not create.* You cannot push anything, so the work is
+- *Another account's branch.* You cannot push anything, so the work is
   writing the findings down where the author will act on them: **all** of them,
   including the ones that would have been a one-line fix, in the review comment
   and in a reply describing what you would have changed. Then apply `unsettled`
@@ -1377,13 +1395,12 @@ comment as context rather than as the reason.
 
 **State the cost, because it is real.** `needs a decision` has no commit
 carve-out, so parking a PR under it parks *every* finding on that PR behind a
-human, including the ones the author could have fixed unprompted. On a branch
-this run cannot push to, that is the whole PR. In `review-only` mode, where
-almost nothing is pushable, it is potentially the whole queue. The trade is
-deliberate — a judgement call quietly dissolved by an unrelated commit is worse
-than a PR that waits — but write the other findings up in full first, so the
-human clearing the label finds everything they need in one place rather than
-just the question.
+human, including the ones the author could have fixed unprompted. On another
+account's branch, that is the whole PR — which at `review scope: all` could be
+most of the queue. The trade is deliberate — a judgement call quietly dissolved
+by an unrelated commit is worse than a PR that waits — but write the other
+findings up in full first, so the human clearing the label finds everything
+they need in one place rather than just the question.
 
 Either way, record what is left in the log and the report, and move on. Do not
 spend further rounds on it: a new round is cold to your reasoning but not to the
@@ -1616,9 +1633,10 @@ rules forbid leaving behind. If the budget cannot cover a review, step 3 writes
 the plan into the log instead of opening a PR.
 
 This is a deliberate narrowing, and it is the honest consequence of the hard
-rule against pushing to branches this run did not create. The alternative is
-sign-off to push to other people's branches, which is a decision for a human and
-not something to assume unattended.
+rule against pushing to **other accounts'** branches. That rule stays: pushing
+to someone else's work unattended is a decision for its author, not one to
+assume. What changed on 2026-08-25 is only that earlier runs of *this* account
+no longer count as someone else.
 
 The semi-cold round is not defended on cost — it is defended on what silence
 can and cannot establish. It asks a narrow question a reviewer can actually
