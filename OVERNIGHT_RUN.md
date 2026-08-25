@@ -96,7 +96,7 @@ whole queue is what you actually want cleared.
 
 ### What it may push to, and what follows from that
 
-The hard rule is [only push to branches this account owns](#hard-rules). At
+The hard rule is [only push to PRs this account opened](#hard-rules). At
 `review scope: own` every in-scope PR is by definition this account's, so a
 `review-only` run **can** push — to fix findings on work earlier runs opened.
 That is the point of the mode: review the queue *and* clear it.
@@ -131,19 +131,19 @@ Two things follow, and both matter more than they look.
   in-scope PR pushable, `review-only` fixes findings and re-reviews exactly as
   `build` does — the difference between the modes is step 3, not step 2. At
   `review scope: all` the other accounts' PRs are the ones step 2 cannot fix:
-  describe the fix in a comment, apply `unsettled`, and post the reason that fits
-  — `not our branch @ <sha>` when the fix is straightforward but unpushable,
-  `needs a decision @ <sha>` when the finding needs a judgement nobody unattended
-  should make. Those two are what *step 2* produces, and they are **not** the
-  whole reason set: a PR stopped by the ceiling or the budget still takes
-  `ran out of rounds @ <sha>`, in this mode as in `build`. That sentence is a
-  pointer, not a restatement — it exists because a reader meeting two reasons
-  here would otherwise take them as exhaustive. The reasons themselves are defined under
-  [Priority order](#priority-order); if this bullet ever disagrees with them,
-  they win. The second is not optional
-  tidiness. Only `needs a decision` routes a PR to a human; giving a
-  judgement call the `not our branch` reason means the next unrelated push clears
-  it and the question is never asked.
+  describe the fix in a comment, apply `unsettled`, and post the reason that
+  fits — `not our branch @ <sha>` when the fix is straightforward but
+  unpushable, `needs a decision @ <sha>` when the finding needs a judgement
+  nobody unattended should make. Those two are what *step 2* produces, and they
+  are **not** the whole reason set: a PR stopped by the ceiling or the budget
+  still takes `ran out of rounds @ <sha>`, in this mode as in `build`. That
+  sentence is a pointer, not a restatement — it exists because a reader meeting
+  two reasons here would otherwise take them as exhaustive. The reasons
+  themselves are defined under [Priority order](#priority-order); if this
+  bullet ever disagrees with them, they win. The second is not optional
+  tidiness. Only `needs a decision` routes a PR to a human; giving a judgement
+  call the `not our branch` reason means the next unrelated push clears it and
+  the question is never asked.
 
 **At `review scope: all`, a `review-only` run can still close findings on
 another account's PR without ever pushing a fix itself.** (At `own` it simply
@@ -230,10 +230,12 @@ untouched has exactly one place to look.
 | question | test |
 |---|---|
 | may this run *review* the PR? | is `.user.login` this account, or is scope `all`? |
-| may this run *push* to it? | is `.user.login` this account? |
+| may this run *push* to it? | is `.user.login` this account, **and** no commit on the branch carries another login? |
 
-So at `review scope: own` everything in the queue is pushable, and at `all` the
-other accounts' PRs are reviewable but not pushable.
+So at `review scope: own` everything in the queue is pushable **unless a
+collaborator has pushed to it** — see the branch check in
+[Hard rules](#hard-rules). At `all`, other accounts' PRs are reviewable but not
+pushable at all.
 
 *Until 2026-08-25 these were different questions* — the push test asked which run
 created the branch, so a PR this account opened on an earlier night was in scope
@@ -384,9 +386,33 @@ most expensive kind of surprise in an unattended run.
   **The two can diverge, and the divergence is the risky direction:** a
   collaborator may push commits to a branch whose PR this account opened. The
   author test passes, so the run would treat it as its own and land fixes on
-  someone else's in-flight work. So: **before pushing, check whether the branch
-  carries commits by another login, and if it does, treat the PR as another
-  account's** — comment, do not push.
+  someone else's in-flight work. So **before pushing, check the branch for
+  commits by another login**:
+
+  ```
+  ME=$(gh api user --jq ".login")
+  gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[].author.login // "UNKNOWN"' | sort -u | grep -vx "$ME"
+  ```
+
+  **Any output means do not push** — comment, and treat the PR as another
+  account's. Empty output means every commit is this account's.
+
+  Three things about that command, because the obvious alternatives fail
+  differently:
+
+  - **`--paginate` matters.** `pulls/<n>/commits` caps at 250 per page, and a
+    long-running branch exceeds a page.
+  - **Not `gh pr view --json commits`.** That caps at 100 with no paging, and its
+    author field is the *commit* author, which a rebase or a co-authored commit
+    misattributes — so it fires on the account's own rebased branches and
+    reinstates the stall this card removed.
+  - **`// "UNKNOWN"` fails closed.** `.author.login` is `null` for a commit whose
+    email is linked to no account, and a bare `.author.login` would let those
+    read as "no other login" — a guard that never fires. Mapping them to
+    `UNKNOWN` makes them output, so an unverifiable branch is treated as someone
+    else's. Measured on this repo: 0 nulls across 36 commits in five PRs, so this
+    should be rare rather than routine — if it becomes routine, that is worth
+    reporting rather than working around.
 
   *This was "branches this run created" until 2026-08-25.* That rule was
   conditioned on a sign-off it never received, and the cost was measured: of the
@@ -1242,12 +1268,16 @@ alongside `low`…`max`, it launches a multi-agent review in the cloud, is bille
 separately and is user-triggered — none of which an unattended run should reach
 for.
 
-**2 — Address the review findings on the PR you are carrying**, if the branch
-belongs to **this account**. That is the same test the `review scope` filter
-already runs — compare `gh api user --jq ".login"` against the PR's
-`.user.login` — so at `review scope: own` it is true of every PR in the queue,
-and step 2 always applies. A PR this account opened on an earlier night is
-pushable; only another account's is not.
+**2 — Address the review findings on the PR you are carrying**, if this account
+opened it **and** no one else has pushed to the branch. The first half is the
+same test the `review scope` filter runs — `gh api user --jq ".login"` against
+the PR's `.user.login` — so at `review scope: own` it is true of every PR in the
+queue. The second half is the collaborator check in
+[Hard rules](#hard-rules), and it has to be run per PR: a PR this account opened
+on an earlier night is pushable *until someone else pushes to it*, and then it
+is not.
+
+So step 2 applies to most of an `own` queue, not all of it by construction.
 
 For a PR you may not push to — another account's, which only reaches the queue
 at `review scope: all` — describe the fix in a comment, apply `unsettled` and
@@ -1348,10 +1378,11 @@ anyone looking again.
 **A PR that has never had a finding needs two `cold: clean` markers in a row,
 not one.** Everywhere else, settling rests on something a reviewer confirmed: a
 semi-cold round said this fix closes this finding. A PR clean on its first look
-has no such confirmation anywhere — one reviewer's silence would carry the whole
-terminal state, and silence is the evidence this document rejects everywhere
-else. Two independent cold passes is the weakest confirmation available when
-there is nothing concrete to check, and it is the least that label should cost.
+has no such confirmation anywhere — one reviewer's silence would carry the
+whole terminal state, and silence is the evidence this document rejects
+everywhere else. Two independent cold passes is the weakest confirmation
+available when there is nothing concrete to check, and it is the least that
+label should cost.
 
 The gap between those two rounds is a mid-cycle window like any other: no
 commit, no label, nothing for the timestamp test to see. The first round's
@@ -1594,7 +1625,7 @@ hitting the ceiling early — the failure this section exists to prevent. Sortin
 `Z`-suffixed UTC lexicographically picks the later; an empty `REOPENED` sorts
 first and leaves `SINCE`.
 
-**What this costs, plainly — and it depends on who owns the branch.**
+**What this costs, plainly — and it depends on who opened the PR.**
 
 *Every PR this account owns* — this run's and earlier runs' alike — is cycled in
 full. Clean on first look costs two reviews; one round of findings costs three —
@@ -1673,11 +1704,18 @@ reviewable by this run — a draft nobody has looked at is exactly what the hard
 rules forbid leaving behind. If the budget cannot cover a review, step 3 writes
 the plan into the log instead of opening a PR.
 
-This is a deliberate narrowing, and it is the honest consequence of the hard
-rule against pushing to **other accounts'** branches. That rule stays: pushing
-to someone else's work unattended is a decision for its author, not one to
-assume. What changed on 2026-08-25 is only that earlier runs of *this* account
-no longer count as someone else.
+**That reason stands on its own, and it used to stand on another one that is
+gone.** Under the old push rule, no later run could touch a branch this run
+created, so a PR this run did not review would never be reviewed by anything —
+the reserve was the only thing standing between step 3 and an abandoned draft.
+Since 2026-08-25 a later run of this account can review *and* fix it, so that
+argument no longer holds.
+
+Keep the reserve anyway: **an unreviewed draft is a harm at the moment it is
+opened**, not only if nobody ever gets to it. The hard rules say so
+independently of who can push. The point of writing this down is that the
+obsolete justification is exactly how a rule gets dropped — whoever next
+re-derives it will find the old reason false and may conclude the rule is too.
 
 The semi-cold round is not defended on cost — it is defended on what silence
 can and cannot establish. It asks a narrow question a reviewer can actually
