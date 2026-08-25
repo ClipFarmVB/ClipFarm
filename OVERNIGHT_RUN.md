@@ -169,10 +169,13 @@ of it, and lowercase both sides — the query matches case-insensitively and the
 router has to agree with it, or `Cold: findings` passes selection and then falls
 off the routing table.
 
-A trailing summary on that line is fine and worth encouraging. What is not fine
-is anything *before* the marker. Note also that prefix matching separates
-`semi-cold: closes` from `semi-cold: does not close` only because neither is a
-prefix of the other — preserve that if you ever add a fifth marker.
+A trailing summary on that line is fine and worth encouraging — say so in the
+brief when you spawn a round, because a reviewer reading "the body starts with
+the literal marker" strictly is exactly the one who would otherwise have written
+the useful summary. What is not fine is anything *before* the marker. Note also
+that prefix matching separates `semi-cold: closes` from `semi-cold: does not
+close` only because neither is a prefix of the other — preserve that if you ever
+add a fifth marker.
 
 Note what is deliberately *not* a marker: the `unsettled: …` comment that
 records why that label went on. It is a label rationale, not a round — it
@@ -226,6 +229,19 @@ A `cold: clean` marker on an unlabelled PR therefore means: apply the label now,
 unless the PR has never had a finding and carries only one such marker, in which
 case it wants its second clean cold round first.
 
+**"Never had a finding" spans the PR's whole life, not this run.** Every other
+count in this section is scoped by `SINCE`; this one must not be, or a PR whose
+findings were raised and closed last night reads as never-had-a-finding tonight
+and settles a round early. Ask it without a window:
+
+```
+FINDINGS='^(cold: findings|semi-cold:)'
+gh pr view <n> --json comments --jq "[.comments[] | select(.body | test(\"$FINDINGS\"; \"i\"))] | length"
+```
+
+Zero means nothing has ever been found on this PR — a semi-cold round only
+exists because a finding did — so it is the case that needs two clean rounds.
+
 **Skip PRs labelled `review-settled`** unless commits have landed since the
 label was applied. That label is the record that a cold round cleared the bar
 below — no Critical and no Medium finding, nits permitted. Without it, "already
@@ -247,6 +263,21 @@ else records it:
   is not something a commit clears; the author pushing something unrelated would
   otherwise buy fresh rounds to re-derive the same finding off the same
   unchanged lines.
+
+**When either carve-out re-opens a PR, take the label off and start cold.** The
+routing table above reads the latest marker, and on a re-opened PR that marker
+describes a head that no longer exists: a re-opened `review-settled` PR still
+says `cold: clean`, which routes to "apply the label" that is already on it, and
+a re-opened `unsettled` one still says `cold: findings`, which routes to fixing
+findings raised against superseded code. Neither is what the PR needs. So:
+
+- **Remove the label.** Left on, it advertises `review-settled` to humans
+  reading a PR with unreviewed commits, and forces every later run back through
+  the timeline comparison to work out that it does not mean what it says.
+- **The next round is cold**, whatever the last marker says. New code that
+  nothing has looked at is the first-look case.
+- **Reset the round count**, which removing the label does on its own, since the
+  count is scoped by `SINCE` and by the label event.
 
 **Both carve-outs need the moment the label was applied**, which `gh pr view`
 does not carry. Read it off the timeline and compare it with the head commit's
@@ -297,10 +328,11 @@ the fix does what the finding asked.
 **It posts one marker comment like every other round** — body starting with the
 literal `semi-cold: closes` or `semi-cold: does not close`, before any heading,
 then each finding it checked with the reason, then anything the fix introduced,
-tiered as below. Tell it, as you tell the cold
-reviewer, to post with `gh pr comment` — never `gh pr review`, never
-`/code-review --comment`. One comment per round, never one per finding: the
-rules that recover state after a compaction count marker comments, and a round
+tiered as below. A same-line summary after the marker is welcome here too. Tell
+it, as you tell the cold reviewer, to post with `gh pr comment` — never
+`gh pr review`, never `/code-review --comment`. One comment per round, never one
+per finding: the rules that recover state after a compaction count marker
+comments, and a round
 posting several inflates that count as surely as one posting none.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
@@ -330,8 +362,10 @@ review arrives signed.
 
 Its brief: run `/code-review` on that PR and post one marker comment — its body
 **starting** with the literal text `cold: findings` or `cold: clean`, before any
-heading or formatting, since that is what selection matches on — with the
-findings in tiers:
+heading or formatting, since that is what selection matches on. A one-line
+summary after the marker on the same line is welcome (`cold: findings — 2
+Critical, 1 Medium`); anything before it strands the PR. Then the findings, in
+tiers:
 
 - **Critical** — correctness, security, data loss
 - **Medium** — should fix before merge
