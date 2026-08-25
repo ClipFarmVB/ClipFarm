@@ -1467,7 +1467,8 @@ stops after one or two rounds regardless.
 happen, and the 5-PR cap is not reachable.** Twenty-odd PRs at one to two rounds
 is 20–40 reviews, and five new PRs at three each is another 15; there is no
 reading of a 32-round budget on which both fit. Priority order gates ticket work
-behind a queue this document says the budget cannot finish, so ticket work waits for a night that starts with
+behind a queue this document says the budget cannot finish, so ticket work waits
+for a night that starts with
 the queue already marked. That is the intended trade — the queue is the
 bottleneck, not ticket supply — but it should be read as a consequence, not
 discovered at 4am.
