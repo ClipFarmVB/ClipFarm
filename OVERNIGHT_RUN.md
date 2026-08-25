@@ -141,14 +141,19 @@ So every round posts **exactly one comment**, opening with one of four markers:
   close a finding, and a cold round posted on top would make its own marker the
   latest and hide the open finding from this very rule.
 
-Every rule below that reads markers uses the same pattern. Set it once — and
-note that `gh`'s built-in `--jq` takes a filter string only. It has no `--arg`,
-so the pattern is interpolated by the shell and the filter's own quotes are
-escaped:
+Every rule below that reads markers uses the same pattern. `gh`'s built-in
+`--jq` takes a filter string only — it has no `--arg` — so the pattern is
+interpolated by the shell and the filter's own quotes are escaped:
 
 ```
 MARKERS='^(cold|semi-cold):'
 ```
+
+**Set it in every shell that uses it**, including the round-counting query
+hundreds of lines below, which runs in a later iteration and possibly after a
+compaction. It is a pattern to re-declare, not state that persists. An unset
+`MARKERS` makes that filter `test("")`, which matches every comment on the PR
+and returns exactly the count the marker scheme exists to avoid.
 
 **Post them with `gh pr comment`, never `gh pr review`.** A review body does not
 appear in `gh pr view --json comments` at all — #191 carries three comments and
@@ -214,13 +219,8 @@ LABEL=review-settled   # or: LABEL=unsettled
 gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/timeline --jq "[.[] | select(.event==\"labeled\" and .label.name==\"$LABEL\") | .created_at] | last"
 ```
 
-Set `LABEL` to the one you are actually testing. Reading the wrong label
-returns no event, which is indistinguishable from never labelled — and that
-failure mode fails **open**, quietly re-reviewing work that was already
-settled.
-
-Substitute the label you are actually testing. Reading the wrong one returns no
-event, which is indistinguishable from never labelled — and that failure mode
+Set `LABEL` to the one you are actually testing. Reading the wrong label returns
+no event, which is indistinguishable from never labelled — and that failure mode
 fails **open**, quietly re-reviewing work that was already settled.
 
 Compare each PR's head commit against the commit of its most recent review. If
@@ -257,10 +257,10 @@ the fix does what the finding asked.
 **It posts one marker comment like every other round** — `semi-cold: closes` or
 `semi-cold: does not close`, then each finding it checked with the reason, then
 anything the fix introduced, tiered as below. Tell it, as you tell the cold
-reviewer, to post with `gh pr comment` and never `gh pr review`. One comment per round, never one
-per finding: the rules that recover state after a compaction count marker
-comments, and a round posting several inflates that count as surely as one
-posting none.
+reviewer, to post with `gh pr comment` — never `gh pr review`, never
+`/code-review --comment`. One comment per round, never one per finding: the
+rules that recover state after a compaction count marker comments, and a round
+posting several inflates that count as surely as one posting none.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, treat it as blocked: `unsettled`,
@@ -294,11 +294,13 @@ with `cold: findings` or `cold: clean` — with the findings in tiers:
 - **Medium** — should fix before merge
 - **Nit** — style, naming, comments
 
-**Post it with `gh pr comment`, not `gh pr review`** — this belongs in the brief
-you hand over, not only in the selection rules above, because `/code-review`
-makes submitting a review the natural move and a review body is invisible to the
-query that routes this PR. A reviewer that submits one strands the PR on its
-previous marker.
+**Post it with `gh pr comment`. Not `gh pr review`, and not
+`/code-review --comment`.** This belongs in the brief you hand over, not only in
+the selection rules above, because the skill you just told it to run documents
+`--comment` as its own way to publish findings — inline review comments, which
+is the move a reviewer holding the skill reaches for first. Both mechanisms are
+invisible to `gh pr view --json comments`, which is the query that routes this
+PR, so either one strands it on its previous marker.
 
 Challenge the design where warranted, not only the code; say so when a premise
 looks wrong. **Verify claims against the repository** rather than trusting the PR
@@ -443,11 +445,22 @@ the ceiling is six rounds *per run*, and an `unsettled: ran out of rounds` PR is
 promised a reset when new commits land. A raw count undoes both — a PR that
 spent six rounds last night would read as already at the ceiling before this run
 touched it. So record the run's start time in the log's first line, and count
-markers newer than it (or newer than that `unsettled` label event, if you read
-one off the timeline):
+markers newer than it.
+
+**When a PR was re-opened mid-run by new commits, count from its `unsettled`
+label event instead — but only if that event falls inside this run.** The bound
+you want is the *later* of the two. A label applied last night is older than the
+run start, so counting from it sweeps in markers this run has already spent, and
+the ceiling arrives early on a PR that was just promised a reset.
+
+`.createdAt > "$SINCE"` is a lexicographic string compare against GitHub's
+`2026-08-24T23:08:57Z`, so `SINCE` must be UTC with the `Z` suffix and nothing
+else. An offset form like `2026-08-25T01:08:57+02:00` sorts wrong against it and
+the count comes back low or zero — which reads as "no rounds this run" and hands
+the PR a fresh six-round ceiling:
 
 ```
-SINCE=<run-start, ISO 8601>
+SINCE=2026-08-24T23:08:57Z    # UTC, Z-suffixed: date -u +%Y-%m-%dT%H:%M:%SZ
 gh pr view <n> --json comments --jq "[.comments[] | select(.createdAt > \"$SINCE\") | select(.body | test(\"$MARKERS\"))] | length"
 ```
 
