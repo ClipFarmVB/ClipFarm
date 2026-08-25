@@ -338,7 +338,7 @@ the three needs a human to clear it:
   pushing something unrelated would otherwise buy fresh rounds to re-derive the
   same finding off the same unchanged lines.
 
-**When either carve-out re-opens a PR, take the label off and start cold.** The
+**When a carve-out re-opens a PR, take the label off and start cold.** The
 routing table above reads the latest marker, and on a re-opened PR that marker
 describes a head that no longer exists: a re-opened `review-settled` PR still
 says `cold: clean`, which routes to "apply the label" that is already on it, and
@@ -358,7 +358,7 @@ findings raised against superseded code. Neither is what the PR needs. So:
   which includes every round already spent on this PR earlier tonight, and the
   ceiling arrives early on the PR just promised a fresh one.
 
-**Both carve-outs need the moment the label was applied**, which `gh pr view`
+**Every carve-out needs the moment the label was applied**, which `gh pr view`
 does not carry. Read it off the timeline and compare it with the head commit's
 date. Paginate — the event is often past the first page of 30 — filter to the
 label you are testing, and take the **last** one, since a label removed and
@@ -561,13 +561,27 @@ spending budget every lap, and nits are what the settle bar deliberately
 tolerates. Leaving one is the terminating move; file a card if it is worth more
 than that.
 
-**A finding you cannot fix stops the *cycling*, not the work.** If a Critical or
-Medium needs a human decision, or sits on a branch you may not push to, first
-fix everything else that round raised and push it — those findings are real and
-abandoning them wastes the round that found them. *Then* label the PR
-`unsettled`, record what is left in the log and the report, and move on. Do not
+**A finding you cannot fix stops the *cycling*, not the work.** What "the work"
+means depends on why you cannot fix it, and the two cases part company here:
+
+- *A branch this run did not create.* You cannot push anything, so the work is
+  writing the findings down where the author will act on them: **all** of them,
+  including the ones that would have been a one-line fix, in the review comment
+  and in a reply describing what you would have changed. Then label the PR
+  `unsettled: not our branch`. The author's next push re-opens it.
+- *A finding needing a human decision, on a branch you may push to.* First fix
+  everything else that round raised and push it — those findings are real and
+  abandoning them wastes the round that found them. *Then* label the PR
+  `unsettled: needs a decision`.
+
+Either way, record what is left in the log and the report, and move on. Do not
 spend further rounds on it: a new round is cold to your reasoning but not to the
-code, so it re-derives the same blocked finding off the same unchanged lines.
+code, so it re-derives the same finding off the same unchanged lines.
+
+**Always apply the prefix.** A bare `unsettled` says a PR is stuck without
+saying what unsticks it, and the difference is whether the label clears itself
+on the author's next commit or waits for a human who has not been told they are
+needed.
 
 **Ceiling: six rounds per PR per run, cold and semi-cold together**, so a
 pathological PR cannot consume the whole night. Counting only cold rounds would
@@ -627,9 +641,11 @@ markers newer than it.
 
 **When a PR was re-opened mid-run by new commits, count from the event for the
 label that was removed — `unsettled` or `review-settled`, whichever it was —
-instead, and only if that event falls inside this run.** Both carve-outs
-re-open PRs, so both need the bound; naming only one leaves a mid-run re-opened
-`review-settled` PR counting from `SINCE` and hitting the ceiling early. The
+instead, and only if that event falls inside this run.** Three states carry a
+commits-since carve-out — `review-settled`, `unsettled: ran out of rounds` and
+`unsettled: not our branch` — and each needs the bound; naming only one leaves a
+mid-run re-opened PR counting from `SINCE` and hitting the ceiling early.
+(`unsettled: needs a decision` has no carve-out, so it never needs this.) The
 bound you want is the *later* of the two. A label applied last night is older than the
 run start, so counting from it sweeps in markers this run has already spent, and
 the ceiling arrives early on a PR that was just promised a reset.
