@@ -478,12 +478,12 @@ windows silently revert to the PR's
 whole life, and the two-clean rule reads clean markers from before the finding
 was ever raised.
 
-**When a carve-out re-opens a PR, take the label off and start cold.** The
-routing table above reads the latest marker, and on a re-opened PR that marker
-describes a head that no longer exists: a re-opened `review-settled` PR still
-says `cold: clean`, which routes to "apply the label" that is already on it, and
-a re-opened `unsettled` one still says `cold: findings`, which routes to fixing
-findings raised against superseded code. Neither is what the PR needs. So:
+**When a carve-out re-opens a PR, take the label off — and let the routing table
+decide the round.** Do not force a cold one: what the PR needs depends on what
+its last round said, and the table already tells the two cases apart by SHA. A
+re-opened `review-settled` PR wants a cold round; a re-opened
+`unsettled: not our branch` PR, whose author has just pushed a fix, wants a
+semi-cold one. So:
 
 - **Post a `reopened: <sha>` marker first, then remove the label.** In that
   order. The label is the only record that the PR was ever settled or unsettled,
@@ -491,8 +491,8 @@ findings raised against superseded code. Neither is what the PR needs. So:
   counting windows depend on — a later iteration then counts **finding** markers
   over the PR's whole life, so a PR whose findings were raised and closed long
   ago reads as still carrying them. (The clean count is safe here: it is gated
-  on the current head SHA, so stale clean markers cannot count.) The
-  marker is durable; the label was not. Left on, it also advertises
+  on the current head SHA, so stale clean markers cannot count.) The marker is
+  durable; the label was not. Left on, it also advertises
   `review-settled` to humans reading a PR with unreviewed commits.
 - **Route on the last round marker, exactly as the table does** — the
   `reopened:` marker you just posted is not routed on. For a PR that was
@@ -559,17 +559,20 @@ One block, because the three values are only meaningful together: the marker
 line feeds the SHA extraction, and a snippet that leaves `$LATEST` unassigned
 extracts nothing and reports `differs` for every PR.
 
-A marker with no extractable SHA is a malformed round: treat the PR as a
-first-look case and give it a cold round, rather than trusting a marker whose
-subject cannot be established.
+**A malformed marker is invisible, and that is deliberate.** `ROUNDS` matches
+the four routed forms and requires a SHA, so a comment reading
+`cold: no findings @ abc1234`, or one with no SHA, or one behind a markdown
+heading, matches nothing at all. It is not selected, not routed, and not counted
+against the ceiling or the budget. The PR simply reads as though that round
+never happened — which is the one reading that fails safe, and it is why a
+re-post costs nothing: there is no phantom round to double-charge.
 
-**`ROUNDS` is broader than the routed markers, so handle the gap.** It matches
-anything starting `cold:` or `semi-cold:`, while routing knows only four
-phrasings; a reviewer that writes `cold: no findings` is selected and then
-routes nowhere. **A latest marker that matches `ROUNDS` but none of the four
-routed forms is malformed: re-run the round with the brief restated, and note it
-in the report.** Do not guess what was meant, and do not treat it as clean — the
-one reading that fails safe is "this round did not happen".
+The cost is that a malformed marker is *silently* lost rather than flagged.
+That is what the marker-landed check below is for: the round that wrote it is
+the only thing positioned to notice, so it verifies at the time rather than
+leaving a later iteration to infer it. If you find one after the fact, re-post
+the marker correctly and note it in the report; do not guess what was meant, and
+do not read it as clean.
 
 **Compare SHAs, never dates.** A commit's `committer.date` is when it was
 *written*, not when it was pushed: an author who committed on Tuesday and pushed
