@@ -33,10 +33,12 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   // walking into the grid behind the backdrop.
   //
   // It does NOT return focus to the clip card on close, which is the one thing
-  // CF-227 asks for and does not get: the card's thumbnail is a bare
-  // `<div onClick>` (ClipCard.tsx), so it cannot hold focus and there is
-  // nothing to restore to. Tracked as CF-266 (#308); until that lands, closing
-  // a clip drops focus to <body>.
+  // CF-227 asks for and does not get. The trap does call restoreFocusTo — it
+  // just has nothing to restore to: the card's thumbnail is a bare
+  // `<div onClick>` (ClipCard.tsx), so clicking it leaves activeElement on
+  // <body>, and that is what gets captured and handed back. Tracked as
+  // CF-266 (#308); until that lands, closing a clip leaves focus at the top of
+  // the page rather than near the clip.
   //
   // No onEscape — the handler below already owns Escape for this overlay, and
   // passing it here too would close the modal twice.
@@ -59,8 +61,8 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
       // shadow-DOM controls keep `activeElement` on the <video> host however
       // deep Tab has walked, so host identity is the right test. Focus starts
       // on the dialog card rather than the player precisely so ← → navigate
-      // from the state the modal opens in; this guard only takes them back once
-      // the user has Tabbed onto the video.
+      // from the state the modal opens in; this guard hands them back once the
+      // player has focus, whether the user Tabbed to it or clicked it.
       if (document.activeElement === videoRef.current) return;
       if (e.key === "ArrowLeft")  onPrev?.();
       if (e.key === "ArrowRight") onNext?.();
