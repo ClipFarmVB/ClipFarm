@@ -286,6 +286,13 @@ compaction. It is a pattern to re-declare, not state that persists. An unset
 `ROUNDS` makes that filter `test("")`, which matches every comment on the PR and
 returns exactly the count the marker scheme exists to avoid.
 
+**Every machine-written comment goes through `gh pr comment` — rounds and
+non-rounds alike.** That includes `reopened:` and `unsettled:`, which are
+explicitly not rounds and so are not covered by the rounds rule below. A
+`reopened:` marker posted as a review is invisible to the REST read, which
+silently reverts the counting window to the PR's whole life — the exact failure
+that marker exists to prevent.
+
 **Post them with `gh pr comment`, never `gh pr review`.** A review body does not
 appear in `gh pr view --json comments` at all — #191 carries three comments and
 one review, and that query returns only the three — so a verdict submitted as a
@@ -345,7 +352,10 @@ marker written against a head that has since been replaced says nothing about
 what is there now. Windowing by the `reopened:` marker is not enough on its own,
 because an unlabelled PR can take a push mid-cycle with no re-open involved, and
 its stale `cold: clean` would still count. Matching the SHA covers both, and
-needs no window at all.
+needs no window at all — the `reopened:` marker carries the new head, so a
+marker from before a re-open cannot match the current SHA anyway. Where you see
+a `created_at > "$REOPENED"` clause below, that is the **finding** count, which
+is not SHA-gated and does need the window.
 
 It has its own pattern, and the same unset hazard as the others:
 
@@ -410,7 +420,7 @@ them.
 **The label is bare `unsettled`. The reason goes in the comment, never in the
 label name.** There are exactly two **review-state** labels — `review-settled`
 and `unsettled` — alongside the ordinary ones the repo uses (`P1`, `api`,
-`overnight-ok` and so on). `gh pr edit --add-label unsettled:\ blocked` fails against a
+`overnight-ok` and so on). `gh pr edit --add-label "unsettled: blocked"` fails against a
 label that does not exist, leaving the PR unlabelled with open Criticals, which
 is the one state this document forbids. So: apply `unsettled`, and post a
 comment opening `unsettled: <reason> @ <sha>`. That comment is the only record
@@ -453,9 +463,10 @@ findings raised against superseded code. Neither is what the PR needs. So:
 - **Post a `reopened: <sha>` marker first, then remove the label.** In that
   order. The label is the only record that the PR was ever settled or unsettled,
   so taking it off without leaving anything behind destroys the boundary the
-  counting windows depend on — a later iteration then counts clean and finding
-  markers over the PR's whole life and settles it after a single clean round on
-  new code, which is exactly what the two-clean rule exists to prevent. The
+  counting windows depend on — a later iteration then counts **finding** markers
+  over the PR's whole life, so a PR whose findings were raised and closed long
+  ago reads as still carrying them. (The clean count is safe here: it is gated
+  on the current head SHA, so stale clean markers cannot count.) The
   marker is durable; the label was not. Left on, it also advertises
   `review-settled` to humans reading a PR with unreviewed commits.
 - **Route on the last round marker, exactly as the table does** — the
@@ -784,7 +795,7 @@ is the intent, since the oldest have waited longest. Do not order by the
 [This run](#this-run) and no PR carries it.
 
 **Run budget: 32 reviews per run**, cold and semi-cold together. Six rounds
-across twenty PRs would permit far more — a whole night of nothing but
+across a queue this size would permit far more — a whole night of nothing but
 reviewing, which together with "stop on usage limits" means step 3 never
 happens. **When the budget is spent, stop reviewing and go to step 3** — but
 step 3 may then only plan and file, **not open PRs**, because a PR opened with
@@ -803,8 +814,13 @@ run, which is the whole reason these labels exist.
 unless the count survives: context may be compacted mid-run, and counts you hold
 in your head reset to zero when it is. Recover both from the log at the start of
 every iteration, and cross-check the per-PR count by counting **marker
-comments** — not comments, which also carry your step 2 fix replies and anything
-a human wrote.
+comments** — and when the two disagree, **the markers win.** The log records
+what a round intended; the markers record what the PR actually carries, and
+every other rule here reads the PR. A log ahead of the markers means a round's
+marker did not land, which the check above is there to catch at the time; a log
+behind them means a compaction lost an entry. Neither is a reason to trust the
+log over the thing the rules read. Count markers, not comments: comments also
+carry your step 2 fix replies and anything a human wrote.
 
 **Count only markers from this run.** Markers persist for the life of the PR;
 the ceiling is six rounds *per run*, and an `unsettled: ran out of rounds` PR is
@@ -861,11 +877,12 @@ Critical or Medium ends in `unsettled: not our branch` after a single cold
 round, and a clean one settles after two. The fix loop does not run on them at
 all — the author's own push is what continues it, on a later night.
 
-**The budget will bind on the first night, and that is expected.** Twenty PRs
-are open, none carrying a marker, so a first pass over the queue alone costs
-twenty to forty reviews — a clean one takes two, since it needs two clean cold
-rounds to settle — before this run's own PRs are reviewed at all. Against 32
-that does not fit, and it should not be written as though it does.
+**The budget will bind on the first night, and that is expected.** Twenty-odd
+PRs are open, none carrying a marker, so a first pass over the queue alone costs
+one to two reviews each — forty-odd at the upper end, since a clean PR takes two
+(it needs two clean cold rounds to settle) — before this run's own PRs are
+reviewed at all. Against 32 that does not fit, and it should not be written as
+though it does.
 
 What follows from that: **the first night clears part of the queue and reports
 the rest**, and later nights are cheap, because a PR that reached
