@@ -18,6 +18,15 @@ that has to survive is posted as an issue — see [Reporting](#reporting).
 > wrong things. This repository has been bitten by exactly that: CF-192's
 > worst-case reasoning was invalidated by CF-224 without the text changing, and
 > CF-224 read as "fixed" while production was still failing.
+>
+> **Nothing that is discardable may carry a rule.** "This run" holds scope —
+> what tonight's environment looks like, and any narrowing of it — and never
+> behaviour. If a run learns something that should change how future runs act,
+> that belongs under [Standing policy](#standing-policy), even when the lesson
+> came from tonight's scope. A fix written into a section the next reader is
+> told to replace has not been made: it will be discarded unread, while whoever
+> wrote it believes it landed. That happened twice in the first real run, and
+> one of the two was reported as done.
 
 ---
 
@@ -26,25 +35,12 @@ that has to survive is posted as an issue — see [Reporting](#reporting).
 **Last updated: 2026-08-24.** If that date is not recent, stop and ask before
 running.
 
-### In scope
+### Scope for tonight
 
-Work issues carrying the **`overnight-ok`** label:
-
-```
-gh issue list --state open --label overnight-ok --json number,title,labels
-```
-
-That label means a human has judged the ticket safe to implement unattended —
-well-specified, no design or legal decision, no production data, no credentials.
-It is the selection gate. **Do not take an issue that does not carry it**, however
-appealing it looks; if you think one deserves it, argue for it in the report
-instead of taking it.
-
-Work highest priority first (`P0` > `P1` > `P2` > unlabelled). One ticket per
-iteration. If a ticket turns out to need a decision after all, say so in the log,
-drop it, and move on — do not guess.
-
-If nothing carries the label, or everything that does is done, **stop the loop**.
+Selection is governed by [Choosing work](#choosing-work) under Standing policy,
+and does not change run to run. Use this section only to *narrow* it — a subset
+of tickets, an area to avoid — never to restate or relax the gate. If there is
+nothing to narrow, say so and leave it at that.
 
 ### Environment notes for this run
 
@@ -55,6 +51,30 @@ If nothing carries the label, or everything that does is done, **stop the loop**
 
 ## Standing policy
 
+### Choosing work
+
+Work issues carrying the **`overnight-ok`** label:
+
+```
+gh issue list --state open --label overnight-ok --json number,title,labels
+```
+
+That label means a human has judged the ticket safe to implement unattended —
+well-specified, no design or legal decision, no production data, no credentials.
+It is the selection gate. **Do not take an issue that does not carry it**,
+however appealing it looks; if you think one deserves it, argue for it in the
+report instead of taking it.
+
+Work highest priority first (`P0` > `P1` > `P2` > unlabelled). One ticket per
+iteration. If a ticket turns out to need a decision after all, say so in the
+log, drop it, and move on — do not guess.
+
+If nothing carries the label, or everything that does is done, **stop the loop**.
+
+These four are rules, not scope, which is why they live here: an operator
+rewriting "This run" for tonight would otherwise discard the safety gate along
+with last night's ticket list.
+
 ### First: establish what you can actually do
 
 Before relying on any capability, check it, and record the result in the log in
@@ -62,11 +82,20 @@ one block. The first run discovered three gaps separately, mid-work.
 
 - **Projects v2** — `gh project item-list 1 --owner ClipFarmVB --format json`.
   Needs the `project` token scope, which is often absent. This does **not** gate
-  any work: selection is by label, which plain repo scope reads fine. It only
-  affects board hygiene — without it you cannot remove the report issue from the
-  project. Note the gap in the report and carry on.
+  any work, and it does **not** stop cards reaching the board — see below. It
+  only affects *editing* the board: without it you cannot remove the report
+  issue or change a field. Note that, and carry on.
 - **Docker** — `docker info`. If absent, the local stack and the eval harness
   cannot run at all.
+- **`gh` against this repo** — `gh api repos/ClipFarmVB/ClipFarm --jq .full_name`.
+  Every command in this document is written for `gh`, and each was verified
+  against this repo in the exact form given. A cloud runner may have no `gh`
+  credentials at all — the first unattended run got 403 on every repo endpoint
+  with GraphQL disabled, and did the whole night through MCP tools instead.
+  **That works, and is not a reason to stop.** But say in the report which tool
+  you actually used. The four data requirements a non-`gh` tool must meet are
+  written against that answer — they are in [Priority order](#priority-order),
+  under "these commands are specifications", not in the bullet below this one.
 - **Gate tool versions** — read the versions `ci.yml` installs and compare with
   what is installed here. See the gate step below.
 
@@ -91,10 +120,20 @@ most expensive kind of surprise in an unattended run.
 - **You are never the reviewer.** Every PR still gets reviewed — by a subagent
   spawned per step 1, whether or not this session wrote the diff.
 - **Maximum 5 new PRs** and **6 new cards** per run.
-- **No attribution stamps.** Do not add "Generated with Claude Code", a
-  `Co-Authored-By` trailer, a session link, or any similar footer to commits, PR
-  bodies, review comments, or issues. Local settings suppress these but a sandbox
-  does not inherit them, so this is on you.
+- **No attribution stamps that you write.** Do not add "Generated with Claude
+  Code", a `Co-Authored-By` trailer, a session link, or any similar footer to
+  commits, PR bodies, reviews, comments, or issues. Local settings suppress
+  these but a sandbox does not inherit them, so this is on you.
+  **The two named above are never exempt**: both are emitted client-side and
+  both are suppressible, so an agent finding one on its own output has a setting
+  to fix, not an exception to claim.
+
+  The exemption is for footer text you cannot prevent — identify it by
+  reproducing it, not by reasoning about where it came from: post once, read the
+  result back, and if text you did not write is present, quote it verbatim in
+  the report and carry on. Never hand-edit a comment to strip it. "It must be
+  server-side" is not a test the run can perform, and it is exactly the reasoning
+  that would let a stray `Co-Authored-By` through.
 - If a command fails because of usage limits, **stop the loop** — do not retry.
 - If nothing in scope is actionable, **stop the loop**. A run that reviews two
   PRs and opens nothing is a fine outcome.
@@ -168,6 +207,28 @@ that is what tells a round's review from a human's — but every selection and
 counting rule here is phrased against marker **comments**, and a rule phrased
 against reviews would be counting an artifact that is deliberately outside the
 budget and the ceiling.
+
+**If you are not running `gh`, these commands are specifications.** Whatever
+tool you use must give you **every** item below — four reads and one write, and
+the write is the one a check done by counting reads would skip. The failure if
+it does not is silent rather than loud:
+
+1. **Every** comment on a PR, not the first page. GitHub's own PR-comments
+   shortcut caps at 100 and does not paginate; a capped read returns a stale
+   marker and the machine routes on it confidently.
+2. The comment **body verbatim**, so the first line and its SHA survive.
+3. `created_at` per comment, for the run-scoped counts.
+4. Review bodies and ids separately from comments — they are different objects
+   and a tool that merges them breaks the marker/review split.
+5. **Writes as two distinct objects**: a PR comment *and* a submitted review.
+   A tool that posts everything as issue comments produces no review object, so
+   step 2's review read finds nothing and exits, and the night's work never
+   reaches the contribution graph. If your tool cannot submit a review, say so
+   in the report — that is a real capability gap, not a detail.
+
+**Confirm your tool paginates before you trust a marker read**, and name the
+tool in the report. A run that cannot establish point 1 should say so and treat
+every marker read as unverified rather than assuming it saw the newest.
 
 **Every round leaves one marker comment, and selection reads it.** Timestamps
 alone cannot tell a PR stopped mid-cycle from one nobody has touched: a run can
@@ -538,9 +599,8 @@ human-cleared one, so bound it: act only if there is **no `reopened:` marker
 newer than the record comment**. Without the guard, every compaction re-triggers
 it, each new `reopened:` marker pushes `FROM` forward, and the round count
 resets to zero on a PR that has been cycling all night. Otherwise the counting
-windows silently revert to the PR's
-whole life, and the two-clean rule reads clean markers from before the finding
-was ever raised.
+windows silently revert to the PR's whole life, and the two-clean rule reads
+clean markers from before the finding was ever raised.
 
 **When a carve-out re-opens a PR, take the label off — and let the routing table
 decide the round.** Do not force a cold one: what the PR needs depends on what
@@ -675,9 +735,8 @@ responding to the review, and that case has to work or a
 `unsettled: not our branch` PR could never satisfy the settle bar and would burn
 to the ceiling on every visit. It gets the finding it is checking, the commits
 that landed since the marker that raised it, and any reply on the thread — and
-it is asked
-to judge whether that finding is actually closed, then review the new head for
-anything the change introduced. It is anchored by construction: it will check
+it is asked to judge whether that finding is actually closed, then review the
+new head for anything the change introduced. It is anchored by construction: it will check
 the delta rather than re-derive the whole diff. That is the trade, and it buys
 the one thing a cold round cannot do — someone other than the author confirming
 the fix does what the finding asked.
@@ -741,10 +800,9 @@ does not count against the ceiling, and the PR needs a fresh one against the new
 head.
 
 Its brief: run `/code-review high` on that PR, post one marker comment, and
-submit its findings as a review. Give
-it the head SHA you captured, and require the comment's body to **start** with
-the literal
-`cold: findings @ <sha>` or `cold: clean @ <sha>`, before any heading or
+submit its findings as a review. Give it the head SHA you captured, and require
+the comment's body to **start** with the literal `cold: findings @ <sha>` or
+`cold: clean @ <sha>`, before any heading or
 formatting, since that whole line is what selection matches and routes on.
 
 **Which of the two is decided by Critical and Medium alone.** `cold: findings`
@@ -755,8 +813,8 @@ which on a branch this run cannot push to ends as `unsettled` on a PR that had
 actually cleared the bar. The nits go in the review, as they would for any
 other round; the comment stays a marker line either way.
 
-A summary may follow on the same line
-(`cold: findings @ 2c1a865 — 2 Critical, 1 Medium`); nothing may precede the
+A summary may follow on the same line (`cold: findings @ 2c1a865 — 2 Critical,
+1 Medium`); nothing may precede the
 marker, and the SHA is not optional — the routing table is keyed on it, and a
 marker without one can never match a head.
 
@@ -971,9 +1029,32 @@ author's next commit or waits for a human who has not been told they are needed.
 pathological PR cannot consume the whole night. Counting only cold rounds would
 leave the semi-cold ones unbounded — every fix buys another check — and half of
 a ceiling is not a ceiling. Six covers a PR with two rounds of findings and the
-cold round that settles it. Hitting it is the same outcome: fix what you can,
-apply `unsettled` with an `unsettled: ran out of rounds @ <sha>` comment,
-record, move on.
+cold round that settles it — five by the cost model above, with one spare.
+Hitting it is the same outcome: fix what you can, apply `unsettled` with an
+`unsettled: ran out of rounds @ <sha>` comment, record, move on.
+
+**One exception: a PR with nothing open may run the rounds settling needs, past
+the ceiling.** If the sixth round leaves no Critical and no Medium outstanding,
+settling still needs a fresh cold round, and refusing it labels a converged PR
+`unsettled: ran out of rounds` on arithmetic alone. That happened on #291 in the
+first real run: six rounds ending `semi-cold: closes — 4 of 4 Mediums closed,
+nothing new above a nit`, nothing open, and the failure label applied anyway.
+
+**"The rounds settling needs" is usually one, and is two for a PR that has never
+had a finding** — that case wants two consecutive `cold: clean` markers, so
+granting a single round would strand it exactly as the ceiling did. Grant what
+the settle bar asks for, no more.
+
+The exception terminates, which is why it is safe: **any finding ends it
+immediately.** An extra round that raises a Critical or Medium stops the PR
+there, and `unsettled: ran out of rounds` is then accurate rather than
+arithmetic. Rounds that stay clean can only run until the bar is met, and then
+the PR settles. There is no path that keeps granting rounds.
+
+**These rounds are charged to the 32-round budget.** They are real reviews and
+the counting query charges them automatically; unlike a `reopened:` marker or a
+re-posted marker, nothing here is free. The exception lifts the *per-PR*
+ceiling, never the run-wide budget.
 
 **Take one PR all the way through before opening the next.** Review it, fix it,
 check the fix, settle or label it — then move on. Do not run a pass over every
@@ -994,7 +1075,7 @@ carrying a priority label, highest first, then oldest first. Note that most open
 PRs carry no labels at all, so in practice this is mostly "oldest first" — which
 is the intent, since the oldest have waited longest. Do not order by the
 `overnight-ok` label: that is the *issue* selection gate from
-[This run](#this-run) and no PR carries it.
+[Choosing work](#choosing-work) and no PR carries it.
 
 **Run budget: 32 rounds per run**, cold and semi-cold together. *Rounds*, not
 reviews: each round now submits a GitHub review as well as posting its marker,
@@ -1015,7 +1096,10 @@ carrying no label — unlabelled and unreviewed are indistinguishable to the nex
 run, which is the whole reason these labels exist.
 
 **Log every round as you finish it** — `PR #<n> — <cold|semi-cold>, round
-<k>/6, budget <used>/32` plus the tiers found. Neither bound is enforceable
+<k>/6, budget <used>/32` plus the tiers found. A round granted by the settling
+exception is logged as `settling, budget <used>/32` instead of a `<k>/6` — it is
+outside the ceiling, and writing `7/6` reads as a counting bug to the very
+cross-check that is meant to catch one. Neither bound is enforceable
 unless the count survives: context may be compacted mid-run, and counts you hold
 in your head reset to zero when it is. Recover both from the log at the start of
 every iteration, and cross-check **both** counts against the markers — the
@@ -1133,8 +1217,7 @@ costs three, so a smaller reserve guarantees the PR it just opened ends
 `unsettled: ran out of rounds` by construction. A PR this run opens must be
 reviewable by this run — a draft nobody has looked at is exactly what the hard
 rules forbid leaving behind. If the budget cannot cover a review, step 3 writes
-the plan into
-the log instead of opening a PR.
+the plan into the log instead of opening a PR.
 
 This is a deliberate narrowing, and it is the honest consequence of the hard
 rule against pushing to branches this run did not create. The alternative is
@@ -1233,8 +1316,18 @@ inline in under a minute.
   file and line references, options where there is a real choice, acceptance.
   CF-224 (#224) and CF-239 (#242) are good models.
 - Labels from the existing set, including a priority.
-- Add to the `ClipFarm Backlog` project with the **Sprint field left unset** —
-  these are for triage, not for silently joining the current sprint.
+- **Do not try to add the card to the `ClipFarm Backlog` project — a project
+  workflow adds new issues automatically, with `Status: Todo`.** Verified: every
+  card the first unattended run filed reached the board this way, without the
+  `project` scope. Nor is there anything to do about **Sprint**: iteration
+  fields are untouched by GitHub's built-in workflows, so it starts unset, which
+  is what these cards want — they are for triage, not for silently joining the
+  current sprint.
+
+  So **do not report cards as missing from the board.** Every run so far has
+  reported that, and it has been wrong each time. If you want to check rather
+  than assume, `gh project item-list` reads with `project` scope; if you do not
+  have it, say the board was unverified rather than saying the cards are off it.
 - Open the body with: `Filed unattended during an overnight run — needs triage.`
 
 ### When a command is not available
@@ -1263,19 +1356,28 @@ opening a PR.
 ### Reporting
 
 Post the run report as a GitHub issue titled `Overnight run — <YYYY-MM-DD>`,
-labelled `chore`, added to the project with the Sprint field unset. A log file in
-a sandbox is a report nobody reads; the issue is the copy that arrives.
+labelled `chore`. It joins the project the same way cards do — automatically,
+with Sprint unset — so there is nothing to add by hand and nothing to report as
+missing. A log file in a sandbox is a report nobody reads; the issue is the
+copy that arrives.
 
 Put the same summary at the top of `.claude/overnight-log.md`.
 
 The report contains:
 
+- **Which tool you used for GitHub state** — `gh`, MCP, something else — and
+  whether you confirmed it paginates. If you could not confirm it, say marker
+  reads were unverified
+- **Any footer text appended to your posts that you did not write**, quoted
+  verbatim, once
+- **Whether the board was verified**, and if not, say so rather than saying
+  cards are missing from it
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
 - PRs labelled `unsettled`, split by the three reasons their `unsettled:`
   comment gives — `needs a decision` (only these want a human), `not our branch`
-  (the author's next push re-opens it), and `ran out of rounds` (six-round
-  ceiling or review budget) — and what is still outstanding on each
+  (the author's next push re-opens it), and `ran out of rounds` (the per-PR
+  ceiling, or the run-wide budget) — and what is still outstanding on each
 - Whether the review budget ran out, and which PRs never got a first round at
   all — with a deep queue this is the expected shape of a run, not a failure
 - PRs opened, with card and branch — and **what to test to verify each one**
