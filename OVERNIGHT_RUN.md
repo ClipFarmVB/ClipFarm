@@ -161,10 +161,13 @@ the PR owing a second clean round before it may be labelled, and it would sit
 there forever. **Unlabelled means unfinished.** What it needs next comes from
 the routing table below.
 
-Note also that "reviewed" here never means a GitHub review object: every round
-posts with `gh pr comment`, so a PR reviewed a dozen times still has zero
-reviews in GitHub's sense, and any test phrased against reviews reads every PR
-as untouched.
+Note also that "needs a round" is never decided from GitHub review objects. A
+round does submit one — the two artifacts are described below — but the review
+is not what *selection* reads. The review does open with the same marker line —
+that is what tells a round's review from a human's — but every selection and
+counting rule here is phrased against marker **comments**, and a rule phrased
+against reviews would be counting an artifact that is deliberately outside the
+budget and the ceiling.
 
 **Every round leaves one marker comment, and selection reads it.** Timestamps
 alone cannot tell a PR stopped mid-cycle from one nobody has touched: a run can
@@ -262,7 +265,7 @@ close` only because neither is a prefix of the other — preserve that if you ev
 add a fifth marker.
 
 **Use `ROUNDS` wherever something is counted or routed** — the six-round
-ceiling, the 32-review budget, the latest-round lookup. A pattern that also
+ceiling, the 32-round budget, the latest-round lookup. A pattern that also
 matched `reopened:` or `unsettled:` would charge those comments against the
 ceiling and route on them, and neither is a round.
 
@@ -281,8 +284,10 @@ A broader pattern would match `cold: no findings @ abc1234` or a marker with no
 SHA at all: selection would pick it up, the ceiling would be charged for it, and
 routing would have nowhere to send it. Matching only what routes means a
 malformed marker is invisible — which is the reading that fails safe, since
-"this round did not happen" is exactly what a malformed marker tells you. Re-run
-it, and note it in the report; nothing was counted, so nothing is double-charged.
+"this round did not happen" is exactly what a malformed marker tells you.
+Re-post the marker correctly and note it in the report — a re-post is not a new
+round and spends no budget, because nothing was ever counted for the malformed
+one.
 
 `reopened:`, `unsettled:` and `settled:` are matched by their own literal
 prefixes where they are read, and are deliberately outside `ROUNDS` — they are
@@ -301,12 +306,65 @@ explicitly not rounds and so are not covered by the rounds rule below. A
 silently reverts the counting window to the PR's whole life — the exact failure
 that marker exists to prevent.
 
-**Post them with `gh pr comment`, never `gh pr review`.** A review body does not
-appear in `gh pr view --json comments` at all — #191 carries three comments and
-one review, and that query returns only the three — so a verdict submitted as a
-review strands the PR on whatever the previous comment said. This rule has to
-travel to every subagent you spawn, and it is repeated in both briefs below for
-that reason.
+**The marker goes through `gh pr comment`, never `gh pr review`.** A review body
+does not appear in `gh pr view --json comments` at all — #191 carries three
+comments and one review, and that query returns only the three — so a marker
+submitted as a review strands the PR on whatever the previous comment said. This
+rule has to travel to every subagent you spawn, and it is repeated in both
+briefs below for that reason.
+
+**Each round then also submits a review carrying its findings.** Two artifacts,
+one round, and **the findings go in exactly one of them**:
+
+```
+gh pr comment <n> --body "cold: findings @ 2c1a865 — 2 Critical, 1 Medium"
+gh pr review  <n> --comment --body "$(cat <<'EOF'
+cold: findings @ 2c1a865 — 2 Critical, 1 Medium
+
+## Critical
+…
+EOF
+)"
+```
+
+Note the first line of the review body: it is the marker again, byte for byte.
+A review that opens `## Critical` is invisible to the filter step 2 uses, so the
+round that just ran cannot be read back — and it sits one hash away from a
+maintainer's review, which is the confusion the marker line exists to prevent.
+
+The comment is **only** the marker line — the prefix, the SHA, and at most a
+one-line count. The review **repeats that marker line and then holds the tiered
+findings in full**. Repeating one line is not duplication worth avoiding; the
+findings appear once. Writing those into both would mean two copies of the same
+text that can drift apart, and the graph credit comes from the review
+*existing*, not from what the comment contains, so duplicating them buys
+nothing.
+
+**The review needs that line to be findable.** A round's review and a
+maintainer's are both `state: "COMMENTED"`, and on this repo they come from the
+same login, so nothing else distinguishes them — see step 2, which reads
+findings back out.
+
+The graph counts commits, issues opened, PRs opened and submitted reviews —
+**not** conversation comments — so a loop that posts only comments does a night
+of review work that never appears anywhere.
+
+**A clean round still submits a review.** `gh pr review` rejects an empty body,
+and the two rounds that award `review-settled` are exactly the ones with nothing
+above a nit to report — so they would be the rounds that fail to post. Say what
+was checked and that nothing above a nit was found, and list the nits. That is a
+real review; it is the record that someone looked and found it clean.
+
+**The two cannot collide, for exactly the reason the marker cannot be a review.**
+Everything that reads state — `ROUNDS` matching, the latest-marker lookup, the
+six-round ceiling, the 32-round budget — reads the comments endpoint, and a
+review is not in it. So the review is invisible to every count, and adding it
+changes no arithmetic anywhere in this document.
+
+**"One comment per round" still means one *comment*.** The review is not a
+comment and does not violate it. Do not collapse the two into one artifact in
+either direction: a marker inside a review is unreadable, and findings with no
+review are uncounted.
 
 Read the latest marker, and route on it:
 
@@ -463,8 +521,14 @@ makes a human's removal detectable at all:
 **A human clearing a label leaves no `reopened:` marker**, because nothing this
 run did re-opened it. So when you pick up a PR carrying one of those record
 comments but *not* its label — a maintainer removed it — **write the
-`reopened: <sha>` marker yourself before the first round**, and give it a cold
-round. Both labels need this. Without it for `review-settled`, a maintainer who
+`reopened: <sha>` marker yourself before the first round**, then let the routing
+table pick the round, exactly as for a carve-out re-open. Do not force a cold
+one: a maintainer who clears `unsettled: not our branch` *after* the author
+pushed a fix leaves a PR whose last round is `cold: findings` at a stale SHA,
+which wants a semi-cold check. Forcing cold there cannot close the finding, so
+the settle bar stays unreachable and the PR burns to the ceiling.
+
+Both labels need the marker. Without it for `review-settled`, a maintainer who
 removes the label to ask for another look gets it silently re-applied with zero
 rounds run: routing sees `cold: clean` at the current head, and the settle rule
 says apply the label now.
@@ -478,12 +542,15 @@ windows silently revert to the PR's
 whole life, and the two-clean rule reads clean markers from before the finding
 was ever raised.
 
-**When a carve-out re-opens a PR, take the label off and start cold.** The
-routing table above reads the latest marker, and on a re-opened PR that marker
-describes a head that no longer exists: a re-opened `review-settled` PR still
-says `cold: clean`, which routes to "apply the label" that is already on it, and
-a re-opened `unsettled` one still says `cold: findings`, which routes to fixing
-findings raised against superseded code. Neither is what the PR needs. So:
+**When a carve-out re-opens a PR, take the label off — and let the routing table
+decide the round.** Do not force a cold one: what the PR needs depends on what
+its last round said, and the table already tells the two cases apart by SHA. A
+re-opened `review-settled` PR wants a cold round: its last round was
+`cold: clean`, and the new commits are code nothing has read. A re-opened
+`unsettled` PR — either reason that commits can re-open, `not our branch` or
+`ran out of rounds` — wants whatever its last round marker says, which is
+usually `cold: findings` at a stale SHA, and so a semi-cold check of the fix
+that has since landed. So:
 
 - **Post a `reopened: <sha>` marker first, then remove the label.** In that
   order. The label is the only record that the PR was ever settled or unsettled,
@@ -491,8 +558,8 @@ findings raised against superseded code. Neither is what the PR needs. So:
   counting windows depend on — a later iteration then counts **finding** markers
   over the PR's whole life, so a PR whose findings were raised and closed long
   ago reads as still carrying them. (The clean count is safe here: it is gated
-  on the current head SHA, so stale clean markers cannot count.) The
-  marker is durable; the label was not. Left on, it also advertises
+  on the current head SHA, so stale clean markers cannot count.) The marker is
+  durable; the label was not. Left on, it also advertises
   `review-settled` to humans reading a PR with unreviewed commits.
 - **Route on the last round marker, exactly as the table does** — the
   `reopened:` marker you just posted is not routed on. For a PR that was
@@ -559,17 +626,20 @@ One block, because the three values are only meaningful together: the marker
 line feeds the SHA extraction, and a snippet that leaves `$LATEST` unassigned
 extracts nothing and reports `differs` for every PR.
 
-A marker with no extractable SHA is a malformed round: treat the PR as a
-first-look case and give it a cold round, rather than trusting a marker whose
-subject cannot be established.
+**A malformed marker is invisible, and that is deliberate.** `ROUNDS` matches
+the four routed forms and requires a SHA, so a comment reading
+`cold: no findings @ abc1234`, or one with no SHA, or one behind a markdown
+heading, matches nothing at all. It is not selected, not routed, and not counted
+against the ceiling or the budget. The PR simply reads as though that round
+never happened — which is the one reading that fails safe, and it is why a
+re-post costs nothing: there is no phantom round to double-charge.
 
-**`ROUNDS` is broader than the routed markers, so handle the gap.** It matches
-anything starting `cold:` or `semi-cold:`, while routing knows only four
-phrasings; a reviewer that writes `cold: no findings` is selected and then
-routes nowhere. **A latest marker that matches `ROUNDS` but none of the four
-routed forms is malformed: re-run the round with the brief restated, and note it
-in the report.** Do not guess what was meant, and do not treat it as clean — the
-one reading that fails safe is "this round did not happen".
+The cost is that a malformed marker is *silently* lost rather than flagged.
+That is what the marker-landed check below is for: the round that wrote it is
+the only thing positioned to notice, so it verifies at the time rather than
+leaving a later iteration to infer it. If you find one after the fact, re-post
+the marker correctly and note it in the report; do not guess what was meant, and
+do not read it as clean.
 
 **Compare SHAs, never dates.** A commit's `committer.date` is when it was
 *written*, not when it was pushed: an author who committed on Tuesday and pushed
@@ -614,14 +684,18 @@ the fix does what the finding asked.
 
 **It posts one marker comment like every other round** — body starting with the
 literal `semi-cold: closes @ <sha>` or `semi-cold: does not close @ <sha>`,
-carrying the same head SHA the cold brief specifies, before any heading,
-then each finding it checked with the reason, then anything the fix introduced,
-tiered as below. A same-line summary after the marker is welcome here too. Tell
-it, as you tell the cold reviewer, to post with `gh pr comment` — never
-`gh pr review`, never `/code-review --comment`. One comment per round, never one
-per finding: the rules that recover state after a compaction count marker
-comments, and a round posting several inflates that count as surely as one
-posting none.
+carrying the same head SHA the cold brief specifies, before any heading, and
+nothing after it but an optional one-line summary. Each finding it checked, with
+the reason, and anything the fix introduced, goes in its **review**, tiered as
+below — not in the comment. Tell it, as you tell the cold reviewer, to post the
+marker with `gh pr comment` — never `gh pr review`, never
+`/code-review --comment` — and then to submit that write-up as a review with
+`gh pr review <n> --comment --body "…"`, **opening the review body with the same
+marker line** so step 2 can tell it from a human's review. One
+*comment* per round, never one per finding: the rules that recover state after a
+compaction count marker comments, and a round posting several inflates that
+count as surely as one posting none. The review is not a comment and is not
+counted; it is what makes the round visible as work.
 
 **Check the marker landed, every time.** Immediately after a round posts, read
 the latest marker back and confirm it is the one that round wrote, with the SHA
@@ -666,7 +740,8 @@ round finishes**: if the head moved during the round, that round is void. It
 does not count against the ceiling, and the PR needs a fresh one against the new
 head.
 
-Its brief: run `/code-review high` on that PR and post one marker comment. Give
+Its brief: run `/code-review high` on that PR, post one marker comment, and
+submit its findings as a review. Give
 it the head SHA you captured, and require the comment's body to **start** with
 the literal
 `cold: findings @ <sha>` or `cold: clean @ <sha>`, before any heading or
@@ -677,24 +752,43 @@ means at least one Critical or Medium. A round that found *only* nits, or
 nothing at all, writes `cold: clean` — the settle bar permits nits, and a round
 that reports one as `cold: findings` routes the PR to a fix it does not need,
 which on a branch this run cannot push to ends as `unsettled` on a PR that had
-actually cleared the bar. Put the nits in the comment body under `cold: clean`.
+actually cleared the bar. The nits go in the review, as they would for any
+other round; the comment stays a marker line either way.
 
 A summary may follow on the same line
 (`cold: findings @ 2c1a865 — 2 Critical, 1 Medium`); nothing may precede the
 marker, and the SHA is not optional — the routing table is keyed on it, and a
-marker without one can never match a head. Then the findings, in tiers:
+marker without one can never match a head.
+
+**That line is the whole comment.** The findings do not go in it — they go in
+the review, tiered:
 
 - **Critical** — correctness, security, data loss
 - **Medium** — should fix before merge
 - **Nit** — style, naming, comments
 
-**Post it with `gh pr comment`. Not `gh pr review`, and not
+**Post the marker with `gh pr comment`. Not `gh pr review`, and not
 `/code-review --comment`.** This belongs in the brief you hand over, not only in
 the selection rules above, because the skill you just told it to run documents
 `--comment` as its own way to publish findings — inline review comments, which
 is the move a reviewer holding the skill reaches for first. Neither shows up as
 a comment in the REST comments listing that selection reads, so either one
 strands the PR on its previous marker.
+
+**The ban is on the marker, and it still stands.** A review is now required
+*as well*, but it is submitted deliberately with `gh pr review --comment` after
+the marker is posted — not by letting `/code-review --comment` publish inline
+comments in place of either artifact.
+
+**Then submit the findings as a review**, `gh pr review <n> --comment
+--body "…"`, **opening the review body with the same marker line** and putting
+the tiered findings under it. Both artifacts, every round, and the findings
+appear in exactly one of them: the marker comment is what routing reads back,
+the review is what a human reads, what step 2 retrieves the findings from, and
+what the contribution graph counts. The repeated marker line is how step 2 finds
+the right review — a maintainer's review carries none, and is otherwise
+indistinguishable. Self-reviews count too, which matters because most of what this run
+opens it will also review.
 
 Challenge the design where warranted, not only the code; say so when a premise
 looks wrong. **Verify claims against the repository** rather than trusting the PR
@@ -724,9 +818,56 @@ created its branch. Not merely if the account matches: `gh api user -q .login`
 returns *your login*, and matching it against `.author.login` also matches PRs
 this account opened on earlier nights — pushing to those is what the hard rule
 against pushing to branches this run did not create forbids.
+
 For a PR you may not push to, describe the fix in a comment, apply `unsettled`
 and post `unsettled: not our branch @ <sha>`. That is the cheap terminal state,
 not a dead end: the author pushing a fix re-opens it on its own.
+
+**Read the findings out of the round's review.** The marker comment carries the
+prefix, the SHA and at most a count; the findings are in the review that round
+submitted.
+
+**Which is why the review body opens with the same marker line** — the marker,
+then the findings. Not a second copy of the findings: one line, and it is what
+makes the review identifiable at all. Human reviews on this repo carry no marker
+(the existing one on #278 opens `### Critical`), and there is nothing else to
+tell them apart: a round's review and a maintainer's are both `state:
+"COMMENTED"`, and on this repo they are posted by the **same login**, so
+filtering by author would match both. Without the marker line, `tail -1` can
+hand step 2 a maintainer's review to "fix".
+
+It also solves the SHA. The review object's own `.commit_id` is the reviewed
+head, but it returns all forty characters and would have to be sliced to
+`[0:7]` to compare against anything else here; the marker line already carries
+the seven-character form every other rule uses.
+
+```
+ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
+RID=$(gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/reviews --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .id" | tail -1)
+[ -n "$RID" ] || { echo "no round review — see the transitional note below"; exit 1; }
+gh api repos/ClipFarmVB/ClipFarm/pulls/<n>/reviews/$RID --jq ".body"
+```
+
+**Take the id first, then fetch the body.** Reviews come back oldest-first, so
+`tail -1` over the *ids* is the newest round review — but piping bodies through
+`tail -1` returns the last **line** of the last body, because a findings
+write-up is many lines. Ids are one line each, which is what makes the two-step
+correct. The guard **exits**: an unset `RID` requests `…/reviews/`, which 404s,
+and a guard that only prints lets the request it detected go out anyway.
+
+Match the review to the marker comment by the SHA both carry: a review whose
+marker names an earlier head describes findings on code that has since changed.
+
+**Transitional: PRs already mid-cycle when this landed have no round review at
+all.** Their findings were posted in the marker comment under the previous
+shape.
+
+The test is the one the command already performs, and it evaluates itself — no
+date to look up: **a PR with a marker comment but no matching round review is
+one of these.** Read its findings from the marker comment. Every round posted
+after this landed leaves both artifacts, so the case disappears on its own as
+the queue turns over. Do not conclude a PR has no findings because it has no
+round review.
 
 If a fix needs no human decision, implement it, push to that PR's branch, and
 reply on the thread saying what changed. If it needs a judgement call, log it
@@ -855,7 +996,10 @@ is the intent, since the oldest have waited longest. Do not order by the
 `overnight-ok` label: that is the *issue* selection gate from
 [This run](#this-run) and no PR carries it.
 
-**Run budget: 32 reviews per run**, cold and semi-cold together. Six rounds
+**Run budget: 32 rounds per run**, cold and semi-cold together. *Rounds*, not
+reviews: each round now submits a GitHub review as well as posting its marker,
+so counting "reviews" would be ambiguous about which artifact is meant. The
+budget counts rounds, and a round is one marker comment. Six rounds
 across a queue this size would permit far more — a whole night of nothing but
 reviewing, which together with "stop on usage limits" means step 3 never
 happens. **When the budget is spent, stop reviewing and go to step 3** — but
@@ -971,7 +1115,7 @@ stops after one or two rounds regardless.
 
 **So on a backlogged night, step 3 does not happen, and the 5-PR cap is not
 reachable.** Twenty-odd PRs at one to two rounds is 20–40 reviews, and five new
-PRs at three each is another 15; there is no reading of a 32-review budget on
+PRs at three each is another 15; there is no reading of a 32-round budget on
 which both fit. Priority order gates ticket work behind a queue this document
 says the budget cannot finish, so ticket work waits for a night that starts with
 the queue already marked. That is the intended trade — the queue is the
@@ -1005,7 +1149,7 @@ closed by a round pointed at them and settling still needs a cold one.
 
 **Two knobs, and they are not interchangeable.** The **ceiling** (six rounds per
 PR) exists for fairness: it stops one pathological PR eating a night that twenty
-others are queued for. The **budget** (32 reviews per run) sets total depth
+others are queued for. The **budget** (32 rounds per run) sets total depth
 across the queue. If runs are finding real problems and you want more review,
 raise the budget — raising the ceiling only buys more passes over whichever PR
 is already the worst-behaved. Hitting the ceiling is cheap anyway: the findings
