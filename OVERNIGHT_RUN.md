@@ -133,8 +133,13 @@ pick the next one. Running step 1 across every open PR and only then starting
 step 2 is the breadth-first pass ruled out below.
 
 **1 — Review open PRs that need one.** A PR needs a review if it has **no
-review at all** — including one you opened earlier in this run — or if it has
-commits since its most recent review.
+marker comment at all** — including one you opened earlier in this run — or if
+it has commits since its most recent marker.
+
+Read that as *marker*, not *review object*: every round posts with
+`gh pr comment`, so a PR that has been reviewed a dozen times still has zero
+reviews in GitHub's sense, and a test phrased against reviews reads every PR as
+never reviewed.
 
 **Every round leaves one marker comment, and selection reads it.** Timestamps
 alone cannot tell a PR stopped mid-cycle from one nobody has touched: a run can
@@ -152,14 +157,20 @@ than guard against loosely. The four:
 
 - `cold: findings` — a cold round raised a Critical or Medium. Next: step 2,
   fix them.
-- `cold: clean` — a cold round raised nothing above a nit. Next: settle it, or,
-  if the PR has never had a finding, one more cold round (see the settle bar).
-- `semi-cold: closes` — a fix was checked and closes the finding it claimed to.
-  Next: a cold round.
-- `semi-cold: does not close` — it does not. Next: step 2, fix it again. A cold
-  round cannot rescue this one: the settle bar requires a semi-cold check to
-  close a finding, and a cold round posted on top would make its own marker the
-  latest and hide the open finding from this very rule.
+- `cold: clean` — a cold round raised nothing above a nit. Next: settle it **if
+  the settle bar is met** — nothing Critical or Medium still open from *any*
+  round — or one more cold round if the PR has never had a finding. A clean
+  round is not by itself permission to label; see the settle bar.
+- `semi-cold: closes` — a fix was checked, it closes the finding it claimed to,
+  **and the round raised nothing new above a nit**. Next: a cold round.
+- `semi-cold: does not close` — either the finding is still open, or the fix
+  introduced a Critical or Medium of its own. Both are open findings and both
+  route the same way. Next: step 2, fix it again. A cold round cannot rescue
+  this one: the settle bar requires a semi-cold check to close a finding, and a
+  cold round posted on top would make its own marker the latest and hide the
+  open finding from this very rule.
+- *no marker at all* — the query below prints nothing. The PR has never had a
+  round. Next: a cold round, the first-look case.
 
 **Routing is a prefix test on the first line, folded to lowercase.** The
 selection query returns that whole line, and a reviewer will naturally write
@@ -208,13 +219,30 @@ that reason.
 Read the latest marker, and route on it:
 
 ```
-gh pr view <n> --json comments --jq "[.comments[] | select(.body | test(\"$MARKERS\"; \"i\"))] | sort_by(.createdAt) | (last | .body // \"none\") | split(\"\n\")[0]"
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$MARKERS\"; \"i\")) | .body | split(\"\n\")[0]" | tail -1
 ```
 
-It answers `none` for a PR that has never had a round. Without the
-`// "none"` guard `split` is handed a null and the command fails rather
-than answering, which in an unattended run reads as a broken query rather
-than as the fresh PR it is.
+Empty output means the PR has never had a round.
+
+**Do not use `gh pr view --json comments` for any of this.** It fetches
+`comments(first: 100)` and never paginates, so on a PR past a hundred comments
+it returns the *oldest* hundred — and this document expects a dozen rounds of
+markers plus a fix reply each, on PRs that also carry human conversation. The
+newest marker would simply fall outside the window: a late `cold: findings`
+becomes invisible and a stale `cold: clean` settles a PR with open Criticals.
+The REST endpoint above paginates properly.
+
+**And note the shape of these commands: they stream and end in `tail`/`wc`,
+rather than building an array and taking `last` or `length`.** With
+`--paginate`, `--jq` runs *per page* — it prints one result per page, not one
+for the whole set, and `--slurp` cannot be combined with `--jq` to fix that.
+Array-and-`last` therefore yields a line per page, blanks included. Streaming
+the matches and taking the tail is correct across any number of pages. REST
+comments come back oldest-first, so `tail -1` is the newest.
+
+Note also that REST spells the field `created_at`, not the `createdAt` that
+`gh pr view --json` returns — a filter carried over from the GraphQL form
+silently matches nothing.
 
 **The terminal signal is the label, not the marker.** A PR carrying neither
 `review-settled` nor `unsettled` is mid-cycle whatever its latest marker says,
@@ -225,9 +253,17 @@ die in it. Reading `cold: clean` as terminal is what strands such a PR, and it
 strands the never-had-a-finding case twice over — once between its two clean
 rounds, once after the second.
 
-A `cold: clean` marker on an unlabelled PR therefore means: apply the label now,
-unless the PR has never had a finding and carries only one such marker, in which
-case it wants its second clean cold round first.
+A `cold: clean` marker on an unlabelled PR therefore means: apply the label now
+— settle bar permitting — unless the PR has never had a finding and carries only
+one such marker, in which case it wants its second clean cold round first.
+
+**Count those `cold: clean` markers in the same window as the finding test
+below.** Both halves of the two-clean rule have to agree on what "this PR" means
+or the rule collapses: scoping the finding count to a re-open while counting
+clean markers over the PR's whole life lets a re-opened `review-settled` PR —
+which carries a `cold: clean` from before the new commits — settle after a
+single clean round on code nothing has confirmed anything about. That is the
+exact case the rule exists for.
 
 **"Never had a finding" spans the PR's whole life, not this run.** Every other
 count in this section is scoped by `SINCE`; this one must not be, or a PR whose
@@ -244,7 +280,7 @@ For a PR that has never been re-opened, ask over its whole life:
 
 ```
 FINDINGS='^(cold: findings|semi-cold:)'
-gh pr view <n> --json comments --jq "[.comments[] | select(.body | test(\"$FINDINGS\"; \"i\"))] | length"
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$FINDINGS\"; \"i\")) | .id" | wc -l
 ```
 
 **On a re-opened PR, count only from the re-open.** New commits nothing has
@@ -256,7 +292,7 @@ out — but the `labeled` event you already read off the timeline:
 ```
 FINDINGS='^(cold: findings|semi-cold:)'
 REOPENED=<the `labeled` timestamp for the label that was removed — UTC, Z-suffixed>
-gh pr view <n> --json comments --jq "[.comments[] | select(.createdAt > \"$REOPENED\") | select(.body | test(\"$FINDINGS\"; \"i\"))] | length"
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.created_at > \"$REOPENED\") | select(.body | test(\"$FINDINGS\"; \"i\")) | .id" | wc -l
 ```
 
 Zero from the first form means nothing has ever been found on this PR; zero from
@@ -314,15 +350,21 @@ re-applied leaves several:
 
 ```
 LABEL=review-settled   # or: LABEL=unsettled
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/timeline --jq "[.[] | select(.event==\"labeled\" and .label.name==\"$LABEL\") | .created_at] | last"
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/timeline --jq ".[] | select(.event==\"labeled\" and .label.name==\"$LABEL\") | .created_at" | tail -1
 ```
+
+Streaming and `tail -1` for the reason given above: under `--paginate` the
+filter runs per page, so the array-and-`last` form prints a line per page and a
+blank for every page without the event. Captured into a variable that is
+multiline garbage, and read as a timestamp it fails **open** — precisely the
+hazard the next paragraph warns about.
 
 Set `LABEL` to the one you are actually testing. Reading the wrong label returns
 no event, which is indistinguishable from never labelled — and that failure mode
 fails **open**, quietly re-reviewing work that was already settled.
 
-Compare each PR's head commit against the commit of its most recent review. If
-there are commits since, it needs another round.
+Compare each PR's head commit date against the timestamp of its most recent
+marker comment. If there are commits since, it needs another round.
 
 **Never review from this session. Spawn a subagent and let it review cold.**
 The session that wrote the code is the most anchored possible reviewer: once it
@@ -413,8 +455,13 @@ finding confirmed without checking it.
 
 Do not use `/code-review ultra`; it is billed separately and user-triggered.
 
-**2 — Address the review findings on the PR you are carrying**, if you own it
-(`gh api user -q .login`, which includes every PR you opened during this run).
+**2 — Address the review findings on the PR you are carrying**, if **this run**
+created its branch. Not merely if the account matches: `gh api user -q .login`
+also returns PRs this account opened on earlier nights, and pushing to those is
+what the hard rule against pushing to branches this run did not create forbids.
+For a PR you may not push to, describe the fix in a comment and treat the
+finding as blocked.
+
 If a fix needs no human decision, implement it, push to that PR's branch, and
 reply on the thread saying what changed. If it needs a judgement call, log it
 and leave it.
@@ -551,13 +598,16 @@ spent six rounds last night would read as already at the ceiling before this run
 touched it. So record the run's start time in the log's first line, and count
 markers newer than it.
 
-**When a PR was re-opened mid-run by new commits, count from its `unsettled`
-label event instead — but only if that event falls inside this run.** The bound
-you want is the *later* of the two. A label applied last night is older than the
+**When a PR was re-opened mid-run by new commits, count from the event for the
+label that was removed — `unsettled` or `review-settled`, whichever it was —
+instead, and only if that event falls inside this run.** Both carve-outs
+re-open PRs, so both need the bound; naming only one leaves a mid-run re-opened
+`review-settled` PR counting from `SINCE` and hitting the ceiling early. The
+bound you want is the *later* of the two. A label applied last night is older than the
 run start, so counting from it sweeps in markers this run has already spent, and
 the ceiling arrives early on a PR that was just promised a reset.
 
-`.createdAt > "$SINCE"` is a lexicographic string compare against GitHub's
+`.created_at > "$SINCE"` is a lexicographic string compare against GitHub's
 `2026-08-24T23:08:57Z`, so `SINCE` must be UTC with the `Z` suffix and nothing
 else — which is what `date -u +%Y-%m-%dT%H:%M:%SZ` produces, and why the run
 start is recorded in that form. An offset form like `2026-08-25T01:08:57+02:00`
@@ -566,7 +616,7 @@ rounds this run" and hands the PR a fresh six-round ceiling:
 
 ```
 SINCE=<the timestamp from the log's `run start:` line — UTC, Z-suffixed>
-gh pr view <n> --json comments --jq "[.comments[] | select(.createdAt > \"$SINCE\") | select(.body | test(\"$MARKERS\"; \"i\"))] | length"
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.created_at > \"$SINCE\") | select(.body | test(\"$MARKERS\"; \"i\")) | .id" | wc -l
 ```
 
 **What this costs, plainly.** A PR clean on its first look costs two reviews. A
