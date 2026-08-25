@@ -41,7 +41,14 @@ this paragraph is an index, and if it disagrees with the rule it names, the rule
 wins. Deliberately no count: an index that promises a number goes stale the
 moment an amendment is added, and this one already did.
 
-What is amended: the stop rule in [Choosing work](#choosing-work), which
+Note first that one change in this diff is **not** mode-specific: a judgement
+call now outranks the ceiling and the budget when choosing an `unsettled`
+reason, in `build` as much as in `review-only`. It is described under
+[Priority order](#priority-order) and listed here only so it is not mistaken for
+a `review-only` amendment.
+
+What is amended *by the mode*: the stop rule in
+[Choosing work](#choosing-work), which
 decides whether a `review-only` run proceeds at all; the scope subsection of
 [This run](#this-run); the step-3 reserve, and the arithmetic that sizes it;
 what a spent budget does; step 3 itself and everything under [Working a
@@ -57,7 +64,7 @@ the report's title.
 **`review-only` restates nothing about how step 1 works.** Not ordering, not the
 ceiling, not the budget, not the marker scheme, not the settle bar. It is a switch
 on step 3, not a second brief. If anything in this section reads like a
-restatement of a step 1 rule, that is a bug in this section: go to
+*rule* about step 1, that is a bug in this section: go to
 [Priority order](#priority-order) and follow what is written there.
 
 **One exception, and it is deliberate: the review-scope filter below is a real
@@ -107,10 +114,13 @@ Two things follow, and both matter more than they look.
   apply `unsettled`, and post the reason that fits: `not our branch @ <sha>` when
   the fix is straightforward but unpushable, `needs a decision @ <sha>` when the
   finding needs a judgement nobody unattended should make. These two are what
-  *step 2* produces; they are not the whole reason set. A PR stopped by the
-  ceiling or the budget still takes `ran out of rounds @ <sha>`, in this mode as
-  in `build` — reading this bullet as exhaustive would label a budget-stopped PR
-  with a reason chosen for a different cause. The second is not optional
+  *step 2* produces, and they are **not** the whole reason set: a PR stopped by
+  the ceiling or the budget still takes `ran out of rounds @ <sha>`, in this mode
+  as in `build`. That sentence is a pointer, not a restatement — it exists
+  because a reader meeting two reasons here would otherwise take them as
+  exhaustive. The reasons themselves are defined under
+  [Priority order](#priority-order); if this bullet ever disagrees with them,
+  they win. The second is not optional
   tidiness. Only `needs a decision` routes a PR to a human; giving a
   judgement call the `not our branch` reason means the next unrelated push clears
   it and the question is never asked.
@@ -129,14 +139,27 @@ will act on them**, plus `review-settled` on PRs clean across two cold rounds.
 What the mode delivers *over several nights* is the full cycle, with the authors
 supplying the commits this run may not.
 
-**Note the tension with the default scope.** That multi-night cycle turns on an
-author pushing a fix in response to a review — and at `review scope: own`, the
-queue is PRs this account opened, where "the author" is usually the same account
-the run uses. The mechanism is real, but it is strongest exactly where the
-default does not look. At `own`, expect more PRs reaching `review-settled` or
-`needs a decision` and fewer completing the push-and-re-open loop; at `all`,
-expect the reverse. Neither is a defect, but a run reporting "no PRs re-opened"
-means different things under the two scopes.
+**At the default scope, that cycle has no actor, and you should expect the mode
+to stall.** The multi-night loop turns on an author pushing a fix in response to
+a review. At `review scope: own` the queue is PRs *this account* opened — and
+this mode creates no branches, so it may push to none of them. The account that
+would supply the commits is the same one running, and in `review-only` it never
+pushes. So night one parks the queue at `not our branch`, and night two finds
+every in-scope PR labelled with no new commits, skips them all, and stops with
+most of its budget unspent.
+
+That is not a bug to fix in this section; it is what `own` means here. Take it
+as the operating instruction it implies:
+
+- **`review-only` earns its keep at `review scope: all`**, where the other
+  accounts' PRs have authors who do push. That is where the push-and-re-open
+  loop actually runs.
+- **At `own`, treat it as a write-down-the-findings pass, not a cycle.** Its
+  output is reviews on the account's own PRs and `review-settled` where two cold
+  rounds are clean. Everything else waits for a human — the same human who runs
+  the loop.
+- **A second consecutive `own` night is close to worthless** unless commits
+  landed in between. Check that before starting one.
 
 ### Scope: whose PRs get reviewed
 
@@ -226,6 +249,14 @@ running.
 mode: build            # or: review-only
 review scope: own      # or: all
 ```
+
+**If this block is missing, or either value is one you do not recognise, stop
+and ask** — do not assume. The defaults named here are `build` and `own`, and
+they are what an operator who wrote the block intended; an operator who deleted
+it, or typed something else, has not told you anything. This section is the one
+a human rewrites each run, so a missing block is as likely to mean "half-edited"
+as "left at defaults", and the two differ by whether the run reviews other
+people's work.
 
 See [Mode](#mode). The mode decides whether ticket work happens at all; *which*
 tickets is governed by [Choosing work](#choosing-work) under Standing policy,
@@ -1286,14 +1317,30 @@ means depends on why you cannot fix it, and the three cases part company here:
   in the first case, then apply `unsettled` with
   `unsettled: needs a decision @ <sha>`.
 
-**The reason is chosen by what unsticks the PR, not by who owns the branch.** Ask
-"would the author's next push actually resolve this?" — if not, no reason whose
-carve-out fires on a commit is the right one.
+**Between `not our branch` and `needs a decision`, the reason is chosen by what
+unsticks the PR, not by who owns the branch.** Ask "would the author's next push
+actually resolve this?" — if not, `not our branch` is wrong, because its
+carve-out fires on a commit that fixed nothing.
 
-**That includes the ceiling and the budget.** Both tell you to apply
-`ran out of rounds`, and that reason clears on any commit — so a PR carrying a
-decision-needing finding that also happens to hit the ceiling would be silently
-discharged by the author's next unrelated push, and the human never asked. When
+**This is a tie-break between those two, not a general test.** Read as a general
+rule it would rule out `ran out of rounds` for every ceiling- or budget-stopped
+PR — a push does not resolve those either, it only resets the count — leaving
+`needs a decision` as the only reason the document could ever apply. That is not
+the intent. A PR stopped by the ceiling or the budget with nothing needing a
+judgement takes `ran out of rounds`, and its carve-out firing on a commit is
+correct: new code genuinely does deserve fresh rounds.
+
+**Where a judgement call is open, that outranks the ceiling and the budget** —
+in **both** modes, so this changes `build` too, and deliberately. Both tell you
+to apply `ran out of rounds`, and that reason clears on any commit — so a PR
+carrying a decision-needing finding that also hit the ceiling would be silently
+discharged by the author's next unrelated push, and the human never asked.
+
+The cost is that such a PR no longer re-opens on a commit: it waits for a human
+even though the author may have fixed everything else. That is the trade — a
+question quietly dissolved is worse than a PR that waits — but it is the largest
+behavioural change in this document's recent history and it is not confined to
+`review-only`. When
 both apply, **`needs a decision` wins**; note the ceiling or the budget in the
 comment as context rather than as the reason.
 
@@ -1716,6 +1763,11 @@ The report contains:
   comment gives — `needs a decision` (only these want a human), `not our branch`
   (the author's next push re-opens it), and `ran out of rounds` (the per-PR
   ceiling, or the run-wide budget) — and what is still outstanding on each
+- **Which PRs hit the ceiling or the budget**, whatever reason they ended up
+  labelled with. A PR that hit the ceiling *and* carries a judgement call is
+  filed under `needs a decision`, so the reason breakdown above is no longer a
+  reliable count of what the bounds bound — say it separately or the signal is
+  lost
 - Whether the review budget ran out, and which PRs never got a first round at
   all — with a deep queue this is the expected shape of a run, not a failure
 - **Which PRs the `review scope` filter excluded**, and the scope the run used.
