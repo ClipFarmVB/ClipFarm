@@ -317,13 +317,20 @@ briefs below for that reason.
 one round, and **the findings go in exactly one of them**:
 
 ```
-gh pr comment <n> --body "cold: findings @ <sha> — 2 Critical, 1 Medium"
+gh pr comment <n> --body "cold: findings @ 2c1a865 — 2 Critical, 1 Medium"
 gh pr review  <n> --comment --body "$(cat <<'EOF'
+cold: findings @ 2c1a865 — 2 Critical, 1 Medium
+
 ## Critical
 …
 EOF
 )"
 ```
+
+Note the first line of the review body: it is the marker again, byte for byte.
+A review that opens `## Critical` is invisible to the filter step 2 uses, so the
+round that just ran cannot be read back — and it sits one hash away from a
+maintainer's review, which is the confusion the marker line exists to prevent.
 
 The comment is **only** the marker line — the prefix, the SHA, and at most a
 one-line count. The review **repeats that marker line and then holds the tiered
@@ -837,7 +844,7 @@ the seven-character form every other rule uses.
 ```
 ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
 RID=$(gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/reviews --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .id" | tail -1)
-[ -n "$RID" ] || { echo "no round review on this PR — see the transitional note below"; }
+[ -n "$RID" ] || { echo "no round review — see the transitional note below"; exit 1; }
 gh api repos/ClipFarmVB/ClipFarm/pulls/<n>/reviews/$RID --jq ".body"
 ```
 
@@ -845,18 +852,22 @@ gh api repos/ClipFarmVB/ClipFarm/pulls/<n>/reviews/$RID --jq ".body"
 `tail -1` over the *ids* is the newest round review — but piping bodies through
 `tail -1` returns the last **line** of the last body, because a findings
 write-up is many lines. Ids are one line each, which is what makes the two-step
-correct. Guard the empty case too: an unset `RID` requests `…/reviews/`, which
-404s — loud rather than silent, but every other unset-variable hazard here gets
-a sentence and this one earns the same.
+correct. The guard **exits**: an unset `RID` requests `…/reviews/`, which 404s,
+and a guard that only prints lets the request it detected go out anyway.
 
 Match the review to the marker comment by the SHA both carry: a review whose
 marker names an earlier head describes findings on code that has since changed.
 
 **Transitional: PRs already mid-cycle when this landed have no round review at
 all.** Their findings were posted in the marker comment under the previous
-shape. For any PR whose newest marker comment predates this change, read the
-findings from that comment; the rule above applies from the first round posted
-after it. Do not conclude a PR has no findings because it has no round review.
+shape.
+
+The test is the one the command already performs, and it evaluates itself — no
+date to look up: **a PR with a marker comment but no matching round review is
+one of these.** Read its findings from the marker comment. Every round posted
+after this landed leaves both artifacts, so the case disappears on its own as
+the queue turns over. Do not conclude a PR has no findings because it has no
+round review.
 
 If a fix needs no human decision, implement it, push to that PR's branch, and
 reply on the thread saying what changed. If it needs a judgement call, log it
