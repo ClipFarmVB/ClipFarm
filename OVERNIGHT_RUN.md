@@ -301,12 +301,37 @@ explicitly not rounds and so are not covered by the rounds rule below. A
 silently reverts the counting window to the PR's whole life — the exact failure
 that marker exists to prevent.
 
-**Post them with `gh pr comment`, never `gh pr review`.** A review body does not
-appear in `gh pr view --json comments` at all — #191 carries three comments and
-one review, and that query returns only the three — so a verdict submitted as a
-review strands the PR on whatever the previous comment said. This rule has to
-travel to every subagent you spawn, and it is repeated in both briefs below for
-that reason.
+**The marker goes through `gh pr comment`, never `gh pr review`.** A review body
+does not appear in `gh pr view --json comments` at all — #191 carries three
+comments and one review, and that query returns only the three — so a marker
+submitted as a review strands the PR on whatever the previous comment said. This
+rule has to travel to every subagent you spawn, and it is repeated in both
+briefs below for that reason.
+
+**Each round then also submits a review carrying its findings.** Two artifacts,
+one round:
+
+```
+gh pr comment <n> --body "cold: findings @ <sha> — 2 Critical, 1 Medium"
+gh pr review <n> --comment --body-file findings.md
+```
+
+The comment is the machine-readable state; the review is the human-facing
+write-up, and it is what GitHub's contribution graph counts. The graph counts
+commits, issues opened, PRs opened and submitted reviews — **not** conversation
+comments — so a loop that posts only comments does a night of review work that
+never appears anywhere.
+
+**The two cannot collide, for exactly the reason the marker cannot be a review.**
+Everything that reads state — `ROUNDS` matching, the latest-marker lookup, the
+six-round ceiling, the 32-review budget — reads the comments endpoint, and a
+review is not in it. So the review is invisible to every count, and adding it
+changes no arithmetic anywhere in this document.
+
+**"One comment per round" still means one *comment*.** The review is not a
+comment and does not violate it. Do not collapse the two into one artifact in
+either direction: a marker inside a review is unreadable, and findings with no
+review are uncounted.
 
 Read the latest marker, and route on it:
 
@@ -620,11 +645,13 @@ literal `semi-cold: closes @ <sha>` or `semi-cold: does not close @ <sha>`,
 carrying the same head SHA the cold brief specifies, before any heading,
 then each finding it checked with the reason, then anything the fix introduced,
 tiered as below. A same-line summary after the marker is welcome here too. Tell
-it, as you tell the cold reviewer, to post with `gh pr comment` — never
-`gh pr review`, never `/code-review --comment`. One comment per round, never one
-per finding: the rules that recover state after a compaction count marker
-comments, and a round posting several inflates that count as surely as one
-posting none.
+it, as you tell the cold reviewer, to post the marker with `gh pr comment` —
+never `gh pr review`, never `/code-review --comment` — and then to submit its
+findings as a review with `gh pr review <n> --comment --body-file <file>`. One
+*comment* per round, never one per finding: the rules that recover state after a
+compaction count marker comments, and a round posting several inflates that
+count as surely as one posting none. The review is not a comment and is not
+counted; it is what makes the round visible as work.
 
 **Check the marker landed, every time.** Immediately after a round posts, read
 the latest marker back and confirm it is the one that round wrote, with the SHA
@@ -691,13 +718,19 @@ marker without one can never match a head. Then the findings, in tiers:
 - **Medium** — should fix before merge
 - **Nit** — style, naming, comments
 
-**Post it with `gh pr comment`. Not `gh pr review`, and not
+**Post the marker with `gh pr comment`. Not `gh pr review`, and not
 `/code-review --comment`.** This belongs in the brief you hand over, not only in
 the selection rules above, because the skill you just told it to run documents
 `--comment` as its own way to publish findings — inline review comments, which
 is the move a reviewer holding the skill reaches for first. Neither shows up as
 a comment in the REST comments listing that selection reads, so either one
 strands the PR on its previous marker.
+
+**Then submit the same findings as a review**, `gh pr review <n> --comment
+--body-file <file>`. Both artifacts, every round: the marker is what the run
+reads back, the review is what a human reads and what the contribution graph
+counts. Self-reviews count too, which matters because most of what this run
+opens it will also review.
 
 Challenge the design where warranted, not only the code; say so when a premise
 looks wrong. **Verify claims against the repository** rather than trusting the PR
