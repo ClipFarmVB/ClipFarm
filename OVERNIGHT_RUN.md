@@ -197,9 +197,9 @@ exactly that.
 **An out-of-scope PR is not an unreviewed one** — but be honest about what that
 means on the PR itself. Step 1's filter puts such a PR *outside the queue*
 rather than in it and skipped, so no round is owed and no label is missing. It
-does, however, receive **nothing at all**: no marker, no review, no label. On the
-PR, it is indistinguishable from one this run never saw — because that is what it
-is.
+does, however, receive **nothing at all**: no round, no marker, no review, no
+label, no comment. On the PR, it is indistinguishable from one this run never saw
+— because that is what it is.
 
 That is the one place this document's own principle — state should be
 recoverable from the PR — does not hold, and it cannot: writing a marker to say
@@ -251,7 +251,7 @@ amendment lives, and it is the statement that governs.
 running.
 
 ```
-mode: review-only      # or: build
+mode: build            # or: review-only
 review scope: own      # or: all
 ```
 
@@ -444,11 +444,19 @@ step 2 is the breadth-first pass ruled out below.
 **And one filter in front of that test: the run's `review scope`.** With scope
 `own`, a PR whose author is not this account is out of scope and gets no round —
 it is not skipped-because-settled, it is not in the queue at all. With scope
-`all`, every open PR is in the queue. The value comes from the `review scope:`
-line in [This run](#this-run) — **read it there, and if it is missing or holds a
-value you do not recognise, stop and ask** rather than assuming `own`. This is
-the enforcement point, so a run reaching it without having re-read that block
-would otherwise default silently; see [Scope](#scope-whose-prs-get-reviewed).
+`all`, every open PR is in the queue.
+
+The value comes from the `review scope:` line in [This run](#this-run) —
+**read it there, and if it is missing or holds a value you do not recognise,
+stop and ask** rather than assuming `own`. This is the enforcement point, so a
+run reaching it without having re-read that block would otherwise default
+silently; see [Scope](#scope-whose-prs-get-reviewed).
+
+**Out of scope means untouched: no round, no label, no comment.** The only place
+such a PR appears is the report's exclusion list. That belongs here, at the
+moment the filter is applied, rather than only in the section it links to — the
+run of 2026-08-25 applied `unsettled: needs a decision` to 13 out-of-scope PRs
+it had never reviewed, with the forbidding sentence sitting 250 lines away.
 
 **The author field is `.user.login`, not `.author.login`.** On the REST `pulls`
 endpoint this document uses everywhere, `.author` is `null` — verified on #291,
@@ -856,6 +864,22 @@ of which reason applies, and it is what a later run reads back:
 - `unsettled: not our branch @ <sha>`
 - `unsettled: needs a decision @ <sha>`
 - `unsettled: ran out of rounds @ <sha>`
+
+**Whatever the reason, the label needs a round from *this run* behind it.** The
+label asserts that findings are open and this run cannot close them; with no
+round, nothing looked, so there are none to be open — and `needs a decision` has
+no commit carve-out, so it would park the PR on a human indefinitely on the
+strength of a review that never happened. That is what the 2026-08-25 run did to
+13 PRs.
+
+Note the test is **a round from this run**, not a marker matching the current
+head. Those differ, and the difference is not an edge case: the ceiling path
+tells you to fix what you can and *push* before labelling, so by the time the
+label goes on, the head has moved past the last round's marker. An author
+pushing between a round and a `not our branch` label does the same. Requiring a
+head-matching marker would make both cases impossible to label at all, while
+[the rule against leaving open findings unlabelled](#priority-order) still
+demands one.
 
 Only one of the three needs a human to clear it:
 
