@@ -209,8 +209,9 @@ against reviews would be counting an artifact that is deliberately outside the
 budget and the ceiling.
 
 **If you are not running `gh`, these commands are specifications.** Whatever
-tool you use must give you the same four things, and the failure if it does not
-is silent rather than loud:
+tool you use must give you **every** item below — four reads and one write, and
+the write is the one a check done by counting reads would skip. The failure if
+it does not is silent rather than loud:
 
 1. **Every** comment on a PR, not the first page. GitHub's own PR-comments
    shortcut caps at 100 and does not paginate; a capped read returns a stale
@@ -598,9 +599,8 @@ human-cleared one, so bound it: act only if there is **no `reopened:` marker
 newer than the record comment**. Without the guard, every compaction re-triggers
 it, each new `reopened:` marker pushes `FROM` forward, and the round count
 resets to zero on a PR that has been cycling all night. Otherwise the counting
-windows silently revert to the PR's
-whole life, and the two-clean rule reads clean markers from before the finding
-was ever raised.
+windows silently revert to the PR's whole life, and the two-clean rule reads
+clean markers from before the finding was ever raised.
 
 **When a carve-out re-opens a PR, take the label off — and let the routing table
 decide the round.** Do not force a cold one: what the PR needs depends on what
@@ -735,9 +735,8 @@ responding to the review, and that case has to work or a
 `unsettled: not our branch` PR could never satisfy the settle bar and would burn
 to the ceiling on every visit. It gets the finding it is checking, the commits
 that landed since the marker that raised it, and any reply on the thread — and
-it is asked
-to judge whether that finding is actually closed, then review the new head for
-anything the change introduced. It is anchored by construction: it will check
+it is asked to judge whether that finding is actually closed, then review the
+new head for anything the change introduced. It is anchored by construction: it will check
 the delta rather than re-derive the whole diff. That is the trade, and it buys
 the one thing a cold round cannot do — someone other than the author confirming
 the fix does what the finding asked.
@@ -801,10 +800,9 @@ does not count against the ceiling, and the PR needs a fresh one against the new
 head.
 
 Its brief: run `/code-review high` on that PR, post one marker comment, and
-submit its findings as a review. Give
-it the head SHA you captured, and require the comment's body to **start** with
-the literal
-`cold: findings @ <sha>` or `cold: clean @ <sha>`, before any heading or
+submit its findings as a review. Give it the head SHA you captured, and require
+the comment's body to **start** with the literal `cold: findings @ <sha>` or
+`cold: clean @ <sha>`, before any heading or
 formatting, since that whole line is what selection matches and routes on.
 
 **Which of the two is decided by Critical and Medium alone.** `cold: findings`
@@ -815,8 +813,8 @@ which on a branch this run cannot push to ends as `unsettled` on a PR that had
 actually cleared the bar. The nits go in the review, as they would for any
 other round; the comment stays a marker line either way.
 
-A summary may follow on the same line
-(`cold: findings @ 2c1a865 — 2 Critical, 1 Medium`); nothing may precede the
+A summary may follow on the same line (`cold: findings @ 2c1a865 — 2 Critical,
+1 Medium`); nothing may precede the
 marker, and the SHA is not optional — the routing table is keyed on it, and a
 marker without one can never match a head.
 
@@ -1032,9 +1030,8 @@ pathological PR cannot consume the whole night. Counting only cold rounds would
 leave the semi-cold ones unbounded — every fix buys another check — and half of
 a ceiling is not a ceiling. Six covers a PR with two rounds of findings and the
 cold round that settles it — five by the cost model above, with one spare.
-Hitting it is the same outcome: fix what you can,
-apply `unsettled` with an `unsettled: ran out of rounds @ <sha>` comment,
-record, move on.
+Hitting it is the same outcome: fix what you can, apply `unsettled` with an
+`unsettled: ran out of rounds @ <sha>` comment, record, move on.
 
 **One exception: a PR with nothing open may run the rounds settling needs, past
 the ceiling.** If the sixth round leaves no Critical and no Medium outstanding,
@@ -1078,7 +1075,7 @@ carrying a priority label, highest first, then oldest first. Note that most open
 PRs carry no labels at all, so in practice this is mostly "oldest first" — which
 is the intent, since the oldest have waited longest. Do not order by the
 `overnight-ok` label: that is the *issue* selection gate from
-[This run](#this-run) and no PR carries it.
+[Choosing work](#choosing-work) and no PR carries it.
 
 **Run budget: 32 rounds per run**, cold and semi-cold together. *Rounds*, not
 reviews: each round now submits a GitHub review as well as posting its marker,
@@ -1220,8 +1217,7 @@ costs three, so a smaller reserve guarantees the PR it just opened ends
 `unsettled: ran out of rounds` by construction. A PR this run opens must be
 reviewable by this run — a draft nobody has looked at is exactly what the hard
 rules forbid leaving behind. If the budget cannot cover a review, step 3 writes
-the plan into
-the log instead of opening a PR.
+the plan into the log instead of opening a PR.
 
 This is a deliberate narrowing, and it is the honest consequence of the hard
 rule against pushing to branches this run did not create. The alternative is
@@ -1362,8 +1358,8 @@ opening a PR.
 Post the run report as a GitHub issue titled `Overnight run — <YYYY-MM-DD>`,
 labelled `chore`. It joins the project the same way cards do — automatically,
 with Sprint unset — so there is nothing to add by hand and nothing to report as
-missing. A log file in
-a sandbox is a report nobody reads; the issue is the copy that arrives.
+missing. A log file in a sandbox is a report nobody reads; the issue is the
+copy that arrives.
 
 Put the same summary at the top of `.claude/overnight-log.md`.
 
