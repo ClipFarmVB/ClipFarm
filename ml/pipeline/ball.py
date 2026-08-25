@@ -23,11 +23,13 @@ from typing import Optional
 
 import numpy as np
 
-# cv2 is imported lazily inside the two functions that decode video (track_ball,
-# detect_contacts). Everything else here — segmentation, find_contacts,
-# contacts_to_rallies — is pure trajectory maths, and keeping OpenCV out of
-# module import lets the eval tooling and unit tests exercise it with numpy
-# alone (ml/tests installs no OpenCV).
+# cv2 is imported lazily, inside each function that actually opens a video:
+# track_ball, _read_frame_height and detect_rallies. (detect_contacts needs no
+# import of its own — it reaches cv2 only through the two it calls.) Everything
+# else here — segmentation, find_contacts, contacts_to_rallies — is pure
+# trajectory maths, and keeping OpenCV out of module import lets the eval
+# tooling and unit tests exercise it with numpy alone (ml/tests installs no
+# OpenCV).
 
 logger = logging.getLogger(__name__)
 
@@ -527,8 +529,8 @@ def _scale_for(frame_height: int) -> float:
     """
     if frame_height <= 0:
         logger.warning(
-            "find_contacts called without frame_height — assuming %.0fpx tracking "
-            "space; px/s thresholds will be wrong on other resolutions",
+            "contact thresholds requested without a frame height — assuming %.0fpx "
+            "tracking space; px/s thresholds will be wrong on other resolutions",
             REFERENCE_FRAME_HEIGHT,
         )
         return 1.0
@@ -788,11 +790,15 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
         # why. Print the gates that rejected everything so the resolution case
         # (CF-174) is readable in a worker log instead of needing a repro.
         logger.warning(
+            # min_speed is deliberately absent: its gate needs BOTH sides slow,
+            # which already implies the faster side is under hit_speed, so it can
+            # never be the gate that decided. Naming it would send a reader to a
+            # constant that cannot have caused this.
             "find_contacts found nothing in %d segments (%d positions) at "
-            "frame_height=%d: scale %.2f, gates min_speed %.0f / hit_speed %.0f / "
-            "residual_min %.0f px/s against a segmentation ceiling of %.0f px/s",
+            "frame_height=%d: scale %.2f, gates hit_speed %.0f / residual_min "
+            "%.0f px/s against a segmentation ceiling of %.0f px/s",
             len(segments), len(tracker.positions), frame_height, scale,
-            min_speed, hit_speed, residual_min, SEG_MAX_SPEED_PXPS,
+            hit_speed, residual_min, SEG_MAX_SPEED_PXPS,
         )
     return contacts
 
