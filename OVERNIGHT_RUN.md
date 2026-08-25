@@ -141,19 +141,45 @@ So every round posts **exactly one comment**, opening with one of four markers:
   close a finding, and a cold round posted on top would make its own marker the
   latest and hide the open finding from this very rule.
 
+Every rule below that reads markers uses the same pattern. Set it once — and
+note that `gh`'s built-in `--jq` takes a filter string only. It has no `--arg`,
+so the pattern is interpolated by the shell and the filter's own quotes are
+escaped:
+
+```
+MARKERS='^(cold|semi-cold):'
+```
+
 **Post them with `gh pr comment`, never `gh pr review`.** A review body does not
 appear in `gh pr view --json comments` at all — #191 carries three comments and
 one review, and that query returns only the three — so a verdict submitted as a
-review strands the PR on whatever the previous comment said.
+review strands the PR on whatever the previous comment said. This rule has to
+travel to every subagent you spawn, and it is repeated in both briefs below for
+that reason.
 
 Read the latest marker, and route on it:
 
 ```
-gh pr view <n> --json comments --jq '[.comments[] | select(.body | test("^(cold|semi-cold):"))] | sort_by(.createdAt) | last | .body[0:32]'
+gh pr view <n> --json comments --jq "[.comments[] | select(.body | test(\"$MARKERS\"))] | sort_by(.createdAt) | (last | .body // \"none\") | split(\"\n\")[0]"
 ```
 
-**A PR whose latest marker is anything but `cold: clean` is mid-cycle** and
-needs the round that marker names, whatever its timestamps say.
+It answers `none` for a PR that has never had a round. Without the
+`// "none"` guard `split` is handed a null and the command fails rather
+than answering, which in an unattended run reads as a broken query rather
+than as the fresh PR it is.
+
+**The terminal signal is the label, not the marker.** A PR carrying neither
+`review-settled` nor `unsettled` is mid-cycle whatever its latest marker says,
+and needs the round that marker names — including `cold: clean`, whose own
+bullet above gives it a next action. The gap between a settling round and the
+label it earns is a window like any other: no commit, no label, and a run can
+die in it. Reading `cold: clean` as terminal is what strands such a PR, and it
+strands the never-had-a-finding case twice over — once between its two clean
+rounds, once after the second.
+
+A `cold: clean` marker on an unlabelled PR therefore means: apply the label now,
+unless the PR has never had a finding and carries only one such marker, in which
+case it wants its second clean cold round first.
 
 **Skip PRs labelled `review-settled`** unless commits have landed since the
 label was applied. That label is the record that a cold round cleared the bar
@@ -184,8 +210,18 @@ label you are testing, and take the **last** one, since a label removed and
 re-applied leaves several:
 
 ```
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/timeline --jq '[.[] | select(.event=="labeled" and .label.name=="review-settled") | .created_at] | last'
+LABEL=review-settled   # or: LABEL=unsettled
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/timeline --jq "[.[] | select(.event==\"labeled\" and .label.name==\"$LABEL\") | .created_at] | last"
 ```
+
+Set `LABEL` to the one you are actually testing. Reading the wrong label
+returns no event, which is indistinguishable from never labelled — and that
+failure mode fails **open**, quietly re-reviewing work that was already
+settled.
+
+Substitute the label you are actually testing. Reading the wrong one returns no
+event, which is indistinguishable from never labelled — and that failure mode
+fails **open**, quietly re-reviewing work that was already settled.
 
 Compare each PR's head commit against the commit of its most recent review. If
 there are commits since, it needs another round.
@@ -220,7 +256,8 @@ the fix does what the finding asked.
 
 **It posts one marker comment like every other round** — `semi-cold: closes` or
 `semi-cold: does not close`, then each finding it checked with the reason, then
-anything the fix introduced, tiered as below. One comment per round, never one
+anything the fix introduced, tiered as below. Tell it, as you tell the cold
+reviewer, to post with `gh pr comment` and never `gh pr review`. One comment per round, never one
 per finding: the rules that recover state after a compaction count marker
 comments, and a round posting several inflates that count as surely as one
 posting none.
@@ -250,12 +287,18 @@ just spawned that it is never the reviewer. A subagent in a sandbox inherits
 none of your local settings, so the no-stamp rule has to travel with it or its
 review arrives signed.
 
-Its brief: run `/code-review` on that PR and post one marker comment —
-`cold: findings` or `cold: clean` — with the findings in tiers:
+Its brief: run `/code-review` on that PR and post one marker comment — opening
+with `cold: findings` or `cold: clean` — with the findings in tiers:
 
 - **Critical** — correctness, security, data loss
 - **Medium** — should fix before merge
 - **Nit** — style, naming, comments
+
+**Post it with `gh pr comment`, not `gh pr review`** — this belongs in the brief
+you hand over, not only in the selection rules above, because `/code-review`
+makes submitting a review the natural move and a review body is invisible to the
+query that routes this PR. A reviewer that submits one strands the PR on its
+previous marker.
 
 Challenge the design where warranted, not only the code; say so when a premise
 looks wrong. **Verify claims against the repository** rather than trusting the PR
@@ -393,10 +436,19 @@ unless the count survives: context may be compacted mid-run, and counts you hold
 in your head reset to zero when it is. Recover both from the log at the start of
 every iteration, and cross-check the per-PR count by counting **marker
 comments** — not comments, which also carry your step 2 fix replies and anything
-a human wrote:
+a human wrote.
+
+**Count only markers from this run.** Markers persist for the life of the PR;
+the ceiling is six rounds *per run*, and an `unsettled: ran out of rounds` PR is
+promised a reset when new commits land. A raw count undoes both — a PR that
+spent six rounds last night would read as already at the ceiling before this run
+touched it. So record the run's start time in the log's first line, and count
+markers newer than it (or newer than that `unsettled` label event, if you read
+one off the timeline):
 
 ```
-gh pr view <n> --json comments --jq '[.comments[] | select(.body | test("^(cold|semi-cold):"))] | length'
+SINCE=<run-start, ISO 8601>
+gh pr view <n> --json comments --jq "[.comments[] | select(.createdAt > \"$SINCE\") | select(.body | test(\"$MARKERS\"))] | length"
 ```
 
 **What this costs, plainly.** A PR clean on its first look costs two reviews. A
