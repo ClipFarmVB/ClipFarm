@@ -107,9 +107,18 @@ every iteration.** Context may be compacted between iterations; the log is the
 only thing that survives.
 
 **One thing goes in at the start of the run, not the end of an iteration:** the
-run's own start time, on the log's first line, as
-`run start: $(date -u +%Y-%m-%dT%H:%M:%SZ)`. Several bounds are per-run and are
-recovered by comparing against it after a compaction — see
+run's own start time, on the log's first line, in this shape:
+
+```
+run start: 2026-08-25T04:12:09Z
+```
+
+A resolved timestamp, UTC and `Z`-suffixed — produce it with
+`date -u +%Y-%m-%dT%H:%M:%SZ` and write the **result**. Writing the command
+itself into the log is not a near miss: everything downstream compares strings,
+`$` sorts below every digit, so a literal `$(date …)` on that line makes every
+comparison true and the per-run bounds silently become all-time ones. Several
+bounds are recovered by comparing against this line after a compaction — see
 [Priority order](#priority-order). Write it before the first iteration does
 anything.
 
@@ -151,6 +160,19 @@ than guard against loosely. The four:
   round cannot rescue this one: the settle bar requires a semi-cold check to
   close a finding, and a cold round posted on top would make its own marker the
   latest and hide the open finding from this very rule.
+
+**Routing is a prefix test on the first line, folded to lowercase.** The
+selection query returns that whole line, and a reviewer will naturally write
+`cold: findings — 2 Critical, 1 Medium`; matching it against the four markers
+for equality finds nothing. So compare the beginning of the line, not the whole
+of it, and lowercase both sides — the query matches case-insensitively and the
+router has to agree with it, or `Cold: findings` passes selection and then falls
+off the routing table.
+
+A trailing summary on that line is fine and worth encouraging. What is not fine
+is anything *before* the marker. Note also that prefix matching separates
+`semi-cold: closes` from `semi-cold: does not close` only because neither is a
+prefix of the other — preserve that if you ever add a fifth marker.
 
 Note what is deliberately *not* a marker: the `unsettled: …` comment that
 records why that label went on. It is a label rationale, not a round — it
@@ -274,8 +296,8 @@ the fix does what the finding asked.
 
 **It posts one marker comment like every other round** — body starting with the
 literal `semi-cold: closes` or `semi-cold: does not close`, before any heading,
-then each finding it checked with the reason, then
-anything the fix introduced, tiered as below. Tell it, as you tell the cold
+then each finding it checked with the reason, then anything the fix introduced,
+tiered as below. Tell it, as you tell the cold
 reviewer, to post with `gh pr comment` — never `gh pr review`, never
 `/code-review --comment`. One comment per round, never one per finding: the
 rules that recover state after a compaction count marker comments, and a round
@@ -482,7 +504,7 @@ sorts wrong against it and the count comes back low or zero — which reads as "
 rounds this run" and hands the PR a fresh six-round ceiling:
 
 ```
-SINCE=<this run's start, from the log's first line — UTC, Z-suffixed>
+SINCE=<the timestamp from the log's `run start:` line — UTC, Z-suffixed>
 gh pr view <n> --json comments --jq "[.comments[] | select(.createdAt > \"$SINCE\") | select(.body | test(\"$MARKERS\"; \"i\"))] | length"
 ```
 
