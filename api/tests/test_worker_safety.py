@@ -737,9 +737,14 @@ def test_the_clamp_reads_the_width_off_the_column():
     did for games.upload_id after the same overflow), and that change must not
     need a matching edit here to stay correct — the clamp no-ops on its own.
 
-    `getattr` rather than a plain attribute access, and not only to satisfy
-    mypy: `Text` genuinely has no `length`, so the direct form would break at
-    exactly the moment that card lands."""
+    `getattr` rather than a plain attribute access. The reason given here until
+    CF-226 landed was that `Text` "genuinely has no `length`, so the direct form
+    would break at exactly the moment that card lands" — and that is false:
+    `sa.Text().length` exists and is `None`. A plain attribute access would have
+    worked. `getattr` is defensive against a future type that really lacks the
+    attribute, not load-bearing against this one, and the distinction is worth
+    keeping straight: a guard justified by a false claim is one someone removes
+    the day they check the claim."""
     from app.models.game import Game
     from app.workers import _sync_db
 
