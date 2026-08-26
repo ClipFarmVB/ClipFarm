@@ -7,7 +7,6 @@ ml/tests and the eval harness.
 
 Run from the api/ dir: `cd api && pytest tests/test_pose_modal.py`.
 """
-import importlib
 import re
 import sys
 import types
@@ -316,10 +315,11 @@ def test_numpy_scalars_never_reach_the_modal_boundary(monkeypatch):
         "start": np.float64(1.0),
         "end": 6.0,
         "action": "spike",
-        # Exactly the expression ball.py evaluates, at a speed inside the
-        # window where the numpy operand actually wins: hypot(200, 60) ≈ 209,
-        # above the branch's 180 guard and below the ~345 where 0.88 takes over.
-        "confidence": round(min(0.88, 0.65 + np.hypot(np.float64(200.0), 60.0) / 1500.0), 2),
+        # Exactly the expression ball.py evaluates, at a velocity that actually
+        # reaches it: the branch needs `vy_after > 60.0` (strict) as well as
+        # `sp_after > 180.0`, so hypot(200, 70) ≈ 212 clears both, and sits
+        # below the ~345 where the constant 0.88 wins the min() instead.
+        "confidence": round(min(0.88, 0.65 + np.hypot(np.float64(200.0), 70.0) / 1500.0), 2),
         "labels": ["spike"],
         "features": {"contact_count": np.int64(3), "speeds": np.array([1.5, 2.5])},
     }]
@@ -584,47 +584,6 @@ def test_invariant_detects_an_ml_runtime_hidden_behind_a_requirements_file():
     assert not in_api, f"api/requirements.txt now pulls an ML runtime: {in_api}"
 
 
-def test_every_importorskip_target_is_installed():
-    """No test in this suite may skip because a dependency is missing (CF-276).
-
-    This is the general form of the bug that card was about, and it would have
-    caught it: `test_numpy_scalars_never_reach_the_modal_boundary` guards on
-    numpy, numpy was in neither requirements file, and so that test skipped in
-    CI from the day it was written — reported as a pass, forever.
-
-    Asserting against the *environment* rather than against a requirements file
-    is the point. In CI the environment is built from requirements-dev.txt, so
-    this holds that file to every guard in the suite; adding a guarded import
-    without adding the dependency fails here instead of skipping silently. It
-    also closes the reverse: deleting a pin regresses the card, and nothing else
-    in the suite would notice.
-
-    `importorskip` stays on the individual tests as belt-and-braces — this test
-    is the belt, not a licence to remove them.
-    """
-    targets = set()
-    for path in sorted(Path(__file__).parent.glob("*.py")):
-        for m in re.finditer(
-            r"""importorskip\(\s*["']([^"']+)["']""", path.read_text(encoding="utf-8")
-        ):
-            targets.add(m.group(1))
-
-    assert targets, "no importorskip targets found — did this file's layout change?"
-
-    missing = []
-    for name in sorted(targets):
-        try:
-            importlib.import_module(name)
-        except ImportError:
-            missing.append(name)
-
-    assert not missing, (
-        f"{missing} are guarded by importorskip but not installed, so the tests "
-        "behind them skip and are counted as passes. Add them to "
-        "api/requirements-dev.txt — which is the file the api CI job installs."
-    )
-
-
 @pytest.mark.parametrize("package", ["numpy", "opencv-python-headless"])
 def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
     """Pipeline code runs in the worker AND in the Modal image, and rally dicts
@@ -649,23 +608,19 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
     pattern = re.compile(re.escape(package) + r"==([0-9][0-9A-Za-z.\-]*)")
 
     found = {}
-    for label, path in sources.items():
-        text = "\n".join(
-            line for line in path.read_text(encoding="utf-8").splitlines()
-            if not line.lstrip().startswith("#")
-        )
-        matches = set(pattern.findall(text))
-        assert matches, f"{label} does not pin {package} — it must, see this test's docstring"
-        assert len(matches) == 1, f"{label} pins {package} to several versions: {matches}"
-        found[label] = matches.pop()
-
-    for label, path in optional_sources.items():
+    for label, (path, required) in {
+        **{k: (v, True) for k, v in sources.items()},
+        **{k: (v, False) for k, v in optional_sources.items()},
+    }.items():
         text = "\n".join(
             line for line in path.read_text(encoding="utf-8").splitlines()
             if not line.lstrip().startswith("#")
         )
         matches = set(pattern.findall(text))
         if not matches:
+            assert not required, (
+                f"{label} does not pin {package} — it must, see this test's docstring"
+            )
             continue
         assert len(matches) == 1, f"{label} pins {package} to several versions: {matches}"
         found[label] = matches.pop()

@@ -76,28 +76,46 @@ echo "ok"
 # tooling (conan depends on it) and numpy is on half the machines in the world,
 # so importing either proves nothing about a dev install.
 #
-# Scope, stated precisely rather than as "every pin": it checks the plain
-# `name==version` lines. Extras (`foo[bar]==1.0`), range constraints and
-# environment markers are skipped, so adding one of those weakens the gate
-# silently — put a plain pin in this file, or extend the pattern.
+# Scope, stated precisely: it checks `name==version` lines, with or without an
+# extras spec (`uvicorn[standard]==0.34.0` counts, as uvicorn). Range
+# constraints and environment markers are skipped, so adding one of those
+# weakens the gate silently — prefer a plain pin, or extend the pattern.
 #
 # It does not fail the commit, it declines to run the step and says why: an
 # incomplete dev set is "not runnable here", not a reason to block someone who
-# was never told to install it. stderr is deliberately not redirected, so a
-# genuine breakage in this block is visible instead of reading as a skip.
+# was never told to install it.
+#
+# The reason goes to stdout and only stdout is captured, so a genuine breakage
+# in this block — a traceback, a moved file — lands on the terminal instead of
+# being printed as if it were the reason the dev set is absent. An earlier
+# version captured stderr and claimed the opposite in this very comment.
 _api_dev_set=1
-_api_dev_reason=$(python - 2>&1 >/dev/null <<'PY'
+_api_dev_reason=$(python - <<'PY'
 import pathlib, re, sys
 from importlib.metadata import PackageNotFoundError, version
 
-# The `name==pin` lines of requirements-dev.txt — its own test-only deps, which
-# is precisely what a plain `-r requirements.txt` install does not give you.
-# `-r requirements.txt` and comments are skipped by the pattern.
-pins = {}
-for raw in pathlib.Path("api/requirements-dev.txt").read_text().splitlines():
-    m = re.fullmatch(r"([A-Za-z0-9_.\-]+)==([A-Za-z0-9_.\-]+)", raw.split("#", 1)[0].strip())
-    if m:
-        pins[m.group(1)] = m.group(2)
+# Every `name==version` pin reachable from requirements-dev.txt, following its
+# `-r` includes. Following them matters: the file's own three pins are all
+# test-only, so checking just those passes on a machine with pytest, PyYAML and
+# numpy but none of the app's dependencies — and the suite then dies at
+# collection importing fastapi, blocking a commit this gate promises to skip.
+# The app deps live behind the `-r requirements.txt` line.
+def parse(path, seen):
+    if path in seen:
+        return {}
+    seen.add(path)
+    pins = {}
+    for raw in path.read_text().splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line.startswith("-r "):
+            pins.update(parse((path.parent / line[3:].strip()).resolve(), seen))
+            continue
+        m = re.fullmatch(r"([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?==([A-Za-z0-9_.\-]+)", line)
+        if m:
+            pins[m.group(1)] = m.group(2)
+    return pins
+
+pins = parse(pathlib.Path("api/requirements-dev.txt").resolve(), set())
 
 def installed(name):
     try:
@@ -108,7 +126,7 @@ def installed(name):
 # No pins parsed means the file moved or changed shape — report the set as
 # absent rather than running the suite against who knows what.
 if not pins:
-    print("no pins parsed from api/requirements-dev.txt", file=sys.stderr)
+    print("no pins parsed from api/requirements-dev.txt")
     sys.exit(1)
 
 missing = [
@@ -118,7 +136,7 @@ missing = [
 ]
 if missing:
     # Name them: "run the install you already ran" is a useless thing to be told.
-    print("missing or mismatched: " + ", ".join(missing), file=sys.stderr)
+    print("missing or mismatched: " + ", ".join(missing))
     sys.exit(1)
 PY
 ) || _api_dev_set=0
