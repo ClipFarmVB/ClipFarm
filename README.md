@@ -183,7 +183,8 @@ docker compose --env-file .env.docker up --build
 #   web  → http://localhost:3000
 #   api  → http://localhost:8000  (docs at /docs)
 
-# 3. Enable the pre-commit hook (runs most of what CI runs — not api/tests)
+# 3. Enable the pre-commit hook (runs what CI runs; api/tests too, once the
+#    dev install under "Tests" below is done)
 git config core.hooksPath .hooks
 ```
 
@@ -198,7 +199,8 @@ pip install -r api/requirements-dev.txt  # runtime deps + test-only deps
 npm run test --workspace=web             # vitest, ~1s
 npm run test:watch --workspace=web       # same suite, watch mode
 python -m pytest ml/tests/               # ml eval metrics + dead-time
-cd api && python -m pytest tests/        # api (CI runs this; the hook does not)
+cd api && python -m pytest tests/        # api (CI and the hook run this too,
+                                         # once requirements-dev is installed)
 ```
 
 The api suite needs `requirements-dev.txt`, not just `requirements.txt`. Almost
