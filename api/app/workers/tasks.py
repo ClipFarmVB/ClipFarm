@@ -39,6 +39,32 @@ def _worth_condensing(kept_seconds: float, video_duration: float) -> bool:
     return kept_seconds < video_duration * (1.0 - CONDENSE_MIN_TRIM_FRACTION)
 
 
+def _clear_previous_condensed(gid) -> None:
+    """Drop a previous run's condensed cut: the row first, then the object.
+
+    Both halves matter. Leaving the row would serve a condensed video built from
+    a decision this run did not make; leaving the object orphans it, because
+    `delete_game` derives its delete list from `condensed_video_url`
+    (routers/games.py), so a NULL column makes that MP4 unreachable and it bills
+    forever.
+
+    The order is the safe one. A failure between the two leaves an orphan, which
+    is logged and costs storage; the reverse order would leave the row pointing
+    at a deleted object and 404 the player. The key is deterministic, so the
+    delete is a no-op when there was no previous cut.
+
+    Raises whatever the row write raises — the caller decides how loud that is.
+    """
+    from app.services import storage as s3
+    from app.workers._sync_db import sync_set_condensed_result
+
+    sync_set_condensed_result(gid, condensed_video_url=None, condensed_duration=None)
+    try:
+        s3.delete_file(s3.condensed_key(gid))
+    except Exception as del_err:
+        logger.warning("Orphan condensed-video cleanup failed (%s)", del_err)
+
+
 def _build_condense_windows(
     mode: str,
     contacts: list[dict],
@@ -1154,7 +1180,10 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 progress.stage("condensing")
                 try:
                     from app.workers._sync_db import sync_set_condensed_result
-                    from ml.pipeline.dead_time import active_windows_from_detections
+                    from ml.pipeline.dead_time import (
+                        Abstained,
+                        active_windows_from_detections,
+                    )
                     from ml.pipeline.clip import generate_condensed_video
 
                     if ball_ok:
@@ -1181,11 +1210,23 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     # without a condensed cut.
                     trims_something = _worth_condensing(kept_seconds, video_duration)
                     if windows and not trims_something:
-                        logger.info(
-                            "Condense skipped: keep-windows cover %.0fs of %.0fs "
-                            "(built by %r) — nothing meaningful to trim",
-                            kept_seconds, video_duration, built_by,
-                        )
+                        # Two different outcomes reach this line and only one is
+                        # about trim size, so say which: the builder declining
+                        # to judge a sparse track is not "there was little to
+                        # cut". `Abstained` carries that from the builder rather
+                        # than being inferred back from the window shape.
+                        if isinstance(windows, Abstained):
+                            logger.info(
+                                "Condense abstained (built by %r) — ball track too "
+                                "sparse to judge; shipping the full video",
+                                built_by,
+                            )
+                        else:
+                            logger.info(
+                                "Condense skipped: keep-windows cover %.0fs of %.0fs "
+                                "(built by %r) — nothing meaningful to trim",
+                                kept_seconds, video_duration, built_by,
+                            )
 
                     if windows and trims_something:
                         # Re-price the condensing span now that kept-seconds is
@@ -1242,9 +1283,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         # write must never break the stage.
                         try:
                             _require_lock()
-                            sync_set_condensed_result(
-                                gid, condensed_video_url=None, condensed_duration=None,
-                            )
+                            _clear_previous_condensed(gid)
                         except LockLost:
                             raise
                         except Exception as clear_err:

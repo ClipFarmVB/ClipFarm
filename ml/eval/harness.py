@@ -441,6 +441,7 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
     from app.workers.tasks import _track_ball_cached
     from ml.pipeline.ball import find_contacts
     from ml.pipeline.dead_time import (
+        Abstained,
         active_windows_from_contacts,
         active_windows_guarded,
         bridge_windows_by_motion,
@@ -470,18 +471,6 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
         contacts = find_contacts(tracker, frame_height=frame_h)
 
-        # Offline mode is the ball-cache path by design ("no re-tracking"). An
-        # empty contact list means the cache produced no ball signal; the
-        # production fallback here is a ~30-min pose-first CPU re-detect, which
-        # this mode deliberately does not run. Fail loudly instead of scoring an
-        # empty condense as if it were the model's real output.
-        if not contacts:
-            raise SystemExit(
-                f"Offline deadtime: ball cache for {r2_key} yielded no contacts. "
-                "Score the pose-first fallback via --windows-json with a dumped "
-                "keep-window list instead."
-            )
-
         pre_bridge = active_windows_from_contacts(
             contacts, duration,
             gap_seconds=settings.condense_gap_seconds,
@@ -494,6 +483,27 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         positions = [
             {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
         ]
+
+        mode = settings.condense_mode
+        # Offline mode is the ball-cache path by design ("no re-tracking"). No
+        # ball signal at all means the cache is empty; the production fallback
+        # is a ~30-min pose-first CPU re-detect, which this mode deliberately
+        # does not run. Fail loudly rather than score that as the model's output.
+        #
+        # Zero *contacts* is no longer that case for the guarded builder: CF-187
+        # gave it motion anchors precisely so a rally the detector never saw
+        # still opens a window (19 of test4's 46 rallies produce no contact),
+        # so contact-free input with a real track is a legitimate thing to
+        # score — and refusing it here would decline exactly the case the
+        # builder was added for. It still needs a track: with no positions
+        # either, there is nothing for anchors to work from.
+        if not contacts and not (mode == "guarded" and positions):
+            raise SystemExit(
+                f"Offline deadtime: ball cache for {r2_key} yielded no contacts"
+                f"{' and no positions' if mode == 'guarded' else ''}. "
+                "Score the pose-first fallback via --windows-json with a dumped "
+                "keep-window list instead."
+            )
         post_bridge = bridge_windows_by_motion(
             pre_bridge, positions,
             speed_pxps=settings.condense_bridge_speed_pxps,
@@ -501,7 +511,6 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
             max_bridge_seconds=settings.condense_bridge_max_seconds,
         )
 
-        mode = settings.condense_mode
         if mode == "rules":
             print(
                 f"Offline deadtime [mode=rules]: {len(contacts)} contacts → "
@@ -532,8 +541,10 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
 
         # The abstain (one whole-video window) is a real outcome worth seeing in
         # the report, not an error — say so, because a 0% dead-removed row
-        # otherwise reads as a broken run.
-        if shipped == [(0.0, duration)]:
+        # otherwise reads as a broken run. Asked of the builder's own result
+        # rather than matched on shape: a genuine condense that happens to keep
+        # everything is the same list and a different decision.
+        if isinstance(shipped, Abstained):
             print(f"Offline deadtime [mode={mode}]: ABSTAINED — ball track too sparse to condense")
         else:
             print(

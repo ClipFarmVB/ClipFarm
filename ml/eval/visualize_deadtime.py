@@ -498,7 +498,7 @@ def build_html(games: list[Game], all_results: dict) -> str:
         "<p class='sub'>Ground truth is the in-play spans; dead time is the complement. "
         "Both ends of the ladder ship from <code>ml/pipeline/dead_time.py</code>: "
         "<code>v0</code> is <code>condense_mode=\"rules\"</code> and "
-        f"<code>{list(VARIANTS)[-1]}</code> is <code>condense_mode=\"guarded\"</code>, "
+        f"<code>{SHIPPING}</code> is <code>condense_mode=\"guarded\"</code>, "
         "the default. The rungs between them are prototypes in "
         "<code>ml/eval/deadtime_variants.py</code>. Hover any block for its duration "
         "and timestamps.</p>",

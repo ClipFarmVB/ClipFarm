@@ -244,11 +244,12 @@ class Settings(BaseSettings):
     #   "rules"    the two blocks above: contacts + motion bridge (CF-46)
     #   "guarded"  speed-gated contacts + motion anchors + tight pads, abstaining
     #              when the ball track is too sparse to judge (CF-187)
-    # Default is "guarded". Across the five dead-time fixtures it removes more
-    # dead time on every one it condenses, but it is not a clean sweep on live
-    # play: it cuts less than "rules" on two (176s->97s, 83s->48s) and more on
-    # two (2s->10s, 0s->10s), and on the fifth it abstains rather than cut 118s
-    # of rally. Net at the harness' 4:1 live-cut exchange rate: +649s vs +116s
+    # Default is "guarded", and it is not a clean sweep in either direction.
+    # Dead time: it removes more on three of the four it condenses (test2, test4,
+    # test5) and 2.8 points less on test1. Live play: it cuts less than "rules"
+    # on two (176s->97s, 83s->48s) and more on two (2s->10s, 0s->10s), and on
+    # the fifth it abstains rather than cut 118s of rally.
+    # Net at the harness' 4:1 live-cut exchange rate: +649s vs +116s
     # over the three fixtures that are comparable across games. Counting all
     # five gives +1552s vs +615s, and that larger figure is the misleading one:
     # test1 and test3 supply 404s of the gap and their own fixture notes exclude
@@ -264,6 +265,13 @@ class Settings(BaseSettings):
     # builder is worse than a refused boot), and it is safe to make because no
     # deploy file sets CONDENSE_MODE: render.yaml, the compose files and
     # .env.docker.example all leave it at this default.
+    #
+    # What rolling back does NOT restore: the 2%-trim floor
+    # (CONDENSE_MIN_TRIM_FRACTION in workers/tasks.py) is new in CF-187 and
+    # applies to both builders, so a game whose rule-based windows keep >=98%
+    # of the video now ships without a condensed cut where it would previously
+    # have re-encoded a near-copy. CONDENSE_MODE=rules restores the *builder*,
+    # not every line the card touched.
     condense_mode: Literal["rules", "guarded"] = "guarded"
     # Guarded-path tunables — see ml/pipeline/dead_time.active_windows_guarded.
     # Speeds are frame-heights/s, so they hold across source resolutions.

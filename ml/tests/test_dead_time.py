@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ml.pipeline.dead_time import (
     MAX_PLAUSIBLE_SPEED_FH,
+    Abstained,
     active_windows_from_contacts,
     active_windows_from_detections,
     active_windows_guarded,
@@ -352,6 +353,38 @@ class TestActiveWindowsGuarded:
         sparse = ball_path(0, 120, 300.0, step=1.2)
         windows = active_windows_guarded(contacts_at(20.0, 25.0), sparse, 120.0, FRAME_H)
         assert windows == [(0.0, 120.0)], "too little signal to condense on — keep everything"
+
+    def test_an_abstain_says_so_rather_than_only_looking_like_one(self):
+        """The whole-video window is ambiguous on its own: a genuine condense
+        that keeps everything is the same list and a different decision. Callers
+        that need the difference (the stage's log line, the eval report's
+        ABSTAINED row) read the type, so it has to carry the fact.
+        """
+        sparse = ball_path(0, 120, 300.0, step=1.2)
+        abstained = active_windows_guarded(
+            contacts_at(20.0, 25.0), sparse, 120.0, FRAME_H,
+        )
+        assert isinstance(abstained, Abstained)
+        # Still a plain window list to anything that only wants the windows.
+        assert abstained == [(0.0, 120.0)]
+        assert sum(e - s for s, e in abstained) == 120.0
+
+        # A real condense is not an abstain, however much it keeps.
+        condensed = active_windows_guarded(
+            contacts_at(12.0, 15.0, 18.0), mixed_path(120.0), 120.0, FRAME_H,
+        )
+        assert not isinstance(condensed, Abstained)
+
+    def test_an_empty_verdict_is_not_an_abstain(self):
+        """`[]` ("nothing here is play") and an abstain ("I cannot judge this
+        track") are different answers that must not collapse into each other —
+        the empty one is the verdict CF-187's sentinel exists to preserve.
+        """
+        positions = mixed_path(120.0)
+        # Every contact sits over a stationary ball, so the gate rejects them
+        # all and no anchor opens: an empty verdict, not an abstain.
+        windows = active_windows_guarded(contacts_at(70.0), positions, 120.0, FRAME_H)
+        assert not isinstance(windows, Abstained)
 
     def test_keeps_the_rally_and_cuts_the_dead_time(self):
         positions = mixed_path(120.0)

@@ -30,6 +30,24 @@ logger = logging.getLogger(__name__)
 
 Interval = tuple[float, float]
 
+
+class Abstained(list):
+    """The whole-video window returned when the track is too sparse to judge.
+
+    A plain `[(0.0, duration)]` says *what* the builder returned and loses *why*,
+    so every caller that needs the difference has to infer it back from the
+    shape — `_worth_condensing` by a near-total-keep heuristic, the eval harness
+    by comparing against `[(0.0, duration)]`, which also matches a genuine
+    full-coverage condense. This is a `list` subclass rather than a new return
+    type on purpose: it *is* the window list, so callers that only need the
+    windows keep working untouched, and the one fact they were guessing at is
+    available as `isinstance(windows, Abstained)`.
+
+    An abstain is not an error and not an empty verdict. Both of those already
+    have their own shapes here: `[]` means "nothing in this video is play", and
+    an exception falls back to the rules path.
+    """
+
 # ── guarded-path constants (CF-187) ────────────────────────────────────────
 # Speeds here are in frame-heights/s, not px/s, so 360p and 1080p games share
 # one set of thresholds. The px/s thresholds above predate this and stay px/s
@@ -437,7 +455,10 @@ def active_windows_guarded(
             "this sparse",
             len(times) / duration if duration else 0.0, duration, min_track_rate,
         )
-        return [(0.0, duration)]
+        # Abstained, not a plain list: the caller decides what to do with the
+        # whole-video window, but it should not have to re-derive *why* it got
+        # one. See the class docstring.
+        return Abstained([(0.0, duration)])
 
     gated = speed_gate_contacts(contacts, samples, min_speed=gate_speed)
     windows = active_windows_from_contacts(

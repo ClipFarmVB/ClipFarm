@@ -189,6 +189,13 @@ def sync_set_condensed_result(
     produces no cut — and leaving the previous run's URL in place would serve a
     condensed video that no longer corresponds to any decision this pipeline
     made. The row has to reflect this run.
+
+    That holds for the paths the condense stage completes. It does not hold when
+    the stage *raises*: the caller logs and ships the game without a cut, and a
+    previous run's URL survives, because a transient failure is a poor reason to
+    destroy a good artifact the operator can still watch. So a stale cut after a
+    failed re-run is possible by design; the stage's own log line is where that
+    shows up.
     """
     with Session(_engine) as s:
         game = s.get(Game, game_id)

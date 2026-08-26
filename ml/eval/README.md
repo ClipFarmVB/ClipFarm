@@ -171,7 +171,7 @@ the thing to look at before touching its tunables:
 
 | fixture | dead removed | live cut | |
 |---|---|---|---|
-| test1*† | 56.2% → 53.4% | 176s → **97s** | strictly better |
+| test1*† | 56.2% → 53.4% | 176s → **97s** | 79s less play cut, 2.8 points less dead time |
 | test2 | 9.5% → **48.3%** | 2s → 10s | +8s of play for 39 points of dead time |
 | test3*† | 76.5% → 0.0% | 118s → **0s** | abstains rather than cut 118s of rally |
 | test4 | 44.2% → **62.7%** | 83s → **48s** | strictly better |

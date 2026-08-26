@@ -25,6 +25,7 @@ from app.config import settings                                    # noqa: E402
 from app.workers.tasks import (                                    # noqa: E402
     CONDENSE_MIN_TRIM_FRACTION,
     _build_condense_windows,
+    _clear_previous_condensed,
     _worth_condensing,
 )
 
@@ -142,3 +143,64 @@ class TestWorthCondensing:
 
     def test_zero_duration_never_encodes(self):
         assert _worth_condensing(0.0, 0.0) is False
+
+
+class TestClearingAPreviousCondensedCut:
+    """A run that produces no cut must not leave the last one behind.
+
+    Two halves, and the object half is the one with no other safety net:
+    `delete_game` builds its delete list from `condensed_video_url`, so once
+    that column is NULL nothing in the system can reach the old MP4 again. The
+    row write is visible in the UI within a page load; an orphan is invisible
+    and permanent.
+    """
+
+    def _spy(self, monkeypatch, *, row_raises=None, delete_raises=None):
+        from app.services import storage as s3
+        from app.workers import _sync_db
+
+        calls = []
+
+        def fake_set(gid, **kwargs):
+            calls.append(("row", gid, kwargs))
+            if row_raises:
+                raise row_raises
+
+        def fake_delete(key):
+            calls.append(("object", key))
+            if delete_raises:
+                raise delete_raises
+
+        monkeypatch.setattr(_sync_db, "sync_set_condensed_result", fake_set)
+        monkeypatch.setattr(s3, "delete_file", fake_delete)
+        monkeypatch.setattr(s3, "condensed_key", lambda gid: f"condensed/{gid}.mp4")
+        return calls
+
+    def test_clears_the_row_and_deletes_the_object(self, monkeypatch):
+        calls = self._spy(monkeypatch)
+
+        _clear_previous_condensed("game-1")
+
+        assert calls == [
+            ("row", "game-1", {"condensed_video_url": None, "condensed_duration": None}),
+            ("object", "condensed/game-1.mp4"),
+        ], "both halves, row first"
+
+    def test_a_failed_object_delete_does_not_break_the_stage(self, monkeypatch):
+        """Reporting must never break processing: the game still ships. The
+        orphan is logged rather than raised."""
+        calls = self._spy(monkeypatch, delete_raises=RuntimeError("R2 down"))
+
+        _clear_previous_condensed("game-2")
+
+        assert [c[0] for c in calls] == ["row", "object"]
+
+    def test_a_failed_row_write_leaves_the_object_alone(self, monkeypatch):
+        """The reverse order would 404 the player: if the row still points at
+        the object, the object has to still be there."""
+        calls = self._spy(monkeypatch, row_raises=RuntimeError("db down"))
+
+        with pytest.raises(RuntimeError):
+            _clear_previous_condensed("game-3")
+
+        assert [c[0] for c in calls] == ["row"], "no delete after a failed clear"
