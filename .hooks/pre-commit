@@ -105,10 +105,20 @@ def parse(path, seen):
         return {}
     seen.add(path)
     pins = {}
+    if not path.is_file():
+        # An include that does not exist is a broken requirements set, not a
+        # crash: report it as the reason rather than letting a FileNotFoundError
+        # out, which would leave the reason empty and print a traceback.
+        print(f"missing requirements file: {path}")
+        raise SystemExit(1)
     for raw in path.read_text().splitlines():
         line = raw.split("#", 1)[0].strip()
-        if line.startswith("-r "):
-            pins.update(parse((path.parent / line[3:].strip()).resolve(), seen))
+        # All three spellings pip accepts. Handling only `-r <file>` would drop
+        # `-rfile` and `--requirement file` silently, and dropping an include is
+        # how this gate stopped checking app dependencies in the first place.
+        inc = re.fullmatch(r"(?:-r\s*|--requirement[\s=])\s*(\S+)", line)
+        if inc:
+            pins.update(parse((path.parent / inc.group(1)).resolve(), seen))
             continue
         m = re.fullmatch(r"([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?==([A-Za-z0-9_.\-]+)", line)
         if m:
@@ -129,11 +139,11 @@ if not pins:
     print("no pins parsed from api/requirements-dev.txt")
     sys.exit(1)
 
-missing = [
-    f"{n}=={v}" + ("" if installed(n) is None else f" (have {installed(n)})")
-    for n, v in sorted(pins.items())
-    if installed(n) != v
-]
+missing = []
+for n, v in sorted(pins.items()):
+    have = installed(n)
+    if have != v:
+        missing.append(f"{n}=={v}" + ("" if have is None else f" (have {have})"))
 if missing:
     # Name them: "run the install you already ran" is a useless thing to be told.
     print("missing or mismatched: " + ", ".join(missing))

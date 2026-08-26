@@ -33,6 +33,13 @@ def test_every_importorskip_target_is_installed():
     """
     targets = set()
     for path in sorted(TESTS_DIR.glob("*.py")):
+        # Skip this file. Its docstring quotes `pytest.importorskip("celery")`
+        # as prose, and the scan cannot tell prose from code — so without this
+        # the test invents a target out of its own explanation of itself. It
+        # has no real guards to find here anyway; that is the whole point of
+        # the module.
+        if path == pathlib.Path(__file__).resolve():
+            continue
         for m in re.finditer(
             r"""importorskip\(\s*["']([^"']+)["']""", path.read_text(encoding="utf-8")
         ):
