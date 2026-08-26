@@ -433,7 +433,7 @@ work.
 ```
 ME=$(gh api user --jq ".login")
 COMMITS=$(gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[].author.login // "UNKNOWN"')
-[ -n "$COMMITS" ] || { echo "cannot read commits — do not push"; }
+[ -n "$COMMITS" ] || { echo "cannot read commits — do not push"; exit 1; }
 printf '%s\n' "$COMMITS" | sort -u | grep -vx "$ME"
 ```
 
@@ -474,8 +474,11 @@ Three things about the command:
 guard examines a prefix, and a collaborator commit beyond it reads as absent —
 a fail-open in the guard whose other decisions all fail closed. No PR here is
 near that, so this is a stated bound rather than a live problem: **if you meet a
-PR with more than 250 commits, do not trust the guard — treat the PR as another
-account's and say so in the report.**
+PR with more than 250 commits, do not trust the guard — treat it as **latched**,
+apply `unsettled: latched @ <sha>`, and say so in the report.** Not "treat it as
+another account's": that phrase routes to `not our branch`, whose commits
+carve-out would re-open the PR on every push and start the loop this reason
+exists to avoid.
 
 *This was "branches this run created" until 2026-08-25.* That rule was
 conditioned on a sign-off it never received, and the cost was measured: of the
@@ -968,6 +971,7 @@ of which reason applies, and it is what a later run reads back:
 - `unsettled: not our branch @ <sha>`
 - `unsettled: needs a decision @ <sha>`
 - `unsettled: ran out of rounds @ <sha>`
+- `unsettled: latched @ <sha>`
 
 **Whatever the reason, the label needs a round from *this run* behind it.** The
 label asserts that findings are open and this run cannot close them; with no
@@ -985,7 +989,7 @@ head-matching marker would make both cases impossible to label at all, while
 [the rule against leaving open findings unlabelled](#priority-order) still
 demands one.
 
-Only one of the three needs a human to clear it:
+Two of the four need a human to clear them, in different ways:
 
 - `ran out of rounds` — the ceiling or the budget stopped it. New commits
   re-open it, round count reset: a PR that has since been fixed must not look
@@ -996,33 +1000,50 @@ Only one of the three needs a human to clear it:
   reading the review and pushing a fix is the intended path, and it must not need
   a human to also clear a label by hand.
 
-  **At `own` this reason means a collaborator has pushed to the branch** — the
-  guard in [The push test](#the-push-test) firing is the *correct* result, not a
-  malfunction. At `all` it also covers PRs another account opened.
-
-  **But do not use it for the collaborator case: use `needs a decision`.** The
-  commits carve-out re-opens `not our branch` on every new commit, and at `own`
-  the account that pushes is the one running — so a latched PR would re-open on
-  each of its own pushes, burn a cold round re-deriving findings it may not fix,
-  and re-park, forever. Worse, the carve-out's justification (*the author reading
-  the review and pushing a fix is the intended path*) assumes the author is
-  somebody else; here the author is this account, and it is the one actor that
-  cannot act.
-
-  `needs a decision` has no commit carve-out, so it parks once and waits — and it
-  is the honest reason, because what such a PR actually needs is a human deciding
-  whether to push over a collaborator's in-flight work.
-
-  Note the latch is permanent by design: the guard reads the branch's whole
-  history, so one commit from a collaborator makes the PR unpushable by this run
-  from then on, even after the account pushes more. Scoping it to "since this
-  account's last push" would let the run overwrite exactly the in-flight work
-  being guarded.
+  **This reason is only ever about another account's PR**, and those reach the
+  queue only at `review scope: all`. A branch a collaborator has pushed to is a
+  different case with its own reason, below.
 - `needs a decision` — a finding requires a judgement nobody unattended should
   make. Only a human removing the label re-opens it. Commits do not, because the
   decision is not something a commit clears; the author pushing something
   unrelated would otherwise buy fresh rounds to re-derive the same finding off
   the same unchanged lines.
+- `latched` — this account opened the PR, but a collaborator has pushed to the
+  branch, so [The push test](#the-push-test) forbids pushing to it. The findings
+  may be entirely mechanical; what is blocked is not any one of them but the
+  PR-level question of whether to write over someone else's in-flight work.
+
+  **Commits do not re-open it, and that is the whole point.** At `own` the
+  account that pushes is the one running, so a commits carve-out would re-open
+  the PR on each of its own pushes, burn a cold round re-deriving findings it
+  still may not fix, and re-park — forever. The carve-out's usual justification
+  (*the author reading the review and pushing a fix is the intended path*)
+  assumes the author is somebody else. Here the author is this account, and it is
+  the one actor that cannot act.
+
+  **It is cleared by a recorded override, not by removing the label.** A human
+  removing a label leaves no trace the next run can read, so the guard would fire
+  again and re-latch the PR on every run, forever — and meanwhile the PR keeps
+  accumulating code nothing reviews. Instead a human answers the question once,
+  in a comment:
+
+  ```
+  latch-override: push ok @ <sha>
+  ```
+
+  where `<sha>` is the head at the time of the decision. A run treats the PR as
+  pushable again if that comment exists **and** no commit by another login has
+  landed since it — the same shape as every other durable decision here, recorded
+  in a comment precisely because labels do not survive.
+
+  ```
+  gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq '.[] | select(.body | test("^latch-override:"; "i")) | .created_at' | tail -1
+  ```
+
+  Note the latch itself is permanent by design: the guard reads the branch's
+  whole history, so one commit from a collaborator keeps the PR latched even
+  after this account pushes more. Scoping it to "since this account's last push"
+  would let a run overwrite exactly the in-flight work being guarded.
 
 **Applying either terminal label posts a record comment**, and that is what
 makes a human's removal detectable at all:
@@ -1329,19 +1350,22 @@ opened it **and** no one else has pushed to the branch. The first half is the
 same test the `review scope` filter runs — `gh api user --jq ".login"` against
 the PR's `.user.login` — so at `review scope: own` it is true of every PR in the
 queue. The second half is the collaborator check in
-[Hard rules](#hard-rules), and it has to be run per PR: a PR this account opened
-on an earlier night is pushable *until someone else pushes to it*, and then it
-is not.
+[The push test](#the-push-test), and it is run **immediately before each push**,
+not once when you pick the PR up — a run holds a PR across several rounds, and
+the case it guards against is a collaborator pushing while that is happening.
 
 So step 2 applies to most of an `own` queue, not all of it by construction.
 
-For a PR you may not push to — another account's, which only reaches the queue
-at `review scope: all`; or one a collaborator has pushed to, which can arise at
-either scope — describe the fix in a comment and apply `unsettled`. Post
-`unsettled: not our branch @ <sha>` for the first case and
-`unsettled: needs a decision @ <sha>` for the second, for the reason given with
-those reasons. That is the cheap terminal state, not
-a dead end: the author pushing a fix re-opens it on its own.
+For a PR you may not push to, describe the fix in a comment and apply
+`unsettled` with the reason that fits:
+
+- **Another account's PR** — `unsettled: not our branch @ <sha>`. Only reaches
+  the queue at `review scope: all`. A cheap terminal state, not a dead end: the
+  author's next push re-opens it.
+- **A branch a collaborator has pushed to** — `unsettled: latched @ <sha>`. Can
+  arise at either scope. **Commits do not re-open this one**, deliberately; it
+  waits for a `latch-override:` comment from a human. Say so in the report, or
+  the PR sits outside the loop with nobody told.
 
 **Read the findings out of the round's review.** The marker comment carries the
 prefix, the SHA and at most a count; the findings are in the review that round
@@ -1467,14 +1491,21 @@ tolerates. Leaving one is the terminating move; file a card if it is worth more
 than that.
 
 **A finding you cannot fix stops the *cycling*, not the work.** What "the work"
-means depends on why you cannot fix it, and the three cases part company here:
+means depends on why you cannot fix it, and the four cases part company here:
 
-- *Another account's branch.* You cannot push anything, so the work is
+- *Another account's PR.* You cannot push anything, so the work is
   writing the findings down where the author will act on them: **all** of them,
   including the ones that would have been a one-line fix, in the review comment
   and in a reply describing what you would have changed. Then apply `unsettled`
   with an `unsettled: not our branch @ <sha>` comment. The author's next push
   re-opens it.
+- *This account's PR, but a collaborator has pushed to the branch.* Same work —
+  write every finding down, including the mechanical ones — but apply
+  `unsettled: latched @ <sha>` instead. **Not `not our branch`**: that reason
+  re-opens on any commit, and at `own` the account that pushes is the one
+  running, so the PR would re-open on its own pushes and cycle forever. And not
+  `needs a decision` either — no individual finding needs one; the blocked
+  question is the PR-level one about writing over someone else's work.
 - *A finding needing a human decision, on a branch you may push to.* First fix
   everything else that round raised and push it — those findings are real and
   abandoning them wastes the round that found them. *Then* apply `unsettled`
@@ -1651,15 +1682,17 @@ touched it. So count markers newer than the run's start time, which the
 `run start: ` line — found by matching that line, never by position.
 
 **When a PR was re-opened mid-run, count from the `reopened:` marker instead —
-but only if that marker falls inside this run.** There is no label event to read
-here; re-opening writes that marker precisely so this bound survives the label
-being removed. Three states carry a commits-since carve-out — `review-settled`,
-and the `ran out of rounds` and `not our branch` reasons for `unsettled` — and
-each re-opens the same way, so each gets the same bound. (`needs a decision` has
-no carve-out and never needs it.) The bound you want is the *later* of the run
-start and that marker: a `reopened:` marker from last night is older than the
-run start, so counting from it sweeps in markers this run has already spent and
-the ceiling arrives early on a PR just promised a reset.
+but only if that marker falls inside this run.** There is no label event to
+read here; re-opening writes that marker precisely so this bound survives the
+label being removed. Three states carry a commits-since carve-out —
+`review-settled`, and the `ran out of rounds` and `not our branch` reasons for
+`unsettled` — and each re-opens the same way, so each gets the same bound.
+(`needs a decision` and `latched` have no carve-out and never need it: one
+waits for a human to answer the finding, the other for a `latch-override:`
+comment.) The bound you want is the *later* of the run start and that marker: a
+`reopened:` marker from last night is older than the run start, so counting
+from it sweeps in markers this run has already spent and the ceiling arrives
+early on a PR just promised a reset.
 
 `.created_at > "$SINCE"` is a lexicographic string compare against GitHub's
 `2026-08-24T23:08:57Z`, so `SINCE` must be UTC with the `Z` suffix and nothing
@@ -1947,10 +1980,17 @@ The report contains:
   cards are missing from it
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
-- PRs labelled `unsettled`, split by the three reasons their `unsettled:`
-  comment gives — `needs a decision` (only these want a human), `not our branch`
-  (the author's next push re-opens it), and `ran out of rounds` (the per-PR
-  ceiling, or the run-wide budget) — and what is still outstanding on each
+- PRs labelled `unsettled`, split by the four reasons their `unsettled:` comment
+  gives — `needs a decision` (a reviewer found a judgement call), `latched` (a
+  collaborator pushed to the branch), `not our branch` (the author's next push
+  re-opens it), and `ran out of rounds` (the per-PR ceiling, or the run-wide
+  budget) — and what is still outstanding on each
+- **Latched PRs by name**, separately from the count above. Two of these reasons
+  want a human and want *different* humans doing different things: a judgement
+  call needs the finding answered, a latch needs someone to decide whether to
+  push over a collaborator and record it as `latch-override:`. A single "N need
+  a human" figure hides that, which is the same signal loss the bullet below
+  describes for the bounds
 - **Which PRs hit the ceiling or the budget**, whatever reason they ended up
   labelled with. A PR that hit the ceiling *and* carries a judgement call is
   filed under `needs a decision`, so the reason breakdown above is no longer a
