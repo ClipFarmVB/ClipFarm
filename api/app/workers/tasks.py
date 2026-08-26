@@ -5,13 +5,20 @@ import logging
 import tempfile
 import uuid
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+
+from celery.exceptions import Retry
 
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+# Key prefix for game source videos (see storage.game_raw_key). Nothing else
+# lives under it — the ball-position cache has its own prefix — so the
+# retention sweep can treat every object here as a raw upload.
+RAW_PREFIX = "raw/"
 
 
 def _file_md5(path: Path) -> str:
@@ -122,11 +129,20 @@ def _track_ball_cached(
 
     When Modal is configured, tracking itself runs on a GPU worker (CF-11)
     instead of locally on CPU; Modal failures fall back to local CPU tracking
-    so a Modal outage never blocks processing.
+    where a local runtime exists.
+
+    In the deployed image it does not (CF-164 took the ML stack out; CF-225
+    took the model-cache disk that fed it), so there the local step only
+    re-raises. When Modal was tried first, what it raises names BOTH failures,
+    chains from the Modal one — that is the half an operator can act on — and
+    keeps the local failure's type. A missing-`inference` traceback on its own
+    reads as a packaging bug and hides the outage that caused it.
     """
     import os
     from app.services import storage as s3
-    from ml.pipeline.ball import track_ball, TrackedBall, BallPosition
+    from ml.pipeline.ball import (
+        BallRuntimeUnavailable, track_ball, TrackedBall, BallPosition,
+    )
 
     cache_key = _ball_cache_key(video_md5 or _file_md5(local_video), sample_every)
     cache_path = tmp / "ball_cache.json"
@@ -141,18 +157,46 @@ def _track_ball_cached(
         logger.info("Ball cache miss (%s) — running tracking", cache_key)
 
     tracker: TrackedBall | None = None
+    modal_err: Exception | None = None
     if _will_attempt_modal(r2_key):
         try:
             tracker = _track_ball_modal(local_video, r2_key, sample_every, on_progress=on_progress)
             logger.info("Ball tracking ran on Modal GPU: %d positions", len(tracker.positions))
-        except Exception as modal_err:
-            logger.warning("Modal ball tracking failed (%s) — falling back to local CPU", modal_err)
+        except Exception as err:
+            modal_err = err
+            logger.warning("Modal ball tracking failed (%s) — falling back to local CPU", err)
 
     if tracker is None:
-        tracker = track_ball(
-            str(local_video), os.environ["ROBOFLOW_API_KEY"],
-            sample_every=sample_every, on_progress=on_progress,
-        )
+        # Read outside the try: a missing key is a configuration error, and
+        # wrapped below it would surface as "…and locally ('ROBOFLOW_API_KEY')",
+        # a KeyError dressed up as a tracking failure. process_game guards on
+        # this already; the eval and diagnose paths call straight in here.
+        api_key = os.environ["ROBOFLOW_API_KEY"]
+        try:
+            tracker = track_ball(
+                str(local_video), api_key,
+                sample_every=sample_every, on_progress=on_progress,
+            )
+        except Exception as local_err:
+            if modal_err is None:
+                raise
+            # Both paths failed and only one of them is the interesting one. The
+            # local attempt was the fallback, so raising *its* error alone —
+            # usually a missing runtime, on an image that is meant not to have
+            # one — describes the fallback rather than the failure. Every local
+            # failure is wrapped, not just the missing runtime, so the Modal
+            # cause never depends on which one came back.
+            #
+            # The TYPE still follows the local failure. "No runtime here" is
+            # true whether or not Modal was tried first, and flattening it to
+            # RuntimeError erased that in the only environment where the
+            # condition is expected — a deployed run, which always tries Modal.
+            # Nothing translates it to PermanentPipelineError (see its
+            # docstring), so it cannot suppress a retry over a Modal blip.
+            message = f"Ball tracking failed on Modal ({modal_err}) and locally ({local_err})"
+            if isinstance(local_err, BallRuntimeUnavailable):
+                raise BallRuntimeUnavailable(message) from modal_err
+            raise RuntimeError(message) from modal_err
 
     try:
         cache_path.write_text(json.dumps({"positions": [asdict(p) for p in tracker.positions]}))
@@ -167,6 +211,7 @@ def _track_ball_cached(
 @celery_app.task(bind=True, name="recut_clip", max_retries=2, default_retry_delay=30)
 def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start: float, end: float):
     """Re-cut a single clip from the source video after a trim adjustment."""
+    from app.config import settings as app_settings
     from app.workers._sync_db import sync_update_clip_url
     from app.services import storage as s3
     from ml.pipeline.clip import recut_single
@@ -182,7 +227,10 @@ def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start:
             logger.info("Downloading source video for recut of clip %s", clip_id)
             s3.download_file(r2_key, local_video)
 
-            clip_path, thumb_path = recut_single(str(local_video), start, end, tmp)
+            clip_path, thumb_path = recut_single(
+                str(local_video), start, end, tmp,
+                threads=app_settings.ffmpeg_threads,
+            )
 
             # Upload new clip + thumbnail
             clip_url = s3.upload_file(clip_path, s3.clip_key(gid, cid), "video/mp4")
@@ -371,6 +419,159 @@ def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
         raise PermanentPipelineError(str(exc)) from exc
 
 
+def _pose_first_fallback(
+    video_path: str, r2_key: str, ball_err: str | None
+) -> list[dict]:
+    """The pose-first scan, reporting the ball failure that sent us here.
+
+    Split out of `process_game` for one reason: it is the only place both halves
+    of a two-stage failure are in scope, and inline there it was unreachable by
+    a test (there is no seam into `process_game_task` — see
+    test_worker_safety.py).
+
+    `ball_err` is the formatted message, not the exception: holding the
+    exception kept its traceback — and through it the failed stage's frame
+    locals, which for ball tracking means a model handle and cv2/numpy buffers
+    — alive for the rest of the run. Worth avoiding for a value only ever used
+    as text: it was written against the 512 MB worker (CF-164), and while
+    CF-240 has since bought real headroom, cutting still runs libx264 next to
+    it.
+
+    When both stages are down it is usually one event — no Modal — but only the
+    pose message ("Pose detection is unavailable…") reaches the game's
+    `error_message` and Sentry, and it says nothing about the stage that failed
+    first. So every failure out of the scan is re-raised carrying `ball_err`.
+
+    Every failure, not just `PermanentPipelineError`: the scan also dies on
+    `RuntimeError("Cannot open video: …")`, a decode error mid-run, or an OOM,
+    and those dropped `ball_err` exactly like the case this guard was written
+    for. The re-raise preserves permanence — a permanent failure stays
+    permanent, so the task handler still skips the retry — and nothing else
+    about the type, which no caller reads.
+    """
+    try:
+        return _run_detection(video_path, r2_key)
+    except Exception as pose_err:
+        if ball_err is None:
+            raise
+        # Separated: `pose_err` is an arbitrary exception's str() and need not
+        # end in punctuation, so the two halves ran together into one sentence.
+        message = f"{pose_err} — ball tracking failed first: {ball_err}"
+        if isinstance(pose_err, PermanentPipelineError):
+            raise PermanentPipelineError(message) from pose_err
+        raise RuntimeError(message) from pose_err
+
+
+def _sweep_expired_raw_uploads() -> None:
+    """
+    Delete raw uploads older than `raw_upload_retention_days` (CF-194).
+
+    Two passes, and the second is what makes this safe to run repeatedly:
+
+    1. **Rows.** Every game past the cutoff has its `raw_video_url` cleared —
+       guarded on the URL the sweep saw, so a row that changed underneath is
+       left alone. Nothing is deleted from storage in this pass.
+    2. **Objects.** Every object under `raw/` older than the cutoff that no game
+       row still references is deleted, in batches. That covers the keys pass 1
+       just released *and* any object orphaned by an earlier failed delete or a
+       worker killed between the two passes, so the sweep converges instead of
+       leaking: null-first ordering can only ever cost storage, and this is what
+       reclaims it. Two independent guards protect a live upload — it is
+       referenced by its row (`uploading` rows included, from the moment the
+       ticket is issued), and it is newer than the cutoff.
+
+    Order matters between the passes. Deleting first and clearing second can
+    leave a row pointing at a missing object, which turns every later trim into
+    a download failure plus two Celery retries — a broken feature rather than a
+    storage cost.
+
+    Purging a raw video is not free: `recut_clip` re-cuts from it, so trimming a
+    clip stops working once its game's source expires. That is the deliberate
+    trade (the retention window is how long trims stay available) — the API
+    reports it via ClipOut.source_available so the UI can say so.
+
+    **Where this runs.** At the end of a successful process_game run: no cron or
+    celery-beat exists in this stack, and the worker is the one place already
+    off the request path. `_sweep_abandoned_uploads` (CF-163) makes the other
+    choice — the owner's next presign — but that is per-user and only reaches
+    people who are still uploading. Retention is a global cost, so it wants a
+    global trigger. Both share the same limitation: enforcement stops while the
+    system is idle, which is also when the bill stops growing. A beat schedule
+    is the real fix and is a follow-up, not this card.
+
+    Reporting must never break processing: every failure is logged and
+    swallowed, and a partial sweep resumes on the next run.
+    """
+    from app.config import settings as _cfg
+    from app.services import storage as s3
+    from app.workers._sync_db import (
+        sync_clear_raw_video_url,
+        sync_expired_raw_uploads,
+        sync_referenced_raw_keys,
+    )
+
+    days = _cfg.raw_upload_retention_days
+    if days <= 0:  # 0 = keep forever
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # ── Pass 1: release expired rows ─────────────────────────────────────────
+    try:
+        expired = sync_expired_raw_uploads(cutoff)
+    except Exception as exc:
+        logger.warning("Raw-upload retention: could not list expired rows (%s)", exc)
+        return
+
+    released = 0
+    for expired_gid, raw_url in expired:
+        try:
+            if sync_clear_raw_video_url(expired_gid, raw_url):
+                released += 1
+        except Exception as exc:
+            logger.warning(
+                "Raw-upload retention: could not release game %s (%s)", expired_gid, exc
+            )
+
+    # ── Pass 2: reclaim unreferenced objects ─────────────────────────────────
+    # The reference set is the guard, so a failure to build it aborts the pass.
+    # Deleting against a partial set could destroy a live upload.
+    try:
+        referenced = sync_referenced_raw_keys()
+    except Exception as exc:
+        logger.warning(
+            "Raw-upload retention: released %d row(s), but could not read the "
+            "reference set — leaving objects for the next sweep (%s)", released, exc,
+        )
+        return
+
+    try:
+        stale = [
+            obj["key"]
+            for obj in s3.list_objects(RAW_PREFIX)
+            if obj["last_modified"] < cutoff and obj["key"] not in referenced
+        ]
+    except Exception as exc:
+        logger.warning("Raw-upload retention: could not list %s (%s)", RAW_PREFIX, exc)
+        return
+
+    if not stale:
+        return
+
+    failed = s3.delete_files(stale)
+    if failed:
+        # Not lost: they stay unreferenced and past the cutoff, so the next
+        # sweep finds them again.
+        logger.warning(
+            "Raw-upload retention: %d object(s) could not be deleted, retrying next sweep",
+            len(failed),
+        )
+    logger.info(
+        "Raw-upload retention: released %d row(s), reclaimed %d object(s) older than %d day(s)",
+        released, len(stale) - len(failed), days,
+    )
+
+
 @celery_app.task(bind=True, name="process_game", max_retries=2, default_retry_delay=60)
 def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = False):
     """
@@ -457,6 +658,32 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 f"Lost the processing lock for game {gid} mid-job — aborting so "
                 "the retry can re-acquire it"
             )
+
+    def _mark_failed_if_lock_free(message: str) -> None:
+        """Write `failed` for this game, but only if nobody else holds its lock.
+
+        Used after we have lost the lock and spent our retries: the row must not
+        strand in `processing`, but it also must not be stamped over a live run
+        another worker owns. Taking the lock proves the game is not in flight
+        anywhere — and the write happens while the probe is still held, so the
+        fact it establishes cannot lapse between the check and the write. A probe
+        that cannot answer leaves the row alone: a wrong `failed` on a live job
+        is worse than a row left behind for the next run.
+        """
+        probe = GameLock(gid)
+        try:
+            if not probe.acquire():
+                return
+        except Exception:
+            logger.warning(
+                "Could not probe the lock for game %s — leaving its row alone",
+                game_id, exc_info=True,
+            )
+            return
+        try:
+            sync_set_game_status(gid, "failed", error_message=message)
+        finally:
+            probe.release()
 
     try:
         try:
@@ -545,8 +772,9 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     ),
                 )
                 # The object is rejected and will never be processed, so it is
-                # pure stored cost — nothing else reclaims it (the retention
-                # sweep is still a backlog item). Best-effort: a failed delete
+                # pure stored cost, and the retention sweep would not reclaim
+                # it for another `raw_upload_retention_days`. Best-effort: a
+                # failed delete
                 # must not turn a clean rejection into a retried task.
                 try:
                     s3.delete_file(r2_key)
@@ -615,6 +843,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             progress.stage("tracking_ball")
             detections: list[dict] = []
             ball_ok = False
+            ball_err: str | None = None
             ball_contacts: list[dict] = []
             ball_positions: list[dict] = []
             if _os.environ.get("ROBOFLOW_API_KEY"):
@@ -634,14 +863,25 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                             {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
                         ]
                     logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
-                except Exception as ball_err:
-                    logger.warning("Ball pipeline failed (%s) — falling back to pose-first", ball_err)
+                except Exception as err:
+                    # The formatted message, not the exception — see
+                    # _pose_first_fallback: retaining it pins the failed stage's
+                    # traceback and frame locals for the rest of the run.
+                    ball_err = f"{type(err).__name__}: {err}"
+                    # exc_info: this is the first domino, and the pose-first scan
+                    # that follows usually fails too on the same outage. Without
+                    # the traceback the only record of *why* ball tracking went
+                    # is one formatted line.
+                    logger.warning(
+                        "Ball pipeline failed (%s) — falling back to pose-first",
+                        err, exc_info=True,
+                    )
 
             if not ball_ok:
                 # Fallback: pose-first full-video scan (ball tracking failed
                 # entirely or ROBOFLOW_API_KEY unset — rare path). On Modal GPU
                 # when configured; the worker image has no torch to do it here.
-                detections = _run_detection(str(local_video), r2_key)
+                detections = _pose_first_fallback(str(local_video), r2_key, ball_err)
 
                 try:
                     from ml.pipeline.detect import group_into_rallies
@@ -713,6 +953,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             clips_data = generate_clips(
                 str(local_video), detections, tmp,
                 on_progress=lambda f: progress.update(f * 0.7),
+                threads=app_settings.ffmpeg_threads,
             )
 
             # ── 3. Upload clips and thumbnails, save to DB ────────────────
@@ -831,6 +1072,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         condensed_path, condensed_duration = generate_condensed_video(
                             str(local_video), windows, tmp,
                             on_progress=progress.update,
+                            threads=app_settings.ffmpeg_threads,
                         )
                         condensed_url = s3.upload_file(
                             condensed_path, s3.condensed_key(gid), "video/mp4",
@@ -858,6 +1100,14 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         )
                     else:
                         logger.warning("Condense requested but no active windows detected — skipping")
+                except LockLost:
+                    # A lost lock is not "condense failed, carry on" — carrying
+                    # on reaches the `ready` write below and stamps it over
+                    # another worker's live `processing`. `LockLost` subclasses
+                    # RuntimeError, so without this it would be swallowed here.
+                    # Re-raise past this handler to the task-level one, which
+                    # steps aside instead.
+                    raise
                 except Exception as condense_err:
                     logger.exception("Condense stage failed (%s) — game proceeds without it", condense_err)
                 _lap("condensing")
@@ -866,6 +1116,31 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             logger.info("Done: %d clips for game %s", len(rows), game_id)
             logger.info("STAGE_TIMING stage=TOTAL seconds=%.2f", _timing.perf_counter() - _run_t0)
 
+    except LockLost as lost:
+        # We no longer own this game, so we are no longer the authority on its
+        # row — the worker holding the lock is, and it may be part-way through
+        # its own run right now. The generic handler below would stamp `failed`
+        # over that live `processing`, and the retry it schedules no-ops on the
+        # held lock, so nothing would put the row right until the other worker
+        # finished. Step aside instead: log, drop the lock, and let the retry
+        # re-acquire it if it is genuinely free.
+        logger.warning("Aborting game %s: %s", game_id, lost)
+        lock.release()          # before the probe below, so we don't see ourselves
+        try:
+            raise self.retry(exc=lost)
+        except Retry:
+            raise
+        except Exception:
+            # Retries are spent. (Celery re-raises the `exc` we handed it rather
+            # than MaxRetriesExceededError, so "not a Retry" is the reliable
+            # reading of exhaustion, not the exception type.)
+            #
+            # The row must not be left in `processing` forever — that stranding
+            # is exactly what CF-184 removed. But only write it if nobody else
+            # holds the lock, and only while that proof still holds — see
+            # _mark_failed_if_lock_free.
+            _mark_failed_if_lock_free(str(lost))
+            raise
     except Exception as exc:
         # A game deleted mid-flight is the cause of the failure (missing video on
         # retry, FK violation on save), not a transient error — abandon, don't
@@ -888,3 +1163,16 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         raise self.retry(exc=exc)
     finally:
         lock.release()
+
+    # CF-194: enforce raw_upload_retention_days. Deliberately out here — past
+    # the `finally`, so the advisory lock is already released, and past the
+    # TemporaryDirectory, so the game's working files are gone before a sweep
+    # of unrelated backlog holds this task open. Reached on the success path
+    # only: every abandon path above returns, and a failure re-raises.
+    try:
+        _sweep_expired_raw_uploads()
+    except Exception as sweep_err:
+        # Belt-and-braces — the sweep swallows its own failures, and the game
+        # is already `ready`, so nothing here may turn a finished run into a
+        # retried one.
+        logger.warning("Raw-upload retention sweep failed (%s)", sweep_err)

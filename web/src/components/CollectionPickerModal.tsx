@@ -8,6 +8,7 @@ import {
   addClipToCollection,
   type Collection,
 } from "@/lib/api";
+import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -16,6 +17,13 @@ interface Props {
 }
 
 export function CollectionPickerModal({ clipId, onClose }: Props) {
+  // A full-screen overlay, so the page behind it must hold still like it does
+  // behind the clip modal. This is also the second holder that makes the
+  // lock's reference counting load-bearing rather than theoretical: the picker
+  // can open over the clip modal, and its close must not unlock the page while
+  // the modal is still up.
+  useBodyScrollLock(true);
+
   const [collections, setCollections] = useState<Collection[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
@@ -66,10 +74,10 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   return (
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
-      <div className="w-72 rounded-xl border border-border bg-background shadow-2xl">
+      <div className="w-full max-w-[18rem] rounded-xl border border-border bg-background shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="flex items-center gap-2">
@@ -78,7 +86,8 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
           </div>
           <button
             onClick={onClose}
-            className="rounded p-1 text-subtle hover:text-foreground hover:bg-surface-high transition-colors"
+            aria-label="Close"
+            className="flex h-8 w-8 items-center justify-center rounded text-subtle hover:text-foreground hover:bg-surface-high transition-colors"
           >
             <X size={13} />
           </button>
@@ -147,7 +156,7 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
               <button
                 onClick={handleCreate}
                 disabled={createLoading || !newName.trim()}
-                className="rounded bg-brand px-2.5 py-1 text-[11px] font-semibold text-[#0c0c0e] disabled:opacity-40 hover:bg-brand/90 transition-colors"
+                className="shrink-0 rounded bg-brand px-3 py-2 text-[11px] font-semibold text-[#0c0c0e] disabled:opacity-40 hover:bg-brand/90 transition-colors"
               >
                 {createLoading ? <Loader size={11} className="animate-spin" /> : "Add"}
               </button>
@@ -155,7 +164,7 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
           ) : (
             <button
               onClick={() => setCreating(true)}
-              className="flex w-full items-center gap-2 rounded px-1 py-1 text-[12px] text-subtle hover:text-foreground transition-colors"
+              className="flex min-h-9 w-full items-center gap-2 rounded px-1 text-[12px] text-subtle hover:text-foreground transition-colors"
             >
               <Plus size={13} />
               New collection

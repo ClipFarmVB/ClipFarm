@@ -42,7 +42,8 @@ production deploy existed.
   ```
 - Credentials on hand for `.env.docker`: Supabase (`DATABASE_URL` pooler string,
   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`), Cloudflare R2 (`R2_*`), Roboflow
-  (`ROBOFLOW_API_KEY`), Modal (`MODAL_TOKEN_*`), and a `JWT_SECRET`.
+  (`ROBOFLOW_API_KEY`), Modal (`MODAL_TOKEN_*`), and a `JWT_SECRET` — plus the
+  origin the site will be served from, for `CORS_ORIGINS`.
 - SSH access to a fresh Ubuntu 22.04/24.04 host.
 
 ### Box sizing
@@ -51,17 +52,18 @@ production deploy existed.
 |---|---|---|
 | vCPU | 2 | ffmpeg cutting + OpenCV frame work, one game at a time |
 | RAM | 2–4 GB | redis + api + worker together; no torch since CF-164 |
-| Disk | 40–80 GB | 2 GB upload cap × transient working files (no model cache) |
+| Disk | 80–120 GB | the 8 GB upload cap × transient working files — the worker pulls the whole source to a tempdir and writes clips plus any condensed cut alongside it, ~20 GB in flight per cap-sized game (no model cache) |
 
 A **Hetzner CPX21 (3 vCPU / 4 GB, ~€8/mo)** or a DigitalOcean / EC2 equivalent
 is plenty; the older 8 GB recommendation here was sized for torch. No GPU on
 this box — Modal owns every model.
 
-> This asks for more RAM than the Render worker's `starter` (512 MB) plan, which
-> is not a contradiction: **this box runs all three services in one place**
+> This is in the same range as the Render worker's `standard` (2 GB) plan, and
+> asks for more because **this box runs all three services in one place**
 > (redis, api and the worker), where Render splits them across instances. For
-> the worker process alone the peak is the ~150 MB audio energy envelope; see
-> the headroom note in `render.yaml`.
+> the worker process alone the peak is `libx264` during cutting at ~400 MB, with
+> the ~150 MB audio energy envelope behind it; see the headroom note in
+> `render.yaml`.
 
 ---
 
@@ -129,6 +131,9 @@ Must be set for this deploy:
 - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_PUBLIC_URL`.
 - `ROBOFLOW_API_KEY`.
 - **`MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`** — the prerequisite from §0.
+- **`CORS_ORIGINS`** → the origin(s) the site is served from, comma-separated (e.g. `https://your-site.example`). Not in the example file's active lines because the dev stack wants its localhost default; this box does not.
+
+> Since **CF-172** these are enforced, not just documented: `docker-compose.prod.yml` runs api and worker with `ENVIRONMENT=production`, so a missing one refuses the boot and names it rather than failing later at the first upload, auth check, or browser request. `CORS_ORIGINS` and `DATABASE_URL` have working localhost defaults, so the guard treats the default itself as "never set" — which is the only way their absence is visible at all.
 
 > Secrets-on-disk is the minimum for CF-41. Productionizing secret handling
 > (no plaintext `.env` files) is tracked separately in **CF-90 (#90)** and

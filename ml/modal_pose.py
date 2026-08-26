@@ -3,11 +3,14 @@ Modal GPU deployment for pose classification (CF-164).
 
 Second half of the GPU offload that started with ball tracking (CF-11). Pose
 was the last model still running in the worker image, and it is the reason
-that image carries torch + ultralytics — which in turn is why the Render
-worker sits on `standard` (2 GB). Moving pose here lets the worker image drop
+that image carries torch + ultralytics — which at the time was why the Render
+worker sat on `standard` (2 GB). Moving pose here lets the worker image drop
 to ffmpeg + opencv + numpy + boto3, and lets the *full-quality* pose config
 (yolov8s-pose @ 1280) come back: it was downgraded to yolov8n @ 640 in
 `render.yaml` only because a 2 GB CPU box could not carry the real one.
+
+(The worker is on `standard` again as of CF-240, but for libx264's ~400 MB
+during cutting, not for an import — nothing here ships a model any more.)
 
 Both functions call the same `ml.pipeline.detect` code the worker calls
 locally, so this is an execution-location change, not a second implementation.

@@ -122,11 +122,15 @@ function CollectionsContent() {
           <button
             onClick={handleCreate}
             disabled={createLoading || !newName.trim()}
-            className="rounded bg-brand px-2.5 py-1 text-[11px] font-semibold text-[#0c0c0e] disabled:opacity-40 hover:bg-brand/90 transition-colors"
+            className="shrink-0 rounded bg-brand px-3 py-2 text-[11px] font-semibold text-[#0c0c0e] disabled:opacity-40 hover:bg-brand/90 transition-colors"
           >
             {createLoading ? "…" : "Create"}
           </button>
-          <button onClick={() => { setCreating(false); setNewName(""); }} className="text-subtle hover:text-foreground">
+          <button
+            onClick={() => { setCreating(false); setNewName(""); }}
+            aria-label="Cancel"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-subtle hover:text-foreground"
+          >
             <X size={13} />
           </button>
         </div>
@@ -156,8 +160,9 @@ function CollectionsContent() {
       {/* Collection list */}
       {!loading && collections.length > 0 && (
         <div className="space-y-1">
-          {/* Column headers */}
-          <div className="mb-1 grid grid-cols-[1fr_80px_56px] items-center gap-4 px-3 py-1.5">
+          {/* Column headers — the row is a stacked card below sm, so the
+              header would label nothing there. */}
+          <div className="mb-1 hidden grid-cols-[1fr_80px_56px] items-center gap-4 px-3 py-1.5 sm:grid">
             <span className="text-[10px] font-semibold uppercase tracking-widest text-subtle">Name</span>
             <span className="text-[10px] font-semibold uppercase tracking-widest text-subtle text-right">Clips</span>
             <span />
@@ -166,7 +171,7 @@ function CollectionsContent() {
           {collections.map((col) => (
             <div
               key={col.id}
-              className="group grid grid-cols-[1fr_80px_56px] items-center gap-4 rounded-lg border border-border bg-surface px-3 py-3 hover:border-border-strong hover:bg-surface-high transition-all duration-150"
+              className="group flex flex-col gap-2 rounded-lg border border-border bg-surface px-3 py-3 hover:border-border-strong hover:bg-surface-high transition-all duration-150 sm:grid sm:grid-cols-[1fr_80px_56px] sm:items-center sm:gap-4"
             >
               {renamingId === col.id ? (
                 <input
@@ -190,24 +195,31 @@ function CollectionsContent() {
                 </Link>
               )}
 
-              <span className="text-right text-[11px] text-muted tabular-nums">{col.clip_count}</span>
+              {/* One meta line under the name on a phone; `contents` hands
+                  these cells straight back to the grid from sm up. */}
+              <div className="flex items-center gap-3 sm:contents">
+                <span className="text-[11px] text-muted tabular-nums sm:text-right">
+                  {col.clip_count}
+                  <span className="sm:hidden"> clips</span>
+                </span>
 
-              <div className="flex items-center justify-end gap-1">
-                <button
-                  onClick={() => { setRenamingId(col.id); setRenameValue(col.name); }}
-                  className="opacity-0 group-hover:opacity-100 flex items-center justify-center h-6 w-6 rounded text-subtle hover:text-foreground hover:bg-surface-hover transition-all"
-                  title="Rename"
-                >
-                  <Pencil size={11} />
-                </button>
-                <button
-                  onClick={() => handleDelete(col.id, col.name)}
-                  disabled={deleting === col.id}
-                  className="opacity-0 group-hover:opacity-100 flex items-center justify-center h-6 w-6 rounded text-subtle hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-30"
-                  title="Delete collection"
-                >
-                  <Trash2 size={11} />
-                </button>
+                <div className="ml-auto flex items-center gap-1 sm:ml-0 sm:justify-end">
+                  <button
+                    onClick={() => { setRenamingId(col.id); setRenameValue(col.name); }}
+                    className="hover-reveal opacity-0 group-hover:opacity-100 flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-foreground hover:bg-surface-hover transition-all sm:h-6 sm:w-6"
+                    title="Rename"
+                  >
+                    <Pencil size={11} />
+                  </button>
+                  <button
+                    onClick={() => handleDelete(col.id, col.name)}
+                    disabled={deleting === col.id}
+                    className="hover-reveal opacity-0 group-hover:opacity-100 flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-30 sm:h-6 sm:w-6"
+                    title="Delete collection"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
               </div>
             </div>
           ))}

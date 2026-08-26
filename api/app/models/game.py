@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Float, String, DateTime, ForeignKey, Enum as SAEnum
+from sqlalchemy import Boolean, Float, String, Text, DateTime, ForeignKey, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -34,7 +34,13 @@ class Game(Base):
     # S3 multipart upload id, held only while status == uploading. Stored so a
     # delete (or the abandoned-upload sweep) can abort the upload and stop
     # paying for its parts, rather than waiting on a lifecycle rule.
-    upload_id: Mapped[str | None] = mapped_column(String(255))
+    #
+    # Text, not String(n): this was varchar(255) and every multipart upload in
+    # production failed on it (CF-217) because R2 issues ids of ~343 chars.
+    # Neither AWS nor Cloudflare documents a maximum, so any fixed width is a
+    # guess with the same bug waiting behind it; in Postgres text and varchar(n)
+    # are identical in storage and performance.
+    upload_id: Mapped[str | None] = mapped_column(Text)
     # What the client said the video's length was at presign time (CF-91).
     # Carried from presign to completion so the quota charge is taken from the
     # figure declared before the transfer, not from whatever the completion

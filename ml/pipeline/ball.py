@@ -148,9 +148,47 @@ class TrackedBall:
 # 1. Detection
 # ─────────────────────────────────────────────────────────────────────────────
 
+class BallRuntimeUnavailable(RuntimeError):
+    """Roboflow `inference` is not importable in THIS process (CF-225).
+
+    Named after `detect.PoseRuntimeUnavailable`, but claiming less than it does:
+    that type is translated to `PermanentPipelineError` at the worker boundary
+    so Celery stops retrying, and this one is not. Ball tracking has somewhere
+    left to go when it fails — the pose-first scan — so a caller that swallowed
+    the retry here would be deciding the whole run's fate on one stage.
+
+    What the distinct type is for is telling "no runtime here" apart from
+    "tracking ran and failed", which are different problems with different
+    fixes. A RuntimeError subclass, so existing broad handling still catches it.
+
+    Which process this is matters: the Modal image (`ml/modal_app.py`) installs
+    `inference` and is where tracking is *meant* to run, so this firing there is
+    a broken image. Everywhere else it is the expected state — the worker ships
+    no ML runtime since CF-164, and a dev checkout does not get one from
+    `ml/requirements.txt` either: that file pins `inference-sdk`, a different
+    distribution providing `inference_sdk`, not the `inference` this needs.
+    So the local-CPU path is effectively Modal-image-only in practice.
+    """
+
+
 def _load_model(api_key: str):
     """Load Roboflow ball detection model (weights cached after first run)."""
-    from inference import get_model
+    try:
+        from inference import get_model
+    except ImportError as import_err:
+        # Deliberately says only what is true from inside any process: this one
+        # cannot run the model. `_load_model` is the primary path on the Modal
+        # GPU worker and the fallback path in the Celery worker, so the caller
+        # — not this message — is what knows whether that is a broken image or
+        # a deployment that never intended to run it here.
+        raise BallRuntimeUnavailable(
+            f"Roboflow `inference` is not importable in this process ({import_err}), so "
+            f"ball model {MODEL_ID} cannot run here. The only place it is installed is "
+            "the `clipfarm-ball-tracking` Modal image (ml/modal_app.py pins "
+            "inference==1.3.3) — note that ml/requirements.txt carries `inference-sdk`, "
+            "a different distribution (module `inference_sdk`, an HTTP client) that does "
+            "NOT provide this import."
+        ) from import_err
     logger.info("Loading ball detection model %s", MODEL_ID)
     return get_model(MODEL_ID, api_key=api_key)
 
