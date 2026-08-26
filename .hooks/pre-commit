@@ -64,124 +64,43 @@ echo "ok"
 # here": leave it to CI rather than blocking the commit on a setup step nobody
 # was told to do.
 #
-# The gate reads requirements-dev.txt instead of importing one chosen package,
-# because a chosen package is what broke this. The probe used to be `fakeredis`,
-# which CF-184 removed from that file when the lock moved to Postgres — after
-# which the probe could never succeed, this step skipped on every correct dev
-# install, and the hook still exited 0 saying all checks passed. It had been
-# doing that silently ever since.
+# The gate reads the `name==version` pins reachable from requirements-dev.txt
+# (following its `-r` include) and checks each is *present* — not importing one
+# chosen package, because a chosen package is what broke this. The probe used
+# to be `fakeredis`, which CF-184 removed from that file when the lock moved to
+# Postgres — after which the probe could never succeed, this step skipped on
+# every correct dev install, and the hook still exited 0 saying all checks
+# passed. It had been doing that silently ever since. Swapping in another name
+# would reinstate the same failure one rename later, and neither candidate
+# discriminates anyway: PyYAML arrives with unrelated tooling (conan depends on
+# it) and numpy is on half the machines in the world.
 #
-# Swapping in another name would reinstate the same failure one rename later,
-# and neither candidate discriminates anyway: PyYAML arrives with unrelated
-# tooling (conan depends on it) and numpy is on half the machines in the world,
-# so importing either proves nothing about a dev install.
+# Presence, deliberately not version equality, for every pin: an absent
+# dependency kills collection, which is the case this gate exists to decline,
+# while gating on versions made any drift in the same virtualenv — a tool
+# bumping a patch release, numpy resolved elsewhere by other work — skip
+# api/tests while the hook exited 0, the silent-green shape this gate replaced
+# on a wider trigger. Version consistency across the files that matter is
+# test_pipeline_deps_are_pinned_to_one_version_everywhere's job, and CI runs
+# the suite in an environment built exactly from requirements-dev.txt.
 #
-# Scope, stated precisely: it checks `name==version` lines, with or without an
-# extras spec (`uvicorn[standard]==0.34.0` counts, as uvicorn). Range
-# constraints and environment markers are skipped, so adding one of those
-# weakens the gate silently — prefer a plain pin, or extend the pattern. Worth
-# knowing because it is a live temptation: numpy 1.26.4 ships no wheels for
-# 3.13, so the obvious `; python_version < "3.13"` would drop numpy from this
-# check entirely. Everything here runs on 3.11 (ci.yml, Dockerfile.api), so
-# the plain pin is correct today.
+# The check lives in api/scripts/check_dev_set.py rather than inline here, so
+# the `ruff check api/` step above lints it and api/tests tests it — this
+# block's predecessor rotted for the lack of both. Its exact scope (extras,
+# whitespace, what is skipped) is documented in the script.
 #
 # It does not fail the commit, it declines to run the step and says why: an
 # incomplete dev set is "not runnable here", not a reason to block someone who
 # was never told to install it.
 #
-# The reason goes to stdout and only stdout is captured, so a genuine breakage
-# in this block — a traceback, a moved file — lands on the terminal instead of
-# being printed as if it were the reason the dev set is absent. An earlier
-# version captured stderr and claimed the opposite in this very comment.
-_api_dev_set=1
-_api_dev_reason=$(python - <<'PY'
-import pathlib, re, sys
-from importlib.metadata import PackageNotFoundError, version
-
-# Every `name==version` pin reachable from requirements-dev.txt, following its
-# `-r` includes. Following them matters: the file's own three pins are all
-# test-only, so checking just those passes on a machine with pytest, PyYAML and
-# numpy but none of the app's dependencies — and the suite then dies at
-# collection importing fastapi, blocking a commit this gate promises to skip.
-# The app deps live behind the `-r requirements.txt` line.
-def parse(path, seen):
-    if path in seen:
-        return {}
-    seen.add(path)
-    own = {}
-    inherited = {}
-    if not path.is_file():
-        # An include that does not exist is a broken requirements set, not a
-        # crash: report it as the reason rather than letting a FileNotFoundError
-        # out, which would leave the reason empty and print a traceback.
-        print(f"missing requirements file: {path}")
-        raise SystemExit(1)
-    # Explicit encoding: both requirements files contain em dashes, and under a
-    # strict-ASCII locale the default would raise here, degrading a correct dev
-    # install to the generic skip. The tests reading these files say utf-8 too.
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.split("#", 1)[0].strip()
-        # All three spellings pip accepts. Handling only `-r <file>` would drop
-        # `-rfile` and `--requirement file` silently, and dropping an include is
-        # how this gate stopped checking app dependencies in the first place.
-        inc = re.fullmatch(r"(?:-r\s*|--requirement[\s=])\s*(\S+)", line)
-        if inc:
-            inherited.update(parse((path.parent / inc.group(1)).resolve(), seen))
-            continue
-        m = re.fullmatch(r"([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?==([A-Za-z0-9_.\-]+)", line)
-        if m:
-            own[m.group(1)] = m.group(2)
-    # A file's own pins beat what it includes, wherever the `-r` line sits.
-    # Merging in line order let an include placed below a local pin override it,
-    # inverting the precedence this file's comments describe.
-    return {**inherited, **own}
-
-pins = parse(pathlib.Path("api/requirements-dev.txt").resolve(), set())
-
-def installed(name):
-    try:
-        return version(name)
-    except PackageNotFoundError:
-        return None
-
-# No pins parsed means the file moved or changed shape — report the set as
-# absent rather than running the suite against who knows what.
-if not pins:
-    print("no pins parsed from api/requirements-dev.txt")
-    sys.exit(1)
-
-# Presence is what decides whether the suite can run: an absent app dependency
-# kills collection, which is the case this gate exists to decline. An exact
-# version is only worth gating on where a version split IS the thing under
-# test — numpy, whose 1-vs-2 pickle incompatibility is what CF-276 guards.
-# Gating everything on equality instead made any unrelated drift (a tool
-# bumping a patch release in the same virtualenv) skip api/tests while the hook
-# exited 0 — the silent-green shape this gate replaced, with a wider trigger.
-EXACT = {"numpy"}
-
-missing = []
-for n, v in sorted(pins.items()):
-    have = installed(n)
-    if have is None:
-        missing.append(f"{n}=={v}")
-    elif n.lower() in EXACT and have != v:
-        missing.append(f"{n}=={v} (have {have})")
-if missing:
-    # Name them: "run the install you already ran" is a useless thing to be
-    # told. Capped, because on a machine with no dev install at all this is
-    # every pin in the set — twenty names is a wall, and the first few plus a
-    # count say the same thing.
-    shown = ", ".join(missing[:4])
-    if len(missing) > 4:
-        shown += f", and {len(missing) - 4} more"
-    print("missing or mismatched: " + shown)
-    sys.exit(1)
-PY
-) || _api_dev_set=0
-
+# The reason arrives on stdout and only stdout is captured, so a genuine
+# breakage in the script — a traceback, a moved file — lands on the terminal
+# instead of being printed as if it were the reason, and the fallback message
+# below blames the check rather than the dev set. An earlier version captured
+# stderr and claimed the opposite in this very comment.
 printf "  pytest api/tests ... "
-if [ "$_api_dev_set" -eq 0 ]; then
-  echo "skipped — ${_api_dev_reason:-dev set unavailable}; pip install -r api/requirements-dev.txt"
+if ! _api_dev_reason=$(python api/scripts/check_dev_set.py); then
+  echo "skipped — ${_api_dev_reason:-the dev-set check itself failed, see the traceback above}; pip install -r api/requirements-dev.txt"
   _api_tests_skipped=1
 elif ! _api_pytest_out=$(cd api && python -m pytest tests/ -q --no-header 2>&1); then
   echo "FAIL"

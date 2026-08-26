@@ -5,13 +5,30 @@ home for this test was `test_pose_modal.py`, which opens with
 `pytest.importorskip("celery")` — so the test guarding against silent skips
 could itself vanish into a green run, in precisely the way it exists to catch.
 A review round caught that. Anything added here must keep this file importable
-with nothing but the standard library.
+with nothing beyond the standard library and pytest itself — which also covers
+the pre-commit gate script under test below, itself stdlib-only.
+
+This file is NOT excluded from its own scan, so the backticks around the
+quoted call above are load-bearing: they keep the line from matching the
+line-anchored pattern below. An earlier revision excluded the file by path
+instead, which was dead code (the backticks already prevented the match) and
+exempted forever the one module documented as needing to stay guard-free.
 """
 import importlib
+import importlib.util
 import pathlib
 import re
 
+import pytest
+
 TESTS_DIR = pathlib.Path(__file__).resolve().parent
+
+_spec = importlib.util.spec_from_file_location(
+    "check_dev_set", TESTS_DIR.parent / "scripts" / "check_dev_set.py"
+)
+assert _spec is not None and _spec.loader is not None
+check_dev_set = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(check_dev_set)
 
 
 def test_every_importorskip_target_is_installed():
@@ -35,24 +52,19 @@ def test_every_importorskip_target_is_installed():
     # rglob, not glob: a guard in a future subdirectory of api/tests would
     # otherwise escape the check silently, which is this test's whole subject.
     for path in sorted(TESTS_DIR.rglob("*.py")):
-        # Skip this file: its own docstring quotes an importorskip call as
-        # prose, and a scan that reads prose as code invents a target out of
-        # its own explanation of itself. No real guards live here anyway.
-        if path == pathlib.Path(__file__).resolve():
-            continue
         # Anchored to the start of a line, with an optional assignment, so a
-        # match has to look like code rather than merely appear in the file.
-        # The skip above covers this file; this covers the general case — a
-        # docstring anywhere quoting `pytest.importorskip("x")` would
-        # otherwise inject a phantom dependency into the check.
+        # match has to look like code rather than merely appear in the file —
+        # a docstring quoting the call as prose (as this module's own does,
+        # behind a backtick) would otherwise inject a phantom dependency into
+        # the check. `\(\s*` lets the quoted target sit on the next line for a
+        # wrapped call; two calls on one line would evade the anchor, but ruff
+        # (E702, in the hook and CI) forbids the `;` that takes.
         for m in re.finditer(
-            r"""^[ \t]*(?:[\w, ]+=[ \t]*)?pytest\.importorskip\([ \t]*["']([^"']+)["']""",
+            r"""^[ \t]*(?:[\w, ]+=[ \t]*)?pytest\.importorskip\(\s*["']([^"']+)["']""",
             path.read_text(encoding="utf-8"),
             re.MULTILINE,
         ):
             targets.add(m.group(1))
-
-    assert targets, "no importorskip targets found — did this suite's layout change?"
 
     # First-party `app.*` targets are excluded on purpose. They are not what can
     # be missing — they ship with the repo — and importing them is not free:
@@ -61,7 +73,10 @@ def test_every_importorskip_target_is_installed():
     # dependency check. The failure this guards is a third-party package absent
     # from requirements-dev.txt.
     third_party = sorted(t for t in targets if not t.startswith("app."))
-    assert third_party, "only first-party targets found — the filter is too broad"
+    assert third_party, (
+        "no third-party importorskip targets found — did this suite's layout "
+        "or the scan pattern change?"
+    )
 
     missing = []
     for name in third_party:
@@ -75,3 +90,75 @@ def test_every_importorskip_target_is_installed():
         "behind them skip and are counted as passes. Add them to "
         "api/requirements-dev.txt — which is the file the api CI job installs."
     )
+
+
+# ── The pre-commit gate script ───────────────────────────────────────────────
+# api/scripts/check_dev_set.py decides whether the hook runs this very suite.
+# Its predecessor — a probe of one chosen package — could never succeed after
+# CF-184 and skipped the step on every correct dev install for years, so the
+# replacement does not get to be untested.
+
+
+def test_gate_follows_every_include_spelling(tmp_path):
+    """Dropping an include is how the gate stopped checking app deps before."""
+    (tmp_path / "base.txt").write_text("fastapi==0.1\n", encoding="utf-8")
+    for spelling in ("-r base.txt", "-rbase.txt", "--requirement base.txt",
+                     "--requirement=base.txt"):
+        f = tmp_path / "reqs.txt"
+        f.write_text(f"{spelling}\npytest==8.0\n", encoding="utf-8")
+        pins = check_dev_set.parse(f, set())
+        assert pins == {"fastapi": "0.1", "pytest": "8.0"}, spelling
+
+
+def test_gate_reads_pip_legal_pin_spellings(tmp_path):
+    """Whitespace around `==` and an extras spec are both pip-legal; a pin
+    written either way must not silently leave the checked set."""
+    f = tmp_path / "reqs.txt"
+    f.write_text(
+        "fastapi == 0.1\nuvicorn[standard]==0.2  # comment\nscipy>=1.0\n",
+        encoding="utf-8",
+    )
+    pins = check_dev_set.parse(f, set())
+    assert pins == {"fastapi": "0.1", "uvicorn": "0.2"}
+    # scipy>=1.0 is absent by documented design: ranges are skipped, not pins.
+
+
+def test_gate_own_pins_beat_included_ones_wherever_the_include_sits(tmp_path):
+    (tmp_path / "base.txt").write_text("fastapi==0.1\n", encoding="utf-8")
+    for layout in ("-r base.txt\nfastapi==0.2\n", "fastapi==0.2\n-r base.txt\n"):
+        f = tmp_path / "reqs.txt"
+        f.write_text(layout, encoding="utf-8")
+        assert check_dev_set.parse(f, set()) == {"fastapi": "0.2"}, layout
+
+
+def test_gate_names_a_missing_include_instead_of_crashing(tmp_path, capsys):
+    f = tmp_path / "reqs.txt"
+    f.write_text("-r nope.txt\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        check_dev_set.parse(f, set())
+    assert "missing requirements file" in capsys.readouterr().out
+
+
+def test_gate_parses_the_real_dev_set():
+    """Binds the parser to the actual files — and keeps the numpy pin a plain
+    `numpy==X` line in requirements-dev.txt. Loosening it to a range or hiding
+    it behind an environment marker drops it from the gate *and* from the
+    pin-consistency test's regex at once (both match only `==`), so this is
+    the assertion that makes that loosening loud rather than silently green
+    (CF-276)."""
+    pins = check_dev_set.parse(
+        check_dev_set.API_DIR / "requirements-dev.txt", set()
+    )
+    assert "numpy" in pins, (
+        "requirements-dev.txt no longer carries a plain `numpy==X` pin — the "
+        "CF-276 guard now tests whichever numpy pip happens to resolve"
+    )
+    assert "fastapi" in pins, "the `-r requirements.txt` include was not followed"
+    assert len(pins) >= 15, f"suspiciously few pins parsed: {sorted(pins)}"
+
+
+def test_gate_passes_in_an_environment_built_from_the_dev_file():
+    """In CI (and any correct dev install) main() must return 0 — this is also
+    the check that the file's distribution names resolve via importlib.metadata
+    (PyYAML, psycopg2-binary), not just as import names."""
+    assert check_dev_set.main() == 0
