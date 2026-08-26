@@ -379,12 +379,12 @@ def test_the_error_message_points_at_both_deploy_paths():
 # game, for as long as nobody reads the logs. A Literal moves that to load.
 
 
-def test_a_misspelled_condense_mode_fails_at_load(clean_env, monkeypatch):
+def test_a_misspelled_condense_mode_fails_at_load(clean_env):
     """Capitalisation is the realistic typo, and it is the one that used to
     survive: pydantic accepted any str, so "Guarded" reached the worker and fell
     through to "rules" because the equality test is case-sensitive.
     """
-    monkeypatch.setenv("CONDENSE_MODE", "Guarded")
+    clean_env.setenv("CONDENSE_MODE", "Guarded")
 
     with pytest.raises(Exception) as excinfo:
         Settings(_env_file=None)

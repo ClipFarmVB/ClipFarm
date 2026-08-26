@@ -523,6 +523,11 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
             )
             title = "GUARDED vs RULES (CF-187)"
         else:
+            # Unreachable via settings since condense_mode became a Literal (a
+            # typo now fails at Settings construction). Kept because this reads
+            # settings directly, so it is the one guard left if that annotation
+            # is ever widened back to str — unlike tasks._build_condense_windows'
+            # twin, which also still serves direct callers passing a mode string.
             raise SystemExit(f"Unknown condense_mode {mode!r} — expected rules or guarded")
 
         # The abstain (one whole-video window) is a real outcome worth seeing in

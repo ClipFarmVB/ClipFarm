@@ -82,21 +82,26 @@ local CPU pose. Each level catches and falls through.
 - **Detection is free.** The gaps between stage-1 rally windows *are* the dead time,
   so no extra ML or decode pass runs. `ml/pipeline/dead_time.py` regroups the raw ball
   contacts with *coverage* semantics rather than reusing `contacts_to_rallies()`
-  (which curates highlights): no 30s clip cap (a long rally stays one span), looser
-  2-contact minimum, pad → clamp → merge. Pure functions, unit-tested, tunables as
+  (which curates highlights): no 30s clip cap (a long rally stays one span), a
+  1-contact minimum (`condense_min_contacts`) where the highlight path instead
+  discards anything under `MIN_RALLY_DURATION`, pad → clamp → merge. Pure functions, unit-tested, tunables as
   kwargs (ml/ never imports app config).
 - **Pre-gate signal, deliberately.** The condensed video must keep *every* rally,
   not just the ones the highlight gate scored well — so it consumes the stage-1
   output snapshot, not the post-gate survivors.
 - **Two builders, one switch** (`condense_mode`, CF-187). `rules` is the
   original contacts + motion-bridge path and stays the fallback: `guarded` runs
-  inside a try/except that drops back to it, so an unknown mode degrades the
-  condense instead of failing the run. `guarded` is the default — it rejects
+  inside a try/except that drops back to it, so a builder that raises degrades the
+  condense instead of failing the run. The fallback's scope is narrower than it
+  looks — an unknown mode can no longer reach it (`condense_mode` is a `Literal`,
+  so a typo fails at Settings construction, i.e. at boot), and both builders come
+  from one import, so an import failure skips the condense stage entirely rather
+  than falling back. `guarded` is the default — it rejects
   contacts fired over a near-stationary ball, opens windows on sustained motion
   so a rally the contact detector never sees isn't cut outright, and pads
   tighter.
 - **Abstaining beats guessing.** When the ball track is too sparse to judge (below
-  ~1 usable speed sample/s, measured on fixture test3 at 0.52/s), every builder
+  ~1 usable speed sample/s, measured on fixture test3 at 0.57/s), every builder
   buys dead time by cutting real play. `guarded` detects that and declines: it
   returns the whole video, the stage sees nothing worth trimming, and the game
   ships with clips but no condensed cut. Scoring nothing is better than scoring

@@ -57,9 +57,9 @@ def _build_condense_windows(
     warning, because a degraded condense beats a failed run. The scope is worth
     being precise about: both builders come from the same module import below, so
     this fallback covers call-time failures only. If that import itself fails,
-    "rules" is just as gone and the stage-level handler in run_condense skips
-    condensing altogether — the game still ships `ready`, without a condensed
-    cut. config.condense_mode is a Literal, so an unknown mode name can no longer
+    "rules" is just as gone and process_game_task's stage-level `except Exception
+    as condense_err` skips condensing altogether — the game still ships `ready`,
+    without a condensed cut. config.condense_mode is a Literal, so an unknown mode name can no longer
     arrive from settings; the branch stays for direct callers.
 
     The None sentinel is load-bearing, not style: active_windows_guarded returns

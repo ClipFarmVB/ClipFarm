@@ -254,7 +254,13 @@ class Settings(BaseSettings):
     # — see ml/eval/README.md.
     # Literal, not str: an unknown value here (CONDENSE_MODE=Guarded) would
     # otherwise load fine and silently run "rules" forever behind one warning
-    # per game. Fail at load instead.
+    # per game. Note what "fail at load" means for an operator: Settings is
+    # constructed at import, so a typo here is a hard boot failure of both api
+    # and worker with a pydantic validation error — not a curated message like
+    # production_config_error's. That is the intended trade (a misconfigured
+    # builder is worse than a refused boot), and it is safe to make because no
+    # deploy file sets CONDENSE_MODE: render.yaml, the compose files and
+    # .env.docker.example all leave it at this default.
     condense_mode: Literal["rules", "guarded"] = "guarded"
     # Guarded-path tunables — see ml/pipeline/dead_time.active_windows_guarded.
     # Speeds are frame-heights/s, so they hold across source resolutions.
