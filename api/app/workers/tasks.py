@@ -251,9 +251,10 @@ def _json_safe(value):
     The pipeline builds confidences with numpy arithmetic and the results leak
     out as numpy scalars: `ball.py::classify_contact_action` computes
     `min(0.88, 0.65 + sp_after / 1500.0)` where `sp_after` is an `np.hypot`
-    result, so the numpy operand wins the `min()` for any contact under
-    ~345 px/s, `round()` preserves the type, and it lands in the rally's
-    "confidence" via `_make_rally`.
+    result, so the numpy operand wins the `min()` for a contact between ~180 and
+    ~345 px/s — the lower bound being the `sp_after > 180.0` guard on the branch
+    that expression sits in (`ball.py:394`) — `round()` preserves the type, and
+    it lands in the rally's "confidence" via `_make_rally`.
 
     In one process that is invisible. Across the Modal boundary it is a live
     hazard: a numpy-2 pickle names `numpy._core`, which a numpy-1.x image cannot

@@ -293,8 +293,10 @@ def test_numpy_scalars_never_reach_the_modal_boundary(monkeypatch):
     import, so a version split fails at *deserialization* on the far side — and
     the caller sees only "Modal failed", then silently skips pose because there
     is no local runtime. It is also data-dependent: `classify_contact_action`
-    computes `min(0.88, 0.65 + sp_after / 1500.0)`, so the numpy operand only
-    wins the `min()` below ~345 px/s and faster contacts serialize fine.
+    computes `min(0.88, 0.65 + sp_after / 1500.0)` inside a branch guarded by
+    `sp_after > 180.0` (`ball.py:394`), so the numpy operand wins the `min()`
+    only between ~180 and ~345 px/s. Slower contacts never reach the expression
+    and faster ones take the plain 0.88.
 
     Pins keep the two images aligned; this keeps the payload plain regardless.
     """
@@ -313,8 +315,10 @@ def test_numpy_scalars_never_reach_the_modal_boundary(monkeypatch):
         "start": np.float64(1.0),
         "end": 6.0,
         "action": "spike",
-        # Exactly the expression ball.py evaluates for a slower contact.
-        "confidence": round(min(0.88, 0.65 + np.hypot(np.float64(120.0), 60.0) / 1500.0), 2),
+        # Exactly the expression ball.py evaluates, at a speed inside the
+        # window where the numpy operand actually wins: hypot(200, 60) ≈ 209,
+        # above the branch's 180 guard and below the ~345 where 0.88 takes over.
+        "confidence": round(min(0.88, 0.65 + np.hypot(np.float64(200.0), 60.0) / 1500.0), 2),
         "labels": ["spike"],
         "features": {"contact_count": np.int64(3), "speeds": np.array([1.5, 2.5])},
     }]
@@ -594,6 +598,12 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
         "ml/requirements.txt": REPO_ROOT / "ml" / "requirements.txt",
         "ml/modal_pose.py": REPO_ROOT / "ml" / "modal_pose.py",
     }
+    # Checked only if it names the package at all, because it carries numpy (for
+    # the guard above) and not opencv. A hard requirement here would fail the
+    # opencv parametrisation for a file that has no business pinning it.
+    optional_sources = {
+        "api/requirements-dev.txt": REPO_ROOT / "api" / "requirements-dev.txt",
+    }
     pattern = re.compile(re.escape(package) + r"==([0-9][0-9A-Za-z.\-]*)")
 
     found = {}
@@ -604,6 +614,17 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
         )
         matches = set(pattern.findall(text))
         assert matches, f"{label} does not pin {package} — it must, see this test's docstring"
+        assert len(matches) == 1, f"{label} pins {package} to several versions: {matches}"
+        found[label] = matches.pop()
+
+    for label, path in optional_sources.items():
+        text = "\n".join(
+            line for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        matches = set(pattern.findall(text))
+        if not matches:
+            continue
         assert len(matches) == 1, f"{label} pins {package} to several versions: {matches}"
         found[label] = matches.pop()
 
