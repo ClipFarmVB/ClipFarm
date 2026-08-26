@@ -941,6 +941,76 @@ def test_a_failed_write_after_losing_the_lock_keeps_the_original_LockLost(monkey
     )
 
 
+def test_a_probe_blip_does_not_discard_the_error_message(monkeypatch):
+    """A failure to *check* must not cost the failure's own diagnostic.
+
+    The probe and the report used to share one `try`, and the handler could not
+    tell which of them raised. So a blip on the probe alone skipped the
+    message-carrying write, the message-less fallback succeeded, and the row
+    settled terminally as `failed` with a NULL `error_message` that nothing
+    repopulates — the traceback lost to a failure that had nothing to do with
+    writing it.
+
+    Every other test here makes the probe and the write fail together, which is
+    exactly why this path went unnoticed.
+    """
+    from app.workers.tasks import PermanentPipelineError
+
+    wrote = []
+
+    def exists(_gid):
+        raise _DbDown("the probe blipped, the database is fine")
+
+    def set_status(_gid, status, **kw):
+        if status == "failed":
+            wrote.append(kw.get("error_message"))
+
+    def progress(*a, **k):
+        raise PermanentPipelineError("codec unsupported")
+
+    result, _ = _drive_failing_task(monkeypatch, exists, set_status, progress=progress)
+
+    assert len(wrote) == 1, f"expected exactly one `failed` write, got {wrote}"
+    assert wrote[0] is not None, (
+        "the failure was recorded without its message because the *probe* "
+        "raised — the diagnostic is lost to an unrelated blip"
+    )
+    assert result.result is None, (
+        f"expected the task to settle, got {result.result!r}"
+    )
+
+
+def test_a_game_deleted_mid_run_abandons_from_the_handler(monkeypatch):
+    """The handler's own abandon `return`, which nothing pinned.
+
+    Distinct from the pre-`try` probe: this is a game that existed when the run
+    started and was deleted while it was in flight. Without the `return` the
+    handler falls through to `self.retry`, so a deleted game is retried instead
+    of abandoned — the FK failure the probe exists to avoid.
+    """
+    seen = {"exists": 0}
+    wrote = []
+
+    def exists(_gid):
+        seen["exists"] += 1
+        # True for `_abandoned()` at the top, False by the time it failed.
+        return seen["exists"] == 1
+
+    def set_status(_gid, status, **kw):
+        wrote.append(status)
+
+    result, _ = _drive_failing_task(monkeypatch, exists, set_status)
+
+    assert seen["exists"] >= 2, "the handler's own probe should have run"
+    assert "failed" not in wrote, (
+        f"nothing should be written for a game that no longer exists: {wrote}"
+    )
+    assert result.result is None, (
+        f"expected the handler to abandon, got {result.result!r} — a deleted "
+        "game must not be retried into an FK failure"
+    )
+
+
 def test_a_recorded_permanent_failure_settles_without_retrying(monkeypatch):
     """The ordinary case, which nothing asserted.
 

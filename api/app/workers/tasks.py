@@ -1188,33 +1188,46 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         # the `_sync_db` helpers never touch `self` — but see the
         # `except Retry: raise` at the LockLost handler above for what this file
         # already does where the two do overlap.
-        reported = False
+        # The probe and the report are guarded SEPARATELY, and that separation
+        # is the point. One `try` around both cannot tell which failed — so a
+        # blip on the probe alone skipped the message-carrying write, the
+        # message-less fallback succeeded, and the row settled terminally as
+        # `failed` with a NULL error_message that nothing ever repopulates. The
+        # diagnostic is lost to a failure that had nothing to do with writing it.
+        exists = True
         try:
             # A game deleted mid-flight is the cause of the failure (missing video
             # on retry, FK violation on save), not a transient error — abandon,
             # don't retry. This is the safety net for a deletion at any un-checked
             # point.
-            if not sync_game_exists(gid):
-                # Keep the traceback: the deletion is the *likely* cause, but a
-                # genuine unrelated bug that happens to coincide with one would
-                # otherwise vanish without a trace. Info, not error — an abandoned
-                # job isn't a failure.
-                logger.info(
-                    "Game %s no longer exists — abandoning (no retry)", game_id,
-                    exc_info=True,
-                )
-                return
-            logger.exception("Processing failed for game %s", game_id)
+            exists = sync_game_exists(gid)
+        except Exception:
+            # Assume it exists: reporting a failure against a game that turns out
+            # to be gone is harmless, while abandoning one that is still there
+            # drops it silently. Same direction as the probe above the `try`.
+            logger.warning(
+                "Could not check whether game %s still exists — assuming it does",
+                game_id, exc_info=True,
+            )
+        if not exists:
+            # Keep the traceback: the deletion is the *likely* cause, but a
+            # genuine unrelated bug that happens to coincide with one would
+            # otherwise vanish without a trace. Info, not error — an abandoned
+            # job isn't a failure.
+            logger.info(
+                "Game %s no longer exists — abandoning (no retry)", game_id,
+                exc_info=True,
+            )
+            return
+
+        logger.exception("Processing failed for game %s", game_id)
+        reported = False
+        try:
             sync_set_game_status(gid, "failed", error_message=str(exc))
             reported = True
         except Exception:
             # The original failure is not lost: implicit chaining attaches it as
             # __context__, so this one log line carries both tracebacks.
-            #
-            # Falling through to the retry below is safe even when the probe was
-            # the thing that raised — a retry re-enters at the top and re-runs
-            # `_abandoned()`, so a genuinely deleted game abandons cleanly there
-            # rather than being retried into an FK failure.
             logger.exception(
                 "Could not record the failure for game %s — trying without the "
                 "message", game_id,
