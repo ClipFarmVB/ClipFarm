@@ -702,19 +702,21 @@ gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]"
 
 ##### Routing: what the marker tells the run to do next
 
-Routing reads the latest marker **and** compares its SHA with the PR's current
-head. Those two inputs decide the next round, and nothing else does:
+Routing reads the latest marker and compares its SHA with the PR's current
+head. Those two inputs pick the row; four rows need one further fact, named in
+the third column, and those are the only three inputs routing has:
 
-| latest round marker | SHA vs head | and | next |
+| latest round marker | SHA vs head | further condition | next |
 |---|---|---|---|
 | *none* | — | — | **cold round** — the first-look case |
 | `cold: findings` | matches | — | **step 2** — the findings stand against this code, fix them |
 | `cold: findings` | differs | — | **semi-cold** — a fix has already been pushed; check those findings against the new head |
-| `cold: clean` | matches | a Critical or Medium is still open from *any* round | **step 2** — the settle bar is not met |
+| `cold: clean` | matches | a Critical or Medium is still open from *any* round | **semi-cold** — only a semi-cold check can close it; see below |
 | `cold: clean` | matches | nothing open, and the PR has had a finding at some point | **settle it** — apply `review-settled` |
-| `cold: clean` | matches | nothing open, and the PR has *never* had a finding | **cold round** — the second of the two clean rounds that case requires |
+| `cold: clean` | matches | nothing open, never had a finding, and this is its **only** head-matching `cold: clean` | **cold round** — the second of the two that case requires |
+| `cold: clean` | matches | nothing open, never had a finding, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled` |
 | `cold: clean` | differs | — | **cold round** — new code nothing has looked at; see the re-open rule below |
-| `semi-cold: closes` | any | — | **cold round** |
+| `semi-cold: closes` | — | — | **cold round** |
 | `semi-cold: does not close` | matches | — | **step 2** — fix it again |
 | `semi-cold: does not close` | differs | — | **semi-cold** — another fix has landed since; check it |
 
@@ -733,10 +735,19 @@ the run could get stuck:
   round.** The settle bar requires a semi-cold check to close a finding, and a
   cold round posted on top would make its own marker the latest and hide the
   open finding from this very rule.
-- **A clean round is not by itself permission to label.** Three of the rows
-  above start from `cold: clean` and only one settles; the other two are the
-  open-finding case and the never-had-a-finding case, which is why the settle
-  bar is in the table rather than referred to from it.
+- **The open-finding row routes to a semi-cold round, not to step 2, and this
+  is the one rule this table adds rather than restates.** The state is reachable
+  — a cold round posted over an unclosed finding leaves exactly this — and the
+  bullets this table replaced routed it nowhere. Sending it to step 2 does not
+  terminate: the fix moves the head, the `differs` row calls a cold round, a
+  clean cold round lands back on this same row with the finding still not closed
+  by a semi-cold, and the PR burns to the ceiling on code that was fixed. Only a
+  semi-cold check can close a finding, so only a semi-cold gets the PR out.
+- **A clean round is not by itself permission to label.** Five of the rows above
+  start from `cold: clean` and only two settle. The full bar, including what
+  "nothing open" means across rounds, is the
+  [settle bar](#the-cycle-and-the-settle-bar) — the table routes on it, it does
+  not replace it.
 
 **Routing reads the latest `cold:` or `semi-cold:` marker — a round.** Two other
 prefixes are written to the same stream and are deliberately *not* routed on:
@@ -1022,20 +1033,24 @@ something a commit does not fix:
 | `ran out of rounds` | the ceiling or the budget stopped it, findings still open | **new commits**, no human needed | reset |
 | `not our branch` | findings are fixable, but the branch belongs to **another account** and this run may not push | **new commits**, no human needed | reset |
 | `needs a decision` | a finding needs a judgement nobody unattended should make | **a human removing the label** — commits do not | — |
-| `latched` | this account's PR, but a collaborator has pushed to the branch, so [the push test](#the-push-test) forbids pushing | **a human, outside the loop** — no run can clear it | — |
+| `latched` | this account's PR, but [the push test](#the-push-test) forbids pushing — a collaborator has pushed to the branch, **or** the branch is over 250 commits and the guard cannot see far enough to tell | **a human, outside the loop** — no run can clear it | — |
 
 **When more than one is true, `needs a decision` wins**, over each of the other
 three; note the losing one in the comment as context rather than as the reason.
-Among the rest, `latched` beats `ran out of rounds`. `not our branch` and
-`latched` cannot both apply: the first is only ever another account's PR, the
-second only ever this account's.
+Among the rest, `latched` beats `ran out of rounds`, and `not our branch` beats
+it too — where those two coincide the choice is cosmetic, since both clear on a
+commit and both reset the count, but `not our branch` says why this run could
+not have fixed the PR at any budget. `not our branch` and `latched` cannot both
+apply: the first is only ever another account's PR, the second only ever this
+account's.
 
 Why that order and not another: the two commit-cleared reasons discharge
 themselves on the author's next push, so a PR that also needs a judgement would
 have that question dissolved by an unrelated commit and the human never asked.
 The reason that needs a human therefore has to win, or it is not a reason at
-all. Each pairing is worked through case by case in
-[choosing a reason](#when-you-cannot-fix-it-choosing-a-reason).
+all. The pairings involving `needs a decision` are worked through case by case
+in [choosing a reason](#when-you-cannot-fix-it-choosing-a-reason); the two that
+do not involve it are stated here and nowhere else.
 
 **Whatever the reason, the label needs a round from *this run* behind it.** The
 label asserts that findings are open and this run cannot close them; with no
@@ -1471,11 +1486,12 @@ For a PR you may not push to, describe the fix in a comment and apply
   The report is the only place a latched PR is visible; without that line it sits
   outside the loop with nobody aware.
 
-  **Unless a finding also needs a judgement — then `needs a decision` wins**, per
-  the precedence stated with the reasons. The two want different things from
-  different people: a judgement call needs the reviewer's question answered, a
-  latch needs someone to decide what to do about a branch two people are working
-  on.
+  **Unless a finding also needs a judgement — then `needs a decision` wins**,
+  per the precedence under [the terminal labels and their
+  reasons](#the-terminal-labels-and-their-reasons). The two want different
+  things from different people: a judgement call needs the reviewer's question
+  answered, a latch needs someone to decide what to do about a branch two
+  people are working on.
 
 **Read the findings out of the round's review.** The marker comment carries the
 prefix, the SHA and at most a count; the findings are in the review that round
@@ -1648,14 +1664,15 @@ actually resolve this?" — if not, `not our branch` is wrong, because its
 carve-out fires on a commit that fixed nothing.
 
 **This is a tie-break between those two, not a general test.** (Precedence
-across all four is in the table under [the terminal labels and their
-reasons](#the-terminal-labels-and-their-reasons).) Read as a general
-rule it would rule out `ran out of rounds` for every ceiling- or budget-stopped
-PR — a push does not resolve those either, it only resets the count — leaving
-`needs a decision` as the only reason the document could ever apply. That is not
-the intent. A PR stopped by the ceiling or the budget with nothing needing a
-judgement takes `ran out of rounds`, and its carve-out firing on a commit is
-correct: new code genuinely does deserve fresh rounds.
+across all four is stated under the table in [the terminal labels and their
+reasons](#the-terminal-labels-and-their-reasons): `needs a decision` beats each
+of the others, `not our branch` and `latched` each beat `ran out of rounds`.)
+Read as a general rule it would rule out `ran out of rounds` for every ceiling-
+or budget-stopped PR — a push does not resolve those either, it only resets the
+count — leaving `needs a decision` as the only reason the document could ever
+apply. That is not the intent. A PR stopped by the ceiling or the budget with
+nothing needing a judgement takes `ran out of rounds`, and its carve-out firing
+on a commit is correct: new code genuinely does deserve fresh rounds.
 
 **Where a judgement call is open, that outranks the ceiling and the budget** —
 in **both** modes, so this changes `build` too, and deliberately. Both tell you
