@@ -1013,6 +1013,30 @@ of which reason applies, and it is what a later run reads back:
 - `unsettled: ran out of rounds @ <sha>`
 - `unsettled: latched @ <sha>`
 
+The four differ in what clears them, and that is the property to check before
+choosing one — a reason that clears itself on a commit is the wrong reason for
+something a commit does not fix:
+
+| reason | what it records | what re-opens it | round count |
+|---|---|---|---|
+| `ran out of rounds` | the ceiling or the budget stopped it, findings still open | **new commits**, no human needed | reset |
+| `not our branch` | findings are fixable, but the branch belongs to **another account** and this run may not push | **new commits**, no human needed | reset |
+| `needs a decision` | a finding needs a judgement nobody unattended should make | **a human removing the label** — commits do not | — |
+| `latched` | this account's PR, but a collaborator has pushed to the branch, so [the push test](#the-push-test) forbids pushing | **a human, outside the loop** — no run can clear it | — |
+
+**When more than one is true, `needs a decision` wins**, over each of the other
+three; note the losing one in the comment as context rather than as the reason.
+Among the rest, `latched` beats `ran out of rounds`. `not our branch` and
+`latched` cannot both apply: the first is only ever another account's PR, the
+second only ever this account's.
+
+Why that order and not another: the two commit-cleared reasons discharge
+themselves on the author's next push, so a PR that also needs a judgement would
+have that question dissolved by an unrelated commit and the human never asked.
+The reason that needs a human therefore has to win, or it is not a reason at
+all. Each pairing is worked through case by case in
+[choosing a reason](#when-you-cannot-fix-it-choosing-a-reason).
+
 **Whatever the reason, the label needs a round from *this run* behind it.** The
 label asserts that findings are open and this run cannot close them; with no
 round, nothing looked, so there are none to be open — and `needs a decision` has
@@ -1029,8 +1053,7 @@ head-matching marker would make both cases impossible to label at all, while
 [the rule against leaving open findings
 unlabelled](#the-terminal-labels-and-their-reasons) still demands one.
 
-Two of the four need a human to clear them, in different ways — the last two
-below:
+Each reason in full — what it means, and why it clears the way the table says:
 
 - `ran out of rounds` — the ceiling or the budget stopped it. New commits
   re-open it, round count reset: a PR that has since been fixed must not look
@@ -1624,9 +1647,9 @@ unsticks the PR, not by who owns the branch.** Ask "would the author's next push
 actually resolve this?" — if not, `not our branch` is wrong, because its
 carve-out fires on a commit that fixed nothing.
 
-**This is a tie-break between those two, not a general test.** (`latched` has
-its own precedence, stated with the reason itself: `needs a decision` beats it,
-it beats `ran out of rounds`.) Read as a general
+**This is a tie-break between those two, not a general test.** (Precedence
+across all four is in the table under [the terminal labels and their
+reasons](#the-terminal-labels-and-their-reasons).) Read as a general
 rule it would rule out `ran out of rounds` for every ceiling- or budget-stopped
 PR — a push does not resolve those either, it only resets the count — leaving
 `needs a decision` as the only reason the document could ever apply. That is not
