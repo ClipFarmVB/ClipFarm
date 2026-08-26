@@ -750,6 +750,12 @@ def test_the_unbounded_failure_report_is_wrapped():
     re-raise. The behaviour it protects is described where the guard lives
     (`app/workers/tasks.py`, above the call); this test exists so that guard
     cannot be quietly deleted, not to prove it works.
+
+    Two known ways past it, both inherent to reading the AST rather than
+    running it, recorded so nobody mistakes silence here for proof: moving the
+    handler body into a helper that re-raises leaves no `ast.Raise` node to
+    find, and a `finally: raise` is not in `handler.body` at all. Neither
+    happens by accident; both are visible in review.
     """
     source = (pathlib.Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks.py")
     tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -787,14 +793,18 @@ def test_the_unbounded_failure_report_is_wrapped():
         """
         # A handler that raises anything at all propagates out, so the call
         # still kills the enclosing except: shaped like a guard, behaves like
-        # none. `any`, not `all` over a bare-only body — the realistic shape is
-        # `logger.exception(...); raise`, which this file's own handler at
-        # tasks.py:1133 uses, and an `all` check waves that through. Also
+        # none. `any`, not `all` over a bare-only body — both re-raising shapes
+        # are already live in tasks.py, so neither is hypothetical:
+        # `except Retry: raise` (:1131) is bare-only, and
+        # `_mark_failed_if_lock_free(str(lost)); raise` (:1133) does work first
+        # and re-raises anyway. An `all` check accepts the second. This also
         # catches `raise e` and `raise RuntimeError(...)`.
         #
-        # Deliberately conservative: a handler that re-raises only on some
-        # branch is rejected too. That fails closed, which is the direction to
-        # fail in; relax it if a real guard ever needs to.
+        # Deliberately conservative in three ways, all failing closed: a
+        # handler re-raising on only one branch is rejected; so is one whose
+        # `raise` sits in a nested `try` that catches it; so is one containing
+        # a nested `def` that raises. None is a shape this guard wants, and a
+        # false rejection is a loud failure rather than a silent hole.
         if any(isinstance(n, ast.Raise) for st in handler.body for n in ast.walk(st)):
             return False
         if handler.type is None:                       # bare `except:`
