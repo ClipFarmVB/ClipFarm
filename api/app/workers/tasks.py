@@ -1162,8 +1162,8 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         # exists to explain a failure.
         #
         # CF-226 widened the column to Text and removes the cause. This guard is
-        # not that fix repeated — it is here because **the model and the database
-        # can disagree**. `_ERROR_MESSAGE_MAX` is read off the model at import,
+        # not that fix repeated — it is here because the model and the database
+        # can disagree. `_ERROR_MESSAGE_MAX` is read off the model at import,
         # so a worker image carrying `Text` that starts before the api has run
         # the migration turns the CF-225 clamp off while the column is still
         # varchar(1024). `clipfarm-worker` is a separate Render service with its

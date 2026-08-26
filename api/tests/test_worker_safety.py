@@ -741,19 +741,15 @@ def test_error_message_is_unbounded():
 
 
 def test_the_unbounded_failure_report_is_wrapped():
-    """The one status write whose payload is `str(exc)` must not be able to
-    kill the handler it runs in.
+    """The one status write whose payload is `str(exc)` stays wrapped.
 
     Structural, in the same idiom as the lock-checkpoint test above, because
-    `process_game_task` has no seam to call. The hazard this pins is *not* the
-    one CF-226 fixed: `_ERROR_MESSAGE_MAX` is read off the **model**, so a
-    worker image carrying `Text` that starts before the api has run the
-    migration switches the clamp off against a column that is still
-    varchar(1024). `clipfarm-worker` deploys independently with no migration in
-    its start path, so that ordering is available to whoever deploys.
-
-    Unwrapped, a DataError there costs the `failed` write *and* the retry
-    decision, and the row never leaves `processing`.
+    `process_game_task` has no seam to call — and structural is all it is.
+    **It pins the shape, not the recovery**: it cannot tell whether the handler
+    does something useful, only that a broad one exists and does not merely
+    re-raise. The behaviour it protects is described where the guard lives
+    (`app/workers/tasks.py`, above the call); this test exists so that guard
+    cannot be quietly deleted, not to prove it works.
     """
     source = (pathlib.Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks.py")
     tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -789,6 +785,13 @@ def test_the_unbounded_failure_report_is_wrapped():
         driver raises next), so a narrow handler is the same bug wearing a
         try block.
         """
+        # A handler whose whole body is `raise` re-raises what it caught, so
+        # the call still kills the enclosing except. Shaped like a guard,
+        # behaves like none.
+        if all(
+            isinstance(st, ast.Raise) and st.exc is None for st in handler.body
+        ):
+            return False
         if handler.type is None:                       # bare `except:`
             return True
         names = (
