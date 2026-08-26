@@ -115,7 +115,10 @@ def parse(path, seen):
         # out, which would leave the reason empty and print a traceback.
         print(f"missing requirements file: {path}")
         raise SystemExit(1)
-    for raw in path.read_text().splitlines():
+    # Explicit encoding: both requirements files contain em dashes, and under a
+    # strict-ASCII locale the default would raise here, degrading a correct dev
+    # install to the generic skip. The tests reading these files say utf-8 too.
+    for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.split("#", 1)[0].strip()
         # All three spellings pip accepts. Handling only `-r <file>` would drop
         # `-rfile` and `--requirement file` silently, and dropping an include is
