@@ -177,7 +177,18 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           <div className="ml-auto hidden items-center gap-2 text-[10px] text-subtle sm:flex">
             {/* Gated on the same props as the chevrons above: with no sibling
                 clip there is nothing for ← → to navigate to, and the hint was
-                advertising a binding that did nothing. */}
+                advertising a binding that did nothing.
+
+                Not gated on focus, and so not unconditionally true: the guard
+                in the keydown handler hands ← → to the player while it holds
+                focus, which `Tab to player` beside this is the instruction for
+                reaching. It is true in the state the modal opens in, and false
+                only after a deliberate move by the user. Gating it properly
+                means tracking player focus in state and re-rendering on
+                focus/blur — a behaviour change, ruled out of scope for CF-227
+                on the PR. Recorded rather than papered over, because an
+                earlier version of the PR body claimed this footer was true
+                regardless of where focus sits, and that claim was false. */}
             {(onPrev || onNext) && (
               <>
                 <span>← →  navigate</span>

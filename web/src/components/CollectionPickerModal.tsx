@@ -19,14 +19,19 @@ interface Props {
 
 export function CollectionPickerModal({ clipId, onClose }: Props) {
   // A full-screen overlay, so the page behind it must hold still like it does
-  // behind the clip modal. It is the second holder of the lock, which is what
-  // makes its reference counting matter rather than being theoretical.
+  // behind the clip modal.
   //
   // It does NOT open over the clip modal, despite what this comment used to
   // say: the picker is opened from a card-footer button, and ClipModal has no
   // save affordance to open it from. Corrected while adding the focus trap
   // (CF-227), because if it were true the two traps would fight over the same
   // window listener.
+  //
+  // Which means this is not a live second holder of `cf-lock-scroll` either —
+  // the count never exceeds 1 today, and calling the reference counting
+  // load-bearing here (as this comment also used to) was the same false
+  // premise wearing a different hat. `classLock.ts` and its test still carry
+  // it; that is on `main` and outside this card, filed as CF-281 (#327).
   useBodyScrollLock(true);
 
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -39,13 +44,28 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   const newNameRef = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
 
-  // The third overlay in the same position (CF-227). Escape closes the picker,
-  // except while the inline "new collection" field is open — that field already
-  // uses Escape to cancel itself, and taking it here would close the whole
-  // picker mid-typing. Without this the modal traps Tab and offers no keyboard
-  // dismissal but the Close button, which is the half-measure CF-60 named.
+  // The third overlay in the same position (CF-227). Without a trap the modal
+  // constrains Tab and offers no keyboard dismissal but the Close button, which
+  // is the half-measure CF-60 named.
+  //
+  // Escape is routed here rather than gated off. It used to be
+  // `creating ? undefined : onClose`, on the reasoning that the "new
+  // collection" field "already uses Escape to cancel itself" — true only while
+  // that input holds focus, because the cancel lives in its own `onKeyDown`.
+  // The gate is on state, so typing a name and Tabbing to Add left Escape
+  // doing nothing at all: neither cancelling the field nor closing the picker.
+  // With an empty name it is shorter still — Add is disabled and so out of
+  // FOCUSABLE, which makes the input `last`, so one Tab wraps to Close and
+  // lands in the same dead state.
+  //
+  // The trap owns the key in both states instead, and the input's handler no
+  // longer duplicates the cancel. Escape therefore always does something, and
+  // does the nearer thing first.
   useFocusTrap(overlayRef, true, {
-    onEscape: creating ? undefined : onClose,
+    onEscape: () => {
+      if (creating) { cancelCreating(); return; }
+      onClose();
+    },
   });
 
   useEffect(() => {
@@ -57,6 +77,14 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   useEffect(() => {
     if (creating) setTimeout(() => newNameRef.current?.focus(), 0);
   }, [creating]);
+
+  // Closing the inline field and discarding what was typed. Named because the
+  // focus trap's Escape branch and nothing else reaches it — the field's own
+  // handler used to, and no longer needs to.
+  function cancelCreating() {
+    setCreating(false);
+    setNewName("");
+  }
 
   async function handleAdd(collectionId: string) {
     if (saved.has(collectionId) || saving === collectionId) return;
@@ -169,9 +197,10 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
                 ref={newNameRef}
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
+                // Escape is not handled here: the focus trap owns it for the
+                // whole picker, so it cancels this field wherever focus sits.
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleCreate();
-                  if (e.key === "Escape") { setCreating(false); setNewName(""); }
                 }}
                 placeholder="Collection name…"
                 maxLength={100}

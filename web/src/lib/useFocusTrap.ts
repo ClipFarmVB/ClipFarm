@@ -103,8 +103,10 @@ export function nextFocusableAfter(
 export function previousFocusableBefore(
   container: HTMLElement, el: HTMLElement,
 ): HTMLElement | null {
+  // `items` is already a fresh array from the spread above, so reversing it in
+  // place is safe — the NodeList it came from is untouched.
   const items = [...container.querySelectorAll<HTMLElement>(FOCUSABLE)];
-  return [...items].reverse().find(
+  return items.reverse().find(
     (n) => el.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_PRECEDING,
   ) ?? null;
 }
@@ -202,6 +204,12 @@ export function useFocusTrap(
       if (el) trapTabWithin(el, e);
     };
 
+    // One bubble-phase listener on the window, per active trap. That makes
+    // "at most one overlay at a time" load-bearing and enforced by nothing:
+    // two live traps would each handle the same Escape and the same Tab. It
+    // holds today — the three callers cannot be mounted together — but it is a
+    // property of the call graph rather than of this hook, so nesting is NOT
+    // supported. CF-282 (#328) carries the guard if it is ever wanted.
     const win = container.ownerDocument.defaultView ?? window;
     win.addEventListener("keydown", onKey);
     return () => {
