@@ -70,6 +70,22 @@ is recorded on CF-109 (#139) too — a paragraph in a module nobody has to open
 is not an ordering constraint. The 404-not-403 choice below keeps none of them
 an existence oracle in the meantime.
 
+**Player names ride along with a viewable clip, by design (CF-263).** The
+listings attach ``player_name`` with a bare id lookup and no ownership filter,
+so whoever may read a clip may read the name tagged on it — including an
+anonymous viewer of a public one. That is the intended product behaviour:
+publishing a clip publishes it *with* its attribution, which is what makes a
+share link or a feed entry worth anything. It is written down here, and pinned
+by ``test_public_player_name.py``, because a missing ``where`` is otherwise
+indistinguishable from an oversight and the next reader will "fix" it.
+
+Note what this does *not* license. The name is readable through a clip the
+viewer may already see; it is not enumerable, and no write path accepts a
+foreign ``player_id`` (CF-234 closed the one that did). The orphan case — a
+player whose ``team_id`` is NULL is visible here yet unmanageable by its owner,
+because every editing route 404s on a null team — is a real problem and a
+separate one, tracked in CF-238 (#241).
+
 **One deliberate asymmetry.** A public clip inside a private game is reachable
 by direct link (``GET /clips/{id}/share``) and through a collection, but
 ``GET /games/{id}/clips`` 404s the whole endpoint because the game itself isn't
