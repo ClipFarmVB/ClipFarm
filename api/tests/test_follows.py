@@ -5,6 +5,7 @@ that the `followers` tier resolves identically in Python and in SQL. Both are
 checkable without a database; the counter and constraint behaviour is exercised
 live against Postgres (see the PR body).
 """
+import re
 import uuid
 
 import pytest
@@ -274,11 +275,16 @@ def test_only_a_write_that_matched_moves_the_counters():
 
 def test_the_database_refuses_a_negative_counter():
     """Belt to the code's braces. The failure this review found was silent —
-    a CHECK makes the next variant an error at the write that causes it."""
+    a CHECK makes the next variant an error at the write that causes it.
+
+    Searches every migration rather than naming one: this file was 015 when it
+    was written and is 017 now, because a collision on main forced the whole
+    stack to renumber. A test that pins a revision number breaks on every such
+    shift and says nothing useful when it does.
+    """
     import pathlib
-    import re
 
     versions = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
-    sql = (versions / "015_follow_graph.py").read_text(encoding="utf-8")
+    sql = "\n".join(p.read_text(encoding="utf-8") for p in versions.glob("*.py"))
     for col in ("follower_count", "following_count"):
         assert re.search(rf"{col}\s*>=\s*0", sql), f"no CHECK guarding {col}"
