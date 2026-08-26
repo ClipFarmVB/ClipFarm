@@ -383,6 +383,12 @@ most expensive kind of surprise in an unattended run.
   fix belongs on a PR **another account** opened, or on a branch a collaborator
   has touched, describe it in a review comment instead and never push. Both halves
   are spelled out under [The push test](#the-push-test) below.
+- **Never authorise your own push past [The push test](#the-push-test).** If it
+  says the branch is another account's or a collaborator has pushed to it, that
+  is the answer — do not post, label or record anything that would let a later
+  round read it as permission. A grant mechanism existed once and is gone
+  (CF-274); this rule is about the class, not that mechanism, and holds whether
+  or not one exists again.
 - **Never** deploy, unsuspend a hosting service, or touch production
   infrastructure.
 - **Never** run the local stack against a `DATABASE_URL` pointing at Supabase.
@@ -474,11 +480,19 @@ Three things about the command:
 guard examines a prefix, and a collaborator commit beyond it reads as absent —
 a fail-open in the guard whose other decisions all fail closed. No PR here is
 near that, so this is a stated bound rather than a live problem: **if you meet a
-PR with more than 250 commits, do not trust the guard — treat it as **latched**,
+PR with more than 250 commits, do not trust the guard — treat it as latched,
 apply `unsettled: latched @ <sha>`, and say so in the report.** Not "treat it as
 another account's": that phrase routes to `not our branch`, whose commits
 carve-out would re-open the PR on every push and start the loop this reason
 exists to avoid.
+
+**Report this case in its own words, because the remedy differs.** Since CF-274
+there is no override, so `latched` is a permanent exit from the loop — and a PR
+latched *because the guard could not see far enough* is not one a collaborator
+has pushed to. The person reading the report needs to know which: one wants a
+decision about two people on a branch, the other wants someone to confirm the
+branch is in fact this account's and take it from there. Write "latched: guard
+could not verify a branch over 250 commits", not just "latched".
 
 *This was "branches this run created" until 2026-08-25.* That rule was
 conditioned on a sign-off it never received, and the cost was measured: of the
@@ -1058,23 +1072,29 @@ comments but *not* its label — a maintainer removed it — **write the
 `reopened: <sha>` marker yourself before the first round**, then let the routing
 table pick the round, exactly as for a carve-out re-open.
 
-**`latched` needs no marker of its own**, because nothing about it is cleared by
-a label: the collaborator's commits are still on the branch, so the push test
-latches the PR again on the next round unless a human has dealt with it. If the
-branch is unchanged, re-apply `unsettled: latched @ <sha>` and say in the report
-that the label was removed while the branch was still latched. Nothing unsafe
-follows either way — the push test runs before every push.
-
-Do not force a cold one: a maintainer who clears
-`unsettled: not our branch` *after* the author pushed a fix leaves a PR whose
-last round is `cold: findings` at a stale SHA, which wants a semi-cold check.
-Forcing cold there cannot close the finding, so the settle bar stays
-unreachable and the PR burns to the ceiling.
+Do not force a cold one: a maintainer who clears `unsettled: not our branch`
+*after* the author pushed a fix leaves a PR whose last round is `cold: findings`
+at a stale SHA, which wants a semi-cold check. Forcing cold there cannot close
+the finding, so the settle bar stays unreachable and the PR burns to the ceiling.
 
 Both labels need the marker. Without it for `review-settled`, a maintainer who
 removes the label to ask for another look gets it silently re-applied with zero
 rounds run: routing sees `cold: clean` at the current head, and the settle rule
 says apply the label now.
+
+**`unsettled: latched` is the exception to all of the above.** Do not write a
+`reopened:` marker for it and do not route it back into the cycle. Nothing about
+a latch is cleared by removing a label: the collaborator's commits are still on
+the branch, so the push test latches the PR again on the next round. If the
+branch is unchanged, re-apply `unsettled: latched @ <sha>`.
+
+**Say in the report that the label was removed while the branch was still
+latched**, and say it every time it happens. Removing the label is the only
+thing a maintainer *can* try — there is no override to post any more — so
+without that line the loop re-applies it nightly, forever, with no explanation
+reaching the person undoing it. That is the cost of having no in-loop route out,
+and the report is the only place it is payable. Nothing unsafe follows either
+way: the push test runs before every push.
 
 **Guard against re-firing.** That rule describes a re-opened PR as well as a
 human-cleared one, so bound it: act only if there is **no `reopened:` marker
