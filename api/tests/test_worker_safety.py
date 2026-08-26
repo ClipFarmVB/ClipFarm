@@ -982,8 +982,9 @@ def test_a_probe_blip_does_not_discard_the_error_message(monkeypatch):
     repopulates — the traceback lost to a failure that had nothing to do with
     writing it.
 
-    Every other test here makes the probe and the write fail together, which is
-    exactly why this path went unnoticed.
+    It went unnoticed because no other test made the probe fail *alone*: the
+    ones that break the probe break the write too, and the rest leave the probe
+    working. Nothing drove the one combination where the distinction shows.
     """
     from app.workers.tasks import PermanentPipelineError
 

@@ -1168,11 +1168,11 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             _mark_failed_if_lock_free(str(lost))
             raise
     except Exception as exc:
-        # Reporting must never break processing (CF-277). Everything that talks
-        # to the database on the failure path is inside this guard, because both
-        # calls below run from inside an `except` — so anything they raise costs
-        # the `failed` write AND the retry decision, while the `finally` still
-        # releases the lock. The row then sits in `processing` with nothing
+        # Reporting must never break processing (CF-277). Every call that talks
+        # to the database on the failure path is guarded — in two guards, not
+        # one; see below — because they run from inside an `except`, so anything
+        # they raise costs the `failed` write AND the retry decision, while the
+        # `finally` still releases the lock. The row then sits in `processing` with nothing
         # coming back for it: CF-184's stranded game, reached by the code whose
         # job is to explain a failure.
         #
@@ -1199,9 +1199,9 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         # Retry -> TaskPredicate -> CeleryError -> Exception), so a guard drawn
         # around it would swallow the retry signal and cause the exact stranding
         # this exists to prevent. Nothing inside the guard can raise `Retry` —
-        # the `_sync_db` helpers never touch `self` — but see the
-        # `except Retry: raise` at the LockLost handler above for what this file
-        # already does where the two do overlap.
+        # the `_sync_db` helpers never touch `self` — but the LockLost handler
+        # above carries an `except Retry: raise` for what this file already does
+        # where the two do overlap.
         # Concretely, what a shared `try` cost: a
         # blip on the probe alone skipped the message-carrying write, the
         # message-less fallback succeeded, and the row settled terminally as
@@ -1245,12 +1245,22 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 "Could not record the failure for game %s — trying without the "
                 "message", game_id,
             )
-            # Retrying is the right answer for an outage, and the wrong one for a
-            # deterministic failure: an over-long message (CF-225) fails
-            # identically on every attempt, so falling straight to the retry
-            # would re-run the entire pipeline twice and strand the row anyway.
-            # The status without the payload that may be the problem still gets
-            # it out of `processing`, and costs one more statement to try.
+            # Retrying is the right answer for an outage and the wrong one for
+            # a deterministic failure, which fails identically on every attempt
+            # — so falling straight to the retry would re-run the whole pipeline
+            # to strand the row anyway. The status without the payload that may
+            # be the problem still gets it out of `processing`, for one more
+            # statement.
+            #
+            # Against THIS base that is defensive rather than load-bearing, and
+            # the distinction is worth stating because an earlier version of
+            # this comment got it backwards. An over-long message cannot reach
+            # here: CF-225's clamp in `_sync_db._fit_error_message` truncates to
+            # the column width, so the write succeeds. The case becomes real
+            # when CF-226 widens the column to Text — the clamp reads the width
+            # off the *model*, so an image carrying Text against a column still
+            # varchar(1024) turns the clamp off while the bound is still there.
+            # That skew window is documented on CF-226 itself.
             try:
                 sync_set_game_status(gid, "failed")
                 reported = True
