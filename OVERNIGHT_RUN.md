@@ -703,34 +703,40 @@ gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]"
 ##### Routing: what the marker tells the run to do next
 
 Routing reads the latest marker **and** compares its SHA with the PR's current
-head:
+head. Those two inputs decide the next round, and nothing else does:
 
-- `cold: findings`, SHA **matches** head — the findings stand against this code.
-  Next: step 2, fix them.
-- `cold: findings`, SHA **differs** — a fix has already been pushed, and this is
-  the case a marker alone cannot express. Next: a **semi-cold** round checking
-  those findings against the new head. Without this row a compaction mid-fix
-  routes the run back to step 2 forever, and the settle bar is never reachable.
-- `cold: clean`, SHA matches — settle it **if the settle bar is met** (nothing
-  Critical or Medium still open from *any* round), or one more cold round if the
-  PR has never had a finding. A clean round is not by itself permission to
-  label; see the settle bar.
-- `cold: clean`, SHA differs — new code nothing has looked at. Next: a cold
-  round, and see the re-open rule below.
-- `semi-cold: closes` — a fix was checked, it closes the finding it claimed to,
-  **and the round raised nothing new above a nit**. Next: a cold round.
-- `semi-cold: does not close` — either the finding is still open, or the fix
-  introduced a Critical or Medium of its own. Both are open findings and both
-  route the same way. Next: step 2, fix it again. A cold round cannot rescue
-  this one: the settle bar requires a semi-cold check to close a finding, and a
+| latest round marker | SHA vs head | and | next |
+|---|---|---|---|
+| *none* | — | — | **cold round** — the first-look case |
+| `cold: findings` | matches | — | **step 2** — the findings stand against this code, fix them |
+| `cold: findings` | differs | — | **semi-cold** — a fix has already been pushed; check those findings against the new head |
+| `cold: clean` | matches | a Critical or Medium is still open from *any* round | **step 2** — the settle bar is not met |
+| `cold: clean` | matches | nothing open, and the PR has had a finding at some point | **settle it** — apply `review-settled` |
+| `cold: clean` | matches | nothing open, and the PR has *never* had a finding | **cold round** — the second of the two clean rounds that case requires |
+| `cold: clean` | differs | — | **cold round** — new code nothing has looked at; see the re-open rule below |
+| `semi-cold: closes` | any | — | **cold round** |
+| `semi-cold: does not close` | matches | — | **step 2** — fix it again |
+| `semi-cold: does not close` | differs | — | **semi-cold** — another fix has landed since; check it |
+
+Why several of those rows exist, since each was added to close a specific way
+the run could get stuck:
+
+- **The two `differs` rows for findings** — `cold: findings` and
+  `semi-cold: does not close` — exist because a marker alone cannot express "a
+  fix has already been pushed". Without them a compaction mid-fix routes the run
+  back to step 2 forever, and the settle bar is never reachable.
+- **`semi-cold: closes` requires two things**, not one: the fix closes the
+  finding it claimed to, **and** the round raised nothing new above a nit. A
+  round that introduced a Critical or Medium of its own writes
+  `does not close`, because both are open findings and both route the same way.
+- **`semi-cold: does not close` at a matching SHA cannot be rescued by a cold
+  round.** The settle bar requires a semi-cold check to close a finding, and a
   cold round posted on top would make its own marker the latest and hide the
   open finding from this very rule.
-- `semi-cold: does not close`, SHA **differs** — another fix has landed since.
-  Next: another semi-cold round against the new head. Without this row a
-  compaction after a second fix routes back to step 2 forever, exactly as the
-  `cold: findings` case would.
-- *no round marker at all* — the query below prints nothing. The PR has never
-  had a round. Next: a cold round, the first-look case.
+- **A clean round is not by itself permission to label.** Three of the rows
+  above start from `cold: clean` and only one settles; the other two are the
+  open-finding case and the never-had-a-finding case, which is why the settle
+  bar is in the table rather than referred to from it.
 
 **Routing reads the latest `cold:` or `semi-cold:` marker — a round.** Two other
 prefixes are written to the same stream and are deliberately *not* routed on:
