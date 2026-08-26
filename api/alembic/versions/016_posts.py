@@ -8,8 +8,8 @@ Numbered 013 (not 012) so the chain stays linear: 012 is taken by #185
 once. This PR is third in a stack behind CF-107 and CF-108, so it merges
 last by construction — which means it also needs #185 merged first.
 
-Revision ID: 014
-Revises: 013
+Revision ID: 016
+Revises: 015
 Create Date: 2026-08-07
 """
 from typing import Sequence, Union
@@ -18,8 +18,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "014"
-down_revision: Union[str, None] = "013"
+revision: str = "016"
+down_revision: Union[str, None] = "015"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
