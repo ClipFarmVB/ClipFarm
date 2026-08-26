@@ -6,18 +6,17 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select, tuple_
+from sqlalchemy import Select, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user_id
 from app.database import get_db
-from app.models.follow import Follow, FollowStatus
 from app.models.clip import Clip
 from app.models.post import Post
 from app.models.user import User
 from app.schemas.feed import FeedPage
 from app.schemas.post import PostAuthor, PostOut, PostPlayback
-from app.services import access, storage
+from app.services import access, follow_graph, storage
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +70,55 @@ def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
         raise HTTPException(status_code=400, detail="Invalid cursor")
 
 
+def feed_query(
+    user_id: uuid.UUID, *, cursor: str | None = None, limit: int = DEFAULT_PAGE
+) -> Select:
+    """The feed page, as one statement.
+
+    Extracted from the endpoint so the tests can assert against **the query the
+    router actually runs**. They previously built a stand-in that omitted the
+    author filter, the `User` join, the ordering and the limit — so every
+    assertion was really exercising `access.apply_post_visibility`, which CF-109
+    and CF-110 already own and already cover.
+
+    That gap was not theoretical. `test_only_accepted_follows_widen_the_feed`
+    asserted `'accepted'` appeared in the compiled SQL, and it does — inside
+    CF-110's visibility EXISTS, which has nothing to do with which authors are
+    in the feed. Dropping `status == accepted` from the author filter changed
+    real behaviour and all 22 feed tests still passed.
+
+    `apply_post_visibility` owns the clips/games joins and both gates — the
+    post's own tier and the clip's effective one. Since CF-110 it also resolves
+    `followers` with an EXISTS against `follows`, so a followers-tier post from
+    someone you follow appears without a second query and without any
+    Python-side filtering after the LIMIT.
+    """
+    q = (
+        access.apply_post_visibility(select(Post, Clip, User), user_id)
+        .join(User, Post.author_id == User.id)
+        # Authors whose posts may appear: accepted edges, plus self. The rule
+        # comes from follow_graph rather than being restated here — see
+        # followed_author_ids for why that matters.
+        .where(
+            or_(
+                Post.author_id == user_id,
+                Post.author_id.in_(follow_graph.followed_author_ids(user_id)),
+            )
+        )
+        .order_by(Post.created_at.desc(), Post.id.desc())
+        # One extra row, discarded before serializing — that's how has_more is
+        # known without a second COUNT query over the same filtered set.
+        .limit(limit + 1)
+    )
+    if cursor:
+        created_at, post_id = _decode_cursor(cursor)
+        # Row-value comparison, matching the ORDER BY exactly. Written as a
+        # tuple rather than `created_at < x OR (created_at = x AND id < y)` so
+        # Postgres can use the composite index rather than an OR of two ranges.
+        q = q.where(tuple_(Post.created_at, Post.id) < (created_at, post_id))
+    return q
+
+
 @router.get("", response_model=FeedPage)
 async def get_feed(
     db: DB,
@@ -90,35 +138,7 @@ async def get_feed(
     **Empty state:** a user who follows nobody still sees their own posts. The
     client falls back to explore (CF-114) when this comes back empty.
     """
-    # Authors whose posts may appear: everyone with an accepted edge, plus self.
-    # A pending request contributes nothing — see CF-110.
-    followed = select(Follow.followee_id).where(
-        Follow.follower_id == user_id, Follow.status == FollowStatus.accepted
-    )
-
-    # apply_post_visibility owns the clips/games joins and both gates — the
-    # post's own tier and the clip's effective one. Since CF-110 it also
-    # resolves `followers` with an EXISTS against `follows`, so a followers-tier
-    # post from someone you follow appears here without a second query and
-    # without any Python-side filtering after the LIMIT.
-    q = (
-        access.apply_post_visibility(select(Post, Clip, User), user_id)
-        .join(User, Post.author_id == User.id)
-        .where(or_(Post.author_id == user_id, Post.author_id.in_(followed)))
-        .order_by(Post.created_at.desc(), Post.id.desc())
-        # One extra row, discarded before serializing — that's how has_more is
-        # known without a second COUNT query over the same filtered set.
-        .limit(limit + 1)
-    )
-
-    if cursor:
-        created_at, post_id = _decode_cursor(cursor)
-        # Row-value comparison, matching the ORDER BY exactly. Written as a
-        # tuple rather than `created_at < x OR (created_at = x AND id < y)` so
-        # Postgres can use the composite index rather than an OR of two ranges.
-        q = q.where(tuple_(Post.created_at, Post.id) < (created_at, post_id))
-
-    rows = (await db.execute(q)).all()
+    rows = (await db.execute(feed_query(user_id, cursor=cursor, limit=limit))).all()
     has_more = len(rows) > limit
     rows = rows[:limit]
 
