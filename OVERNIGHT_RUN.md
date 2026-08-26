@@ -1737,7 +1737,17 @@ code, so it re-derives the same finding off the same unchanged lines.
 saying what unsticks it, and the difference is whether it clears itself on the
 author's next commit or waits for a human who has not been told they are needed.
 
-##### The ceiling, and the settling exception
+#### Step 3 — ticket work
+
+**3 — Only when 1 and 2 are clear**, take one ticket from "This run".
+
+**This step does not run in `review-only` mode**, and neither does anything under
+[Working a ticket](#working-a-ticket). Everything else below still does — in
+particular [Filing cards](#filing-cards-for-out-of-scope-findings), because
+reviewing is exactly when out-of-scope problems surface, and the 6-card cap
+applies in both modes.
+
+#### The ceiling, and the settling exception
 
 **Ceiling: six rounds per PR per run, cold and semi-cold together**, so a
 pathological PR cannot consume the whole night. Counting only cold rounds would
@@ -1770,7 +1780,7 @@ the counting query charges them automatically; unlike a `reopened:` marker or a
 re-posted marker, nothing here is free. The exception lifts the *per-PR*
 ceiling, never the run-wide budget.
 
-##### Order of work: one PR at a time
+#### Order of work: one PR at a time
 
 **Take one PR all the way through before opening the next.** Review it, fix it,
 check the fix, settle or label it — then move on. Do not run a pass over every
@@ -1793,7 +1803,7 @@ is the intent, since the oldest have waited longest. Do not order by the
 `overnight-ok` label: that is the *issue* selection gate from
 [Choosing work](#choosing-work) and no PR carries it.
 
-##### The run budget
+#### The run budget
 
 **Run budget: 32 rounds per run**, cold and semi-cold together. *Rounds*, not
 reviews: each round now submits a GitHub review as well as posting its marker,
@@ -1823,7 +1833,7 @@ the ceiling: `unsettled`, recorded, move on. Never leave a PR with open findings
 carrying no label — unlabelled and unreviewed are indistinguishable to the next
 run, which is the whole reason these labels exist.
 
-##### Logging, and the counting windows
+#### Logging, and the counting windows
 
 **Log every round as you finish it** — `PR #<n> — <cold|semi-cold>, round
 <k>/6, budget <used>/32` plus the tiers found. A round granted by the settling
@@ -1900,7 +1910,7 @@ hitting the ceiling early — the failure this section exists to prevent. Sortin
 `Z`-suffixed UTC lexicographically picks the later; an empty `REOPENED` sorts
 first and leaves `SINCE`.
 
-##### What a night costs
+#### What a night costs
 
 **What this costs, plainly — and it depends on who opened the PR.**
 
@@ -1995,7 +2005,7 @@ independently of who can push. The point of writing this down is that the
 obsolete justification is exactly how a rule gets dropped — whoever next
 re-derives it will find the old reason false and may conclude the rule is too.
 
-##### Why the machinery is shaped this way
+#### Why the machinery is shaped this way
 
 The semi-cold round is not defended on cost — it is defended on what silence
 can and cannot establish. It asks a narrow question a reviewer can actually
@@ -2018,16 +2028,6 @@ independent one: it finds *different* things, not *all* things, and the returns
 diminish across rounds without reaching zero. That is exactly why there is a
 ceiling and not just a clean bar. This cuts how many rounds a human has to run
 by hand; it does not answer when a PR is actually done.
-
-#### Step 3 — ticket work
-
-**3 — Only when 1 and 2 are clear**, take one ticket from "This run".
-
-**This step does not run in `review-only` mode**, and neither does anything under
-[Working a ticket](#working-a-ticket). Everything else below still does — in
-particular [Filing cards](#filing-cards-for-out-of-scope-findings), because
-reviewing is exactly when out-of-scope problems surface, and the 6-card cap
-applies in both modes.
 
 ### Working a ticket
 
