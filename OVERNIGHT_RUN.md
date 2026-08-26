@@ -1056,16 +1056,30 @@ below:
   pushes in November if the branch has been quiet. If that is not wanted, revoke
   it.
 
-  Two checks, and both must pass:
+  **Post it as a top-level comment on the PR**, not as a reply inside a review
+  thread. The check below reads `issues/<n>/comments`, which returns top-level
+  comments only — a review body or a threaded reply is a different object and is
+  invisible to it. This is the one marker in this document a *human* writes, and
+  the natural place to answer is the review thread where the findings are, so it
+  is the one place the instruction cannot be left implicit.
+
+  Then the run checks it — and every branch below except the first stays latched:
 
   ```
   ME=$(gh api user --jq ".login")
-  OVR=$(gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq "[.[] | select(.user.login != $Q$ME$Q) | .body | split($Q\\n$Q)[0] | select(test($Q^latch-override:$Q; $Qi$Q))] | last // $Q$Q")
-  case "$OVR" in "latch-override: push ok"*) ;; *) echo "no live override — stays latched"; exit 1;; esac
+  OVR=$(gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq "[.[] | select(.user.login != \"$ME\") | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\") | select(test(\"^latch-override:\"; \"i\"))] | last // \"\"" | tr 'A-Z' 'a-z')
 
-  OVR_SHA=$(printf '%s' "$OVR" | grep -oE '@ ?[0-9a-f]{7}' | head -1 | grep -oE '[0-9a-f]{7}')
-  gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[].sha[0:7]' | grep -qx "$OVR_SHA" ||
-    { echo "override SHA not on the branch — history was rewritten, stays latched"; exit 1; }
+  case "$OVR" in
+    "latch-override: push ok @ "*) ;;
+    "latch-override: push ok"*)   echo "override names no @ <sha> — malformed, stays latched"; exit 1;;
+    "latch-override:"*)           echo "override is not a grant ($OVR) — stays latched"; exit 1;;
+    *)                            echo "no override from another account — stays latched"; exit 1;;
+  esac
+
+  OVR_SHA=$(printf '%s' "$OVR" | sed -E 's/.*@ ?([0-9a-f]{7}).*/\1/')
+
+  gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq ".[].sha[0:7]" | grep -qx "$OVR_SHA" ||
+    { echo "override SHA $OVR_SHA is not on the branch — history rewritten, stays latched"; exit 1; }
 
   gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[] | "\(.sha[0:7]) \(.author.login // "UNKNOWN")"' |
     sed -n "/^$OVR_SHA /,\$p" | tail -n +2 | awk '{print $2}' | sort -u | grep -vx "$ME"
@@ -1075,33 +1089,57 @@ below:
   pushed after the decision, so the human authorised something other than what is
   there now. Re-latch.
 
-  Three things about those checks, each closing a way the override could be
-  read as granting more than it does:
+  Why each piece is the way it is, since every one of them closes a way the
+  override could grant more than it does:
 
   - **`select(.user.login != "$ME")`** — the run posts ordinary issue comments
     constantly, and without this it could read one of its own as authorisation.
-  - **`case "$OVR" in "latch-override: push ok"*)`** matches the *verdict*, not
-    the prefix. A maintainer answering "no" writes
-    `latch-override: no — Sam is mid-rewrite, do not push`, which is the natural
-    refusal and uses the prefix the document asked for. Matching only the prefix
-    would read that as a grant — a malformed refusal honoured as permission,
-    which is the one direction that must never fail open.
+    Treat the filter as the second line of defence: the rule is the one in
+    [Hard rules](#hard-rules) forbidding the run to post one at all.
+  - **Any account other than this one may grant it, and that is deliberate.**
+    The affected party is the collaborator whose work is being protected, and
+    they are the right person to answer; so is any human with commit access to
+    this repo. It is a loose predicate on purpose, not an unconsidered one. If
+    this repo ever gains comment-capable bots, tighten it then — an allowlist
+    today would be more machinery than the problem.
+  - **The whole line is lowercased (`tr 'A-Z' 'a-z'`) before matching.** jq
+    selects case-insensitively, so without this a maintainer who capitalises the
+    prefix at the start of a comment is selected and then rejected — and worse,
+    `last` means a later `LATCH-OVERRIDE:` line of any kind supersedes a valid
+    grant and silently revokes it.
+  - **The `case` matches the verdict, not the prefix.** A maintainer answering
+    "no" writes `latch-override: no — Sam is mid-rewrite, do not push`, which is
+    the natural refusal and uses the prefix this document asked for. Matching
+    only the prefix would read that as a grant: a malformed refusal honoured as
+    permission, the one direction that must never fail open. Revocation falls
+    out of the same test — `latch-override: revoked` stops matching, and `last`
+    makes the most recent verdict the operative one.
+  - **`@ <sha>` is required by the `case`, separately from the SHA lookup.**
+    Without that, `latch-override: push ok` — which reads complete — would yield
+    an empty SHA and be reported as *history rewritten*, sending whoever reads
+    the report hunting a force-push that never happened. Malformed and rewritten
+    are different diagnoses for different people.
+  - **`sub("\r$"; "")`** — comments posted through the web UI carry CRLF, and
+    every other first-line extraction here strips it. Both tests below happen to
+    be prefix-anchored, so it is currently harmless; the house pattern exists
+    because this has bitten before.
   - **Freshness is tested by identity, not by date.** "No commits since the
     override" cannot use commit timestamps: `committer.date` is write time, so a
-    collaborator who committed on Tuesday and pushed on Thursday defeats a
+    collaborator who commits on Tuesday and pushes on Thursday defeats a
     Wednesday override, and the run pushes over work that arrived *after* the
     decision. Listing the commits after the recorded SHA and checking their
-    logins has no such failure. The presence check before it matters for the
-    same reason: if the SHA is gone the branch was rewritten, and `sed` would
-    otherwise emit nothing, which reads as "nothing landed" — a fail-open on
-    exactly the case nobody authorised.
-
-  **Against the other reasons: `needs a decision` wins, `latched` beats the
-  rest.** A judgement call is the thing that most needs a named human, so a PR
-  that is both latched and carrying one takes `needs a decision`, with the latch
-  named in the comment as context — the pattern the ceiling already uses. Against
-  `ran out of rounds`, `latched` wins: that reason re-opens on commits and this
-  one must not, so choosing it would reinstate the loop.
+    logins has no such failure.
+  - **The presence check comes first for the same reason.** If the SHA is gone
+    the branch was rewritten, and `sed` would otherwise emit nothing — which
+    reads as "nothing landed", a fail-open on exactly the case nobody
+    authorised. `sed` also assumes the endpoint returns commits oldest-first,
+    which it does; if that ever changed, the window would be wrong silently.
+  - **A 40-character SHA is accepted and truncated to seven**, which is the right
+    answer rather than an accident — the same short form every marker uses.
+  - **Both commit queries inherit the 250-commit cap** documented for
+    [The push test](#the-push-test). Past it the override SHA falls out of the
+    window and the run reports *history rewritten*; treat a PR over 250 commits
+    as latched and say so, exactly as the push test says.
 
   Note the latch itself is permanent by design: the guard reads the branch's
   whole history, so one commit from a collaborator keeps the PR latched even
@@ -1576,9 +1614,18 @@ means depends on why you cannot fix it, and the four cases part company here:
   write every finding down, including the mechanical ones — but apply
   `unsettled: latched @ <sha>` instead. **Not `not our branch`**: that reason
   re-opens on any commit, and at `own` the account that pushes is the one
-  running, so the PR would re-open on its own pushes and cycle forever. And not
-  `needs a decision` either — no individual finding needs one; the blocked
-  question is the PR-level one about writing over someone else's work.
+  running, so the PR would re-open on its own pushes and cycle forever.
+
+  **Unless a finding also needs a judgement — then `needs a decision` wins**, per
+  the precedence under [Priority order](#priority-order), with the latch named in
+  the comment as context. Where no finding needs one, `latched` is right and
+  `needs a decision` would be wrong: the blocked question is the PR-level one
+  about writing over someone else's work, not anything a reviewer raised.
+
+  The distinction matters because the two are answered by different things. A
+  `latch-override:` comment answers *"may we push over Sam's work?"* — it does
+  not answer a judgement call, so parking a judgement call behind one gets it
+  cleared and pushed with the question never asked.
 - *A finding needing a human decision, on a branch you may push to.* First fix
   everything else that round raised and push it — those findings are real and
   abandoning them wastes the round that found them. *Then* apply `unsettled`
@@ -1596,7 +1643,9 @@ unsticks the PR, not by who owns the branch.** Ask "would the author's next push
 actually resolve this?" — if not, `not our branch` is wrong, because its
 carve-out fires on a commit that fixed nothing.
 
-**This is a tie-break between those two, not a general test.** Read as a general
+**This is a tie-break between those two, not a general test.** (`latched` has
+its own precedence, stated with the reason itself: `needs a decision` beats it,
+it beats `ran out of rounds`.) Read as a general
 rule it would rule out `ran out of rounds` for every ceiling- or budget-stopped
 PR — a push does not resolve those either, it only resets the count — leaving
 `needs a decision` as the only reason the document could ever apply. That is not
