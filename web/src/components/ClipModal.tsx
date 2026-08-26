@@ -175,9 +175,16 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
             {formatDuration(clip.end_time - clip.start_time)}
           </span>
           <div className="ml-auto hidden items-center gap-2 text-[10px] text-subtle sm:flex">
-            <span>← →  navigate</span>
-            <span className="w-px h-3 bg-border" />
-            <span>Esc  close</span>
+            {/* Gated on the same props as the chevrons above: with no sibling
+                clip there is nothing for ← → to navigate to, and the hint was
+                advertising a binding that did nothing. */}
+            {(onPrev || onNext) && (
+              <>
+                <span>← →  navigate</span>
+                <span className="w-px h-3 bg-border" />
+              </>
+            )}
+            <span>Esc close · Tab to player</span>
           </div>
         </div>
       </div>
