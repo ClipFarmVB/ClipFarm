@@ -1753,7 +1753,7 @@ applies in both modes.
 pathological PR cannot consume the whole night. Counting only cold rounds would
 leave the semi-cold ones unbounded — every fix buys another check — and half of
 a ceiling is not a ceiling. Six covers a PR with two rounds of findings and the
-cold round that settles it — five by the cost model above, with one spare.
+cold round that settles it — five by the cost model below, with one spare.
 Hitting it is the same outcome: fix what you can, apply `unsettled` with an
 `unsettled: ran out of rounds @ <sha>` comment, record, move on.
 
