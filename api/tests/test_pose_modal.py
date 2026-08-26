@@ -7,6 +7,7 @@ ml/tests and the eval harness.
 
 Run from the api/ dir: `cd api && pytest tests/test_pose_modal.py`.
 """
+import importlib
 import re
 import sys
 import types
@@ -581,6 +582,47 @@ def test_invariant_detects_an_ml_runtime_hidden_behind_a_requirements_file():
         REPO_ROOT / "api" / "requirements.txt"
     )
     assert not in_api, f"api/requirements.txt now pulls an ML runtime: {in_api}"
+
+
+def test_every_importorskip_target_is_installed():
+    """No test in this suite may skip because a dependency is missing (CF-276).
+
+    This is the general form of the bug that card was about, and it would have
+    caught it: `test_numpy_scalars_never_reach_the_modal_boundary` guards on
+    numpy, numpy was in neither requirements file, and so that test skipped in
+    CI from the day it was written — reported as a pass, forever.
+
+    Asserting against the *environment* rather than against a requirements file
+    is the point. In CI the environment is built from requirements-dev.txt, so
+    this holds that file to every guard in the suite; adding a guarded import
+    without adding the dependency fails here instead of skipping silently. It
+    also closes the reverse: deleting a pin regresses the card, and nothing else
+    in the suite would notice.
+
+    `importorskip` stays on the individual tests as belt-and-braces — this test
+    is the belt, not a licence to remove them.
+    """
+    targets = set()
+    for path in sorted(Path(__file__).parent.glob("*.py")):
+        for m in re.finditer(
+            r"""importorskip\(\s*["']([^"']+)["']""", path.read_text(encoding="utf-8")
+        ):
+            targets.add(m.group(1))
+
+    assert targets, "no importorskip targets found — did this file's layout change?"
+
+    missing = []
+    for name in sorted(targets):
+        try:
+            importlib.import_module(name)
+        except ImportError:
+            missing.append(name)
+
+    assert not missing, (
+        f"{missing} are guarded by importorskip but not installed, so the tests "
+        "behind them skip and are counted as passes. Add them to "
+        "api/requirements-dev.txt — which is the file the api CI job installs."
+    )
 
 
 @pytest.mark.parametrize("package", ["numpy", "opencv-python-headless"])
