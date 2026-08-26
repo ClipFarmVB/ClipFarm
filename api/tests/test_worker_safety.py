@@ -780,10 +780,33 @@ def test_the_unbounded_failure_report_is_wrapped():
                 return True
         return False
 
-    # Every such call that is lexically inside a `try:` body with a handler.
+    def catches_everything(handler) -> bool:
+        """A handler broad enough to be a guard rather than a filter.
+
+        `except ValueError:` would satisfy "is inside a try with a handler"
+        while catching none of what this actually protects against — the DB
+        failures are heterogeneous (DataError, OperationalError, whatever the
+        driver raises next), so a narrow handler is the same bug wearing a
+        try block.
+        """
+        if handler.type is None:                       # bare `except:`
+            return True
+        names = (
+            handler.type.elts
+            if isinstance(handler.type, ast.Tuple)
+            else [handler.type]
+        )
+        return any(
+            isinstance(n, ast.Name) and n.id in {"Exception", "BaseException"}
+            for n in names
+        )
+
+    # Every such call lexically inside a `try:` body with a broad handler.
     guarded = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Try) or not node.handlers:
+        if not isinstance(node, ast.Try):
+            continue
+        if not any(catches_everything(h) for h in node.handlers):
             continue
         for stmt in node.body:
             for inner in ast.walk(stmt):
@@ -799,7 +822,8 @@ def test_the_unbounded_failure_report_is_wrapped():
     )
     assert found <= guarded, (
         f"tasks.py:{sorted(found - guarded)} reports a failure with an unbounded "
-        "`str(exc)` outside any try/except. It runs from inside the task's own "
+        "`str(exc)` outside any try/except broad enough to catch a DB error. It "
+        "runs from inside the task's own "
         "except handler, so raising there costs the `failed` write and the retry "
         "decision and strands the game in `processing`"
     )
