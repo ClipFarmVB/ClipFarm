@@ -685,6 +685,155 @@ def test_lock_dies_with_the_worker(pg_locks):
         redelivered.release()
 
 
+# ── the failure path must not strand the game either (CF-277) ─────────────
+#
+# CF-225 and CF-226 are about one value being too long. This is about the
+# database being unreachable at the moment the failure is reported: the handler
+# talks to it twice, and anything raised there costs the `failed` write *and*
+# the retry decision while the `finally` still releases the lock.
+
+
+class _PipelineBoom(Exception):
+    """Stands in for whatever the pipeline raised — the *original* failure."""
+
+
+class _DbDown(Exception):
+    """Stands in for the database being unreachable *from the handler*."""
+
+
+def _drive_failing_task(monkeypatch, exists, set_status, progress=None):
+    """Run `process_game_task` in-process with its DB helpers stubbed.
+
+    The helpers are imported *inside* the task body, so patching
+    `app.workers._sync_db` reaches the names it binds at call time. That is the
+    seam — this task is drivable with no database at all, which CF-277's card
+    assumed it was not.
+
+    `max_retries` is forced to 0 so `self.retry()` re-raises the original
+    exception instead of re-running the task. Under `task_always_eager` a real
+    retry executes the whole task again synchronously, so the eager result is
+    the *second* attempt's outcome and says nothing about whether the first
+    reached its retry decision. Exhausting the retries makes the outcome
+    readable: reaching `self.retry` surfaces the original `_PipelineBoom`,
+    while failing to reach it surfaces whatever escaped the handler.
+    """
+    import sys
+    import types
+
+    from app.workers import _sync_db, locks, tasks
+
+    # Imported at the top of the task body, *above* its `try` — an ImportError
+    # there escapes uncaught and would mask what this is testing.
+    monkeypatch.setitem(sys.modules, "cv2", types.ModuleType("cv2"))
+
+    released: list[int] = []
+
+    class _FakeLock:
+        def __init__(self, *a, **k):
+            pass
+
+        def acquire(self):
+            return True
+
+        def release(self):
+            released.append(1)
+
+        def still_held(self):
+            return True
+
+    def _boom(*a, **k):
+        raise _PipelineBoom("pipeline failed")
+
+    monkeypatch.setattr(locks, "GameLock", _FakeLock)
+    monkeypatch.setattr(_sync_db, "sync_game_exists", exists)
+    monkeypatch.setattr(_sync_db, "sync_set_game_status", set_status)
+    monkeypatch.setattr(_sync_db, "sync_set_game_progress", progress or _boom)
+    monkeypatch.setattr(tasks.process_game_task, "max_retries", 0)
+    monkeypatch.setattr(tasks.celery_app.conf, "task_always_eager", True)
+    monkeypatch.setattr(tasks.celery_app.conf, "task_eager_propagates", False)
+
+    result = tasks.process_game_task.apply(
+        args=[str(uuid.uuid4()), "https://example.invalid/raw/x.mp4"]
+    )
+    return result, released
+
+
+def test_a_database_outage_on_the_failure_path_does_not_strand_the_game(monkeypatch):
+    """CF-277's acceptance, asserted behaviourally rather than structurally.
+
+    The handler talks to the database twice. Unguarded, the first call raising
+    means no `failed` write *and* no retry decision, while the `finally` still
+    releases the lock — the row sits in `processing` with nothing scheduled to
+    come back for it.
+
+    The discriminator is *which* exception leaves the task. `_DbDown` escaping
+    means the handler died where it stood. `_PipelineBoom` escaping means the
+    handler survived, reached `self.retry`, and re-raised the original failure
+    because the retries are spent here. On an unguarded handler this test fails
+    with `_DbDown`.
+    """
+    calls = []
+    seen = {"exists": 0}
+
+    def exists(_gid):
+        seen["exists"] += 1
+        calls.append("exists")
+        # The first call is `_abandoned()`, which runs *above* the guarded
+        # block — raising there would escape uncaught and prove nothing.
+        if seen["exists"] == 1:
+            return True
+        raise _DbDown("unreachable from the handler")
+
+    def set_status(_gid, status, **kw):
+        calls.append(("status", status))
+        if status == "failed":
+            raise _DbDown("unreachable from the handler")
+
+    result, released = _drive_failing_task(monkeypatch, exists, set_status)
+
+    assert not isinstance(result.result, _DbDown), (
+        "the failure-path database error escaped the task, so no `failed` write "
+        "and no retry happened and the row is stranded in `processing`"
+    )
+    assert isinstance(result.result, _PipelineBoom), (
+        f"expected the original pipeline failure to be re-raised by a spent "
+        f"retry, got {result.result!r}"
+    )
+    assert seen["exists"] >= 2, "the handler's probe should have been attempted"
+    assert released, "the lock must still be released"
+
+
+def test_an_unreportable_permanent_failure_still_retries(monkeypatch):
+    """`PermanentPipelineError` returns early — but only if it was written down.
+
+    Returning on a permanent error whose `failed` write never landed is a silent
+    strand: no row update, no retry, nothing scheduled. The early return is
+    gated on the write having succeeded, so an unreportable permanent error
+    falls through to one more attempt.
+
+    Without that gate the task returns `None` here, and this fails.
+    """
+    from app.workers.tasks import PermanentPipelineError
+
+    def exists(_gid):
+        return True
+
+    def set_status(_gid, status, **kw):
+        if status == "failed":
+            raise _DbDown("unreachable from the handler")
+
+    def progress(*a, **k):
+        raise PermanentPipelineError("codec unsupported")
+
+    result, _ = _drive_failing_task(monkeypatch, exists, set_status, progress=progress)
+
+    assert isinstance(result.result, PermanentPipelineError), (
+        f"expected the permanent failure to reach the retry decision and be "
+        f"re-raised, got {result.result!r} — returning early on a failure that "
+        "could not be recorded strands the row"
+    )
+
+
 # ── error_message must never be what strands a game (CF-225) ──────────────
 #
 # The same stranded-in-`processing` symptom as the lock cases above, reached

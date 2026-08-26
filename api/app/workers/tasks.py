@@ -682,6 +682,15 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             return
         try:
             sync_set_game_status(gid, "failed", error_message=message)
+        except Exception:
+            # Same class as the handler below, milder: retries are already spent
+            # here so no retry decision is lost, and the row strands either way
+            # because the write is what failed. What this saves is the caller's
+            # `raise` — without it the DB error replaces the LockLost in what
+            # Sentry sees, and the reason the game was abandoned disappears.
+            logger.exception(
+                "Could not mark game %s failed after losing its lock", game_id
+            )
         finally:
             probe.release()
 
@@ -1142,20 +1151,63 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             _mark_failed_if_lock_free(str(lost))
             raise
     except Exception as exc:
-        # A game deleted mid-flight is the cause of the failure (missing video on
-        # retry, FK violation on save), not a transient error — abandon, don't
-        # retry. This is the safety net for a deletion at any un-checked point.
-        if not sync_game_exists(gid):
-            # Keep the traceback: the deletion is the *likely* cause, but a genuine
-            # unrelated bug that happens to coincide with one would otherwise vanish
-            # without a trace. Info, not error — an abandoned job isn't a failure.
-            logger.info(
-                "Game %s no longer exists — abandoning (no retry)", game_id, exc_info=True
+        # Reporting must never break processing (CF-277). Everything that talks
+        # to the database on the failure path is inside this guard, because both
+        # calls below run from inside an `except` — so anything they raise costs
+        # the `failed` write AND the retry decision, while the `finally` still
+        # releases the lock. The row then sits in `processing` with nothing
+        # coming back for it: CF-184's stranded game, reached by the code whose
+        # job is to explain a failure.
+        #
+        # Guarding the path rather than each call is deliberate: the hole here
+        # arrived by a second database call being added beside a bare one, and
+        # per-call guards leave that same trap for the next addition.
+        #
+        # `raise self.retry(...)` stays OUTSIDE the guard, and that is
+        # load-bearing. Celery's `Retry` inherits from `Exception` (verified:
+        # Retry -> TaskPredicate -> CeleryError -> Exception), so a guard drawn
+        # around it would swallow the retry signal and cause the exact stranding
+        # this exists to prevent. Nothing inside the guard can raise `Retry` —
+        # the `_sync_db` helpers never touch `self` — but see the
+        # `except Retry: raise` at the LockLost handler above for what this file
+        # already does where the two do overlap.
+        reported = False
+        try:
+            # A game deleted mid-flight is the cause of the failure (missing video
+            # on retry, FK violation on save), not a transient error — abandon,
+            # don't retry. This is the safety net for a deletion at any un-checked
+            # point.
+            if not sync_game_exists(gid):
+                # Keep the traceback: the deletion is the *likely* cause, but a
+                # genuine unrelated bug that happens to coincide with one would
+                # otherwise vanish without a trace. Info, not error — an abandoned
+                # job isn't a failure.
+                logger.info(
+                    "Game %s no longer exists — abandoning (no retry)", game_id,
+                    exc_info=True,
+                )
+                return
+            logger.exception("Processing failed for game %s", game_id)
+            sync_set_game_status(gid, "failed", error_message=str(exc))
+            reported = True
+        except Exception:
+            # The original failure is not lost: implicit chaining attaches it as
+            # __context__, so this one log line carries both tracebacks.
+            #
+            # Falling through to the retry below is safe even when the probe was
+            # the thing that raised — a retry re-enters at the top and re-runs
+            # `_abandoned()`, so a genuinely deleted game abandons cleanly there
+            # rather than being retried into an FK failure.
+            logger.exception(
+                "Could not record the failure for game %s — retrying rather than "
+                "leaving it in `processing`", game_id,
             )
-            return
-        logger.exception("Processing failed for game %s", game_id)
-        sync_set_game_status(gid, "failed", error_message=str(exc))
-        if isinstance(exc, PermanentPipelineError):
+
+        # `reported` gates this, not just the exception type. A permanent failure
+        # we could not write down is still worth another attempt at writing down:
+        # returning here on an unreported error is a silent strand with nothing
+        # scheduled to come back for it, which is the whole bug.
+        if reported and isinstance(exc, PermanentPipelineError):
             # Identical on every attempt — retrying re-runs the pipeline's most
             # expensive path to reach the same failure. Settle on `failed` now.
             logger.info("Not retrying game %s — permanent condition", game_id)
