@@ -24,7 +24,9 @@ COPY api/requirements.txt /tmp/api-requirements.txt
 # Bump these files together or not at all: this one, ml/requirements.txt and
 # ml/modal_pose.py — and, for numpy, api/requirements-dev.txt as well, which
 # pins it (CF-276) so the tests run against the major the pipeline ships. The
-# pin-consistency test enforces all four for numpy, the first three for opencv.
+# pin-consistency test requires the pin in the first three and checks the dev
+# file only if it names the package — so it catches a *split*, not a removal;
+# deleting the dev pin is caught by test_dev_dependencies.py instead.
 RUN pip install --upgrade pip \
     && pip install -r /tmp/api-requirements.txt \
     && pip install ffmpeg-python opencv-python-headless==4.10.0.84 numpy==1.26.4 greenlet

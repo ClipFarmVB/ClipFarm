@@ -108,7 +108,8 @@ def parse(path, seen):
     if path in seen:
         return {}
     seen.add(path)
-    pins = {}
+    own = {}
+    inherited = {}
     if not path.is_file():
         # An include that does not exist is a broken requirements set, not a
         # crash: report it as the reason rather than letting a FileNotFoundError
@@ -125,12 +126,15 @@ def parse(path, seen):
         # how this gate stopped checking app dependencies in the first place.
         inc = re.fullmatch(r"(?:-r\s*|--requirement[\s=])\s*(\S+)", line)
         if inc:
-            pins.update(parse((path.parent / inc.group(1)).resolve(), seen))
+            inherited.update(parse((path.parent / inc.group(1)).resolve(), seen))
             continue
         m = re.fullmatch(r"([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?==([A-Za-z0-9_.\-]+)", line)
         if m:
-            pins[m.group(1)] = m.group(2)
-    return pins
+            own[m.group(1)] = m.group(2)
+    # A file's own pins beat what it includes, wherever the `-r` line sits.
+    # Merging in line order let an include placed below a local pin override it,
+    # inverting the precedence this file's comments describe.
+    return {**inherited, **own}
 
 pins = parse(pathlib.Path("api/requirements-dev.txt").resolve(), set())
 
@@ -146,11 +150,22 @@ if not pins:
     print("no pins parsed from api/requirements-dev.txt")
     sys.exit(1)
 
+# Presence is what decides whether the suite can run: an absent app dependency
+# kills collection, which is the case this gate exists to decline. An exact
+# version is only worth gating on where a version split IS the thing under
+# test — numpy, whose 1-vs-2 pickle incompatibility is what CF-276 guards.
+# Gating everything on equality instead made any unrelated drift (a tool
+# bumping a patch release in the same virtualenv) skip api/tests while the hook
+# exited 0 — the silent-green shape this gate replaced, with a wider trigger.
+EXACT = {"numpy"}
+
 missing = []
 for n, v in sorted(pins.items()):
     have = installed(n)
-    if have != v:
-        missing.append(f"{n}=={v}" + ("" if have is None else f" (have {have})"))
+    if have is None:
+        missing.append(f"{n}=={v}")
+    elif n.lower() in EXACT and have != v:
+        missing.append(f"{n}=={v} (have {have})")
 if missing:
     # Name them: "run the install you already ran" is a useless thing to be
     # told. Capped, because on a machine with no dev install at all this is

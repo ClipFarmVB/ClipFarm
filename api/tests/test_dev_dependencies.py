@@ -32,7 +32,9 @@ def test_every_importorskip_target_is_installed():
     is the belt, not a licence to remove them.
     """
     targets = set()
-    for path in sorted(TESTS_DIR.glob("*.py")):
+    # rglob, not glob: a guard in a future subdirectory of api/tests would
+    # otherwise escape the check silently, which is this test's whole subject.
+    for path in sorted(TESTS_DIR.rglob("*.py")):
         # Skip this file: its own docstring quotes an importorskip call as
         # prose, and a scan that reads prose as code invents a target out of
         # its own explanation of itself. No real guards live here anyway.
