@@ -30,10 +30,11 @@ VERSIONS = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
 PENDING_UPSTREAM: dict[str, tuple[str, str]] = {
     # revision: (its down_revision, the PR that brings it)
     #
-    # Empty because the two that were listed here have merged: 012 came with
-    # #185 (CF-163) and 013 with #194 (CF-91). Both are in this tree now, so
-    # the exemptions were removed — which is what
-    # `test_pending_upstream_entries_are_still_pending` exists to force.
+    # 015 is CF-226 (#229), a one-line widening of games.error_message. It was
+    # going to take the next number after this stack; that gated a P1 behind two
+    # feature PRs, so the dependency was inverted and it takes 015 while posts
+    # moved to 016. Merge #229 first.
+    "015": ("014", "#229 — CF-226 widen games.error_message"),
 }
 
 
@@ -127,4 +128,62 @@ def test_pending_upstream_entries_are_still_pending():
     assert not landed, (
         f"these have landed and no longer need an exemption: {landed}. "
         "Remove them from PENDING_UPSTREAM."
+    )
+
+
+def _revision_files() -> list[tuple[str, str]]:
+    """(filename, revision_id) for every migration, keeping duplicates.
+
+    `_revisions()` returns a dict keyed on revision id, so two files claiming
+    the same id collapse into one entry — and every chain test below then passes
+    in exactly the state that breaks a deploy. This keeps the list.
+    """
+    out: list[tuple[str, str]] = []
+    for path in sorted(VERSIONS.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        rev = re.search(r'^revision:?\s*(?::\s*str\s*)?=\s*"([^"]+)"', text, re.M)
+        if rev:
+            out.append((path.name, rev.group(1)))
+    return out
+
+
+def test_no_revision_id_is_claimed_twice():
+    """The blind spot the dict-based parse could not see (CF-243).
+
+    Alembic does not error on a duplicate revision id — it emits a UserWarning,
+    resolves the id to one of the two, and computes an upgrade path containing
+    only that one. So `alembic upgrade head` exits 0 having silently skipped the
+    other migration, and the table it should have created is simply absent. The
+    deploy reports success and every route touching that table 500s.
+
+    This branch hit it for real: `014_posts.py` here and `014_upload_id_text.py`
+    from CF-217 on main both declared revision "014", and all five chain tests
+    passed while `posts` would never have been created.
+    """
+    import collections
+
+    files = _revision_files()
+    counts = collections.Counter(rev for _, rev in files)
+    dupes = {
+        rev: [name for name, r in files if r == rev]
+        for rev, count in counts.items()
+        if count > 1
+    }
+    assert not dupes, (
+        f"two migrations claim the same revision id: {dupes}. Alembic only "
+        "WARNS on this and then resolves the id to one of them, so "
+        "`alembic upgrade head` silently skips the other — renumber one."
+    )
+
+
+def test_the_parsed_map_accounts_for_every_file():
+    """Guards the guard.
+
+    If `_revisions()` ever silently drops a file again — a duplicate id, a
+    format it cannot parse — the count diverges here rather than the chain
+    tests going quietly green.
+    """
+    assert len(_revisions()) == len(_revision_files()), (
+        "the revision map has fewer entries than there are migration files, "
+        "which means at least one was collapsed or unparsed"
     )
