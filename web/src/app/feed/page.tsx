@@ -151,13 +151,24 @@ function Feed() {
         </div>
       ))}
 
+      {/* snap-start on both trailing elements, and it is load-bearing rather
+          than cosmetic. Under `snap-type: mandatory` the container must come to
+          rest on a snap point; without an alignment of their own these are not
+          snap points, so the scroll rests on the last *post* and stops exactly
+          their own height short — measured at 0px of 128 visible. That makes
+          the error below, the only surface for a failed page-2 fetch,
+          unreachable precisely when it has something to say.
+
+          It is the same trap the prefetch comment cites for rejecting a
+          sentinel loader; the reasoning was right and simply wasn't applied to
+          the two elements that ended up at the bottom. */}
       {done && (
-        <div className="flex h-32 items-center justify-center text-[12px] text-white/40">
+        <div className="flex h-32 snap-start items-center justify-center text-[12px] text-white/40">
           You&apos;re all caught up.
         </div>
       )}
       {error && posts.length > 0 && (
-        <div className="flex h-32 items-center justify-center px-8 text-center text-[12px] text-white/50">
+        <div className="flex h-32 snap-start items-center justify-center px-8 text-center text-[12px] text-white/50">
           {error}
         </div>
       )}
