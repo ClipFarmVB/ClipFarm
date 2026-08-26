@@ -941,6 +941,37 @@ def test_a_failed_write_after_losing_the_lock_keeps_the_original_LockLost(monkey
     )
 
 
+def test_a_recorded_transient_failure_still_retries(monkeypatch):
+    """The other half of the `reported` gate, which nothing pinned.
+
+    A round found that replacing `if reported and isinstance(exc,
+    PermanentPipelineError)` with a bare `if reported` passes the whole suite:
+    every test here drives either a *permanent* failure or an *unrecorded* one,
+    so nothing asserted that an ordinary transient failure — recorded fine —
+    still gets its retry. Weakening the condition to `if reported` would settle
+    every recorded failure on the first attempt, silently removing retries
+    from the pipeline.
+    """
+    wrote = []
+
+    def exists(_gid):
+        return True
+
+    def set_status(_gid, status, **kw):
+        if status == "failed":
+            wrote.append(kw.get("error_message"))
+
+    result, _ = _drive_failing_task(monkeypatch, exists, set_status)
+
+    assert wrote and wrote[0] is not None, (
+        f"the transient failure should have been recorded with its message: {wrote}"
+    )
+    assert isinstance(result.result, _PipelineBoom), (
+        f"expected the retry decision to be reached, got {result.result!r} — a "
+        "recorded *transient* failure must still retry"
+    )
+
+
 def test_a_probe_blip_does_not_discard_the_error_message(monkeypatch):
     """A failure to *check* must not cost the failure's own diagnostic.
 

@@ -1176,9 +1176,16 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         # coming back for it: CF-184's stranded game, reached by the code whose
         # job is to explain a failure.
         #
-        # Guarding the path rather than each call is deliberate: the hole here
-        # arrived by a second database call being added beside a bare one, and
-        # per-call guards leave that same trap for the next addition.
+        # The rule is that every database call on this path is guarded — not
+        # that one `try` covers them all. The hole here arrived by a second
+        # database call being added beside a bare one, so the thing to preserve
+        # is that a new call cannot be added *unguarded*, which is what the test
+        # in test_worker_safety.py holds.
+        #
+        # They are grouped by what a failure means rather than one per call: a
+        # probe that cannot answer and a report that cannot be written need
+        # different responses, and a single `try` around both cannot tell which
+        # one raised. That distinction is not cosmetic — see below.
         #
         # `raise self.retry(...)` stays OUTSIDE the guard, and that is
         # load-bearing. Celery's `Retry` inherits from `Exception` (verified:
@@ -1188,8 +1195,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         # the `_sync_db` helpers never touch `self` — but see the
         # `except Retry: raise` at the LockLost handler above for what this file
         # already does where the two do overlap.
-        # The probe and the report are guarded SEPARATELY, and that separation
-        # is the point. One `try` around both cannot tell which failed — so a
+        # Concretely, what a shared `try` cost: a
         # blip on the probe alone skipped the message-carrying write, the
         # message-less fallback succeeded, and the row settled terminally as
         # `failed` with a NULL error_message that nothing ever repopulates. The
