@@ -491,8 +491,12 @@ there is no override, so `latched` is a permanent exit from the loop — and a P
 latched *because the guard could not see far enough* is not one a collaborator
 has pushed to. The person reading the report needs to know which: one wants a
 decision about two people on a branch, the other wants someone to confirm the
-branch is in fact this account's and take it from there. Write "latched: guard
-could not verify a branch over 250 commits", not just "latched".
+branch is in fact this account's and take it from there. Say so in the report's
+own words — *"latched because the guard could not verify a branch over 250
+commits"* — as prose, not as a marker. The comment on the PR is still
+`unsettled: latched @ <sha>`: the four round forms and the `unsettled:` prefixes
+are the only shapes anything reads back, and inventing a fifth makes it
+invisible to every rule that does.
 
 *This was "branches this run created" until 2026-08-25.* That rule was
 conditioned on a sign-off it never received, and the cost was measured: of the
@@ -1042,23 +1046,28 @@ below:
   run can act on to authorise itself past the person whose work is on that
   branch.
 
-  That was tried. A `latch-override:` grant existed for three days and produced
-  the worst defect in the change that introduced it: the run could post its own
-  override and clear its own latch. Closing that took an author filter, a hard
-  rule, a verdict match, a SHA validity check, an identity-based freshness test
-  and a four-branch parser — and successive reviews kept finding more, including
-  a query that never executed at all. It was the only thing here that *granted* a
-  permission rather than withholding one, and that asymmetry is what made it hard
-  to get right. Removed under CF-274.
+  That was tried. A `latch-override:` grant was added on 2026-08-25 and removed
+  on 2026-08-26, and in between it produced the worst defect in the change that
+  introduced it: the run could post its own override and clear its own latch.
+  Closing that took an author filter, a hard rule, a verdict match, a SHA
+  validity check, an identity-based freshness test and a four-branch parser —
+  and successive reviews kept finding more, including a query that never
+  executed at all. It was the only thing here that *granted* a permission
+  rather than withholding one, and that asymmetry is what made it hard to get
+  right. Removed under CF-274.
 
   **The cost is real and intended.** A latched PR cannot be finished by the loop.
   Report it by name so a human picks it up — that is the only route out, and the
   report is the only place it is visible.
 
-  Note the latch itself is permanent by design: the guard reads the branch's
-  whole history, so one commit from a collaborator keeps the PR latched even
-  after this account pushes more. Scoping it to "since this account's last push"
-  would let a run overwrite exactly the in-flight work being guarded.
+  **The latch is permanent by design, and since the grant went there is nothing
+  to soften it.** The guard reads the branch's whole history, so one commit from
+  a collaborator keeps the PR latched however many times this account pushes
+  afterwards — and no run can now lift it. Both halves are deliberate, and the
+  second is why the first matters more than it used to: scoping the guard to
+  "since this account's last push" would let a run overwrite exactly the
+  in-flight work being guarded, so the permanence stays, and the cost of it
+  lands on the report line rather than on a mechanism.
 
 **Applying either terminal label posts a record comment**, and that is what
 makes a human's removal detectable at all:
@@ -1082,8 +1091,18 @@ removes the label to ask for another look gets it silently re-applied with zero
 rounds run: routing sees `cold: clean` at the current head, and the settle rule
 says apply the label now.
 
-**`unsettled: latched` is the exception to all of the above.** Do not write a
-`reopened:` marker for it and do not route it back into the cycle. Nothing about
+**Guard against re-firing.** That rule describes a re-opened PR as well as a
+human-cleared one, so bound it: act only if there is **no `reopened:` marker
+newer than the record comment**. Without the guard, every compaction re-triggers
+it, each new `reopened:` marker pushes `FROM` forward, and the round count
+resets to zero on a PR that has been cycling all night. Otherwise the counting
+windows silently revert to the PR's whole life, and the two-clean rule reads
+clean markers from before the finding was ever raised.
+
+**`unsettled: latched` is the exception to the two rules above** — the
+`reopened:` marker and the routing that follows it. It still posts its record
+comment like every other reason; what it does not get is a `reopened:` marker or
+a route back into the cycle. Nothing about
 a latch is cleared by removing a label: the collaborator's commits are still on
 the branch, so the push test latches the PR again on the next round. If the
 branch is unchanged, re-apply `unsettled: latched @ <sha>`.
@@ -1095,14 +1114,6 @@ without that line the loop re-applies it nightly, forever, with no explanation
 reaching the person undoing it. That is the cost of having no in-loop route out,
 and the report is the only place it is payable. Nothing unsafe follows either
 way: the push test runs before every push.
-
-**Guard against re-firing.** That rule describes a re-opened PR as well as a
-human-cleared one, so bound it: act only if there is **no `reopened:` marker
-newer than the record comment**. Without the guard, every compaction re-triggers
-it, each new `reopened:` marker pushes `FROM` forward, and the round count
-resets to zero on a PR that has been cycling all night. Otherwise the counting
-windows silently revert to the PR's whole life, and the two-clean rule reads
-clean markers from before the finding was ever raised.
 
 **When a carve-out re-opens a PR, take the label off — and let the routing table
 decide the round.** Do not force a cold one: what the PR needs depends on what
@@ -1397,9 +1408,13 @@ For a PR you may not push to, describe the fix in a comment and apply
 - **A branch a collaborator has pushed to** — `unsettled: latched @ <sha>`. Can
   arise at either scope. **Commits do not re-open this one**, deliberately, and
   no run can clear it: a human handles the PR outside the loop. **Report it by
-  name and say what is blocking it** — who pushed to the branch, and that the
-  findings are written up in the review. The report is the only place a latched
-  PR is visible; without that line it sits outside the loop with nobody aware.
+  name and say what is blocking it** — either who pushed to the branch, or that
+  the guard could not verify it (see the 250-commit bound in
+  [The push test](#the-push-test)), plus the fact that the findings are written
+  up in the review. Those two are different problems: one wants a decision about
+  two people on a branch, the other wants someone to confirm whose branch it is.
+  The report is the only place a latched PR is visible; without that line it sits
+  outside the loop with nobody aware.
 
   **Unless a finding also needs a judgement — then `needs a decision` wins**, per
   the precedence stated with the reasons. The two want different things from
@@ -2033,19 +2048,26 @@ The report contains:
   tier
 - PRs labelled `unsettled`, split by the four reasons their `unsettled:` comment
   gives — `needs a decision` (a reviewer found a judgement call), `latched` (a
-  collaborator pushed to the branch), `not our branch` (the author's next push
+  collaborator pushed to the branch, **or** the guard could not verify it),
+  `not our branch` (the author's next push
   re-opens it), and `ran out of rounds` (the per-PR ceiling, or the run-wide
   budget) — and what is still outstanding on each
-- **Latched PRs by name, with who pushed to each branch.** Two of these reasons
-  want a human and want *different* humans doing different things: a judgement
-  call needs the reviewer's question answered, a latch needs someone to decide
-  what to do about a branch two people are working on. A single "N need a human"
-  figure hides that, which is the same signal loss the bullet below describes for
-  the bounds.
+- **Latched PRs by name, each saying why it latched.** Two of these reasons want
+  a human and want *different* humans doing different things: a judgement call
+  needs the reviewer's question answered, a latch needs someone to decide what to
+  do about a branch. A single "N need a human" figure hides that, which is the
+  same signal loss the bullet below describes for the bounds.
+
+  A latch has two causes and they want different responses, so name the cause,
+  not just the state:
 
   > `#312` is latched — `@sam` has pushed to the branch, so the run may not.
   > 2 Medium and 3 nits are written up in the review. Someone needs to take this
   > one over: merge it, push the fix, or hand it back to `@sam`.
+
+  > `#288` is latched — the guard could not verify it, because the branch has
+  > more than 250 commits. Nobody may have pushed to it at all. Someone needs to
+  > confirm whose branch it is; the findings are in the review either way.
 
   **These PRs cannot be returned to the loop by anything a run does**, which is
   why the report line is not optional: it is the only place a latched PR is
