@@ -44,7 +44,8 @@ moment an amendment is added, and this one already did.
 Note first that one change in this diff is **not** mode-specific: a judgement
 call now outranks the ceiling and the budget when choosing an `unsettled`
 reason, in `build` as much as in `review-only`. It is described under
-[Priority order](#priority-order) and listed here only so it is not mistaken for
+[choosing a reason](#when-you-cannot-fix-it-choosing-a-reason) and listed here
+only so it is not mistaken for
 a `review-only` amendment.
 
 What is amended *by the mode*: the stop rule in
@@ -65,7 +66,7 @@ the report's title.
 ceiling, not the budget, not the marker scheme, not the settle bar. It is a switch
 on step 3, not a second brief. If anything in this section reads like a
 *rule* about step 1, that is a bug in this section: go to
-[Priority order](#priority-order) and follow what is written there.
+[step 1](#step-1--which-prs-need-a-round) and follow what is written there.
 
 **One exception, and it is deliberate: the review-scope filter below is a real
 addition to selection.** It is written into step 1's selection rule itself so that
@@ -547,7 +548,8 @@ itself into the log is not a near miss: everything downstream compares strings,
 `$` sorts below every digit, so a literal `$(date …)` on that line makes every
 comparison true and the per-run bounds silently become all-time ones. Several
 bounds are recovered by comparing against this line after a compaction — see
-[Priority order](#priority-order). Write it before the first iteration does
+[the counting windows](#logging-and-the-counting-windows). Write it before the
+first iteration does
 anything.
 
 ### Priority order
@@ -703,18 +705,24 @@ gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]"
 ##### Routing: what the marker tells the run to do next
 
 Routing reads the latest marker and compares its SHA with the PR's current
-head. Those two inputs pick the row; four rows need one further fact, named in
-the third column, and those are the only three inputs routing has:
+head. Those two pick the row. The `cold: clean` rows each need one more fact,
+named in the third column and drawn from three sources — whether a finding is
+still open, whether one was raised in the counting window, and how many
+head-matching `cold: clean` markers the PR carries. Read each from the list
+under the table; do not count the rows or the sources against this sentence,
+for the reason [the numbered list above](#what-a-non-gh-tool-must-provide)
+gives:
 
 | latest round marker | SHA vs head | further condition | next |
 |---|---|---|---|
 | *none* | — | — | **cold round** — the first-look case |
 | `cold: findings` | matches | — | **step 2** — the findings stand against this code, fix them |
 | `cold: findings` | differs | — | **semi-cold** — a fix has already been pushed; check those findings against the new head |
-| `cold: clean` | matches | a Critical or Medium is still open from *any* round | **semi-cold** — only a semi-cold check can close it; see below |
-| `cold: clean` | matches | nothing open, and the PR has had a finding at some point | **settle it** — apply `review-settled` |
-| `cold: clean` | matches | nothing open, never had a finding, and this is its **only** head-matching `cold: clean` | **cold round** — the second of the two that case requires |
-| `cold: clean` | matches | nothing open, never had a finding, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled` |
+| `cold: clean` | matches | a finding is still open, **and** commits have landed since the marker that raised it | **semi-cold** — that fix is what needs checking; only a semi-cold can close a finding |
+| `cold: clean` | matches | a finding is still open, **and** nothing has landed since the marker that raised it | **step 2** — nothing to check, so spend no round; fix it |
+| `cold: clean` | matches | nothing open, and a finding was raised **in the counting window** | **settle it** — apply `review-settled` |
+| `cold: clean` | matches | nothing open, none raised in the window, and this is its **only** head-matching `cold: clean` | **cold round** — the second of the two that case requires |
+| `cold: clean` | matches | nothing open, none raised in the window, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled` |
 | `cold: clean` | differs | — | **cold round** — new code nothing has looked at; see the re-open rule below |
 | `semi-cold: closes` | — | — | **cold round** |
 | `semi-cold: does not close` | matches | — | **step 2** — fix it again |
@@ -735,19 +743,37 @@ the run could get stuck:
   round.** The settle bar requires a semi-cold check to close a finding, and a
   cold round posted on top would make its own marker the latest and hide the
   open finding from this very rule.
-- **The open-finding row routes to a semi-cold round, not to step 2, and this
-  is the one rule this table adds rather than restates.** The state is reachable
-  — a cold round posted over an unclosed finding leaves exactly this — and the
-  bullets this table replaced routed it nowhere. Sending it to step 2 does not
-  terminate: the fix moves the head, the `differs` row calls a cold round, a
-  clean cold round lands back on this same row with the finding still not closed
-  by a semi-cold, and the PR burns to the ceiling on code that was fixed. Only a
-  semi-cold check can close a finding, so only a semi-cold gets the PR out.
-- **A clean round is not by itself permission to label.** Five of the rows above
-  start from `cold: clean` and only two settle. The full bar, including what
-  "nothing open" means across rounds, is the
-  [settle bar](#the-cycle-and-the-settle-bar) — the table routes on it, it does
-  not replace it.
+- **The two open-finding rows are what this table adds rather than restates.**
+  The state is reachable — a cold round posted over an unclosed finding leaves
+  exactly this — and the bullets this table replaced routed it nowhere. They
+  split on whether there is anything to check. Where a fix has landed since the
+  finding's marker, a semi-cold round checks it, because only a semi-cold can
+  close a finding: sending that to step 2 instead does not terminate — the fix
+  moves the head, the `differs` row calls a cold round, a clean cold round lands
+  back here with the finding still unclosed, and the PR burns to its ceiling on
+  code that was already fixed. Where nothing has landed, the verdict is settled
+  before a reviewer could read anything, so **spawn no round**: go straight to
+  step 2, spend nothing against the ceiling or the budget, and let the fix create
+  something for the next round to check.
+- **"Still open" is read from the marker stream, not from memory.** A finding is
+  open when the PR carries a `cold: findings` or `semi-cold: does not close`
+  marker with no later `semi-cold: closes`. That is the whole test, it survives a
+  compaction, and it is also what identifies *the marker that raised the finding*
+  — the latest such marker with no `closes` after it. Do not substitute a count
+  of findings *raised*: the `FINDINGS` query below never returns to zero once a
+  PR has had one, so routing on it would hold a converged PR on these rows until
+  the ceiling stopped it.
+- **"In the counting window" is not "ever".** On a PR that has been re-opened the
+  window starts at its latest `reopened:` marker, exactly as
+  [the finding count](#reading-state-back-queries-labels-counts-and-windows)
+  specifies. A PR re-opened by a push, carrying a finding closed before the
+  re-open and none since, is the never-had-a-finding case for settling and needs
+  its two clean rounds. Settling it on one because it once had a finding fails
+  toward less review, which is the direction this document guards hardest.
+- **A clean round is not by itself permission to label.** Most rows starting from
+  `cold: clean` do not settle. The full bar, including what "nothing open" means
+  across rounds, is the [settle bar](#the-cycle-and-the-settle-bar) — the table
+  routes on it, it does not replace it.
 
 **Routing reads the latest `cold:` or `semi-cold:` marker — a round.** Two other
 prefixes are written to the same stream and are deliberately *not* routed on:
@@ -827,9 +853,9 @@ not rounds and must never be counted as any.
 
 **Set `ROUNDS` in every shell that uses it**, including the round-counting query
 hundreds of lines below, which runs in a later iteration and possibly after a
-compaction. It is a pattern to re-declare, not state that persists. An unset
-`ROUNDS` makes that filter `test("")`, which matches every comment on the PR and
-returns exactly the count the marker scheme exists to avoid.
+compaction. It is a pattern to re-declare, not state that persists. What an
+unset `ROUNDS` does, and why every block here declares it, is stated with the
+pattern itself above.
 
 ##### Posting a round: comment and review
 
@@ -905,6 +931,7 @@ review are uncounted.
 Read the latest marker, and route on it:
 
 ```
+ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
 gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1
 ```
 
@@ -937,16 +964,20 @@ line is sliced or compared for equality, which routing now does.
 
 **The terminal signal is the label, not the marker.** A PR carrying neither
 `review-settled` nor `unsettled` is mid-cycle whatever its latest marker says,
-and needs the round that marker names — including `cold: clean`, whose own
-bullet above gives it a next action. The gap between a settling round and the
-label it earns is a window like any other: no commit, no label, and a run can
-die in it. Reading `cold: clean` as terminal is what strands such a PR, and it
-strands the never-had-a-finding case twice over — once between its two clean
-rounds, once after the second.
+and needs the round that marker names — including `cold: clean`, which [the
+routing table](#routing-what-the-marker-tells-the-run-to-do-next) gives several
+next actions depending on what else is true of the PR. The gap between a
+settling round and the label it earns is a window like any other: no commit, no
+label, and a run can die in it. Reading `cold: clean` as terminal is what
+strands such a PR, and it strands the never-had-a-finding case twice over —
+once between its two clean rounds, once after the second.
 
 A `cold: clean` marker on an unlabelled PR therefore means: apply the label now
-— settle bar permitting — unless the PR has never had a finding and carries only
-one such marker, in which case it wants its second clean cold round first.
+— settle bar permitting — unless one of the routing table's exceptions applies.
+Two do: a PR with a finding still open takes a semi-cold round, or step 2 where
+nothing has landed since the finding's marker, rather than settling; and a PR
+with no finding raised in the counting window that carries only one such marker
+wants its second clean cold round first.
 
 **Count only `cold: clean` markers whose SHA is the current head.** The rule is
 about *this code* having been read clean twice, not about the PR's history: a
@@ -1099,8 +1130,10 @@ Each reason in full — what it means, and why it clears the way the table says:
   decision is not something a commit clears; the author pushing something
   unrelated would otherwise buy fresh rounds to re-derive the same finding off
   the same unchanged lines.
-- `latched` — this account opened the PR, but a collaborator has pushed to the
-  branch, so [The push test](#the-push-test) forbids pushing to it. The findings
+- `latched` — this account opened the PR, but [The push test](#the-push-test)
+  forbids pushing to it: either a collaborator has pushed to the branch, or the
+  branch is over 250 commits and the guard cannot see far enough to rule that
+  out. Both take this reason; the report distinguishes them. The findings
   may be entirely mechanical; what is blocked is not any one of them but the
   PR-level question of whether to write over someone else's in-flight work.
 
@@ -1320,6 +1353,8 @@ normally costs you; here that cost is the point. Step 2 of
 same mechanism, pointed at a diff. **The first round on a PR is always cold**,
 and so is the round that awards `review-settled`.
 
+##### The semi-cold reviewer's brief
+
 A **semi-cold** round is for checking a fix — **whoever pushed it.** Usually
 that is this run; on another account's branch, it is the author responding to
 the review, and that case has to work or a `unsettled: not our branch` PR could
@@ -1331,8 +1366,6 @@ introduced. It is anchored by construction: it will check the delta rather than
 re-derive the whole diff. That is the trade, and it buys the one thing a cold
 round cannot do — someone other than the author confirming the fix does what
 the finding asked.
-
-##### The semi-cold reviewer's brief
 
 **It posts one marker comment like every other round** — body starting with the
 literal `semi-cold: closes @ <sha>` or `semi-cold: does not close @ <sha>`,
@@ -1357,25 +1390,22 @@ the two bookkeeping sources — your logged round count and the marker count on
 the PR — then disagree with nothing to say which is right. If it did not land,
 re-post it correctly; that repost is not a new round and does not spend budget.
 
-**A semi-cold round with nothing to check writes `does not close` — and
-"nothing" is measured from the marker that raised the finding, never from the
-clean one.** Routing sends a round here when a `cold: clean` marker sits at the
-current head and a finding from an earlier round is still open. That clean
-marker matching the head says only that no code has landed since *it*; it says
-nothing about the finding, which may be several commits older. Where a fix
-landed between the two, that fix is precisely what this round exists to check,
-and it is checkable: read the commits since the finding's own marker, as the
-brief above already specifies, and judge it on those.
+**Measure the commits to check from the marker that raised the finding, never
+from a later `cold: clean`.** Where a clean round was posted over a still-open
+finding, that clean marker matching the head says only that nothing has landed
+since *it* — the finding may be several commits older, and a fix may sit between
+the two. That fix is precisely what the round exists to check. Reading emptiness
+off the clean marker instead would write `does not close` against already-fixed
+code, for the reason
+[the routing table](#routing-what-the-marker-tells-the-run-to-do-next) gives
+under its open-finding rows.
 
-Reading emptiness off the clean marker instead would force `does not close` onto
-code that was already fixed, send it back to step 2 to be fixed again, and burn
-the PR to its ceiling on the loop the routing table's `differs` rows exist to
-prevent.
-
-Where the commit list since the finding's own marker really is empty, nothing
-has landed and the finding is unfixed by definition: write `does not close` and
-let step 2 fix it. That round costs one against the ceiling and buys the check
-the clean marker skipped, which is the only kind that can close a finding.
+**If a round is ever dispatched with nothing to check, write `does not close`.**
+Routing does not send one: the open-finding rows split on whether anything
+landed since the finding's marker, and the empty case goes to step 2 without
+spending a round. This is the answer if some other path produces one anyway —
+nothing landed, so the finding is unfixed by definition. Do not improvise a
+verdict from an empty diff.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, apply the `unsettled` label with a
@@ -1697,8 +1727,7 @@ carve-out fires on a commit that fixed nothing.
 
 **This is a tie-break between those two, not a general test.** (Precedence
 across all four is stated under the table in [the terminal labels and their
-reasons](#the-terminal-labels-and-their-reasons): `needs a decision` beats each
-of the others, `not our branch` and `latched` each beat `ran out of rounds`.)
+reasons](#the-terminal-labels-and-their-reasons).)
 Read as a general rule it would rule out `ran out of rounds` for every ceiling-
 or budget-stopped PR — a push does not resolve those either, it only resets the
 count — leaving `needs a decision` as the only reason the document could ever
@@ -1753,7 +1782,11 @@ applies in both modes.
 pathological PR cannot consume the whole night. Counting only cold rounds would
 leave the semi-cold ones unbounded — every fix buys another check — and half of
 a ceiling is not a ceiling. Six covers a PR with two rounds of findings and the
-cold round that settles it — five by the cost model below, with one spare.
+cold round that settles it — five by the cost model below, with one spare. The
+spare is now allocated: a PR that lands on the routing table's open-finding row
+spends it on the semi-cold round that recovers from a clean marker posted over
+an unclosed finding. A PR needing that detour twice will hit the ceiling, which
+is the intended outcome — twice is not a convergence.
 Hitting it is the same outcome: fix what you can, apply `unsettled` with an
 `unsettled: ran out of rounds @ <sha>` comment, record, move on.
 
@@ -1847,6 +1880,7 @@ per-PR round count, and the run-wide budget, which is the sum of this run's
 markers across every PR it touched:
 
 ```
+ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
 for n in $(gh pr list --state open --json number --jq '.[].number'); do
   gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/$n/comments" --jq ".[] | select(.created_at > \"$SINCE\") | select(.body | test(\"$ROUNDS\"; \"i\")) | .id"
 done | wc -l
