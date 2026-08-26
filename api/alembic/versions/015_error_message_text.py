@@ -34,6 +34,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # No table rewrite: Postgres treats varchar(n) -> text as binary-coercible,
+    # so this is a catalogue change and takes an ACCESS EXCLUSIVE lock only for
+    # as long as that takes. It does not scan `games`, which matters because the
+    # lock blocks reads as well as writes.
     op.alter_column(
         "games",
         "error_message",

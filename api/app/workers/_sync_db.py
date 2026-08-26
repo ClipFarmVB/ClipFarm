@@ -27,13 +27,22 @@ _engine = create_engine(_sync_url, pool_pre_ping=True)
 #
 # The width is read off the model, not repeated: it is the column that imposes
 # this, so a column that changes must not need a matching edit here to stay
-# correct. Unbounded means no clamp at all — which is how CF-226 lands. That
-# card widens the column to Text (as CF-217 did for games.upload_id, the same
-# class of overflow), and this file should not appear in its diff.
+# correct. Unbounded means no clamp at all — which is how CF-226 landed. That
+# card widened the column to Text (as CF-217 did for games.upload_id, the same
+# class of overflow) with no functional change here, which is what this design
+# was for.
 #
-# Until then this is a mitigation, not a fix: the value that overflows is a
-# Modal remote traceback, i.e. the operator-actionable half of the failure, so
-# the clamp truncates the diagnostic someone opened the row to read.
+# **So this is now inert, and it is kept for the window where it is not.**
+# `_ERROR_MESSAGE_MAX` is read off the *model* at import, so an image carrying
+# `Text` that starts before the migration has run reads `None` and clamps
+# nothing against a column that is still varchar(1024). The worker deploys
+# independently of the api, which is the service that migrates.
+#
+# While it was load-bearing it was a mitigation, not a fix, and the reason is
+# worth keeping: the value that overflows is a Modal remote traceback, i.e. the
+# operator-actionable half of the failure, so the clamp truncates the diagnostic
+# someone opened the row to read. `process_game_task` now also guards the one
+# unbounded write, so that window degrades rather than stranding the game.
 # getattr, not a plain attribute: an unbounded column type need not carry a
 # `length` at all, and that case is exactly the one this must survive.
 _ERROR_MESSAGE_MAX = getattr(Game.__table__.c.error_message.type, "length", None)

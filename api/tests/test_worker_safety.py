@@ -715,6 +715,96 @@ def test_error_message_is_clamped_to_the_column_width():
     assert _fit_error_message("short") == "short", "and nothing else is touched"
 
 
+def test_error_message_is_unbounded():
+    """CF-226's acceptance, asserted rather than skipped.
+
+    The test above guards on the width and now skips, which records the change
+    only as an absence — a suite that skips a test reads the same whether the
+    column was widened or the test was quietly broken. This is the positive
+    half: it fails if anyone re-bounds the column, which is the regression that
+    would strand games again.
+    """
+    from app.models.game import Game
+    from app.workers import _sync_db
+
+    col = Game.__table__.c.error_message.type
+    assert getattr(col, "length", None) is None, (
+        f"error_message is bounded again ({col!r}) — an over-long value raises "
+        "DataError inside the task's except handler and strands the game"
+    )
+    assert _sync_db._ERROR_MESSAGE_MAX is None, "so the clamp must be inert"
+
+    long_message = "x" * 50_000
+    assert _sync_db._fit_error_message(long_message) == long_message, (
+        "and a full traceback must survive it unchanged"
+    )
+
+
+def test_the_unbounded_failure_report_is_wrapped():
+    """The one status write whose payload is `str(exc)` must not be able to
+    kill the handler it runs in.
+
+    Structural, in the same idiom as the lock-checkpoint test above, because
+    `process_game_task` has no seam to call. The hazard this pins is *not* the
+    one CF-226 fixed: `_ERROR_MESSAGE_MAX` is read off the **model**, so a
+    worker image carrying `Text` that starts before the api has run the
+    migration switches the clamp off against a column that is still
+    varchar(1024). `clipfarm-worker` deploys independently with no migration in
+    its start path, so that ordering is available to whoever deploys.
+
+    Unwrapped, a DataError there costs the `failed` write *and* the retry
+    decision, and the row never leaves `processing`.
+    """
+    source = (pathlib.Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks.py")
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+
+    def writes_str_exc(node) -> bool:
+        """`sync_set_game_status(..., "failed", error_message=str(<name>))`."""
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            return False
+        if node.func.id != "sync_set_game_status":
+            return False
+        if not any(
+            isinstance(a, ast.Constant) and a.value == "failed" for a in node.args
+        ):
+            return False
+        for kw in node.keywords:
+            if kw.arg != "error_message":
+                continue
+            v = kw.value
+            if (
+                isinstance(v, ast.Call)
+                and isinstance(v.func, ast.Name)
+                and v.func.id == "str"
+            ):
+                return True
+        return False
+
+    # Every such call that is lexically inside a `try:` body with a handler.
+    guarded = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try) or not node.handlers:
+            continue
+        for stmt in node.body:
+            for inner in ast.walk(stmt):
+                if writes_str_exc(inner):
+                    guarded.add(inner.lineno)
+
+    found = {n.lineno for n in ast.walk(tree) if writes_str_exc(n)}
+
+    assert found, (
+        "no `sync_set_game_status(..., \"failed\", error_message=str(exc))` in "
+        "tasks.py — if the call was renamed or restructured, re-point this test "
+        "rather than deleting it"
+    )
+    assert found <= guarded, (
+        f"tasks.py:{sorted(found - guarded)} reports a failure with an unbounded "
+        "`str(exc)` outside any try/except. It runs from inside the task's own "
+        "except handler, so raising there costs the `failed` write and the retry "
+        "decision and strands the game in `processing`"
+    )
+
+
 @pytest.mark.parametrize("width", [1, 2, 8, 9, 10, 64, 1024])
 def test_the_clamp_never_returns_more_than_the_width(monkeypatch, width):
     """Including widths too small to hold the "cut" marker.
