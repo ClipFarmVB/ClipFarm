@@ -98,8 +98,16 @@ echo "ok"
 # instead of being printed as if it were the reason, and the fallback message
 # below blames the check rather than the dev set. An earlier version captured
 # stderr and claimed the opposite in this very comment.
+# It is also the hook's slowest step by some margin — ~12s against ~2s for tsc
+# and well under 1s for everything else, because it imports fastapi, sqlalchemy
+# and celery at collection. That is worth an explicit way out: without one the
+# only lever is `--no-verify`, which skips every check in this file rather than
+# the one that costs the time. Loud on purpose, and never the default.
 printf "  pytest api/tests ... "
-if ! _api_dev_reason=$(python api/scripts/check_dev_set.py); then
+if [ -n "$CLIPFARM_SKIP_API_TESTS" ]; then
+  echo "skipped — CLIPFARM_SKIP_API_TESTS is set"
+  _api_tests_skipped=1
+elif ! _api_dev_reason=$(python api/scripts/check_dev_set.py); then
   echo "skipped — ${_api_dev_reason:-the dev-set check itself failed, see the traceback above}; pip install -r api/requirements-dev.txt"
   _api_tests_skipped=1
 elif ! _api_pytest_out=$(cd api && python -m pytest tests/ -q --no-header 2>&1); then

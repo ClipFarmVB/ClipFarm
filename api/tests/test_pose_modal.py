@@ -14,6 +14,12 @@ from pathlib import Path
 
 import pytest
 
+# One definition of how an `-r` include is spelled, shared with the pre-commit
+# gate rather than copied. Duplicated, drifting requirements parsing is what
+# this branch spent a round removing; re-adding a second copy here would be the
+# same mistake in a new place.
+from scripts.check_dev_set import INCLUDE
+
 pytest.importorskip("celery")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -510,11 +516,10 @@ def _requirements_packages(path: Path) -> set[str]:
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
-        # All three include spellings pip accepts, same as the pre-commit
-        # gate's parser: `-r <file>` alone would silently treat
-        # `--requirement <file>` as a package named `--requirement` and drop
-        # everything behind the include.
-        inc = re.fullmatch(r"(?:-r\s*|--requirement[\s=])\s*(\S+)", line)
+        # All three include spellings pip accepts, via the gate's own pattern:
+        # `-r <file>` alone would silently treat `--requirement <file>` as a
+        # package named `--requirement` and drop everything behind the include.
+        inc = INCLUDE.fullmatch(line)
         if inc:
             names |= _requirements_packages((path.parent / inc.group(1)).resolve())
             continue
@@ -614,9 +619,14 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
         ("api/requirements-dev.txt", REPO_ROOT / "api" / "requirements-dev.txt",
          package == "numpy"),
     ]
-    # `\s*==\s*` because pip accepts whitespace around the operator, and a
-    # reformatted pin must fail as a split or a removal, not vanish.
-    pattern = re.compile(re.escape(package) + r"\s*==\s*([0-9][0-9A-Za-z.\-]*)")
+    # Whitespace around the operator because pip accepts it, and a reformatted
+    # pin must fail as a split or a removal rather than vanish. `[^\S\n]` and
+    # not `\s`: the text below is comment-stripped lines rejoined with "\n", so
+    # `\s` would let a match run across two lines and pair a package name with
+    # the next line's version.
+    pattern = re.compile(
+        re.escape(package) + r"[^\S\n]*==[^\S\n]*([0-9][0-9A-Za-z.\-]*)"
+    )
 
     found = {}
     for label, path, required in sources:

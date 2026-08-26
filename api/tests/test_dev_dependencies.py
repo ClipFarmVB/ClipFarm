@@ -15,20 +15,19 @@ instead, which was dead code (the backticks already prevented the match) and
 exempted forever the one module documented as needing to stay guard-free.
 """
 import importlib
-import importlib.util
 import pathlib
 import re
 
 import pytest
 
-TESTS_DIR = pathlib.Path(__file__).resolve().parent
+# Plain import, on the same footing as every `from app...` in this suite: both
+# rely on api/ being on sys.path, which `python -m pytest` (README, ci.yml)
+# provides. It is also the point of the script existing — one importable
+# definition of how a requirements line is read, shared with test_pose_modal.py
+# instead of copied into it.
+from scripts import check_dev_set
 
-_spec = importlib.util.spec_from_file_location(
-    "check_dev_set", TESTS_DIR.parent / "scripts" / "check_dev_set.py"
-)
-assert _spec is not None and _spec.loader is not None
-check_dev_set = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(check_dev_set)
+TESTS_DIR = pathlib.Path(__file__).resolve().parent
 
 
 def test_every_importorskip_target_is_installed():
@@ -49,6 +48,7 @@ def test_every_importorskip_target_is_installed():
     is the belt, not a licence to remove them.
     """
     targets = set()
+    per_file = {}
     # rglob, not glob: a guard in a future subdirectory of api/tests would
     # otherwise escape the check silently, which is this test's whole subject.
     for path in sorted(TESTS_DIR.rglob("*.py")):
@@ -65,6 +65,18 @@ def test_every_importorskip_target_is_installed():
             re.MULTILINE,
         ):
             targets.add(m.group(1))
+            per_file.setdefault(path.name, set()).add(m.group(1))
+
+    # This module's docstring quotes an importorskip call as prose, and stays
+    # out of the scan only because that quote sits behind a backtick. Asserting
+    # it here puts that fact in code rather than in punctuation: reflow the
+    # docstring so the quote starts a line and this fails, instead of a phantom
+    # dependency appearing in the list below.
+    assert pathlib.Path(__file__).name not in per_file, (
+        f"this module now contributes scan targets ({per_file[pathlib.Path(__file__).name]}) "
+        "— its docstring quotes the call as prose, so a reflow has made prose "
+        "look like code; re-inline the quote behind a backtick"
+    )
 
     # First-party `app.*` targets are excluded on purpose. They are not what can
     # be missing — they ship with the repo — and importing them is not free:

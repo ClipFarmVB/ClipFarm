@@ -5,7 +5,9 @@ this script: non-zero means the step is skipped (not failed), with this
 script's stdout printed as the reason. It lives here rather than inline in the
 hook so `ruff check api/` lints it and `api/tests/test_dev_dependencies.py`
 tests it — the probe it replaced (`python -c "import fakeredis"`) rotted
-silently for exactly the lack of both.
+silently for exactly the lack of both. Not type-checked, though: `mypy api/app`
+covers the app package only, so the annotations below are documentation rather
+than an enforced contract (same footing as api/scripts/auto_migrate.py).
 
 What it checks: every `name==version` pin reachable from
 api/requirements-dev.txt, following its `-r` include in all three spellings
