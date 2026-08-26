@@ -525,8 +525,8 @@ def test_oversize_object_is_deleted_and_rejected(fake_storage, fake_task, monkey
     """A presigned PUT cannot enforce Content-Length, so a client can declare a
     small file and upload a large one. This is where that is caught — after the
     transfer, but still before any GPU time is spent."""
-    monkeypatch.setattr(settings, "max_upload_bytes", 1024)
-    fake_storage["_head"]["value"] = {"size": 99_999, "content_type": "video/mp4"}
+    monkeypatch.setattr(settings, "max_upload_bytes", 8 * 1024**3)
+    fake_storage["_head"]["value"] = {"size": 9 * 1024**3, "content_type": "video/mp4"}
     game = _uploading_game()
     db = FakeDB(game)
 
@@ -534,6 +534,9 @@ def test_oversize_object_is_deleted_and_rejected(fake_storage, fake_task, monkey
         asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
 
     assert exc.value.status_code == 413
+    # CF-167: the same sentence the presign path and the dropzone would give,
+    # naming the cap in the units the user was shown it in.
+    assert exc.value.detail == "File is 9 GB; the maximum is 8 GB."
     assert fake_storage["delete_file"] == ["raw/abc.mp4"], "the object must not linger"
     assert game in db.deleted, "the row must not linger either"
     assert fake_task.calls == []
@@ -846,3 +849,31 @@ def test_a_quota_rejection_it_does_own_discards_object_and_row(
     assert fake_storage["delete_file"] == ["raw/abc.mp4"], "no orphaned object"
     assert db.deleted == [game], "and no row left to process"
     assert not fake_task.calls
+
+
+# --- CF-217: the column must not bound the multipart upload id ---------------
+
+
+def test_upload_id_column_is_unbounded():
+    """R2 issues multipart upload ids far longer than the varchar(255) this
+    column started as, so every multipart upload failed in production with
+    StringDataRightTruncationError while small single-PUT uploads kept working.
+
+    Asserted against the column type rather than by inserting, because the bug
+    needs no database to reproduce — it is a schema decision — and because the
+    thing worth preventing is someone reinstating a bound. A larger fixed width
+    would fail this too, deliberately: neither AWS nor Cloudflare documents a
+    maximum, so a bound is a guess, and the observed 343 characters is evidence
+    about one provider on one day rather than a limit.
+    """
+    from sqlalchemy import String
+
+    from app.models.game import Game
+
+    column_type = Game.__table__.c.upload_id.type
+    length = getattr(column_type, "length", None)
+
+    assert not (isinstance(column_type, String) and length is not None), (
+        f"upload_id is bounded at {length} characters; R2 multipart upload ids "
+        "are longer than that (~343 observed). Use Text."
+    )

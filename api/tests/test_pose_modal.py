@@ -700,6 +700,232 @@ def test_dev_compose_declares_every_named_volume_it_mounts():
     )
 
 
+# ── Ball tracking fallback (CF-225) ──────────────────────────────────
+
+@pytest.fixture
+def fake_ball(monkeypatch, tmp_path):
+    """Stand in for ml.pipeline.ball, plus a storage layer that always misses.
+
+    Same reason as `fake_detect`: `ml` is not importable from the api test run,
+    and neither is a Roboflow runtime — which is the deployed worker's state for
+    ball tracking too, and the whole subject of these tests.
+    """
+    ball = types.ModuleType("ml.pipeline.ball")
+
+    class BallRuntimeUnavailable(RuntimeError):
+        pass
+
+    class BallPosition:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    class TrackedBall:
+        def __init__(self, positions=None):
+            self.positions = positions or []
+
+    def track_ball(video_path, api_key, **kwargs):
+        raise BallRuntimeUnavailable("no local ball runtime")
+
+    ball.MODEL_ID = "volleyball/3"
+    ball.BallRuntimeUnavailable = BallRuntimeUnavailable
+    ball.BallPosition = BallPosition
+    ball.TrackedBall = TrackedBall
+    ball.track_ball = track_ball
+
+    pipeline = types.ModuleType("ml.pipeline")
+    pipeline.ball = ball
+    ml = types.ModuleType("ml")
+    ml.pipeline = pipeline
+
+    for name, mod in (("ml", ml), ("ml.pipeline", pipeline), ("ml.pipeline.ball", ball)):
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    # The real module, patched function by function. A sys.modules entry does
+    # NOT work here: `from app.services import storage` resolves the attribute
+    # the parent package gained when the submodule was first imported, so once
+    # anything in the run has imported it the stub is never consulted. These
+    # tests were passing on the real `download_file` failing for want of R2
+    # credentials — green for a reason unrelated to what they assert.
+    from app.services import storage
+
+    def download_file(key, dest):
+        raise RuntimeError("ball cache miss")
+
+    monkeypatch.setattr(storage, "download_file", download_file)
+    monkeypatch.setattr(storage, "upload_file", lambda *a, **kw: None)
+    monkeypatch.setenv("ROBOFLOW_API_KEY", "rf-key")
+    return ball
+
+
+def _modal_down(monkeypatch, tasks):
+    monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: True)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("modal 503")
+
+    monkeypatch.setattr(tasks, "_track_ball_modal", boom)
+
+
+def test_modal_failure_survives_the_missing_local_ball_runtime(monkeypatch, tmp_path, fake_ball):
+    """The Modal error is the half an operator can act on, so it has to survive
+    the fallback attempt. Before CF-225 it was swallowed and the game failed with
+    `ModuleNotFoundError: inference` — which reads as a broken image, not as an
+    outage."""
+    from app.workers import tasks
+
+    _modal_down(monkeypatch, tasks)
+
+    with pytest.raises(RuntimeError) as exc:
+        tasks._track_ball_cached(
+            tmp_path / "game.mp4", tmp_path, sample_every=3,
+            r2_key="raw/x.mp4", video_md5="abc",
+        )
+
+    assert "modal 503" in str(exc.value), "the Modal failure must survive"
+    assert "no local ball runtime" in str(exc.value), "so must the local one"
+    assert "modal 503" in str(exc.value.__cause__), (
+        "chain from the Modal error, not from the missing-runtime one"
+    )
+
+
+def test_the_local_failures_type_survives_the_wrapping(monkeypatch, tmp_path, fake_ball):
+    """"No runtime here" is true whether or not Modal was tried first, and a
+    deployed run ALWAYS tries Modal — so flattening the type to RuntimeError
+    erased the distinction in the only environment where the condition is
+    expected. It cannot suppress a retry: nothing translates it to
+    PermanentPipelineError, unlike the pose equivalent."""
+    from app.workers import tasks
+
+    _modal_down(monkeypatch, tasks)
+
+    with pytest.raises(fake_ball.BallRuntimeUnavailable) as exc:
+        tasks._track_ball_cached(
+            tmp_path / "game.mp4", tmp_path, sample_every=3,
+            r2_key="raw/x.mp4", video_md5="abc",
+        )
+
+    assert "modal 503" in str(exc.value)
+
+
+def test_any_local_failure_carries_the_modal_cause(monkeypatch, tmp_path, fake_ball):
+    """Not just the missing runtime. Locally — dev, the eval harness — the local
+    attempt really runs, so it can fail on a corrupt file or a rejected Roboflow
+    key, and the Modal failure is no less relevant for that. A plain failure
+    stays a plain failure, though: only the runtime case keeps the named type."""
+    from app.workers import tasks
+
+    _modal_down(monkeypatch, tasks)
+
+    def cannot_open(*args, **kwargs):
+        raise RuntimeError("Cannot open video: game.mp4")
+
+    monkeypatch.setattr(fake_ball, "track_ball", cannot_open)
+
+    with pytest.raises(RuntimeError) as exc:
+        tasks._track_ball_cached(
+            tmp_path / "game.mp4", tmp_path, sample_every=3,
+            r2_key="raw/x.mp4", video_md5="abc",
+        )
+
+    assert "modal 503" in str(exc.value)
+    assert "Cannot open video" in str(exc.value)
+    assert not isinstance(exc.value, fake_ball.BallRuntimeUnavailable)
+
+
+def test_a_missing_roboflow_key_is_not_dressed_up_as_a_tracking_failure(
+    monkeypatch, tmp_path, fake_ball
+):
+    """`process_game` guards on the key, but the eval and diagnose paths call
+    straight in here. Read inside the try, a missing key came back as "…and
+    locally ('ROBOFLOW_API_KEY')" — a config error wearing an outage's clothes."""
+    from app.workers import tasks
+
+    _modal_down(monkeypatch, tasks)
+    monkeypatch.delenv("ROBOFLOW_API_KEY")
+
+    with pytest.raises(KeyError):
+        tasks._track_ball_cached(
+            tmp_path / "game.mp4", tmp_path, sample_every=3,
+            r2_key="raw/x.mp4", video_md5="abc",
+        )
+
+
+# ── The pose-first hand-off (CF-225) ───────────────────────────────────
+
+BALL_ERR = "BallRuntimeUnavailable: failed on Modal (modal 503) and locally (no runtime)"
+
+
+def test_a_permanent_pose_failure_reports_the_ball_failure_before_it(monkeypatch):
+    """The end of the chain, and the only place both halves are in scope.
+
+    Everything upstream is invisible without this: the caller catches the ball
+    failure and falls through, and the pose scan's PermanentPipelineError is
+    what reaches `error_message` and Sentry. Its message is about pose."""
+    from app.workers import tasks
+
+    def unavailable(video_path, r2_key):
+        raise tasks.PermanentPipelineError("Pose detection is unavailable (no ultralytics)")
+
+    monkeypatch.setattr(tasks, "_run_detection", unavailable)
+
+    with pytest.raises(tasks.PermanentPipelineError) as exc:
+        tasks._pose_first_fallback("game.mp4", "raw/x.mp4", BALL_ERR)
+
+    assert "Pose detection is unavailable" in str(exc.value)
+    assert "ball tracking failed first" in str(exc.value)
+    assert "modal 503" in str(exc.value), "the whole chain, not just the last link"
+
+
+def test_a_transient_pose_failure_reports_it_too_without_becoming_permanent(monkeypatch):
+    """`_run_detection` only translates PoseRuntimeUnavailable, so catching just
+    PermanentPipelineError missed every other way the scan dies — a corrupt
+    file, a decode error mid-run, an OOM — and dropped the ball failure in
+    exactly the case this exists to prevent. Permanence still has to follow the
+    original: a transient failure that came back permanent would lose its
+    retry."""
+    from app.workers import tasks
+
+    def cannot_open(video_path, r2_key):
+        raise RuntimeError("Cannot open video: game.mp4")
+
+    monkeypatch.setattr(tasks, "_run_detection", cannot_open)
+
+    with pytest.raises(RuntimeError) as exc:
+        tasks._pose_first_fallback("game.mp4", "raw/x.mp4", BALL_ERR)
+
+    assert "Cannot open video" in str(exc.value)
+    assert "ball tracking failed first" in str(exc.value)
+    assert not isinstance(exc.value, tasks.PermanentPipelineError), (
+        "wrapping must not turn a retryable failure into a permanent one"
+    )
+
+
+def test_the_pose_failure_is_untouched_when_ball_tracking_never_ran(monkeypatch):
+    """No ROBOFLOW_API_KEY: pose-first is the plan, not a fallback, so there is
+    no earlier failure to report and nothing to add."""
+    from app.workers import tasks
+
+    original = tasks.PermanentPipelineError("Pose detection is unavailable")
+
+    def unavailable(video_path, r2_key):
+        raise original
+
+    monkeypatch.setattr(tasks, "_run_detection", unavailable)
+
+    with pytest.raises(tasks.PermanentPipelineError) as exc:
+        tasks._pose_first_fallback("game.mp4", "", None)
+
+    assert exc.value is original
+
+
+def test_the_scan_result_passes_straight_through(monkeypatch):
+    from app.workers import tasks
+
+    monkeypatch.setattr(tasks, "_run_detection", lambda v, k: [{"start": 0.0}])
+
+    assert tasks._pose_first_fallback("game.mp4", "raw/x.mp4", BALL_ERR) == [{"start": 0.0}]
+
+
 def test_worker_has_no_model_cache_disk():
     """No weights are downloaded in the worker any more, so the disk that
     pinned them is gone — and with it the single-instance constraint a Render

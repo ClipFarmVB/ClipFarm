@@ -201,13 +201,20 @@ python -m pytest ml/tests/               # ml eval metrics + dead-time
 cd api && python -m pytest tests/        # api (CI runs this; the hook does not)
 ```
 
-The api suite needs `requirements-dev.txt`, not just `requirements.txt`. Several
-tests guard their imports with `pytest.importorskip`, so without the test-only
-deps (`fakeredis[lua]` and friends) they **skip silently** — the run still reports
-green while covering less than you think. `requirements-dev.txt` pulls the runtime
-deps in via `-r requirements.txt`, so it is the only install you need. Test-only
-packages deliberately stay out of `requirements.txt`, which builds the production
-image via `Dockerfile.api`.
+The api suite needs `requirements-dev.txt`, not just `requirements.txt`. Almost
+every test guards its imports with `pytest.importorskip` (`sqlalchemy`,
+`fastapi`, `celery`, `psycopg2`), so an incomplete install makes them **skip
+silently** — the run still reports green while covering less than you think.
+`requirements-dev.txt` pulls the runtime deps in via `-r requirements.txt` and
+adds the test-only ones, so it is the only install you need. Test-only packages
+deliberately stay out of `requirements.txt`, which builds the production image
+via `Dockerfile.api`.
+
+The CF-184 advisory-lock tests skip on a second condition: they assert what the
+*database* does, so they need a real Postgres. They find one on localhost by
+themselves — `docker compose up db` is enough — or take `LOCK_TEST_DATABASE_URL`,
+which is what CI sets. Without either they skip, and the tests that actually
+demonstrate the per-game lock do not run.
 
 Notes:
 - **Default `DATABASE_URL` is the local `db` container** (`.env.docker.example`
@@ -244,6 +251,7 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 
 | Setting | Default | Purpose |
 |---|---|---|
+| `environment` | `development` | `production` makes the api and worker **refuse to start** when `database_url`, `cors_origins`, the `supabase_*` keys or the `r2_*` credentials are unset (plus `roboflow_api_key` and the `modal_token_*` pair on the worker, checked at worker boot since the api never calls either service), naming the ones that are (CF-172). Both production paths set it for you (`render.yaml`, `docker-compose.prod.yml`); local dev leaves it alone and keeps its zero-config defaults. Not `debug` inverted — `debug` defaults to off, so gating on it would fire on every local run. |
 | `highlight_score_threshold` | `0.50` | Rallies below this are dropped before pose/cutting. Env-overridable, no rebuild. |
 | `clip_verify_enabled` | `false` | Use CLIP frames in scoring (slow on CPU; enable for GPU). |
 | `pose_model` / `pose_imgsz` / `pose_skip_frames` | `yolov8s-pose.pt` / `1280` / `4` | Pose quality vs speed. Sent to the Modal GPU function; the defaults are what production runs since CF-164. |
@@ -254,13 +262,13 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `redis_url` / `celery_*` | redis:6379 | Job queue. |
 | `modal_token_id` / `modal_token_secret` | "" | Enables the Modal GPU path for ball tracking *and* pose. |
 | `allow_stub_detections` | `false` | Lets the pose-first fallback return **fabricated** clips when no pose runtime is available. Development only — the worker persists what it returns. Kept separate from `debug` on purpose, so a shared dev flag can't grant it. |
-| `max_upload_bytes` | 2 GB | Upload size cap. Served to the web app by `GET /games/upload-config` so the advertised limit can't drift from the enforced one. |
+| `max_upload_bytes` | 8 GB | Upload size cap. Served to the web app by `GET /games/upload-config` so the advertised limit can't drift from the enforced one. |
 | `single_put_max_bytes` / `upload_part_size_bytes` | 100 MiB / 100 MiB | Below the threshold an upload is one presigned PUT; above it, multipart with parts this size. |
-| `upload_url_ttl_seconds` | `21600` (6 h) | Lifetime of a presigned upload URL — must cover a whole upload on a slow uplink. |
+| `upload_url_ttl_seconds` | `43200` (12 h) | Lifetime of a presigned upload URL — must cover a whole upload on a slow uplink. |
 | `abandoned_upload_hours` | `24` | Upload tickets never completed are swept (row deleted, multipart aborted) on the owner's next presign. |
 | `max_upload_duration_seconds` | `14400` (4 h) | Longest single video accepted. Checked at presign against the client-declared length, then again by the worker against the probed one. |
 | `quota_window_hours` / `quota_max_games_per_window` / `quota_max_minutes_per_window` | `24` / `5` / `360` | Per-user rolling processing quota (cost guardrail — GPU inference is ~$0.25 per hour of footage). Both caps apply. Counted from the `upload_events` ledger, so deleting a game does not refund a slot. A duration the file size contradicts (missing, `0`, or physically impossible for the byte count) is priced from the size instead of trusted, and settled to the probed value by the worker. `GET /games/upload-config` returns the limits plus the caller's remaining allowance. |
-| `raw_upload_retention_days` | `7` | Intended raw-upload TTL (enforcement is a backlog item). |
+| `raw_upload_retention_days` | `7` | Raw uploads are deleted this many days after upload (`0` = keep forever). Clips outlive the source; trimming a clip needs it, so this is also how long trims stay available. |
 
 Secrets go in `.env.docker` (gitignored) for the stack, `api/.env` and `web/.env.local` for
 local non-Docker runs. Never commit credentials.

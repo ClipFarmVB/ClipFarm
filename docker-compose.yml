@@ -77,6 +77,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # The code default (2) is sized for the 512 MB / 0.5 CPU production worker
+      # (CF-224); a dev machine has real cores, so encode a bit wider here.
+      # Keep it bounded anyway — this container sees the host's core count too.
+      FFMPEG_THREADS: "4"
       # No POSE_* or MODEL_* vars since CF-164: this image carries no torch, so
       # nothing here loads a model or downloads weights. Ball tracking and pose
       # both run on Modal — set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in

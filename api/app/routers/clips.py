@@ -58,8 +58,13 @@ async def _get_viewable_clip(
     return clip, game
 
 
-async def _get_owned_clip(clip_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> Clip:
+async def _get_owned_clip(
+    clip_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession
+) -> tuple[Clip, Game]:
     """Fetch a clip and verify the requesting user OWNS its parent game.
+
+    Returns the parent game alongside it: every write path echoes a ClipOut,
+    whose source_available reads off the game (CF-194).
 
     Write paths only (tag / labels / trim / delete). Read paths use
     _get_viewable_clip."""
@@ -69,7 +74,7 @@ async def _get_owned_clip(clip_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSessi
     game = await db.get(Game, clip.game_id)
     if not game or game.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Clip not found")
-    return clip
+    return clip, game
 
 
 def _rewrite_urls(clip: Clip) -> dict[str, str | None]:
@@ -149,10 +154,14 @@ async def list_clips(
         for p in pr.scalars():
             player_map[p.id] = p.name
 
+    # One game, so one lookup: False once its raw upload has been swept (CF-194).
+    raw_available = game is not None and game.raw_video_url is not None
+
     out = []
     for c in clips:
         d = ClipOut.model_validate(c)
         d.player_name = player_map.get(c.player_id) if c.player_id else None  # type: ignore[arg-type]
+        d.source_available = raw_available
         urls = _rewrite_urls(c)
         d.clip_url = urls["clip_url"]  # type: ignore[assignment]
         d.thumbnail_url = urls["thumbnail_url"]
@@ -167,7 +176,7 @@ async def tag_clip(
     db: DB,
     user_id: uuid.UUID = Depends(get_current_user_id),
 ):
-    clip = await _get_owned_clip(clip_id, user_id, db)
+    clip, game = await _get_owned_clip(clip_id, user_id, db)
 
     player = await db.get(Player, body.player_id)
     if not player:
@@ -179,6 +188,7 @@ async def tag_clip(
 
     out = ClipOut.model_validate(clip)
     out.player_name = player.name
+    out.source_available = game.raw_video_url is not None
     return out
 
 
@@ -201,7 +211,7 @@ async def update_clip_labels(
     if len(clean_labels) > 2:
         raise HTTPException(status_code=400, detail="Maximum 2 action labels per clip")
 
-    clip = await _get_owned_clip(clip_id, user_id, db)
+    clip, game = await _get_owned_clip(clip_id, user_id, db)
 
     # Determine labels for correction record (preserve user selection order)
     user_labels = body.labels
@@ -250,6 +260,7 @@ async def update_clip_labels(
     await db.refresh(clip)
 
     out = ClipOut.model_validate(clip)
+    out.source_available = game.raw_video_url is not None
     urls = _rewrite_urls(clip)
     out.clip_url = urls["clip_url"]  # type: ignore[assignment]
     out.thumbnail_url = urls["thumbnail_url"]
@@ -274,11 +285,15 @@ async def trim_clip(
     start_delta: negative = extend earlier, positive = shrink from start
     end_delta:   positive = extend later, negative = shrink from end
     """
-    clip = await _get_owned_clip(clip_id, user_id, db)
+    clip, game = await _get_owned_clip(clip_id, user_id, db)
 
-    game = await db.get(Game, clip.game_id)
-    if not game or not game.raw_video_url:
-        raise HTTPException(status_code=400, detail="Source video not available for trimming")
+    # Gone once the raw upload passes raw_upload_retention_days (CF-194).
+    # ClipOut.source_available tells clients this before they try.
+    if not game.raw_video_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Source video no longer available — this game's upload has passed its retention window",
+        )
 
     new_start = max(0, clip.start_time + body.start_delta)
     new_end = clip.end_time + body.end_delta
@@ -304,6 +319,7 @@ async def trim_clip(
     )
 
     out = ClipOut.model_validate(clip)
+    out.source_available = game.raw_video_url is not None
     urls = _rewrite_urls(clip)
     out.clip_url = urls["clip_url"]  # type: ignore[assignment]
     out.thumbnail_url = urls["thumbnail_url"]

@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { ClaimHandleBanner } from "@/components/ClaimHandleBanner";
 import { Sidebar } from "@/components/Sidebar";
@@ -9,6 +9,14 @@ import { SOCIAL_ENABLED } from "@/lib/features";
 export const metadata: Metadata = {
   title: "ClipFarm — Volleyball Highlights",
   description: "Automatically clip and organize volleyball highlights from game footage.",
+};
+
+// Explicit rather than relying on Next's default: the drawer and the clip
+// player are sized against the visual viewport, so a zoomed-out initial scale
+// would render the whole app at the wrong size on a phone.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -34,8 +42,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ThemeProvider>
           <AuthProvider>
             <Sidebar />
-            <main className="ml-[220px] min-h-screen">
-              <div className="mx-auto max-w-5xl px-8 py-8">
+            {/* pt on mobile clears the fixed top bar Sidebar renders there;
+                from lg the sidebar is a permanent column again. */}
+            <main className="min-h-screen pt-[52px] lg:ml-[220px] lg:pt-0">
+              <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
                 {/* Mounted on every page, so gating it here is also what keeps
                     /users/me from being requested at all when social is off. */}
                 {SOCIAL_ENABLED && <ClaimHandleBanner />}

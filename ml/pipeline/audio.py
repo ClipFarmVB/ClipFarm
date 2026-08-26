@@ -57,9 +57,10 @@ def _extract_audio_pcm(video_path: str) -> np.ndarray | None:
         # Stream stdout to a temp file rather than capture_output=True. At 16 kHz
         # mono float32 a 40-minute game is ~150 MB of PCM, and capture_output holds
         # the finished bytes *and* the chunk list it accumulated them from, roughly
-        # doubling the peak. That was noise on a 2 GB box; since CF-164 the worker
-        # runs on 512 MB, where this is the single largest allocation left in the
-        # pipeline. np.fromfile then materializes the array exactly once.
+        # doubling the peak. The worker is back on 2 GB (CF-240) after a spell on
+        # 512 MB, and libx264 during cutting (~400 MB) is the real ceiling rather
+        # than this — but ~150 MB avoided is still ~150 MB, and the temp file costs
+        # nothing to keep. np.fromfile then materializes the array exactly once.
         fd, pcm_path = tempfile.mkstemp(suffix=".pcm")
         os.close(fd)
         try:

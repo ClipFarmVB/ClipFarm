@@ -31,6 +31,11 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
   const [trimLoading, setTrimLoading] = useState(false);
   const [labelLoading, setLabelLoading] = useState(false);
 
+  // CF-194: the raw upload is deleted after its retention window, and a re-cut
+  // reads from it. Undefined means an older payload without the field — treat
+  // that as available so trimming isn't hidden on a stale response.
+  const canTrim = clip.source_available !== false;
+
   async function handleTag(playerId: string) {
     setTagging(false);
     const updated = await tagClip(clip.id, playerId);
@@ -111,14 +116,14 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
           <button
             onClick={(e) => { e.stopPropagation(); onToggleSelect(clip.id); }}
             className={cn(
-              "absolute top-2 right-2 z-10 flex h-5 w-5 items-center justify-center rounded border transition-all duration-150",
+              "absolute top-2 right-2 z-10 flex h-7 w-7 items-center justify-center rounded border transition-all duration-150",
               selected
                 ? "bg-brand border-brand text-[#0c0c0e]"
                 : "bg-black/40 border-white/30 text-transparent hover:border-white/60"
             )}
             aria-label={selected ? "Deselect" : "Select"}
           >
-            <Check size={11} strokeWidth={3} />
+            <Check size={13} strokeWidth={3} />
           </button>
         )}
 
@@ -139,9 +144,9 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
 
         {/* Play overlay */}
         <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/35 transition-colors duration-200">
-          <div className="opacity-0 group-hover:opacity-100 scale-90 group-hover:scale-100 transition-all duration-200">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/15 backdrop-blur-sm border border-white/20">
-              <Play size={14} className="text-white fill-white ml-0.5" />
+          <div className="hover-reveal opacity-0 group-hover:opacity-100 scale-90 group-hover:scale-100 transition-all duration-200">
+            <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white/15 backdrop-blur-sm border border-white/20">
+              <Play size={16} className="text-white fill-white ml-0.5" />
             </div>
           </div>
         </div>
@@ -182,7 +187,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
           </div>
 
           {/* Right: action buttons */}
-          <div className="flex items-center gap-0.5 shrink-0">
+          <div className="flex flex-wrap items-center justify-end gap-0.5 shrink-0">
             <button
               onClick={() => {
                 if (!labeling && localLabels.length === 0 && localAction !== "unknown") {
@@ -192,7 +197,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
                 setTrimming(false);
               }}
               className={cn(
-                "flex items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium transition-colors",
+                "flex min-h-8 items-center gap-1 rounded px-2 py-1.5 text-[10px] font-medium transition-colors",
                 labeling ? "text-brand bg-brand/8" : "text-subtle hover:text-muted hover:bg-surface-hover"
               )}
             >
@@ -203,7 +208,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
             {onSave && (
               <button
                 onClick={() => onSave(clip.id)}
-                className="flex items-center gap-1 rounded px-1.5 py-1 text-[10px] text-subtle hover:text-muted hover:bg-surface-hover transition-colors"
+                className="flex min-h-8 items-center gap-1 rounded px-2 py-1.5 text-[10px] text-subtle hover:text-muted hover:bg-surface-hover transition-colors"
                 title="Save to collection"
               >
                 <Bookmark size={9} />
@@ -213,9 +218,12 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
 
             <button
               onClick={() => { setTrimming(!trimming); setLabeling(false); }}
+              disabled={!canTrim}
+              title={canTrim ? undefined : "Source video expired — this clip can no longer be re-cut"}
               className={cn(
-                "flex items-center gap-0.5 rounded px-1.5 py-1 text-[10px] font-medium transition-colors",
-                trimming ? "text-brand bg-brand/8" : "text-subtle hover:text-muted hover:bg-surface-hover"
+                "flex min-h-8 items-center gap-0.5 rounded px-2 py-1.5 text-[10px] font-medium transition-colors",
+                trimming ? "text-brand bg-brand/8" : "text-subtle hover:text-muted hover:bg-surface-hover",
+                !canTrim && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-subtle"
               )}
             >
               <ChevronLeft size={9} /><ChevronRight size={9} className="-ml-1" />
@@ -226,7 +234,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
             {tagging ? (
               <select
                 autoFocus
-                className="rounded border border-border bg-surface-high px-1.5 py-0.5 text-[10px] text-foreground focus:outline-none"
+                className="min-h-8 rounded border border-border bg-surface-high px-2 py-1 text-[10px] text-foreground focus:outline-none"
                 onBlur={() => setTagging(false)}
                 onChange={(e) => handleTag(e.target.value)}
                 defaultValue=""
@@ -241,7 +249,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
             ) : (
               <button
                 onClick={() => setTagging(true)}
-                className="flex items-center gap-1 rounded px-1.5 py-1 text-[10px] text-subtle hover:text-muted hover:bg-surface-hover transition-colors"
+                className="flex min-h-8 items-center gap-1 rounded px-2 py-1.5 text-[10px] text-subtle hover:text-muted hover:bg-surface-hover transition-colors"
               >
                 <User size={9} />
                 {localPlayerName ?? "Tag"}
@@ -264,7 +272,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
                   disabled={labelLoading}
                   onClick={() => handleToggleLabel(label)}
                   className={cn(
-                    "rounded px-2 py-0.5 text-[10px] font-medium capitalize transition-all duration-100 disabled:opacity-40",
+                    "min-h-8 rounded px-2.5 py-1.5 text-[10px] font-medium capitalize transition-all duration-100 disabled:opacity-40",
                     active && isNotAction
                       ? "bg-red-500/10 text-red-400 ring-1 ring-red-500/20"
                       : active
@@ -280,7 +288,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
         )}
 
         {/* Trim panel */}
-        {trimming && (
+        {trimming && canTrim && (
           <div className="mt-2 pt-2 border-t border-border">
             <div className="flex items-center justify-between gap-2">
               {/* Start controls */}
@@ -292,7 +300,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
                       key={label}
                       disabled={trimLoading}
                       onClick={() => handleTrim(d[0], d[1])}
-                      className="rounded bg-surface-high px-1.5 py-0.5 text-[10px] font-medium text-subtle hover:text-foreground hover:bg-surface-hover transition-colors disabled:opacity-40"
+                      className="min-h-9 min-w-11 rounded bg-surface-high px-2.5 py-1.5 text-[10px] font-medium text-subtle hover:text-foreground hover:bg-surface-hover transition-colors disabled:opacity-40"
                     >
                       {label}
                     </button>
@@ -312,7 +320,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
                       key={label}
                       disabled={trimLoading}
                       onClick={() => handleTrim(d[0], d[1])}
-                      className="rounded bg-surface-high px-1.5 py-0.5 text-[10px] font-medium text-subtle hover:text-foreground hover:bg-surface-hover transition-colors disabled:opacity-40"
+                      className="min-h-9 min-w-11 rounded bg-surface-high px-2.5 py-1.5 text-[10px] font-medium text-subtle hover:text-foreground hover:bg-surface-hover transition-colors disabled:opacity-40"
                     >
                       {label}
                     </button>

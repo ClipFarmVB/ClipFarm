@@ -40,6 +40,14 @@ services:
       redis:
         condition: service_healthy
     volumes: !override []
+    environment:
+      # This box IS production, so hold it to the production config check
+      # (CF-172): the api refuses to start when DATABASE_URL, the Supabase keys
+      # or the R2 credentials are missing from .env.docker, naming the ones that
+      # are absent, instead of falling back to a localhost database or failing
+      # at the first upload. Set here rather than in .env.docker because that
+      # file is also the dev stack's, where the defaults are meant to work.
+      ENVIRONMENT: production
     restart: unless-stopped
 
   worker:
@@ -63,6 +71,9 @@ services:
       # any route (CF-164 review 3) and is pinned so it cannot drift back in.
       ALLOW_STUB_DETECTIONS: "false"
       DEBUG: "false"
+      # Same production config check as the api above (CF-172) — the worker
+      # reads the same credentials and fails just as quietly without them.
+      ENVIRONMENT: production
     # No POSE_* block here any more. It used to pin the light config
     # (yolov8n-pose @ 640, every 8th frame) because pose was the one model still
     # running locally and this box is CPU-only by design. CF-164 moved pose to

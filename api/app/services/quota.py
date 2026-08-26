@@ -43,6 +43,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -141,8 +142,27 @@ def _fmt_window(hours: float) -> str:
     return f"{hours:g} hours" if hours != 1 else "hour"
 
 
-def _fmt_gb(num_bytes: int) -> str:
-    return f"{num_bytes / 1024 ** 3:.1f} GB"
+def fmt_size(num_bytes: int) -> str:
+    """Render a byte count the way the dropzone does — GB once it is one, MB
+    below that, no trailing ".0".
+
+    Public because `complete_upload` needs the same wording for the same cap:
+    CF-167 was two places disagreeing about one limit, and "8.0 GB" here
+    against "8 GB" in the UI, or "0.5 GB" against "512 MB", is that bug again
+    in smaller print. Mirrors fmtLimit in web/src/components/UploadZone.tsx —
+    change the two together.
+
+    Decimal rather than f-string rounding because Python rounds half to even
+    and JS's toFixed rounds half away from zero, so a limit landing exactly on
+    a half would render differently on each side.
+    """
+    gb = Decimal(num_bytes) / Decimal(1024**3)
+    if gb >= 10:
+        return f"{gb.quantize(Decimal(1), rounding=ROUND_HALF_UP)} GB"
+    if gb >= 1:
+        return f"{gb.quantize(Decimal('0.1'), rounding=ROUND_HALF_UP).normalize():f} GB"
+    mb = Decimal(num_bytes) / Decimal(1024**2)
+    return f"{mb.quantize(Decimal(1), rounding=ROUND_HALF_UP)} MB"
 
 
 # Bitrate bounds used to sanity-check and stand in for a declared duration.
@@ -244,8 +264,8 @@ def check_upload_allowed(
 
     if size_bytes is not None and size_bytes > limits.max_upload_bytes:
         return 413, (
-            f"File is {_fmt_gb(size_bytes)}; the maximum is "
-            f"{_fmt_gb(limits.max_upload_bytes)}."
+            f"File is {fmt_size(size_bytes)}; the maximum is "
+            f"{fmt_size(limits.max_upload_bytes)}."
         )
 
     if duration_seconds is not None and duration_seconds > limits.max_duration_seconds:
