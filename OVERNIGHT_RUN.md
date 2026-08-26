@@ -558,6 +558,8 @@ through review and fix and re-review until it reaches a terminal state, then
 pick the next one. Running step 1 across every open PR and only then starting
 step 2 is the breadth-first pass ruled out below.
 
+#### Step 1 — which PRs need a round
+
 **1 — Review open PRs that need one.** One test, not two:
 
 > **A PR needs a round unless it carries `review-settled` or `unsettled` and
@@ -616,6 +618,8 @@ counting rule here is phrased against marker **comments**, and a rule phrased
 against reviews would be counting an artifact that is deliberately outside the
 budget and the ceiling.
 
+#### What a non-`gh` tool must provide
+
 **If you are not running `gh`, these commands are specifications.** Whatever
 tool you use must give you **every numbered item below**, to the end of the
 list. Deliberately not a count: this sentence has already been wrong once, when
@@ -662,6 +666,8 @@ sentence. The failure if any item is missing is silent rather than loud:
 **Confirm your tool paginates before you trust a marker read**, and name the
 tool in the report. A run that cannot establish point 1 should say so and treat
 every marker read as unverified rather than assuming it saw the newest.
+
+#### Markers: what a round writes
 
 **Every round leaves one marker comment, and selection reads it.** Timestamps
 alone cannot tell a PR stopped mid-cycle from one nobody has touched: a run can
@@ -800,6 +806,8 @@ explicitly not rounds and so are not covered by the rounds rule below. A
 silently reverts the counting window to the PR's whole life — the exact failure
 that marker exists to prevent.
 
+#### Posting a round: comment and review
+
 **The marker goes through `gh pr comment`, never `gh pr review`.** A review body
 does not appear in `gh pr view --json comments` at all — #191 carries three
 comments and one review, and that query returns only the three — so a marker
@@ -893,6 +901,8 @@ through the web UI can carry CRLF, which leaves a trailing carriage return on
 the marker line; harmless for the prefix test, but it corrupts the SHA when the
 line is sliced or compared for equality, which routing now does.
 
+#### Reading state back: labels, counts and windows
+
 **The terminal signal is the label, not the marker.** A PR carrying neither
 `review-settled` nor `unsettled` is mid-cycle whatever its latest marker says,
 and needs the round that marker names — including `cold: clean`, whose own
@@ -966,6 +976,8 @@ Zero from the first form means nothing has ever been found on this PR; zero from
 the second means nothing has been found since it was re-opened. Either way it is
 the case that needs two clean cold rounds — a semi-cold round only exists
 because a finding did, so no marker means no finding.
+
+#### The terminal labels and their reasons
 
 **Skip PRs labelled `review-settled`** unless commits have landed since the
 label was applied. That label is the record that a cold round cleared the bar
@@ -1068,6 +1080,8 @@ below:
   "since this account's last push" would let a run overwrite exactly the
   in-flight work being guarded, so the permanence stays, and the cost of it
   lands on the report line rather than on a mechanism.
+
+#### Record comments, human removal, and re-opening
 
 **Applying either terminal label posts a record comment**, and that is what
 makes a human's removal detectable at all:
@@ -1224,6 +1238,8 @@ the only thing that can continue the cycle. That case is `all`-scope only since
 the push rule changed, but the carve-out still has to work when it arises, and a
 date test breaks it silently. Identity has no such failure mode.
 
+#### Cold and semi-cold rounds
+
 **Never review from this session. Spawn a subagent and let it review cold.**
 The session that wrote the code is the most anchored possible reviewer: once it
 has judged a file fine it checks the delta rather than re-deriving that
@@ -1316,6 +1332,8 @@ round finishes**: if the head moved during the round, that round is void. It
 does not count against the ceiling, and the PR needs a fresh one against the new
 head.
 
+#### The cold reviewer's brief
+
 Its brief: run `/code-review high` on that PR, post one marker comment, and
 submit its findings as a review. Give it the head SHA you captured, and require
 the comment's body to **start** with the literal `cold: findings @ <sha>` or
@@ -1387,6 +1405,8 @@ Do not use `/code-review ultra`. Whether or not it counts as an effort level
 alongside `low`…`max`, it launches a multi-agent review in the cloud, is billed
 separately and is user-triggered — none of which an unattended run should reach
 for.
+
+#### Step 2 — fix what the round found
 
 **2 — Address the review findings on the PR you are carrying**, if this account
 opened it **and** no one else has pushed to the branch. The first half is the
@@ -1472,6 +1492,8 @@ If a fix needs no human decision, implement it, push to that PR's branch, and
 reply on the thread saying what changed. If it needs a judgement call, log it
 and leave it.
 
+#### The cycle and the settle bar
+
 **This is a cycle, and the order matters.** A cold subagent posts the first
 review. *Then* you push the fix and reply saying what changed. *Then* a
 **semi-cold** subagent checks that fix against the finding it claims to close.
@@ -1544,6 +1566,8 @@ presents the same choice again. A PR can cycle indefinitely on nits alone,
 spending budget every lap, and nits are what the settle bar deliberately
 tolerates. Leaving one is the terminating move; file a card if it is worth more
 than that.
+
+#### When you cannot fix it: choosing a reason
 
 **A finding you cannot fix stops the *cycling*, not the work.** What "the work"
 means depends on why you cannot fix it, and the four cases part company here:
@@ -1628,6 +1652,8 @@ code, so it re-derives the same finding off the same unchanged lines.
 saying what unsticks it, and the difference is whether it clears itself on the
 author's next commit or waits for a human who has not been told they are needed.
 
+#### The ceiling and the budget
+
 **Ceiling: six rounds per PR per run, cold and semi-cold together**, so a
 pathological PR cannot consume the whole night. Counting only cold rounds would
 leave the semi-cold ones unbounded — every fix buys another check — and half of
@@ -1658,6 +1684,8 @@ the PR settles. There is no path that keeps granting rounds.
 the counting query charges them automatically; unlike a `reopened:` marker or a
 re-posted marker, nothing here is free. The exception lifts the *per-PR*
 ceiling, never the run-wide budget.
+
+#### Order of work, and logging
 
 **Take one PR all the way through before opening the next.** Review it, fix it,
 check the fix, settle or label it — then move on. Do not run a pass over every
@@ -1783,6 +1811,8 @@ hitting the ceiling early — the failure this section exists to prevent. Sortin
 `Z`-suffixed UTC lexicographically picks the later; an empty `REOPENED` sorts
 first and leaves `SINCE`.
 
+#### What a night costs
+
 **What this costs, plainly — and it depends on who opened the PR.**
 
 *Every PR this account owns* — this run's and earlier runs' alike — is cycled in
@@ -1897,6 +1927,8 @@ independent one: it finds *different* things, not *all* things, and the returns
 diminish across rounds without reaching zero. That is exactly why there is a
 ceiling and not just a clean bar. This cuts how many rounds a human has to run
 by hand; it does not answer when a PR is actually done.
+
+#### Step 3 — ticket work
 
 **3 — Only when 1 and 2 are clear**, take one ticket from "This run".
 
