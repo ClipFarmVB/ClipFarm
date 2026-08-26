@@ -1178,14 +1178,21 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
         #
         # The rule is that every database call on this path is guarded — not
         # that one `try` covers them all. The hole here arrived by a second
-        # database call being added beside a bare one, so the thing to preserve
-        # is that a new call cannot be added *unguarded*, which is what the test
-        # in test_worker_safety.py holds.
+        # database call being added beside a bare one, so what must survive is
+        # that a new call cannot be added unguarded.
         #
-        # They are grouped by what a failure means rather than one per call: a
-        # probe that cannot answer and a report that cannot be written need
-        # different responses, and a single `try` around both cannot tell which
-        # one raised. That distinction is not cosmetic — see below.
+        # Nothing enforces that structurally. The tests in test_worker_safety.py
+        # pin the *behaviour* of the calls that exist — an outage on either one
+        # still reaches the retry decision — so adding a third unguarded call
+        # would break them only if it happened to fail in a covered scenario.
+        # Stated because the previous version of this comment claimed the tests
+        # held the rule, and they do not.
+        #
+        # The guards are grouped by what a failure means rather than one per
+        # call: a probe that cannot answer and a report that cannot be written
+        # need different responses, and a single `try` around both cannot tell
+        # which raised. What that cost concretely is described just below the
+        # `Retry` note.
         #
         # `raise self.retry(...)` stays OUTSIDE the guard, and that is
         # load-bearing. Celery's `Retry` inherits from `Exception` (verified:
