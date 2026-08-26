@@ -1048,11 +1048,11 @@ something a commit does not fix:
 **When more than one is true, `needs a decision` wins**, over each of the other
 three; note the losing one in the comment as context rather than as the reason.
 Among the rest, `latched` beats `ran out of rounds`, and `not our branch` beats
-it too — where those two coincide the choice is cosmetic, since both clear on a
-commit and both reset the count, but `not our branch` says why this run could
-not have fixed the PR at any budget. `not our branch` and `latched` cannot both
-apply: the first is only ever another account's PR, the second only ever this
-account's.
+`ran out of rounds` too — though where **those** two coincide the choice is
+cosmetic, since both clear on a commit and both reset the count, and `not our
+branch` wins only because it says why this run could not have fixed the PR at
+any budget. `not our branch` and `latched` cannot both apply: the first is only
+ever another account's PR, the second only ever this account's.
 
 Why that order and not another: the two commit-cleared reasons discharge
 themselves on the author's next push, so a PR that also needs a judgement would
@@ -1075,8 +1075,8 @@ tells you to fix what you can and *push* before labelling, so by the time the
 label goes on, the head has moved past the last round's marker. An author
 pushing between a round and a `not our branch` label does the same. Requiring a
 head-matching marker would make both cases impossible to label at all, while
-[the rule against leaving open findings
-unlabelled](#the-terminal-labels-and-their-reasons) still demands one.
+the rule against leaving open findings unlabelled — stated above, and again
+with the budget — still demands one.
 
 Each reason in full — what it means, and why it clears the way the table says:
 
@@ -1354,6 +1354,15 @@ heading, or phrased outside the four forms is invisible to every rule here, and
 the two bookkeeping sources — your logged round count and the marker count on
 the PR — then disagree with nothing to say which is right. If it did not land,
 re-post it correctly; that repost is not a new round and does not spend budget.
+
+**A semi-cold round with nothing to check writes `does not close`.** Routing
+sends one here when a `cold: clean` marker sits at the current head and a
+finding from an earlier round is still open — a clean round was posted over that
+finding without closing it, so there are no commits since the marker for this
+round to read. Do not treat the empty list as a reason to improvise: nothing has
+landed, so the finding is unfixed by definition. Write `does not close` and let
+step 2 fix it. The round costs one against the ceiling and buys the thing the
+clean marker skipped, which is the only kind of check that can close a finding.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, apply the `unsettled` label with a
