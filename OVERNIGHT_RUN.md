@@ -153,9 +153,9 @@ another account's PR without ever pushing a fix itself.** (At `own` it simply
 pushes the fix, like any other run.) The settle bar wants a semi-cold check,
 and a semi-cold round checks a fix *whoever pushed it*: on another account's
 branch, that is the author responding to the review, and [the brief requires
-that case to work](#cold-and-semi-cold-rounds) precisely so an `unsettled: not our branch`
-PR is not stranded. So `unsettled: not our branch` is a **waypoint, not a
-terminus** — the author's next push re-opens the PR, and the next run's
+that case to work](#cold-and-semi-cold-rounds) precisely so an `unsettled: not
+our branch` PR is not stranded. So `unsettled: not our branch` is a **waypoint,
+not a terminus** — the author's next push re-opens the PR, and the next run's
 semi-cold round is what closes the finding.
 
 What a single night in this mode delivers is **findings written where the author
@@ -251,10 +251,9 @@ stalled the loop; see [Hard rules](#hard-rules).
 
 It ends when either is true:
 
-- **no in-scope PR needs a round**, by the test in
-  [step 1](#step-1--which-prs-need-a-round) — not a restatement of it, *that* test,
-  carve-outs included; or
-- the round budget is spent.
+- **no in-scope PR needs a round**, by the test in [step
+1](#step-1--which-prs-need-a-round) — not a restatement of it, *that* test,
+carve-outs included; or - the round budget is spent.
 
 **Do not paraphrase the first condition.** The obvious phrasing — "every
 in-scope PR carries `review-settled` or `unsettled`" — drops the trailing *and
@@ -460,22 +459,23 @@ makes the head SHA get re-read after every round.
 Three things about the command:
 
 - **`.author.login` is correct *here*, and it is the one place in this document
-  that is so.** [The author field rule](#reading-state-back-queries-labels-counts-and-windows) says to use
-  `.user.login`, in bold, and it is right — about `pulls/<n>`. This is
-  `pulls/<n>/commits`, a different payload: its objects carry `author` and
-  `committer` and **no `user` at all** (verified on #311). "Correcting" this to
-  `.user.login` would yield `UNKNOWN` for every commit, fire the guard on every
-  PR, and make the whole queue unpushable — reinstating the stall CF-270 removed,
-  silently, behind a guard that looks like it is working.
-- **Not `gh pr view --json commits`.** It caps at 100 with no paging, and its
-  author field is the *commit* author, which a rebase or a co-authored commit
-  misattributes — so it fires on the account's own rebased branches.
-- **`// "UNKNOWN"` fails closed.** `.author.login` is `null` for a commit whose
-  email is linked to no account; a bare `.author.login` lets those read as "no
-  other login", and the guard never fires. Mapping them to `UNKNOWN` makes an
-  unverifiable branch count as someone else's. Measured 2026-08-25 on #190, #191,
-  #214, #243 and #288: 0 nulls across 36 commits, so this should be rare — if it
-  stops being rare, report that rather than working around it.
+that is so.** [The author field
+rule](#reading-state-back-queries-labels-counts-and-windows) says to use
+`.user.login`, in bold, and it is right — about `pulls/<n>`. This is
+`pulls/<n>/commits`, a different payload: its objects carry `author` and
+`committer` and **no `user` at all** (verified on #311). "Correcting" this to
+`.user.login` would yield `UNKNOWN` for every commit, fire the guard on every
+PR, and make the whole queue unpushable — reinstating the stall CF-270 removed,
+silently, behind a guard that looks like it is working. - **Not `gh pr view
+--json commits`.** It caps at 100 with no paging, and its author field is the
+*commit* author, which a rebase or a co-authored commit misattributes — so it
+fires on the account's own rebased branches. - **`// "UNKNOWN"` fails closed.**
+`.author.login` is `null` for a commit whose email is linked to no account; a
+bare `.author.login` lets those read as "no other login", and the guard never
+fires. Mapping them to `UNKNOWN` makes an unverifiable branch count as someone
+else's. Measured 2026-08-25 on #190, #191, #214, #243 and #288: 0 nulls across
+36 commits, so this should be rare — if it stops being rare, report that rather
+than working around it.
 
 **The bound this command does not clear.** `pulls/<n>/commits` returns at most
 250 commits however you page it (`per_page` itself caps at 100). Past 250 the
@@ -1020,8 +1020,8 @@ tells you to fix what you can and *push* before labelling, so by the time the
 label goes on, the head has moved past the last round's marker. An author
 pushing between a round and a `not our branch` label does the same. Requiring a
 head-matching marker would make both cases impossible to label at all, while
-[the rule against leaving open findings unlabelled](#when-you-cannot-fix-it-choosing-a-reason) still
-demands one.
+[the rule against leaving open findings
+unlabelled](#when-you-cannot-fix-it-choosing-a-reason) still demands one.
 
 Two of the four need a human to clear them, in different ways — the last two
 below:
