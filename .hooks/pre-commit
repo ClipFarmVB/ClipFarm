@@ -5,7 +5,7 @@
 # dependency-light one, then api/tests after installing the app deps), while the
 # hook has one. See the mypy note below.
 #
-# Install for your clone:
+# Install for your clone — this is a step you own; nothing does it for you:
 #   git config core.hooksPath .hooks
 #
 # Requirements: ruff, mypy, pytest, and npm on PATH. For the full api/tests step:
@@ -22,29 +22,59 @@
 
 set -e
 
-echo "pre-commit: running CI checks..."
+# ── Interpreter ───────────────────────────────────────────────────────────────
+# Resolve once; every Python step below uses $PY.
+#
+# Not `command -v python`: on Windows, `python` and `python3` are Microsoft Store
+# alias stubs in %LOCALAPPDATA%\Microsoft\WindowsApps, that directory precedes a
+# real install on PATH, and the stubs are present and executable. They pass every
+# existence check and then refuse to run, printing an install advert and exiting
+# 49. So the probe has to actually execute something and see it work.
+#
+# Order matters: `python` first keeps Linux, macOS and CI on exactly the
+# interpreter they use today. `py` is the Windows launcher, which reaches the
+# real install the stubs shadow. Note the steps stay `-m` module invocations —
+# on Windows `Scripts\` is typically off PATH too, so bare `ruff`/`mypy`
+# executables are not an alternative.
+for _candidate in python py python3; do
+  if "$_candidate" -c "import sys; sys.exit(0)" >/dev/null 2>&1; then
+    PY="$_candidate"
+    break
+  fi
+done
+
+if [ -z "$PY" ]; then
+  echo "pre-commit: no working Python interpreter found." >&2
+  echo "  Tried: python, py, python3 — each either missing or not executable." >&2
+  echo "  On Windows, 'python' is often a Microsoft Store stub that exits without" >&2
+  echo "  running; install Python and make sure 'py' works, or disable the alias" >&2
+  echo "  under Settings > Apps > Advanced app settings > App execution aliases." >&2
+  exit 1
+fi
+
+echo "pre-commit: running CI checks... (python: $PY)"
 
 # ── API: ruff lint ────────────────────────────────────────────────────────────
 printf "  ruff check api/ ... "
-python -m ruff check api/
+"$PY" -m ruff check api/
 echo "ok"
 
 # ── API: mypy type-check ──────────────────────────────────────────────────────
 printf "  mypy api/app ...     "
-python -m mypy api/app --ignore-missing-imports
+"$PY" -m mypy api/app --ignore-missing-imports
 echo "ok"
 
 # ── ML eval: ruff + mypy ──────────────────────────────────────────────────────
 printf "  ruff check ml/eval . "
-python -m ruff check ml/eval
+"$PY" -m ruff check ml/eval
 echo "ok"
 printf "  mypy ml/eval ...     "
-python -m mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
+"$PY" -m mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
 echo "ok"
 
 # ── ML: unit tests (eval metrics + dead-time) ─────────────────────────────────
 printf "  pytest ml/tests ...  "
-if ! _pytest_out=$(python -m pytest ml/tests/ -q --no-header 2>&1); then
+if ! _pytest_out=$("$PY" -m pytest ml/tests/ -q --no-header 2>&1); then
   echo "FAIL"
   echo "$_pytest_out"
   exit 1
@@ -67,10 +97,10 @@ echo "ok"
 # end. Treat a set without fakeredis as "not runnable here" and leave it to CI
 # rather than blocking the commit on a setup step nobody was told to do.
 printf "  pytest api/tests ... "
-if ! python -c "import fakeredis" >/dev/null 2>&1; then
+if ! "$PY" -c "import fakeredis" >/dev/null 2>&1; then
   echo "skipped (pip install -r api/requirements-dev.txt to run these locally)"
   _api_tests_skipped=1
-elif ! _api_pytest_out=$(cd api && python -m pytest tests/ -q --no-header 2>&1); then
+elif ! _api_pytest_out=$(cd api && "$PY" -m pytest tests/ -q --no-header 2>&1); then
   echo "FAIL"
   echo "$_api_pytest_out"
   exit 1

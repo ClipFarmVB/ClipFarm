@@ -39,6 +39,16 @@ changes that break rally boundaries.
 `mypy api/app`, `ruff check ml/eval`, `mypy ml/eval`, `pytest ml/tests`,
 plus eslint, tsc and vitest for `web/`.
 
+- **Installing it is a step you own** — nothing wires it up for you:
+
+  ```bash
+  git config core.hooksPath .hooks
+  ```
+
+  The hook resolves its own interpreter (`python` → `py` → `python3`, first that
+  actually runs), so it works on Windows, where `python` is usually a Microsoft
+  Store stub that passes `command -v` and then refuses to run (CF-259).
+
 - **A fresh worktree needs `npm ci` at the repo root first.** Without
   `node_modules`, the hook's eslint/tsc/vitest steps fail or hang, and the failure
   looks like a code problem rather than a missing install. This bites every new
