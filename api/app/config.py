@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -230,20 +232,30 @@ class Settings(BaseSettings):
     condense_bridge_speed_pxps: float = 150.0   # a speed sample this fast counts as in-play
     condense_bridge_fast_fraction: float = 0.35  # bridge when ≥ this fraction of samples are fast
     condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
-    # Which keep-window builder the condense stage uses. A failure in "guarded"
-    # falls back to "rules", so a feature mismatch degrades the condense rather
-    # than failing the run.
+    # Which keep-window builder the condense stage uses. A failure *inside* the
+    # guarded builder falls back to "rules", so a feature mismatch degrades the
+    # condense rather than failing the run. Note the fallback is within-builder
+    # only: both builders are imported from the same module, so an import-time
+    # failure takes out "rules" too and the whole condense stage is skipped by
+    # the stage-level handler in tasks.py. The game still ships `ready`.
     #   "rules"    the two blocks above: contacts + motion bridge (CF-46)
     #   "guarded"  speed-gated contacts + motion anchors + tight pads, abstaining
     #              when the ball track is too sparse to judge (CF-187)
     # Default is "guarded". Across the five dead-time fixtures it removes more
     # dead time on every one it condenses, but it is not a clean sweep on live
-    # play: it cuts less than "rules" on two (176s->116s, 83s->66s) and more on
-    # two (2s->12s, 0s->18s), and on the fifth it abstains rather than cut 118s
-    # of rally. Net at the harness' 4:1 live-cut exchange rate: +1568s vs +615s.
-    # Three of the five were held out while it was tuned. Raising the gate or
-    # anchor speeds widens those two paid trades — see ml/eval/README.md.
-    condense_mode: str = "guarded"
+    # play: it cuts less than "rules" on two (176s->97s, 83s->48s) and more on
+    # two (2s->10s, 0s->10s), and on the fifth it abstains rather than cut 118s
+    # of rally. Net at the harness' 4:1 live-cut exchange rate: +649s vs +116s
+    # over the three fixtures that are comparable across games. Counting all
+    # five gives +1552s vs +615s, and that larger figure is the misleading one:
+    # test1 and test3 supply 404s of the gap and their own fixture notes exclude
+    # them from cross-game comparison. Three of the five were held out while it
+    # was tuned. Raising the gate or anchor speeds widens those two paid trades
+    # — see ml/eval/README.md.
+    # Literal, not str: an unknown value here (CONDENSE_MODE=Guarded) would
+    # otherwise load fine and silently run "rules" forever behind one warning
+    # per game. Fail at load instead.
+    condense_mode: Literal["rules", "guarded"] = "guarded"
     # Guarded-path tunables — see ml/pipeline/dead_time.active_windows_guarded.
     # Speeds are frame-heights/s, so they hold across source resolutions.
     condense_guard_gate_speed: float = 0.25       # min median speed around a credible contact
@@ -255,10 +267,10 @@ class Settings(BaseSettings):
     condense_guard_pad_after: float = 2.0         # seconds kept after a window
     condense_guard_merge_gap_seconds: float = 3.0  # merge windows closer than this
     # Usable speed samples/s below which the builder abstains and keeps the whole
-    # video. The fixtures observe 0.52/s on the one game that must abstain and
-    # 1.47-2.63/s on the four that must not, so 1.0 sits in a wide clean gap — but
+    # video. The fixtures observe 0.57/s on the one game that must abstain and
+    # 1.51-2.99/s on the four that must not, so 1.0 sits in a wide clean gap — but
     # that also means the boundary is UNCONSTRAINED, not tuned: nothing has been
-    # measured between 0.52 and 1.47, and a game landing in there flips between
+    # measured between 0.57 and 1.51, and a game landing in there flips between
     # condensing normally and shipping no condensed video at all, the most
     # user-visible outcome on this path. Revisit with a real game in the gap
     # before moving it.

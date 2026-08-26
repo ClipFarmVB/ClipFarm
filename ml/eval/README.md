@@ -209,7 +209,7 @@ be mistaken for a broken run.
 (0.57 usable speed samples/s — its fixture note records 0.76, which is the *raw*
 track rate, a different measure); the other four sit at 1.51-2.99. The default 1.0
 stands in that gap, but nothing has been measured inside it, and a game landing
-between 0.52 and 1.47 flips between condensing normally and shipping no condensed
+between 0.57 and 1.51 flips between condensing normally and shipping no condensed
 video — the most user-visible outcome on this path. A fixture in the gap is what
 would settle it; until one exists, treat a move of
 `condense_guard_min_track_rate` as unevidenced in either direction.

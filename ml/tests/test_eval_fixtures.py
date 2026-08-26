@@ -52,8 +52,11 @@ class TestEveryDeadtimeFixture:
     def test_video_is_pinned_by_content_hash_and_tracking_space(self, test_id):
         """
         md5 keys the ball cache; source_frame_height is the tracking space the
-        px/s thresholds are scaled by (CF-174). A fixture missing the height
-        scores 1080p footage against 360p thresholds and looks plausible doing it.
+        guarded path normalises speeds into — it divides by the height to get
+        frame-heights/s, so one set of thresholds covers 360p and 1080p games.
+        deadtime_variants.load_game defaults a missing height to 1080, so a 360p
+        fixture that omits it has every speed divided by 3 and silently scores
+        against thresholds 3x too strict, while looking plausible doing it.
         """
         raw = load_deadtime_fixture(test_id).raw
         assert len(raw.get("source_video_md5", "")) == 32, "expected a 32-char content MD5"

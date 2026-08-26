@@ -47,6 +47,15 @@ MAX_SAMPLE_SPACING = 1.5   # a longer gap is a tracking dropout, not motion
 # Clamping keeps the sample's existence — which is what the density and
 # fast-fraction tests read — while refusing to believe its size. Matches
 # ball.py's SEG_MAX_SPEED_PXPS (1200 px/s = 1.11 frame-heights/s at 1080p).
+#
+# That equivalence holds *at 1080p only*, and the "at 1080p" is not a footnote:
+# in px/s this ceiling scales with the source, so on 360p footage it sits at
+# 400 px/s — 3x stricter than the tracker's own cap. It bites accordingly:
+# 226 of test1's 5636 usable samples (4.0%) exceed it against 2 under a literal
+# px/s cap. That asymmetry costs nothing today *because* this clamps rather than
+# drops — re-running the fixtures with this cap at the px/s equivalent, or removed
+# entirely, gives byte-identical windows and nets on all five. Restore any form of
+# dropping here and the resolution dependence becomes load-bearing again.
 MAX_PLAUSIBLE_SPEED_FH = 1.11
 
 CONTACT_SPEED_HALF_WINDOW = 1.5   # median speed is taken over ±this around a contact

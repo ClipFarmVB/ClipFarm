@@ -397,7 +397,12 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
       <p class="note"><b>*</b> {_join(held_out)} were never inspected while tuning —
       those columns and the <b>held-out net</b> are the only numbers here not fitted to the data.
       <b>test5</b> is the strongest of them: it was labeled after the variants were written,
-      so it could not have shaped them even indirectly.</p>
+      so it could not have shaped them even indirectly. Held-out and comparable are
+      separate axes and the <b>held-out net</b> mixes them: two of its three fixtures are
+      also the two excluded above, and they dominate it — test1 alone supplies 89% of
+      {SHIPPING}'s held-out net, and together the two supply 82% of its gain over
+      {BASELINE}. Unfitted is not the same as comparable; test5 is the only fixture
+      that is both.</p>
     </section>
     """
 

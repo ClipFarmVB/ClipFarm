@@ -52,9 +52,15 @@ def _build_condense_windows(
     actually produced them (for logging — the requested mode may not be the one
     that ran).
 
-    Anything that goes wrong in a non-default builder — feature drift, a missing
-    frame height, an unknown mode name — falls back to "rules" with a warning,
-    because a degraded condense beats a failed run.
+    Anything that goes wrong *inside* a non-default builder — feature drift, a
+    missing frame height, an unknown mode name — falls back to "rules" with a
+    warning, because a degraded condense beats a failed run. The scope is worth
+    being precise about: both builders come from the same module import below, so
+    this fallback covers call-time failures only. If that import itself fails,
+    "rules" is just as gone and the stage-level handler in run_condense skips
+    condensing altogether — the game still ships `ready`, without a condensed
+    cut. config.condense_mode is a Literal, so an unknown mode name can no longer
+    arrive from settings; the branch stays for direct callers.
 
     The None sentinel is load-bearing, not style: active_windows_guarded returns
     [] on a dense track where every contact failed the speed gate and nothing
