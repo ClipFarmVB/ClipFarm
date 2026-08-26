@@ -270,7 +270,15 @@ def _json_safe(value):
     future bump on either side cannot bring it back.
     """
     if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
+        # Keys ride the same pickle as values, so a numpy scalar key is the
+        # same hazard. Scalars only: an ndarray is unhashable and can never be
+        # a key, and full `_json_safe` on keys would turn a tuple key into an
+        # unhashable list.
+        return {
+            (k.tolist() if hasattr(k, "dtype") and hasattr(k, "tolist") else k):
+                _json_safe(v)
+            for k, v in value.items()
+        }
     if isinstance(value, (list, tuple)):
         return [_json_safe(v) for v in value]
     # numpy scalars and arrays, without importing numpy into this module.
