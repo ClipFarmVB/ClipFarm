@@ -1067,23 +1067,37 @@ below:
 
   ```
   ME=$(gh api user --jq ".login")
-  OVR=$(gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq "[.[] | select(.user.login != \"$ME\") | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\") | select(test(\"^latch-override:\"; \"i\"))] | last // \"\"" | tr 'A-Z' 'a-z')
+  OVR_RAW=$(gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq "[.[] | select(.user.login != \"$ME\") | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\") | select(test(\"^latch-override:\"; \"i\"))] | last // \"\"")
+  OVR=$(printf '%s' "$OVR_RAW" | tr 'A-Z' 'a-z')
 
   case "$OVR" in
-    "latch-override: push ok @ "*) ;;
-    "latch-override: push ok"*)   echo "override names no @ <sha> — malformed, stays latched"; exit 1;;
-    "latch-override:"*)           echo "override is not a grant ($OVR) — stays latched"; exit 1;;
+    "latch-override: push ok @"*) ;;
+    "latch-override: push ok"*)   echo "grant names no @ <sha> — malformed, stays latched"; exit 1;;
+    "latch-override:"*)           echo "not a grant ($OVR_RAW) — stays latched"; exit 1;;
     *)                            echo "no override from another account — stays latched"; exit 1;;
   esac
 
   OVR_SHA=$(printf '%s' "$OVR" | sed -E 's/.*@ ?([0-9a-f]{7}).*/\1/')
+  printf '%s' "$OVR_SHA" | grep -qE '^[0-9a-f]{7}$' ||
+    { echo "grant's SHA is not seven hex characters — malformed, stays latched"; exit 1; }
 
-  gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq ".[].sha[0:7]" | grep -qx "$OVR_SHA" ||
+  COMMITS=$(gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[] | "\(.sha[0:7]) \(.author.login // "UNKNOWN")"')
+
+  printf '%s\n' "$COMMITS" | awk '{print $1}' | grep -qx "$OVR_SHA" ||
     { echo "override SHA $OVR_SHA is not on the branch — history rewritten, stays latched"; exit 1; }
 
-  gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[] | "\(.sha[0:7]) \(.author.login // "UNKNOWN")"' |
-    sed -n "/^$OVR_SHA /,\$p" | tail -n +2 | awk '{print $2}' | sort -u | grep -vx "$ME"
+  printf '%s\n' "$COMMITS" | sed -n "/^$OVR_SHA /,\$p" | tail -n +2 | awk '{print $2}' | sort -u | grep -vx "$ME"
   ```
+
+  **When the override passes and you push, say so on the PR.** Post a comment —
+  `pushed under latch-override from @<who> @ <sha>` — at the moment the push
+  lands. The collaborator whose commits are on that branch may not be the person
+  who granted it, and nothing else tells them a run wrote on top of their work;
+  their next `git pull` should be explicable. It is also the only record that the
+  most consequential thing this document permits actually happened: without it, a
+  PR whose latch was overridden looks in the report exactly like one that was
+  never latched. Name those PRs in the report too, for the reason
+  [Reporting](#reporting) gives — the report is the only record.
 
   **Any output from the last command means the override is stale** — someone else
   pushed after the decision, so the human authorised something other than what is
@@ -1158,17 +1172,17 @@ comments but *not* its label — a maintainer removed it — **write the
 `reopened: <sha>` marker yourself before the first round**, then let the routing
 table pick the round, exactly as for a carve-out re-open.
 
-**Except for `latched`.** That reason is cleared by a `latch-override:` comment
-and by nothing else, so a bare label removal does not re-open it: re-apply
-`unsettled: latched @ <sha>` and say in the report that the label was removed
-without an override. Nothing unsafe follows from getting this wrong — the push
-test still runs before any push, so the PR is simply re-latched — but it costs
-a cold round every run and leaves whoever removed the label watching it come
-back. Do not force a cold one: a maintainer who clears `unsettled: not our
-branch` *after* the author pushed a fix leaves a PR whose last round is `cold:
-findings` at a stale SHA, which wants a semi-cold check. Forcing cold there
-cannot close the finding, so the settle bar stays unreachable and the PR burns
-to the ceiling.
+**Except for `latched`.** That reason is cleared by a `latch-override: push ok
+@ <sha>` comment and by nothing else, so a bare label removal does not re-open
+it: re-apply `unsettled: latched @ <sha>` and say in the report that the label
+was removed without an override. Nothing unsafe follows from getting this wrong
+— the push test still runs before any push, so the PR is simply re-latched —
+but it costs a cold round every run and leaves whoever removed the label
+watching it come back. Do not force a cold one: a maintainer who clears
+`unsettled: not our branch` *after* the author pushed a fix leaves a PR whose
+last round is `cold: findings` at a stale SHA, which wants a semi-cold check.
+Forcing cold there cannot close the finding, so the settle bar stays
+unreachable and the PR burns to the ceiling.
 
 Both labels need the marker. Without it for `review-settled`, a maintainer who
 removes the label to ask for another look gets it silently re-applied with zero
@@ -1475,8 +1489,16 @@ For a PR you may not push to, describe the fix in a comment and apply
   author's next push re-opens it.
 - **A branch a collaborator has pushed to** — `unsettled: latched @ <sha>`. Can
   arise at either scope. **Commits do not re-open this one**, deliberately; it
-  waits for a `latch-override:` comment from a human. Say so in the report, or
-  the PR sits outside the loop with nobody told.
+  waits for a `latch-override: push ok @ <sha>` comment from a human, posted at
+  the top level of the PR. Report the PR by name with that line quoted and the
+  SHA filled in — the prefix alone is not enough for someone to act on, and
+  without it the PR sits outside the loop with nobody able to bring it back.
+
+  **Unless a finding also needs a judgement — then `needs a decision` wins**, per
+  the precedence stated with the reasons. A `latch-override:` comment answers
+  *"may we push over their work?"*, not the reviewer's question, so parking a
+  judgement call behind one gets it cleared and pushed with the question never
+  asked.
 
 **Read the findings out of the round's review.** The marker comment carries the
 prefix, the SHA and at most a count; the findings are in the review that round
@@ -2107,12 +2129,27 @@ The report contains:
   collaborator pushed to the branch), `not our branch` (the author's next push
   re-opens it), and `ran out of rounds` (the per-PR ceiling, or the run-wide
   budget) — and what is still outstanding on each
-- **Latched PRs by name**, separately from the count above. Two of these reasons
-  want a human and want *different* humans doing different things: a judgement
-  call needs the finding answered, a latch needs someone to decide whether to
-  push over a collaborator and record it as `latch-override:`. A single "N need
-  a human" figure hides that, which is the same signal loss the bullet below
-  describes for the bounds
+- **Latched PRs by name, each with the exact line to post.** Two of these
+  reasons want a human and want *different* humans doing different things: a
+  judgement call needs the finding answered, a latch needs someone to decide
+  whether to push over a collaborator. A single "N need a human" figure hides
+  that, which is the same signal loss the bullet below describes for the bounds.
+
+  **Quote the override verbatim, with the SHA filled in, and say where it goes:**
+
+  > `#312` is latched by a commit from `@sam`. To authorise, post a **top-level
+  > comment on the PR** whose first line is exactly
+  > `latch-override: push ok @ 88df5aa` — or `latch-override: revoked` to
+  > withdraw an earlier one.
+
+  This is the only instruction in this document aimed at a human rather than a
+  run, and it is the one place where being approximately right means the feature
+  silently does not exist. `latch-override: approved` is rejected as *not a
+  grant*; the same line posted as a reply inside a review thread is invisible to
+  the check, which reads top-level comments only. Both fail closed and both look
+  to the maintainer like the mechanism is broken, because the run's next report
+  says *no override* — which is not what happened. Giving them the prefix and
+  letting them guess the rest is how that occurs
 - **Which PRs hit the ceiling or the budget**, whatever reason they ended up
   labelled with. A PR that hit the ceiling *and* carries a judgement call is
   filed under `needs a decision`, so the reason breakdown above is no longer a
