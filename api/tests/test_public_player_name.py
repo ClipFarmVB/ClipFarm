@@ -99,6 +99,12 @@ class _FakeSession:
 
     async def execute(self, _stmt):
         self.executed += 1
+        if not self._queued:
+            raise AssertionError(
+                f"execute() called {self.executed} times, but only "
+                f"{self.executed - 1} result set(s) were queued — the route "
+                f"issued a query this test did not expect"
+            )
         return _Result(self._queued.pop(0))
 
 
