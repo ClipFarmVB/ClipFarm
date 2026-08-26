@@ -11,3 +11,13 @@ pytest==8.3.4
 # it those tests importorskip themselves into a silent pass, which is the exact
 # failure mode requirements-dev exists to prevent.
 PyYAML==6.0.2
+# The numpy-payload guard in test_pose_modal.py (CF-276). Without this that test
+# importorskips itself into a silent pass — the same failure PyYAML is here for,
+# and it had been skipping in CI since it was written.
+#
+# Pinned to the version every image that matters already pins: Dockerfile.api,
+# ml/requirements.txt and ml/modal_pose.py all say 1.26.4. The behaviour under
+# test IS a numpy-1-vs-2 split — a numpy-2 pickle names `numpy._core`, which a
+# 1.x image cannot import — so an unpinned dev numpy would test whichever major
+# pip resolved that day, which is close to testing nothing in particular.
+numpy==1.26.4
