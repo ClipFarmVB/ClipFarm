@@ -383,6 +383,11 @@ most expensive kind of surprise in an unattended run.
   fix belongs on a PR **another account** opened, or on a branch a collaborator
   has touched, describe it in a review comment instead and never push. Both halves
   are spelled out under [The push test](#the-push-test) below.
+- **Never post a `latch-override:` comment.** That comment is how a *human*
+  authorises pushing to a branch a collaborator has touched. A run that writes
+  its own hands itself the permission [The push test](#the-push-test) exists to
+  withhold — and it is the one gate that opens without pushing to `main`,
+  merging or force-pushing, so nothing else here would stop it.
 - **Never** deploy, unsuspend a hosting service, or touch production
   infrastructure.
 - **Never** run the local stack against a `DATABASE_URL` pointing at Supabase.
@@ -989,7 +994,8 @@ head-matching marker would make both cases impossible to label at all, while
 [the rule against leaving open findings unlabelled](#priority-order) still
 demands one.
 
-Two of the four need a human to clear them, in different ways:
+Two of the four need a human to clear them, in different ways — the last two
+below:
 
 - `ran out of rounds` — the ceiling or the budget stopped it. New commits
   re-open it, round count reset: a PR that has since been fixed must not look
@@ -1025,20 +1031,77 @@ Two of the four need a human to clear them, in different ways:
   removing a label leaves no trace the next run can read, so the guard would fire
   again and re-latch the PR on every run, forever — and meanwhile the PR keeps
   accumulating code nothing reviews. Instead a human answers the question once,
-  in a comment:
+  in a comment whose first line is exactly:
 
   ```
   latch-override: push ok @ <sha>
   ```
 
-  where `<sha>` is the head at the time of the decision. A run treats the PR as
-  pushable again if that comment exists **and** no commit by another login has
-  landed since it — the same shape as every other durable decision here, recorded
-  in a comment precisely because labels do not survive.
+  where `<sha>` is the short head SHA at the time of the decision. To withdraw
+  it, post `latch-override: revoked` — the most recent `latch-override:` line
+  wins, so a revocation supersedes an earlier grant.
+
+  **You may never post one yourself.** This is the only mechanism in this
+  document that *grants* a permission rather than withholding one, and a run that
+  writes its own override hands itself the exact push the last several rules were
+  written to withhold — without pushing to `main`, merging, or force-pushing, so
+  nothing else would stop it. See [Hard rules](#hard-rules). The query below
+  filters by author as well, but treat that filter as a second line of defence
+  rather than the rule.
+
+  **An override does not expire.** Only a newer `latch-override:` line or a
+  commit by another login ends it. That is deliberate rather than an oversight —
+  a decision about whether to write over a named person's work does not go stale
+  on a timer — but it does mean an override made in August still authorises
+  pushes in November if the branch has been quiet. If that is not wanted, revoke
+  it.
+
+  Two checks, and both must pass:
 
   ```
-  gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq '.[] | select(.body | test("^latch-override:"; "i")) | .created_at' | tail -1
+  ME=$(gh api user --jq ".login")
+  OVR=$(gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq "[.[] | select(.user.login != $Q$ME$Q) | .body | split($Q\\n$Q)[0] | select(test($Q^latch-override:$Q; $Qi$Q))] | last // $Q$Q")
+  case "$OVR" in "latch-override: push ok"*) ;; *) echo "no live override — stays latched"; exit 1;; esac
+
+  OVR_SHA=$(printf '%s' "$OVR" | grep -oE '@ ?[0-9a-f]{7}' | head -1 | grep -oE '[0-9a-f]{7}')
+  gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[].sha[0:7]' | grep -qx "$OVR_SHA" ||
+    { echo "override SHA not on the branch — history was rewritten, stays latched"; exit 1; }
+
+  gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[] | "\(.sha[0:7]) \(.author.login // "UNKNOWN")"' |
+    sed -n "/^$OVR_SHA /,\$p" | tail -n +2 | awk '{print $2}' | sort -u | grep -vx "$ME"
   ```
+
+  **Any output from the last command means the override is stale** — someone else
+  pushed after the decision, so the human authorised something other than what is
+  there now. Re-latch.
+
+  Three things about those checks, each closing a way the override could be
+  read as granting more than it does:
+
+  - **`select(.user.login != "$ME")`** — the run posts ordinary issue comments
+    constantly, and without this it could read one of its own as authorisation.
+  - **`case "$OVR" in "latch-override: push ok"*)`** matches the *verdict*, not
+    the prefix. A maintainer answering "no" writes
+    `latch-override: no — Sam is mid-rewrite, do not push`, which is the natural
+    refusal and uses the prefix the document asked for. Matching only the prefix
+    would read that as a grant — a malformed refusal honoured as permission,
+    which is the one direction that must never fail open.
+  - **Freshness is tested by identity, not by date.** "No commits since the
+    override" cannot use commit timestamps: `committer.date` is write time, so a
+    collaborator who committed on Tuesday and pushed on Thursday defeats a
+    Wednesday override, and the run pushes over work that arrived *after* the
+    decision. Listing the commits after the recorded SHA and checking their
+    logins has no such failure. The presence check before it matters for the
+    same reason: if the SHA is gone the branch was rewritten, and `sed` would
+    otherwise emit nothing, which reads as "nothing landed" — a fail-open on
+    exactly the case nobody authorised.
+
+  **Against the other reasons: `needs a decision` wins, `latched` beats the
+  rest.** A judgement call is the thing that most needs a named human, so a PR
+  that is both latched and carrying one takes `needs a decision`, with the latch
+  named in the comment as context — the pattern the ceiling already uses. Against
+  `ran out of rounds`, `latched` wins: that reason re-opens on commits and this
+  one must not, so choosing it would reinstate the loop.
 
   Note the latch itself is permanent by design: the guard reads the branch's
   whole history, so one commit from a collaborator keeps the PR latched even
@@ -1055,11 +1118,19 @@ makes a human's removal detectable at all:
 run did re-opened it. So when you pick up a PR carrying one of those record
 comments but *not* its label — a maintainer removed it — **write the
 `reopened: <sha>` marker yourself before the first round**, then let the routing
-table pick the round, exactly as for a carve-out re-open. Do not force a cold
-one: a maintainer who clears `unsettled: not our branch` *after* the author
-pushed a fix leaves a PR whose last round is `cold: findings` at a stale SHA,
-which wants a semi-cold check. Forcing cold there cannot close the finding, so
-the settle bar stays unreachable and the PR burns to the ceiling.
+table pick the round, exactly as for a carve-out re-open.
+
+**Except for `latched`.** That reason is cleared by a `latch-override:` comment
+and by nothing else, so a bare label removal does not re-open it: re-apply
+`unsettled: latched @ <sha>` and say in the report that the label was removed
+without an override. Nothing unsafe follows from getting this wrong — the push
+test still runs before any push, so the PR is simply re-latched — but it costs
+a cold round every run and leaves whoever removed the label watching it come
+back. Do not force a cold one: a maintainer who clears `unsettled: not our
+branch` *after* the author pushed a fix leaves a PR whose last round is `cold:
+findings` at a stale SHA, which wants a semi-cold check. Forcing cold there
+cannot close the finding, so the settle bar stays unreachable and the PR burns
+to the ceiling.
 
 Both labels need the marker. Without it for `review-settled`, a maintainer who
 removes the label to ask for another look gets it silently re-applied with zero
@@ -1240,8 +1311,10 @@ re-post it correctly; that repost is not a new round and does not spend budget.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, apply the `unsettled` label with a
-comment naming the reason that fits — `not our branch` or `needs a decision` —
-record it, and move on. It does not become closed by being argued with.
+comment naming the reason that fits — any of the four, and note that a
+collaborator pushing mid-cycle makes `latched` reachable here by the shortest
+route in the document — record it, and move on. It does not become closed by
+being argued with.
 
 **Never let a semi-cold round settle a PR.** It was handed the previous
 reviewer's conclusions, so its silence inherits their blind spots; treating that
