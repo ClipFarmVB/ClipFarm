@@ -607,6 +607,14 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
     }
     pattern = re.compile(re.escape(package) + r"==([0-9][0-9A-Za-z.\-]*)")
 
+    # A label in both dicts would be silently downgraded to optional by the
+    # merge below, quietly turning a mandatory source into one that may say
+    # nothing. Cheap to assert, and the failure it prevents is invisible.
+    assert not sources.keys() & optional_sources.keys(), (
+        f"a source is listed as both required and optional: "
+        f"{sorted(sources.keys() & optional_sources.keys())}"
+    )
+
     found = {}
     for label, (path, required) in {
         **{k: (v, True) for k, v in sources.items()},

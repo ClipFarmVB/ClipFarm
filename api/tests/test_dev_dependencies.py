@@ -33,15 +33,20 @@ def test_every_importorskip_target_is_installed():
     """
     targets = set()
     for path in sorted(TESTS_DIR.glob("*.py")):
-        # Skip this file. Its docstring quotes `pytest.importorskip("celery")`
-        # as prose, and the scan cannot tell prose from code — so without this
-        # the test invents a target out of its own explanation of itself. It
-        # has no real guards to find here anyway; that is the whole point of
-        # the module.
+        # Skip this file: its own docstring quotes an importorskip call as
+        # prose, and a scan that reads prose as code invents a target out of
+        # its own explanation of itself. No real guards live here anyway.
         if path == pathlib.Path(__file__).resolve():
             continue
+        # Anchored to the start of a line, with an optional assignment, so a
+        # match has to look like code rather than merely appear in the file.
+        # The skip above covers this file; this covers the general case — a
+        # docstring anywhere quoting `pytest.importorskip("x")` would
+        # otherwise inject a phantom dependency into the check.
         for m in re.finditer(
-            r"""importorskip\(\s*["']([^"']+)["']""", path.read_text(encoding="utf-8")
+            r"""^[ \t]*(?:[\w, ]+=[ \t]*)?pytest\.importorskip\([ \t]*["']([^"']+)["']""",
+            path.read_text(encoding="utf-8"),
+            re.MULTILINE,
         ):
             targets.add(m.group(1))
 

@@ -79,7 +79,11 @@ echo "ok"
 # Scope, stated precisely: it checks `name==version` lines, with or without an
 # extras spec (`uvicorn[standard]==0.34.0` counts, as uvicorn). Range
 # constraints and environment markers are skipped, so adding one of those
-# weakens the gate silently — prefer a plain pin, or extend the pattern.
+# weakens the gate silently — prefer a plain pin, or extend the pattern. Worth
+# knowing because it is a live temptation: numpy 1.26.4 ships no wheels for
+# 3.13, so the obvious `; python_version < "3.13"` would drop numpy from this
+# check entirely. Everything here runs on 3.11 (ci.yml, Dockerfile.api), so
+# the plain pin is correct today.
 #
 # It does not fail the commit, it declines to run the step and says why: an
 # incomplete dev set is "not runnable here", not a reason to block someone who
@@ -145,8 +149,14 @@ for n, v in sorted(pins.items()):
     if have != v:
         missing.append(f"{n}=={v}" + ("" if have is None else f" (have {have})"))
 if missing:
-    # Name them: "run the install you already ran" is a useless thing to be told.
-    print("missing or mismatched: " + ", ".join(missing))
+    # Name them: "run the install you already ran" is a useless thing to be
+    # told. Capped, because on a machine with no dev install at all this is
+    # every pin in the set — twenty names is a wall, and the first few plus a
+    # count say the same thing.
+    shown = ", ".join(missing[:4])
+    if len(missing) > 4:
+        shown += f", and {len(missing) - 4} more"
+    print("missing or mismatched: " + shown)
     sys.exit(1)
 PY
 ) || _api_dev_set=0
