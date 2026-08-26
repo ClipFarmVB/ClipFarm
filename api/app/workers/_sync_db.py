@@ -16,8 +16,8 @@ _sync_url = settings.database_url.replace("+asyncpg", "")
 _engine = create_engine(_sync_url, pool_pre_ping=True)
 
 
-# games.error_message is a bounded column and nothing on the write path enforced
-# that. The value is `str(exc)` from an arbitrary failure — a Modal error
+# games.error_message was a bounded column and nothing on the write path
+# enforced that. The value is `str(exc)` from an arbitrary failure — a Modal error
 # carrying a remote traceback runs long. Overflowing raised DataError from
 # *inside* the task's own `except` handler, which cost the `failed` write and
 # the retry decision (the `finally` still ran, so the lock was released), so the

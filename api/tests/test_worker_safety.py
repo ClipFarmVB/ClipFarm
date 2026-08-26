@@ -785,12 +785,17 @@ def test_the_unbounded_failure_report_is_wrapped():
         driver raises next), so a narrow handler is the same bug wearing a
         try block.
         """
-        # A handler whose whole body is `raise` re-raises what it caught, so
-        # the call still kills the enclosing except. Shaped like a guard,
-        # behaves like none.
-        if all(
-            isinstance(st, ast.Raise) and st.exc is None for st in handler.body
-        ):
+        # A handler that raises anything at all propagates out, so the call
+        # still kills the enclosing except: shaped like a guard, behaves like
+        # none. `any`, not `all` over a bare-only body — the realistic shape is
+        # `logger.exception(...); raise`, which this file's own handler at
+        # tasks.py:1133 uses, and an `all` check waves that through. Also
+        # catches `raise e` and `raise RuntimeError(...)`.
+        #
+        # Deliberately conservative: a handler that re-raises only on some
+        # branch is rejected too. That fails closed, which is the direction to
+        # fail in; relax it if a real guard ever needs to.
+        if any(isinstance(n, ast.Raise) for st in handler.body for n in ast.walk(st)):
             return False
         if handler.type is None:                       # bare `except:`
             return True

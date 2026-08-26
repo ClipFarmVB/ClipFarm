@@ -10,7 +10,7 @@ still runs and the advisory lock is released, but the row never leaves
 `processing`. That is the CF-184 stranded-game symptom, reached by the code whose
 job is to explain a failure. CF-225 added a clamp on the write path as a
 mitigation; this is the fix, and it lets the clamp stand down on its own
-(`_ERROR_MESSAGE_MAX` is read off the column, so an unbounded type makes
+(`_ERROR_MESSAGE_MAX` is read off the model, so an unbounded type makes
 `_fit_error_message` a no-op with no edit).
 
 Text rather than a larger fixed width, for the same reason as `upload_id` in 014:
