@@ -696,13 +696,27 @@ def test_lock_dies_with_the_worker(pg_locks):
 # `str(exc)` from an arbitrary failure; a remote Modal traceback is not a rare
 # shape for it.
 
-def test_error_message_is_clamped_to_the_column_width():
-    from app.models.game import Game
+def test_error_message_is_clamped_to_the_column_width(monkeypatch):
+    """The middle-cut contract, pinned at a width rather than at the column's.
+
+    This read the width off the column and skipped once CF-226 made it
+    unbounded — which left `_fit_error_message`'s actual behaviour asserted by
+    nothing at all. A review round replaced its body with the naive tail cut its
+    own docstring calls wrong, and the file still passed.
+
+    `_fit_error_message` is not dead code after CF-226. It is what runs in the
+    window the guard in `process_game_task` exists for: an image carrying `Text`
+    against a column that is still varchar(1024), where `_ERROR_MESSAGE_MAX` is
+    whatever the model said and the clamp is load-bearing again. Pinning the
+    contract at a fixed width keeps it honest in that window; the column being
+    unbounded today is what `test_error_message_is_unbounded` asserts, and the
+    two are different claims.
+    """
+    from app.workers import _sync_db
     from app.workers._sync_db import _fit_error_message
 
-    width = getattr(Game.__table__.c.error_message.type, "length", None)
-    if not width:
-        pytest.skip("error_message is unbounded (Text) — nothing to clamp")
+    width = 1024
+    monkeypatch.setattr(_sync_db, "_ERROR_MESSAGE_MAX", width)
 
     fitted = _fit_error_message("HEAD" + "x" * (width * 5) + "TAIL")
 
@@ -782,6 +796,24 @@ def test_the_unbounded_failure_report_is_wrapped():
                 return True
         return False
 
+    def reraises(handler) -> bool:
+        """Does this handler let the exception back out?
+
+        Any `raise` at all: a handler that raises propagates, so the call still
+        kills the enclosing except — shaped like a guard, behaves like none.
+        `any`, not `all` over a bare-only body: both shapes are already live in
+        tasks.py, so neither is hypothetical — `except Retry: raise` (:1131) is
+        bare-only, and `_mark_failed_if_lock_free(str(lost)); raise` (:1133)
+        does work first and re-raises anyway. Also catches `raise e` and
+        `raise RuntimeError(...)`.
+
+        Conservative in three further ways, all failing closed: a handler
+        re-raising on only one branch counts; so does one whose `raise` sits in
+        a nested `try` that catches it; so does one containing a nested `def`
+        that raises. None is a shape this guard wants.
+        """
+        return any(isinstance(n, ast.Raise) for st in handler.body for n in ast.walk(st))
+
     def catches_everything(handler) -> bool:
         """A handler broad enough to be a guard rather than a filter.
 
@@ -791,22 +823,6 @@ def test_the_unbounded_failure_report_is_wrapped():
         driver raises next), so a narrow handler is the same bug wearing a
         try block.
         """
-        # A handler that raises anything at all propagates out, so the call
-        # still kills the enclosing except: shaped like a guard, behaves like
-        # none. `any`, not `all` over a bare-only body — both re-raising shapes
-        # are already live in tasks.py, so neither is hypothetical:
-        # `except Retry: raise` (:1131) is bare-only, and
-        # `_mark_failed_if_lock_free(str(lost)); raise` (:1133) does work first
-        # and re-raises anyway. An `all` check accepts the second. This also
-        # catches `raise e` and `raise RuntimeError(...)`.
-        #
-        # Deliberately conservative in three ways, all failing closed: a
-        # handler re-raising on only one branch is rejected; so is one whose
-        # `raise` sits in a nested `try` that catches it; so is one containing
-        # a nested `def` that raises. None is a shape this guard wants, and a
-        # false rejection is a loud failure rather than a silent hole.
-        if any(isinstance(n, ast.Raise) for st in handler.body for n in ast.walk(st)):
-            return False
         if handler.type is None:                       # bare `except:`
             return True
         names = (
@@ -819,12 +835,31 @@ def test_the_unbounded_failure_report_is_wrapped():
             for n in names
         )
 
-    # Every such call lexically inside a `try:` body with a broad handler.
+    def actually_guards(node) -> bool:
+        """A broad handler is not enough — it has to be the one that runs.
+
+        Python matches handlers in order, so `except DataError: raise` sitting
+        in *front* of `except Exception:` intercepts the exception this guard
+        exists for and propagates it, while a per-handler `any()` still sees a
+        broad handler and calls the call guarded. That is a real hole this test
+        had, found by review after three earlier ones.
+
+        So: if any handler in the chain re-raises, the `try` does not guard,
+        whatever else is in it. Conservative — a re-raising handler for some
+        unrelated exception is rejected too — and conservative is the right
+        direction, because the failure it prevents is silent and the failure it
+        causes is a loud test.
+        """
+        if any(reraises(h) for h in node.handlers):
+            return False
+        return any(catches_everything(h) for h in node.handlers)
+
+    # Every such call lexically inside a `try:` that actually guards it.
     guarded = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Try):
             continue
-        if not any(catches_everything(h) for h in node.handlers):
+        if not actually_guards(node):
             continue
         for stmt in node.body:
             for inner in ast.walk(stmt):
