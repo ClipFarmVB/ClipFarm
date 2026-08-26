@@ -102,8 +102,9 @@ The hard rule is [only push to PRs this account opened](#hard-rules). At
 That is the point of the mode: review the queue *and* clear it.
 
 At `review scope: all` the queue also contains other accounts' PRs, and those it
-still may not touch. So the only thing it cannot push to is *other people's*
-work.
+still may not touch. So what it cannot push to is *other people's* work — and,
+at either scope, any branch a collaborator has pushed to; see
+[The push test](#the-push-test).
 
 Two things follow, and both matter more than they look.
 
@@ -127,9 +128,10 @@ Two things follow, and both matter more than they look.
   discipline, stated plainly, because there is no longer a construction to hide
   behind. If concurrency is ever wanted, runs need an identity — in the markers
   and in the counters — and that is the work, not a wording change here.
-- **Step 2 runs in full at `own`, and collapses only at `all`.** With every
-  in-scope PR pushable, `review-only` fixes findings and re-reviews exactly as
-  `build` does — the difference between the modes is step 3, not step 2. At
+- **Step 2 runs in full at `own` on the PRs it may push to.** That is most of an
+  `own` queue — everything except branches a collaborator has pushed to — so
+  `review-only` fixes findings and re-reviews exactly as `build` does, and the
+  difference between the modes is step 3, not step 2. At
   `review scope: all` the other accounts' PRs are the ones step 2 cannot fix:
   describe the fix in a comment, apply `unsettled`, and post the reason that
   fits — `not our branch @ <sha>` when the fix is straightforward but
@@ -161,10 +163,11 @@ What the mode delivers *over several nights* is the full cycle: review, fix,
 re-review, settle.
 
 **At `review scope: own` the mode runs its own cycle end to end.** Every
-in-scope PR is this account's, so every one is pushable — the run reviews, fixes
-what needs no judgement, and re-reviews, without waiting on anyone. That is the
-mode working as intended, and it is what the push rule change on 2026-08-25
-bought.
+in-scope PR is this account's, and every one it may push to — all but the
+collaborator-latched ones, see [The push test](#the-push-test) — it reviews,
+fixes what needs no judgement, and re-reviews, without waiting on anyone. That
+is the mode working as intended, and it is what the push rule change on
+2026-08-25 bought.
 
 *This paragraph previously said the opposite.* Under the old rule — push only to
 branches **this run** created — a `review-only` night created no branches and so
@@ -225,7 +228,8 @@ So the **report is the only record**, which is why naming the excluded PRs there
 is a requirement and not a courtesy. A reader who wants to know why a PR went
 untouched has exactly one place to look.
 
-**Scope and pushability are the same test**, and both read `.user.login`:
+**Scope and pushability share their first test**, and both read `.user.login`
+on the PR — pushing then adds a second condition:
 
 | question | test |
 |---|---|
@@ -374,55 +378,11 @@ most expensive kind of surprise in an unattended run.
 ### Hard rules
 
 - **Never** push to `main`, merge a PR, or force-push anything.
-- **Only push to the branch of a PR opened by the account this run posts as** —
-  any run's, not just this one's. If a fix belongs on a PR **another account**
-  opened, describe it in a review comment instead and never push.
-
-  *Phrased as PR authorship, not branch ownership, because authorship is what the
-  test reads.* Everywhere below the test is `.user.login` on the PR — GitHub does
-  not expose "who owns the branch", and a rule written in terms the test cannot
-  evaluate is a rule that drifts from its enforcement.
-
-  **The two can diverge, and the divergence is the risky direction:** a
-  collaborator may push commits to a branch whose PR this account opened. The
-  author test passes, so the run would treat it as its own and land fixes on
-  someone else's in-flight work. So **before pushing, check the branch for
-  commits by another login**:
-
-  ```
-  ME=$(gh api user --jq ".login")
-  gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[].author.login // "UNKNOWN"' | sort -u | grep -vx "$ME"
-  ```
-
-  **Any output means do not push** — comment, and treat the PR as another
-  account's. Empty output means every commit is this account's.
-
-  Three things about that command, because the obvious alternatives fail
-  differently:
-
-  - **`--paginate` matters.** `pulls/<n>/commits` caps at 250 per page, and a
-    long-running branch exceeds a page.
-  - **Not `gh pr view --json commits`.** That caps at 100 with no paging, and its
-    author field is the *commit* author, which a rebase or a co-authored commit
-    misattributes — so it fires on the account's own rebased branches and
-    reinstates the stall this card removed.
-  - **`// "UNKNOWN"` fails closed.** `.author.login` is `null` for a commit whose
-    email is linked to no account, and a bare `.author.login` would let those
-    read as "no other login" — a guard that never fires. Mapping them to
-    `UNKNOWN` makes them output, so an unverifiable branch is treated as someone
-    else's. Measured on this repo: 0 nulls across 36 commits in five PRs, so this
-    should be rare rather than routine — if it becomes routine, that is worth
-    reporting rather than working around.
-
-  *This was "branches this run created" until 2026-08-25.* That rule was
-  conditioned on a sign-off it never received, and the cost was measured: of the
-  eight PRs in one night's working set, seven ended `unsettled: not our branch`
-  and **all seven were this account's own work from earlier runs**. The loop
-  could review everything it had built and fix none of it. The sign-off is now
-  given: earlier runs of this account are this account.
-
-  **If the harness still refuses the push, that is a separate gate and this rule
-  does not override it.** Report the refusal rather than working around it.
+- **Only push to the branch of a PR opened by the account this run posts as, and
+  only if nobody else has pushed to it.** Any run's PR, not just this one's. If a
+  fix belongs on a PR **another account** opened, or on a branch a collaborator
+  has touched, describe it in a review comment instead and never push. Both halves
+  are spelled out under [The push test](#the-push-test) below.
 - **Never** deploy, unsuspend a hosting service, or touch production
   infrastructure.
 - **Never** run the local stack against a `DATABASE_URL` pointing at Supabase.
@@ -451,6 +411,81 @@ most expensive kind of surprise in an unattended run.
 - If a command fails because of usage limits, **stop the loop** — do not retry.
 - If nothing in scope is actionable, **stop the loop**. A run that reviews two
   PRs and opens nothing is a fine outcome.
+
+### The push test
+
+Two conditions, both required, and the second has to be re-run each time.
+
+**1 — This account opened the PR.** Compare `gh api user --jq ".login"` against
+the PR's `.user.login`. That is the same test the `review scope` filter runs, so
+at `review scope: own` it is true of everything in the queue.
+
+*Phrased as PR authorship rather than branch ownership because authorship is what
+the test reads.* GitHub does not expose "who owns the branch", and a rule written
+in terms its test cannot evaluate is a rule that drifts from its enforcement.
+
+**2 — Nobody else has pushed to the branch.** The two can diverge, and the
+divergence runs in the risky direction: a collaborator may push commits to a
+branch whose PR this account opened. The author test passes, so without this the
+run would treat the PR as its own and land fixes on someone else's in-flight
+work.
+
+```
+ME=$(gh api user --jq ".login")
+COMMITS=$(gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[].author.login // "UNKNOWN"')
+[ -n "$COMMITS" ] || { echo "cannot read commits — do not push"; }
+printf '%s\n' "$COMMITS" | sort -u | grep -vx "$ME"
+```
+
+**Any output means do not push.** Empty output means every commit is this
+account's — *but only if the read succeeded*, which is why `$COMMITS` is checked
+separately. A PR always has at least one commit, so an empty raw list means the
+call failed, not that the branch is clean. Without that check the guard fails
+**open** on a network error, a rate limit, a wrong PR number or a token missing a
+scope: `gh api` writes to stderr, stdout is empty, and empty reads as "push".
+
+**Run it immediately before each push, not once when you pick the PR up.** A run
+holds a PR across several rounds, and the failure this guards against is a
+collaborator pushing *while that is happening* — which is the same reasoning that
+makes the head SHA get re-read after every round.
+
+Three things about the command:
+
+- **`.author.login` is correct *here*, and it is the one place in this document
+  that is so.** [The author field rule](#priority-order) says to use
+  `.user.login`, in bold, and it is right — about `pulls/<n>`. This is
+  `pulls/<n>/commits`, a different payload: its objects carry `author` and
+  `committer` and **no `user` at all** (verified on #311). "Correcting" this to
+  `.user.login` would yield `UNKNOWN` for every commit, fire the guard on every
+  PR, and make the whole queue unpushable — reinstating the stall CF-270 removed,
+  silently, behind a guard that looks like it is working.
+- **Not `gh pr view --json commits`.** It caps at 100 with no paging, and its
+  author field is the *commit* author, which a rebase or a co-authored commit
+  misattributes — so it fires on the account's own rebased branches.
+- **`// "UNKNOWN"` fails closed.** `.author.login` is `null` for a commit whose
+  email is linked to no account; a bare `.author.login` lets those read as "no
+  other login", and the guard never fires. Mapping them to `UNKNOWN` makes an
+  unverifiable branch count as someone else's. Measured 2026-08-25 on #190, #191,
+  #214, #243 and #288: 0 nulls across 36 commits, so this should be rare — if it
+  stops being rare, report that rather than working around it.
+
+**The bound this command does not clear.** `pulls/<n>/commits` returns at most
+250 commits however you page it (`per_page` itself caps at 100). Past 250 the
+guard examines a prefix, and a collaborator commit beyond it reads as absent —
+a fail-open in the guard whose other decisions all fail closed. No PR here is
+near that, so this is a stated bound rather than a live problem: **if you meet a
+PR with more than 250 commits, do not trust the guard — treat the PR as another
+account's and say so in the report.**
+
+*This was "branches this run created" until 2026-08-25.* That rule was
+conditioned on a sign-off it never received, and the cost was measured: of the
+eight PRs in one night's working set, seven ended `unsettled: not our branch`
+and **all seven were this account's own work from earlier runs**. The loop could
+review everything it had built and fix none of it. The sign-off is now given:
+earlier runs of this account are this account.
+
+**If the harness still refuses the push, that is a separate gate and this rule
+does not override it.** Report the refusal rather than working around it.
 
 ### Log before you finish each iteration
 
@@ -538,10 +573,12 @@ nothing. It is the same REST-versus-GraphQL trap as `created_at` against
 gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".user.login"
 ```
 
-Note that scope and pushability are now the **same** test — both ask whether the
-PR's `.user.login` is this account. They were different questions while the push
-rule keyed on which run created the branch; since 2026-08-25 it keys on the
-account, so a PR that is in scope at `own` is also one this run may push to.
+Note that scope and pushability now share a test rather than being unrelated
+questions: both ask whether the PR's `.user.login` is this account. Pushing adds
+one further condition — that no collaborator has pushed to the branch, see
+[The push test](#the-push-test) — so a PR in scope at `own` is one this run may
+push to *unless it is latched*. They were wholly different questions while the
+push rule keyed on which run created the branch.
 
 The obvious phrasing — "no marker at all, or commits since the last marker" —
 leaves a hole. A PR sitting on its first `cold: clean` with no new commits has a
@@ -959,9 +996,28 @@ Only one of the three needs a human to clear it:
   reading the review and pushing a fix is the intended path, and it must not need
   a human to also clear a label by hand.
 
-  **Only reachable at `review scope: all`.** At `own` every in-scope PR is this
-  account's and therefore pushable, so this reason cannot arise — if you find
-  yourself reaching for it on an `own` run, the branch test has gone wrong.
+  **At `own` this reason means a collaborator has pushed to the branch** — the
+  guard in [The push test](#the-push-test) firing is the *correct* result, not a
+  malfunction. At `all` it also covers PRs another account opened.
+
+  **But do not use it for the collaborator case: use `needs a decision`.** The
+  commits carve-out re-opens `not our branch` on every new commit, and at `own`
+  the account that pushes is the one running — so a latched PR would re-open on
+  each of its own pushes, burn a cold round re-deriving findings it may not fix,
+  and re-park, forever. Worse, the carve-out's justification (*the author reading
+  the review and pushing a fix is the intended path*) assumes the author is
+  somebody else; here the author is this account, and it is the one actor that
+  cannot act.
+
+  `needs a decision` has no commit carve-out, so it parks once and waits — and it
+  is the honest reason, because what such a PR actually needs is a human deciding
+  whether to push over a collaborator's in-flight work.
+
+  Note the latch is permanent by design: the guard reads the branch's whole
+  history, so one commit from a collaborator makes the PR unpushable by this run
+  from then on, even after the account pushes more. Scoping it to "since this
+  account's last push" would let the run overwrite exactly the in-flight work
+  being guarded.
 - `needs a decision` — a finding requires a judgement nobody unattended should
   make. Only a human removing the label re-opens it. Commits do not, because the
   decision is not something a commit clears; the author pushing something
@@ -1280,8 +1336,11 @@ is not.
 So step 2 applies to most of an `own` queue, not all of it by construction.
 
 For a PR you may not push to — another account's, which only reaches the queue
-at `review scope: all` — describe the fix in a comment, apply `unsettled` and
-post `unsettled: not our branch @ <sha>`. That is the cheap terminal state, not
+at `review scope: all`; or one a collaborator has pushed to, which can arise at
+either scope — describe the fix in a comment and apply `unsettled`. Post
+`unsettled: not our branch @ <sha>` for the first case and
+`unsettled: needs a decision @ <sha>` for the second, for the reason given with
+those reasons. That is the cheap terminal state, not
 a dead end: the author pushing a fix re-opens it on its own.
 
 **Read the findings out of the round's review.** The marker comment carries the
@@ -1670,10 +1729,11 @@ the rest**, and later nights are cheap, because a PR that reached
 budget is a bound on one night's spend, not a promise to cover the backlog.
 
 The **ceiling** now binds far more often than it used to. It applies to any PR
-this account owns that keeps yielding findings — which at `review scope: own` is
-every PR in the queue, not just the handful this run opened. The old reasoning
-(*a PR from an earlier night stops after one or two rounds regardless*) was a
-consequence of not being able to push to it, and no longer holds.
+this account owns that keeps yielding findings — which at `review scope: own`
+is every PR in the queue it may push to, not just the handful this run opened.
+The old reasoning (*a PR from an earlier night stops after one or two rounds
+regardless*) was a consequence of not being able to push to it, and no longer
+holds.
 
 **So on a backlogged night — at `review scope: all`, see above — step 3 does
 not happen, and the 5-PR cap is not reachable.** Twenty-odd PRs at one to two
