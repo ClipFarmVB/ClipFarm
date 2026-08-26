@@ -19,16 +19,21 @@ pytest.importorskip("boto3")
 
 from fastapi import HTTPException  # noqa: E402
 
-from sqlalchemy import select  # noqa: E402
 
-from app.models.post import Post as PostModel  # noqa: E402
 from app.routers import feed as feed_router  # noqa: E402
-from app.services import access  # noqa: E402
 
 
 def _visible(viewer):
-    """The feed's visibility-filtered base query, as the router builds it."""
-    return access.apply_post_visibility(select(PostModel), viewer)
+    """The query the router actually runs — not a stand-in for it.
+
+    This used to be `apply_post_visibility(select(Post), viewer)`, which omitted
+    the author filter, the User join, the ordering and the limit. Every
+    assertion below was therefore exercising CF-109/CF-110's shared predicate
+    rather than the feed, and the review that caught it showed the cost: with
+    `status == accepted` removed from the author filter, all 22 tests here still
+    passed.
+    """
+    return feed_router.feed_query(viewer)
 
 VIEWER = uuid.uuid4()
 ANONYMOUS = None
@@ -141,7 +146,7 @@ def test_paging_uses_a_keyset_not_an_offset():
     boundary and skipping another. This is the acceptance criterion."""
     import inspect
 
-    src = inspect.getsource(feed_router.get_feed)
+    src = inspect.getsource(feed_router.feed_query)
     assert "tuple_" in src, "keyset comparison expected"
     assert ".offset(" not in src, "OFFSET paging would duplicate/skip rows"
 
@@ -151,7 +156,7 @@ def test_the_cursor_comparison_matches_the_order_by():
     OFFSET — it skips rows deterministically rather than only under writes."""
     import inspect
 
-    src = inspect.getsource(feed_router.get_feed)
+    src = inspect.getsource(feed_router.feed_query)
     assert "Post.created_at.desc(), Post.id.desc()" in src
     assert "tuple_(Post.created_at, Post.id) < (created_at, post_id)" in src
 
@@ -164,18 +169,20 @@ def test_one_page_is_one_query():
     author, clip and game all arrive as joined columns."""
     import inspect
 
-    src = inspect.getsource(feed_router.get_feed)
-    body = src.split("items: list[PostOut] = []")[1]
+    handler = inspect.getsource(feed_router.get_feed)
+    body = handler.split("items: list[PostOut] = []")[1]
     assert "await db.execute" not in body, "no queries inside the serialize loop"
     assert "db.get(" not in body
-    assert "select(Post, Clip, User)" in src, "author must be joined, not fetched per row"
+    assert "select(Post, Clip, User)" in inspect.getsource(feed_router.feed_query), (
+        "author must be joined, not fetched per row"
+    )
 
 
 def test_has_more_costs_no_extra_query():
     """limit + 1 and discard, rather than a COUNT over the same filtered set."""
     import inspect
 
-    src = inspect.getsource(feed_router.get_feed)
+    src = inspect.getsource(feed_router.feed_query)
     assert "limit + 1" in src
     assert "func.count" not in src
 
@@ -235,7 +242,12 @@ def test_both_gates_resolve_the_tier_not_just_one():
     only the post gate learned about follows, the clip gate would still reject
     it and the feed would silently drop the exact content it exists to show."""
     sql = _sql(_visible(VIEWER)).lower()
-    posts_half, _, clips_half = sql.partition("clips.visibility")
+    # Scope to the WHERE clause. The SELECT list names clips.visibility as a
+    # column now that the real query returns the clip, so partitioning the whole
+    # statement lands inside the column list rather than between the gates.
+    where_at = sql.index("where ")
+    posts_half, sep, clips_half = sql[where_at:].partition("clips.visibility")
+    assert sep, "the clip gate must be in the WHERE clause"
     assert "'followers'" in posts_half, "post gate resolves the tier"
     assert "'followers'" in clips_half, "clip gate resolves it too"
 
@@ -246,7 +258,7 @@ def test_the_feed_reuses_the_shared_predicate():
     copy of the ladder — the same argument that moved posts into access.py."""
     import inspect
 
-    src = inspect.getsource(feed_router.get_feed)
+    src = inspect.getsource(feed_router.feed_query)
     assert "access.apply_post_visibility" in src
     assert "Post.visibility" not in src, "no local visibility logic"
     assert "Clip.visibility" not in src
@@ -280,3 +292,57 @@ def test_both_cursor_decoders_agree_on_what_is_malformed():
             with pytest.raises(HTTPException) as exc:
                 decode(bad)
             assert exc.value.status_code == 400
+
+
+# ── the author filter itself (review finding 1) ─────────────────────────────
+
+
+def test_the_author_filter_requires_an_accepted_edge():
+    """The assertion the old suite was missing.
+
+    `test_only_accepted_follows_widen_the_feed` checks `'accepted'` appears in
+    the compiled SQL — and it does, inside CF-110's visibility EXISTS, which is
+    a different clause about a different question. So dropping
+    `status == accepted` from the *author* filter passed the whole suite.
+
+    This asserts against the author subquery specifically: the IN (...) that
+    decides whose posts are eligible at all, before visibility is considered.
+    """
+    from app.services import follow_graph
+
+    sub = _sql(follow_graph.followed_author_ids(VIEWER)).lower()
+    assert "follows.status" in sub, "the author filter must constrain status"
+    assert "'accepted'" in sub
+    assert "'pending'" not in sub, "a request must not make its target's posts eligible"
+    assert "follows.follower_id" in sub, "scoped to this viewer"
+
+
+def test_the_feed_takes_the_followed_set_from_follow_graph():
+    """One source for 'which accounts count as followed'.
+
+    It had drifted into three copies — access.accepted_follow_exists,
+    is_accepted_follower, and one written out in the router — of which only the
+    first was pinned. The router's is now the shared one.
+    """
+    import inspect
+
+    src = inspect.getsource(feed_router.feed_query)
+    assert "follow_graph.followed_author_ids" in src
+    assert "FollowStatus.accepted" not in src, "no fourth copy of the rule"
+
+
+def test_the_tests_assert_against_the_query_the_router_runs():
+    """Guards the fix itself.
+
+    `_visible` returning anything other than the router's own builder is how
+    this suite drifted into testing the shared predicate instead of the feed.
+    """
+    import inspect
+
+    assert "feed_query" in inspect.getsource(_visible)
+    sql = _sql(_visible(VIEWER)).lower()
+    # Properties that exist only on the real query, absent from the old stand-in.
+    assert "join users" in sql, "the User join the router adds"
+    assert "order by" in sql, "the ordering"
+    assert "limit" in sql, "the page bound"
+    assert "posts.author_id in" in sql, "the author filter"
