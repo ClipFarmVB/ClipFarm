@@ -141,7 +141,8 @@ Two things follow, and both matter more than they look.
   still takes `ran out of rounds @ <sha>`, in this mode as in `build`. That
   sentence is a pointer, not a restatement — it exists because a reader meeting
   two reasons here would otherwise take them as exhaustive. The reasons
-  themselves are defined under [Priority order](#priority-order); if this
+  themselves are defined under [the terminal labels and their
+  reasons](#the-terminal-labels-and-their-reasons); if this
   bullet ever disagrees with them, they win. The second is not optional
   tidiness. Only `needs a decision` routes a PR to a human; giving a judgement
   call the `not our branch` reason means the next unrelated push clears it and
@@ -152,7 +153,7 @@ another account's PR without ever pushing a fix itself.** (At `own` it simply
 pushes the fix, like any other run.) The settle bar wants a semi-cold check,
 and a semi-cold round checks a fix *whoever pushed it*: on another account's
 branch, that is the author responding to the review, and [the brief requires
-that case to work](#priority-order) precisely so an `unsettled: not our branch`
+that case to work](#cold-and-semi-cold-rounds) precisely so an `unsettled: not our branch`
 PR is not stranded. So `unsettled: not our branch` is a **waypoint, not a
 terminus** — the author's next push re-opens the PR, and the next run's
 semi-cold round is what closes the finding.
@@ -251,7 +252,7 @@ stalled the loop; see [Hard rules](#hard-rules).
 It ends when either is true:
 
 - **no in-scope PR needs a round**, by the test in
-  [Priority order](#priority-order) — not a restatement of it, *that* test,
+  [step 1](#step-1--which-prs-need-a-round) — not a restatement of it, *that* test,
   carve-outs included; or
 - the round budget is spent.
 
@@ -265,7 +266,7 @@ unreviewed, which is the "waypoint, not a terminus" promise broken exactly where
 it matters. This is the failure [Mode](#mode) warns about, so it gets no
 exception here.
 
-On the second, see [the budget rule](#priority-order) — that is where the
+On the second, see [the budget rule](#the-run-budget) — that is where the
 amendment lives, and it is the statement that governs.
 
 ---
@@ -367,7 +368,8 @@ one block. The first run discovered three gaps separately, mid-work.
   with GraphQL disabled, and did the whole night through MCP tools instead.
   **That works, and is not a reason to stop.** But say in the report which tool
   you actually used. The data requirements a non-`gh` tool must meet are written
-  against that answer — they are in [Priority order](#priority-order), under
+  against that answer — they are in [what a non-`gh` tool must
+  provide](#what-a-non-gh-tool-must-provide), under
   "these commands are specifications", not in the bullet below this one.
 - **Gate tool versions** — read the versions `ci.yml` installs and compare with
   what is installed here. See the gate step below.
@@ -458,7 +460,7 @@ makes the head SHA get re-read after every round.
 Three things about the command:
 
 - **`.author.login` is correct *here*, and it is the one place in this document
-  that is so.** [The author field rule](#priority-order) says to use
+  that is so.** [The author field rule](#reading-state-back-queries-labels-counts-and-windows) says to use
   `.user.login`, in bold, and it is right — about `pulls/<n>`. This is
   `pulls/<n>/commits`, a different payload: its objects carry `author` and
   `committer` and **no `user` at all** (verified on #311). "Correcting" this to
@@ -618,7 +620,7 @@ counting rule here is phrased against marker **comments**, and a rule phrased
 against reviews would be counting an artifact that is deliberately outside the
 budget and the ceiling.
 
-#### What a non-`gh` tool must provide
+##### What a non-`gh` tool must provide
 
 **If you are not running `gh`, these commands are specifications.** Whatever
 tool you use must give you **every numbered item below**, to the end of the
@@ -667,7 +669,7 @@ sentence. The failure if any item is missing is silent rather than loud:
 tool in the report. A run that cannot establish point 1 should say so and treat
 every marker read as unverified rather than assuming it saw the newest.
 
-#### Markers: what a round writes
+##### Markers: what a round writes
 
 **Every round leaves one marker comment, and selection reads it.** Timestamps
 alone cannot tell a PR stopped mid-cycle from one nobody has touched: a run can
@@ -697,6 +699,8 @@ can ever fire, and nothing settles:
 ```
 gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]"
 ```
+
+##### Routing: what the marker tells the run to do next
 
 Routing reads the latest marker **and** compares its SHA with the PR's current
 head:
@@ -799,14 +803,14 @@ compaction. It is a pattern to re-declare, not state that persists. An unset
 `ROUNDS` makes that filter `test("")`, which matches every comment on the PR and
 returns exactly the count the marker scheme exists to avoid.
 
+##### Posting a round: comment and review
+
 **Every machine-written comment goes through `gh pr comment` — rounds and
 non-rounds alike.** That includes `reopened:` and `unsettled:`, which are
 explicitly not rounds and so are not covered by the rounds rule below. A
 `reopened:` marker posted as a review is invisible to the REST read, which
 silently reverts the counting window to the PR's whole life — the exact failure
 that marker exists to prevent.
-
-#### Posting a round: comment and review
 
 **The marker goes through `gh pr comment`, never `gh pr review`.** A review body
 does not appear in `gh pr view --json comments` at all — #191 carries three
@@ -868,6 +872,8 @@ comment and does not violate it. Do not collapse the two into one artifact in
 either direction: a marker inside a review is unreadable, and findings with no
 review are uncounted.
 
+##### Reading state back: queries, labels, counts and windows
+
 Read the latest marker, and route on it:
 
 ```
@@ -900,8 +906,6 @@ The first-line extractions above end in `| sub("\r$"; "")`. Bodies written
 through the web UI can carry CRLF, which leaves a trailing carriage return on
 the marker line; harmless for the prefix test, but it corrupts the SHA when the
 line is sliced or compared for equality, which routing now does.
-
-#### Reading state back: labels, counts and windows
 
 **The terminal signal is the label, not the marker.** A PR carrying neither
 `review-settled` nor `unsettled` is mid-cycle whatever its latest marker says,
@@ -977,7 +981,7 @@ the second means nothing has been found since it was re-opened. Either way it is
 the case that needs two clean cold rounds — a semi-cold round only exists
 because a finding did, so no marker means no finding.
 
-#### The terminal labels and their reasons
+##### The terminal labels and their reasons
 
 **Skip PRs labelled `review-settled`** unless commits have landed since the
 label was applied. That label is the record that a cold round cleared the bar
@@ -1016,7 +1020,7 @@ tells you to fix what you can and *push* before labelling, so by the time the
 label goes on, the head has moved past the last round's marker. An author
 pushing between a round and a `not our branch` label does the same. Requiring a
 head-matching marker would make both cases impossible to label at all, while
-[the rule against leaving open findings unlabelled](#priority-order) still
+[the rule against leaving open findings unlabelled](#when-you-cannot-fix-it-choosing-a-reason) still
 demands one.
 
 Two of the four need a human to clear them, in different ways — the last two
@@ -1081,7 +1085,7 @@ below:
   in-flight work being guarded, so the permanence stays, and the cost of it
   lands on the report line rather than on a mechanism.
 
-#### Record comments, human removal, and re-opening
+##### Record comments, human removal, and re-opening
 
 **Applying either terminal label posts a record comment**, and that is what
 makes a human's removal detectable at all:
@@ -1238,7 +1242,7 @@ the only thing that can continue the cycle. That case is `all`-scope only since
 the push rule changed, but the carve-out still has to work when it arises, and a
 date test breaks it silently. Identity has no such failure mode.
 
-#### Cold and semi-cold rounds
+##### Cold and semi-cold rounds
 
 **Never review from this session. Spawn a subagent and let it review cold.**
 The session that wrote the code is the most anchored possible reviewer: once it
@@ -1271,6 +1275,8 @@ introduced. It is anchored by construction: it will check the delta rather than
 re-derive the whole diff. That is the trade, and it buys the one thing a cold
 round cannot do — someone other than the author confirming the fix does what
 the finding asked.
+
+##### The semi-cold reviewer's brief
 
 **It posts one marker comment like every other round** — body starting with the
 literal `semi-cold: closes @ <sha>` or `semi-cold: does not close @ <sha>`,
@@ -1332,7 +1338,7 @@ round finishes**: if the head moved during the round, that round is void. It
 does not count against the ceiling, and the PR needs a fresh one against the new
 head.
 
-#### The cold reviewer's brief
+##### The cold reviewer's brief
 
 Its brief: run `/code-review high` on that PR, post one marker comment, and
 submit its findings as a review. Give it the head SHA you captured, and require
@@ -1492,7 +1498,7 @@ If a fix needs no human decision, implement it, push to that PR's branch, and
 reply on the thread saying what changed. If it needs a judgement call, log it
 and leave it.
 
-#### The cycle and the settle bar
+##### The cycle and the settle bar
 
 **This is a cycle, and the order matters.** A cold subagent posts the first
 review. *Then* you push the fix and reply saying what changed. *Then* a
@@ -1567,7 +1573,7 @@ spending budget every lap, and nits are what the settle bar deliberately
 tolerates. Leaving one is the terminating move; file a card if it is worth more
 than that.
 
-#### When you cannot fix it: choosing a reason
+##### When you cannot fix it: choosing a reason
 
 **A finding you cannot fix stops the *cycling*, not the work.** What "the work"
 means depends on why you cannot fix it, and the four cases part company here:
@@ -1585,7 +1591,8 @@ means depends on why you cannot fix it, and the four cases part company here:
   running, so the PR would re-open on its own pushes and cycle forever.
 
   **Unless a finding also needs a judgement — then `needs a decision` wins**, per
-  the precedence under [Priority order](#priority-order), with the latch named in
+  the precedence under [the terminal labels and their
+  reasons](#the-terminal-labels-and-their-reasons), with the latch named in
   the comment as context. Where no finding needs one, `latched` is right and
   `needs a decision` would be wrong: the blocked question is the PR-level one
   about writing over someone else's work, not anything a reviewer raised.
@@ -1652,7 +1659,7 @@ code, so it re-derives the same finding off the same unchanged lines.
 saying what unsticks it, and the difference is whether it clears itself on the
 author's next commit or waits for a human who has not been told they are needed.
 
-#### The ceiling and the budget
+##### The ceiling, and the settling exception
 
 **Ceiling: six rounds per PR per run, cold and semi-cold together**, so a
 pathological PR cannot consume the whole night. Counting only cold rounds would
@@ -1685,7 +1692,7 @@ the counting query charges them automatically; unlike a `reopened:` marker or a
 re-posted marker, nothing here is free. The exception lifts the *per-PR*
 ceiling, never the run-wide budget.
 
-#### Order of work, and logging
+##### Order of work: one PR at a time
 
 **Take one PR all the way through before opening the next.** Review it, fix it,
 check the fix, settle or label it — then move on. Do not run a pass over every
@@ -1707,6 +1714,8 @@ PRs carry no labels at all, so in practice this is mostly "oldest first" — whi
 is the intent, since the oldest have waited longest. Do not order by the
 `overnight-ok` label: that is the *issue* selection gate from
 [Choosing work](#choosing-work) and no PR carries it.
+
+##### The run budget
 
 **Run budget: 32 rounds per run**, cold and semi-cold together. *Rounds*, not
 reviews: each round now submits a GitHub review as well as posting its marker,
@@ -1735,6 +1744,8 @@ If the budget runs out with findings open on a PR, it gets the same treatment as
 the ceiling: `unsettled`, recorded, move on. Never leave a PR with open findings
 carrying no label — unlabelled and unreviewed are indistinguishable to the next
 run, which is the whole reason these labels exist.
+
+##### Logging, and the counting windows
 
 **Log every round as you finish it** — `PR #<n> — <cold|semi-cold>, round
 <k>/6, budget <used>/32` plus the tiers found. A round granted by the settling
@@ -1811,7 +1822,7 @@ hitting the ceiling early — the failure this section exists to prevent. Sortin
 `Z`-suffixed UTC lexicographically picks the later; an empty `REOPENED` sorts
 first and leaves `SINCE`.
 
-#### What a night costs
+##### What a night costs
 
 **What this costs, plainly — and it depends on who opened the PR.**
 
@@ -1905,6 +1916,8 @@ opened**, not only if nobody ever gets to it. The hard rules say so
 independently of who can push. The point of writing this down is that the
 obsolete justification is exactly how a rule gets dropped — whoever next
 re-derives it will find the old reason false and may conclude the rule is too.
+
+##### Why the machinery is shaped this way
 
 The semi-cold round is not defended on cost — it is defended on what silence
 can and cannot establish. It asks a narrow question a reviewer can actually
