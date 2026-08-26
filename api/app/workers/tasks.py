@@ -245,6 +245,19 @@ def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start:
         raise self.retry(exc=exc)
 
 
+def _json_safe_key(key):
+    """`_json_safe` for a dict key: hashable in, hashable out.
+
+    An ndarray is unhashable and so can never be a key; a tuple key can, and
+    stays a tuple rather than becoming the list `_json_safe` would return.
+    """
+    if isinstance(key, tuple):
+        return tuple(_json_safe_key(k) for k in key)
+    if hasattr(key, "dtype") and hasattr(key, "tolist"):
+        return key.tolist()
+    return key
+
+
 def _json_safe(value):
     """Plain-Python copy of a nested structure, with numpy scalars unwrapped.
 
@@ -267,18 +280,18 @@ def _json_safe(value):
     yields the plain 0.88 literal and the same code path works.
 
     Matching pins fix it today (see Dockerfile.api); sending plain floats means a
-    future bump on either side cannot bring it back.
+    future bump on either side cannot bring the *request* back. The response is
+    not covered by this function and needs no equivalent pass today —
+    `classify_action` returns float literals and `x()`/`y()` cast with `float()`,
+    so what comes back is already plain — but that is a property of those
+    heuristics, not a guarantee this function makes. Anything that starts
+    returning numpy from the Modal side needs the same treatment there.
     """
     if isinstance(value, dict):
         # Keys ride the same pickle as values, so a numpy scalar key is the
-        # same hazard. Scalars only: an ndarray is unhashable and can never be
-        # a key, and full `_json_safe` on keys would turn a tuple key into an
-        # unhashable list.
-        return {
-            (k.tolist() if hasattr(k, "dtype") and hasattr(k, "tolist") else k):
-                _json_safe(v)
-            for k, v in value.items()
-        }
+        # same hazard — but they cannot go through `_json_safe` itself, which
+        # returns lists for sequences and would make a tuple key unhashable.
+        return {_json_safe_key(k): _json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(v) for v in value]
     # numpy scalars and arrays, without importing numpy into this module.
