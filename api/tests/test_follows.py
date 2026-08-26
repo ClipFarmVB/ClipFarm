@@ -18,7 +18,7 @@ from app.models.clip import Clip  # noqa: E402
 from app.models.follow import FollowStatus  # noqa: E402
 from app.models.game import Game  # noqa: E402
 from app.models.visibility import Visibility  # noqa: E402
-from app.services import access  # noqa: E402
+from app.services import access, follow_graph  # noqa: E402
 
 VIEWER = uuid.uuid4()
 OWNER = uuid.uuid4()
@@ -288,3 +288,73 @@ def test_the_database_refuses_a_negative_counter():
     sql = "\n".join(p.read_text(encoding="utf-8") for p in versions.glob("*.py"))
     for col in ("follower_count", "following_count"):
         assert re.search(rf"{col}\s*>=\s*0", sql), f"no CHECK guarding {col}"
+
+
+def test_the_python_half_filters_on_accepted_too():
+    """The half nothing pinned.
+
+    Every other part of this feature treats the followers tier as a security
+    boundary — the fail-closed default, the pending/accepted split, the
+    anonymous short-circuit, the EXISTS pinned to both ends of the edge. The one
+    function that decides the answer on the single-object paths had no assertion
+    on it at all: deleting `status == accepted` from is_accepted_follower left
+    the entire suite green.
+
+    What that costs is the exact drift CF-108's seam existed to prevent. A
+    PENDING request would grant followers-tier access on GET /games/{id},
+    /clips/{id} and /posts/{id}, while the list endpoints stayed correct because
+    they go through the SQL half — the two halves disagreeing, in the direction
+    that grants access, with nothing red anywhere.
+
+    `test_followers_tier_matches_between_python_and_sql` doesn't reach it: it
+    asserts can_view_game honours the boolean and that 'followers' appears in
+    the SQL, both true no matter how the edge was resolved. The resolution lives
+    here, in a module that test never touches.
+
+    Needs no database — a capturing session gets at the statement.
+    """
+    import asyncio
+
+    captured: list[str] = []
+
+    class _CapturingSession:
+        async def execute(self, stmt):
+            captured.append(_sql(stmt).lower())
+
+            class _Result:
+                def first(self):
+                    return None
+
+            return _Result()
+
+    asyncio.run(
+        follow_graph.is_accepted_follower(_CapturingSession(), VIEWER, OWNER)
+    )
+
+    assert captured, "is_accepted_follower must actually query"
+    sql = captured[0]
+    assert "'accepted'" in sql, (
+        "the Python half must filter on status='accepted' — without it a PENDING "
+        "request grants followers-tier access on every single-object read, while "
+        "the SQL half stays correct and no existing test notices"
+    )
+    assert "'pending'" not in sql
+    # Same scoping the SQL half is held to: this viewer following this owner,
+    # not any accepted edge anywhere.
+    assert "follower_id" in sql, "must pin the viewer end"
+    assert "followee_id" in sql, "must pin the owner end"
+
+
+def test_both_halves_are_pinned_not_just_the_sql_one():
+    """Guards the pair rather than each side alone.
+
+    The gap above existed because the SQL half had two tests naming 'accepted'
+    and the Python half had none — an asymmetry nothing declared. This states it
+    as a requirement so a third resolver can't arrive unpinned.
+    """
+    import inspect
+
+    for fn in (follow_graph.is_accepted_follower, access.accepted_follow_exists):
+        assert "accepted" in inspect.getsource(fn), (
+            f"{fn.__module__}.{fn.__name__} must constrain status to accepted"
+        )
