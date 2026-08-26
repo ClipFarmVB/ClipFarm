@@ -313,7 +313,10 @@ async def complete_upload(
         await db.commit()
         raise HTTPException(
             status_code=413,
-            detail=f"File too large. Max {settings.max_upload_bytes // (1024 * 1024)} MB",
+            detail=(
+                f"File is {quota.fmt_size(head['size'])}; the maximum is "
+                f"{quota.fmt_size(settings.max_upload_bytes)}."
+            ),
         )
 
     # Charge the quota (CF-91). This is the binding claim, taken here rather

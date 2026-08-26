@@ -1,6 +1,7 @@
 """Synchronous DB helpers for use inside Celery tasks (no asyncio event loop)."""
 import uuid
 from datetime import datetime
+from urllib.parse import urlparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -13,6 +14,53 @@ from app.models.upload_event import UploadEvent
 # Sync engine (Celery workers don't run in an asyncio loop)
 _sync_url = settings.database_url.replace("+asyncpg", "")
 _engine = create_engine(_sync_url, pool_pre_ping=True)
+
+
+# games.error_message is a bounded column and nothing on the write path enforced
+# that. The value is `str(exc)` from an arbitrary failure — a Modal error
+# carrying a remote traceback runs long. Overflowing raised DataError from
+# *inside* the task's own `except` handler, which cost the `failed` write and
+# the retry decision (the `finally` still ran, so the lock was released), so the
+# row sat in `processing` forever: the CF-184 stranded-game symptom, reached by
+# the code that exists to explain a failure. Clamped here rather than at each
+# call site so every writer is covered, including the next one.
+#
+# The width is read off the model, not repeated: it is the column that imposes
+# this, so a column that changes must not need a matching edit here to stay
+# correct. Unbounded means no clamp at all — which is how CF-226 lands. That
+# card widens the column to Text (as CF-217 did for games.upload_id, the same
+# class of overflow), and this file should not appear in its diff.
+#
+# Until then this is a mitigation, not a fix: the value that overflows is a
+# Modal remote traceback, i.e. the operator-actionable half of the failure, so
+# the clamp truncates the diagnostic someone opened the row to read.
+# getattr, not a plain attribute: an unbounded column type need not carry a
+# `length` at all, and that case is exactly the one this must survive.
+_ERROR_MESSAGE_MAX = getattr(Game.__table__.c.error_message.type, "length", None)
+
+
+def _fit_error_message(message: str) -> str:
+    """Clamp to the column width, cutting the MIDDLE and marking the cut.
+
+    The middle because both ends carry the signal: an exception's type and
+    message lead, and when the long part is a remote traceback the frame that
+    actually raised is last. A tail cut keeps the preamble and drops the answer.
+    The full text is in the worker log and Sentry either way — this column is
+    the copy an operator sees first, not the only copy.
+    """
+    if not _ERROR_MESSAGE_MAX or len(message) <= _ERROR_MESSAGE_MAX:
+        return message
+    marker = " …[cut]… "
+    keep = _ERROR_MESSAGE_MAX - len(marker)
+    if keep < 2:
+        # A column too narrow to hold the marker and a character from each end.
+        # Absurd today at 1024, but this function's whole contract is that a
+        # column change needs no edit here — and a negative `keep` made the
+        # slices run backwards and returned MORE than the width, reinstating the
+        # DataError it exists to prevent. Fall back to a plain head cut.
+        return message[:_ERROR_MESSAGE_MAX]
+    head = keep // 2
+    return message[:head] + marker + message[len(message) - (keep - head):]
 
 
 def sync_get_game(game_id: uuid.UUID) -> Game | None:
@@ -57,7 +105,7 @@ def sync_set_game_status(
         if processed_at:
             game.processed_at = processed_at
         if error_message:
-            game.error_message = error_message
+            game.error_message = _fit_error_message(error_message)
         s.commit()
 
 
@@ -76,7 +124,7 @@ def sync_note_game_error(game_id: uuid.UUID, message: str):
         game = s.get(Game, game_id)
         if not game:
             return
-        game.error_message = message
+        game.error_message = _fit_error_message(message)
         s.commit()
 
 
@@ -200,3 +248,56 @@ def sync_delete_game_clips(game_id: uuid.UUID) -> list[str]:
             s.delete(clip)
         s.commit()
     return urls
+
+
+def sync_expired_raw_uploads(cutoff: datetime) -> list[tuple[uuid.UUID, str]]:
+    """
+    (game_id, raw_video_url) for every game whose raw upload predates `cutoff`
+    and is safe to purge (CF-194).
+
+    Restricted to terminal states: a queued or processing game still needs its
+    source, and the retention window is far longer than any run, so excluding
+    them costs nothing.
+    """
+    with Session(_engine) as s:
+        rows = (
+            s.query(Game.id, Game.raw_video_url)
+            .filter(
+                Game.raw_video_url.isnot(None),
+                Game.created_at < cutoff,
+                Game.status.in_((GameStatus.ready, GameStatus.failed)),
+            )
+            .all()
+        )
+        return [(gid, url) for gid, url in rows]
+
+
+def sync_referenced_raw_keys() -> set[str]:
+    """
+    Every R2 key still referenced by a game row, across all statuses.
+
+    The safety guard for the retention sweep's reconciliation pass: an object
+    in this set is live and must never be deleted, whatever its age. `uploading`
+    rows are included deliberately — an upload in flight is referenced from the
+    moment its ticket is issued (CF-163).
+    """
+    with Session(_engine) as s:
+        rows = s.query(Game.raw_video_url).filter(Game.raw_video_url.isnot(None)).all()
+    return {urlparse(url).path.lstrip("/") for (url,) in rows if url}
+
+
+def sync_clear_raw_video_url(game_id: uuid.UUID, expected_url: str) -> bool:
+    """
+    Null a game's raw pointer, but only while it still holds `expected_url`.
+
+    False means the row changed underneath us (deleted, or the pointer moved)
+    and the caller must NOT delete the object — it may no longer be the one
+    this sweep looked at.
+    """
+    with Session(_engine) as s:
+        game = s.get(Game, game_id)
+        if not game or game.raw_video_url != expected_url:
+            return False
+        game.raw_video_url = None
+        s.commit()
+        return True

@@ -53,6 +53,29 @@ you have real users or the no-backups risk becomes unacceptable.
 ### 3. Fill the secrets
 Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 
+> ⚠️ **`sync: false` keys do not appear in the env group until you add them.**
+> Render only creates keys that carry a literal `value:`; a `sync: false` key is
+> a declaration that *you* will supply it, not an empty slot waiting to be
+> filled. So "I applied the blueprint" and "the services have credentials" are
+> two different statements, and the group looking short is the normal state, not
+> a sync failure.
+>
+> Since **CF-172** a missing one is loud: `ENVIRONMENT=production` (pinned in the
+> group, so it arrives on its own) makes api and worker refuse to start, naming
+> what is absent —
+>
+> ```
+> ENVIRONMENT=production but these required settings are not set:
+> DATABASE_URL, CORS_ORIGINS, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ...
+> ```
+>
+> Before that, a blank `DATABASE_URL` fell back to a localhost default and the
+> pre-deploy migration died with `Connect call failed ('127.0.0.1', 5432)`,
+> which reads as a Supabase outage; blank R2 or Supabase keys survived boot and
+> surfaced at the first upload or auth check instead. If you see either symptom
+> on an older deploy, check the env group before checking the database.
+> `SENTRY_DSN` stays genuinely optional — blank means monitoring off.
+
 **`clipfarm-shared` group** (used by api + worker):
 
 | Key | Where to find it |
@@ -76,11 +99,11 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 
 **`clipfarm-api`:**
 - `API_BASE_URL` → this service's public URL (set after step 4, or its custom domain)
-- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.ca`
+- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.ca`. Checked at startup since **CF-172** — it has a localhost default, so unset it does not error, it silently CORS-blocks the whole frontend.
 
 **`clipfarm-worker`:**
 - `ROBOFLOW_API_KEY` → Roboflow → Settings → API Keys
-- `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` → modal.com → Settings → API Tokens. **Required**, not optional: since CF-164 every model runs on Modal and the worker image ships no torch, so blank tokens no longer mean "slow local CPU" — they mean trajectory-only labels — and a hard failure, not fabricated clips, if the ball model is also unreachable. Deploy both Modal apps once from a machine with `modal setup` auth before the first job:
+- `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` → modal.com → Settings → API Tokens. **Required**, not optional: since CF-164 every model runs on Modal and the worker image ships no torch, so blank tokens no longer mean "slow local CPU" — they mean trajectory-only labels — and a hard failure, not fabricated clips, if the ball model is also unreachable. Since **CF-172** the worker refuses to boot without them rather than degrading quietly (the api is unaffected — it never calls Modal). Deploy both Modal apps once from a machine with `modal setup` auth before the first job:
 
   ```bash
   modal deploy ml/modal_app.py && modal deploy ml/modal_pose.py
@@ -314,9 +337,9 @@ they weigh SPF/DKIM alignment differently.
 4. **GPU offload** — the worker log should say `Ball tracking ran on Modal GPU`
    and `Pose refinement ran on Modal GPU`, and both `clipfarm-ball-tracking` and
    `clipfarm-pose` should show a run on the Modal dashboard. A `falling back to
-   local CPU` line means the tokens or the deploy are missing; on a `starter`
-   worker that fallback finds no torch and quietly degrades the labels, so this
-   check is the one that catches it.
+   local CPU` line means the tokens or the deploy are missing; no torch ships
+   in this image at any plan, so that fallback finds none and quietly degrades
+   the labels — this check is the one that catches it.
 
    There is no model-cache disk to verify any more — CF-164 removed it along
    with the last model in this image. Pose weights are baked into the
@@ -362,6 +385,18 @@ there is nothing left to reap.
 What a deploy still costs is **the work in flight**: a requeued game restarts
 from the beginning, not from where it was killed. So deploying while a long
 match is processing is wasteful, not dangerous.
+
+The requeue is also not instant, and 2h is a floor on the wait, not a ceiling.
+Redis has no push-based cancel, so a killed worker's task is restored to the
+queue only once it has been unacked for the broker `visibility_timeout`
+(`celery_visibility_timeout`, 2h) — and `restore_visible` runs only while a
+worker is polling the broker, which a `--pool=solo` worker busy on another game
+is not. So a killed game can sit in `processing` for the 2h timeout *plus*
+however long the surviving worker spends on other jobs first. This is why the
+timeout is kept low rather than raised (CF-192): in the deployed image every
+model runs on Modal (CF-164, no local-CPU path), so no job approaches 2h and
+there is no worst case to size up for — raising it would only stretch this
+recovery window.
 
 **How immediate "released" is.** A Render deploy stops the container, the socket
 closes, and the lock goes within milliseconds. The slow case is a connection
@@ -436,13 +471,37 @@ same Blueprint when there are real users; that's also what would let
   prepared statements. If you hit `prepared statement already exists`, use the
   session-mode pooler port or append the appropriate asyncpg options. (The dev
   stack already runs against the pooler, so the working URL format carries over.)
-- **Worker sizing** is the main cost lever, and CF-164 spent it: the worker runs
-  on `starter` (512 MB), down from `standard` (2 GB). That is affordable only
-  because no model ships in the image — ball tracking and pose are both on
-  Modal, so torch, ultralytics and Roboflow `inference` are gone. **If you ever
-  put an ML runtime back into `Dockerfile.api`, size the worker back up in the
-  same change**; a torch import on 512 MB OOMs the box.
-  `api/tests/test_pose_modal.py` pins the two together.
+- **Worker sizing** is the main cost lever, and it is back on `standard` (2 GB /
+  1 CPU) as of CF-240. CF-164 had taken it down to `starter` (512 MB) once ball
+  tracking and pose both moved to Modal and torch, ultralytics and Roboflow
+  `inference` left the image — but no game ever finished processing on 512 MB.
+  `libx264` peaks at ~407 MB even at `FFMPEG_THREADS=1` (CF-224) against a
+  process already holding ~95 MB, so `cutting_clips` OOM-killed the worker on
+  every production attempt. CF-239 removes the re-encode for browser-safe
+  sources, but HEVC, VP9 and ProRes still need libx264 and the same ~400 MB, so
+  the headroom stays. Worker cost is $7 → $25/mo; $31.25 → $49.25/mo in total.
+  **If you ever put an ML runtime back into `Dockerfile.api`, do not size this
+  back down**; a torch import on 512 MB OOMs the box, and
+  `api/tests/test_pose_modal.py` pins the two together whenever the plan reads
+  `starter`.
+- **The worker's `model-cache` disk is gone from the blueprint — check it is gone
+  from the *service* (CF-225).** CF-164 deleted the `disk:` block when the last
+  model left the image; two days later the live instance still mounted it, with
+  28 KB used of 974 MB. Auto-deploy is off, so the worker simply had not been
+  redeployed — but Render's disk docs don't say whether a blueprint sync removes
+  a disk at all, so don't assume the deploy does it. After the next worker
+  deploy, Render Dashboard → `clipfarm-worker` → **Disks**: if one is still
+  listed, delete it there. Nothing in the *worker* writes under `/models` any
+  more, and the ball-position cache lives in R2, so there is nothing on that
+  disk to preserve. `/models` is still a live path on both Modal images — the
+  `clipfarm-model-cache` Volume mounts there for ball tracking, and pose stages
+  its baked-in weights there — but that is Modal's storage, unrelated to this
+  disk and untouched by deleting it.
+
+  This is the step that actually unlocks scaling: **a service with a disk
+  attached cannot run more than one instance**, so while it survives,
+  `numInstances: 1` is a platform constraint rather than a choice. Once it is
+  detached, CF-65c's horizontal scaling is a `numInstances` edit.
 - **Production now runs the full-quality pose config** (`yolov8s-pose` @ 1280,
   every 4th frame — `app/config.py`'s defaults), because it runs on a T4 rather
   than on the worker's CPU. The old warning here — that prod ran a light

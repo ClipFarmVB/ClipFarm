@@ -149,5 +149,5 @@ npx wrangler@4 r2 bucket lifecycle add clipfarm abort-incomplete-uploads \
   --abort-multipart-days 7
 ```
 
-Seven days is comfortably longer than `upload_url_ttl_seconds` (6h), so it can
+Seven days is comfortably longer than `upload_url_ttl_seconds` (12h), so it can
 never abort an upload a client could still legitimately finish.

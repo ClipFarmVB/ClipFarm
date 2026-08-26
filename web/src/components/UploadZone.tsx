@@ -20,12 +20,14 @@ import { cn } from "@/lib/utils";
 // never does — the server's values are the real limits. Before CF-163 these
 // were the limits, and they disagreed with the server's (15 GB here vs a 2 GB
 // cap), so an in-between file was only rejected after the bytes had moved.
+// Keep these in step with api/app/config.py: a fallback above the real cap
+// would reintroduce exactly that failure whenever the config request fails.
 const FALLBACK_CONFIG: UploadConfig = {
-  max_upload_bytes: 2 * 1024 ** 3,
+  max_upload_bytes: 8 * 1024 ** 3,
   allowed_content_types: ["video/mp4", "video/quicktime", "video/x-matroska", "video/webm"],
   single_put_max_bytes: 100 * 1024 ** 2,
   part_size_bytes: 100 * 1024 ** 2,
-  url_ttl_seconds: 6 * 3600,
+  url_ttl_seconds: 12 * 3600,
   // Quota fallbacks are deliberately "nothing used yet": if the config never
   // arrives we must not invent a limit and block a legitimate upload. The
   // readout is hidden in that case (see `quotaKnown`), and the server enforces
@@ -78,6 +80,7 @@ function fmtRemaining(remainingSec: number): string {
   return `Uploading — about ${Math.round(remainingSec / 60)} min left`;
 }
 
+/** Mirrors quota.fmt_size in the api — change the two together. */
 function fmtLimit(bytes: number): string {
   const gb = bytes / 1024 ** 3;
   return gb >= 1 ? `${Number(gb.toFixed(gb < 10 ? 1 : 0))} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
@@ -123,7 +126,8 @@ export function UploadZone() {
     if (!config.allowed_content_types.includes(f.type))
       return "Unsupported file type. Upload an MP4, MOV, MKV, or WebM.";
     if (f.size > config.max_upload_bytes)
-      return `File too large. Maximum is ${fmtLimit(config.max_upload_bytes)}.`;
+      // Same sentence the server would have returned — see quota.fmt_size.
+      return `File is ${fmtLimit(f.size)}; the maximum is ${fmtLimit(config.max_upload_bytes)}.`;
     return null;
   };
 
@@ -268,7 +272,7 @@ export function UploadZone() {
         onDrop={(e) => { e.preventDefault(); if (!uploading) onDrop(e); else setDragging(false); }}
         onClick={() => !file && document.getElementById("file-input")?.click()}
         className={cn(
-          "relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-12 text-center transition-all duration-200",
+          "relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition-all duration-200 sm:p-12",
           dragging
             ? "border-brand/50 bg-brand/5 scale-[1.01]"
             : file
@@ -298,7 +302,7 @@ export function UploadZone() {
             {!uploading && (
               <button
                 onClick={() => document.getElementById("file-input")?.click()}
-                className="mt-3 text-[11px] text-subtle hover:text-muted transition-colors"
+                className="mt-2 min-h-9 px-2 text-[11px] text-subtle hover:text-muted transition-colors"
               >
                 Click to change file
               </button>
@@ -350,7 +354,7 @@ export function UploadZone() {
             checked={condense}
             onChange={(e) => setCondense(e.target.checked)}
             disabled={uploading}
-            className="mt-0.5 accent-[var(--brand,#6366f1)]"
+            className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--brand,#6366f1)]"
           />
           <span>
             <span className="block text-[13px] font-medium text-foreground">Remove dead time</span>

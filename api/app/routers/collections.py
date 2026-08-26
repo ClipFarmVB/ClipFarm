@@ -112,10 +112,21 @@ async def list_collection_clips(collection_id: uuid.UUID, user_id: UserId, db: D
         for p in pr.scalars():
             player_map[p.id] = p.name
 
+    # A collection spans games, so source_available (CF-194) needs one lookup
+    # per distinct game rather than the single game a clip listing has.
+    game_ids = {c.game_id for c in clips}
+    raw_available: dict[uuid.UUID, bool] = {}
+    if game_ids:
+        gr = await db.execute(
+            select(Game.id, Game.raw_video_url).where(Game.id.in_(game_ids))
+        )
+        raw_available = {gid: url is not None for gid, url in gr}
+
     out = []
     for c in clips:
         d = ClipOut.model_validate(c)
         d.player_name = player_map.get(c.player_id) if c.player_id else None  # type: ignore[arg-type]
+        d.source_available = raw_available.get(c.game_id, False)
         if storage.r2_configured():
             d.clip_url = storage.presign_from_stored_url(c.clip_url, expires_in=3600)  # type: ignore[assignment]
             d.thumbnail_url = (
