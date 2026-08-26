@@ -245,15 +245,31 @@ def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start:
         raise self.retry(exc=exc)
 
 
+def _json_safe_key(key):
+    """`_json_safe` for a dict key: hashable in, hashable out.
+
+    An ndarray is unhashable and so can never be a key; a tuple key can, and
+    stays a tuple rather than becoming the list `_json_safe` would return.
+    """
+    if isinstance(key, tuple):
+        return tuple(_json_safe_key(k) for k in key)
+    if hasattr(key, "dtype") and hasattr(key, "tolist"):
+        return key.tolist()
+    return key
+
+
 def _json_safe(value):
     """Plain-Python copy of a nested structure, with numpy scalars unwrapped.
 
     The pipeline builds confidences with numpy arithmetic and the results leak
     out as numpy scalars: `ball.py::classify_contact_action` computes
     `min(0.88, 0.65 + sp_after / 1500.0)` where `sp_after` is an `np.hypot`
-    result, so the numpy operand wins the `min()` for any contact under
-    ~345 px/s, `round()` preserves the type, and it lands in the rally's
-    "confidence" via `_make_rally`.
+    result, so the numpy operand can win the `min()`. Speed alone does not
+    decide it: the expression sits inside `y_frac < 0.45 and vy_after > 60.0
+    and sp_after > 180.0` (`ball.py:394`), and above ~345 px/s the constant
+    0.88 wins instead — so ~180-345 px/s is necessary for the leak, not
+    sufficient. When it does leak, `round()` preserves the type and it lands in
+    the rally's "confidence" via `_make_rally`.
 
     In one process that is invisible. Across the Modal boundary it is a live
     hazard: a numpy-2 pickle names `numpy._core`, which a numpy-1.x image cannot
@@ -264,10 +280,18 @@ def _json_safe(value):
     yields the plain 0.88 literal and the same code path works.
 
     Matching pins fix it today (see Dockerfile.api); sending plain floats means a
-    future bump on either side cannot bring it back.
+    future bump on either side cannot bring the *request* back. The response is
+    not covered by this function and needs no equivalent pass today —
+    `classify_action` returns float literals and `x()`/`y()` cast with `float()`,
+    so what comes back is already plain — but that is a property of those
+    heuristics, not a guarantee this function makes. Anything that starts
+    returning numpy from the Modal side needs the same treatment there.
     """
     if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
+        # Keys ride the same pickle as values, so a numpy scalar key is the
+        # same hazard — but they cannot go through `_json_safe` itself, which
+        # returns lists for sequences and would make a tuple key unhashable.
+        return {_json_safe_key(k): _json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(v) for v in value]
     # numpy scalars and arrays, without importing numpy into this module.
