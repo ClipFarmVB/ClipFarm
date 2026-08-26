@@ -805,9 +805,10 @@ do not factor it out.** The blocks below are meant to be run as they stand, and
 an agent landing mid-document copies one block, not the section around it. With
 `ROUNDS` unset the filter becomes `test("")`, which matches **every** comment on
 the PR (verified against `gh`'s own jq: 4 of 4 strings, against 1 of 4 for the
-real pattern). In the round-counting block that returns the PR's total comment
-count, reads as a spent ceiling, and labels `ran out of rounds` a PR that has
-spent none — a fail-open in the one direction this document guards hardest. The
+real pattern). In the round-counting block that makes the count come back as the
+PR's total number of comments, which reads as a spent ceiling and labels
+`ran out of rounds` a PR that has spent none — a fail-open in the one direction
+this document guards hardest. The
 same hazard is stated for `FINDINGS` below, for the same reason.
 
 **It matches the four routed forms and nothing else**, and it requires the SHA.
@@ -1060,7 +1061,8 @@ have that question dissolved by an unrelated commit and the human never asked.
 The reason that needs a human therefore has to win, or it is not a reason at
 all. The pairings involving `needs a decision` are worked through case by case
 in [choosing a reason](#when-you-cannot-fix-it-choosing-a-reason); the two that
-do not involve it are stated here and nowhere else.
+do not involve it are stated here, and repeated only as a pointer in the
+tie-break note there.
 
 **Whatever the reason, the label needs a round from *this run* behind it.** The
 label asserts that findings are open and this run cannot close them; with no
@@ -1355,14 +1357,25 @@ the two bookkeeping sources — your logged round count and the marker count on
 the PR — then disagree with nothing to say which is right. If it did not land,
 re-post it correctly; that repost is not a new round and does not spend budget.
 
-**A semi-cold round with nothing to check writes `does not close`.** Routing
-sends one here when a `cold: clean` marker sits at the current head and a
-finding from an earlier round is still open — a clean round was posted over that
-finding without closing it, so there are no commits since the marker for this
-round to read. Do not treat the empty list as a reason to improvise: nothing has
-landed, so the finding is unfixed by definition. Write `does not close` and let
-step 2 fix it. The round costs one against the ceiling and buys the thing the
-clean marker skipped, which is the only kind of check that can close a finding.
+**A semi-cold round with nothing to check writes `does not close` — and
+"nothing" is measured from the marker that raised the finding, never from the
+clean one.** Routing sends a round here when a `cold: clean` marker sits at the
+current head and a finding from an earlier round is still open. That clean
+marker matching the head says only that no code has landed since *it*; it says
+nothing about the finding, which may be several commits older. Where a fix
+landed between the two, that fix is precisely what this round exists to check,
+and it is checkable: read the commits since the finding's own marker, as the
+brief above already specifies, and judge it on those.
+
+Reading emptiness off the clean marker instead would force `does not close` onto
+code that was already fixed, send it back to step 2 to be fixed again, and burn
+the PR to its ceiling on the loop the routing table's `differs` rows exist to
+prevent.
+
+Where the commit list since the finding's own marker really is empty, nothing
+has landed and the finding is unfixed by definition: write `does not close` and
+let step 2 fix it. That round costs one against the ceiling and buys the check
+the clean marker skipped, which is the only kind that can close a finding.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, apply the `unsettled` label with a
