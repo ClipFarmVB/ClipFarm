@@ -705,13 +705,13 @@ gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]"
 ##### Routing: what the marker tells the run to do next
 
 Routing reads the latest marker and compares its SHA with the PR's current
-head. Those two pick the row. The `cold: clean` rows each need one more fact,
-named in the third column and drawn from three sources — whether a finding is
-still open, whether one was raised in the counting window, and how many
-head-matching `cold: clean` markers the PR carries. Read each from the list
-under the table; do not count the rows or the sources against this sentence,
-for the reason [the numbered list above](#what-a-non-gh-tool-must-provide)
-gives:
+head. Those two pick the row. The `cold: clean` rows at a matching SHA need one
+more fact each, named in the third column and drawn from three sources —
+whether a finding is still open, whether one was raised in the counting window,
+and how many head-matching `cold: clean` markers the PR carries. Read each from
+the list under the table; do not count the rows or the sources against this
+sentence, for the reason [the numbered list
+above](#what-a-non-gh-tool-must-provide) gives:
 
 | latest round marker | SHA vs head | further condition | next |
 |---|---|---|---|
@@ -757,8 +757,10 @@ the run could get stuck:
   something for the next round to check.
 - **"Still open" is read from the marker stream, not from memory.** A finding is
   open when the PR carries a `cold: findings` or `semi-cold: does not close`
-  marker with no later `semi-cold: closes`. That is the whole test, it survives a
-  compaction, and it is also what identifies *the marker that raised the finding*
+  marker with no later `semi-cold: closes`. That is the test routing uses — a
+  proxy, with the settle bar still the authority, since a `semi-cold: closes`
+  checking one finding says nothing about a second raised by the same round. It
+  survives a compaction, and identifies *the marker that raised the finding*
   — the latest such marker with no `closes` after it. Do not substitute a count
   of findings *raised*: the `FINDINGS` query below never returns to zero once a
   PR has had one, so routing on it would hold a converged PR on these rows until
@@ -1353,8 +1355,6 @@ normally costs you; here that cost is the point. Step 2 of
 same mechanism, pointed at a diff. **The first round on a PR is always cold**,
 and so is the round that awards `review-settled`.
 
-##### The semi-cold reviewer's brief
-
 A **semi-cold** round is for checking a fix — **whoever pushed it.** Usually
 that is this run; on another account's branch, it is the author responding to
 the review, and that case has to work or a `unsettled: not our branch` PR could
@@ -1366,6 +1366,8 @@ introduced. It is anchored by construction: it will check the delta rather than
 re-derive the whole diff. That is the trade, and it buys the one thing a cold
 round cannot do — someone other than the author confirming the fix does what
 the finding asked.
+##### The semi-cold reviewer's brief
+
 
 **It posts one marker comment like every other round** — body starting with the
 literal `semi-cold: closes @ <sha>` or `semi-cold: does not close @ <sha>`,
