@@ -36,6 +36,10 @@ set -e
 # real install the stubs shadow. Note the steps stay `-m` module invocations —
 # on Windows `Scripts\` is typically off PATH too, so bare `ruff`/`mypy`
 # executables are not an alternative.
+# Cleared first: PY is a plausible name to have exported for other reasons, and
+# an inherited value would sail past the guard below and be used as if it had
+# been probed.
+PY=""
 for _candidate in python py python3; do
   if "$_candidate" -c "import sys; sys.exit(0)" >/dev/null 2>&1; then
     PY="$_candidate"
