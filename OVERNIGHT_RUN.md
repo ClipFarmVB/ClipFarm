@@ -800,6 +800,16 @@ not strand the PR:
 ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
 ```
 
+**Every block that uses it re-declares it, and that repetition is deliberate —
+do not factor it out.** The blocks below are meant to be run as they stand, and
+an agent landing mid-document copies one block, not the section around it. With
+`ROUNDS` unset the filter becomes `test("")`, which matches **every** comment on
+the PR (verified against `gh`'s own jq: 4 of 4 strings, against 1 of 4 for the
+real pattern). In the round-counting block that returns the PR's total comment
+count, reads as a spent ceiling, and labels `ran out of rounds` a PR that has
+spent none — a fail-open in the one direction this document guards hardest. The
+same hazard is stated for `FINDINGS` below, for the same reason.
+
 **It matches the four routed forms and nothing else**, and it requires the SHA.
 A broader pattern would match `cold: no findings @ abc1234` or a marker with no
 SHA at all: selection would pick it up, the ceiling would be charged for it, and
