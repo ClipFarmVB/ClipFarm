@@ -909,6 +909,102 @@ def test_a_deterministic_report_failure_is_written_without_its_message(monkeypat
     )
 
 
+def test_a_failed_write_after_losing_the_lock_keeps_the_original_LockLost(monkeypatch):
+    """The sibling path's guard, which I had claimed needed a second harness.
+
+    It does not: passing a `progress` that raises `LockLost` drives
+    `_mark_failed_if_lock_free` through the existing helper. A review round
+    pointed that out by writing the test, which is a better argument than the
+    one I made for deferring it.
+
+    Unguarded, the database error from that write propagates out of the call and
+    the `raise` below it never runs — so the DB error *replaces* the `LockLost`
+    in what Sentry sees, and the reason the game was abandoned disappears.
+    """
+    from app.workers.locks import LockLost
+
+    def exists(_gid):
+        return True
+
+    def set_status(_gid, status, **kw):
+        if status == "failed":
+            raise _DbDown("unreachable while marking failed")
+
+    def progress(*a, **k):
+        raise LockLost("another worker took the lock")
+
+    result, _ = _drive_failing_task(monkeypatch, exists, set_status, progress=progress)
+
+    assert isinstance(result.result, LockLost), (
+        f"expected the original LockLost to survive, got {result.result!r} — a "
+        "failure while marking the row loses the reason the game was abandoned"
+    )
+
+
+def test_a_recorded_permanent_failure_settles_without_retrying(monkeypatch):
+    """The ordinary case, which nothing asserted.
+
+    Every other test here drives a *failed* report. This is the path where the
+    write succeeds: a permanent error is recorded and the task settles. A review
+    round found that deleting `reported = True` from the successful write passes
+    the whole suite — the flag was pinned only on the fallback, so the common
+    path was covered by nothing.
+    """
+    from app.workers.tasks import PermanentPipelineError
+
+    wrote = []
+
+    def exists(_gid):
+        return True
+
+    def set_status(_gid, status, **kw):
+        if status == "failed":
+            wrote.append(kw.get("error_message"))
+
+    def progress(*a, **k):
+        raise PermanentPipelineError("codec unsupported")
+
+    result, _ = _drive_failing_task(monkeypatch, exists, set_status, progress=progress)
+
+    assert len(wrote) == 1 and wrote[0] is not None, (
+        f"the failure should be recorded once, with its message; got {wrote}"
+    )
+    assert result.result is None, (
+        f"expected the task to settle, got {result.result!r} — a permanent "
+        "failure that WAS recorded must not re-run the pipeline"
+    )
+
+
+def test_a_deleted_game_abandons_without_retrying(monkeypatch):
+    """The probe's `return` is what makes abandoning mean anything.
+
+    A review round found that deleting it passes the whole suite: nothing
+    asserted that a game which no longer exists stops rather than being
+    processed and retried into an FK failure.
+    """
+    touched = []
+
+    def exists(_gid):
+        return False
+
+    def set_status(_gid, status, **kw):
+        touched.append(status)
+
+    result, released = _drive_failing_task(monkeypatch, exists, set_status)
+
+    # Asserting the *result* is not enough: without the `return` the run falls
+    # into the pipeline, fails, and the handler's own probe abandons it there —
+    # same `None`, having done the work. What distinguishes them is that nothing
+    # should have been touched at all.
+    assert touched == [], (
+        f"a deleted game was processed before being abandoned: wrote {touched}"
+    )
+    assert not released, "the lock should never have been taken"
+    assert result.result is None, (
+        f"expected a deleted game to abandon, got {result.result!r}"
+    )
+
+
 # ── error_message must never be what strands a game (CF-225) ──────────────
 #
 # The same stranded-in-`processing` symptom as the lock cases above, reached
