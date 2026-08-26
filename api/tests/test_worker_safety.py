@@ -834,6 +834,81 @@ def test_an_unreportable_permanent_failure_still_retries(monkeypatch):
     )
 
 
+def test_an_unanswerable_probe_before_the_try_does_not_end_the_task(monkeypatch):
+    """The retry this fix schedules must survive its own first database call.
+
+    `_abandoned()` runs *above* the task's `try`, so an exception there is
+    uncaught — and there is no `autoretry_for` on this task to schedule another
+    attempt after it. On the retry the handler schedules for an outage, an
+    unguarded probe here would spend that attempt and end the chain: CF-277's
+    bug one level up, undoing the fix for it.
+
+    A probe that cannot answer proceeds instead of abandoning, so the run
+    reaches the handler and the retry decision. Unguarded, `_DbDown` escapes
+    from `_abandoned()` before the pipeline starts at all.
+    """
+    def exists(_gid):
+        raise _DbDown("unreachable before the try")
+
+    def set_status(_gid, status, **kw):
+        if status == "failed":
+            raise _DbDown("unreachable from the handler")
+
+    result, _ = _drive_failing_task(monkeypatch, exists, set_status)
+
+    assert not isinstance(result.result, _DbDown), (
+        "the pre-`try` probe ended the task, so the retry scheduled for an "
+        "outage dies on its own first database call"
+    )
+    assert isinstance(result.result, _PipelineBoom), (
+        f"expected the run to proceed and reach the retry decision, got "
+        f"{result.result!r}"
+    )
+
+
+def test_a_deterministic_report_failure_is_written_without_its_message(monkeypatch):
+    """An over-long message must not cost two full pipeline runs.
+
+    The CF-225 failure is *deterministic*: it fails identically on every
+    attempt, so falling straight to the retry re-runs the whole pipeline —
+    download, tracking, everything — to strand the row anyway. Writing the
+    status without the payload that may be the problem gets it out of
+    `processing` at once.
+
+    Asserted through the `PermanentPipelineError` branch because that is where
+    the difference is visible: with the fallback the report lands, `reported`
+    is True, and the task returns instead of retrying.
+    """
+    from app.workers.tasks import PermanentPipelineError
+
+    wrote = []
+
+    def exists(_gid):
+        return True
+
+    def set_status(_gid, status, **kw):
+        if status != "failed":
+            return
+        if kw.get("error_message") is not None:
+            raise _DbDown("value too long for the column")
+        wrote.append("failed-without-message")
+
+    def progress(*a, **k):
+        raise PermanentPipelineError("codec unsupported")
+
+    result, _ = _drive_failing_task(monkeypatch, exists, set_status, progress=progress)
+
+    assert wrote == ["failed-without-message"], (
+        "the message-less write should have been attempted after the first "
+        f"write failed; calls: {wrote}"
+    )
+    assert result.result is None, (
+        f"expected the task to settle rather than retry, got {result.result!r} — "
+        "a deterministic report failure that was recorded must not re-run the "
+        "pipeline to reach the same place"
+    )
+
+
 # ── error_message must never be what strands a game (CF-225) ──────────────
 #
 # The same stranded-in-`processing` symptom as the lock cases above, reached

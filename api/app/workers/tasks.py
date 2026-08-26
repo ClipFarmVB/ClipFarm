@@ -628,8 +628,25 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
     # The game may already be gone: deleted before the worker picked this up, or
     # this is a retry scheduled after a delete. Its DB row and raw video are gone,
     # so there's nothing to do — abandon rather than 404 on download and retry.
-    if _abandoned():
-        return
+    #
+    # Guarded because this is the FIRST database call on a retry, and it sits
+    # above the `try` below — so an exception here is uncaught, and there is no
+    # `autoretry_for` on this task to schedule another attempt after it. On a
+    # retry the handler scheduled for a database outage, an unguarded probe here
+    # would spend that attempt and end the chain, which is the failure CF-277 is
+    # about, one level up.
+    #
+    # A probe that cannot answer proceeds rather than abandons: the run may fail
+    # later, and the handler's own probe catches a genuine deletion. Abandoning
+    # on an unanswerable probe would silently drop a game that still exists.
+    try:
+        if _abandoned():
+            return
+    except Exception:
+        logger.warning(
+            "Could not check whether game %s still exists — proceeding; a real "
+            "deletion is caught at the next checkpoint", game_id, exc_info=True,
+        )
 
     # CF-65a: never process one game on two workers at once. A redelivered or
     # duplicated task whose game is already in flight is a harmless no-op.
@@ -1199,9 +1216,23 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             # `_abandoned()`, so a genuinely deleted game abandons cleanly there
             # rather than being retried into an FK failure.
             logger.exception(
-                "Could not record the failure for game %s — retrying rather than "
-                "leaving it in `processing`", game_id,
+                "Could not record the failure for game %s — trying without the "
+                "message", game_id,
             )
+            # Retrying is the right answer for an outage, and the wrong one for a
+            # deterministic failure: an over-long message (CF-225) fails
+            # identically on every attempt, so falling straight to the retry
+            # would re-run the entire pipeline twice and strand the row anyway.
+            # The status without the payload that may be the problem still gets
+            # it out of `processing`, and costs one more statement to try.
+            try:
+                sync_set_game_status(gid, "failed")
+                reported = True
+            except Exception:
+                logger.exception(
+                    "Could not mark game %s failed at all — retrying rather than "
+                    "leaving it in `processing`", game_id,
+                )
 
         # `reported` gates this, not just the exception type. A permanent failure
         # we could not write down is still worth another attempt at writing down:
