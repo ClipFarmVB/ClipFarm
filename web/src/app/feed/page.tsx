@@ -132,12 +132,21 @@ function Feed() {
 
   return (
     // Breaks out of the root layout's padded, max-width column: this is the one
-    // route that owns the whole viewport. `left-0 md:left-[220px]` clears the
-    // fixed sidebar on desktop and ignores it on a phone — the sidebar's own
-    // mobile behaviour is CF-60, not this card.
+    // route that owns its whole area. The insets mirror CF-60's layout exactly
+    // rather than approximating it:
+    //
+    //   * `lg`, not `md` — CF-60 keeps the sidebar a drawer until `lg` and only
+    //     then pins it at 220px, so insetting at `md` would leave a dead
+    //     220px gutter on tablets for a sidebar that isn't there.
+    //   * `top-[52px]` below `lg`, matching <main>'s `pt-[52px]`, because CF-60
+    //     puts a fixed header bar there. Covering it would take the menu button
+    //     with it and strand a phone user on the feed with no nav.
+    //   * `z-10` keeps it under that header (z-20), the drawer (z-40) and the
+    //     drawer's dimming overlay (z-30) — at z-30 it painted over the overlay
+    //     and broke the dim.
     <div
       ref={scrollerRef}
-      className="fixed inset-y-0 right-0 left-0 z-30 snap-y snap-mandatory overflow-y-scroll overscroll-y-contain bg-black md:left-[220px]"
+      className="fixed bottom-0 left-0 right-0 top-[52px] z-10 snap-y snap-mandatory overflow-y-scroll overscroll-y-contain bg-black lg:left-[220px] lg:top-0"
     >
       {posts.map((post, i) => (
         <div key={post.id} data-index={i} className="h-full">

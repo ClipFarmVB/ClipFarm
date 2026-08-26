@@ -129,8 +129,8 @@ separate motion pass.
   signed into the URL, so R2 itself rejects a mismatch. Size cannot be signed
   (S3/R2 ignore Content-Length as a query parameter), which is why the HEAD exists.
   Files over 100 MiB use multipart — not for the 5 GiB single-PUT ceiling, which the
-  2 GB cap keeps out of reach, but so a dropped connection retries one part instead
-  of the whole file. XHR (not fetch) on the frontend for upload progress.
+  100 MiB threshold keeps out of reach, but so a dropped connection retries one part
+  instead of the whole file. XHR (not fetch) on the frontend for upload progress.
 - **Auth:** Supabase issues JWTs; the API verifies them (JWKS), never handles
   passwords. Next.js middleware guards routes server-side.
 - **Migrations:** Alembic. The api container's start command applies them automatically
@@ -145,10 +145,11 @@ separate motion pass.
   "CPU-only torch" (`--index-url .../whl/cpu`) to avoid shipping CUDA, then went
   further: with ball tracking (CF-11) and pose (CF-164) both on Modal, torch,
   ultralytics, transformers and Roboflow `inference` leave the image entirely.
-  What that buys is a **`starter` (512 MB) Render worker instead of `standard`
-  (2 GB)** — the image was sized by its heaviest import, not its workload — and,
-  because pose now has a GPU, the full-quality config (`yolov8s-pose` @ 1280)
-  that a 2 GB CPU box could not afford.
+  What that buys is, because pose now has a GPU, the full-quality config
+  (`yolov8s-pose` @ 1280) that a 2 GB CPU box could not afford — the image was
+  sized by its heaviest import, not its workload. It briefly bought a `starter`
+  (512 MB) Render worker too, but CF-240 put that back to `standard` (2 GB):
+  what sizes this box now is `libx264` during cutting, not an import.
 
   It also removes two long-standing build hazards along with the packages that
   caused them, both worth remembering if an ML dependency is ever added back:

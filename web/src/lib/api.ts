@@ -194,6 +194,9 @@ export interface Clip {
   thumbnail_url: string;
   labels: string[];
   created_at: string;
+  // False once the game's raw upload has passed its retention window (CF-194):
+  // the clip still plays, but it can no longer be re-cut, so trimming is off.
+  source_available?: boolean;
 }
 
 export interface ClipFilters {

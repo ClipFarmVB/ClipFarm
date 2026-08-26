@@ -8,7 +8,11 @@ if _project_root not in sys.path:
 
 from celery import Celery
 from celery.signals import celeryd_init
-from app.config import settings
+from app.config import (
+    REQUIRED_IN_PRODUCTION_WORKER,
+    production_config_error,
+    settings,
+)
 from app.observability import init_sentry
 
 celery_app = Celery(
@@ -44,7 +48,9 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     # Redis default is 3600s: a task longer than that is redelivered while it's
-    # still running (CF-45). Raise it above worst-case task time.
+    # still running (CF-45). Since CF-184 the advisory lock — not this timeout —
+    # is what stops the resulting concurrent double-processing, so it is no longer
+    # sized to outrun the job; config.py has what it now trades off (CF-192).
     broker_transport_options={"visibility_timeout": settings.celery_visibility_timeout},
     # ── CF-150: don't store task results ──────────────────────────────────────
     # Nothing reads them: progress and terminal state are polled from Postgres
@@ -68,6 +74,40 @@ def _init_worker_monitoring(**_kwargs):
     import) keeps the worker's CeleryIntegration out of the api process, which
     imports celery_app only to enqueue tasks."""
     init_sentry("worker")
+
+
+@celeryd_init.connect
+def _check_worker_production_config(**_kwargs):
+    """Refuse to boot a production worker without its Modal tokens (CF-172).
+
+    The rest of the production config guard is a validator on `Settings`
+    (app/config.py). These two cannot live there: `Settings` is imported by the
+    api as well, and the api never calls Modal — failing the web service over a
+    worker credential would be a worse outage than the one being fixed. This
+    signal fires only in the worker daemon, so the check lands on the process
+    that actually needs them.
+
+    Why it is a hard failure rather than a warning: since CF-164 no model ships
+    in this image, so blank tokens do not mean "slow local CPU" any more. Every
+    game completes with trajectory-only labels, and ROBOFLOW_API_KEY unset sends
+    the pipeline down the pose-first path — output that looks like a successful
+    run and is not. Registered after Sentry above so the refusal is reported
+    before the process dies.
+
+    SystemExit, NOT a RuntimeError, and this is load-bearing: celery's
+    `Signal.send` wraps every receiver in `except Exception` and appends the
+    exception to a list of responses nobody reads ("In Celery 'send' and
+    'send_robust' do the same thing" — its own docstring). A RuntimeError here
+    is swallowed and the worker boots anyway. The swallow is not even visible:
+    celeryd_init fires from `Worker.on_before_init`, before Celery configures
+    logging, so `Signal.send`'s own `logger.exception` reaches nothing.
+    SystemExit is a BaseException, so `except Exception` cannot catch it and the
+    process exits 1 without reaching `ready`. test_config.py pins this by
+    sending the handler through a real celery Signal.
+    """
+    missing = settings.missing_in_production(REQUIRED_IN_PRODUCTION_WORKER)
+    if missing:
+        raise SystemExit(production_config_error(missing))
 
 
 if settings.debug:
