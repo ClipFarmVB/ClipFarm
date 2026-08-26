@@ -1,5 +1,16 @@
-# Test-only dependencies (not installed into the runtime image).
+# Test-only dependencies (not installed into the runtime image), plus — since
+# CF-276 — numpy, which the runtime image does ship; see its note below.
 #   pip install -r api/requirements-dev.txt && cd api && pytest tests
+#
+# NEEDS PYTHON 3.11 (what ci.yml and Dockerfile.api both run). numpy 1.26.4
+# publishes no wheel for 3.12+, so on a newer interpreter pip falls back to
+# building it from source and this whole install dies in a wall of compiler
+# output — which reads as "my machine is broken", not "this repo is 3.11".
+# It takes the rest of the file down with it, so nothing here gets installed.
+# The fix is an interpreter, not a marker: `; python_version < "3.13"` would
+# quietly drop numpy from the pin-consistency test and the pre-commit gate,
+# both of which match only a plain `==`, restoring the silent skip CF-276
+# closed. A dev-set test asserts that pin stays plain for exactly that reason.
 # The api CI job installs THIS file, so everything here is available in CI and
 # api/tests genuinely executes there — keep test-only deps in this file rather
 # than requirements.txt, which builds the production image.
@@ -11,14 +22,18 @@ pytest==8.3.4
 # it those tests importorskip themselves into a silent pass, which is the exact
 # failure mode requirements-dev exists to prevent.
 PyYAML==6.0.2
-
-# The condense stage's signal work is numpy, so api/tests/test_condense_windows.py
-# opens with `pytest.importorskip("numpy")`. numpy is installed by Dockerfile.api,
-# not by requirements.txt, so without this line the documented contributor
-# workflow (`pip install -r api/requirements-dev.txt && pytest tests`) skips that
-# whole file and still reports green — the CF-187 `[]`-is-a-verdict regression
-# included. CI only covers it by side effect of a numpy it installs for ml/tests.
-# PINNED to match Dockerfile.api: an unpinned dev install would hand local tests
-# numpy 2 while the image runs 1.26.4, across the pickle boundary that file
-# documents.
+# Two guards need it, and both importorskip themselves into a silent pass
+# without it — the same failure PyYAML is here for:
+#   - test_pose_modal.py's numpy-payload guard (CF-276), which had been
+#     skipping in CI since it was written.
+#   - test_condense_windows.py (CF-187), whose signal work is numpy; without
+#     this line the documented contributor workflow skips that whole file and
+#     still reports green, the `[]`-is-a-verdict regression included. CI only
+#     covered it by side effect of a numpy installed for ml/tests.
+#
+# Pinned to the version every image that matters already pins: Dockerfile.api,
+# ml/requirements.txt and ml/modal_pose.py all say 1.26.4. The behaviour under
+# test IS a numpy-1-vs-2 split — a numpy-2 pickle names `numpy._core`, which a
+# 1.x image cannot import — so an unpinned dev numpy would test whichever major
+# pip resolved that day, which is close to testing nothing in particular.
 numpy==1.26.4
