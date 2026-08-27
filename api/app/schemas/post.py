@@ -1,9 +1,27 @@
 import uuid
 from datetime import datetime
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.visibility import Visibility
+
+
+class _Author(Protocol):
+    """What `PostAuthor.from_author` needs off a user row.
+
+    A Protocol rather than importing `User`: this schema is imported by the
+    model layer's consumers and a concrete import runs the cycle the other way.
+    Annotating it at all is the point — `from_author` is the one
+    security-relevant serializer here, and an unannotated parameter opts exactly
+    it out of type checking, so a column rename would land silently.
+    """
+
+    id: uuid.UUID
+    username: str | None
+    display_name: str | None
+    avatar_url: str | None
+    username_is_generated: bool
 
 
 class PostAuthor(BaseModel):
@@ -27,7 +45,7 @@ class PostAuthor(BaseModel):
     avatar_url: str | None
 
     @classmethod
-    def from_author(cls, author) -> "PostAuthor":
+    def from_author(cls, author: _Author) -> "PostAuthor":
         """Withhold a handle its owner never chose.
 
         `create_post` does not require a claimed handle, so a backfilled user
@@ -42,7 +60,7 @@ class PostAuthor(BaseModel):
         """
         return cls(
             id=author.id,
-            username=None if getattr(author, "username_is_generated", False) else author.username,
+            username=None if author.username_is_generated else author.username,
             display_name=author.display_name,
             avatar_url=author.avatar_url,
         )
@@ -102,6 +120,13 @@ class PostUpdate(BaseModel):
     Visibility is deliberately not editable here: widening a post may require
     widening the clip it references, which is a decision the UI has to surface
     explicitly rather than something a PATCH quietly performs.
+
+    **The two empties differ.** Omitting `caption`, or sending `null`, means
+    "leave it alone"; sending `""` clears it. There is no way to say "clear it"
+    with `null` because that is the same JSON a client sends for a field it
+    isn't editing, and guessing between them would make a partial update
+    destructive. `ProfileUpdate` uses the same convention, which is the other
+    reason not to invert it here alone.
     """
 
     caption: str | None = Field(default=None, max_length=500)

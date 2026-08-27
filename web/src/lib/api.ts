@@ -45,9 +45,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // 360 min per 24 hours left" — which the raw form buried inside JSON.
   if (!res.ok) await throwApiError(res);
   // A 204 has no body, so res.json() rejects with "Unexpected end of JSON
-  // input" — on *success*. Every DELETE here returns 204, which is why
-  // deleteGame hand-rolls its own fetch to sidestep this helper. Handled here
-  // instead so the next DELETE doesn't have to.
+  // input" — on *success*. Every DELETE here returns 204, and handling it here
+  // is what lets them all share this helper: deleteGame used to hand-roll its
+  // own fetch purely to sidestep the JSON parse.
   if (res.status === 204 || res.headers.get("content-length") === "0") {
     return undefined as T;
   }
@@ -88,13 +88,8 @@ export function renameGame(id: string, title: string): Promise<Game> {
   });
 }
 
-export async function deleteGame(id: string): Promise<void> {
-  const authHeaders = await getAuthHeaders();
-  const res = await fetch(`${API_URL}/games/${id}`, {
-    method: "DELETE",
-    headers: authHeaders,
-  });
-  if (!res.ok) await throwApiError(res);
+export function deleteGame(id: string): Promise<void> {
+  return request<void>(`/games/${id}`, { method: "DELETE" });
 }
 
 // ─── Uploads ─────────────────────────────────────────────────────────────────
@@ -197,6 +192,15 @@ export interface Clip {
   // False once the game's raw upload has passed its retention window (CF-194):
   // the clip still plays, but it can no longer be re-cut, so trimming is off.
   source_available?: boolean;
+  // The widest tier a post over this clip may take — the clip's own visibility
+  // or its game's, resolved server-side (CF-109). The composer greys out
+  // anything above it; without this the only way to learn the ceiling was to
+  // submit and read the 409, and since nothing can raise a clip's visibility
+  // yet that was a dead end rather than a step.
+  //
+  // Optional, and absent means `private`: a response from a path that hasn't
+  // been taught to resolve it offers less, never more.
+  effective_visibility?: Visibility;
 }
 
 export interface ClipFilters {

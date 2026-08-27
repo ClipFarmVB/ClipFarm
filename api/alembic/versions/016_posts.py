@@ -75,7 +75,13 @@ def upgrade() -> None:
     # never touched the single-column one. That index would have been pure
     # write cost on a table the pipeline appends to per post.
     op.create_index("ix_posts_author_created", "posts", ["author_id", "created_at"])
-    op.create_index("ix_posts_created_at", "posts", ["created_at"])
+    # No bare ix_posts_created_at. It was here without an argument, and held to
+    # the same standard as the paragraph above it there is no reader for one:
+    # the profile query is author-scoped and CF-111's feed is scoped to a follow
+    # set, so both enter through author_id and take the composite. A global
+    # created_at btree would be write cost on an append-heavy table for a
+    # "newest posts anywhere" query that does not exist. If discovery (CF-115)
+    # wants one, it wants it with that query's actual shape.
 
 
 def downgrade() -> None:

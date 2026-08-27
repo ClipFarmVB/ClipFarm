@@ -6,6 +6,7 @@ import { X, ChevronLeft, ChevronRight, Link2, Send } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { PostComposerModal } from "@/components/PostComposerModal";
 import { SOCIAL_ENABLED } from "@/lib/features";
+import { needsHandle, useMe } from "@/lib/useMe";
 import { type Clip, getClipShareUrl } from "@/lib/api";
 import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 
@@ -36,6 +37,18 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   // render; this needs no effect at all.
   const [composingFor, setComposingFor] = useState<string | null>(null);
   const composing = composingFor === clip.id;
+
+  // Posting needs a claimed handle. `PostAuthor` withholds a *generated* one —
+  // the CF-107 backfill derives handles from email local parts, so publishing
+  // one is an existence oracle — which means a handle-less author posts a card
+  // that names nobody and links nowhere.
+  //
+  // The model comment on `User.username` has always said "the frontend blocks
+  // posting until one is claimed"; until now nothing did. The claim banner in
+  // layout.tsx is already the route out, so this hides the entry point rather
+  // than inventing a second prompt.
+  const me = useMe(SOCIAL_ENABLED);
+  const canPost = SOCIAL_ENABLED && me !== null && !needsHandle(me);
 
   // Keyboard navigation
   useEffect(() => {
@@ -159,7 +172,7 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           <span className="text-[11px] text-subtle">
             {formatDuration(clip.end_time - clip.start_time)}
           </span>
-          {SOCIAL_ENABLED && (
+          {canPost && (
           <button
             onClick={() => setComposingFor(clip.id)}
             className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-muted hover:bg-surface-high hover:text-foreground transition-colors focus-ring"

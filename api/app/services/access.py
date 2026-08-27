@@ -115,6 +115,38 @@ def _effective(clip: Clip, game: Game) -> Visibility:
     return clip.visibility or game.visibility
 
 
+# Least → most visible. Exported because publishing needs to *compare* two
+# tiers, not just evaluate one: a post may never be wider than the clip behind
+# it. The comparison lived in the posts router next to a second copy of
+# `clip.visibility or game.visibility`, which is the duplication this module's
+# docstring argues against — the readability ladder moved and the ordering one
+# did not.
+_RANK = {Visibility.private: 0, Visibility.followers: 1, Visibility.public: 2}
+
+
+def at_most(requested: Visibility, allowed: Visibility) -> bool:
+    """Is `requested` no wider than `allowed`?
+
+    A *write*-side rule, unlike everything else here, and deliberately so: it is
+    the same ladder, and a second ordering of the same three values is exactly
+    what drifts when a tier is added.
+    """
+    return _RANK[requested] <= _RANK[allowed]
+
+
+def widest_allowed(clip: Clip | None, game: Game | None) -> Visibility:
+    """The most permissive tier a post over this clip may take.
+
+    Named separately from `effective` because the API hands this to clients so
+    the composer can grey out what it cannot offer, and "the ceiling for a post"
+    is the thing being published rather than an internal detail of the clip.
+    Falls back to `private` when either side is missing — fail closed.
+    """
+    if clip is None or game is None:
+        return Visibility.private
+    return _effective(clip, game)
+
+
 def may_read(
     viewer_id: uuid.UUID | None,
     owner_id: uuid.UUID,
