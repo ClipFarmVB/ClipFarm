@@ -743,12 +743,20 @@ def test_the_walk_needs_the_box_sizes_to_be_plausible():
     """What keeps the step-over from accepting anything at all.
 
     A box states its length before its type, so arbitrary bytes have to carry a
-    chain of usable lengths to reach a type this recognises.
+    chain of usable lengths to reach a type this recognises. Each case below is
+    built so that dropping the length guard flips the verdict to "video" —
+    asserting on bytes that reject either way would pin nothing.
     """
-    # Unknown type, and a size too small to be a box header — not a chain.
-    assert games_router._sniff_video_container(b"\x00\x00\x00\x03XXXXmdat" + b"\x00" * 8) is None
-    # Unknown type with size 0: "runs to end of file", so nothing follows it.
-    assert games_router._sniff_video_container(b"\x00\x00\x00\x00XXXXmdat" + b"\x00" * 8) is None
+    # size 4: too small to hold a box header, so the chain stops. Without the
+    # guard the walk lands on `mdat` at offset 4 and calls this a video.
+    assert games_router._sniff_video_container(
+        b"\x00\x00\x00\x04XXXXmdat" + b"\x00" * 8
+    ) is None
+    # size 0 means "runs to the end of the file", so nothing follows it.
+    # Without the guard the walk never advances and re-reads the same bytes.
+    assert games_router._sniff_video_container(
+        b"\x00\x00\x00\x00XXXXmdat" + b"\x00" * 8
+    ) is None
     # A size that walks past the window rather than onto a known type.
     assert games_router._sniff_video_container(b"\x7f\xff\xff\xffXXXX" + b"\x00" * 56) is None
 
@@ -760,19 +768,39 @@ def test_still_not_a_video(fake_storage):
     assert games_router._sniff_video_container(b"\x89PNG\r\n\x1a\n" + b"\x00" * 56) is None
 
 
-def test_the_too_short_floor_is_not_the_read_window():
-    """These are separate numbers on purpose.
+def test_a_box_using_the_64_bit_size_form_is_walked():
+    """Size `1` means the real, 64-bit length follows the type.
+
+    Not a curiosity at this repo's limits: a 32-bit box size tops out at 4 GiB
+    and uploads run to 8 GB, so a large `mdat` has to use this form. A walk that
+    read the literal `1` would treat the box as malformed and stop.
+    """
+    header = (
+        b"\x00\x00\x00\x01" + b"XXXX" + (16).to_bytes(8, "big")
+        + b"\x00\x00\x07\x54mdat" + b"\x00" * 8
+    )
+    assert games_router._sniff_video_container(header) == "iso-bmff"
+
+
+def test_an_object_shorter_than_the_read_window_still_completes(fake_storage, fake_task):
+    """The read window and the delete-unread floor are separate numbers.
 
     `too_short` drives the destructive branch; the window is sized for how far
     the sniff may have to walk. Tying them together would mean every widening of
-    the read deleted more real files — a 40-byte object is not something to
-    reject just because the sniff would have liked 64 bytes.
+    the read deleted more real files, so this object is deliberately longer than
+    MIN_CONTAINER_BYTES and shorter than VIDEO_SIGNATURE_BYTES.
     """
-    assert games_router.MIN_CONTAINER_BYTES <= games_router.VIDEO_SIGNATURE_BYTES
-    assert games_router.MIN_CONTAINER_BYTES <= 16, (
-        "this is the size below which an object is deleted unread; keep it at "
-        "the shortest thing that could carry a container header"
+    assert games_router.MIN_CONTAINER_BYTES < 32 < games_router.VIDEO_SIGNATURE_BYTES
+    fake_storage["_head"]["value"] = {"size": 32, "content_type": "video/mp4"}
+    fake_storage["_header"]["value"] = ISO_BMFF_HEADER
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert fake_storage["delete_file"] == [], (
+        "a 32-byte object is not too short to sniff; only the floor decides that"
     )
+    assert len(fake_task.calls) == 1
 
 
 def test_oversize_object_is_deleted_and_rejected(fake_storage, fake_task, monkeypatch):
