@@ -109,7 +109,7 @@ ml/modal_pose.py           Modal GPU deployment of pose  (deploy: modal deploy m
 
 Dockerfile.api             image for api + worker (shared)
 Dockerfile.web             image for web
-docker-compose.yml         db · redis · api · worker · web  (project name: clipfarm)
+docker-compose.yml         db · redis · api · worker · web (+ `eval`, profile-gated)
 .hooks/pre-commit          runs the exact CI checks locally
 ```
 
@@ -242,6 +242,74 @@ Notes:
 - `docker compose restart` does **not** reload env files. To pick up `.env.docker` changes:
   `docker compose up -d --force-recreate <service>`.
 - The worker mounts `./api` and `./ml`, so Python changes are picked up on worker restart.
+- **The dev worker is capped at production's size** — 2 GB / 1 CPU, tracking
+  `plan: standard` in `render.yaml`, with `FFMPEG_THREADS=1` to match (CF-241).
+  Unconstrained it could not reproduce CF-224's OOM, because that bug needs the
+  gap between the cores a container *advertises* and the CPU it is *allowed*, and
+  a dev machine never lies about its own hardware. `memswap_limit` matches, which
+  is how you say *no swap* — Docker otherwise grants swap equal to the limit
+  again, and Render has none, so the repro would quietly decline to fail. Both
+  fields need kernel swap accounting to bind at all; if a 512 MB run refuses to
+  OOM, check `docker info` for the "No swap limit support" warning before
+  believing it.
+
+  Both directions are sanctioned, and both are a **file** rather than a
+  remembered prefix — the same reasoning that gave `eval` its own service:
+
+  ```bash
+  docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.repro.yml up worker
+  ```
+  ```bash
+  docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.fast.yml up worker
+  ```
+
+  The first reproduces the production OOM — every number in it is load-bearing,
+  which is why they are pinned in the file and in `api/tests/`. The second is the
+  **fast path for local end-to-end runs**, for when the question is "does the
+  pipeline work" and waiting on one core is just waiting. It costs you the
+  fidelity the defaults exist for, so no timing or memory claim may come from a
+  run like that — those need default limits.
+
+  **Keep `--env-file .env.docker`.** It is what Compose interpolates from.
+  Dropping it does not fall back to `.env.docker`: it falls back to `./.env` if
+  the repo root has one (gitignored, so yours may differ from everyone else's),
+  and to the compiled-in defaults otherwise — so `POSTGRES_HOST_PORT` is ignored
+  and the db container fights whatever is already on 5432.
+
+  **One knob set.** `WORKER_MEM_LIMIT` / `WORKER_CPUS` /
+  `WORKER_FFMPEG_THREADS` size the worker wherever it is defined — the default
+  in `docker-compose.yml`, and the fast overlay, which only moves their
+  defaults. You will need them on a smaller machine: `cpus: 4` cannot be created
+  on an engine with fewer than four, which Docker reports as `range of CPUs is
+  from 0.01 to N.00`. Check `docker info --format '{{.NCPU}}'`, and **lower the
+  threads with the CPUs** — 4 x264 threads on 2 CPUs is CF-224's
+  oversubscription again:
+
+  ```bash
+  WORKER_CPUS=2 WORKER_FFMPEG_THREADS=2 WORKER_MEM_LIMIT=4g docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.fast.yml up worker
+  ```
+
+  The repro overlay reads none of them: its numbers *are* the measurement, and a
+  resized repro completes, which reads as "already fixed".
+  `api/tests/test_dev_prod_parity.py` fails it for reading any variable at all,
+  and fails the fast overlay for reading one outside `WORKER_*` — in either
+  spelling, `${VAR}` or `$VAR`.
+
+  **Pass them as a prefix.** Compose reads them from the shell, from whatever
+  `--env-file` names, *and* from a `./.env` in the repo root if one exists — so
+  a value parked anywhere but your command line applies to every run without
+  appearing in what you typed.
+
+  Anything CPU-bound and *not* about production's box — the eval harness, the
+  tuning scripts — belongs on the `eval` service: same image, no limits, and
+  profile-gated so `up` never starts it.
+  `docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.harness --help`.
+  Nothing in the repo hands it the queue: no `depends_on`, no celery command,
+  and no broker URLs, so `run --rm eval celery ...` looks for `localhost:6379` in
+  a container with no redis. That is not the same as it being unable to reach
+  one — `eval` still loads your `.env.docker`, so a `CELERY_BROKER_URL` set there
+  does arrive, and those jobs would then run unconstrained. Don't. To process a
+  real game faster, use the fast overlay above. See `ml/eval/README.md`.
 - Modal GPU is optional **for the dev stack only**, and the deployed image has no
   torch to fall back to (CF-164) — see `DEPLOY_RENDER.md`. Without `MODAL_TOKEN_*`
   in Docker Compose, ball tracking and pose have no local runtime and the pipeline

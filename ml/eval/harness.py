@@ -306,7 +306,8 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     (pre_gate = all scored rallies, post_gate = those above the gate).
 
     Runs impure edges (R2, ffmpeg, cv2, app config) behind lazy imports — must
-    be invoked where those deps live (the worker container).
+    be invoked where those deps live — the `eval` service, not `worker`,
+    which carries production's resource limits (CF-241).
     """
     import tempfile
 
@@ -430,7 +431,8 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
     that replace it.
 
     Runs impure edges (R2, ffmpeg, cv2, app config) behind lazy imports — must be
-    invoked where those deps live (the worker container).
+    invoked where those deps live — the `eval` service, not `worker`,
+    which carries production's resource limits (CF-241).
     """
     import tempfile
 
