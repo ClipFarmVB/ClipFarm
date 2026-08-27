@@ -953,6 +953,40 @@ def test_whitespace_is_still_reported_alongside_a_parse_failure(clean_env, value
     assert "whitespace" in problems[0]
 
 
+def test_production_rejects_a_backslash(clean_env):
+    """Browsers treat `\\` as `/` (WHATWG URL), so `https://x.ca\\evil.com` is
+    sent as Origin `https://x.ca` and the entry matches nothing — the same
+    silent outage as the tab this guard already catches.
+
+    urlsplit does NOT agree with browsers here: it leaves the backslash in the
+    netloc, which is why the entry was accepted. No legitimate origin contains
+    one.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors("https://clipfarm.ca\\evil.com")
+
+    assert "nothing after it" in str(exc.value)
+
+
+def test_whitespace_does_not_draw_punycode_advice(clean_env):
+    """A non-breaking space makes the host non-ASCII, so the punycode check
+    fired alongside the whitespace one — and "use the xn-- spelling" is advice
+    the operator cannot act on. The fix is to delete the space, after which the
+    host may be plain ASCII.
+
+    One refused boot either way, so this is about the instruction being right
+    rather than about a wasted deploy.
+    """
+    assert _origin_problems("https://\xa0clipfarm.ca") == [
+        "contains whitespace — no browser can send this as an Origin"
+    ]
+    # A genuinely unlatinised host, with no whitespace, still gets the advice.
+    assert any(
+        "punycode" in problem
+        for problem in _origin_problems("https://\u043a\u043b\u0438\u043f.\u0440\u0444")
+    )
+
+
 def test_production_rejects_a_percent_escape_in_the_host(clean_env):
     """`clipfarm%2eca` reads as `clipfarm.ca` to whoever pasted it and matches
     nothing, because a browser sends the decoded host in an Origin header. Same
@@ -1312,8 +1346,8 @@ def test_a_boot_error_names_every_pydantic_error_not_just_the_first(
 
     It also pins that each problem names its field. Taking only `msg` rendered
     `CONDENSE_MODE=banana` as a bare "Input should be 'rules' or 'guarded'":
-    true, and useless, since the operator is not told which of 62 settings it
-    is about. pydantic puts the field on its own line and the first version of
+    true, and useless, since the operator is not told which setting it is about,
+    out of dozens. pydantic puts the field on its own line and the first version of
     the wrapper dropped it.
     """
     for name, value in PRODUCTION_ENV.items():

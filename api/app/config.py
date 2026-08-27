@@ -147,6 +147,11 @@ def _origin_problems(origin: str) -> list[str]:
     slash while normalizing, which would quietly undo the check below rather
     than enforce it.
     """
+    # `null` is not carved out, and that is deliberate: a browser sends it for a
+    # sandboxed iframe or a `file://` page, so allowing it opens the classic
+    # null-origin bypass to any such context. It falls into the scheme/host
+    # message below, which is the right refusal even if it is not a specific
+    # one.
     if origin == "*":
         return [
             "with allow_credentials=True this lets any site make credentialed "
@@ -196,6 +201,9 @@ def _origin_problems(origin: str) -> list[str]:
         ]
 
     problems: list[str] = list(whitespace_problem)
+    # The netloc with any userinfo removed. Needed by the case check and by the
+    # percent-escape carve-out, which were computing it separately.
+    host_and_port = parts.netloc.rpartition("@")[2]
 
     # A disallowed scheme is NOT a parse failure, and treating it as one cost a
     # refused boot: `ftp://admin:hunter2@clipfarm.ca` parses cleanly — netloc
@@ -221,7 +229,13 @@ def _origin_problems(origin: str) -> list[str]:
     # — and the second was accepted, then handed to Starlette's exact-string
     # compare, where it matches nothing. Neither character can appear in an
     # Origin header at all, so testing the raw entry costs no precision.
-    if parts.path or "?" in origin or "#" in origin:
+    # A backslash is included because browsers treat it as `/` (WHATWG URL), so
+    # `https://x.ca\\evil.com` is sent as Origin `https://x.ca` and the entry
+    # matches nothing — the same silent outage as the tab this function already
+    # catches. urlsplit does NOT agree with browsers here: it leaves the
+    # backslash in the netloc, so the entry was accepted. No legitimate origin
+    # contains one.
+    if parts.path or "?" in origin or "#" in origin or "\\" in origin:
         problems.append(
             "an Origin is scheme://host[:port] with nothing after it; a trailing "
             "slash, path, query or fragment matches no browser Origin header"
@@ -275,7 +289,7 @@ def _origin_problems(origin: str) -> list[str]:
     # must not crash on. An earlier version of this paragraph stated the rule as
     # absolute; it is not.
     scheme_text = origin[: len(parts.scheme)] if parts.scheme else ""
-    raw_host = parts.netloc.rpartition("@")[2]
+    raw_host = host_and_port
     if raw_host.startswith("["):
         close = raw_host.find("]")
         if close != -1:
@@ -292,7 +306,12 @@ def _origin_problems(origin: str) -> list[str]:
         # an Origin header, so it allows nobody while looking correct in a
         # dashboard — the same silent outage as the wildcard. The punycode
         # spelling of the same host is ASCII and still passes.
-        if not parts.hostname.isascii():
+        # Not while whitespace is already reported: a non-breaking space makes
+        # the host non-ASCII, and "use the xn-- spelling" is then advice the
+        # operator cannot act on — the fix is to delete the space, after which
+        # the host may be plain ASCII. One refused boot either way, but the
+        # wrong instruction is worse than one fewer line.
+        if not parts.hostname.isascii() and not whitespace_problem:
             problems.append(
                 "a browser sends the punycode form of an internationalised host, "
                 "so this matches nothing — use the xn-- spelling"
@@ -327,7 +346,7 @@ def _origin_problems(origin: str) -> list[str]:
         # "write it decoded" — advice that cannot be followed; and
         # `parts.hostname` has already had the brackets STRIPPED, so it never
         # looks bracketed at all and the carve-out would never fire.
-        if "%" in parts.hostname and not parts.netloc.rpartition("@")[2].startswith("["):
+        if "%" in parts.hostname and not host_and_port.startswith("["):
             problems.append(
                 "a percent-escape in the host matches nothing — a browser sends "
                 "the decoded host, so write it decoded"
@@ -965,7 +984,8 @@ def _boot_error(exc: ValidationError) -> str:
     line and taking only the message drops it. A first version of this did, and
     turned `CONDENSE_MODE=banana` into a bare "Input should be 'rules' or
     'guarded'" — true, and useless, because the operator is not told which of
-    62 settings it is about. The model-validator errors have an empty `loc` and
+    setting it is about, out of dozens. The model-validator errors have an empty
+    `loc` and
     already name their variable in the message, so they are left alone.
     """
     problems = []
