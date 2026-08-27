@@ -135,6 +135,8 @@ Must be set for this deploy:
 
 > Since **CF-172** these are enforced, not just documented: `docker-compose.prod.yml` runs api and worker with `ENVIRONMENT=production`, so a missing one refuses the boot and names it rather than failing later at the first upload, auth check, or browser request. `CORS_ORIGINS` and `DATABASE_URL` have working localhost defaults, so the guard treats the default itself as "never set" — which is the only way their absence is visible at all.
 
+> And since **CF-235**, being set is not enough for `CORS_ORIGINS`: each entry must be a bare `scheme://host[:port]`. A value that is set but cannot work refuses the boot and says which entry and why — a bare `*`, a trailing slash or path, upper case, `user:password@`, a wildcard host such as `https://*.clipfarm.ca`, or a default/zero-padded port. All but the first fail the same way if left alone: they look right in a config box and allow nobody.
+
 > Secrets-on-disk is the minimum for CF-41. Productionizing secret handling
 > (no plaintext `.env` files) is tracked separately in **CF-90 (#90)** and
 > supersedes this step once done.
