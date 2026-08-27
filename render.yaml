@@ -198,6 +198,18 @@ services:
     branch: main
     region: oregon
     plan: standard
+    # Changing this plan is a two-file change (CF-241): docker-compose.yml pins
+    # the dev worker's `mem_limit`, `memswap_limit` and `cpus` to whatever this
+    # says, so that a laptop can reproduce the production box. Move them
+    # together or the dev environment quietly stops being able to catch the
+    # next CF-224. The same applies to FFMPEG_THREADS further down this file:
+    # the dev worker matches whatever it says.
+    #
+    # api/tests/test_dev_prod_parity.py fails all of that apart — and note it
+    # lives in api/tests/, which .hooks/pre-commit does NOT run, so a mismatch
+    # surfaces in CI rather than at commit time. Run it by hand:
+    #   cd api && python -m pytest tests/test_dev_prod_parity.py
+    #
     # Before raising this, confirm the service has no disk attached — see the
     # note above: while one is, Render holds the service to a single instance
     # and this field will not take. After that it is a queue-throughput
@@ -261,6 +273,9 @@ services:
       # here — CF-240 changes one variable. It is set explicitly rather than
       # left to the code default so the coupling is visible next to the plan it
       # depends on.
+      # Mirrored by the dev worker in docker-compose.yml and enforced by
+      # api/tests/test_dev_prod_parity.py, which .hooks/pre-commit does not run
+      # — change this and the compose default together, or find out in CI.
       - key: FFMPEG_THREADS
         value: "1"
       - key: REDIS_URL

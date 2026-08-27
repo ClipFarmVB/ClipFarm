@@ -61,13 +61,37 @@ These need opposite fixes, so always compare the two.
 ## Running it
 
 Both modes need a *processed* game (the model's clips must exist). Run from the
-repo root; the `--offline` mode must run where the pipeline deps live (the
-worker container).
+repo root; the `--offline` mode must run where the pipeline deps live — the
+**`eval` service**, which is the worker's image without the worker's resource
+limits (CF-241). Use `worker` only when what you are measuring is the production
+box itself (encode timings, memory headroom); a correctness sweep held to 1 CPU
+is just a slower sweep.
+
+`eval` is profile-gated, so `docker compose up` never starts it and every
+invocation below is a one-shot `run --rm`. Keep the `--env-file .env.docker`:
+Compose interpolates `${...}` from it, and without it the stack's ports and
+limits silently fall back to their defaults. It has no default command — a bare
+`run eval` prints usage and exits 64 rather than starting a stray uvicorn. It
+pins no `FFMPEG_THREADS` and no broker URLs, because neither is read on an eval
+path: `Settings.ffmpeg_threads` reaches only `recut_clip_task` and
+`process_game_task`, and nothing here imports `ml.pipeline.clip`. Pinning either
+would be config that looks load-bearing and is not.
+
+Nothing in the repo hands `eval` the queue — which is not the same as it being
+unable to reach one. `eval` still loads your `.env.docker`, so a
+`CELERY_BROKER_URL` set there does arrive, and `run --rm eval celery ...` would
+then take real jobs and run them unconstrained. Don't.
+
+Not the same as "eval never runs ffmpeg": `--offline` calls
+`compute_audio_energy`, which shells out to ffmpeg to pull mono PCM
+(`ml/pipeline/audio.py`). That is a `-vn` decode, not CF-224's x264 encode, and
+it reads no thread setting — but it is a real subprocess, so measure with it in
+mind.
 
 ```bash
 # Offline: replay detection + scoring from the R2 ball-cache (no re-tracking).
-docker compose exec -e GIT_COMMIT=$(git rev-parse --short HEAD) worker \
-  python -m ml.eval.harness --test test1 --version my-change --offline
+docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
+  eval python -m ml.eval.harness --test test1 --version my-change --offline
 
 # Clips-json: score a pre-dumped {pre_gate, post_gate} window list.
 python -m ml.eval.harness --test test1 --version my-change --clips-json dump.json
@@ -79,8 +103,8 @@ python -m ml.eval.harness --mode deadtime --test test1 --version my-change \
 
 # Dead-time, offline: derive the windows from the real video via the R2
 # ball-cache, mirroring the pipeline's stage-5 condense path.
-docker compose run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
-  worker python -m ml.eval.harness --mode deadtime --test test1 \
+docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
+  eval python -m ml.eval.harness --mode deadtime --test test1 \
   --version my-change --offline
 ```
 

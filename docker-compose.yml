@@ -1,5 +1,25 @@
 name: clipfarm
 
+# The image, mounts and env file behind both `worker` and `eval`. What they do
+# NOT share is deliberate and lives on each service: the worker carries
+# production's resource limits and the broker URLs, eval carries neither.
+#
+# `image:` is what makes the shared half literally true, not just visually:
+# sharing only `build:` would have Compose tag the two services separately and
+# build them independently, from whatever the tree held at each build — two
+# images that merely look alike in this file. A shared tag means one build,
+# reused.
+x-worker-image: &worker-image
+  image: clipfarm-worker
+  build:
+    context: .
+    dockerfile: Dockerfile.api
+  env_file:
+    - .env.docker
+  volumes:
+    - ./api:/app/api
+    - ./ml:/app/ml
+
 services:
   db:
     image: postgres:16-alpine
@@ -65,22 +85,113 @@ services:
       - ./ml:/app/ml
 
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
+    <<: *worker-image
     restart: unless-stopped
-    env_file:
-      - .env.docker
+    # Production's box, locally (CF-241). Unconstrained, this container gets the
+    # whole host — which is precisely why CF-224's OOM could not be reproduced
+    # here before it shipped: the bug needs the *divergence* between advertised
+    # cores and allocated CPU, and a dev machine telling the truth never creates
+    # one. `cpus` is a CFS quota, so `nproc` still reports the host's 16 while
+    # only this much CPU is schedulable — the same lie the Render container
+    # tells, which is what makes the repro faithful.
+    #
+    # Track `clipfarm-worker`'s `plan` in render.yaml: `standard` = 2 GB / 1 CPU
+    # since CF-240. api/tests/test_dev_prod_parity.py pins the two together.
+    #
+    # WHY THE DEFAULT IS CAPPED, now that docker-compose.repro.yml can supply
+    # CF-224's 512 MB / 0.5 CPU on demand. 2 GB / 1 CPU reproduces no OOM we know
+    # of, and the cap is paid on every local run — so the case has to be made.
+    #
+    # An opt-in repro only helps someone who already suspects, and CF-224 is the
+    # third bug of this shape here where nobody did. The default decides whether
+    # the *next* one is caught; the overlay confirms a divergence you have
+    # already thought of.
+    #
+    # Stated narrowly, because it is easy to overclaim: a local run that FITS is
+    # evidence about production; a local run on 16 cores and 64 GB is not. This
+    # does not reproduce CF-224 — that box was half this size.
+    #
+    # Three honest limits. `api` and `web` are still unconstrained (out of scope
+    # per CF-241), so this is parity for one of three services. `--pool=solo`
+    # means the cost lands on every local game. And the fast overlay that hands
+    # that cost back has exactly the discoverability problem the cap was chosen
+    # to avoid: you have to know it exists. The cap is the default because being
+    # wrong about speed is recoverable and being wrong about fit is not — not
+    # because the trade is free.
+    #
+    # Two overlay files sit either side of this default, each with its own rule;
+    # read the file before using it. docker-compose.repro.yml (512 MB / 0.5 CPU)
+    # and docker-compose.fast.yml (8 GB / 4 CPU):
+    #
+    #   docker compose --env-file .env.docker \
+    #     -f docker-compose.yml -f docker-compose.repro.yml up worker
+    #
+    # The WORKER_MEM_LIMIT / WORKER_CPUS / WORKER_FFMPEG_THREADS knobs below are
+    # the ad-hoc path, and the fast overlay reads the same three — it only moves
+    # their defaults. They are interpolation, so Compose reads them from the
+    # shell, from `--env-file`, or from a `./.env` you may not remember writing;
+    # a value parked in any of those applies to every run without appearing in
+    # the command. Prefer the prefix. (docker-compose.repro.yml reads none of
+    # them, on purpose: its numbers are the measurement.)
+    #
+    # That is a trade, taken deliberately rather than dodged. These briefly had
+    # their own FAST_* namespace, which did buy something real: a stale
+    # WORKER_MEM_LIMIT could not resize the fast overlay. It cost a third
+    # interpolation policy across three points on one axis, and a rule nobody
+    # would remember. One knob set meaning "the worker's size, wherever the
+    # worker is defined" is the coherent version, and it is affordable precisely
+    # because no claim may come from a fast run in the first place. The overlay
+    # that must NOT be resizable is the repro, and that one reads nothing.
+    #
+    # memswap_limit equal to mem_limit asks for NO swap. Docker's default is
+    # double, i.e. 2 GB of RAM plus 2 GB of swap — under which the repro overlay
+    # can decline to OOM while the same encode is killed on Render, which has
+    # no swap at all. An unfaithful repro is worse than none: it says "fixed".
+    #
+    # "Asks", because the kernel has to be accounting for swap for this to bind.
+    # Docker warns and ignores both fields on a host without swap accounting
+    # enabled (common on stock Linux; Docker Desktop's VM has it). If a 512 MB
+    # repro run refuses to OOM, check `docker info` for that warning before
+    # believing the result — the limit may simply not have applied.
+    # Both read WORKER_MEM_LIMIT, and must keep reading the *same* variable:
+    # giving swap its own knob is how you end up with `WORKER_MEM_LIMIT=8g`
+    # asking for 8 GB of memory inside a 2 GB memory+swap ceiling, which Docker
+    # rejects at container create. The fast path below would stop working.
+    mem_limit: ${WORKER_MEM_LIMIT:-2g}
+    memswap_limit: ${WORKER_MEM_LIMIT:-2g}
+    cpus: ${WORKER_CPUS:-1.0}
     environment:
       # DATABASE_URL comes from .env.docker (local db container by default,
-      # shared Supabase as a deliberate opt-in) — do not override here
+      # shared Supabase as a deliberate opt-in) — do not override here.
+      #
+      # The broker URLs sit on this service rather than in the shared anchor
+      # above so that `eval` cannot pick them up: this is the one that takes
+      # queued work.
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-      # The code default (2) is sized for the 512 MB / 0.5 CPU production worker
-      # (CF-224); a dev machine has real cores, so encode a bit wider here.
-      # Keep it bounded anyway — this container sees the host's core count too.
-      FFMPEG_THREADS: "4"
+      # 1, matching render.yaml, not the code default of 2 (CF-224). Parity is
+      # the point: the limits above are worth little if the thing that OOMs
+      # under them is configured differently here.
+      #
+      # Raising it as a *speed* knob means raising WORKER_CPUS with it — threads
+      # a container cannot schedule cost memory and buy nothing (CF-224 measured
+      # 2 threads at 0.5 CPU as both slower and 60 MB heavier). Raising it to
+      # *provoke* the OOM is the opposite move and deliberately unbalanced:
+      # docker-compose.repro.yml pairs 4 threads with 0.5 CPU precisely because
+      # only 4-or-unbounded blows the 512 MB ceiling. Follow the "raise them
+      # together" rule there and the run completes at ~408 MB, reading as
+      # "already fixed".
+      #
+      # The knob is WORKER_FFMPEG_THREADS, deliberately not FFMPEG_THREADS.
+      # Same name on both sides would mean the app's own variable doubles as
+      # the compose knob: setting FFMPEG_THREADS in .env.docker would then be
+      # ignored under a bare `docker compose up` (this `environment:` value
+      # beats `env_file:`) and honoured under the README's
+      # `--env-file .env.docker` start command, which is what interpolation
+      # reads. Namespacing it, like WORKER_MEM_LIMIT and WORKER_CPUS, deletes
+      # the difference instead of documenting it.
+      FFMPEG_THREADS: "${WORKER_FFMPEG_THREADS:-1}"
       # No POSE_* or MODEL_* vars since CF-164: this image carries no torch, so
       # nothing here loads a model or downloads weights. Ball tracking and pose
       # both run on Modal — set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in
@@ -98,12 +209,69 @@ services:
         condition: service_healthy
       api:
         condition: service_started
+    # No model_cache volume since CF-164 (see x-worker-image above): nothing in
+    # this image downloads weights, and the top-level volume it referenced is gone.
     command: celery -A app.workers.celery_app worker --loglevel=info --pool=solo
-    # No model_cache volume since CF-164: nothing in this image downloads
-    # weights, and the top-level volume it referenced is gone.
-    volumes:
-      - ./api:/app/api
-      - ./ml:/app/ml
+
+  # The eval harness and the tuning scripts, deliberately *un*constrained.
+  #
+  # This is the answer to CF-241's known tension: the harness is a CPU-bound
+  # offline sweep over cached detections, not a thing production runs, and
+  # holding it to one core would make every sweep several times slower for no
+  # fidelity gained. Rather than teaching people an env-var incantation they
+  # would forget (and then silently benchmark at 1 CPU), eval gets its own
+  # service: same image and same mounts, no resource limits, and none of the
+  # worker's broker wiring (see below).
+  #
+  # Profile-gated, so `docker compose up` never starts it. Run one-shot — keep
+  # the `--env-file`, it is what Compose interpolates from:
+  #   docker compose --env-file .env.docker \
+  #     run --rm --no-deps eval python -m ml.eval.harness --help
+  #
+  # If you are eval-ing something whose *cost* matters — encode timings, memory
+  # headroom — use `worker`, not this. Correctness sweeps belong here; anything
+  # measuring the production box does not.
+  #
+  # It is NOT a second worker, and deliberately cannot become one: no
+  # `depends_on`, no celery command, and — note the absent `environment:` — no
+  # broker URLs. `run --rm eval celery ...` would otherwise take real jobs off
+  # the queue and run them unconstrained; with nothing in this repo setting
+  # them, Settings falls back to localhost:6379 inside a container that has no
+  # redis, so it connects to nothing.
+  #
+  # "Nothing in this repo": eval still loads `.env.docker`, which is yours, so a
+  # CELERY_BROKER_URL set there does reach it and no test can see that. The
+  # claim is that this file never hands eval the queue — not that you cannot.
+  # To process a game faster, raise the worker's own limits (see above).
+  eval:
+    <<: *worker-image
+    profiles: ["eval"]
+    # No FFMPEG_THREADS pin, deliberately. Settings.ffmpeg_threads is read only
+    # by recut_clip_task and process_game_task, and nothing under ml/eval imports
+    # ml.pipeline.clip, so the setting is never consulted on an eval path. A
+    # value pinned here would be config that looks load-bearing and is not.
+    #
+    # That is narrower than "eval never runs ffmpeg", which would be false:
+    # harness.py --offline calls compute_audio_energy, which shells out to ffmpeg
+    # for a -vn decode to mono PCM (ml/pipeline/audio.py). It passes no -threads
+    # and reads nothing from here, so there is no knob to pin — but it is a real
+    # subprocess, and claiming otherwise is the CF-192 failure with the sign
+    # flipped. If eval ever grows an encode of its own, give it its own variable
+    # then — sharing the worker's would mean retuning one silently retunes the
+    # other.
+    #
+    # Every real invocation passes its own command. Without this, a bare
+    # `run eval` or `--profile eval up` would inherit Dockerfile.api's CMD and
+    # quietly start a *second uvicorn* — a running web server where you asked
+    # for a sweep. Fail with usage instead.
+    command:
+      - sh
+      - -c
+      - >-
+        echo "eval is a one-shot runner, not a service: pass a command, e.g.
+        docker compose --env-file .env.docker run --rm --no-deps eval
+        python -m ml.eval.harness --help" >&2;
+        exit 64
 
   web:
     build:
