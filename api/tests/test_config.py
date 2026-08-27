@@ -1042,6 +1042,40 @@ def test_a_backslash_does_not_hide_a_real_port_problem(clean_env, value, extra):
         assert extra in problems[1]
 
 
+@pytest.mark.parametrize(
+    ("with_backslash", "without"),
+    [
+        ("https://clipfarm.ca:\\", "https://clipfarm.ca:"),
+        ("https://\\:8443", "https://:8443"),
+        ("https://admin:hunter2@[::1]\\", "https://admin:hunter2@[::1]"),
+        ("http://clipfarm.ca:80\\", "http://clipfarm.ca:80"),
+        ("https://clipfarm.ca:abc\\", "https://clipfarm.ca:abc"),
+    ],
+)
+def test_a_backslash_hides_nothing(clean_env, with_backslash, without):
+    """A backslash must be orthogonal to every other check: the entry reports
+    whatever it would report without one, plus the backslash itself.
+
+    An earlier fix cleaned the value for the PORT checks only, through a second
+    `urlsplit`, and left every other check reading the raw parse. Three then
+    cost a second refused boot apiece — the trailing colon, the missing host,
+    and an unparseable bracketed netloc that hid a credential. The entry is
+    parsed once, cleaned, instead.
+
+    Asserting the relationship rather than a fixed list is what makes this hold
+    for checks nobody has written yet.
+    """
+    expected = set(_origin_problems(without))
+    got = set(_origin_problems(with_backslash))
+
+    assert expected <= got, f"lost: {expected - got}"
+    assert got - expected == {
+        "an Origin is scheme://host[:port] with nothing after it; a trailing "
+        "slash, backslash, path, query or fragment matches no browser Origin "
+        "header"
+    }
+
+
 def test_production_rejects_a_backslash(clean_env):
     """Browsers treat `\\` as `/` (WHATWG URL), so `https://x.ca\\evil.com` is
     sent as Origin `https://x.ca` and the entry matches nothing — the same

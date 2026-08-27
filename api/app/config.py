@@ -208,8 +208,19 @@ def _origin_problems(origin: str) -> list[str]:
             "this as an Origin; retype the value rather than editing it"
         )
 
+    # Everything below parses the entry with backslashes REMOVED, and the
+    # backslash itself is reported from the raw entry by the check further down.
+    #
+    # A previous version cleaned the value for the PORT checks only, via a
+    # second `urlsplit`, and left every other check reading the raw parse. Three
+    # of them then cost a second refused boot apiece — `https://x.ca:\` hid the
+    # trailing-colon problem, `https://\:8443` hid the missing host, and
+    # `https://admin:hunter2@[::1]\` failed to parse at all and hid a
+    # credential. Cleaning once, here, removes the whole class rather than
+    # patching the three that were found.
+    cleaned = origin.replace("\\", "") if "\\" in origin else origin
     try:
-        parts = urlsplit(origin)
+        parts = urlsplit(cleaned)
     except ValueError:
         # urlsplit raises on a malformed bracketed netloc — `http://[bad]`,
         # `http://[::1`. Unguarded this escaped the whole validator: the
@@ -317,7 +328,7 @@ def _origin_problems(origin: str) -> list[str]:
     # be to call `.encode("idna")` here, which raises on inputs this function
     # must not crash on. An earlier version of this paragraph stated the rule as
     # absolute; it is not.
-    scheme_text = origin[: len(parts.scheme)] if parts.scheme else ""
+    scheme_text = cleaned[: len(parts.scheme)] if parts.scheme else ""
     raw_host = host_and_port
     if raw_host.startswith("["):
         close = raw_host.find("]")
@@ -408,32 +419,8 @@ def _origin_problems(origin: str) -> list[str]:
         # its own message below and would otherwise get both.
         problems.append("no host — an Origin is scheme://host[:port]")
 
-    # The port is read from the entry with any backslash removed, NOT skipped
-    # when one is present. urlsplit leaves the backslash in the netloc, so
-    # `https://x.ca:8443\` made `.port` raise and reported a spurious "not a
-    # number" beside the backslash message — but skipping the port checks
-    # outright lost real ones: with the backslash in the PATH
-    # (`http://x.ca:80/a\b`) the netloc is clean and the default-port problem is
-    # genuine, and even `http://x.ca:80\` still has a default port once the
-    # backslash is deleted.
-    #
-    # An earlier version called this a third implied pair. It is not one: the
-    # implication holds only where the backslash is in the netloc AND the port
-    # is otherwise valid — one case out of four. Judging the port on the cleaned
-    # value covers all four without a carve-out.
-    port_source = parts
-    if "\\" in parts.netloc:
-        try:
-            port_source = urlsplit(origin.replace("\\", ""))
-        except ValueError:
-            # Not known to be reachable: removing backslashes cannot move the
-            # netloc boundary (fixed by the first /?#) or unbalance a bracket,
-            # and a brute-force search found no entry where the raw parses and
-            # the cleaned raises. Kept anyway because this runs at boot, where
-            # an uncaught exception replaces a useful message with a traceback.
-            port_source = parts
     try:
-        port = port_source.port
+        port = parts.port
     except ValueError:
         # urlsplit only raises here — it does not validate on parse.
         problems.append("port must be a number in 1-65535")
@@ -460,11 +447,7 @@ def _origin_problems(origin: str) -> list[str]:
                     f"browser omits it, so this matches no Origin header. Drop it"
                 )
             else:
-                # `port_source`, not `parts`: with a backslash in the netloc
-                # the raw text is `8443\` and the padding test compares it
-                # against `8443`, inventing a zero-padded report on a good
-                # port.
-                _, sep, port_text = port_source.netloc.rpartition(":")
+                _, sep, port_text = parts.netloc.rpartition(":")
                 if sep and port_text != str(port):
                     problems.append(
                         f"port `{port_text}` is zero-padded — a browser sends "
@@ -991,6 +974,12 @@ class Settings(BaseSettings):
             return self  # emptiness is CF-172's to report, not this guard's
 
         origins = self.cors_origins_list
+        # Not reachable today: CF-172's validator runs first and rejects a blank
+        # or whitespace-only CORS_ORIGINS as "never set" — executed both `""`
+        # and `"   "` to check rather than assuming. Kept because it is one
+        # branch and the two validators are independent: reorder them, or add a
+        # value CF-172 considers set but which yields no origins, and this is
+        # the only thing standing between that and a boot that allows nobody.
         if not origins:
             raise ValueError(
                 cors_origins_error(
