@@ -105,37 +105,60 @@ echo "ok"
 # the one that costs the time. Loud on purpose, and never the default.
 #
 # Locating the probe is its own problem, and getting it wrong is invisible.
-# `core.hooksPath` is an absolute path to ONE checkout's .hooks, so this file
-# also runs for every git worktree — with that worktree as the CWD. A bare
-# `python api/scripts/check_dev_set.py` therefore resolves against a tree that
-# may not contain the script at all: any branch older than it, which is every
-# long-lived worktree the day the script lands. The command then fails to
-# start, the `elif` takes the skip branch, and the step announces a missing dev
-# install to someone whose dev install is fine — the same silent-green shape
-# this gate exists to prevent, one level up.
+# A bare `python api/scripts/check_dev_set.py` resolves against the CWD, which
+# is the tree being committed in. That is right, and it is what this does — but
+# only if it is allowed to fail honestly when the file is not there.
 #
-# Prefer the copy in the tree being committed, so a branch that changes the
-# probe is checked by its own version. Fall back to the one beside this hook,
-# which cannot be missing: both came out of the same checkout.
+# Why a tree can lack it: `core.hooksPath` decides which checkout's copy of
+# THIS FILE runs. Set relative, as `git config core.hooksPath .hooks` at the top
+# of this file and in README.md prescribe, git resolves it against each working
+# tree's own root — so a worktree runs its own hook, matched to its own
+# `api/`, and hook and probe can never disagree. Set to an ABSOLUTE path, every
+# worktree runs one checkout's hook against a different checkout's files, and a
+# branch older than the probe hits a hook that expects it.
+#
+# That is a misconfiguration rather than a case to work around, and the
+# tempting workaround is worse than the bug. Falling back to the copy beside
+# this hook would run a FOREIGN checkout's probe: check_dev_set.py resolves its
+# requirements file from its own __file__, so it would validate the hook
+# checkout's dependency set and then hand a pass to a pytest run over this
+# tree's tests. Where the two trees have diverged — which is precisely when the
+# fallback would fire — the probe says yes, collection dies on an import, and
+# the FAIL branch below `exit 1`s. That turns a gate which promises never to
+# block a commit into one that blocks it for a dependency the committer was
+# never asked to install.
+#
+# So: this tree's probe, or an honest skip.
 _dev_set_probe=api/scripts/check_dev_set.py
-if [ ! -f "$_dev_set_probe" ]; then
-  _dev_set_probe="$(dirname "$0")/../api/scripts/check_dev_set.py"
-fi
 
 printf "  pytest api/tests ... "
 if [ -n "$CLIPFARM_SKIP_API_TESTS" ]; then
   echo "skipped — CLIPFARM_SKIP_API_TESTS is set"
   _api_tests_skipped="unset CLIPFARM_SKIP_API_TESTS to run them"
 elif [ ! -f "$_dev_set_probe" ]; then
-  # Distinct from the dev-set skip below, and worth its own branch: no install
-  # fixes this, so pointing at `pip install` would send someone down a road
-  # that cannot end. Neither location had the file, which means the hook and
-  # the repo have come apart.
-  echo "skipped — no dev-set probe in the working tree or beside the hook; a hook/repo mismatch, not a missing install"
-  _api_tests_skipped="see the reason above — no install fixes it"
+  # Its own branch because no install fixes it: pointing at pip would send
+  # someone down a road that cannot end. Self-contained on purpose — the
+  # summary at the bottom is the last thing a reader sees, so the remedy has to
+  # survive being read on its own, without the line above it.
+  echo "skipped — $_dev_set_probe is not in this working tree; if other branches have it, core.hooksPath is absolute and should be relative: git config core.hooksPath .hooks"
+  _api_tests_skipped="this tree has no $_dev_set_probe; if other branches do, run: git config core.hooksPath .hooks"
 elif ! _api_dev_reason=$(python "$_dev_set_probe"); then
-  echo "skipped — ${_api_dev_reason:-the dev-set check itself failed, see the traceback above}; pip install -r api/requirements-dev.txt"
-  _api_tests_skipped="pip install -r api/requirements-dev.txt to run them"
+  # The probe declines for three different reasons — an incomplete dev set, a
+  # requirements file it cannot find, and its own crash — and only the first is
+  # fixed by installing anything. `$_api_dev_reason` already distinguishes them
+  # on the line above; carry the same distinction into the summary rather than
+  # prescribing pip for all three.
+  case "$_api_dev_reason" in
+    missing:*)
+      echo "skipped — $_api_dev_reason; pip install -r api/requirements-dev.txt"
+      _api_tests_skipped="pip install -r api/requirements-dev.txt to run them" ;;
+    "")
+      echo "skipped — the dev-set check itself failed, see the traceback above"
+      _api_tests_skipped="$_dev_set_probe failed; see its traceback above" ;;
+    *)
+      echo "skipped — $_api_dev_reason"
+      _api_tests_skipped="$_api_dev_reason" ;;
+  esac
 elif ! _api_pytest_out=$(cd api && python -m pytest tests/ -q --no-header 2>&1); then
   echo "FAIL"
   echo "$_api_pytest_out"
