@@ -62,8 +62,11 @@ class Post(Base):
     comment_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
     )
+    # No index=True: every read of this table enters through author_id (a
+    # profile grid, or CF-111's follow set) and takes the composite below. See
+    # the posts migration for why a bare created_at index has no reader.
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
     # The composite the migration creates, declared so it reaches

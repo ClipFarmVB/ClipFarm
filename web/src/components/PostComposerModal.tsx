@@ -8,6 +8,24 @@ import { createPost, type Clip, type Visibility } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/apiError";
 import { cn } from "@/lib/utils";
 
+const RANK: Record<Visibility, number> = { private: 0, followers: 1, public: 2 };
+
+/**
+ * Whether `tier` is wider than this clip allows, and so must be offered
+ * disabled rather than offered and refused.
+ *
+ * Exported so it can be asserted: this is the rule that decides whether a user
+ * meets a limit they can understand or a 409 they cannot act on, and it mirrors
+ * `access.at_most` on the API — the two orderings of the same three values have
+ * to agree, and a UI copy that drifts wide is the one that fails on submit.
+ *
+ * An absent ceiling resolves to `private`, matching `ClipOut`'s own default:
+ * a payload that predates the field offers less, never more.
+ */
+export function tierBlocked(tier: Visibility, ceiling: Visibility | undefined): boolean {
+  return RANK[tier] > RANK[ceiling ?? "private"];
+}
+
 const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof Lock }[] = [
   {
     value: "private",
@@ -36,9 +54,19 @@ const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof L
  * naming a tier and leaving the user to guess — this is youth-sports footage,
  * so "Everyone" needs to read as "everyone".
  *
- * Posting never widens the clip itself. If the chosen visibility exceeds what
- * the clip allows the API refuses with 409, and that message is surfaced as-is
- * instead of being silently worked around.
+ * Posting never widens the clip itself — and the tiers a clip cannot support
+ * are shown disabled, with the reason, rather than offered and then refused.
+ *
+ * That is the half this was missing. Nothing in the product can raise a clip's
+ * or a game's visibility yet (there is no write path for either), and both
+ * default to private, so for a real user "Followers" and "Everyone" both ended
+ * in a 409 telling them to go do something that does not exist. An unreachable
+ * option that explains why is a limit; one that fails on submit is a dead end.
+ *
+ * `clip.effective_visibility` carries the ceiling the API derives. The 409 is
+ * still handled and still surfaced as-is — it stays the backstop for a clip
+ * that goes private between the page load and the click, which is exactly the
+ * race the server-side check exists for.
  */
 export function PostComposerModal({
   clip,
@@ -49,6 +77,13 @@ export function PostComposerModal({
   onClose: () => void;
   onPosted?: () => void;
 }) {
+  // Absent means private — the fail-closed direction, matching the schema's
+  // own default. A clip payload that predates this field offers "Only me"
+  // rather than offering everything.
+  const ceiling: Visibility = clip.effective_visibility ?? "private";
+  const ceilingLabel =
+    OPTIONS.find((o) => o.value === ceiling)?.label.toLowerCase() ?? ceiling;
+
   const [caption, setCaption] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("private");
   const [saving, setSaving] = useState(false);
@@ -138,30 +173,46 @@ export function PostComposerModal({
         <span className="text-[11px] text-subtle">{caption.length}/500</span>
 
         <div className="mt-4 space-y-1.5">
-          {OPTIONS.map(({ value, label, blurb, icon: Icon }) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setVisibility(value)}
-              className={cn(
-                "flex w-full items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors",
-                visibility === value
-                  ? "border-brand bg-brand/10"
-                  : "border-border hover:border-border-strong",
-              )}
-            >
-              <Icon
+          {OPTIONS.map(({ value, label, blurb, icon: Icon }) => {
+            const blocked = tierBlocked(value, ceiling);
+            return (
+              <button
+                key={value}
+                type="button"
+                disabled={blocked}
+                aria-describedby={blocked ? `vis-${value}-why` : undefined}
+                onClick={() => setVisibility(value)}
                 className={cn(
-                  "mt-0.5 h-4 w-4 shrink-0",
-                  visibility === value ? "text-brand" : "text-subtle",
+                  "flex w-full items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors",
+                  blocked
+                    ? "cursor-not-allowed border-border/60 opacity-50"
+                    : visibility === value
+                      ? "border-brand bg-brand/10"
+                      : "border-border hover:border-border-strong",
                 )}
-              />
-              <span className="flex-1">
-                <span className="block text-[13px] font-medium">{label}</span>
-                <span className="block text-[11px] text-muted">{blurb}</span>
-              </span>
-            </button>
-          ))}
+              >
+                <Icon
+                  className={cn(
+                    "mt-0.5 h-4 w-4 shrink-0",
+                    !blocked && visibility === value ? "text-brand" : "text-subtle",
+                  )}
+                />
+                <span className="flex-1">
+                  <span className="block text-[13px] font-medium">{label}</span>
+                  <span className="block text-[11px] text-muted">
+                    {blocked ? (
+                      <span id={`vis-${value}-why`}>
+                        Not available — this clip is {ceilingLabel === "only me" ? "private" : ceilingLabel}, and a
+                        post can&apos;t show more of the footage than the clip does.
+                      </span>
+                    ) : (
+                      blurb
+                    )}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         {error && (

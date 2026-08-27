@@ -18,9 +18,19 @@ then posts and follows between them so the feed has something in it:
     bob     public account, posts public + followers, follows alice
     carol   PRIVATE account, posts public — following her needs approval
 
-Sign in as any of them by their email (`alice@local.test` and so on) once you
-have created the matching Supabase user; the api keys off the JWT `sub`, so the
-ids here are re-derived from the email to stay stable across runs.
+**You cannot sign in as these accounts, and trying is worse than a no-op.**
+The api keys off the JWT `sub`, which for a real Supabase user is a random
+UUID; the ids here are `uuid5` over the email so they stay stable across runs.
+Those will never coincide. And because `users.email` is UNIQUE while
+`_ensure_user_exists` upserts on the *id* index only, the first authenticated
+request as `alice@local.test` hits a unique violation on `email` and 500s —
+and keeps 500ing until the seeded row is deleted by hand, with an error that
+points at auth rather than at this script.
+
+So these accounts are for **anonymous reads and DEBUG-mode curl**, which is
+what the visibility matrix actually needs. Exercise them with the post ids the
+script prints. Seeding a signed-in account means taking the real Supabase user
+id, which is a different job than this script does.
 """
 import asyncio
 import os
