@@ -992,8 +992,8 @@ def test_a_boot_error_names_the_env_var_not_the_field(clean_env, monkeypatch):
 
 
 BACKSLASH_MESSAGE = (
-    "an Origin is scheme://host[:port] with nothing after it; a trailing "
-    "slash, backslash, path, query or fragment matches no browser Origin header"
+    "contains a backslash — browsers read it as `/`, so this is sent as the "
+    "part before it and matches no Origin header"
 )
 
 
@@ -1034,12 +1034,12 @@ def test_a_backslash_does_not_hide_a_real_port_problem(clean_env, value, extra):
     """
     problems = _origin_problems(value)
 
-    assert problems[0] == BACKSLASH_MESSAGE
+    assert BACKSLASH_MESSAGE in problems
+    others = [problem for problem in problems if problem != BACKSLASH_MESSAGE]
     if extra is None:
-        assert len(problems) == 1
+        assert others == []
     else:
-        assert len(problems) == 2
-        assert extra in problems[1]
+        assert any(extra in problem for problem in others), others
 
 
 @pytest.mark.parametrize(
@@ -1050,6 +1050,13 @@ def test_a_backslash_does_not_hide_a_real_port_problem(clean_env, value, extra):
         ("https://admin:hunter2@[::1]\\", "https://admin:hunter2@[::1]"),
         ("http://clipfarm.ca:80\\", "http://clipfarm.ca:80"),
         ("https://clipfarm.ca:abc\\", "https://clipfarm.ca:abc"),
+        # Early-return paths, where cleaning empties the netloc. These are where
+        # the property failed: the backslash message was folded into the tail
+        # check, which the early return never reaches, so the entry was refused
+        # with nothing saying what to delete.
+        ("https://\\", "https://"),
+        ("https://\\\\", "https://"),
+        ("ftp://\\", "ftp://"),
     ],
 )
 def test_a_backslash_hides_nothing(clean_env, with_backslash, without):
@@ -1069,11 +1076,7 @@ def test_a_backslash_hides_nothing(clean_env, with_backslash, without):
     got = set(_origin_problems(with_backslash))
 
     assert expected <= got, f"lost: {expected - got}"
-    assert got - expected == {
-        "an Origin is scheme://host[:port] with nothing after it; a trailing "
-        "slash, backslash, path, query or fragment matches no browser Origin "
-        "header"
-    }
+    assert got - expected == {BACKSLASH_MESSAGE}
 
 
 def test_production_rejects_a_backslash(clean_env):
@@ -1088,7 +1091,7 @@ def test_production_rejects_a_backslash(clean_env):
     with pytest.raises(ValidationError) as exc:
         _production_with_cors("https://clipfarm.ca\\evil.com")
 
-    assert "nothing after it" in str(exc.value)
+    assert "contains a backslash" in str(exc.value)
 
 
 @pytest.mark.parametrize(

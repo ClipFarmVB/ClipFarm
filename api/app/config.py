@@ -218,6 +218,27 @@ def _origin_problems(origin: str) -> list[str]:
     # `https://admin:hunter2@[::1]\` failed to parse at all and hid a
     # credential. Cleaning once, here, removes the whole class rather than
     # patching the three that were found.
+    if "\\" in origin:
+        # Its own check on the RAW entry, and carried by every return path
+        # below. Folding it into the tail check lost it wherever cleaning
+        # emptied the netloc — `https://\\` reported only "not a scheme://host
+        # origin", with nothing telling the operator what to delete.
+        #
+        # Browsers treat `\\` as `/` (WHATWG URL), so `https://x.ca\\evil.com`
+        # is sent as Origin `https://x.ca` and the entry matches nothing.
+        # urlsplit does not agree — it leaves the backslash in the netloc, which
+        # is why nothing caught it before CF-235. No legitimate origin has one.
+        invisible_problem.append(
+            "contains a backslash — browsers read it as `/`, so this is sent as "
+            "the part before it and matches no Origin header"
+        )
+    # Everything below parses the entry with backslashes REMOVED. The cost is
+    # that a verdict can be computed on a string the operator did not write:
+    # `https://x.ca\\@evil.com` cleans to `https://x.ca@evil.com` and is
+    # reported as carrying userinfo, where a browser would read host `x.ca` and
+    # a path. The entry is refused either way and the backslash message says
+    # what to delete, so the wrong second message costs nothing — but it is a
+    # real consequence of cleaning by deletion rather than by re-serialising.
     cleaned = origin.replace("\\", "") if "\\" in origin else origin
     try:
         parts = urlsplit(cleaned)
@@ -274,11 +295,10 @@ def _origin_problems(origin: str) -> list[str]:
     # catches. urlsplit does NOT agree with browsers here: it leaves the
     # backslash in the netloc, so the entry was accepted. No legitimate origin
     # contains one.
-    if parts.path or "?" in origin or "#" in origin or "\\" in origin:
+    if parts.path or "?" in origin or "#" in origin:
         problems.append(
             "an Origin is scheme://host[:port] with nothing after it; a trailing "
-            "slash, backslash, path, query or fragment matches no browser Origin "
-            "header"
+            "slash, path, query or fragment matches no browser Origin header"
         )
 
     if parts.username is not None:
@@ -974,12 +994,18 @@ class Settings(BaseSettings):
             return self  # emptiness is CF-172's to report, not this guard's
 
         origins = self.cors_origins_list
-        # Not reachable today: CF-172's validator runs first and rejects a blank
-        # or whitespace-only CORS_ORIGINS as "never set" — executed both `""`
-        # and `"   "` to check rather than assuming. Kept because it is one
-        # branch and the two validators are independent: reorder them, or add a
-        # value CF-172 considers set but which yields no origins, and this is
-        # the only thing standing between that and a boot that allows nobody.
+        # Reachable, and the way in is `CORS_ORIGINS=","` — also `",,,"` and
+        # `" , , "`. CF-172 sees a non-blank string and passes it; every entry
+        # is blank after stripping, so the list is empty and the app would boot
+        # allowing nobody.
+        #
+        # An earlier version of this comment called the branch unreachable,
+        # having executed `""` and `"   "` — both blank after stripping, so both
+        # stopped one line earlier and neither was ever the way in. Two examples
+        # that share the property under test prove nothing about the ones that
+        # do not. The comment at the top of this file lists `","` as a
+        # motivating failure and `test_production_rejects_a_value_that_parses_to_
+        # no_origins` has been pinning it through this branch all along.
         if not origins:
             raise ValueError(
                 cors_origins_error(
