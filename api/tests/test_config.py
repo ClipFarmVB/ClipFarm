@@ -922,6 +922,44 @@ def test_idna_does_not_lower_case_an_ascii_label(clean_env):
     assert len(_origin_problems(pure)) == 1
 
 
+def test_production_rejects_a_percent_escape_in_the_host(clean_env):
+    """`clipfarm%2eca` reads as `clipfarm.ca` to whoever pasted it and matches
+    nothing, because a browser sends the decoded host in an Origin header. Same
+    silent outage as the wildcard.
+
+    It was accepted, while a comment a few lines above the wildcard check
+    claimed such entries were "refused either way". They were not — `%2A` was
+    refused only by accident, for its capital, and `%2e` sailed through.
+
+    The bracketed form is excluded on purpose: an IPv6 zone id is written
+    `%25eth0`, and rejecting it would be a guess about a shape this guard has no
+    evidence about.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors("https://clipfarm%2eca")
+
+    assert "percent-escape" in str(exc.value)
+    assert _origin_problems("http://[fe80::1%25eth0]") == []
+
+
+@pytest.mark.parametrize("value", ["//x.ca/A://b", "//clipfarm.ca?Next=https://x"])
+def test_a_later_scheme_separator_is_not_read_as_the_scheme(clean_env, value):
+    """`origin.index("://")` finds the FIRST `://` anywhere in the entry, so a
+    second one inside a path or query put everything before it into the scheme
+    and invented "must be lower-case".
+
+    The scheme now comes from `parts.scheme` — what urlsplit actually parsed —
+    sliced back out of the raw entry to recover its case.
+    """
+    problems = _origin_problems(value)
+
+    assert not any("lower-case" in problem for problem in problems)
+    # And the case check still works where there IS a scheme.
+    assert _origin_problems("HTTPS://clipfarm.ca") == [
+        "must be lower-case — origins are compared as exact strings"
+    ]
+
+
 def test_an_invalid_port_does_not_invent_a_case_problem(clean_env):
     """A capital can only reach the port when the port is invalid, and the
     invalid port is reported on its own.

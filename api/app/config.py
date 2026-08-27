@@ -249,10 +249,18 @@ def _origin_problems(origin: str) -> list[str]:
     # `"WWW.клипфарм.рф".encode("idna")` gives `WWW.xn--80apfehqi4a.xn--p1ai` —
     # so suppressing the case message for any non-ASCII host sent the operator
     # to a value that is refused again, which is the two-boot failure this
-    # branch exists to end. An ASCII capital is exactly the part punycode will
-    # not fix. (A percent-escape in a host, `%2A`, reads as one of those. It is
-    # not a shape any browser sends, and the entry is refused either way.)
-    scheme_text = origin[: origin.index("://")] if "://" in origin else ""
+    # branch exists to end.
+    #
+    # It is a heuristic and it over-reports in one place: an ASCII capital
+    # INSIDE a non-ASCII label does get folded away, since the whole label is
+    # re-encoded — `"WWWклипфарм.рф".encode("idna")` gives
+    # `xn--www-8cd3blhkzl6b.xn--p1ai`. `https://WWWклипфарм.рф` therefore prints
+    # both messages where one would do. That costs nothing (the punycode fix
+    # resolves both, so it is still one refused boot) and the precise test would
+    # be to call `.encode("idna")` here, which raises on inputs this function
+    # must not crash on. An earlier version of this paragraph stated the rule as
+    # absolute; it is not.
+    scheme_text = origin[: len(parts.scheme)] if parts.scheme else ""
     raw_host = parts.netloc.rpartition("@")[2]
     if raw_host.startswith("["):
         close = raw_host.find("]")
@@ -288,6 +296,21 @@ def _origin_problems(origin: str) -> list[str]:
                 "wildcard hosts are not supported — origins are compared as "
                 "exact strings, so this matches nothing; list each subdomain "
                 "explicitly"
+            )
+        # A percent-escape in the host matches nothing: a browser sends the
+        # decoded host in an Origin header, so `clipfarm%2eca` allows nobody
+        # while reading as `clipfarm.ca` to whoever pasted it — the same silent
+        # outage as the wildcard. It was ACCEPTED, and a comment a few lines
+        # above claimed such entries were "refused either way"; they were not,
+        # and `%2A` was refused only by accident, for the capital.
+        #
+        # Bracketed hosts are excluded: an IPv6 zone id is written `%25eth0`,
+        # and while no browser sends one as an Origin either, rejecting it here
+        # would be a guess about a shape this guard has no evidence about.
+        if "%" in parts.hostname and not parts.netloc.startswith("["):
+            problems.append(
+                "a percent-escape in the host matches nothing — a browser sends "
+                "the decoded host, so write it decoded"
             )
     # Beyond `*` and non-ASCII, host characters are not checked. `clipfarm.ca.`
     # (browsers drop the FQDN root dot) and `clipfarm_ca` (underscore is not
