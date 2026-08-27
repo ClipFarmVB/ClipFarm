@@ -22,6 +22,13 @@
  * actually likely here, but a signature R2 rejects will look like a click that
  * did nothing. That is a worse-to-debug outcome traded for a much less costly
  * one.
+ *
+ * Everything below is about one consequence of that trade: **a frame removed
+ * while its transfer is still running kills the download and reports nothing.**
+ * Firefox and Safari tie the request to the frame's lifetime, which is why the
+ * frame cannot be removed synchronously — and that fact does not stop being
+ * true later, which is what the first two attempts at reclaiming frames each
+ * got wrong in turn.
  */
 
 /** The slice of `document` this needs — injected so it is testable under
@@ -31,35 +38,58 @@ export interface DownloadHost {
   body: { appendChild(node: Node): void };
 }
 
-/**
- * How many frames are kept alive.
- *
- * **Not a timeout, deliberately.** The first version removed each frame 60s
- * after appending it, on the reasoning that 60s is long enough for R2 to
- * answer. It is — but answering is not what the frame is needed for. Firefox
- * and Safari tie the request to the frame's lifetime, which is why the frame
- * cannot be removed synchronously; that is equally true at 60 seconds, so the
- * timer was not a cleanup, it was an abort of whatever was still streaming. A
- * 40MB clip over a ~3 Mbps mobile connection needs about 107 seconds, and this
- * module has already traded a loud failure for a silent one — so the user
- * would have got a truncated file and no error anywhere. Sizing the constant
- * against time-to-first-byte while it bounds time-to-complete was the defect,
- * and no constant fixes it: a slow enough connection beats any of them.
- *
- * So frames are reclaimed by count instead. A frame is removed only once this
- * many *later* downloads have started, which for the failing case above means
- * the transfer is only cut short if nine downloads are in flight at once —
- * where the timer needed just one slow download to do it. What is left behind
- * meanwhile is at most eight empty, sandboxed, display:none elements.
- */
-export const FRAME_POOL_LIMIT = 8;
+/** A frame and when its navigation started, which is what makes an eviction
+ *  decision possible: how long a frame has existed is the only evidence
+ *  available here about whether its transfer is done. */
+export interface PooledFrame {
+  frame: HTMLIFrameElement;
+  startedAt: number;
+}
 
-const framePool: HTMLIFrameElement[] = [];
+/**
+ * How many frames may accumulate before the oldest *eligible* one is reclaimed.
+ *
+ * Generous on purpose. The first version removed each frame 60s after
+ * appending it, reasoning that 60s is long enough for R2 to answer — but
+ * answering is not what the frame is needed for, so the timer was an abort of
+ * whatever was still streaming. A 40MB clip over ~3 Mbps needs about 107
+ * seconds. No constant fixes that: a slow enough connection beats any of them.
+ *
+ * Count-based reclamation replaced it, which was better and still not right —
+ * see MIN_FRAME_AGE_MS. An empty sandboxed `display:none` frame costs
+ * essentially nothing, so this is set where a batch-download session never
+ * reaches it rather than at the smallest number that bounds the DOM.
+ */
+export const FRAME_POOL_LIMIT = 32;
+
+/**
+ * How old a frame must be before it may be reclaimed at all.
+ *
+ * This is the half the count alone got wrong. Eviction is FIFO, so the frame
+ * it takes is the one that started earliest — and a frame is only still
+ * interesting *because* its transfer has not finished, which makes the oldest
+ * entry disproportionately the slow one. The policy preferentially reaped
+ * exactly what it existed to protect: start a 40MB clip on mobile, then save
+ * eight short ones over the next minute — an ordinary batch session, and the
+ * reason CF-101 exists — and the ninth append killed the 40MB transfer.
+ *
+ * So age gates eviction and count only triggers it. Ten minutes is far past
+ * any plausible transfer of a clip, and unlike the original timer nothing is
+ * ever removed *on* a schedule: a frame is reclaimed only when later downloads
+ * need the room, and only if it is old enough to be almost certainly finished.
+ * When every frame is too young the pool simply grows past the limit, which is
+ * the right way to be wrong — some empty elements, rather than a coach's
+ * download dying silently.
+ */
+export const MIN_FRAME_AGE_MS = 10 * 60_000;
+
+const framePool: PooledFrame[] = [];
 
 export function startCrossOriginDownload(
   url: string,
   host: DownloadHost = document,
-  pool: HTMLIFrameElement[] = framePool,
+  pool: PooledFrame[] = framePool,
+  now: () => number = Date.now,
 ): void {
   const frame = host.createElement("iframe");
   frame.hidden = true;
@@ -70,11 +100,25 @@ export function startCrossOriginDownload(
   // context, which is the thing this module exists to prevent. The URL is ours
   // against our own bucket, so this is not a live hole. `allow-downloads` is
   // the one capability kept, and it is the only one the frame is for.
+  //
+  // Note the failure mode if an engine does not honour that token: an
+  // unrecognised sandbox token is ignored while the sandbox itself still
+  // applies, so the download is blocked outright rather than degraded — and
+  // this module cannot report that. Current Chrome, Firefox and Safari all
+  // support it; the pre-merge browser pass has to confirm a file actually
+  // *saves*, not merely that its name is right.
   frame.setAttribute("sandbox", "allow-downloads");
   frame.style.display = "none";
   frame.src = url;
   host.body.appendChild(frame);
 
-  pool.push(frame);
-  while (pool.length > FRAME_POOL_LIMIT) pool.shift()?.remove();
+  pool.push({ frame, startedAt: now() });
+  // Stops at the first frame too young to touch, so the queue stays in order
+  // and a live transfer is never skipped over to reach an older one.
+  while (
+    pool.length > FRAME_POOL_LIMIT &&
+    now() - pool[0].startedAt >= MIN_FRAME_AGE_MS
+  ) {
+    pool.shift()?.frame.remove();
+  }
 }

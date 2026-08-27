@@ -434,8 +434,15 @@ class TestCondensedDownloadFilename:
 
 class TestFilenameLengthBound:
     def test_the_whole_name_fits_a_filesystem(self):
-        # Four capped components plus separators reach 258 — over the 255-byte
-        # limit most filesystems impose on a single name.
+        """Four 80-byte components with separators reach 257, over the 255-byte
+        limit most filesystems impose on a single name.
+
+        **This test reaches the joined cap only because it passes an unbounded
+        `action`.** No route can: `action` comes from ActionType, whose longest
+        value is 7 bytes, so production's worst case is 184 against a 251-byte
+        budget. Green here is not evidence the path is exercised in the app —
+        it is evidence the cap holds for the longer field set CF-101 will pass.
+        """
         out = clip_download_filename("g" * 200, "a" * 200, "p" * 200, 252.0)
         assert len(out.encode("utf-8")) <= MAX_FILENAME_BYTES
 
