@@ -184,7 +184,20 @@ export function useFocusTrap(
   useEffect(() => {
     if (!active) return;
     const container = containerRef.current;
-    if (!container) return;
+    if (!container) {
+      // The effect depends only on `active`, so there is no re-run to recover
+      // on: a null container here disables the trap for as long as the overlay
+      // is open. Refs attach before effects fire, so this means the ref was
+      // never wired to a rendered element — a caller bug, and a silent one,
+      // because a trap that does nothing looks exactly like a trap.
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(
+          "useFocusTrap: containerRef is null while active; the trap is disabled. " +
+            "Attach the ref to the element rendered for this overlay.",
+        );
+      }
+      return;
+    }
 
     // Captured now, not read in the cleanup: by the time the cleanup runs the
     // ref may point elsewhere, and eslint is right to say so. At activation the
@@ -198,22 +211,40 @@ export function useFocusTrap(
 
     const onKey = (e: KeyboardEvent) => {
       const escape = onEscapeRef.current;
-      if (e.key === "Escape" && escape) { escape(); return; }
+      if (e.key === "Escape" && escape) {
+        // Claim the key. Without this the UA's own Escape runs alongside ours:
+        // Firefox reverts the text field being edited, and the browser-level
+        // binding — leaving fullscreen is the usual one — fires too, so one
+        // press does two things the user asked for once.
+        e.preventDefault();
+        escape();
+        return;
+      }
       if (e.key !== "Tab") return;
       const el = containerRef.current;
       if (el) trapTabWithin(el, e);
     };
 
-    // One bubble-phase listener on the window, per active trap. That makes
-    // "at most one overlay at a time" load-bearing and enforced by nothing:
-    // two live traps would each handle the same Escape and the same Tab. It
-    // holds today — the three callers cannot be mounted together — but it is a
-    // property of the call graph rather than of this hook, so nesting is NOT
-    // supported. CF-282 (#328) carries the guard if it is ever wanted.
-    const win = container.ownerDocument.defaultView ?? window;
-    win.addEventListener("keydown", onKey);
+    // Capture on the document, not bubble on the window, and for a *shared*
+    // hook the difference is load-bearing. Bubbling puts the trap last, behind
+    // every handler between the target and the window, so a single
+    // `e.stopPropagation()` in any child's onKeyDown — a common reflex in a
+    // text field — silently turns off both Tab trapping and Escape, and
+    // nothing shows it until someone tries the keyboard. Capture runs ahead of
+    // all of them: no overlay can disable the trap by accident, and callers do
+    // not have to reason about listener ordering to stay correct.
+    //
+    // Still one listener per active trap, so "at most one overlay at a time"
+    // remains load-bearing and enforced by nothing — two live traps would each
+    // handle the same Escape and the same Tab. It holds today because the three
+    // callers cannot be mounted together, but that is a property of the call
+    // graph rather than of this hook, so nesting is NOT supported. Capture
+    // makes the guard tractable when it is wanted, since the outermost trap
+    // now sees the event first: CF-282 (#328).
+    const doc = container.ownerDocument;
+    doc.addEventListener("keydown", onKey, true);
     return () => {
-      win.removeEventListener("keydown", onKey);
+      doc.removeEventListener("keydown", onKey, true);
       restoreFocusTo(restoreTarget);
     };
     // containerRef, initialFocus and restoreFocusRef are read at activation;

@@ -43,6 +43,8 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   const [createLoading, setCreateLoading] = useState(false);
   const newNameRef = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const newCollectionRef = useRef<HTMLButtonElement>(null);
 
   // The third overlay in the same position (CF-227). Without a trap the modal
   // constrains Tab and offers no keyboard dismissal but the Close button, which
@@ -61,8 +63,24 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   // The trap owns the key in both states instead, and the input's handler no
   // longer duplicates the cancel. Escape therefore always does something, and
   // does the nearer thing first.
-  useFocusTrap(overlayRef, true, {
+  //
+  // The card, not the backdrop: the trap should bound the same element that
+  // claims to be the dialog. They hold the same controls today only because the
+  // card is the backdrop's sole child — a fact about the current markup, not a
+  // guarantee.
+  useFocusTrap(cardRef, true, {
+    // The card, not the first control in it. Left to the default, focus lands
+    // on the header Close button and the first Space dismisses the picker
+    // before it has been read — the same hazard ClipModal avoids with "Copy
+    // link", answered the same way in both overlays.
+    initialFocus: () => cardRef.current,
     onEscape: () => {
+      // Not while the create is in flight. Cancelling does not abort the POST —
+      // the collection is still created and the clip still saved — and
+      // handleCreate's continuation then clears `newName`/`creating` under
+      // whatever has been typed since. Ignoring the key leaves one consistent
+      // outcome rather than two racing ones.
+      if (createLoading) return;
       if (creating) { cancelCreating(); return; }
       onClose();
     },
@@ -74,8 +92,17 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
       .finally(() => setLoading(false));
   }, []);
 
+  // Focus follows the field in both directions. Opening it moves focus in;
+  // closing it has to move focus back, because the input and the Add button
+  // unmount and whichever held focus takes it to <body> — outside the
+  // container, where the trap cannot help until the next Tab wraps it in.
+  // `wasCreating` stops this stealing focus on the initial mount, where
+  // `creating` is already false and nothing was unmounted.
+  const wasCreatingRef = useRef(false);
   useEffect(() => {
     if (creating) setTimeout(() => newNameRef.current?.focus(), 0);
+    else if (wasCreatingRef.current) setTimeout(() => newCollectionRef.current?.focus(), 0);
+    wasCreatingRef.current = creating;
   }, [creating]);
 
   // Closing the inline field and discarding what was typed. Named because the
@@ -120,6 +147,11 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
       <div
+        ref={cardRef}
+        // Focusable as a focus target, never as a Tab stop — see initialFocus
+        // above. `trapTabWithin` handles a container holding focus that
+        // FOCUSABLE does not match, which is exactly this.
+        tabIndex={-1}
         // Matching the drawer (CF-60) and ClipModal: the Tab trap only
         // constrains the keyboard, and `aria-modal` is what stops a screen
         // reader swiping into the page behind. On the card rather than the
@@ -128,7 +160,7 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
         role="dialog"
         aria-modal
         aria-label="Save clip to a collection"
-        className="w-full max-w-[18rem] rounded-xl border border-border bg-background shadow-2xl"
+        className="w-full max-w-[18rem] rounded-xl border border-border bg-background shadow-2xl focus:outline-none"
       >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -216,6 +248,7 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
             </div>
           ) : (
             <button
+              ref={newCollectionRef}
               onClick={() => setCreating(true)}
               className="flex min-h-9 w-full items-center gap-2 rounded px-1 text-[12px] text-subtle hover:text-foreground transition-colors"
             >

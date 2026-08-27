@@ -42,7 +42,12 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   //
   // No onEscape — the handler below already owns Escape for this overlay, and
   // passing it here too would close the modal twice.
-  useFocusTrap(overlayRef, true, {
+  //
+  // The card, not the backdrop: the trap should bound the same element that
+  // claims to be the dialog. They hold the same controls today only because the
+  // card is the backdrop's sole child — a fact about the current markup, not a
+  // guarantee.
+  useFocusTrap(cardRef, true, {
     // The dialog card, not a control inside it. Two things that rules out:
     // the default (first FOCUSABLE) is "Copy link", where the first Space or
     // Enter after opening fires a request and overwrites the clipboard; and
