@@ -115,27 +115,43 @@ def production_config_error(missing: list[str]) -> str:
 _ALLOWED_ORIGIN_SCHEMES = ("http", "https")
 
 
-def _origin_problem(origin: str) -> str | None:
-    """Why `origin` cannot work as a CORS allow-list entry, or None if it can.
+def _origin_problems(origin: str) -> list[str]:
+    """Every reason `origin` cannot work as a CORS allow-list entry.
+
+    A list, not the first problem, and that is the point. An entry can be wrong
+    in more than one way at once — `https://admin:hunter2@clipfarm.ca/` carries
+    a credential AND a trailing slash — and reporting one of them costs the
+    operator a second refused production boot to discover the other.
+
+    Three rounds of review tried to fix that by ORDERING the checks so the more
+    important problem is reported first. That cannot work, and the reasoning is
+    worth keeping: with two independent defects, whichever is reported, fixing
+    it leaves the other. The ordering argument only ever applied to pairs where
+    one problem *implies* the other — a zero-padded default port, an upper-case
+    unicode host — and those are still ordered below for that reason. For
+    genuinely independent defects the only fix is to report them all.
 
     Deliberately not pydantic's AnyHttpUrl: in 2.x that *appends* a trailing
     slash while normalizing, which would quietly undo the check below rather
     than enforce it.
     """
     if origin == "*":
-        return (
+        return [
             "with allow_credentials=True this lets any site make credentialed "
             "cross-origin calls (main.py)"
-        )
+        ]
 
-    # Before urlsplit, and against the RAW entry, because urlsplit strips tab,
-    # CR and LF out of the value before parsing — so `https://clip\tfarm.ca`
-    # arrives here with hostname `clipfarm.ca` and a host-side check sees
-    # nothing wrong. `cors_origins_list` splits the raw env string, so Starlette
-    # is then handed the tab-bearing entry, which matches no Origin header. Only
-    # a plain space was caught before this moved.
+    # The early returns below are the cases where nothing further can be said:
+    # the entry cannot be parsed, so every other check would be guessing.
+
+    # Against the RAW entry, because urlsplit strips tab, CR and LF out of the
+    # value before parsing — so `https://clip\tfarm.ca` arrives with hostname
+    # `clipfarm.ca` and a host-side check sees nothing wrong. `cors_origins_list`
+    # splits the raw env string, so Starlette is handed the tab-bearing entry,
+    # which matches no Origin header. Only a plain space was caught before this
+    # moved above urlsplit.
     if any(c.isspace() for c in origin):
-        return "contains whitespace — no browser can send this as an Origin"
+        return ["contains whitespace — no browser can send this as an Origin"]
 
     try:
         parts = urlsplit(origin)
@@ -144,132 +160,130 @@ def _origin_problem(origin: str) -> str | None:
         # `http://[::1`. Unguarded this escaped the whole validator: the
         # operator got a bare ValueError naming neither CORS_ORIGINS nor a
         # deploy doc, and because it killed the comprehension that builds
-        # `problems`, every other bad entry went unreported too. A worse boot
-        # failure than the one this guard replaces.
-        return "the host could not be parsed — not a scheme://host origin"
+        # `problems`, every other bad entry went unreported too.
+        return ["the host could not be parsed — not a scheme://host origin"]
+
     # scheme and netloc must BOTH be present: `clipfarm.ca` parses to an empty
     # scheme with the whole string in .path, and a bare `https://` parses to an
     # empty netloc. Checking only path/query/fragment would misreport the first
     # and accept the second.
     if parts.scheme not in _ALLOWED_ORIGIN_SCHEMES or not parts.netloc:
-        return "not a scheme://host origin — expected http:// or https:// and a host"
+        return ["not a scheme://host origin — expected http:// or https:// and a host"]
+
+    problems: list[str] = []
+
     # `?` and `#` are tested on the RAW entry, not on parts.query/parts.fragment.
     # urlsplit reports both as "" whether the delimiter was absent or present and
     # empty, so a truthiness test cannot tell `https://x.ca` from `https://x.ca?`
     # — and the second was accepted, then handed to Starlette's exact-string
-    # compare, where it matches nothing. Same silent outage as the trailing
-    # slash this check already catches. Neither character can appear in an
+    # compare, where it matches nothing. Neither character can appear in an
     # Origin header at all, so testing the raw entry costs no precision.
     if parts.path or "?" in origin or "#" in origin:
-        return (
+        problems.append(
             "an Origin is scheme://host[:port] with nothing after it; a trailing "
             "slash, path, query or fragment matches no browser Origin header"
         )
-    # Non-ASCII BEFORE the case check, so one mistake costs one refused boot.
-    # `https://КЛИПФАРМ.РФ` is both upper-case and unlatinised; reporting the
-    # case first sends the operator to `https://клипфарм.рф`, which the next
-    # boot refuses for punycode. Same ordering argument as the port block below,
-    # and this is where it was not applied.
-    #
-    # A raw-unicode host can never match: browsers send the punycode form in an
-    # Origin header, so it allows nobody while looking correct in a dashboard —
-    # the same silent outage as the wildcard. The punycode spelling of the same
-    # host is ASCII and still passes. An earlier comment cited IDNs as a *reason
-    # for* accepting unusual hosts, which had it backwards.
-    #
-    # Guarded on `parts.hostname` because it is None for `https://:8443`, which
-    # reaches its own message further down; an unguarded `.isascii()` here would
-    # be an AttributeError at boot rather than a rejection.
-    if parts.hostname and not parts.hostname.isascii():
-        return (
-            "a browser sends the punycode form of an internationalised host, so "
-            "this matches nothing — use the xn-- spelling"
-        )
-    # Userinfo BEFORE the case check, for the third application of the same
-    # ordering rule and the last place it was missing.
-    # `https://Admin:S3cret@clipfarm.ca` is both upper-case and credential-
-    # bearing; reporting the case first sends the operator to
-    # `https://admin:s3cret@clipfarm.ca`, which the next boot refuses for
-    # userinfo. Two refused production boots, and the first diagnosis is the
-    # less important of the two problems.
-    #
-    # netloc must be a bare host[:port]. The checks around it constrain the
-    # parts AROUND the host and say nothing about its shape, so userinfo and a
-    # malformed port both sail through — and neither can ever equal a browser's
-    # Origin header, which is what an allow-list entry is compared against.
+
     if parts.username is not None:
-        return (
+        problems.append(
             "carries user:password — RFC 6454 discards userinfo, so this entry "
             "can never match a browser Origin header"
         )
-    if origin != origin.lower():
-        return "must be lower-case — origins are compared as exact strings"
-    try:
-        port = parts.port
-    except ValueError:
-        # urlsplit only raises here — it does not validate on parse.
-        return "port must be a number in 1-65535"
-    # 0 is in urlsplit's accepted range but is not a port a browser can send.
-    if port == 0:
-        return "port must be a number in 1-65535"
-    if parts.netloc.endswith(":"):
-        return "trailing `:` with no port — write the host alone, or host:port"
-    # Last, because the checks above have peeled off userinfo and port and this
-    # is what should be left. `https://:8443` gets this far with a non-empty
-    # netloc, no userinfo and a valid port — every earlier check passes and the
-    # host is simply absent.
-    if not parts.hostname:
-        return "no host — an Origin is scheme://host[:port]"
-    # The wildcard subdomain, which is the half of this card worth most. Only a
-    # BARE `*` was rejected above; `https://*.clipfarm.ca` reached the end and
-    # returned None. Starlette compares allow_origins as exact strings —
-    # allow_origin_regex is the only other route and main.py passes none — so a
-    # wildcard host allows nobody, the same silent outage the trailing slash
-    # causes. It is the likelier operator mistake of the two: a trailing slash
-    # is a slip, "allow all my subdomains" is an intention this config language
-    # cannot express, so someone reaches for it deliberately.
-    if "*" in parts.hostname:
-        return (
-            "wildcard hosts are not supported — origins are compared as exact "
-            "strings, so this matches nothing; list each subdomain explicitly"
-        )
+
+    # The case check runs on scheme + host[:port] with any userinfo removed,
+    # rather than on the whole entry. `https://admin:Hunter2@clipfarm.ca` is not
+    # a case problem — the capitals are in a credential that has to go anyway —
+    # and reporting one would be advice the operator cannot act on separately.
+    scheme_text, _, after_scheme = origin.partition("://")
+    authority = after_scheme
+    for delimiter in "/?#":
+        authority = authority.partition(delimiter)[0]
+    cased = f"{scheme_text}{authority.rpartition('@')[2]}"
+    if cased != cased.lower():
+        problems.append("must be lower-case — origins are compared as exact strings")
+
+    if parts.hostname:
+        # A raw-unicode host can never match: browsers send the punycode form in
+        # an Origin header, so it allows nobody while looking correct in a
+        # dashboard — the same silent outage as the wildcard. The punycode
+        # spelling of the same host is ASCII and still passes.
+        if not parts.hostname.isascii():
+            problems.append(
+                "a browser sends the punycode form of an internationalised host, "
+                "so this matches nothing — use the xn-- spelling"
+            )
+        # The wildcard subdomain, the half of this card worth most. Only a BARE
+        # `*` is rejected above; `https://*.clipfarm.ca` used to reach the end
+        # and return None. Starlette compares allow_origins as exact strings —
+        # allow_origin_regex is the only other route and main.py passes none —
+        # so a wildcard host allows nobody. It is the likelier operator mistake
+        # of the two: a trailing slash is a slip, "allow all my subdomains" is
+        # an intention this config language cannot express, so someone reaches
+        # for it deliberately.
+        if "*" in parts.hostname:
+            problems.append(
+                "wildcard hosts are not supported — origins are compared as "
+                "exact strings, so this matches nothing; list each subdomain "
+                "explicitly"
+            )
     # Beyond `*` and non-ASCII, host characters are not checked. `clipfarm.ca.`
     # (browsers drop the FQDN root dot) and `clipfarm_ca` (underscore is not
     # valid in a hostname) are still accepted and still match nothing. That is a
     # scope call: a general hostname-shape check is where a guard like this
     # starts refusing production boots for hosts that were fine — single-label
     # internal names, `host.docker.internal` — and a false rejection is worse
-    # than the bug, because it takes the service down on deploy. The two carved
-    # out are the ones with no legitimate reading at all.
-    # A port a browser never sends is the same silent class as the trailing
-    # slash: it looks deliberate in a dashboard and matches no Origin header.
-    # Read from the raw netloc rather than parts.port, which has already
-    # normalised `:080` to 80.
-    #
-    # `rpartition(":")` is NOT bracket-aware — `'[::1]'.rpartition(':')` returns
-    # `('[:', ':', '1]')`, so on a bare IPv6 literal the "port text" is `1]`.
-    # An earlier version of this comment claimed otherwise. What makes it safe
-    # is the `port is not None` guard: urlsplit reports no port for `[::1]`, so
-    # the block never runs. Hoisting either check above that guard would start
-    # rejecting `http://[::1]` as a zero-padded port.
-    if port is not None:
-        # Default BEFORE padded, and deliberately. Both can be true of `:080` on
-        # http, and reporting the padding first sends the operator to `:80` —
-        # which the next boot then refuses as the default port. Two refused
-        # production boots for one mistake. "Drop it" is right in both cases, so
-        # it goes first and the padded message is left for ports worth keeping.
-        if (parts.scheme, port) in (("http", 80), ("https", 443)):
-            return (
-                f"`:{port}` is the default port for {parts.scheme} — a browser "
-                f"omits it, so this matches no Origin header. Drop it"
-            )
-        _, sep, port_text = parts.netloc.rpartition(":")
-        if sep and port_text != str(port):
-            return (
-                f"port `{port_text}` is zero-padded — a browser sends "
-                f"`{port}`, and origins are compared as exact strings"
-            )
-    return None
+    # than the bug, because it takes the service down on deploy.
+    elif not parts.netloc.endswith(":"):
+        # `https://:8443` reaches here with a non-empty netloc, no userinfo and
+        # a valid port — the host is simply absent. The trailing-colon case has
+        # its own message below and would otherwise get both.
+        problems.append("no host — an Origin is scheme://host[:port]")
+
+    try:
+        port = parts.port
+    except ValueError:
+        # urlsplit only raises here — it does not validate on parse.
+        problems.append("port must be a number in 1-65535")
+    else:
+        # 0 is in urlsplit's accepted range but is not a port a browser sends.
+        if port == 0:
+            problems.append("port must be a number in 1-65535")
+        elif port is not None:
+            # Default BEFORE padded, and this ordering IS justified: both are
+            # true of `:080` on http, and "drop it" is the right instruction for
+            # either, so reporting the padding first would send the operator to
+            # `:80` and the next boot would refuse that as the default port.
+            # These two are not independent — one fix resolves both — which is
+            # what separates this from the pairs that had to be accumulated.
+            #
+            # Read from the raw netloc rather than parts.port, which has already
+            # normalised `:080` to 80. `rpartition(":")` is NOT bracket-aware —
+            # `'[::1]'.rpartition(':')` returns `('[:', ':', '1]')`, so on a bare
+            # IPv6 literal the "port text" is `1]`. What makes that safe is this
+            # `port is not None` branch: urlsplit reports no port for `[::1]`.
+            if (parts.scheme, port) in (("http", 80), ("https", 443)):
+                problems.append(
+                    f"`:{port}` is the default port for {parts.scheme} — a "
+                    f"browser omits it, so this matches no Origin header. Drop it"
+                )
+            else:
+                _, sep, port_text = parts.netloc.rpartition(":")
+                if sep and port_text != str(port):
+                    problems.append(
+                        f"port `{port_text}` is zero-padded — a browser sends "
+                        f"`{port}`, and origins are compared as exact strings"
+                    )
+    if parts.netloc.endswith(":"):
+        problems.append(
+            "trailing `:` with no port — write the host alone, or host:port"
+        )
+    return problems
+
+
+def _origin_problem(origin: str) -> str | None:
+    """The first problem with `origin`, or None. For callers wanting one line."""
+    problems = _origin_problems(origin)
+    return problems[0] if problems else None
 
 
 def _redacted_origin(origin: str) -> str:
@@ -298,8 +312,11 @@ def _redacted_origin(origin: str) -> str:
     The third is the one that settles it. **No textual rule can separate
     userinfo from host:port**, so "provably not a credential" was never
     provable, and every version of it will have a complement left open. urlsplit
-    does not help either: for `admin:hunter2` it reports host `admin`, port
-    `hunter2`, and username and password both None.
+    does not help either: for `https://admin:hunter2@x.ca/y` it reports the
+    netloc as `admin:hunter2` with username and password both None, having read
+    the credential as a host and a port. (`urlsplit("admin:hunter2")` alone does
+    something different again — scheme `admin`, path `hunter2` — which an
+    earlier version of this paragraph cited as if it were the same thing.)
 
     So the entry is not parsed at all. The tie-break the previous versions kept
     getting wrong in alternating directions — a printed secret is
@@ -777,11 +794,15 @@ class Settings(BaseSettings):
         # reported as "entry 1", pointing at a comma. A number that does not
         # match what they pasted is worse than no number, because it is the one
         # handle they have on an entry whose text has been redacted away.
+        # One line per (entry, problem), with the entry number repeated rather
+        # than the problems joined — two of the messages carry their own
+        # semicolon, so any separator inside a line is ambiguous, and an entry
+        # can now contribute more than one problem.
         problems = [
             f"entry {position} {_redacted_origin(entry)!r}: {why}"
             for position, raw in enumerate(self.cors_origins.split(","), 1)
             if (entry := raw.strip())
-            and (why := _origin_problem(entry)) is not None
+            for why in _origin_problems(entry)
         ]
         if problems:
             raise ValueError(cors_origins_error(problems))
@@ -795,26 +816,46 @@ def _settings_or_boot_error() -> Settings:
     renders it as `input_value={...}` — every secret the model takes, verbatim,
     middle-truncated. Whether a given secret falls inside the elided middle is
     *arithmetic*: it depends on how many fields precede it and how long they
-    are. `cors_origins` lands there today at field 4 of 62. Move it to the end
-    of the class and a pasted password reaches the boot log, with every test in
+    are. `cors_origins` lands there today at field 5 of 62, with the other
+    production-required fields at 38-50. Move it to the end of the class and a
+    pasted password reaches the boot log, with every test in
     `test_config.py` still passing — they construct Settings directly and pin a
     key ordering unrelated to production's.
 
     So the redaction this module does on the message it composes was true of
     that message and not of what an operator actually reads. The
-    ValidationError therefore does not escape: only the composed messages do,
-    and `from None` drops the chained original so a traceback cannot print it
-    either.
+    ValidationError therefore does not escape: only the composed messages do.
 
-    This covers the boot path. An integration that captures the exception
-    *object* — Sentry, a structured logging handler — still sees the mapping;
-    that is CF-289 (#337), which is wider than this module.
+    `from None` sets `__suppress_context__`, which stops a traceback printing
+    the original — it does not *delete* it. The RuntimeError still holds the
+    ValidationError on `__context__`, so anything walking the exception chain
+    can reach the mapping. That is the boot path covered and the object not; an
+    integration capturing the exception itself — Sentry, a structured logging
+    handler — still sees it. CF-289 (#337) is that, and is wider than this
+    module.
     """
     try:
         return Settings()
     except ValidationError as exc:
-        problems = "; ".join(str(error["msg"]) for error in exc.errors())
-        raise RuntimeError(f"Configuration is not usable: {problems}") from None
+        raise RuntimeError(_boot_error(exc)) from None
+
+
+def _boot_error(exc: ValidationError) -> str:
+    """Compose a boot message from `exc` carrying no input values.
+
+    `loc` as well as `msg`, because pydantic renders the field name on its own
+    line and taking only the message drops it. A first version of this did, and
+    turned `CONDENSE_MODE=banana` into a bare "Input should be 'rules' or
+    'guarded'" — true, and useless, because the operator is not told which of
+    62 settings it is about. The model-validator errors have an empty `loc` and
+    already name their variable in the message, so they are left alone.
+    """
+    problems = []
+    for error in exc.errors():
+        field = ".".join(str(part) for part in error["loc"])
+        message = str(error["msg"])
+        problems.append(f"{field}: {message}" if field else message)
+    return "Configuration is not usable: " + "; ".join(problems)
 
 
 settings = _settings_or_boot_error()

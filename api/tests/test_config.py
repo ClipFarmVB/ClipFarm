@@ -28,6 +28,7 @@ from app.config import (  # noqa: E402
     REQUIRED_IN_PRODUCTION_WORKER,
     Settings,
     _origin_problem,
+    _origin_problems,
     _settings_or_boot_error,
     cors_origins_error,
     production_config_error,
@@ -805,6 +806,83 @@ def test_only_a_scheme_this_guard_accepts_is_echoed(clean_env):
     assert "'***'" in message
 
 
+def test_an_alphabetic_scheme_is_not_echoed_either(clean_env):
+    """The companion to the test above, and it exists because that one pinned
+    the closed set only against `isalnum()`.
+
+    `s3cret` contains a digit, so `isalpha()` rejects it and the leak would not
+    show; `password` does not. Both are secrets pasted where a scheme belongs,
+    and neither is http or https.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors("password://admin@clipfarm.ca")
+
+    message = str(exc.value)
+    assert "password://" not in message
+    assert "'***'" in message
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        # Credential + trailing slash: independent, so both must be reported.
+        ("https://admin:hunter2@clipfarm.ca/", {"user:password", "nothing after it"}),
+        # Credential + upper-case scheme.
+        ("HTTPS://admin:hunter2@clipfarm.ca", {"user:password", "lower-case"}),
+        # Credential + unlatinised host.
+        ("https://admin:hunter2@\u043a\u043b\u0438\u043f\u0444\u0430\u0440\u043c.\u0440\u0444",
+         {"user:password", "punycode"}),
+    ],
+)
+def test_every_problem_with_an_entry_is_reported_at_once(clean_env, value, expected):
+    """An entry can be wrong in more than one independent way, and reporting one
+    costs a second refused production boot to discover the other.
+
+    Three rounds tried to fix this by ORDERING the checks. That cannot work:
+    with two independent defects, whichever is reported first, fixing it leaves
+    the other. Ordering only helps where one problem *implies* the other — a
+    zero-padded default port — and those pairs are still ordered.
+    """
+    problems = _origin_problems(value)
+
+    assert len(problems) == len(expected)
+    for fragment in expected:
+        assert any(fragment in problem for problem in problems), fragment
+
+
+def test_capitals_inside_a_credential_are_not_a_case_problem(clean_env):
+    """`https://admin:Hunter2@clipfarm.ca` has capitals only in userinfo, which
+    has to go anyway. Reporting "must be lower-case" as well would be advice the
+    operator cannot act on separately — so the case check runs on scheme plus
+    host[:port] with userinfo removed, not on the whole entry.
+    """
+    assert _origin_problems("https://admin:Hunter2@clipfarm.ca") == [
+        "carries user:password — RFC 6454 discards userinfo, so this entry "
+        "can never match a browser Origin header"
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://clipfarm.ca/",
+        "https://*.clipfarm.ca",
+        "https://:8443",
+        "https://clipfarm.ca:",
+        "https://clipfarm.ca:abc",
+        "http://clipfarm.ca:80",
+    ],
+)
+def test_a_single_defect_still_reports_exactly_one_problem(clean_env, value):
+    """The other half of accumulating: it must not turn one mistake into a list.
+
+    `https://:8443` is the one worth pinning — it has no host AND could pick up
+    the trailing-colon message, and `http://x:80` is both a default port and a
+    candidate for the padded-port message.
+    """
+    assert len(_origin_problems(value)) == 1
+
+
 def test_an_uppercase_credential_costs_one_refused_boot(clean_env):
     """`https://Admin:S3cret@clipfarm.ca` is both upper-case and credential-
     bearing. Reporting the case first sends the operator to
@@ -1021,7 +1099,12 @@ def test_the_boot_error_carries_no_input_values(clean_env, monkeypatch):
 
 
 def test_a_boot_error_still_names_every_problem(clean_env, monkeypatch):
-    """Only the messages survive the re-raise, so all of them have to."""
+    """Only the messages survive the re-raise, so all of them have to.
+
+    Two CORS problems, which arrive as one pydantic error — the companion test
+    below covers several *pydantic* errors, which is the case the `"; ".join`
+    exists for and which this one does not reach.
+    """
     for name, value in PRODUCTION_ENV.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("CORS_ORIGINS", "https://clipfarm.ca/,https://*.clipfarm.ca")
@@ -1032,6 +1115,36 @@ def test_a_boot_error_still_names_every_problem(clean_env, monkeypatch):
     message = str(exc.value)
     assert "nothing after it" in message
     assert "wildcard" in message
+
+
+def test_a_boot_error_names_every_pydantic_error_not_just_the_first(
+    clean_env, monkeypatch
+):
+    """`"; ".join(... for error in exc.errors())` was pinned by nothing —
+    replacing it with `errors()[0]` passed the whole suite, because every other
+    test produces exactly one pydantic error.
+
+    Two FIELD errors are needed. A field failure short-circuits the model
+    validator, so pairing a bad CORS value with a bad field yields one error,
+    not two — which is why the first attempt at this test proved nothing.
+
+    It also pins that each problem names its field. Taking only `msg` rendered
+    `CONDENSE_MODE=banana` as a bare "Input should be 'rules' or 'guarded'":
+    true, and useless, since the operator is not told which of 62 settings it
+    is about. pydantic puts the field on its own line and the first version of
+    the wrapper dropped it.
+    """
+    for name, value in PRODUCTION_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("CONDENSE_MODE", "banana")
+    monkeypatch.setenv("DEBUG", "notabool")
+
+    with pytest.raises(RuntimeError) as exc:
+        _settings_or_boot_error()
+
+    message = str(exc.value).lower()
+    assert "condense_mode" in message
+    assert "debug" in message
 
 
 def test_the_cors_message_points_at_both_deploy_paths():
