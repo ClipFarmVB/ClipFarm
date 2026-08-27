@@ -51,11 +51,25 @@ uses nothing outside the standard library.
 
 What that costs is cycle detection, and six green here does not mean the chain
 is sound. Alembic builds the graph and raises `CycleDetected`; this file only
-reads declared ids, and a loop among them can leave every check below happy.
-Measured on this repo's `versions/` with `001`'s `down_revision` set to `"014"`
-and `003`'s to `"001"`: one head, no duplicates, every parent resolving, all six
-tests pass — and alembic 1.14 refuses the same directory with
-`Cycle is detected in revisions (001, 002, ..., 014)`. See the merge note below.
+reads declared ids, and no check below is looking for a loop.
+
+Most loops do fail here anyway, as a side effect of the head count rather than
+by design, so the gap is narrower than "cycles are not caught" and it is worth
+being exact about where it is. Redirecting one edge inside the chain strands
+the revision it used to point at: `004`'s `down_revision` set to `"006"` on
+this repo's `versions/` leaves heads `{003, 014}`. A closed loop with no root
+leaves *zero* heads. Both fail `test_there_is_exactly_one_head`.
+
+What slips through is a loop that also happens to leave exactly one revision
+unnamed as a parent. Measured on this repo's `versions/` with `001`'s
+`down_revision` set to `"014"` and `003`'s to `"001"`: the second edit orphans
+`002` — nothing names it as a parent any more — so `002` is the single head, no
+duplicates, every parent resolving, and all six tests pass, while alembic 1.14
+refuses the same directory with
+`Cycle is detected in revisions (001, 002, ..., 014)`. That is one hand-built
+shape, not a property of cycles; but one is enough, because the head count is
+not a cycle check and passing it establishes nothing about loops. See the merge
+note below.
 """
 import collections
 import pathlib
@@ -79,9 +93,12 @@ VERSIONS = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
 # entry out again once that PR lands. This file has no equivalent. Keep it.
 #
 # Theirs also has test_the_chain_is_a_single_line — no revision may be the
-# parent of two others — and that is not redundant with the head count here: a
-# fork paired with a cycle still leaves exactly one head, so all six tests below
-# pass on a tree alembic rejects outright (module docstring). Keep it too.
+# parent of two others — and that is not redundant with the head count here.
+# The head count does reject most loops, but as a side effect: it misses one
+# that orphans exactly one revision into being the sole head, and the docstring
+# measures such a pair (`001` <- `014`, `003` <- `001`) passing all six tests
+# below on a tree alembic rejects outright. Theirs catches that one, because
+# the same edit leaves `001` the parent of both `002` and `003`. Keep it too.
 #
 # This one parses into a LIST — see `_parsed()`. Theirs parses into
 # `dict[revision_id, down_revision]`, where two files claiming one id collapse
@@ -247,18 +264,36 @@ def test_the_filename_prefix_matches_the_revision_id():
     `016_posts.py` / `"016"` today, `014_posts.py` / `"014"` when this file was
     written. A duplicate is visible only once both files share a tree, which is
     `test_no_revision_id_is_claimed_twice`'s job, not this one's.
+
+    Two ways to lose the listing, and the second is the one that arrives by
+    running the tool. A half-done renumber leaves the prefix disagreeing with
+    the id. A file `alembic revision` generated is named for a hex id —
+    `api/alembic.ini` sets no `file_template`, so the default
+    `%(rev)s_%(slug)s` yields `a3f9c1d2e4b5_add_posts.py` — where prefix and id
+    agree perfectly and the listing stops sorting into an order at all. So both
+    are checked: the numbering first, then the match.
     """
     # Split the *stem*, not the filename: `name.split("_")[0]` on a file with no
-    # underscore yields `015.py`, which is not `isdigit()`, so the whole check
-    # skipped exactly the names most likely to have been renumbered by hand.
-    # The `isdigit()` guard itself stays: it scopes this check to the numbered
-    # scheme this repo uses, so a file named some other way is not reported as a
-    # mismatch against a prefix that was never meant to be a revision id.
-    mismatched = {
-        name: rev
+    # underscore yields `015.py`, which is not `isdigit()` and so was reported
+    # as unnumbered rather than compared.
+    prefixes = {
+        name: (pathlib.Path(name).stem.split("_", 1)[0], rev)
         for name, rev, _, _ in _parsed()
-        if (prefix := pathlib.Path(name).stem.split("_", 1)[0]) != rev
-        and prefix.isdigit()
+    }
+    unnumbered = sorted(
+        name for name, (prefix, _) in prefixes.items() if not prefix.isdigit()
+    )
+    assert not unnumbered, (
+        f"these migrations are not named for a number: {unnumbered}. This is "
+        "what `alembic revision` produces: api/alembic.ini sets no "
+        "`file_template`, so the default `%(rev)s_%(slug)s` names the file "
+        "after a generated hex id, and prefix and id agree — nothing below "
+        "fires while the directory listing stops being sortable at all. This "
+        "repo numbers migrations by hand, 001 upward; rename the file and its "
+        "`revision` onto the next free number."
+    )
+    mismatched = {
+        name: rev for name, (prefix, rev) in prefixes.items() if prefix != rev
     }
     assert not mismatched, (
         f"filename prefix and revision id disagree: {mismatched}. Rename the "
@@ -331,18 +366,19 @@ def test_there_is_exactly_one_head():
     heads = sorted(revisions - parents)
 
     def describe(head: str) -> str:
-        """What the files themselves say about a head — no inference."""
-        for name, rev, down, raw in parsed:
-            if rev != head:
-                continue
-            if raw is None:
-                return f"{head} ({name}: no down_revision line at all)"
-            if down is not None:
-                return f"{head} ({name}: down_revision {down!r})"
-            if raw == "None":
-                return f"{head} ({name}: down_revision None, a declared root)"
-            return f"{head} ({name}: down_revision {raw}, unreadable)"
-        return f"{head} (named as a parent, but no file declares it)"
+        """What the files themselves say about a head — no inference.
+
+        Every head has a row: `heads` is `revisions - parents`, and `revisions`
+        is built from `parsed`. So there is no no-such-file case to report.
+        """
+        name, _, down, raw = next(row for row in parsed if row[1] == head)
+        if raw is None:
+            return f"{head} ({name}: no down_revision line at all)"
+        if down is not None:
+            return f"{head} ({name}: down_revision {down!r})"
+        if raw == "None":
+            return f"{head} ({name}: down_revision None, a declared root)"
+        return f"{head} ({name}: down_revision {raw}, unreadable)"
 
     assert len(heads) == 1, (
         f"expected one head, found {len(heads)}: "
