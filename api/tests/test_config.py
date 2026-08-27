@@ -614,6 +614,16 @@ def test_an_unparseable_host_is_reported_rather_than_escaping(clean_env):
         "https://admin:hunter2?a@clipfarm.ca",
         "https://admin:hunter2#a@clipfarm.ca",
         "admin:hunter2/x@clipfarm.ca",          # and in the no-scheme branch
+        # An empty authority: the delimiter is in LEADING position, so the
+        # authority truncates to "" and an "is this a bare host?" test says yes.
+        "//admin:hunter2@clipfarm.ca",
+        "https:///admin:hunter2@clipfarm.ca",
+        # An all-digit password. This is the shape that retired the textual
+        # rule: `admin:12345` cannot be told from `clipfarm.ca:8443`.
+        "https://admin:12345/x@clipfarm.ca",
+        # A second `@` after the authority, which anchored the old slice to the
+        # wrong one and printed `https://***@handle` — host gone.
+        "https://admin:hunter2@clipfarm.ca/x@handle",
     ],
 )
 def test_a_rejected_origin_does_not_echo_its_password(clean_env, value):
@@ -631,9 +641,11 @@ def test_a_rejected_origin_does_not_echo_its_password(clean_env, value):
 
     message = str(exc.value)
     assert "hunter2" not in message.lower()
-    assert "***@" in message
-    # Redacted, not swallowed: the operator still has to be able to find it.
-    assert "clipfarm.ca" in message or "[bad]" in message
+    assert "12345" not in message
+    assert "***" in message
+    # Nothing of the entry survives but the scheme — the operator finds it by
+    # the entry number instead, which the test below pins.
+    assert "admin" not in message
 
 
 @pytest.mark.parametrize("value", ["https://clipfarm.ca?", "https://clipfarm.ca#"])
@@ -679,66 +691,50 @@ def test_a_padded_default_port_costs_one_refused_boot_not_two(clean_env, value, 
 @pytest.mark.parametrize(
     "value",
     [
-        "clipfarm.ca/@handle",   # no scheme, `@` in the path
-        "clipfarm.ca?x=a@b",     # no scheme, `@` in the query
+        "https://clipfarm.ca/@handle",       # `@` in the path, no credential
+        "https://clipfarm.ca:8443/x@y",      # ...with a port on the authority
+        "clipfarm.ca/@handle",               # ...and with no scheme at all
     ],
 )
-def test_the_no_scheme_fallback_does_not_over_redact_either(clean_env, value):
-    """The over-redaction fix was applied to the scheme-bearing path only, and
-    the fallback kept doing a whole-string rpartition — so `clipfarm.ca/@handle`
-    still came back `***@handle`, host gone, with a `***@` falsely implying a
-    credential was found.
+def test_an_at_sign_is_redacted_even_where_it_is_probably_harmless(clean_env, value):
+    """These carry no credential, and they are redacted anyway.
 
-    The docstring on `_redacted_origin` described the fix as covering the whole
-    function. This test is what makes that true rather than intended.
+    Two earlier versions of this file asserted the opposite — that an entry
+    whose `@` sits in the path is echoed intact — and a review round showed why
+    that cannot be pinned: `admin:12345` is textually indistinguishable from
+    `host:8443`, so no rule separates userinfo from a host and port. A test
+    asserting "this one is safe to print" was enforcing the opposite of the
+    stated tie-break.
+
+    The cost is that the entry's text is gone from the message, which is what
+    the numbering below exists to pay for.
     """
     with pytest.raises(ValidationError) as exc:
         _production_with_cors(value)
 
     message = str(exc.value)
-    assert "***" not in message
-    assert value in message
+    assert "***" in message
+    assert value not in message
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        "https://clipfarm.ca/@handle",     # `@` in the path
-        "https://clipfarm.ca/?x=a@b",      # `@` in the query
-        "https://clipfarm.ca:8443/x@y",    # ...with a port on the authority
-        "http://[::1]:3000/a@b",           # ...and an IPv6 literal, ported
-        "http://[::1]/a@b",                # ...and bare, whose colons are not a port
-    ],
-)
-def test_a_rejected_origin_without_userinfo_is_echoed_intact(clean_env, value):
-    """The other half of the redaction, and a bug the first version had.
+def test_each_problem_is_numbered_so_a_redacted_entry_is_identifiable(clean_env):
+    """Redacted entries print as `scheme://***`, so two of them are otherwise
+    indistinguishable and the operator cannot tell which one to go and fix.
 
-    Searching the whole string for `@` redacted `https://clipfarm.ca/@handle` to
-    `https://***@handle` — no credential was at risk, but the host was lost, so
-    the operator could not tell which entry had been rejected. Redacting the
-    error message into uselessness defeats the point of having one. Only the
-    authority is searched now.
+    The position in the pasted list is what replaces the text. It has to survive
+    entries that are *fine* — the numbering counts every origin, not only the
+    bad ones — or it points at the wrong entry.
     """
     with pytest.raises(ValidationError) as exc:
-        _production_with_cors(value)
+        _production_with_cors(
+            "https://clipfarm.ca,https://a:b@x.ca,https://ok.ca,https://c:d@y.ca"
+        )
 
     message = str(exc.value)
-    assert "***" not in message
-    assert value in message
-
-
-def test_each_problem_is_delimited(clean_env):
-    """The problems used to be joined with `; `, and two of the messages carry
-    their own semicolon — so with several bad entries there was no way to see
-    where one problem ended. One per line instead.
-    """
-    with pytest.raises(ValidationError) as exc:
-        _production_with_cors("https://*.clipfarm.ca,https://clipfarm.ca:080")
-
-    lines = [ln for ln in str(exc.value).splitlines() if ln.startswith("  - ")]
-    assert len(lines) == 2
-    assert "*.clipfarm.ca" in lines[0]
-    assert ":080" in lines[1]
+    assert "entry 2 'https://***'" in message
+    assert "entry 4 'https://***'" in message
+    # The good entries are counted but not reported.
+    assert "entry 1" not in message and "entry 3" not in message
 
 
 @pytest.mark.parametrize(

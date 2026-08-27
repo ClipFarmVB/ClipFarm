@@ -239,71 +239,43 @@ def _origin_problem(origin: str) -> str | None:
     return None
 
 
-def _is_bare_host(authority: str) -> bool:
-    """Is `authority` a plain host[:port], with no userinfo hiding in it?
-
-    Textual, because urlsplit cannot answer this: `admin:hunter2` comes back as
-    host `admin` port `hunter2` with username and password both None. Used only
-    to decide whether an error message may echo an entry verbatim.
-    """
-    if "@" in authority:
-        return False
-    if authority.startswith("["):
-        # IPv6 literal. The colons inside the brackets are part of the address,
-        # so only what follows `]` can be a port — and a bare `[::1]` has none.
-        close = authority.find("]")
-        if close == -1:
-            return False
-        rest = authority[close + 1:]
-        return not rest or (rest.startswith(":") and rest[1:].isdigit())
-    _, sep, port = authority.rpartition(":")
-    return not sep or port.isdigit()
-
-
 def _redacted_origin(origin: str) -> str:
-    """`origin` with any userinfo replaced, for echoing into an error message.
+    """`origin` reduced to something safe to echo into an error message.
 
-    Applied at the interpolation site rather than inside the userinfo branch,
-    which is where it looks like it belongs and where it would miss most of the
-    cases. A credential-bearing entry usually fails some *other* check first:
-    `https://admin:pw@x.ca/` fails on the path, `https://Admin:Pw@x.ca` fails on
-    the case, and both would then be echoed in full.
+    An entry containing `@` is shown as `scheme://***`, and nothing else about
+    it is printed. Callers number the problems, so the operator identifies the
+    entry by its position in the list rather than by its text.
 
-    Purely textual, so it also covers the entry `urlsplit` cannot parse — and it
-    cannot itself raise while building an error message, which is the one place
-    a second exception is least welcome.
+    That is blunt on purpose, and it is the fourth shape this function has had.
+    The first three tried to print as much of the entry as was "safe", and each
+    was wrong in a way only found by execution:
 
-    Only the AUTHORITY is searched for the `@`. A first version searched the
-    whole string and so redacted `https://clipfarm.ca/@handle` to
-    `https://***@handle` — losing the host, which leaves the operator unable to
-    tell which entry was rejected. No credential was at risk there; the damage
-    was to the message, which is the entire point of this function.
+      * whole-string search       — destroyed the host: `clipfarm.ca/@handle`
+                                    came back `***@handle`
+      * authority-only search     — leaked, because a stray `/`, `?` or `#`
+                                    between the credential and the `@` pushes
+                                    the `@` out of the authority
+      * authority + "is it a bare
+        host?" test               — leaked on an empty authority
+                                    (`//admin:pw@host`) and on an all-digit
+                                    password, since `admin:12345` is
+                                    indistinguishable from `host:8443`
+
+    The third is the one that settles it. **No textual rule can separate
+    userinfo from host:port**, so "provably not a credential" was never
+    provable, and every version of it will have a complement left open. urlsplit
+    does not help either: for `admin:hunter2` it reports host `admin`, port
+    `hunter2`, and username and password both None.
+
+    So the entry is not parsed at all. The tie-break the previous versions kept
+    getting wrong in alternating directions — a printed secret is
+    unrecoverable, a message that is harder to act on is not — is applied once,
+    here, to every entry that could possibly carry one.
     """
     if "@" not in origin:
         return origin
-    scheme, sep, rest = origin.partition("://")
-    body = rest if sep else origin
-    authority = body
-    for delimiter in "/?#":
-        authority = authority.partition(delimiter)[0]
-    # Echo the entry intact only where the `@` is provably NOT userinfo: the
-    # authority holds no `@` of its own *and* is a plain host[:port]. Anything
-    # else is redacted, including the shape that produced this rule —
-    # `https://admin:hunter2/x@clipfarm.ca`, where a stray `/` pushes the `@`
-    # out of the authority and an authority-only search finds no userinfo to
-    # hide. urlsplit is no help there: it reads `admin:hunter2` as host `admin`
-    # port `hunter2` and reports username and password as None.
-    #
-    # The two failure directions are not symmetric, so the tie is broken the
-    # same way every time: printing a secret is unrecoverable, while losing the
-    # host costs the operator a message that is harder to act on. Uncertain
-    # means redact.
-    if "@" not in authority and _is_bare_host(authority):
-        return origin
-    # Keep everything after the last `@`, delimiters included, so the operator
-    # can still recognise the entry they pasted.
-    kept = body.rpartition("@")[2]
-    return f"{scheme}://***@{kept}" if sep else f"***@{kept}"
+    scheme, sep, _ = origin.partition("://")
+    return f"{scheme}://***" if sep else "***"
 
 
 def cors_origins_error(problems: list[str]) -> str:
@@ -740,9 +712,12 @@ class Settings(BaseSettings):
         # `{value}: {why}`, not `{value} is {why}`. Five of the messages are
         # standalone clauses that do not complete "X is …", and this is the text
         # an operator reads at the moment production will not boot.
+        # Numbered, because a redacted entry prints as `scheme://***` and two of
+        # them would otherwise be indistinguishable. The position is what makes
+        # the message actionable once the text cannot be shown.
         problems = [
-            f"{_redacted_origin(origin)!r}: {why}"
-            for origin in origins
+            f"entry {position} {_redacted_origin(origin)!r}: {why}"
+            for position, origin in enumerate(origins, 1)
             if (why := _origin_problem(origin)) is not None
         ]
         if problems:
