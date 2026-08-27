@@ -248,6 +248,12 @@ class Settings(BaseSettings):
     #   "rules"    the two blocks above: contacts + motion bridge (CF-46)
     #   "guarded"  speed-gated contacts + motion anchors + tight pads, abstaining
     #              when the ball track is too sparse to judge (CF-187)
+    # The figures below pre-date the NaN change (242dbb0) and are not re-scored:
+    # over-ceiling speed samples no longer vote "fast" at the motion anchor, which
+    # can only remove anchor coverage, so each is an upper bound on dead time
+    # removed and a lower bound on live play cut. See ml/eval/README.md for how
+    # narrow that bound is and why the earlier cap experiments do not cover it.
+    #
     # Default is "guarded", and it is not a clean sweep in either direction.
     # Dead time: it removes more on three of the four it condenses (test2, test4,
     # test5) and 2.8 points less on test1. Live play: it cuts less than "rules"

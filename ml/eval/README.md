@@ -169,6 +169,19 @@ The guarded path became the default on the fixture numbers below, not on a
 clean sweep — it buys dead time with live play on two of them, and that trade is
 the thing to look at before touching its tunables:
 
+> **These figures pre-date the NaN change (CF-187, `242dbb0`) and have not been
+> re-scored.** Over-ceiling speed samples used to be clamped to
+> `MAX_PLAUSIBLE_SPEED_FH`, which left them voting "fast" at the motion anchor;
+> they are now NaN and vote for neither side. That can only *remove* anchor
+> coverage, never add it, so every row below is an upper bound on dead time
+> removed and a lower bound on live play cut. The bound is narrow — an anchor is
+> lost only where believable-fast samples fall under `ANCHOR_MIN_FRACTION`,
+> which needs ~80% of a window over-ceiling (~30% if half of it is already slow),
+> against a 4.0% global rate on test1 — but local clustering is unmeasured, and
+> track hops bunch where the tracker is confused. **Re-run the ladder before
+> treating these as current**; the earlier cap-at-px/s-equivalent and cap-removed
+> runs do not stand in for it, because all of those variants still voted "fast".
+
 | fixture | dead removed | live cut | |
 |---|---|---|---|
 | test1*† | 56.2% → 53.4% | 176s → **97s** | 79s less play cut, 2.8 points less dead time |

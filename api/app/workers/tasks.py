@@ -84,6 +84,48 @@ def _clear_previous_condensed(gid) -> None:
         logger.warning("Orphan condensed-video cleanup failed (%s)", del_err)
 
 
+def _maybe_clear_previous_condensed(
+    gid, windows, *, ball_ok: bool, built_by: str, _require_lock,
+) -> bool:
+    """Clear a previous condensed cut, but only if this run earned the right to.
+
+    The decision and the deletion are joined here rather than at the call site
+    on purpose. The original defect was an *unconditional* clear — the predicate
+    was never wrong, it simply was not consulted — so a test that only exercises
+    `_condense_verdict_is_confident` leaves the regression that actually
+    happened uncovered. With the branch in a function, a test can assert that a
+    degraded run performs no deletion at all.
+
+    The lock-checkpoint callable is named `_require_lock`, underscore and all,
+    so that `test_every_require_lock_checkpoint_routes_to_a_locklost_handler`
+    still sees this checkpoint. That scan finds calls by name; moving one behind
+    a parameter would hide it from the routing check while leaving the call
+    itself in place — silent under-coverage of the lock invariant, which is the
+    failure that test exists to prevent.
+
+    Returns whether the clear was attempted. Never raises except on LockLost,
+    which the stage handles: a reporting write must not break processing.
+    """
+    from app.workers.locks import LockLost
+
+    if not _condense_verdict_is_confident(windows, ball_ok=ball_ok):
+        logger.info(
+            "Keeping any previous condensed cut: this run did not judge the "
+            "video (ball signal: %s, built by %r)",
+            "ok" if ball_ok else "missing", built_by,
+        )
+        return False
+
+    try:
+        _require_lock()
+        _clear_previous_condensed(gid)
+    except LockLost:
+        raise
+    except Exception as clear_err:
+        logger.warning("Could not clear a previous condensed cut (%s)", clear_err)
+    return True
+
+
 def _condense_verdict_is_confident(windows, *, ball_ok: bool) -> bool:
     """Whether this run is entitled to delete a previous run's condensed cut.
 
@@ -1325,23 +1367,11 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         # would otherwise destroy the last good cut it cannot
                         # rebuild. Wrapped because a reporting write must never
                         # break the stage.
-                        if _condense_verdict_is_confident(windows, ball_ok=ball_ok):
-                            try:
-                                _require_lock()
-                                _clear_previous_condensed(gid)
-                            except LockLost:
-                                raise
-                            except Exception as clear_err:
-                                logger.warning(
-                                    "Could not clear a previous condensed cut (%s)",
-                                    clear_err,
-                                )
-                        else:
-                            logger.info(
-                                "Keeping any previous condensed cut: this run did not "
-                                "judge the video (ball signal: %s, built by %r)",
-                                "ok" if ball_ok else "missing", built_by,
-                            )
+                        _maybe_clear_previous_condensed(
+                            gid, windows,
+                            ball_ok=ball_ok, built_by=built_by,
+                            _require_lock=_require_lock,
+                        )
                 except LockLost:
                     # A lost lock is not "condense failed, carry on" — carrying
                     # on reaches the `ready` write below and stamps it over

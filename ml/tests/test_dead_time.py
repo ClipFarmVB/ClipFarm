@@ -503,3 +503,64 @@ class TestImplausibleSpeedsAreUnjudged:
         samples = speed_samples(mixed_path(120.0), FRAME_H)
         windows = motion_anchor_windows(samples, 120.0)
         assert any(s <= 20.0 <= e for s, e in windows)
+
+
+class TestWhereTheNaNChangeCostsAnAnchor:
+    """Bounds the exposure the fixture re-score has to check.
+
+    The NaN change can only ever *remove* anchor coverage: an over-ceiling
+    sample used to vote fast and now abstains. So the question for the fixtures
+    is not "does it differ" but "how much over-ceiling density does it take to
+    drop a window", and that has a closed-form answer worth pinning — a comment
+    asserting it would rot, and the earlier cap-vs-no-cap measurement cannot
+    speak to it (every variant there still voted fast).
+
+    ANCHOR_MIN_FRACTION is 0.4 of the samples in a ±ANCHOR_HALF_WINDOW stretch.
+    """
+
+    # step chosen so a +/-ANCHOR_HALF_WINDOW stretch (6.0s) holds exactly two
+    # 20-sample periods, making the tiled proportions exact locally as well as
+    # globally — the whole point, since local clustering is the open question.
+    STEP = 0.15
+    PERIOD = 20
+
+    def window(self, fast_frac, nan_frac, duration=40.0):
+        """A track whose samples are fast / unjudged / slow in given proportions.
+
+        Built in speed space directly: constructing positions that yield an
+        exact over-ceiling ratio is fiddly and would test the fixture, not the
+        anchor.
+        """
+        n_fast = round(fast_frac * self.PERIOD)
+        n_nan = round(nan_frac * self.PERIOD)
+        period = np.full(self.PERIOD, 0.05)   # slow: well under the 0.30 bar
+        period[:n_fast] = 0.9                 # believable and fast
+        period[n_fast:n_fast + n_nan] = np.nan
+
+        n = int(duration / self.STEP)
+        times = np.arange(n) * self.STEP
+        speeds = np.tile(period, n // self.PERIOD + 1)[:n]
+        return times, speeds
+
+    def test_mostly_fast_still_anchors_despite_unjudged_samples(self):
+        """40% believable-fast is the bar: unjudged samples alongside it do not
+        pull it under, which is why a 4%-over-ceiling fixture is comfortable.
+
+        Asserted mid-track: a window at either end is truncated, so its fraction
+        is computed over fewer samples and follows the tiling phase rather than
+        the proportions under test.
+        """
+        assert covers(motion_anchor_windows(self.window(0.6, 0.3), 40.0), 20.0)
+
+    def test_an_anchor_is_lost_only_when_believable_fast_falls_under_the_bar(self):
+        # Just under 40% believable-fast, the rest unjudged: coverage goes. This
+        # is the shape a heavily-hopping stretch has to reach to lose an anchor.
+        assert not covers(motion_anchor_windows(self.window(0.35, 0.65), 40.0), 20.0)
+        # Just over it, under the same unjudged load, it holds.
+        assert covers(motion_anchor_windows(self.window(0.45, 0.55), 40.0), 20.0)
+
+    def test_a_window_already_half_slow_has_less_headroom(self):
+        """The second case: where a window is already half genuinely slow, only
+        ~30% unjudged is enough to tip it under the bar."""
+        assert covers(motion_anchor_windows(self.window(0.5, 0.2), 40.0), 20.0)
+        assert not covers(motion_anchor_windows(self.window(0.3, 0.2), 40.0), 20.0)

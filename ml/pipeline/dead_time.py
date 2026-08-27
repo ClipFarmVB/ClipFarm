@@ -79,10 +79,24 @@ MAX_SAMPLE_SPACING = 1.5   # a longer gap is a tracking dropout, not motion
 # in px/s this ceiling scales with the source, so on 360p footage it sits at
 # 400 px/s — 3x stricter than the tracker's own cap. It bites accordingly:
 # 226 of test1's 5636 usable samples (4.0%) exceed it against 2 under a literal
-# px/s cap. That asymmetry costs nothing today *because* this clamps rather than
-# drops — re-running the fixtures with this cap at the px/s equivalent, or removed
-# entirely, gives byte-identical windows and nets on all five. Restore any form of
-# dropping here and the resolution dependence becomes load-bearing again.
+# px/s cap.
+#
+# UNMEASURED SINCE THE NaN CHANGE. That asymmetry used to cost nothing, and the
+# evidence was a fixture re-run with this cap at the px/s equivalent and with it
+# removed entirely: byte-identical windows and nets on all five. That
+# measurement does NOT carry over, and it is worth being explicit about why —
+# all three variants it compared leave a believable number above the anchor's
+# 0.40 bar, so all three vote "fast" and of course agree. NaN is the first
+# variant that votes *not fast*, which is the whole point of it, and therefore
+# the first that measurement cannot speak for.
+#
+# What bounds it instead, from driving motion_anchor_windows directly: an anchor
+# is lost only where believable-fast samples fall under ANCHOR_MIN_FRACTION —
+# ~80% of a window over-ceiling if nothing else in it is slow, ~30% if half the
+# window already sits below the bar (pinned in test_dead_time.py). Against
+# test1's 4.0% global rate that is comfortable; the open question is *local*
+# clustering, and track hops bunch precisely where the tracker is confused. So
+# the fixtures want re-scoring before this merges — see ml/eval/README.md.
 MAX_PLAUSIBLE_SPEED_FH = 1.11
 
 CONTACT_SPEED_HALF_WINDOW = 1.5   # median speed is taken over ±this around a contact

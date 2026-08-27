@@ -27,6 +27,7 @@ from app.workers.tasks import (                                    # noqa: E402
     _build_condense_windows,
     _clear_previous_condensed,
     _condense_verdict_is_confident,
+    _maybe_clear_previous_condensed,
     _worth_condensing,
 )
 from ml.pipeline.dead_time import Abstained                         # noqa: E402
@@ -256,3 +257,86 @@ class TestOnlyAConfidentVerdictMayClear:
     def test_the_shapes_alone_do_not_decide_it(self):
         """A plain whole-video window from a confident run is not an abstain."""
         assert _condense_verdict_is_confident([(0.0, 120.0)], ball_ok=True) is True
+
+
+class TestTheClearIsActuallyGatedOnTheVerdict:
+    """The wiring, not the predicate.
+
+    The defect this guards is the one that actually shipped: the clear was
+    unconditional. The predicate was never wrong — it did not exist. So testing
+    `_condense_verdict_is_confident` four ways proves nothing about whether
+    anything consults it, and the suite would stay green with the branch
+    replaced by `if True:`. These tests fail in that case.
+    """
+
+    def _spy_clear(self, monkeypatch):
+        from app.workers import tasks
+
+        cleared = []
+        monkeypatch.setattr(
+            tasks, "_clear_previous_condensed", lambda gid: cleared.append(gid),
+        )
+        return cleared
+
+    def test_a_confident_verdict_clears(self, monkeypatch):
+        cleared = self._spy_clear(monkeypatch)
+
+        attempted = _maybe_clear_previous_condensed(
+            "game-1", [], ball_ok=True, built_by="guarded", _require_lock=lambda: None,
+        )
+
+        assert attempted is True
+        assert cleared == ["game-1"]
+
+    def test_a_run_without_ball_signal_deletes_nothing(self, monkeypatch):
+        cleared = self._spy_clear(monkeypatch)
+
+        attempted = _maybe_clear_previous_condensed(
+            "game-2", [], ball_ok=False, built_by="pose-fallback",
+            _require_lock=lambda: None,
+        )
+
+        assert attempted is False
+        assert cleared == [], "a degraded run must not touch the previous cut"
+
+    def test_an_abstain_deletes_nothing(self, monkeypatch):
+        cleared = self._spy_clear(monkeypatch)
+
+        attempted = _maybe_clear_previous_condensed(
+            "game-3", Abstained([(0.0, DURATION)]),
+            ball_ok=True, built_by="guarded", _require_lock=lambda: None,
+        )
+
+        assert attempted is False
+        assert cleared == []
+
+    def test_the_lock_is_checked_before_deleting(self, monkeypatch):
+        """`_require_lock` guards every write in this stage; losing the lock
+        mid-run means another worker owns the game and this one must not write.
+        LockLost has to pass through, not be swallowed as a reporting failure."""
+        from app.workers.locks import LockLost
+
+        cleared = self._spy_clear(monkeypatch)
+
+        def lost():
+            raise LockLost("another worker owns this game")
+
+        with pytest.raises(LockLost):
+            _maybe_clear_previous_condensed(
+                "game-4", [], ball_ok=True, built_by="guarded", _require_lock=lost,
+            )
+
+        assert cleared == []
+
+    def test_a_failed_clear_does_not_break_the_stage(self, monkeypatch):
+        """Reporting must never break processing — the game still ships."""
+        from app.workers import tasks
+
+        def boom(gid):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(tasks, "_clear_previous_condensed", boom)
+
+        assert _maybe_clear_previous_condensed(
+            "game-5", [], ball_ok=True, built_by="guarded", _require_lock=lambda: None,
+        ) is True
