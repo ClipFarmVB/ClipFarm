@@ -60,8 +60,8 @@ def require_local(url: str) -> None:
         sys.exit(
             f"refusing to seed a non-local database (host: {host!r}).\n"
             "This writes fabricated accounts and posts. Point DATABASE_URL at "
-            "the local db container first — docker-compose.override.yml does "
-            "that for you."
+            "the local db container first, for example "
+            "postgresql+asyncpg://postgres:postgres@db:5432/clipfarm"
         )
 
 
@@ -90,8 +90,8 @@ async def main() -> None:
             await db.execute(
                 text(
                     "INSERT INTO users (id,email,username,display_name,is_private,"
-                    "username_is_generated,follower_count,following_count,created_at) "
-                    "VALUES (:i,:e,:u,:d,:p,false,0,0,now()) "
+                    "username_is_generated,created_at) "
+                    "VALUES (:i,:e,:u,:d,:p,false,now()) "
                     "ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username, "
                     "display_name=EXCLUDED.display_name, is_private=EXCLUDED.is_private"
                 ),
@@ -149,32 +149,55 @@ async def main() -> None:
         # bob follows alice so his feed isn't just his own posts. Nobody follows
         # carol — her account is private, so that is a request to approve in the
         # UI, which is the more interesting thing to look at.
-        await db.execute(
-            text("DELETE FROM follows WHERE follower_id = ANY(:ids)"),
-            {"ids": list(ids.values())},
-        )
-        await db.execute(
-            text(
-                "INSERT INTO follows (id,follower_id,followee_id,status,created_at) "
-                "VALUES (:i,:f,:t,'accepted',now())"
-            ),
-            {"i": uuid.uuid4(), "f": ids["bob"], "t": ids["alice"]},
-        )
-        await db.execute(
-            text("UPDATE users SET follower_count=1 WHERE id=:i"), {"i": ids["alice"]}
-        )
-        await db.execute(
-            text("UPDATE users SET following_count=1 WHERE id=:i"), {"i": ids["bob"]}
-        )
+        #
+        # Skipped entirely before CF-110's migration has run. This script lives
+        # on the first PR of the stack and the follow graph arrives on the
+        # third, so at 016 there is no `follows` table and no counter columns —
+        # writing them unconditionally killed the whole seed on the first
+        # INSERT, which is the one path this PR documents for local testing.
+        has_follows = (
+            await db.execute(text("SELECT to_regclass('public.follows')"))
+        ).scalar() is not None
+        if not has_follows:
+            print(
+                "note: no `follows` table yet (CF-110 is unmerged), so the "
+                "follow edge is skipped. Profiles and posts are seeded; the "
+                "feed needs the follow graph to have anything in it."
+            )
+        if has_follows:
+            await db.execute(
+                text("DELETE FROM follows WHERE follower_id = ANY(:ids)"),
+                {"ids": list(ids.values())},
+            )
+            await db.execute(
+                text(
+                    "INSERT INTO follows (id,follower_id,followee_id,status,created_at) "
+                    "VALUES (:i,:f,:t,'accepted',now())"
+                ),
+                {"i": uuid.uuid4(), "f": ids["bob"], "t": ids["alice"]},
+            )
+            # The counters arrive with the same migration as the table.
+            await db.execute(
+                text("UPDATE users SET follower_count=1 WHERE id=:i"), {"i": ids["alice"]}
+            )
+            await db.execute(
+                text("UPDATE users SET following_count=1 WHERE id=:i"), {"i": ids["bob"]}
+            )
         await db.commit()
 
-    print(f"seeded {len(ACCOUNTS)} accounts, {posts} posts, 1 follow edge\n")
+    edge = "1 follow edge" if has_follows else "no follow edge (CF-110 unmerged)"
+    print(f"seeded {len(ACCOUNTS)} accounts, {posts} posts, {edge}")
+    print()
     for handle, display, private in ACCOUNTS:
         print(f"  {handle:<6} {display:<12} {'PRIVATE' if private else 'public':<8} "
               f"{handle}@local.test   id={ids[handle]}")
+    if has_follows:
+        print("\nbob follows alice. Nobody follows carol - following her creates "
+              "a request she has to approve.")
+    else:
+        print("\nNo follow edges yet - the follow graph arrives with CF-110, so "
+              "the feed has nothing in it until #191 merges.")
     print(
-        "\nbob follows alice. Nobody follows carol — following her creates a "
-        "request she has to approve.\n"
         "Sign in as one of them (create the Supabase user with the same email), "
         "or curl the api directly with DEBUG on."
     )

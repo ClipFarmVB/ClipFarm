@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { Check, Globe, Lock, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { createPost, type Clip, type Visibility } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/apiError";
 import { cn } from "@/lib/utils";
 
 const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof Lock }[] = [
@@ -27,30 +28,6 @@ const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof L
     icon: Globe,
   },
 ];
-
-/**
- * Pull a readable message out of an API error.
- *
- * FastAPI's `detail` is a string for our deliberate 4xx (the 409 visibility
- * ceiling) but an **array of objects** for a 422 validation failure. The
- * previous regex unwrap only matched the string shape, so an over-long caption
- * showed the user a raw `{"detail":[{"type":"string_too_long",...}]}` — and any
- * escaped quote inside a string detail survived as a literal backslash.
- */
-function errorText(e: unknown): string {
-  const raw = (e instanceof Error ? e.message : "").replace(/^API error \d+:\s*/, "");
-  if (!raw) return "Could not post";
-  try {
-    const { detail } = JSON.parse(raw);
-    if (typeof detail === "string") return detail;
-    if (Array.isArray(detail)) {
-      return detail.map((d) => d?.msg).filter(Boolean).join("; ") || "Could not post";
-    }
-  } catch {
-    // Not JSON — a network failure or a proxy error page. Show it as-is.
-  }
-  return raw;
-}
 
 /**
  * Publish a clip as a post (CF-109).
@@ -88,11 +65,16 @@ export function PostComposerModal({
     return () => { if (closeTimer.current) clearTimeout(closeTimer.current); };
   }, []);
 
-  // Escape closes the composer, not the ClipModal underneath it. ClipModal
-  // stands down while this is mounted; this is the other half of that.
+  // Escape closes the composer, not the ClipModal underneath it.
+  //
+  // What makes that true is ClipModal's `composing` guard, which returns before
+  // it reads the key — NOT stopPropagation. Both listeners are on `window`, so
+  // neither can stop the other: stopPropagation only halts a bubbling event
+  // between DOM nodes, and these are siblings on the same target. The call is
+  // gone rather than left in place looking load-bearing.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") { e.stopPropagation(); onClose(); }
+      if (e.key === "Escape") onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -107,7 +89,14 @@ export function PostComposerModal({
       onPosted?.();
       closeTimer.current = setTimeout(onClose, 900);
     } catch (e) {
-      setError(errorText(e));
+      // Shared helper — it understands the 422 array shape now, so the
+      // composer no longer needs a private copy of that logic.
+      setError(
+        apiErrorMessage(
+          (e instanceof Error ? e.message : "").replace(/^API error \d+:\s*/, ""),
+          "Could not post",
+        ),
+      );
     } finally {
       setSaving(false);
     }

@@ -6,10 +6,13 @@ revision that isn't in the directory raises
 `Can't locate revision identified by 'NNN'` — and because that happens at boot,
 the failure isn't scoped to the new feature. **Every endpoint is down.**
 
-CF-109 shipped `013` whose parent `012` lives on a still-open PR. That
-dependency was a sentence in a docstring, which is exactly the kind of thing
-that survives a rebase, a cherry-pick, or a reviewer skimming the body. This
-turns it into a list someone has to consciously edit.
+CF-109's posts migration has been renumbered twice by collisions on main, and
+each time its parent lived on a still-open PR. That dependency used to be a
+sentence in a docstring, which is exactly the kind of thing that survives a
+rebase, a cherry-pick, or a reviewer skimming the body. PENDING_UPSTREAM turns
+it into a list someone has to consciously edit. Numbers are deliberately not
+repeated in this prose — they move, and stale prose about migration order is
+what these tests exist to replace.
 
 Parsed from the files rather than by booting alembic: no database, no config,
 and it runs in the pre-commit hook's `pytest` step.
