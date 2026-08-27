@@ -461,6 +461,19 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
+
+        # A container OpenCV cannot decode reports 0 here, and every guarded
+        # speed threshold is normalized by frame height — so the builder would
+        # raise ValueError several frames of stack away from the cause. This
+        # function's other bad-input paths all exit with instructions; so does
+        # this one.
+        if frame_h <= 0:
+            raise SystemExit(
+                f"Offline deadtime: OpenCV read a frame height of {frame_h} from "
+                f"{r2_key}. Its codec is probably unavailable in this environment "
+                "— check the file plays locally, or score a dumped keep-window "
+                "list with --windows-json instead."
+            )
         # Prefer the fixture's declared duration (the same value that anchors the
         # dead-time complement); fall back to the decoded frame count.
         duration = fixture.duration or (n_frames / fps)

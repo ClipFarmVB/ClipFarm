@@ -226,6 +226,10 @@ class Settings(BaseSettings):
     condense_gap_seconds: float = 10.0       # contact gap that counts as dead time
     condense_pad_before: float = 5.0         # seconds kept before a window
     condense_pad_after: float = 4.0          # seconds kept after a window
+    # Note under condense_mode="guarded": motion anchors open windows on their
+    # own evidence, so this bounds only the contact-derived half. Raising it to
+    # be conservative buys less than it reads as buying — the anchor is
+    # unaffected. Under "rules" it means what it always did.
     condense_min_contacts: int = 1           # keep even single-contact groups — dropping play is worse
     condense_merge_gap_seconds: float = 5.0  # merge windows closer than this
     # Motion bridge: re-join windows split by contact-silent stretches of real

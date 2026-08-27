@@ -206,6 +206,26 @@ def sync_set_condensed_result(
         s.commit()
 
 
+def sync_clear_condensed_result(game_id) -> str | None:
+    """Clear the condensed columns, returning the URL that was there.
+
+    The return value is what makes the caller able to clean up after itself
+    without guessing: the row is the only record of the object, so the caller
+    has to know whether there was one to delete. Without it every no-cut run
+    issues a delete for a key that has never existed, and the warning that
+    fires when cleanup genuinely fails is buried among no-ops.
+    """
+    with Session(_engine) as s:
+        game = s.get(Game, game_id)
+        if not game:
+            return None
+        previous = game.condensed_video_url
+        game.condensed_video_url = None
+        game.condensed_duration = None
+        s.commit()
+        return previous
+
+
 def sync_update_clip_url(
     clip_id: uuid.UUID,
     clip_url: str,

@@ -58,13 +58,22 @@ MAX_SAMPLE_SPACING = 1.5   # a longer gap is a tracking dropout, not motion
 
 # Displacement faster than this is usually the tracker hopping between two
 # different objects rather than one ball flying, so its *magnitude* means
-# nothing. It is clamped to this ceiling rather than discarded: 32-63% of the
+# nothing. Such a sample is kept as NaN rather than discarded: 32-63% of the
 # samples above it (measured per fixture) fall inside labeled play, so dropping
 # them throws away real rally evidence and, because the abstain guard counts
-# samples, penalises exactly the fast well-tracked games it should trust.
-# Clamping keeps the sample's existence — which is what the density and
-# fast-fraction tests read — while refusing to believe its size. Matches
-# ball.py's SEG_MAX_SPEED_PXPS (1200 px/s = 1.11 frame-heights/s at 1080p).
+# samples, penalises exactly the fast well-tracked games it should trust. NaN
+# keeps the sample's existence — which is what the density test reads — while
+# refusing to believe its size. Matches ball.py's SEG_MAX_SPEED_PXPS
+# (1200 px/s = 1.11 frame-heights/s at 1080p).
+#
+# It used to *clamp* to this ceiling, which had the opposite effect on the one
+# block with no evidence gate in front of it. Every consumer reduces speed to a
+# boolean far below the ceiling — the anchor's bar is 0.30 — so a clamped
+# sample did not read as "unbelievably fast", it read as fast with 3.7x margin.
+# A between-sets stretch where the tracker alternates between two stationary
+# balls is nothing but over-ceiling samples, and it opened a full-width motion
+# anchor over pure dead time. NaN votes for neither side, which is the honest
+# answer for a displacement whose size we have just declared meaningless.
 #
 # That equivalence holds *at 1080p only*, and the "at 1080p" is not a footnote:
 # in px/s this ceiling scales with the source, so on 360p footage it sits at
@@ -86,9 +95,17 @@ ANCHOR_MIN_SECONDS = 2.0
 # evidence — test2 tracks at 1.5 samples/s, so a couple of stray fast samples
 # would otherwise open a window over dead time. Same guard as
 # bridge_windows_by_motion's min_samples.
+# If a real game in the wild needs the guarded path tuned, this is the first
+# number to reach for — it decides whether a sparsely-tracked stretch can
+# anchor at all — and it is the one with no `condense_guard_*` setting behind
+# it and no fixture pinning it. Deliberate (fewer knobs, and CONDENSE_MODE=rules
+# is a real rollback), but worth knowing before an incident rather than during.
 ANCHOR_MIN_SAMPLES = 6
 
-SpeedSamples = tuple[np.ndarray, np.ndarray]   # (midpoint times, speeds in fh/s)
+# (midpoint times, speeds in fh/s). Speeds may be NaN: see
+# MAX_PLAUSIBLE_SPEED_FH — a sample whose magnitude is not believable. Consumers
+# must mask rather than propagate.
+SpeedSamples = tuple[np.ndarray, np.ndarray]
 
 
 def merge_intervals(intervals: list[Interval], merge_gap_seconds: float = 0.0) -> list[Interval]:
@@ -239,12 +256,16 @@ def speed_samples(
 
     Pairs further apart than max_sample_spacing are dropped rather than measured:
     across a tracking dropout the displacement says nothing about how fast the
-    ball moved. Speeds above max_speed are *clamped* instead — the tracker
-    jumping between two objects still tells us a sample exists at that instant,
-    and discarding it would both lose real rally evidence and thin the sample
-    count the abstain guard counts.
+    ball moved. Speeds above max_speed become **NaN** instead of being dropped —
+    the tracker jumping between two objects still tells us a sample exists at
+    that instant, and discarding it would thin the sample count the abstain
+    guard reads. NaN says "a sample, of unjudgeable size", which is what an
+    over-ceiling displacement actually is.
 
     Returns sorted (times, speeds); empty arrays when there is nothing usable.
+    Consumers must treat NaN as *no evidence either way*: `speeds >= x` is
+    already False for it, and anything averaging speeds has to mask it out
+    rather than let it propagate.
     """
     if frame_height <= 0:
         return np.empty(0), np.empty(0)
@@ -257,10 +278,13 @@ def speed_samples(
         if not 0 < dt <= max_sample_spacing:
             continue
         v = math.hypot(x1 - x0, y1 - y0) / dt / frame_height
-        # Clamped, not dropped — see MAX_PLAUSIBLE_SPEED_FH. A track hop still
-        # happened at this instant; only its size is untrustworthy.
+        # NaN, not dropped and not clamped — see MAX_PLAUSIBLE_SPEED_FH. A track
+        # hop still happened at this instant, so the sample stays and the abstain
+        # guard still counts it; but its magnitude is unjudged, and every
+        # consumer thresholds well below the ceiling, so clamping would have
+        # made "too fast to believe" vote for "fast" at 3.7x the anchor's bar.
         times.append((t0 + t1) / 2)
-        vals.append(min(v, max_speed))
+        vals.append(v if v <= max_speed else math.nan)
     return np.array(times), np.array(vals)
 
 
@@ -317,7 +341,13 @@ def speed_gate_contacts(
     kept = []
     for c in contacts:
         lo, hi = np.searchsorted(times, [c["time"] - half_window, c["time"] + half_window])
-        if hi <= lo or float(np.median(speeds[lo:hi])) >= min_speed:
+        # Over-ceiling samples are NaN, and a window of nothing but those is the
+        # same situation as a window with no samples at all: unjudged, so the
+        # contact stands. Masking rather than nanmedian to keep the all-NaN case
+        # explicit instead of a warning plus a NaN that compares False.
+        window = speeds[lo:hi]
+        judged = window[~np.isnan(window)]
+        if hi <= lo or not len(judged) or float(np.median(judged)) >= min_speed:
             kept.append(c)
     return kept
 
@@ -345,6 +375,22 @@ def motion_anchor_windows(
     them, so the evidence bar is higher: a full second must sit inside a
     ±half_window stretch that is min_fraction fast over at least min_samples
     samples, and the resulting run must last min_seconds.
+
+    **Known limitation — the anchor is local, the abstain guard is global.**
+    `track_is_usable` tests the whole-video sample rate, while `min_samples`
+    here is a local bar. A game that is well tracked in one half and sparse in
+    the other passes the guard and then anchors nothing across the sparse half,
+    so those rallies keep only what their contacts open — under pads (3.0/2.0,
+    merge 3.0) whose safety argument is that the anchor gave every rally a
+    window. `speed_gate_contacts` has the matching problem and solves it by
+    treating a locally unmeasured contact as unjudged rather than rejected; the
+    anchor has no equivalent, because "no evidence here" and "no play here"
+    produce the same absent window.
+
+    Fixing it properly means degrading per region rather than per video —
+    rules-width pads over stretches with no usable local density — which also
+    subsumes the all-or-nothing shape of the abstain. That is a change to what
+    the builder ships, so it is filed rather than smuggled in here.
     """
     times, speeds = samples
     if not len(times) or duration <= 0:

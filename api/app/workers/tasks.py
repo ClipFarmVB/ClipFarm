@@ -7,11 +7,22 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from celery.exceptions import Retry
 
 from app.workers.celery_app import celery_app
+
+if TYPE_CHECKING:
+    # Type-only: importing app.config at module scope would run Settings() as a
+    # side effect of importing this module. Annotating `settings` at all is the
+    # point — untyped, mypy could not see the eight condense_guard_* reads
+    # below, so a renamed setting became an AttributeError caught by the
+    # builder's own fallback and the worker ran "rules" forever behind one
+    # warning per game. That is the failure condense_mode's Literal closes at
+    # the front door; this closes it at the back.
+    from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -50,19 +61,51 @@ def _clear_previous_condensed(gid) -> None:
 
     The order is the safe one. A failure between the two leaves an orphan, which
     is logged and costs storage; the reverse order would leave the row pointing
-    at a deleted object and 404 the player. The key is deterministic, so the
-    delete is a no-op when there was no previous cut.
+    at a deleted object and 404 the player.
+
+    Only call this for a run that actually judged the video — see
+    `_condense_verdict_is_confident`. This deletes user-visible output and
+    cannot be undone.
 
     Raises whatever the row write raises — the caller decides how loud that is.
     """
     from app.services import storage as s3
-    from app.workers._sync_db import sync_set_condensed_result
+    from app.workers._sync_db import sync_clear_condensed_result
 
-    sync_set_condensed_result(gid, condensed_video_url=None, condensed_duration=None)
+    previous = sync_clear_condensed_result(gid)
+    if not previous:
+        # Nothing was there. Skipping the delete keeps the warning below
+        # meaningful: it should mean "an object was left behind", not "we asked
+        # R2 about a key that has never existed".
+        return
     try:
         s3.delete_file(s3.condensed_key(gid))
     except Exception as del_err:
         logger.warning("Orphan condensed-video cleanup failed (%s)", del_err)
+
+
+def _condense_verdict_is_confident(windows, *, ball_ok: bool) -> bool:
+    """Whether this run is entitled to delete a previous run's condensed cut.
+
+    Clearing is right when the pipeline looked at the video and concluded there
+    is nothing worth cutting: the old cut then contradicts a real judgement.
+    It is wrong when the run could not form that judgement, because the previous
+    cut may be the only good one and clearing it destroys the object too.
+
+    Two ways a run reaches "no cut" without judging anything:
+
+    - **No ball signal** (`ball_ok` False). Tracking failed — a Roboflow outage,
+      a bad upload — and the stage falls back to pose-derived rallies. That is a
+      degraded input, not a verdict about the game.
+    - **An abstain.** The guarded builder says so itself: the track is too
+      sparse to judge. `Abstained` exists precisely so this is not guesswork.
+
+    "Could not see the ball" and "looked and found nothing to cut" must not both
+    delete.
+    """
+    from ml.pipeline.dead_time import Abstained
+
+    return ball_ok and not isinstance(windows, Abstained)
 
 
 def _build_condense_windows(
@@ -71,7 +114,7 @@ def _build_condense_windows(
     positions: list[dict],
     duration: float,
     frame_height: int,
-    settings,
+    settings: "Settings",
 ) -> tuple[list[tuple[float, float]], str]:
     """
     Keep-windows for the condense stage, with the name of the builder that
@@ -1276,19 +1319,28 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         )
 
                     if not (windows and trims_something):
-                        # No cut was produced this run. Clear any previous one:
-                        # re-processing a game that now abstains would otherwise
-                        # keep serving a condensed video built from a decision
-                        # this run did not make. Wrapped because a reporting
-                        # write must never break the stage.
-                        try:
-                            _require_lock()
-                            _clear_previous_condensed(gid)
-                        except LockLost:
-                            raise
-                        except Exception as clear_err:
-                            logger.warning(
-                                "Could not clear a previous condensed cut (%s)", clear_err,
+                        # No cut was produced this run. Clear any previous one —
+                        # but only if this run actually judged the video, since
+                        # clearing deletes the object too and a degraded re-run
+                        # would otherwise destroy the last good cut it cannot
+                        # rebuild. Wrapped because a reporting write must never
+                        # break the stage.
+                        if _condense_verdict_is_confident(windows, ball_ok=ball_ok):
+                            try:
+                                _require_lock()
+                                _clear_previous_condensed(gid)
+                            except LockLost:
+                                raise
+                            except Exception as clear_err:
+                                logger.warning(
+                                    "Could not clear a previous condensed cut (%s)",
+                                    clear_err,
+                                )
+                        else:
+                            logger.info(
+                                "Keeping any previous condensed cut: this run did not "
+                                "judge the video (ball signal: %s, built by %r)",
+                                "ok" if ball_ok else "missing", built_by,
                             )
                 except LockLost:
                     # A lost lock is not "condense failed, carry on" — carrying

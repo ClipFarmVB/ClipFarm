@@ -2,12 +2,12 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ml.pipeline.dead_time import (
-    MAX_PLAUSIBLE_SPEED_FH,
     Abstained,
     active_windows_from_contacts,
     active_windows_from_detections,
@@ -264,16 +264,23 @@ class TestSpeedSamples:
         times, speeds = speed_samples(positions, FRAME_H)
         assert times.size == 0 and speeds.size == 0
 
-    def test_track_hop_is_clamped_not_discarded(self):
+    def test_track_hop_is_kept_but_unjudged_not_discarded(self):
         # 900 px/s = 2.5 frame-heights/s, above MAX_PLAUSIBLE_SPEED_FH: the
         # tracker jumped to another object, so the *magnitude* is not the ball's
         # speed. The sample still exists, though, and dropping it would both
         # throw away real rally evidence (32-63% of over-ceiling samples fall
         # inside labeled play) and thin the count track_is_usable reads — so it
-        # is clamped to the ceiling instead.
-        _, speeds = speed_samples(ball_path(0, 5, 900.0), FRAME_H)
-        assert speeds.size > 0
-        assert speeds.max() == pytest.approx(MAX_PLAUSIBLE_SPEED_FH)
+        # is kept, as NaN.
+        #
+        # This used to clamp to the ceiling. Same intent, and the "not
+        # discarded" half is unchanged and asserted below; but a clamped value
+        # is still a number, and every consumer thresholds 3-4x below the
+        # ceiling, so it voted "fast" at the motion anchor. NaN abstains from
+        # that vote — see TestImplausibleSpeedsAreUnjudged.
+        times, speeds = speed_samples(ball_path(0, 5, 900.0), FRAME_H)
+        assert speeds.size > 0, "the sample is kept"
+        assert times.size == speeds.size, "density is unchanged — the point of keeping it"
+        assert np.isnan(speeds).all(), "its magnitude is unjudged"
 
     def test_a_believable_speed_is_left_alone(self):
         # 300 px/s = 0.83 fh/s at FRAME_H, comfortably under the ceiling.
@@ -441,3 +448,58 @@ class TestActiveWindowsGuarded:
 
     def test_no_positions_abstains(self):
         assert active_windows_guarded(contacts_at(5.0), [], 60.0, FRAME_H) == [(0.0, 60.0)]
+
+
+class TestImplausibleSpeedsAreUnjudged:
+    """A displacement too big to believe must not vote on either side.
+
+    The ceiling exists because a hop between two different objects says nothing
+    about how fast a ball flew. Clamping it to the ceiling did not express that:
+    every consumer thresholds far below the ceiling (the anchor's bar is 0.30
+    against a 1.11 ceiling), so "unbelievably fast" arrived as "fast, with 3.7x
+    margin" at the one block with no evidence gate in front of it.
+    """
+
+    def oscillating(self, duration=120.0, step=0.33, apart=5000.0):
+        """The tracker alternating between two stationary balls far apart.
+
+        Nothing here moves. Every sample is a teleport, so every speed is over
+        the ceiling — this is dead time that looks maximally fast by magnitude.
+        """
+        out, t, flip = [], 0.0, False
+        while t <= duration:
+            out.append({"time": t, "x": apart if flip else 0.0, "y": 0.0})
+            flip = not flip
+            t += step
+        return out
+
+    def test_oscillation_is_not_read_as_speed(self):
+        times, speeds = speed_samples(self.oscillating(), FRAME_H)
+        assert len(times), "the samples still exist — density must not change"
+        assert np.isnan(speeds).all(), "every teleport is unjudged, not maximal"
+
+    def test_oscillation_opens_no_motion_anchor(self):
+        """The regression: pure dead time opening a full-width anchor window."""
+        samples = speed_samples(self.oscillating(), FRAME_H)
+        assert motion_anchor_windows(samples, 120.0) == []
+
+    def test_the_abstain_guard_still_counts_them(self):
+        """Density is the one thing an over-ceiling sample does attest to, and
+        the guard reads sample count — dropping them would penalise exactly the
+        fast, well-tracked games it should trust."""
+        samples = speed_samples(self.oscillating(), FRAME_H)
+        assert track_is_usable(samples, 120.0)
+
+    def test_a_contact_among_only_unjudged_samples_stands(self):
+        """`speed_gate_contacts` treats no usable evidence as unjudged rather
+        than rejected. An all-NaN window is that case, not a slow one."""
+        samples = speed_samples(self.oscillating(), FRAME_H)
+        kept = speed_gate_contacts(contacts_at(60.0), samples)
+        assert len(kept) == 1
+
+    def test_real_motion_still_anchors(self):
+        """The counterweight: believable fast motion must still open a window,
+        or this trades one silent failure for another."""
+        samples = speed_samples(mixed_path(120.0), FRAME_H)
+        windows = motion_anchor_windows(samples, 120.0)
+        assert any(s <= 20.0 <= e for s, e in windows)

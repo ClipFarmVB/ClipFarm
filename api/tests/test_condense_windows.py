@@ -26,8 +26,10 @@ from app.workers.tasks import (                                    # noqa: E402
     CONDENSE_MIN_TRIM_FRACTION,
     _build_condense_windows,
     _clear_previous_condensed,
+    _condense_verdict_is_confident,
     _worth_condensing,
 )
+from ml.pipeline.dead_time import Abstained                         # noqa: E402
 
 FRAME_H = 360
 DURATION = 120.0
@@ -126,6 +128,11 @@ class TestEmptyIsAVerdictNotAFailure:
         )
         assert windows == [(0.0, DURATION)]
         assert built_by == "guarded"
+        # Not just the shape: the api-side path must carry the sentinel through
+        # too, because the stage reads it to decide both what to log and — since
+        # the fifth review — whether it may delete a previous run's cut. List
+        # equality alone would pass with the fact stripped somewhere in here.
+        assert isinstance(windows, Abstained)
 
 
 class TestWorthCondensing:
@@ -155,23 +162,25 @@ class TestClearingAPreviousCondensedCut:
     and permanent.
     """
 
-    def _spy(self, monkeypatch, *, row_raises=None, delete_raises=None):
+    def _spy(self, monkeypatch, *, previous="https://r2/old.mp4",
+             row_raises=None, delete_raises=None):
         from app.services import storage as s3
         from app.workers import _sync_db
 
         calls = []
 
-        def fake_set(gid, **kwargs):
-            calls.append(("row", gid, kwargs))
+        def fake_clear(gid):
+            calls.append(("row", gid))
             if row_raises:
                 raise row_raises
+            return previous
 
         def fake_delete(key):
             calls.append(("object", key))
             if delete_raises:
                 raise delete_raises
 
-        monkeypatch.setattr(_sync_db, "sync_set_condensed_result", fake_set)
+        monkeypatch.setattr(_sync_db, "sync_clear_condensed_result", fake_clear)
         monkeypatch.setattr(s3, "delete_file", fake_delete)
         monkeypatch.setattr(s3, "condensed_key", lambda gid: f"condensed/{gid}.mp4")
         return calls
@@ -182,9 +191,19 @@ class TestClearingAPreviousCondensedCut:
         _clear_previous_condensed("game-1")
 
         assert calls == [
-            ("row", "game-1", {"condensed_video_url": None, "condensed_duration": None}),
+            ("row", "game-1"),
             ("object", "condensed/game-1.mp4"),
         ], "both halves, row first"
+
+    def test_no_previous_cut_means_no_delete(self, monkeypatch):
+        """The row is the record of the object, so a NULL column means there is
+        nothing out there to remove. Asking R2 about a key that never existed
+        would make the cleanup warning meaningless noise on every no-cut run."""
+        calls = self._spy(monkeypatch, previous=None)
+
+        _clear_previous_condensed("game-4")
+
+        assert calls == [("row", "game-4")]
 
     def test_a_failed_object_delete_does_not_break_the_stage(self, monkeypatch):
         """Reporting must never break processing: the game still ships. The
@@ -204,3 +223,36 @@ class TestClearingAPreviousCondensedCut:
             _clear_previous_condensed("game-3")
 
         assert [c[0] for c in calls] == ["row"], "no delete after a failed clear"
+
+
+class TestOnlyAConfidentVerdictMayClear:
+    """Clearing deletes the object as well as the row, so it is unrecoverable.
+
+    A run that produced no cut has said one of two very different things:
+    "I looked and there is nothing worth cutting", or "I could not look". Only
+    the first earns the right to destroy the previous run's cut. The second
+    happens for real — a tracking outage takes the pose-fallback branch, which
+    can return no windows without raising anything.
+    """
+
+    def test_a_real_verdict_may_clear(self):
+        assert _condense_verdict_is_confident([], ball_ok=True) is True
+        assert _condense_verdict_is_confident(
+            [(0.0, 10.0)], ball_ok=True,
+        ) is True
+
+    def test_a_run_without_ball_signal_may_not(self):
+        """The pose-fallback branch: tracking failed, so 'no windows' is a
+        statement about the tracker, not about the game."""
+        assert _condense_verdict_is_confident([], ball_ok=False) is False
+
+    def test_an_abstain_may_not(self):
+        """The builder said outright that it could not judge the track. This is
+        what Abstained is for — inferring it from the window shape would also
+        match a genuine full-coverage condense."""
+        abstained = Abstained([(0.0, 120.0)])
+        assert _condense_verdict_is_confident(abstained, ball_ok=True) is False
+
+    def test_the_shapes_alone_do_not_decide_it(self):
+        """A plain whole-video window from a confident run is not an abstain."""
+        assert _condense_verdict_is_confident([(0.0, 120.0)], ball_ok=True) is True
