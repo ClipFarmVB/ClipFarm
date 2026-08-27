@@ -103,13 +103,39 @@ echo "ok"
 # and celery at collection. That is worth an explicit way out: without one the
 # only lever is `--no-verify`, which skips every check in this file rather than
 # the one that costs the time. Loud on purpose, and never the default.
+#
+# Locating the probe is its own problem, and getting it wrong is invisible.
+# `core.hooksPath` is an absolute path to ONE checkout's .hooks, so this file
+# also runs for every git worktree — with that worktree as the CWD. A bare
+# `python api/scripts/check_dev_set.py` therefore resolves against a tree that
+# may not contain the script at all: any branch older than it, which is every
+# long-lived worktree the day the script lands. The command then fails to
+# start, the `elif` takes the skip branch, and the step announces a missing dev
+# install to someone whose dev install is fine — the same silent-green shape
+# this gate exists to prevent, one level up.
+#
+# Prefer the copy in the tree being committed, so a branch that changes the
+# probe is checked by its own version. Fall back to the one beside this hook,
+# which cannot be missing: both came out of the same checkout.
+_dev_set_probe=api/scripts/check_dev_set.py
+if [ ! -f "$_dev_set_probe" ]; then
+  _dev_set_probe="$(dirname "$0")/../api/scripts/check_dev_set.py"
+fi
+
 printf "  pytest api/tests ... "
 if [ -n "$CLIPFARM_SKIP_API_TESTS" ]; then
   echo "skipped — CLIPFARM_SKIP_API_TESTS is set"
-  _api_tests_skipped=1
-elif ! _api_dev_reason=$(python api/scripts/check_dev_set.py); then
+  _api_tests_skipped="unset CLIPFARM_SKIP_API_TESTS to run them"
+elif [ ! -f "$_dev_set_probe" ]; then
+  # Distinct from the dev-set skip below, and worth its own branch: no install
+  # fixes this, so pointing at `pip install` would send someone down a road
+  # that cannot end. Neither location had the file, which means the hook and
+  # the repo have come apart.
+  echo "skipped — no dev-set probe in the working tree or beside the hook; a hook/repo mismatch, not a missing install"
+  _api_tests_skipped="see the reason above — no install fixes it"
+elif ! _api_dev_reason=$(python "$_dev_set_probe"); then
   echo "skipped — ${_api_dev_reason:-the dev-set check itself failed, see the traceback above}; pip install -r api/requirements-dev.txt"
-  _api_tests_skipped=1
+  _api_tests_skipped="pip install -r api/requirements-dev.txt to run them"
 elif ! _api_pytest_out=$(cd api && python -m pytest tests/ -q --no-header 2>&1); then
   echo "FAIL"
   echo "$_api_pytest_out"
@@ -138,7 +164,10 @@ fi
 echo "ok"
 
 if [ -n "$_api_tests_skipped" ]; then
-  echo "pre-commit: all checks passed (api/tests skipped — pip install -r api/requirements-dev.txt to run them)."
+  # The remedy comes from whichever branch skipped, because they do not share
+  # one. Hard-coding the dev-set install here told someone whose install was
+  # fine to reinstall it, which is how the missing-probe bug stayed invisible.
+  echo "pre-commit: all checks passed (api/tests skipped — ${_api_tests_skipped})."
 else
   echo "pre-commit: all checks passed."
 fi
