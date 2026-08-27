@@ -49,10 +49,11 @@ VERSIONS = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
 # This one parses into a LIST — see `_parsed()`. Theirs parses into
 # `dict[revision_id, down_revision]`, where two files claiming one id collapse
 # into a single entry and every check reading it sees a chain that looks fine;
-# it works around that with a second, list-shaped parser used by its duplicate
-# check alone, while its other tests still read the dict. Folding both onto one
-# list parser is the load-bearing half of the resolution and the half that is
-# easy to drop, because the tests stay green either way.
+# it works around that with a second, list-shaped parser (`_revision_files()`)
+# used by its duplicate check and its parse-accounting test, while its chain
+# tests still read the dict. Folding both onto one list parser is the
+# load-bearing half of the resolution and the half that is easy to drop,
+# because the tests stay green either way.
 #
 # Also here and not there: the filename-prefix check and the down_revision
 # shape check (`test_every_down_revision_is_a_string_or_none`).
