@@ -27,6 +27,8 @@ from app.config import (  # noqa: E402
     REQUIRED_IN_PRODUCTION,
     REQUIRED_IN_PRODUCTION_WORKER,
     Settings,
+    _origin_problem,
+    _settings_or_boot_error,
     cors_origins_error,
     production_config_error,
 )
@@ -803,6 +805,30 @@ def test_only_a_scheme_this_guard_accepts_is_echoed(clean_env):
     assert "'***'" in message
 
 
+def test_an_uppercase_credential_costs_one_refused_boot(clean_env):
+    """`https://Admin:S3cret@clipfarm.ca` is both upper-case and credential-
+    bearing. Reporting the case first sends the operator to
+    `https://admin:s3cret@clipfarm.ca`, which the next boot refuses for
+    userinfo — two refused production boots, and the first diagnosis is the
+    less important of the two problems.
+
+    Third application of the same ordering rule, and the only one that was not
+    pinned when it was written: reverting the order passed the whole suite.
+
+    Asserted against `_origin_problem` directly rather than through the
+    ValidationError. The first version of this test went through `Settings` and
+    failed for a reason worth recording: pydantic middle-truncates the rendered
+    message, and `user:password` landed inside the elided part. That is the same
+    arithmetic that hid the credential in `input_value=` — here it silently
+    defeats an assertion instead.
+    """
+    problem = _origin_problem("https://Admin:S3cret@clipfarm.ca")
+
+    assert problem is not None
+    assert "user:password" in problem
+    assert "lower-case" not in problem
+
+
 def test_an_uppercase_unicode_host_costs_one_refused_boot(clean_env):
     """`https://КЛИПФАРМ.РФ` is both upper-case and unlatinised. Reporting the
     case first sends the operator to the lower-cased form, which the next boot
@@ -956,6 +982,56 @@ def test_the_unset_guard_reports_before_the_shape_guard(clean_env):
 
     assert "SUPABASE_URL" in str(exc.value)
     assert "allow_credentials" not in str(exc.value)
+
+
+def test_the_boot_error_carries_no_input_values(clean_env, monkeypatch):
+    """The redaction this module does was true of the message it composes and
+    not of what an operator actually reads.
+
+    pydantic attaches the whole input mapping to a ValidationError and `str()`
+    renders it as `input_value={...}` — every secret the model takes, verbatim,
+    middle-truncated. `cors_origins` falls inside the elided middle today only
+    because it is field 4 of 62 with the other production-required fields at
+    37-49. That is arithmetic, not a guarantee: moving one field to the end of
+    the class puts a pasted password in the boot log with **every other test in
+    this file still passing**, because they construct Settings directly and pin
+    a key ordering unrelated to production's.
+
+    So this asserts the ordering-independent property — no `input_value=` at
+    all — rather than "the secret happens not to appear". The distinction is the
+    whole finding.
+    """
+    for name, value in PRODUCTION_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("CORS_ORIGINS", "https://admin:hunter2@clipfarm.ca")
+
+    with pytest.raises(RuntimeError) as exc:
+        _settings_or_boot_error()
+
+    message = str(exc.value)
+    assert "input_value" not in message
+    assert "hunter2" not in message.lower()
+    # The chained original carries the same mapping, so a traceback must not
+    # print it either. `raise ... from None` is what sets this.
+    assert exc.value.__suppress_context__
+    assert exc.value.__cause__ is None
+    # Still actionable: the operator learns which variable and why.
+    assert "CORS_ORIGINS" in message
+    assert "user:password" in message
+
+
+def test_a_boot_error_still_names_every_problem(clean_env, monkeypatch):
+    """Only the messages survive the re-raise, so all of them have to."""
+    for name, value in PRODUCTION_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("CORS_ORIGINS", "https://clipfarm.ca/,https://*.clipfarm.ca")
+
+    with pytest.raises(RuntimeError) as exc:
+        _settings_or_boot_error()
+
+    message = str(exc.value)
+    assert "nothing after it" in message
+    assert "wildcard" in message
 
 
 def test_the_cors_message_points_at_both_deploy_paths():

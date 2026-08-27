@@ -1,7 +1,7 @@
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Zero-config local defaults, and the sentinels the production check below looks
@@ -185,17 +185,25 @@ def _origin_problem(origin: str) -> str | None:
             "a browser sends the punycode form of an internationalised host, so "
             "this matches nothing — use the xn-- spelling"
         )
-    if origin != origin.lower():
-        return "must be lower-case — origins are compared as exact strings"
-    # netloc must be a bare host[:port]. The checks above constrain the parts
-    # AROUND it and say nothing about its shape, so userinfo and a malformed
-    # port both sail through — and neither can ever equal a browser's Origin
-    # header, which is what an allow-list entry is compared against.
-    if parts.username is not None or parts.password is not None:
+    # Userinfo BEFORE the case check, for the third application of the same
+    # ordering rule and the last place it was missing.
+    # `https://Admin:S3cret@clipfarm.ca` is both upper-case and credential-
+    # bearing; reporting the case first sends the operator to
+    # `https://admin:s3cret@clipfarm.ca`, which the next boot refuses for
+    # userinfo. Two refused production boots, and the first diagnosis is the
+    # less important of the two problems.
+    #
+    # netloc must be a bare host[:port]. The checks around it constrain the
+    # parts AROUND the host and say nothing about its shape, so userinfo and a
+    # malformed port both sail through — and neither can ever equal a browser's
+    # Origin header, which is what an allow-list entry is compared against.
+    if parts.username is not None:
         return (
             "carries user:password — RFC 6454 discards userinfo, so this entry "
             "can never match a browser Origin header"
         )
+    if origin != origin.lower():
+        return "must be lower-case — origins are compared as exact strings"
     try:
         port = parts.port
     except ValueError:
@@ -308,7 +316,7 @@ def _redacted_origin(origin: str) -> str:
     # operator needs. Redacting on that shape would blank a message for every
     # ordinary malformed port. The `@` is the only signal that userinfo was
     # meant, so it is the only one acted on.
-    if "@" not in origin and "%40" not in origin.lower():
+    if "@" not in origin and "%40" not in origin:
         return origin
     # The scheme is echoed only when it is one this guard would actually accept.
     # `partition("://")` splits at the FIRST `://` anywhere in the entry, so a
@@ -780,4 +788,33 @@ class Settings(BaseSettings):
         return self
 
 
-settings = Settings()
+def _settings_or_boot_error() -> Settings:
+    """Build Settings, or fail with a message that carries no input values.
+
+    pydantic attaches the entire input mapping to a ValidationError, and `str()`
+    renders it as `input_value={...}` — every secret the model takes, verbatim,
+    middle-truncated. Whether a given secret falls inside the elided middle is
+    *arithmetic*: it depends on how many fields precede it and how long they
+    are. `cors_origins` lands there today at field 4 of 62. Move it to the end
+    of the class and a pasted password reaches the boot log, with every test in
+    `test_config.py` still passing — they construct Settings directly and pin a
+    key ordering unrelated to production's.
+
+    So the redaction this module does on the message it composes was true of
+    that message and not of what an operator actually reads. The
+    ValidationError therefore does not escape: only the composed messages do,
+    and `from None` drops the chained original so a traceback cannot print it
+    either.
+
+    This covers the boot path. An integration that captures the exception
+    *object* — Sentry, a structured logging handler — still sees the mapping;
+    that is CF-289 (#337), which is wider than this module.
+    """
+    try:
+        return Settings()
+    except ValidationError as exc:
+        problems = "; ".join(str(error["msg"]) for error in exc.errors())
+        raise RuntimeError(f"Configuration is not usable: {problems}") from None
+
+
+settings = _settings_or_boot_error()
