@@ -603,6 +603,17 @@ def test_an_unparseable_host_is_reported_rather_than_escaping(clean_env):
         "https://admin:hunter2@clipfarm.ca/",   # fails on the PATH check first
         "https://Admin:Hunter2@clipfarm.ca",    # fails on the CASE check first
         "https://admin:hunter2@[bad]",          # fails to parse at all
+        "https://admin:pa@ss@clipfarm.ca",      # `@` inside the password
+        # A stray delimiter between the credential and the `@`. These are the
+        # ones an authority-only search misses: the `/`, `?` or `#` truncates
+        # the authority before the `@`, so there is no userinfo left to find
+        # and the entry was echoed whole. urlsplit reports username and
+        # password as None for all three — it reads `admin:hunter2` as host
+        # `admin`, port `hunter2` — so nothing but a textual rule catches them.
+        "https://admin:hunter2/x@clipfarm.ca",
+        "https://admin:hunter2?a@clipfarm.ca",
+        "https://admin:hunter2#a@clipfarm.ca",
+        "admin:hunter2/x@clipfarm.ca",          # and in the no-scheme branch
     ],
 )
 def test_a_rejected_origin_does_not_echo_its_password(clean_env, value):
@@ -692,8 +703,11 @@ def test_the_no_scheme_fallback_does_not_over_redact_either(clean_env, value):
 @pytest.mark.parametrize(
     "value",
     [
-        "https://clipfarm.ca/@handle",   # `@` in the path
-        "https://clipfarm.ca/?x=a@b",    # `@` in the query
+        "https://clipfarm.ca/@handle",     # `@` in the path
+        "https://clipfarm.ca/?x=a@b",      # `@` in the query
+        "https://clipfarm.ca:8443/x@y",    # ...with a port on the authority
+        "http://[::1]:3000/a@b",           # ...and an IPv6 literal, ported
+        "http://[::1]/a@b",                # ...and bare, whose colons are not a port
     ],
 )
 def test_a_rejected_origin_without_userinfo_is_echoed_intact(clean_env, value):

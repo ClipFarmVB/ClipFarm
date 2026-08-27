@@ -239,6 +239,27 @@ def _origin_problem(origin: str) -> str | None:
     return None
 
 
+def _is_bare_host(authority: str) -> bool:
+    """Is `authority` a plain host[:port], with no userinfo hiding in it?
+
+    Textual, because urlsplit cannot answer this: `admin:hunter2` comes back as
+    host `admin` port `hunter2` with username and password both None. Used only
+    to decide whether an error message may echo an entry verbatim.
+    """
+    if "@" in authority:
+        return False
+    if authority.startswith("["):
+        # IPv6 literal. The colons inside the brackets are part of the address,
+        # so only what follows `]` can be a port — and a bare `[::1]` has none.
+        close = authority.find("]")
+        if close == -1:
+            return False
+        rest = authority[close + 1:]
+        return not rest or (rest.startswith(":") and rest[1:].isdigit())
+    _, sep, port = authority.rpartition(":")
+    return not sep or port.isdigit()
+
+
 def _redacted_origin(origin: str) -> str:
     """`origin` with any userinfo replaced, for echoing into an error message.
 
@@ -258,20 +279,30 @@ def _redacted_origin(origin: str) -> str:
     tell which entry was rejected. No credential was at risk there; the damage
     was to the message, which is the entire point of this function.
     """
+    if "@" not in origin:
+        return origin
     scheme, sep, rest = origin.partition("://")
-    # The authority is what precedes the first /, ? or # — in both branches. An
-    # earlier version applied that to the scheme-bearing path only and left the
-    # fallback doing a whole-string rpartition, so `clipfarm.ca/@handle` still
-    # came back `***@handle`: the exact bug the paragraph above says is fixed,
-    # surviving in the branch that paragraph did not describe.
-    authority = rest if sep else origin
+    body = rest if sep else origin
+    authority = body
     for delimiter in "/?#":
         authority = authority.partition(delimiter)[0]
-    if "@" not in authority:
+    # Echo the entry intact only where the `@` is provably NOT userinfo: the
+    # authority holds no `@` of its own *and* is a plain host[:port]. Anything
+    # else is redacted, including the shape that produced this rule —
+    # `https://admin:hunter2/x@clipfarm.ca`, where a stray `/` pushes the `@`
+    # out of the authority and an authority-only search finds no userinfo to
+    # hide. urlsplit is no help there: it reads `admin:hunter2` as host `admin`
+    # port `hunter2` and reports username and password as None.
+    #
+    # The two failure directions are not symmetric, so the tie is broken the
+    # same way every time: printing a secret is unrecoverable, while losing the
+    # host costs the operator a message that is harder to act on. Uncertain
+    # means redact.
+    if "@" not in authority and _is_bare_host(authority):
         return origin
-    # Keep whatever followed the userinfo, delimiters included, so the operator
+    # Keep everything after the last `@`, delimiters included, so the operator
     # can still recognise the entry they pasted.
-    kept = origin[origin.index(authority) + authority.rindex("@") + 1:]
+    kept = body.rpartition("@")[2]
     return f"{scheme}://***@{kept}" if sep else f"***@{kept}"
 
 
