@@ -12,8 +12,9 @@ The card said alembic resolves the id to one file, skips the other, and exits 0
 with a migration silently unapplied. That is wrong, and this file said it too
 until CF-243's review. Checked against the pinned alembic (1.14.0) on this
 repo's own `versions/` plus CF-109's historical `014_posts.py`, in a scratch
-directory with no database: alembic warns `Revision 014 is present more than
-once`, and then `RevisionMap._revision_map` puts *both* `Revision` objects into
+directory with no database: alembic warns
+`Revision 014 is present more than once`, and then
+`RevisionMap._revision_map` puts *both* `Revision` objects into
 `heads`, while `map_[id]` keeps only the file read last — `014_upload_id_text.py`
 here, with `014_posts.py` dropped from the map and left in `heads`. Nothing
 takes it out again: the only removal is `heads.discard(map_[downrev])`, which
@@ -21,11 +22,10 @@ reaches a revision through the map *by its parent's id*, and with both `014`
 files at the tip the `downrev` in hand is `013` — so no duplicate is pruned at
 all. `Revision` defines neither `__eq__` nor `__hash__`, so the two objects do
 not collapse into one either. The tree ends with two heads printing the same
-string: `alembic
-heads` emits `014 (head)` twice, and `alembic upgrade head` resolves `head`
-through `get_current_head()`, raises `MultipleHeads`, prints `FAILED: Multiple
-head revisions are present for given argument 'head'` and exits 255 with
-nothing applied. Both shapes do this — the CF-109 pair sharing a
+string: `alembic heads` emits `014 (head)` twice, and `alembic upgrade head`
+resolves `head` through `get_current_head()`, raises `MultipleHeads`, prints
+`FAILED: Multiple head revisions are present for given argument 'head'` and
+exits 255 with nothing applied. Both shapes do this — the CF-109 pair sharing a
 `down_revision`, and a pair with different parents alike.
 
 So it is loud. What it is not is recognisable: the message says *multiple
@@ -54,8 +54,8 @@ is sound. Alembic builds the graph and raises `CycleDetected`; this file only
 reads declared ids, and a loop among them can leave every check below happy.
 Measured on this repo's `versions/` with `001`'s `down_revision` set to `"014"`
 and `003`'s to `"001"`: one head, no duplicates, every parent resolving, all six
-tests pass — and alembic 1.14 refuses the same directory with `Cycle is detected
-in revisions (001, 002, ..., 014)`. See the merge note below.
+tests pass — and alembic 1.14 refuses the same directory with
+`Cycle is detected in revisions (001, 002, ..., 014)`. See the merge note below.
 """
 import collections
 import pathlib
