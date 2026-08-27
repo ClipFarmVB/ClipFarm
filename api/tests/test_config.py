@@ -460,10 +460,10 @@ def test_production_rejects_an_origin_carrying_userinfo(clean_env, value):
     browser never puts credentials in an Origin header and an entry containing
     them matches nothing — the same silent failure as a trailing slash.
 
-    There is a second reason to reject rather than strip: `cors_origins_error`
-    echoes every bad entry back, so a password left in CORS_ORIGINS would be
-    reprinted into the boot log. Refusing it is what keeps the error message
-    safe to print.
+    Rejecting is not by itself what keeps the boot log safe — an earlier version
+    of this docstring said it was. `cors_origins_error` echoes every bad entry
+    back whatever the reason for rejecting it, so what protects the log is the
+    redaction in `_redacted_origin`, tested below.
     """
     with pytest.raises(ValidationError) as exc:
         _production_with_cors(value)
@@ -502,11 +502,14 @@ def test_production_rejects_a_host_with_a_trailing_colon(clean_env):
     assert "trailing `:`" in str(exc.value)
 
 
+# `https://clip farm.ca` used to live here, on the reading that a space made the
+# host unusable. It is a whitespace problem, and it is now caught with the tab,
+# CR and LF cases above — before urlsplit rather than after it, since those
+# three never reach the host check at all. Same rejection, honester branch.
 @pytest.mark.parametrize(
     "value",
     [
         "https://:8443",          # port but no host
-        "https://clip farm.ca",   # space in the host
     ],
 )
 def test_production_rejects_an_entry_with_no_usable_host(clean_env, value):
@@ -529,6 +532,135 @@ def test_production_rejects_a_mixed_case_origin(clean_env):
         _production_with_cors("HTTPS://ClipFarm.ca")
 
     assert "lower-case" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://*.clipfarm.ca",       # the one an operator actually reaches for
+        "https://sub.*.clipfarm.ca",
+        "https://*",
+    ],
+)
+def test_production_rejects_a_wildcard_host(clean_env, value):
+    """Only the BARE `*` was rejected before; these returned None and passed.
+
+    Starlette compares allow_origins as exact strings — allow_origin_regex is
+    the only other route and main.py passes none — so a wildcard host allows
+    nobody. That is the same silent outage a trailing slash causes, and it is
+    the likelier mistake of the two: a trailing slash is a slip, while "allow
+    all my subdomains" is an intention this config language cannot express, so
+    someone reaches for it on purpose.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    assert "wildcard" in str(exc.value)
+    # Not the bare-`*` branch, which would pass this test for the wrong reason.
+    assert "allow_credentials" not in str(exc.value)
+
+
+@pytest.mark.parametrize("ws", ["\t", "\n", "\r", " "])
+def test_production_rejects_whitespace_urlsplit_would_have_swallowed(clean_env, ws):
+    """The check has to run on the raw entry, and it used to run on the parsed
+    host. urlsplit strips tab, CR and LF *before* parsing, so `.hostname` came
+    back clean and the entry was accepted — while `cors_origins_list` splits the
+    raw env string, handing Starlette the whitespace-bearing value, which
+    matches no Origin header. Only a plain space was ever caught.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(f"https://clip{ws}farm.ca")
+
+    assert "whitespace" in str(exc.value)
+
+
+def test_an_unparseable_host_is_reported_rather_than_escaping(clean_env):
+    """`urlsplit` raises on a malformed bracketed netloc, and it sat above every
+    check with no guard.
+
+    Asserting "something raised" would pass against the unguarded version too,
+    since pydantic wraps a stray ValueError from a validator into a
+    ValidationError either way. What distinguishes them is the message: guarded,
+    the operator is told which variable and where to read about it, AND the
+    other bad entry in the same list is still reported. Unguarded, the
+    comprehension that builds `problems` dies on the first bad entry, so the
+    second one is never mentioned and neither is CORS_ORIGINS.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors("http://[bad],https://clipfarm.ca/")
+
+    message = str(exc.value)
+    assert "CORS_ORIGINS" in message
+    assert "could not be parsed" in message
+    # The entry AFTER the unparseable one still gets reported.
+    assert "nothing after it" in message
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://admin:hunter2@clipfarm.ca",    # fails on userinfo
+        "https://admin:hunter2@clipfarm.ca/",   # fails on the PATH check first
+        "https://Admin:Hunter2@clipfarm.ca",    # fails on the CASE check first
+        "https://admin:hunter2@[bad]",          # fails to parse at all
+    ],
+)
+def test_a_rejected_origin_does_not_echo_its_password(clean_env, value):
+    """A failed production boot prints this message into the service log, whose
+    audience is everyone with dashboard access — wider than everyone who can
+    read the env var. Before the redaction the entry went in verbatim.
+
+    The three shapes after the first are why the redaction is applied at the
+    interpolation site rather than inside the userinfo branch, which is where it
+    looks like it belongs. A credential-bearing entry usually fails some *other*
+    check first, and a branch-local redaction would echo it in full.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    message = str(exc.value)
+    assert "hunter2" not in message.lower()
+    assert "***@" in message
+    # Redacted, not swallowed: the operator still has to be able to find it.
+    assert "clipfarm.ca" in message or "[bad]" in message
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("https://clipfarm.ca:443", "default port"),
+        ("http://clipfarm.ca:80", "default port"),
+        ("https://clipfarm.ca:080", "zero-padded"),
+    ],
+)
+def test_production_rejects_a_port_no_browser_sends(clean_env, value, expected):
+    """Same silent class as the trailing slash: looks deliberate in a dashboard,
+    matches no Origin header. A browser omits the default port and never pads.
+
+    The padded case has to be read off the raw netloc — `parts.port` has already
+    normalised `:080` to 80, so a check written against it cannot see the
+    padding at all.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    assert expected in str(exc.value)
+
+
+def test_each_problem_reads_as_a_sentence(clean_env):
+    """The messages are standalone clauses, so the line that joins them must not
+    supply a verb. `f"{value} is {why}"` produced "… is must be lower-case" and
+    "… is an Origin is scheme://host[:port]" for five of the seven.
+
+    This is the text an operator reads at the moment production will not boot,
+    and this PR goes to the trouble of naming both deploy paths in it.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors("HTTPS://ClipFarm.ca,https://clipfarm.ca/")
+
+    message = str(exc.value)
+    assert " is must be" not in message
+    assert " is an Origin is " not in message
 
 
 @pytest.mark.parametrize(

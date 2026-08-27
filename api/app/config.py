@@ -123,11 +123,29 @@ def _origin_problem(origin: str) -> str | None:
     """
     if origin == "*":
         return (
-            "`*` — with allow_credentials=True this lets any site make "
-            "credentialed cross-origin calls (main.py)"
+            "with allow_credentials=True this lets any site make credentialed "
+            "cross-origin calls (main.py)"
         )
 
-    parts = urlsplit(origin)
+    # Before urlsplit, and against the RAW entry, because urlsplit strips tab,
+    # CR and LF out of the value before parsing — so `https://clip\tfarm.ca`
+    # arrives here with hostname `clipfarm.ca` and a host-side check sees
+    # nothing wrong. `cors_origins_list` splits the raw env string, so Starlette
+    # is then handed the tab-bearing entry, which matches no Origin header. Only
+    # a plain space was caught before this moved.
+    if any(c.isspace() for c in origin):
+        return "contains whitespace — no browser can send this as an Origin"
+
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        # urlsplit raises on a malformed bracketed netloc — `http://[bad]`,
+        # `http://[::1`. Unguarded this escaped the whole validator: the
+        # operator got a bare ValueError naming neither CORS_ORIGINS nor a
+        # deploy doc, and because it killed the comprehension that builds
+        # `problems`, every other bad entry went unreported too. A worse boot
+        # failure than the one this guard replaces.
+        return "the host could not be parsed — not a scheme://host origin"
     # scheme and netloc must BOTH be present: `clipfarm.ca` parses to an empty
     # scheme with the whole string in .path, and a bare `https://` parses to an
     # empty netloc. Checking only path/query/fragment would misreport the first
@@ -147,9 +165,8 @@ def _origin_problem(origin: str) -> str | None:
     # header, which is what an allow-list entry is compared against.
     if parts.username is not None or parts.password is not None:
         return (
-            "an Origin carries no user:password — RFC 6454 discards userinfo, so "
-            "this entry can never match a browser Origin header (and a password "
-            "in CORS_ORIGINS would be echoed by the error above)"
+            "carries user:password — RFC 6454 discards userinfo, so this entry "
+            "can never match a browser Origin header"
         )
     try:
         port = parts.port
@@ -167,9 +184,57 @@ def _origin_problem(origin: str) -> str | None:
     # host is simply absent.
     if not parts.hostname:
         return "no host — an Origin is scheme://host[:port]"
-    if any(c.isspace() for c in parts.hostname):
-        return "host contains whitespace — no browser can send this as an Origin"
+    # The wildcard subdomain, which is the half of this card worth most. Only a
+    # BARE `*` was rejected above; `https://*.clipfarm.ca` reached the end and
+    # returned None. Starlette compares allow_origins as exact strings —
+    # allow_origin_regex is the only other route and main.py passes none — so a
+    # wildcard host allows nobody, the same silent outage the trailing slash
+    # causes. It is the likelier operator mistake of the two: a trailing slash
+    # is a slip, "allow all my subdomains" is an intention this config language
+    # cannot express, so someone reaches for it deliberately.
+    if "*" in parts.hostname:
+        return (
+            "wildcard hosts are not supported — origins are compared as exact "
+            "strings, so this matches nothing; list each subdomain explicitly"
+        )
+    # A port a browser never sends is the same silent class as the trailing
+    # slash: it looks deliberate in a dashboard and matches no Origin header.
+    # Read from the raw netloc rather than parts.port, which has already
+    # normalised `:080` to 80. rpartition is bracket-safe — `[::1]:3000` splits
+    # at the last colon, and a bare `[::1]` yields no separator at all.
+    if parts.port is not None:
+        _, sep, port_text = parts.netloc.rpartition(":")
+        if sep and port_text != str(parts.port):
+            return (
+                f"port `{port_text}` is zero-padded — a browser sends "
+                f"`{parts.port}`, and origins are compared as exact strings"
+            )
+        if (parts.scheme, parts.port) in (("http", 80), ("https", 443)):
+            return (
+                f"`:{parts.port}` is the default port for {parts.scheme} — a "
+                "browser omits it, so this matches no Origin header; drop it"
+            )
     return None
+
+
+def _redacted_origin(origin: str) -> str:
+    """`origin` with any userinfo replaced, for echoing into an error message.
+
+    Applied at the interpolation site rather than inside the userinfo branch,
+    which is where it looks like it belongs and where it would miss most of the
+    cases. A credential-bearing entry usually fails some *other* check first:
+    `https://admin:pw@x.ca/` fails on the path, `https://Admin:Pw@x.ca` fails on
+    the case, and both would then be echoed in full.
+
+    Purely textual, so it also covers the entry `urlsplit` cannot parse — and it
+    cannot itself raise while building an error message, which is the one place
+    a second exception is least welcome.
+    """
+    if "@" not in origin:
+        return origin
+    scheme, sep, rest = origin.partition("://")
+    host = (rest if sep else origin).rpartition("@")[2]
+    return f"{scheme}://***@{host}" if sep else f"***@{host}"
 
 
 def cors_origins_error(problems: list[str]) -> str:
@@ -521,8 +586,11 @@ class Settings(BaseSettings):
                 )
             )
 
+        # `{value}: {why}`, not `{value} is {why}`. Five of the messages are
+        # standalone clauses that do not complete "X is …", and this is the text
+        # an operator reads at the moment production will not boot.
         problems = [
-            f"{origin!r} is {why}"
+            f"{_redacted_origin(origin)!r}: {why}"
             for origin in origins
             if (why := _origin_problem(origin)) is not None
         ]
