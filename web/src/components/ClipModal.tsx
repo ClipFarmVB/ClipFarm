@@ -55,13 +55,26 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
     // ← → stop navigating clips until the user Tabs away — while the footer
     // still advertises them. A tabindex="-1" container has neither problem:
     // nothing to activate, and arrows reach the handler below.
+    // Load-bearing beyond focus: an AT announces the dialog because the
+    // element receiving focus is the one carrying role="dialog" and the
+    // accessible name. Moving role/aria-label to the backdrop — which the
+    // comment on the card warns against for the trap boundary — would also
+    // silence that announcement, and nothing here would fail.
     initialFocus: () => cardRef.current,
   });
 
   // Keyboard navigation
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") { onClose(); return; }
+      if (e.key === "Escape") {
+        // Leaving the player's fullscreen fires Escape at the page as well as
+        // at the UA, so without this one press exits fullscreen AND closes the
+        // modal — the user asked for one of those. This is the only overlay
+        // with a <video>, which is why only this one needs the guard.
+        if (document.fullscreenElement) return;
+        onClose();
+        return;
+      }
       // Arrows belong to the player while it holds focus — they seek, and the
       // shadow-DOM controls keep `activeElement` on the <video> host however
       // deep Tab has walked, so host identity is the right test. Focus starts
@@ -206,7 +219,13 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
                 <span className="w-px h-3 bg-border" />
               </>
             )}
-            <span>Esc close · Tab to player</span>
+            {/* "Tab to player" was false: the header buttons precede the
+                video in document order, so a forward Tab from the card lands
+                on Copy link in every shape, and shift-Tab reaches the player
+                only in the single-clip one. What is true regardless is that
+                Tab cycles the dialog's controls, which is what the trap
+                guarantees. */}
+            <span>Esc close · Tab cycles controls</span>
           </div>
         </div>
       </div>

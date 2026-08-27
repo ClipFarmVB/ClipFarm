@@ -78,14 +78,25 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
     // on the header Close button and the first Space dismisses the picker
     // before it has been read — the same hazard ClipModal avoids with "Copy
     // link", answered the same way in both overlays.
+    // Load-bearing beyond focus: an AT announces the dialog because the
+    // element receiving focus is the one carrying role="dialog" and the
+    // accessible name. Moving role/aria-label to the backdrop — which the
+    // comment on the card warns against for the trap boundary — would also
+    // silence that announcement, and nothing here would fail.
     initialFocus: () => cardRef.current,
     onEscape: () => {
-      // Not while the create is in flight. Cancelling does not abort the POST —
-      // the collection is still created and the clip still saved — and
-      // handleCreate's continuation then clears `newName`/`creating` under
-      // whatever has been typed since. Ignoring the key leaves one consistent
-      // outcome rather than two racing ones.
-      if (createLoading) return;
+      // Not while the create is in flight — but only the cancel, not the close.
+      // `handleCreate` clears `creating` before awaiting `handleAdd`, so
+      // `createLoading` outlives the field: on a slow link the input is already
+      // gone, the picker looks idle, and gating the whole handler on
+      // `createLoading` swallowed Escape-to-close in that window (and
+      // preventDefaulted it, so nothing else saw it either).
+      //
+      // Cancelling is what must not race: it does not abort the POST — the
+      // collection is created and the clip saved regardless — and the
+      // continuation then clears `newName`/`creating` under whatever has been
+      // typed since.
+      if (creating && createLoading) return;
       if (creating) { cancelCreating(); return; }
       onClose();
     },
@@ -105,9 +116,14 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   // `creating` is already false and nothing was unmounted.
   const wasCreatingRef = useRef(false);
   useEffect(() => {
-    if (creating) setTimeout(() => newNameRef.current?.focus(), 0);
-    else if (wasCreatingRef.current) setTimeout(() => newCollectionRef.current?.focus(), 0);
+    // Cleared on unmount: a pending callback would fire after the trap's own
+    // cleanup has restored focus to the trigger, stealing it back to an element
+    // that is no longer on the page.
+    let t: ReturnType<typeof setTimeout> | undefined;
+    if (creating) t = setTimeout(() => newNameRef.current?.focus(), 0);
+    else if (wasCreatingRef.current) t = setTimeout(() => newCollectionRef.current?.focus(), 0);
     wasCreatingRef.current = creating;
+    return () => { if (t !== undefined) clearTimeout(t); };
   }, [creating]);
 
   // Closing the inline field and discarding what was typed. Named because the
@@ -132,6 +148,11 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   async function handleCreate() {
     const name = newName.trim();
     if (!name) return;
+    // Re-entry guard. The Add button carries `disabled={createLoading || ...}`,
+    // but Enter in the field reaches this directly, so two quick presses
+    // created two collections. Guarding here rather than on the key covers both
+    // entry points at once.
+    if (createLoading) return;
     setCreateLoading(true);
     try {
       const col = await createCollection(name);

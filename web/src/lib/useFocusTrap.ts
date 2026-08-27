@@ -202,14 +202,25 @@ export function useFocusTrap(
     // Captured now, not read in the cleanup: by the time the cleanup runs the
     // ref may point elsewhere, and eslint is right to say so. At activation the
     // trigger is rendered and current, which is the value we want anyway.
-    const restoreTarget =
-      restoreFocusRef?.current ?? container.ownerDocument.activeElement;
+    // Only the activeElement half is captured now. It has to be: by cleanup
+    // the focus has already moved. `restoreFocusRef` is read in the cleanup
+    // instead, because a ref object's identity is stable and its `.current` is
+    // the whole reason callers pass one — snapshotting it here would hand back
+    // the trigger as it was at activation, which is the staleness the option
+    // exists to avoid.
+    const capturedActive = container.ownerDocument.activeElement;
 
     const initial =
       initialFocus?.() ?? container.querySelector<HTMLElement>(FOCUSABLE);
     initial?.focus();
 
     const onKey = (e: KeyboardEvent) => {
+      // An IME is mid-composition: Escape cancels the candidate list and Tab
+      // moves between candidates, and both belong to the IME rather than to
+      // this overlay. Without this, one Escape while composing a collection
+      // name reaches `cancelCreating` and discards everything typed so far —
+      // the user asked to dismiss a candidate and lost the field.
+      if (e.isComposing) return;
       const escape = onEscapeRef.current;
       if (e.key === "Escape" && escape) {
         // Claim the key. Without this the UA's own Escape runs alongside ours:
@@ -252,7 +263,14 @@ export function useFocusTrap(
     doc.addEventListener("keydown", onKey, true);
     return () => {
       doc.removeEventListener("keydown", onKey, true);
-      restoreFocusTo(restoreTarget);
+      // eslint's generic advice — copy the ref into a variable inside the
+      // effect — is exactly what this stopped doing, and would reinstate the
+      // staleness. Reading late is the point: the caller passes a ref so that
+      // the trigger is whatever it is NOW. The hazard the rule guards against,
+      // a node that has since unmounted, is already handled — restoreFocusTo
+      // declines anything with no client rects.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      restoreFocusTo(restoreFocusRef?.current ?? capturedActive);
     };
     // containerRef, initialFocus and restoreFocusRef are read at activation;
     // onEscape is read through a ref at keypress time, so none of them belongs
