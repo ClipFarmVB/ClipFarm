@@ -11,8 +11,8 @@ exactly, nothing below it is trustworthy, so it prints the expected values.
 
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
 CF-174 — read the labels as REFERENCE (360p) values, not effective ones. The
-three px/s tunables (CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS,
-MIN_SPEED_PXPS) are multiplied by ball._scale_for(frame_height) at use, and
+two px/s tunables (CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS) are
+multiplied by ball._scale_for(frame_height) at use, and
 SEG_MAX_SPEED_PXPS additionally feeds that function's cap, so a row sweeping it
 moves the clamp underneath itself. The default fixture is test1 at 360p, where
 the scale is exactly 1.0 and label == effective, which is why the pinned
@@ -43,7 +43,7 @@ BRIDGE: dict[str, Any] = dict(speed_pxps=150.0, fast_fraction=0.35, max_bridge_s
 
 TUNABLES = (
     "CONTACT_RESIDUAL_RATIO", "CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_HIT_SPEED_PXPS",
-    "MIN_SPEED_PXPS", "MIN_CONTACT_SPACING", "SEG_MIN_POSITIONS",
+    "MIN_CONTACT_SPACING", "SEG_MIN_POSITIONS",
     "SEG_MIN_MEDIAN_SPEED_PXPS", "SEG_MAX_SPEED_PXPS", "MAX_SAMPLE_GAP_SEC",
 )
 

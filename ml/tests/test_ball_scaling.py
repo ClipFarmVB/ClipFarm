@@ -333,21 +333,53 @@ class TestPastTheClampPointItRevertsRatherThanExtrapolating:
         assert _scale_for(1080) == pytest.approx(3.0)
 
 
+def flat_hit(before_pxps: float, after_pxps: float, frame_height: int,
+             step: float = 0.2, hit_at: int = 6, n: int = 12) -> TrackedBall:
+    """
+    A hit rendered in *pixels*, not frame-heights: the ball crosses the frame
+    horizontally at before_pxps, reverses at hit_at and leaves at after_pxps,
+    always at mid-height.
+
+    Horizontal is the point. y_frac is a fraction and is normalized at every
+    resolution regardless of scaling, so holding y flat leaves pixel speed as
+    the only input the frame height can move — which is what makes two
+    resolutions running in the same speed space compare exactly.
+    """
+    positions, x, y = [], 0.2 * frame_height, 0.5 * frame_height
+    for i in range(n):
+        positions.append(BallPosition(
+            frame=int(i * step * 30), time=i * step, x=x, y=y, confidence=0.8,
+        ))
+        x += (before_pxps if i < hit_at else -after_pxps) * step
+    return TrackedBall(positions=positions)
+
+
 class TestActionClassificationIsNormalized:
     """
     classify_contact_action's thresholds are px/s too. Left raw, the same hit
     changed label with resolution — and since find_contacts' scaled gate admits
     nothing under 720 px/s at 1080p, the SET band (45-240) became unreachable
     there by construction. It normalizes velocities into reference space instead.
+
+    It normalizes by _scale_for, not by the raw frame-height ratio, so the class
+    below can pin the half that matters: the classifier and the gate that feeds
+    it always speak the same units.
     """
 
     @pytest.mark.parametrize(("before_fhps", "after_fhps"), [
         (0.20, 0.50), (0.15, 0.35), (0.10, 0.25), (0.30, 0.90),
     ])
     def test_same_physical_hit_gets_the_same_label(self, before_fhps, after_fhps):
+        """
+        Up to the clamp point, where the scale still tracks resolution. 2160p is
+        deliberately not here: past the clamp the gate stops normalizing and the
+        classifier stops with it, so invariance ends exactly where _scale_for's
+        does. Asserting it at 2160p passed only because a direct call bypasses
+        the revert — see TestPastTheClampTheClassifierFollowsTheGate.
+        """
         labels = {
             h: classify_contact_action(physical_track(h, before_fhps, after_fhps), 4, h)[0]
-            for h in (360, 720, 1080, 2160)
+            for h in (360, 720, 1080, int(CLAMP_HEIGHT))
         }
         assert len(set(labels.values())) == 1, f"label varies by resolution: {labels}"
 
@@ -366,6 +398,110 @@ class TestActionClassificationIsNormalized:
             for b, a in ((0.10, 0.25), (0.15, 0.35), (0.20, 0.50))
         ]
         assert "set" in labels
+
+
+class TestPastTheClampTheClassifierFollowsTheGate:
+    """
+    The revert at the clamp point moves the gate; the classifier has to move
+    with it. Normalizing by the true frame-height ratio while the gate ran
+    unscaled put every 4K contact the gate admitted (240 px/s and up, natively)
+    into 40-200 px/s of reference space — inside SET and nowhere else, so every
+    4K rally came out `action="set"`, no labels, a flat 0.58 into score.py.
+
+    These go through find_contacts. A direct classify_contact_action call is
+    invariant in isolation and cannot see the revert at all, which is how that
+    shipped green.
+    """
+
+    # Same pixel motion, two frame heights, both running unscaled: 360p because
+    # it is the reference, 2160p because it is past the clamp. Speeds are
+    # absolute px/s and y stays at mid-frame, so every input the classifier
+    # reads is identical — the labels have to be too.
+    CASES = ((300.0, 100.0), (600.0, 60.0), (400.0, 300.0), (800.0, 200.0))
+
+    @pytest.mark.parametrize(("before_pxps", "after_pxps"), CASES)
+    def test_4k_labels_the_same_pixel_motion_the_reference_does(
+        self, before_pxps, after_pxps,
+    ):
+        def judged(h):
+            return [
+                (round(c["time"], 3), c["action"], c["action_confidence"],
+                 round(c["speed_after"], 1))
+                for c in find_contacts(flat_hit(before_pxps, after_pxps, h),
+                                       frame_height=h)
+            ]
+
+        ref, tall = judged(360), judged(2160)
+        assert ref, "the case has to produce a contact for the comparison to mean anything"
+        assert tall == ref, (
+            "past the clamp the gate admits in native px/s; the classifier must "
+            f"judge in native px/s too — {tall} vs {ref}"
+        )
+
+    def test_a_contact_the_gate_called_fast_is_not_labelled_a_soft_set(self):
+        """
+        The contradiction, stated on its own. Past the clamp the gate admits
+        nothing under 240 px/s and the SET band tops out at 240 px/s, both in
+        native pixels — so a contact the gate measured at 300 px/s is above
+        SET's ceiling in the same breath. Labelling it "set" is only possible if
+        the two halves are reading different units, which is what shipped: the
+        classifier divided by 6 and read 50 px/s.
+        """
+        contacts = find_contacts(flat_hit(400.0, 300.0, 2160), frame_height=2160)
+        assert contacts, "the gate has to admit this for the point to be made"
+        assert contacts[0]["speed_after"] == pytest.approx(300.0)
+        assert contacts[0]["action"] != "set", (
+            "300 px/s cannot be over the gate's floor and under SET's ceiling at once"
+        )
+
+    def test_4k_labels_are_mains_labels_not_normalized_ones(self):
+        """
+        Says the cost out loud rather than implying the labels got better. Past
+        the clamp nothing is normalized, so an ordinary 0.25 fh/s redirect at
+        2160p reads as fast in native pixels and comes out "spike" — wrong, and
+        wrong in exactly the way `main` is wrong today. The gain here is that
+        one policy governs both halves; CF-229 is what makes the label right.
+        """
+        contacts = find_contacts(
+            TrackedBall(physical_track(2160, 0.10, 0.25)), frame_height=2160)
+        assert [c["action"] for c in contacts] == ["spike"]
+
+
+class TestTheDeadNearStationaryGateStaysGone:
+    """
+    MIN_SPEED_PXPS = 120 rejected samples with both sides slow. It shared the
+    CF-174 scale with CONTACT_HIT_SPEED_PXPS at half the value, so the hit-speed
+    gate on the next line rejected everything it did — scaling it measured
+    nothing and zeroing it moved no test. It is removed, not documented: left
+    in, a tuning pass that took CONTACT_HIT_SPEED_PXPS below it would switch on
+    a gate no fixture has ever exercised.
+    """
+
+    @pytest.mark.parametrize("frame_height", [360, 720, 1080])
+    def test_a_slow_ball_is_still_rejected_by_the_hit_speed_gate(
+        self, frame_height, caplog,
+    ):
+        """
+        0.28 frame-heights/s is under the 0.667 floor at every resolution and
+        well over the segmentation filter, so the track segments cleanly and
+        then dies on hit_speed — the gate that was doing this work all along.
+        """
+        import logging
+        rolling = rally_track(frame_height, 0.28)
+        assert len(_segment_track(rolling.positions)) == 1, "must reach the gates"
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
+            assert find_contacts(rolling, frame_height=frame_height) == []
+        assert "hit_speed" in caplog.text
+        assert "kept no segments" not in caplog.text, (
+            "rejected before the gates — this would pass without them"
+        )
+
+    def test_the_constant_is_gone(self):
+        assert not hasattr(ball, "MIN_SPEED_PXPS"), (
+            "MIN_SPEED_PXPS is dead code while it sits below CONTACT_HIT_SPEED_PXPS "
+            "and an unmeasured live gate the moment it does not — CF-174 removed it "
+            "rather than leave that switch lying around"
+        )
 
 
 class TestSegmentationIsNotScaled:

@@ -230,6 +230,17 @@ def bridge_windows_by_motion(
     pixels at 1080p, so an unscaled threshold calls ordinary handling "fast"
     and bridges gaps that are really dead time. frame_height <= 0 keeps the
     unscaled (360p) behaviour.
+
+    Note the asymmetry with the other half of the condense path: this scales
+    unconditionally, while ball._scale_for stops at a clamp point and reverts to
+    1.0 above it. So a 2160p upload finds contacts with unscaled gates and joins
+    their windows with a 6x-scaled threshold. That is deliberate, not an
+    oversight — the clamp exists because the scaled contact floor walks into the
+    fixed SEG_MAX_SPEED_PXPS ceiling and the two gates go disjoint. This
+    threshold is one-sided: there is no ceiling here to collide with, so scaling
+    it stays correct at every height and clamping it would only make it wrong.
+    If SEG_MAX_SPEED_PXPS ever scales (CF-229) the clamp disappears and the two
+    halves converge on their own.
     """
     if len(windows) < 2 or not positions:
         return list(windows)
