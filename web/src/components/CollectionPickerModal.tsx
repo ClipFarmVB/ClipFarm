@@ -179,10 +179,14 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
         // FOCUSABLE does not match, which is exactly this.
         tabIndex={-1}
         // Matching the drawer (CF-60) and ClipModal: the Tab trap only
-        // constrains the keyboard, and `aria-modal` is what stops a screen
-        // reader swiping into the page behind. On the card rather than the
+        // constrains the keyboard, and `aria-modal` is what asks a screen
+        // reader not to swipe into the page behind. On the card rather than the
         // backdrop, because the dialog is the card — the two modals disagreed
         // on this until CF-227 moved both.
+        //
+        // "Asks", not "stops": `aria-modal` is honoured by convention and its
+        // support is uneven. CF-227's card asked for the page behind to be
+        // `inert`, which would not depend on convention. CF-285 (#333).
         role="dialog"
         aria-modal
         aria-label="Save clip to a collection"

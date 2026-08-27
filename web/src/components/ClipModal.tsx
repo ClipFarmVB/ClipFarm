@@ -112,9 +112,15 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
       <div
         ref={cardRef}
         // Matching the drawer (CF-60): the Tab trap only constrains the
-        // keyboard, and `aria-modal` is what stops a screen reader swiping into
-        // the grid behind. On the card rather than the backdrop, because the
-        // dialog is the card.
+        // keyboard, and `aria-modal` is what asks a screen reader not to swipe
+        // into the grid behind. On the card rather than the backdrop, because
+        // the dialog is the card.
+        //
+        // "Asks", not "stops". `aria-modal` is honoured by convention and its
+        // support across AT/browser pairs is uneven; where it is not honoured
+        // nothing else here prevents that swipe. CF-227's card asked for the
+        // page behind to be `inert`, which would not depend on convention —
+        // this is a substitution, and the gap is CF-285 (#333).
         role="dialog"
         aria-modal
         aria-label={`${clip.action_type} clip`}

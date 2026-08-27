@@ -129,8 +129,18 @@ export function Sidebar() {
           the backdrop. Closed, or as the desktop column, it is ordinary page
           furniture and goes back to being a plain complementary landmark.
           `inert` already hides the closed drawer from the a11y tree, but
-          `aria-modal` on a DOM-present element is handled inconsistently
-          across assistive tech, so it should not be sitting there at all. */}
+          `aria-modal` left on an element that is NOT currently a modal is
+          handled inconsistently across assistive tech, so it should not be
+          sitting there at all.
+
+          That is a narrower claim than it used to make, and the distinction
+          matters because the two modals rely on the opposite half of it. This
+          is about a STALE `aria-modal` on the closed drawer, not about whether
+          the attribute works while the dialog is genuinely open. What is true
+          in both places is that `aria-modal` is honoured by convention and its
+          support is uneven — none of the three overlays marks the page behind
+          them `inert`, which is what CF-227's card actually asked for and what
+          would cover this without relying on convention. CF-285 (#333). */}
       <aside
         ref={asideRef}
         id="app-sidebar"
