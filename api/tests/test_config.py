@@ -846,6 +846,12 @@ def test_every_problem_with_an_entry_is_reported_at_once(clean_env, value, expec
     zero-padded default port, handled by ordering the two port checks, and an
     upper-case unicode host, handled by suppressing the case message. An earlier
     version of this docstring said both were handled by ordering.
+
+    A backslash was briefly counted as a third such pair and is not one — see
+    `test_a_backslash_does_not_hide_a_real_port_problem`. The number here has
+    been wrong in three places at once (this file, config.py, and the PR body),
+    which is why the config.py docstring now states the retraction rather than
+    just the corrected count.
     """
     problems = _origin_problems(value)
 
@@ -982,18 +988,47 @@ def test_a_boot_error_names_the_env_var_not_the_field(clean_env, monkeypatch):
     assert "condense_mode:" not in message
 
 
-def test_a_backslash_does_not_also_report_a_bad_port(clean_env):
-    """urlsplit leaves the backslash in the netloc, so `https://x.ca:8443\\`
-    reported an invalid port as well — and deleting the backslash fixes both.
+BACKSLASH_MESSAGE = (
+    "an Origin is scheme://host[:port] with nothing after it; a trailing "
+    "slash, backslash, path, query or fragment matches no browser Origin header"
+)
 
-    A third implied pair, after the padded default port and the upper-case
-    unicode host. The docstring said there were two.
+
+@pytest.mark.parametrize(
+    ("value", "extra"),
+    [
+        # A good port with a backslash after it: the ONLY case where deleting
+        # the backslash also fixes the port, so nothing else is reported.
+        ("https://clipfarm.ca:8443\\", None),
+        # A default port, backslash in the netloc: deleting the backslash leaves
+        # `:80`, which is still wrong. Reported.
+        ("http://clipfarm.ca:80\\", "default port"),
+        # A default port, backslash in the PATH: the netloc is clean and the
+        # port problem has nothing to do with the backslash at all.
+        ("http://clipfarm.ca:80/x\\y", "default port"),
+        # A genuinely unparseable port.
+        ("https://clipfarm.ca:abc\\", "port must be a number"),
+    ],
+)
+def test_a_backslash_does_not_hide_a_real_port_problem(clean_env, value, extra):
+    """urlsplit leaves the backslash in the netloc, so `.port` raised and a
+    spurious "not a number" printed beside the backslash message.
+
+    Skipping the port checks whenever a backslash appeared fixed that and lost
+    three real problems — the first version of this test asserted exactly that
+    loss, calling it a third implied pair. It is not one: the implication holds
+    only where the backslash is in the netloc AND the port is otherwise valid,
+    one case of the four below. The port is read from the entry with the
+    backslash removed instead, which needs no carve-out.
     """
-    assert _origin_problems("https://clipfarm.ca:8443\\") == [
-        "an Origin is scheme://host[:port] with nothing after it; a trailing "
-        "slash, backslash, path, query or fragment matches no browser Origin "
-        "header"
-    ]
+    problems = _origin_problems(value)
+
+    assert problems[0] == BACKSLASH_MESSAGE
+    if extra is None:
+        assert len(problems) == 1
+    else:
+        assert len(problems) == 2
+        assert extra in problems[1]
 
 
 def test_production_rejects_a_backslash(clean_env):

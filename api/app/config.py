@@ -138,10 +138,10 @@ def _origin_problems(origin: str) -> list[str]:
       an upper-case unicode host, where writing the punycode form lower-cases
       it as a side effect — handled by suppressing the case message, but only
       for the capitals punycode actually removes. IDNA leaves an already-ASCII
-      label alone, so `WWW.клипфарм.рф` still gets both;
+      label alone, so `WWW.клипфарм.рф` still gets both.
 
-      a backslash, which urlsplit leaves in the netloc and which therefore also
-      breaks the port — handled by skipping the port checks when one is present.
+    A backslash was briefly listed as a third such pair and is not one — see the
+    port block, which reads the cleaned value rather than carving anything out.
 
     An earlier version of this paragraph said the second was "ordered below"
     like the first. It was not ordered at all, and both messages were printed.
@@ -368,12 +368,27 @@ def _origin_problems(origin: str) -> list[str]:
         # its own message below and would otherwise get both.
         problems.append("no host — an Origin is scheme://host[:port]")
 
-    # Skipped when a backslash is present: urlsplit leaves it in the netloc, so
-    # `https://x.ca:8443\` reported an invalid port as well — and deleting the
-    # backslash fixes both. A THIRD implied pair, after the padded default port
-    # and the upper-case unicode host.
+    # The port is read from the entry with any backslash removed, NOT skipped
+    # when one is present. urlsplit leaves the backslash in the netloc, so
+    # `https://x.ca:8443\` made `.port` raise and reported a spurious "not a
+    # number" beside the backslash message — but skipping the port checks
+    # outright lost real ones: with the backslash in the PATH
+    # (`http://x.ca:80/a\b`) the netloc is clean and the default-port problem is
+    # genuine, and even `http://x.ca:80\` still has a default port once the
+    # backslash is deleted.
+    #
+    # An earlier version called this a third implied pair. It is not one: the
+    # implication holds only where the backslash is in the netloc AND the port
+    # is otherwise valid — one case out of four. Judging the port on the cleaned
+    # value covers all four without a carve-out.
+    port_source = parts
+    if "\\" in parts.netloc:
+        try:
+            port_source = urlsplit(origin.replace("\\", ""))
+        except ValueError:
+            port_source = parts
     try:
-        port = None if "\\" in origin else parts.port
+        port = port_source.port
     except ValueError:
         # urlsplit only raises here — it does not validate on parse.
         problems.append("port must be a number in 1-65535")
@@ -400,7 +415,11 @@ def _origin_problems(origin: str) -> list[str]:
                     f"browser omits it, so this matches no Origin header. Drop it"
                 )
             else:
-                _, sep, port_text = parts.netloc.rpartition(":")
+                # `port_source`, not `parts`: with a backslash in the netloc
+                # the raw text is `8443\` and the padding test compares it
+                # against `8443`, inventing a zero-padded report on a good
+                # port.
+                _, sep, port_text = port_source.netloc.rpartition(":")
                 if sep and port_text != str(port):
                     problems.append(
                         f"port `{port_text}` is zero-padded — a browser sends "
@@ -1005,7 +1024,10 @@ def _boot_error(exc: ValidationError) -> str:
     The name goes through `Settings.env_name_for()` rather than being printed
     raw. `loc` carries the FIELD name and the operator sets an environment
     variable — the module comment at the top of this file says so, and
-    `production_config_error` has always obeyed it. This function did not, which
+    `missing_in_production` does the same conversion for CF-172's message. (An
+    earlier version of this paragraph credited `production_config_error`, which
+    has never called it — `git log -L` on the function says so.) This one did
+    not, which
     made it the second place on this branch where new code re-derived something
     the module already had a helper for.
 
