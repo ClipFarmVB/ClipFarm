@@ -159,6 +159,49 @@ export interface FocusTrapOptions {
 }
 
 
+/**
+ * Which live trap owns the keyboard, when more than one is mounted (CF-282).
+ *
+ * Every trap binds its own listener to the same node, so with two of them
+ * active both see the same Tab and the same Escape. Same-node listeners run in
+ * registration order, which makes the OUTER trap run first — the wrong end.
+ * The innermost overlay is the one the user is looking at and the one whose
+ * Escape should close and whose bounds Tab should respect.
+ *
+ * A stack settles it with no cooperation from callers: a trap pushes a token
+ * while active and handles keys only while that token is on top. The outer trap
+ * does not need to know an inner one exists; it just stops being on top.
+ *
+ * Plain functions over a module-level array, exported for the same reason
+ * `trapTabWithin` is: the ordering rule is the part worth pinning, and this way
+ * it is pinned without mounting anything.
+ */
+const trapStack: object[] = [];
+
+/** Register `token` as the innermost trap. Idempotent. */
+export function pushTrap(token: object): void {
+  // Idempotent because an effect that re-runs without its cleanup having run
+  // would otherwise leave the same token twice, and the second copy would keep
+  // an unmounted trap on top forever.
+  if (!trapStack.includes(token)) trapStack.push(token);
+}
+
+/** Unregister `token`, wherever it sits. */
+export function removeTrap(token: object): void {
+  // By index rather than `pop()`: React does not promise that cleanups run in
+  // reverse mount order, so an outer trap can unmount first. Popping blindly
+  // would then remove the inner trap's token and hand the keyboard to a trap
+  // that is going away.
+  const i = trapStack.lastIndexOf(token);
+  if (i !== -1) trapStack.splice(i, 1);
+}
+
+/** Is `token` the innermost live trap? False for an unregistered token. */
+export function isInnermostTrap(token: object): boolean {
+  return trapStack.length > 0 && trapStack[trapStack.length - 1] === token;
+}
+
+
 export function useFocusTrap(
   containerRef: RefObject<HTMLElement | null>,
   active: boolean,
@@ -214,7 +257,17 @@ export function useFocusTrap(
       initialFocus?.() ?? container.querySelector<HTMLElement>(FOCUSABLE);
     initial?.focus();
 
+    // Identity only — never read, only compared. An object literal is the
+    // cheapest value that is equal to nothing else.
+    const token = {};
+    pushTrap(token);
+
     const onKey = (e: KeyboardEvent) => {
+      // Innermost trap wins. Every live trap gets this event; all but the top
+      // of the stack decline it, so a nested overlay's Escape closes the
+      // nested overlay and its Tab stays inside the nested bounds, rather than
+      // both traps acting on one keypress.
+      if (!isInnermostTrap(token)) return;
       // An IME is mid-composition: Escape cancels the candidate list and Tab
       // moves between candidates, and both belong to the IME rather than to
       // this overlay. Without this, one Escape while composing a collection
@@ -245,23 +298,26 @@ export function useFocusTrap(
     // all of them: no overlay can disable the trap by accident, and callers do
     // not have to reason about listener ordering to stay correct.
     //
-    // Still one listener per active trap, so "at most one overlay at a time"
-    // remains load-bearing and enforced by nothing — two live traps would each
-    // handle the same Escape and the same Tab. It holds today because the three
-    // callers cannot be mounted together, but that is a property of the call
-    // graph rather than of this hook, so nesting is NOT supported: CF-282
-    // (#328).
+    // Still one listener per active trap, all on the same node, so every live
+    // trap sees every key. That used to make "at most one overlay at a time" a
+    // load-bearing invariant enforced by nothing — true only because the three
+    // callers could not be mounted together, which is a property of the call
+    // graph rather than of this hook. The trap stack above enforces it here
+    // instead: all but the innermost decline, so nesting is now supported
+    // rather than merely unlikely. CF-282 (#328) is closed by this.
     //
-    // Capture does not help with that. Every trap binds to the same node, and
-    // same-node listeners run in registration order within a phase, so the
-    // outer trap fires first — from mount order, exactly as it did on the
-    // window. And outer-first is the wrong end to start from: a nested trap
-    // wants the INNERMOST one to claim the key, so the guard has to be the
-    // outer trap detecting a live inner trap and standing down, not simply
-    // whoever is called first handling it.
+    // Note that capture phase contributes nothing to that. Same-node listeners
+    // run in registration order within a phase, so the outer trap runs first
+    // either way — and outer-first is the wrong end, which is precisely why the
+    // ordering had to be decided by the stack rather than by the DOM. What
+    // capture buys is the stopPropagation immunity described above, and only
+    // that.
     const doc = container.ownerDocument;
     doc.addEventListener("keydown", onKey, true);
     return () => {
+      // Off the stack first, so the trap below becomes innermost immediately
+      // rather than after the focus restore below has run.
+      removeTrap(token);
       doc.removeEventListener("keydown", onKey, true);
       // eslint's generic advice — copy the ref into a variable inside the
       // effect — is exactly what this stopped doing, and would reinstate the

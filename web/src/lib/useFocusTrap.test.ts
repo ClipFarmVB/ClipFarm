@@ -11,8 +11,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   FOCUSABLE,
+  isInnermostTrap,
   nextFocusableAfter,
   previousFocusableBefore,
+  pushTrap,
+  removeTrap,
   restoreFocusTo,
   trapTabWithin,
 } from "@/lib/useFocusTrap";
@@ -313,5 +316,67 @@ describe("previousFocusableBefore", () => {
     const el = overlay(`<div id="card" tabindex="-1"><button id="copy">copy</button></div>`);
     const card = el.querySelector<HTMLElement>("#card")!;
     expect(previousFocusableBefore(el, card)).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("the trap stack (nesting)", () => {
+  // Tokens are removed rather than reset through a back door: the stack is
+  // module state shared by every test in this file, and a leaked token would
+  // silently make later assertions pass for the wrong reason.
+  const outer = {};
+  const inner = {};
+  afterEach(() => { removeTrap(inner); removeTrap(outer); });
+
+  it("a lone trap is innermost", () => {
+    pushTrap(outer);
+    expect(isInnermostTrap(outer)).toBe(true);
+  });
+
+  it("an unregistered token is not innermost", () => {
+    expect(isInnermostTrap(outer)).toBe(false);
+    pushTrap(outer);
+    expect(isInnermostTrap(inner)).toBe(false);
+  });
+
+  it("the inner trap wins while both are live", () => {
+    pushTrap(outer);
+    pushTrap(inner);
+    expect(isInnermostTrap(inner)).toBe(true);
+    // The point of the whole thing: the outer trap declines rather than acting
+    // on a key meant for the overlay above it.
+    expect(isInnermostTrap(outer)).toBe(false);
+  });
+
+  it("removing the inner trap hands the keyboard back to the outer one", () => {
+    pushTrap(outer);
+    pushTrap(inner);
+    removeTrap(inner);
+    expect(isInnermostTrap(outer)).toBe(true);
+  });
+
+  it("removes by identity, so a non-LIFO cleanup does not evict the wrong trap", () => {
+    // React does not promise cleanups run in reverse mount order. A `pop()`
+    // here would drop the INNER token and leave a dead outer trap owning the
+    // keyboard; this is the test that discriminates the two implementations.
+    pushTrap(outer);
+    pushTrap(inner);
+    removeTrap(outer);
+    expect(isInnermostTrap(inner)).toBe(true);
+    expect(isInnermostTrap(outer)).toBe(false);
+  });
+
+  it("pushing twice does not strand a token on top", () => {
+    pushTrap(outer);
+    pushTrap(outer);
+    removeTrap(outer);
+    expect(isInnermostTrap(outer)).toBe(false);
+  });
+
+  it("removing an unregistered token is a no-op", () => {
+    pushTrap(outer);
+    removeTrap(inner);
+    expect(isInnermostTrap(outer)).toBe(true);
   });
 });
