@@ -186,13 +186,27 @@ class FakeTask:
 
 
 # Container headers, hand-built rather than sliced off a fixture video: the
-# check reads 16 bytes, so a real file would add megabytes to the repo to
-# exercise the same twelve.
+# check reads only the first few dozen bytes, so a real file would add megabytes
+# to the repo to exercise the same handful.
 ISO_BMFF_HEADER = b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00"   # .mp4
 QUICKTIME_HEADER = b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00"   # .mov
 FRAGMENTED_MP4_HEADER = b"\x00\x00\x00\x18stypmsdh\x00\x00\x00\x00"
 EBML_HEADER = b"\x1a\x45\xdf\xa3\x93\x42\x82\x88matroska"       # .mkv / .webm
 ZIP_HEADER = b"PK\x03\x04\x14\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00"
+
+
+def _qt_header(lead: bytes, *, lead_size: int = 20) -> bytes:
+    """A QuickTime file that opens with `lead` instead of `ftyp`.
+
+    Shaped like the file measured in CF-244's review: a small leading box, then
+    the `wide`/`mdat` pair ffmpeg's mov muxer writes. QTFF does not require
+    `ftyp`, so each of these is a legal .mov rather than a contrived one.
+    """
+    return (
+        lead_size.to_bytes(4, "big") + lead + b"\x00" * (lead_size - 8)
+        + b"\x00\x00\x00\x08wide"
+        + b"\x00\x00\x07\x54mdat"
+    )
 
 
 @pytest.fixture
@@ -596,7 +610,7 @@ def test_a_non_video_upload_is_deleted_and_rejected(fake_storage, fake_task):
 def test_a_zero_byte_upload_is_rejected(fake_storage, fake_task):
     """The case the fail-open path would otherwise hide.
 
-    `bytes=0-15` on a zero-length object is unsatisfiable, so R2 answers 416,
+    A ranged read of a zero-length object is unsatisfiable, so R2 answers 416,
     `head_bytes` returns None, and "unreadable header" waves it through — an
     empty file all the way to a GPU job. Decided from `head["size"]` instead,
     which also keeps the verdict independent of exactly how storage answers an
@@ -626,7 +640,7 @@ def test_an_object_too_short_to_sniff_is_not_read_at_all(fake_storage, fake_task
         asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
 
     assert exc.value.status_code == 415
-    assert reads == [], "no point asking storage for 16 bytes of a 4-byte object"
+    assert reads == [], "no point asking storage for the header of a 4-byte object"
 
 
 def test_an_unreadable_header_allows_the_upload_through(fake_storage, fake_task):
@@ -634,7 +648,7 @@ def test_an_unreadable_header_allows_the_upload_through(fake_storage, fake_task)
     four lines above it — and deliberately.
 
     No object at all means there is nothing to accept, so 400 is the only
-    answer. A header that cannot be read means R2 would not hand over 16 bytes
+    answer. A header that cannot be read means R2 would not hand over the head
     of an object it has already confirmed: the transfer completed, possibly 8 GB
     of it, and discarding that over a storage hiccup costs the user far more
     than letting a mislabelled file reach a worker that will fail to decode it.
@@ -679,6 +693,85 @@ def test_the_sniff_reads_only_the_signature_window(fake_storage, fake_task, monk
     assert games_router.VIDEO_SIGNATURE_BYTES <= 64, (
         "the window only has to reach the ISO-BMFF brand at offset 8; a large "
         "read here is bytes transferred on every completion for nothing"
+    )
+
+
+# ── CF-244 review: QuickTime does not require `ftyp` ────────────────────────
+#
+# The first version of this check accepted ISO-BMFF only on a leading `ftyp` or
+# `styp`. That is right for MP4 — ISO/IEC 14496-12 requires `ftyp` early — but
+# `video/quicktime` is on the allowlist too and QTFF has no such requirement, so
+# these files were being deleted with a 415 and no retry path.
+#
+# Demonstrated on real bytes before these were written: take an ffmpeg-produced
+# .mov and replace its 20-byte `ftyp` with a same-length `free` box, so every
+# chunk offset in the moov stays valid. ffprobe reports
+# `format_name=mov,mp4,m4a,3gp,3g2,mj2`, duration intact, exit 0. The old sniff
+# returned None for the same bytes.
+
+
+@pytest.mark.parametrize("lead", [b"wide", b"moov", b"mdat", b"free", b"skip", b"pnot", b"junk"])
+def test_quicktime_without_ftyp_is_a_video(lead):
+    """Each of these may legally open a .mov. None of them is `ftyp`."""
+    assert games_router._sniff_video_container(_qt_header(lead)) == "iso-bmff"
+
+
+def test_a_quicktime_without_ftyp_completes(fake_storage, fake_task):
+    """Through the handler, not just the sniffer: the cost of the old answer was
+    paid on the reject branch, which deletes the row and the object."""
+    fake_storage["_header"]["value"] = _qt_header(b"wide")
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert fake_storage["delete_file"] == [], "a legal .mov must not be destroyed"
+    assert len(fake_task.calls) == 1
+
+
+def test_an_unrecognised_leading_box_is_stepped_over():
+    """A type list will always be narrower than the decoder's.
+
+    ffmpeg does not match on the leading atom at all — it walks the chain — so
+    the same .mov with its first atom relabelled to a type nothing recognises
+    still probes as `mov,mp4,m4a,3gp,3g2,mj2` (checked with ffprobe). Anything
+    that only widened the list would still delete that file.
+    """
+    assert games_router._sniff_video_container(_qt_header(b"XXXX")) == "iso-bmff"
+
+
+def test_the_walk_needs_the_box_sizes_to_be_plausible():
+    """What keeps the step-over from accepting anything at all.
+
+    A box states its length before its type, so arbitrary bytes have to carry a
+    chain of usable lengths to reach a type this recognises.
+    """
+    # Unknown type, and a size too small to be a box header — not a chain.
+    assert games_router._sniff_video_container(b"\x00\x00\x00\x03XXXXmdat" + b"\x00" * 8) is None
+    # Unknown type with size 0: "runs to end of file", so nothing follows it.
+    assert games_router._sniff_video_container(b"\x00\x00\x00\x00XXXXmdat" + b"\x00" * 8) is None
+    # A size that walks past the window rather than onto a known type.
+    assert games_router._sniff_video_container(b"\x7f\xff\xff\xffXXXX" + b"\x00" * 56) is None
+
+
+def test_still_not_a_video(fake_storage):
+    """The widening must not have turned the check off."""
+    assert games_router._sniff_video_container(ZIP_HEADER) is None
+    assert games_router._sniff_video_container(b"not a video, just some prose about one." * 2) is None
+    assert games_router._sniff_video_container(b"\x89PNG\r\n\x1a\n" + b"\x00" * 56) is None
+
+
+def test_the_too_short_floor_is_not_the_read_window():
+    """These are separate numbers on purpose.
+
+    `too_short` drives the destructive branch; the window is sized for how far
+    the sniff may have to walk. Tying them together would mean every widening of
+    the read deleted more real files — a 40-byte object is not something to
+    reject just because the sniff would have liked 64 bytes.
+    """
+    assert games_router.MIN_CONTAINER_BYTES <= games_router.VIDEO_SIGNATURE_BYTES
+    assert games_router.MIN_CONTAINER_BYTES <= 16, (
+        "this is the size below which an object is deleted unread; keep it at "
+        "the shortest thing that could carry a container header"
     )
 
 

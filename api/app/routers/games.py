@@ -46,19 +46,94 @@ router = APIRouter(prefix="/games", tags=["games"])
 # declared-vs-sniffed equality check would reject it. The declared allowlist in
 # quota.check_upload_allowed still governs what a client may *declare*; this is a
 # separate, coarser check on what it actually *sent*.
-VIDEO_SIGNATURE_BYTES = 16
-_ISO_BMFF_BOX_TYPES = (b"ftyp", b"styp")  # styp = fragmented mp4
+# How much of the object to read. Wider than the 8 bytes a box header needs, so
+# the scan below can step over a leading box and look at the next one.
+VIDEO_SIGNATURE_BYTES = 64
+# The floor for "too small to be a container at all", deliberately NOT the read
+# size above. Sizing the destructive reject off the read window would mean every
+# widening of the window rejected more real files; this only has to sit below
+# the shortest header worth sniffing.
+MIN_CONTAINER_BYTES = 16
 _EBML_MAGIC = b"\x1a\x45\xdf\xa3"
+
+# Box types that identify the ISO-BMFF/QTFF family when one of them leads the
+# file.
+#
+# NOT just `ftyp` (CF-244 review). ISO/IEC 14496-12 requires `ftyp` early, so an
+# MP4 always carries it — but `video/quicktime` is on the allowlist too, and
+# QTFF does not require it: a .mov may legally begin with `wide`, `moov`,
+# `mdat`, `free`, `skip` or `pnot`. Measured rather than reasoned about —
+# replacing the 20-byte `ftyp` of an ffmpeg-produced .mov with a same-length
+# `free` box (same length, so every chunk offset in the moov stays valid) leaves
+# a file ffprobe reports as `format_name=mov,mp4,m4a,3gp,3g2,mj2` with its
+# duration intact and exit 0, while an `ftyp`-only check called it not-a-video.
+#
+# Getting this wrong is expensive in one direction only. The reject path deletes
+# the Game row and the R2 object and answers 415 with no retry, so the user
+# re-transfers up to 8 GB — the same cost the fail-open decision below is
+# written to avoid, except paid on a confident wrong answer instead of an
+# uncertain one.
+_ISO_BMFF_BOX_TYPES = frozenset({
+    b"ftyp",  # ISO-BMFF brand — required early in MP4, optional in QuickTime
+    b"styp",  # fragmented mp4 segment
+    b"moov",  # movie header; leads a faststart / streaming-ordered file
+    b"mdat",  # media data
+    b"wide",  # 64-bit-size placeholder ffmpeg's mov muxer emits before mdat
+    b"free",  # padding, and what stripping an atom in place leaves behind
+    b"skip",  # padding, the other spelling
+    b"junk",  # padding, as written by some capture tools
+    b"pnot",  # preview, on old QuickTime files
+})
+# Enough to step over a couple of small leading boxes. The read window bounds
+# the walk anyway; this just keeps it obviously finite.
+_ISO_BMFF_MAX_BOXES = 4
 
 
 def _sniff_video_container(header: bytes) -> str | None:
     """The container family `header` belongs to, or None if it is neither."""
     if header.startswith(_EBML_MAGIC):
         return "ebml"
-    # ISO-BMFF puts a 4-byte box size first, so the type is at offset 4.
-    if len(header) >= 8 and header[4:8] in _ISO_BMFF_BOX_TYPES:
+    if _opens_with_iso_bmff_box(header):
         return "iso-bmff"
     return None
+
+
+def _opens_with_iso_bmff_box(header: bytes) -> bool:
+    """Whether `header` opens with a recognisable ISO-BMFF/QTFF box chain.
+
+    Walks a few boxes instead of testing only the first, because the set of
+    types that may lead a QuickTime file is open-ended and any fixed list will
+    be narrower than the decoder's. ffmpeg does not match on the leading type at
+    all — it follows the chain — which is why the same .mov with its first atom
+    relabelled to a type nothing recognises still probes as
+    `mov,mp4,m4a,3gp,3g2,mj2`. Stepping over an unrecognised but well-formed box
+    keeps this from deleting such a file.
+
+    What bounds the cost of that is the size field: a box declares its own
+    length before its type, and only a plausible length lets the walk continue,
+    so arbitrary bytes have to survive a chain of them to reach an accept.
+    """
+    offset = 0
+    for _ in range(_ISO_BMFF_MAX_BOXES):
+        # ISO-BMFF puts a 4-byte box size first, so the type is at offset 4.
+        if offset + 8 > len(header):
+            return False
+        size = int.from_bytes(header[offset:offset + 4], "big")
+        if header[offset + 4:offset + 8] in _ISO_BMFF_BOX_TYPES:
+            return True
+        if size == 1:
+            # `1` means the real, 64-bit size follows the type.
+            if offset + 16 > len(header):
+                return False
+            size = int.from_bytes(header[offset + 8:offset + 16], "big")
+        if size < 8:
+            # `0` means "runs to the end of the file", legal only for the last
+            # box — so there is nothing after it to step to. 2..7 cannot hold a
+            # box header at all, so these are not boxes.
+            return False
+        offset += size
+    return False
+
 
 DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
@@ -358,19 +433,25 @@ async def complete_upload(
     # Fails OPEN on an unreadable probe, which is the opposite of what the HEAD
     # above does with its None — deliberately. A None from head_object means
     # there is no object, so there is nothing to accept and 400 is the only
-    # answer. A None here means R2 would not hand over 16 bytes of an object we
-    # have already seen: the transfer completed, possibly 8 GB of it, and
-    # discarding it over a storage hiccup costs the user far more than letting a
-    # mislabelled file through to a worker that will fail to decode it anyway.
-    # The cheaper wrong answer differs between the two, so the direction does.
+    # answer. A None here means R2 would not hand over the first few bytes of an
+    # object we have already seen: the transfer completed, possibly 8 GB of it,
+    # and discarding it over a storage hiccup costs the user far more than
+    # letting a mislabelled file through to a worker that will fail to decode it
+    # anyway. The cheaper wrong answer differs between the two, so the direction
+    # does.
     # Decided from the size we already have rather than from the read below.
     # An object too short to carry a container header is definitively not a
-    # video, and a ranged read is the wrong instrument for it: `bytes=0-15` on a
-    # zero-length object is unsatisfiable, so R2 answers 416, head_bytes returns
-    # None, and the fail-open path waves it through. Reading the size keeps the
-    # verdict independent of how storage chooses to answer that request — and
-    # saves the request entirely.
-    too_short = head["size"] < VIDEO_SIGNATURE_BYTES
+    # video, and a ranged read is the wrong instrument for it: a ranged read of
+    # a zero-length object is unsatisfiable, so R2 answers 416, head_bytes
+    # returns None, and the fail-open path waves it through. Reading the size
+    # keeps the verdict independent of how storage chooses to answer that
+    # request — and saves the request entirely.
+    #
+    # MIN_CONTAINER_BYTES, not VIDEO_SIGNATURE_BYTES: the window is sized for
+    # how far the sniff may need to walk, and this is the destructive branch, so
+    # widening the read must not widen what gets deleted (CF-244 review). A
+    # short object is read and sniffed on whatever bytes exist.
+    too_short = head["size"] < MIN_CONTAINER_BYTES
     header = None if too_short else await run_in_threadpool(
         storage.head_bytes, key, VIDEO_SIGNATURE_BYTES
     )
