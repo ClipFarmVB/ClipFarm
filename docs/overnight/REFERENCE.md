@@ -6,8 +6,12 @@ any stretch where questions cannot be answered.
 Start one with:
 
 ```
-/loop Read OVERNIGHT_RUN.md and follow it exactly. Re-read .claude/overnight-log.md first each iteration so you do not repeat work.
+/loop Read docs/overnight/README.md, then docs/overnight/REFERENCE.md in full, and follow it exactly. Re-read .claude/overnight-log.md first each iteration so you do not repeat work.
 ```
+
+[`README.md`](./README.md) in this folder carries the reading protocol — read
+this file in full on the first iteration, and re-read the sections the work
+touches after that rather than the whole thing every lap.
 
 The log stays gitignored on purpose: it is scratch memory for one run. The report
 that has to survive is posted as an issue — see [Reporting](#reporting).
@@ -355,26 +359,15 @@ night's ticket list.
 Before relying on any capability, check it, and record the result in the log in
 one block. The first run discovered three gaps separately, mid-work.
 
-- **`gh` itself.** Run `gh --version`. **Every command in this brief is written
-  in `gh`, and some environments have none of it** — the web/remote sandbox
-  provides GitHub access only as MCP tools (`mcp__github__*`). If `gh` is
-  missing, the machinery still applies unchanged; only the invocations differ,
-  and you translate them yourself. Three differences bite:
-  - **Reading labels off a PR.** `issue_read` with `get_labels` fails on a pull
-    request number (`Could not resolve to an Issue`). Read labels from
-    `list_pull_requests` instead, and use it to *verify a label landed* — the
-    write returns success either way.
-  - **List calls blow the context budget.** `list_issues` / `list_pull_requests`
-    return full issue bodies even with `minimal_output`, and a default page is
-    large enough to be refused outright. Pass a small `perPage` (1–5) and page.
-  - **Writing labels replaces the whole set**, so read the current labels first
-    or you will silently drop one.
-
 - **Projects v2** — `gh project item-list 1 --owner ClipFarmVB --format json`.
   Needs the `project` token scope, which is often absent. This does **not** gate
   any work, and it does **not** stop cards reaching the board — see below. It
   only affects *editing* the board: without it you cannot remove the report
   issue or change a field. Note that, and carry on.
+- **`gh` itself** — `gh --version`. Every command here is written in `gh` and
+  some environments have none of it. That is an expected case, not a blocker:
+  see [What a non-`gh` tool must provide](#what-a-non-gh-tool-must-provide),
+  and name the tool you used in the report.
 - **Docker** — `docker info`. If absent, the local stack and the eval harness
   cannot run at all.
 - **`gh` against this repo** — `gh api repos/ClipFarmVB/ClipFarm --jq .full_name`.
@@ -685,6 +678,27 @@ sentence. The failure if any item is missing is silent rather than loud:
 **Confirm your tool paginates before you trust a marker read**, and name the
 tool in the report. A run that cannot establish point 1 should say so and treat
 every marker read as unverified rather than assuming it saw the newest.
+
+**Where the GitHub MCP tools fail these, specifically.** They are the expected
+non-`gh` tool in the web sandbox, and they satisfy the list — but three of the
+failures are silent, and all three were hit in the run of 2026-08-27:
+
+- **Labels cannot be read off a PR the obvious way.** `issue_read` with
+  `get_labels` returns `Could not resolve to an Issue` for a pull request
+  number. Read them from `list_pull_requests` instead. Use that to *verify a
+  label landed*, too: the write returns success whether or not it did, so a
+  settle that never took looks identical to one that did.
+- **Writing labels replaces the whole set.** Read the current labels first or
+  you will silently drop one. On a PR carrying only your own label this is
+  invisible.
+- **The list calls can exceed the context budget outright.** `list_issues` and
+  `list_pull_requests` return full issue and PR bodies even with
+  `minimal_output: true`, and on this repository a default page is refused for
+  size — which costs a call and returns nothing. Pass a small `perPage` (1–5)
+  and page. This is why point 1's pagination requirement is not academic here.
+
+None of these changes a rule. They change what "I checked" is worth, which is
+the same class of problem as everything else in this section.
 
 ##### Markers: what a round writes
 
