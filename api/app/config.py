@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -224,6 +226,10 @@ class Settings(BaseSettings):
     condense_gap_seconds: float = 10.0       # contact gap that counts as dead time
     condense_pad_before: float = 5.0         # seconds kept before a window
     condense_pad_after: float = 4.0          # seconds kept after a window
+    # Note under condense_mode="guarded": motion anchors open windows on their
+    # own evidence, so this bounds only the contact-derived half. Raising it to
+    # be conservative buys less than it reads as buying — the anchor is
+    # unaffected. Under "rules" it means what it always did.
     condense_min_contacts: int = 1           # keep even single-contact groups — dropping play is worse
     condense_merge_gap_seconds: float = 5.0  # merge windows closer than this
     # Motion bridge: re-join windows split by contact-silent stretches of real
@@ -233,6 +239,80 @@ class Settings(BaseSettings):
     condense_bridge_speed_pxps: float = 150.0   # a speed sample this fast counts as in-play
     condense_bridge_fast_fraction: float = 0.35  # bridge when ≥ this fraction of samples are fast
     condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
+    # Which keep-window builder the condense stage uses. A failure *inside* the
+    # guarded builder falls back to "rules", so a feature mismatch degrades the
+    # condense rather than failing the run. Note the fallback is within-builder
+    # only: both builders are imported from the same module, so an import-time
+    # failure takes out "rules" too and the whole condense stage is skipped by
+    # the stage-level handler in tasks.py. The game still ships `ready`.
+    #   "rules"    the two blocks above: contacts + motion bridge (CF-46)
+    #   "guarded"  speed-gated contacts + motion anchors + tight pads, abstaining
+    #              when the ball track is too sparse to judge (CF-187)
+    # Default is "guarded". Measured at 42b582f from the R2 ball caches, with
+    # mode=rules reproducing its documented figures exactly on four of five
+    # fixtures as a control (the fifth, test5's 9.6% rules baseline, was a
+    # long-standing doc error and is corrected).
+    #
+    # Dead time: it removes more on all four it condenses (+2.2 points on test1,
+    # +41 test2, +29 test4, +40 test5). Live play: it cuts 50s LESS than "rules"
+    # on test1 and more on the other three (2s->12s, 83s->100s, 0s->20s), and on
+    # the fifth it abstains rather than cut 118s of rally.
+    #
+    # Net at the harness' 4:1 live-cut exchange rate: +533s vs +134s over the
+    # three fixtures comparable across games. Counting all five gives +1440s vs
+    # +633s, and that larger figure is the misleading one: test1 and test3 supply
+    # most of the gap and their own fixture notes exclude them from cross-game
+    # comparison. Three of the five were held out while it was tuned.
+    #
+    # Worth reading past the net: across those three comparable fixtures "rules"
+    # cuts 85s of live play and "guarded" cuts 132s, so the default cuts 47s more
+    # of the thing this repo protects and buys it back with dead time at 4:1.
+    # That trade was taken deliberately — the dead-time win is large and holds on
+    # every fixture it condenses, and 4:1 is the rate this repo's own harness
+    # scores against — but it was a judgement, not something the numbers decided.
+    # Weigh live play more heavily and CONDENSE_MODE=rules is the reasonable
+    # read. Raising the gate or anchor speeds widens the trade further, which is
+    # the change that should reopen the question — see ml/eval/README.md.
+    # Literal, not str: an unknown value here (CONDENSE_MODE=Guarded) would
+    # otherwise load fine and silently run "rules" forever behind one warning
+    # per game. Note what "fail at load" means for an operator: Settings is
+    # constructed at import, so a typo here is a hard boot failure of both api
+    # and worker with a pydantic validation error — not a curated message like
+    # production_config_error's. That is the intended trade (a misconfigured
+    # builder is worse than a refused boot), and it is safe to make because no
+    # deploy file sets CONDENSE_MODE: render.yaml, the compose files and
+    # .env.docker.example all leave it at this default.
+    #
+    # What rolling back does NOT restore: the 2%-trim floor
+    # (CONDENSE_MIN_TRIM_FRACTION in workers/tasks.py) is new in CF-187 and
+    # applies to both builders, so a game whose rule-based windows keep >=98%
+    # of the video now ships without a condensed cut where it would previously
+    # have re-encoded a near-copy. CONDENSE_MODE=rules restores the *builder*,
+    # not every line the card touched.
+    condense_mode: Literal["rules", "guarded"] = "guarded"
+    # Guarded-path tunables — see ml/pipeline/dead_time.active_windows_guarded.
+    # Speeds are frame-heights/s, so they hold across source resolutions.
+    condense_guard_gate_speed: float = 0.25       # min median speed around a credible contact
+    condense_guard_anchor_speed: float = 0.30     # a speed sample this fast counts toward an anchor
+    # Pads apply to contact-derived windows only — anchor windows already span
+    # the motion they found and keep their own pad (dead_time.ANCHOR_PAD), so
+    # raising these does not widen a rally recovered purely by the anchor.
+    condense_guard_pad_before: float = 3.0        # seconds kept before a window
+    condense_guard_pad_after: float = 2.0         # seconds kept after a window
+    condense_guard_merge_gap_seconds: float = 3.0  # merge windows closer than this
+    # Usable speed samples/s below which the builder abstains and keeps the whole
+    # video. The fixtures observe 0.57/s on the one game that must abstain and
+    # 1.51-2.99/s on the four that must not, so 1.0 sits in a wide clean gap — but
+    # that also means the boundary is UNCONSTRAINED, not tuned: nothing has been
+    # measured between 0.57 and 1.51, and a game landing in there flips between
+    # condensing normally and shipping no condensed video at all, the most
+    # user-visible outcome on this path. Revisit with a real game in the gap
+    # before moving it.
+    # Units: *usable speed samples*/s (speed_samples() output), not raw track
+    # points. test3 is 0.57 usable/s but 0.76 raw/s, and its fixture note records
+    # the raw one — quoting the wrong figure against this threshold compares two
+    # different measurements.
+    condense_guard_min_track_rate: float = 1.0
 
     # Database
     database_url: str = LOCAL_DATABASE_URL

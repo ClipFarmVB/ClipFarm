@@ -7,11 +7,22 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from celery.exceptions import Retry
 
 from app.workers.celery_app import celery_app
+
+if TYPE_CHECKING:
+    # Type-only: importing app.config at module scope would run Settings() as a
+    # side effect of importing this module. Annotating `settings` at all is the
+    # point — untyped, mypy could not see the eight condense_guard_* reads
+    # below, so a renamed setting became an AttributeError caught by the
+    # builder's own fallback and the worker ran "rules" forever behind one
+    # warning per game. That is the failure condense_mode's Literal closes at
+    # the front door; this closes it at the back.
+    from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +30,205 @@ logger = logging.getLogger(__name__)
 # lives under it — the ball-position cache has its own prefix — so the
 # retention sweep can treat every object here as a raw upload.
 RAW_PREFIX = "raw/"
+
+# Condense below this much trimming is not worth the re-encode — see the
+# condense stage in process_game_task.
+CONDENSE_MIN_TRIM_FRACTION = 0.02
+
+
+def _worth_condensing(kept_seconds: float, video_duration: float) -> bool:
+    """
+    Whether a keep-window set trims enough to be worth the re-encode.
+
+    The guarded builder abstains by returning one whole-video window, and
+    encoding that would spend minutes to upload a copy of the original. Callers
+    treat False as "ship the game without a condensed cut", which is also the
+    right answer for any other near-total keep.
+    """
+    if video_duration <= 0:
+        return False
+    return kept_seconds < video_duration * (1.0 - CONDENSE_MIN_TRIM_FRACTION)
+
+
+def _clear_previous_condensed(gid) -> None:
+    """Drop a previous run's condensed cut: the row first, then the object.
+
+    Both halves matter. Leaving the row would serve a condensed video built from
+    a decision this run did not make; leaving the object orphans it, because
+    `delete_game` derives its delete list from `condensed_video_url`
+    (routers/games.py), so a NULL column makes that MP4 unreachable and it bills
+    forever.
+
+    The order is the safe one. A failure between the two leaves an orphan, which
+    is logged and costs storage; the reverse order would leave the row pointing
+    at a deleted object and 404 the player.
+
+    Only call this for a run that actually judged the video — see
+    `_condense_verdict_is_confident`. This deletes user-visible output and
+    cannot be undone.
+
+    Raises whatever the row write raises — the caller decides how loud that is.
+    """
+    from app.services import storage as s3
+    from app.workers._sync_db import sync_clear_condensed_result
+
+    previous = sync_clear_condensed_result(gid)
+    if not previous:
+        # Nothing was there. Skipping the delete keeps the warning below
+        # meaningful: it should mean "an object was left behind", not "we asked
+        # R2 about a key that has never existed".
+        return
+    try:
+        s3.delete_file(s3.condensed_key(gid))
+    except Exception as del_err:
+        logger.warning("Orphan condensed-video cleanup failed (%s)", del_err)
+
+
+def _maybe_clear_previous_condensed(
+    gid, windows, *, ball_ok: bool, built_by: str, _require_lock,
+) -> bool:
+    """Clear a previous condensed cut, but only if this run earned the right to.
+
+    The decision and the deletion are joined here rather than at the call site
+    on purpose. The original defect was an *unconditional* clear — the predicate
+    was never wrong, it simply was not consulted — so a test that only exercises
+    `_condense_verdict_is_confident` leaves the regression that actually
+    happened uncovered. With the branch in a function, a test can assert that a
+    degraded run performs no deletion at all.
+
+    The lock-checkpoint callable is named `_require_lock`, underscore and all,
+    so that `test_every_require_lock_checkpoint_routes_to_a_locklost_handler`
+    still sees this checkpoint. That scan finds calls by name; moving one behind
+    a parameter would hide it from the routing check while leaving the call
+    itself in place — silent under-coverage of the lock invariant, which is the
+    failure that test exists to prevent.
+
+    Returns whether the clear was attempted. Never raises except on LockLost,
+    which the stage handles: a reporting write must not break processing.
+    """
+    from app.workers.locks import LockLost
+
+    if not _condense_verdict_is_confident(windows, ball_ok=ball_ok):
+        logger.info(
+            "Keeping any previous condensed cut: this run did not judge the "
+            "video (ball signal: %s, built by %r)",
+            "ok" if ball_ok else "missing", built_by,
+        )
+        return False
+
+    try:
+        _require_lock()
+        _clear_previous_condensed(gid)
+    except LockLost:
+        raise
+    except Exception as clear_err:
+        logger.warning("Could not clear a previous condensed cut (%s)", clear_err)
+    return True
+
+
+def _condense_verdict_is_confident(windows, *, ball_ok: bool) -> bool:
+    """Whether this run is entitled to delete a previous run's condensed cut.
+
+    Clearing is right when the pipeline looked at the video and concluded there
+    is nothing worth cutting: the old cut then contradicts a real judgement.
+    It is wrong when the run could not form that judgement, because the previous
+    cut may be the only good one and clearing it destroys the object too.
+
+    Two ways a run reaches "no cut" without judging anything:
+
+    - **No ball signal** (`ball_ok` False). Tracking failed — a Roboflow outage,
+      a bad upload — and the stage falls back to pose-derived rallies. That is a
+      degraded input, not a verdict about the game.
+    - **An abstain.** The guarded builder says so itself: the track is too
+      sparse to judge. `Abstained` exists precisely so this is not guesswork.
+
+    "Could not see the ball" and "looked and found nothing to cut" must not both
+    delete.
+    """
+    from ml.pipeline.dead_time import Abstained
+
+    return ball_ok and not isinstance(windows, Abstained)
+
+
+def _build_condense_windows(
+    mode: str,
+    contacts: list[dict],
+    positions: list[dict],
+    duration: float,
+    frame_height: int,
+    settings: "Settings",
+) -> tuple[list[tuple[float, float]], str]:
+    """
+    Keep-windows for the condense stage, with the name of the builder that
+    actually produced them (for logging — the requested mode may not be the one
+    that ran).
+
+    Anything that goes wrong *inside* a non-default builder — feature drift, a
+    missing frame height, an unknown mode name — falls back to "rules" with a
+    warning, because a degraded condense beats a failed run. The scope is worth
+    being precise about: both builders come from the same module import below, so
+    this fallback covers call-time failures only. If that import itself fails,
+    "rules" is just as gone and process_game_task's stage-level `except Exception
+    as condense_err` skips condensing altogether — the game still ships `ready`,
+    without a condensed cut. config.condense_mode is a Literal, so an unknown mode name can no longer
+    arrive from settings; the branch stays for direct callers.
+
+    The None sentinel is load-bearing, not style: active_windows_guarded returns
+    [] on a dense track where every contact failed the speed gate and nothing
+    anchored a window, which is a real verdict of "no play here". Reading that as
+    a failure would rebuild the windows from the very contacts the gate rejected
+    — the junk the mode exists to remove. Only an exception means "fall back".
+    """
+    from ml.pipeline.dead_time import (
+        active_windows_from_contacts,
+        active_windows_guarded,
+        bridge_windows_by_motion,
+    )
+
+    windows: list[tuple[float, float]] | None = None
+    built_by = mode
+    if mode != "rules":
+        try:
+            if mode == "guarded":
+                windows = active_windows_guarded(
+                    contacts, positions, duration, frame_height,
+                    gap_seconds=settings.condense_gap_seconds,
+                    min_contacts=settings.condense_min_contacts,
+                    pad_before=settings.condense_guard_pad_before,
+                    pad_after=settings.condense_guard_pad_after,
+                    merge_gap_seconds=settings.condense_guard_merge_gap_seconds,
+                    gate_speed=settings.condense_guard_gate_speed,
+                    anchor_speed=settings.condense_guard_anchor_speed,
+                    min_track_rate=settings.condense_guard_min_track_rate,
+                )
+            else:
+                raise ValueError(f"unknown condense_mode {mode!r}")
+        except Exception as mode_err:
+            logger.warning(
+                "Condense mode %r failed (%s) — using rule-based windows",
+                mode, mode_err,
+            )
+            windows = None
+            built_by = "rules"
+
+    if windows is None:
+        built_by = "rules"
+        windows = active_windows_from_contacts(
+            contacts, duration,
+            gap_seconds=settings.condense_gap_seconds,
+            pad_before=settings.condense_pad_before,
+            pad_after=settings.condense_pad_after,
+            min_contacts=settings.condense_min_contacts,
+            merge_gap_seconds=settings.condense_merge_gap_seconds,
+        )
+        windows = bridge_windows_by_motion(
+            windows, positions,
+            speed_pxps=settings.condense_bridge_speed_pxps,
+            fast_fraction=settings.condense_bridge_fast_fraction,
+            max_bridge_seconds=settings.condense_bridge_max_seconds,
+        )
+    return windows, built_by
+
 
 
 def _file_md5(path: Path) -> str:
@@ -1056,28 +1266,19 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 try:
                     from app.workers._sync_db import sync_set_condensed_result
                     from ml.pipeline.dead_time import (
-                        active_windows_from_contacts,
+                        Abstained,
                         active_windows_from_detections,
-                        bridge_windows_by_motion,
                     )
                     from ml.pipeline.clip import generate_condensed_video
 
                     if ball_ok:
-                        windows = active_windows_from_contacts(
-                            ball_contacts, video_duration,
-                            gap_seconds=app_settings.condense_gap_seconds,
-                            pad_before=app_settings.condense_pad_before,
-                            pad_after=app_settings.condense_pad_after,
-                            min_contacts=app_settings.condense_min_contacts,
-                            merge_gap_seconds=app_settings.condense_merge_gap_seconds,
-                        )
-                        windows = bridge_windows_by_motion(
-                            windows, ball_positions,
-                            speed_pxps=app_settings.condense_bridge_speed_pxps,
-                            fast_fraction=app_settings.condense_bridge_fast_fraction,
-                            max_bridge_seconds=app_settings.condense_bridge_max_seconds,
+                        windows, built_by = _build_condense_windows(
+                            app_settings.condense_mode,
+                            ball_contacts, ball_positions, video_duration, _frame_h,
+                            app_settings,
                         )
                     else:
+                        built_by = "pose-fallback"
                         windows = active_windows_from_detections(
                             pre_gate_rallies, video_duration,
                             pad_before=app_settings.condense_pad_before,
@@ -1085,11 +1286,37 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                             merge_gap_seconds=app_settings.condense_merge_gap_seconds,
                         )
 
-                    if windows:
+                    kept_seconds = sum(end - start for start, end in windows)
+                    # A condense that keeps ~everything is a no-op, and the
+                    # guarded builder abstains by returning exactly that (one
+                    # whole-video window) when the ball track is too sparse to
+                    # judge. Encoding it would spend minutes to upload a copy of
+                    # the original, so skip it: the game still goes ready, just
+                    # without a condensed cut.
+                    trims_something = _worth_condensing(kept_seconds, video_duration)
+                    if windows and not trims_something:
+                        # Two different outcomes reach this line and only one is
+                        # about trim size, so say which: the builder declining
+                        # to judge a sparse track is not "there was little to
+                        # cut". `Abstained` carries that from the builder rather
+                        # than being inferred back from the window shape.
+                        if isinstance(windows, Abstained):
+                            logger.info(
+                                "Condense abstained (built by %r) — ball track too "
+                                "sparse to judge; shipping the full video",
+                                built_by,
+                            )
+                        else:
+                            logger.info(
+                                "Condense skipped: keep-windows cover %.0fs of %.0fs "
+                                "(built by %r) — nothing meaningful to trim",
+                                kept_seconds, video_duration, built_by,
+                            )
+
+                    if windows and trims_something:
                         # Re-price the condensing span now that kept-seconds is
                         # known: its cost tracks kept footage, not video length,
                         # so the static weight can be well off (29-43% observed).
-                        kept_seconds = sum(end - start for start, end in windows)
                         progress.rebudget_final_stage(
                             "condensing", kept_seconds * CONDENSE_SECS_PER_KEPT_SEC,
                         )
@@ -1122,8 +1349,29 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                             "Condensed video: %.0fs → %.0fs (%d windows)",
                             video_duration, condensed_duration, len(windows),
                         )
-                    else:
-                        logger.warning("Condense requested but no active windows detected — skipping")
+                    elif not windows:
+                        # Not a warning: for the guarded builder [] is a verdict
+                        # ("nothing here is play"), which _build_condense_windows
+                        # deliberately passes through rather than treating as a
+                        # failure. Logging it as a fault contradicts that and
+                        # trains readers to ignore the line.
+                        logger.info(
+                            "Condense produced no keep-windows (built by %r) — "
+                            "shipping the game without a condensed cut", built_by,
+                        )
+
+                    if not (windows and trims_something):
+                        # No cut was produced this run. Clear any previous one —
+                        # but only if this run actually judged the video, since
+                        # clearing deletes the object too and a degraded re-run
+                        # would otherwise destroy the last good cut it cannot
+                        # rebuild. Wrapped because a reporting write must never
+                        # break the stage.
+                        _maybe_clear_previous_condensed(
+                            gid, windows,
+                            ball_ok=ball_ok, built_by=built_by,
+                            _require_lock=_require_lock,
+                        )
                 except LockLost:
                     # A lost lock is not "condense failed, carry on" — carrying
                     # on reaches the `ready` write below and stamps it over
