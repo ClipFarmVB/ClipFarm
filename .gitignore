@@ -56,5 +56,8 @@ runs/
 .turbo/
 .claude/
 
-# Local-only compose override for social testing (see the file header)
+# Local-only compose override for social testing. Ignored and never committed,
+# so it has no header to point at: it is where you set SOCIAL_ENABLED and
+# NEXT_PUBLIC_SOCIAL_ENABLED to try the social stack against your own database
+# without editing the tracked compose file.
 docker-compose.override.yml

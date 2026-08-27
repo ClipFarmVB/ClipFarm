@@ -7,13 +7,15 @@ import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/contexts/AuthContext";
 import { getProfile, type Profile } from "@/lib/api";
 import { useMe } from "@/lib/useMe";
+import { PostGrid } from "./PostGrid";
 
 /**
  * Public profile body at /u/{handle} (CF-107).
  *
- * Identity only for now: the clip grid arrives with posts (CF-109) and is gated
- * by the visibility model (CF-108). A private account still renders its profile
- * so someone can find it and request to follow — only the *content* is hidden.
+ * Identity plus the post grid (CF-109), gated by the visibility model (CF-108).
+ * A private account still renders its profile so someone can find it and
+ * request to follow — only the *content* is hidden, and the grid gets that for
+ * free because `GET /posts?username=` filters in SQL for the viewer.
  *
  * Split out of page.tsx so the SOCIAL_ENABLED check can live in a server
  * component: `notFound()` from a client component only runs after hydration,
@@ -100,13 +102,19 @@ export function ProfileView({ handle }: { handle: string }) {
         )}
       </div>
 
-      <div className="mt-8 rounded-md border border-dashed border-border px-4 py-10 text-center">
-        <p className="text-sm text-muted">
-          {profile.is_private && !isSelf
-            ? "This account is private. Follow to see their clips."
-            : "No posts yet."}
-        </p>
-      </div>
+      {profile.is_private && !isSelf ? (
+        <div className="mt-8 rounded-md border border-dashed border-border px-4 py-10 text-center">
+          <p className="text-sm text-muted">
+            This account is private. Follow to see their clips.
+          </p>
+        </div>
+      ) : (
+        // Not conditional on the account flag beyond this: a private account's
+        // *public* post is deliberately readable (see services/access.py), so
+        // hiding the grid entirely would contradict the API. The card above is
+        // for the case where there is provably nothing to show.
+        <PostGrid handle={handle} isSelf={isSelf} />
+      )}
     </div>
   );
 }

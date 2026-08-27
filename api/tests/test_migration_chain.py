@@ -33,11 +33,14 @@ VERSIONS = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
 PENDING_UPSTREAM: dict[str, tuple[str, str]] = {
     # revision: (its down_revision, the PR that brings it)
     #
-    # 015 is CF-226 (#229), a one-line widening of games.error_message. It was
-    # going to take the next number after this stack; that gated a P1 behind two
-    # feature PRs, so the dependency was inverted and it takes 015 while posts
-    # moved to 016. Merge #229 first.
-    "015": ("014", "#229 — CF-226 widen games.error_message"),
+    # 015 is CF-226, a one-line widening of games.error_message. It was going to
+    # take the next number after this stack; that gated a P1 behind two feature
+    # PRs, so the dependency was inverted and it takes 015 while posts moved to
+    # 016.
+    #
+    # The PR is #320 — #229 is the *issue*, which is not a thing anyone can
+    # merge. The entry names the PR because merge order is what it encodes.
+    "015": ("014", "PR #320 — CF-226 (#229) widen games.error_message"),
 }
 
 
@@ -86,6 +89,28 @@ def test_every_down_revision_resolves():
         f"down_revision points at a revision that does not exist: {dangling}. "
         "Either the file is missing, or it lives on another branch — in which "
         "case add it to PENDING_UPSTREAM with the PR that brings it."
+    )
+
+
+def test_the_chain_is_not_currently_bootable_if_anything_is_pending():
+    """The exemption must not read as "fine" — it is a merge blocker.
+
+    An earlier version let PENDING_UPSTREAM make the suite green in exactly the
+    state where `alembic upgrade head` cannot resolve the chain. That is the
+    wrong signal: a red check is a merge gate, a dict literal in a test file is
+    a thing a reviewer has to notice. So the exemption still *scopes* the
+    failure — it says which revision and which PR rather than "revision not
+    found" — but it does not remove it.
+
+    `docker-compose.yml` runs `auto_migrate.py && uvicorn`, so on this branch
+    the api container does not start at all until the upstream PR merges. That
+    is a fact about the branch worth failing over.
+    """
+    assert not PENDING_UPSTREAM, (
+        "this branch's migration chain depends on revisions that have not "
+        f"merged yet: {PENDING_UPSTREAM}. `alembic upgrade head` cannot resolve "
+        "the chain until they land, so the api will not boot and this branch "
+        "must not merge first. Merge those PRs, then delete the entries."
     )
 
 

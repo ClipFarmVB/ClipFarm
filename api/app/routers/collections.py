@@ -11,6 +11,7 @@ from app.models.clip import Clip
 from app.models.game import Game
 from app.models.collection import Collection, CollectionClip
 from app.models.player import Player
+from app.models.visibility import Visibility
 from app.schemas.clip import ClipOut
 from app.schemas.collection import CollectionOut, CollectionCreate, CollectionRename, CollectionAddClip
 from app.services import access, storage
@@ -114,19 +115,27 @@ async def list_collection_clips(collection_id: uuid.UUID, user_id: UserId, db: D
 
     # A collection spans games, so source_available (CF-194) needs one lookup
     # per distinct game rather than the single game a clip listing has.
+    # Same lookup carries the game's visibility, which a clip that inherits
+    # (NULL) needs to resolve the ceiling for a post over it (CF-109).
     game_ids = {c.game_id for c in clips}
     raw_available: dict[uuid.UUID, bool] = {}
+    game_visibility: dict[uuid.UUID, Visibility] = {}
     if game_ids:
         gr = await db.execute(
-            select(Game.id, Game.raw_video_url).where(Game.id.in_(game_ids))
+            select(Game.id, Game.raw_video_url, Game.visibility).where(Game.id.in_(game_ids))
         )
-        raw_available = {gid: url is not None for gid, url in gr}
+        for gid, url, vis in gr:
+            raw_available[gid] = url is not None
+            game_visibility[gid] = vis
 
     out = []
     for c in clips:
         d = ClipOut.model_validate(c)
         d.player_name = player_map.get(c.player_id) if c.player_id else None  # type: ignore[arg-type]
         d.source_available = raw_available.get(c.game_id, False)
+        d.effective_visibility = (
+            c.visibility or game_visibility.get(c.game_id) or Visibility.private
+        )
         if storage.r2_configured():
             d.clip_url = storage.presign_from_stored_url(c.clip_url, expires_in=3600)  # type: ignore[assignment]
             d.thumbnail_url = (
