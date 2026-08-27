@@ -156,14 +156,24 @@ def _origin_problems(origin: str) -> list[str]:
     # The early returns below are the cases where nothing further can be said:
     # the entry cannot be parsed, so every other check would be guessing.
 
+    whitespace_problem: list[str] = []
     # Against the RAW entry, because urlsplit strips tab, CR and LF out of the
     # value before parsing — so `https://clip\tfarm.ca` arrives with hostname
     # `clipfarm.ca` and a host-side check sees nothing wrong. `cors_origins_list`
     # splits the raw env string, so Starlette is handed the tab-bearing entry,
     # which matches no Origin header. Only a plain space was caught before this
     # moved above urlsplit.
+    #
+    # It ACCUMULATES rather than returning. `https://admin:hunter2@clip farm.ca/`
+    # parses perfectly well — netloc `admin:hunter2@clip farm.ca`, username
+    # `admin`, path `/` — so whitespace is not the "nothing further can be said"
+    # case the early returns below are for, and reporting it alone cost the
+    # second refused boot this function exists to prevent. It is collected first
+    # only so it leads the list, being the defect that explains the others.
     if any(c.isspace() for c in origin):
-        return ["contains whitespace — no browser can send this as an Origin"]
+        whitespace_problem.append(
+            "contains whitespace — no browser can send this as an Origin"
+        )
 
     try:
         parts = urlsplit(origin)
@@ -173,15 +183,19 @@ def _origin_problems(origin: str) -> list[str]:
         # operator got a bare ValueError naming neither CORS_ORIGINS nor a
         # deploy doc, and because it killed the comprehension that builds
         # `problems`, every other bad entry went unreported too.
-        return ["the host could not be parsed — not a scheme://host origin"]
+        return whitespace_problem + [
+            "the host could not be parsed — not a scheme://host origin"
+        ]
 
     # An empty netloc IS a parse failure: `clipfarm.ca` puts the whole string in
     # .path with no scheme, and a bare `https://` has nothing after it. Neither
     # gives any later check something to read, so nothing else can be said.
     if not parts.netloc:
-        return ["not a scheme://host origin — expected http:// or https:// and a host"]
+        return whitespace_problem + [
+            "not a scheme://host origin — expected http:// or https:// and a host"
+        ]
 
-    problems: list[str] = []
+    problems: list[str] = list(whitespace_problem)
 
     # A disallowed scheme is NOT a parse failure, and treating it as one cost a
     # refused boot: `ftp://admin:hunter2@clipfarm.ca` parses cleanly — netloc
@@ -307,7 +321,13 @@ def _origin_problems(origin: str) -> list[str]:
         # Bracketed hosts are excluded: an IPv6 zone id is written `%25eth0`,
         # and while no browser sends one as an Origin either, rejecting it here
         # would be a guess about a shape this guard has no evidence about.
-        if "%" in parts.hostname and not parts.netloc.startswith("["):
+        # The bracket test reads the netloc with userinfo removed. Neither of
+        # the obvious sources works: `parts.netloc` keeps the userinfo, so
+        # `https://user@[::1%25eth0]` did not look bracketed and was told to
+        # "write it decoded" — advice that cannot be followed; and
+        # `parts.hostname` has already had the brackets STRIPPED, so it never
+        # looks bracketed at all and the carve-out would never fire.
+        if "%" in parts.hostname and not parts.netloc.rpartition("@")[2].startswith("["):
             problems.append(
                 "a percent-escape in the host matches nothing — a browser sends "
                 "the decoded host, so write it decoded"
@@ -404,11 +424,16 @@ def _redacted_origin(origin: str) -> str:
     The third is the one that settles it. **No textual rule can separate
     userinfo from host:port**, so "provably not a credential" was never
     provable, and every version of it will have a complement left open. urlsplit
-    does not help either: for `https://admin:hunter2@x.ca/y` it reports the
-    netloc as `admin:hunter2` with username and password both None, having read
-    the credential as a host and a port. (`urlsplit("admin:hunter2")` alone does
-    something different again — scheme `admin`, path `hunter2` — which an
-    earlier version of this paragraph cited as if it were the same thing.)
+    does not help either: for `https://admin:hunter2` it reports the netloc as
+    `admin:hunter2` with username and password both None, having read the
+    credential as a host and a port.
+
+    Two earlier versions of this paragraph cited the wrong example for that —
+    first `urlsplit("admin:hunter2")`, then `https://admin:hunter2@x.ca/y`,
+    which actually reports username `admin` and password `hunter2` and so shows
+    the opposite of the point. The claim was right both times and the evidence
+    for it was not, which is the failure this branch has had a dozen times: a
+    sentence that sounds obviously true, never executed.
 
     So the entry is not parsed at all. The tie-break the previous versions kept
     getting wrong in alternating directions — a printed secret is
@@ -874,9 +899,11 @@ class Settings(BaseSettings):
                 )
             )
 
-        # `{value}: {why}`, not `{value} is {why}`. Five of the messages are
-        # standalone clauses that do not complete "X is …", and this is the text
-        # an operator reads at the moment production will not boot.
+        # `{value}: {why}`, not `{value} is {why}`. Most of the messages are
+        # standalone clauses that do not complete "X is …" — a count was given
+        # here and went stale the first time one was added, so it is not given
+        # again. This is the text an operator reads when production will not
+        # boot.
         # Numbered, because a redacted entry prints as `scheme://***` and two of
         # them would otherwise be indistinguishable. The position is what makes
         # the message actionable once the text cannot be shown.
@@ -908,9 +935,8 @@ def _settings_or_boot_error() -> Settings:
     renders it as `input_value={...}` — every secret the model takes, verbatim,
     middle-truncated. Whether a given secret falls inside the elided middle is
     *arithmetic*: it depends on how many fields precede it and how long they
-    are. `cors_origins` lands there today at field 5 of 62, with the other
-    production-required fields at 38-50. Move it to the end of the class and a
-    pasted password reaches the boot log, with every test in
+    are — arithmetic, not a property. Move `cors_origins` to the end of the
+    class and a pasted password reaches the boot log, with every test in
     `test_config.py` still passing — they construct Settings directly and pin a
     key ordering unrelated to production's.
 

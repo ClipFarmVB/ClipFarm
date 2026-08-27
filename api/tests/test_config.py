@@ -922,6 +922,37 @@ def test_idna_does_not_lower_case_an_ascii_label(clean_env):
     assert len(_origin_problems(pure)) == 1
 
 
+def test_whitespace_does_not_suppress_the_other_problems(clean_env):
+    """`https://admin:hunter2@clip farm.ca/` parses perfectly well — netloc
+    `admin:hunter2@clip farm.ca`, username `admin`, path `/` — so whitespace is
+    not the "nothing further can be said" case the early returns are for.
+
+    Reporting it alone cost exactly the second refused boot this function's own
+    docstring argues against, in the one early return that was never revisited
+    when the rest of the function moved to accumulating.
+    """
+    problems = _origin_problems("https://admin:hunter2@clip farm.ca/")
+
+    assert len(problems) == 3
+    assert "whitespace" in problems[0]
+    assert any("user:password" in problem for problem in problems)
+    assert any("nothing after it" in problem for problem in problems)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["http://[bad ]", "clip farm.ca"],
+)
+def test_whitespace_is_still_reported_alongside_a_parse_failure(clean_env, value):
+    """The genuine early returns carry it too — an entry that cannot be parsed
+    still had whitespace, and that is the more actionable of the two.
+    """
+    problems = _origin_problems(value)
+
+    assert len(problems) == 2
+    assert "whitespace" in problems[0]
+
+
 def test_production_rejects_a_percent_escape_in_the_host(clean_env):
     """`clipfarm%2eca` reads as `clipfarm.ca` to whoever pasted it and matches
     nothing, because a browser sends the decoded host in an Origin header. Same
@@ -940,6 +971,15 @@ def test_production_rejects_a_percent_escape_in_the_host(clean_env):
 
     assert "percent-escape" in str(exc.value)
     assert _origin_problems("http://[fe80::1%25eth0]") == []
+    # With userinfo in front, the bracket is no longer at the start of netloc
+    # and `parts.hostname` has had the brackets stripped — so neither obvious
+    # source sees an IPv6 literal here. Reading netloc-after-userinfo does.
+    # Without this case the fix is unpinned: a mutation reverting it to plain
+    # `parts.netloc.startswith("[")` passed the whole suite.
+    assert _origin_problems("https://user@[::1%25eth0]") == [
+        "carries user:password — RFC 6454 discards userinfo, so this entry "
+        "can never match a browser Origin header"
+    ]
 
 
 @pytest.mark.parametrize("value", ["//x.ca/A://b", "//clipfarm.ca?Next=https://x"])
@@ -1117,7 +1157,8 @@ def test_production_rejects_a_port_no_browser_sends(clean_env, value, expected):
 def test_each_problem_reads_as_a_sentence(clean_env):
     """The messages are standalone clauses, so the line that joins them must not
     supply a verb. `f"{value} is {why}"` produced "… is must be lower-case" and
-    "… is an Origin is scheme://host[:port]" for five of the seven.
+    "… is an Origin is scheme://host[:port]" for most of them. (A count used to
+    stand here and was stale within two commits, so this one does not give one.)
 
     This is the text an operator reads at the moment production will not boot,
     and this PR goes to the trouble of naming both deploy paths in it.
@@ -1204,12 +1245,17 @@ def test_the_boot_error_carries_no_input_values(clean_env, monkeypatch):
 
     pydantic attaches the whole input mapping to a ValidationError and `str()`
     renders it as `input_value={...}` — every secret the model takes, verbatim,
-    middle-truncated. `cors_origins` falls inside the elided middle today only
-    because it is field 4 of 62 with the other production-required fields at
-    37-49. That is arithmetic, not a guarantee: moving one field to the end of
-    the class puts a pasted password in the boot log with **every other test in
-    this file still passing**, because they construct Settings directly and pin
-    a key ordering unrelated to production's.
+    middle-truncated. Whether a given secret falls inside the elided middle
+    depends on how many fields precede it and how long they are: it is
+    arithmetic, not a guarantee. Moving one field to the end of the class puts a
+    pasted password in the boot log with **every other test in this file still
+    passing**, because they construct Settings directly and pin a key ordering
+    unrelated to production's.
+
+    No field positions are quoted here on purpose. Two earlier versions did, a
+    review measured a third set, and the numbers move every time anyone adds a
+    setting — a load-bearing fact that goes stale on an unrelated commit is
+    worse than no fact.
 
     So this asserts the ordering-independent property — no `input_value=` at
     all — rather than "the secret happens not to appear". The distinction is the
