@@ -152,7 +152,14 @@ def _origin_problem(origin: str) -> str | None:
     # and accept the second.
     if parts.scheme not in _ALLOWED_ORIGIN_SCHEMES or not parts.netloc:
         return "not a scheme://host origin — expected http:// or https:// and a host"
-    if parts.path or parts.query or parts.fragment:
+    # `?` and `#` are tested on the RAW entry, not on parts.query/parts.fragment.
+    # urlsplit reports both as "" whether the delimiter was absent or present and
+    # empty, so a truthiness test cannot tell `https://x.ca` from `https://x.ca?`
+    # — and the second was accepted, then handed to Starlette's exact-string
+    # compare, where it matches nothing. Same silent outage as the trailing
+    # slash this check already catches. Neither character can appear in an
+    # Origin header at all, so testing the raw entry costs no precision.
+    if parts.path or "?" in origin or "#" in origin:
         return (
             "an Origin is scheme://host[:port] with nothing after it; a trailing "
             "slash, path, query or fragment matches no browser Origin header"
@@ -197,22 +204,36 @@ def _origin_problem(origin: str) -> str | None:
             "wildcard hosts are not supported — origins are compared as exact "
             "strings, so this matches nothing; list each subdomain explicitly"
         )
+    # `*` is the only host CHARACTER this rejects. `clipfarm.ca.` (browsers drop
+    # the FQDN root dot) and `clipfarm_ca` (underscore is not valid in a
+    # hostname) are still accepted and still match nothing. That is a scope
+    # call, not an oversight: a general hostname-shape check is where a guard
+    # like this starts refusing production boots for origins that were fine —
+    # IDNs, single-label internal names, `host.docker.internal` — and a false
+    # rejection here is worse than the bug, because it takes the service down on
+    # deploy. The wildcard is carved out because it is the mistake operators
+    # actually make, being an intention the config language cannot express.
     # A port a browser never sends is the same silent class as the trailing
     # slash: it looks deliberate in a dashboard and matches no Origin header.
     # Read from the raw netloc rather than parts.port, which has already
     # normalised `:080` to 80. rpartition is bracket-safe — `[::1]:3000` splits
     # at the last colon, and a bare `[::1]` yields no separator at all.
     if port is not None:
+        # Default BEFORE padded, and deliberately. Both can be true of `:080` on
+        # http, and reporting the padding first sends the operator to `:80` —
+        # which the next boot then refuses as the default port. Two refused
+        # production boots for one mistake. "Drop it" is right in both cases, so
+        # it goes first and the padded message is left for ports worth keeping.
+        if (parts.scheme, port) in (("http", 80), ("https", 443)):
+            return (
+                f"`:{port}` is the default port for {parts.scheme} — a browser "
+                f"omits it, so this matches no Origin header. Drop it"
+            )
         _, sep, port_text = parts.netloc.rpartition(":")
         if sep and port_text != str(port):
             return (
                 f"port `{port_text}` is zero-padded — a browser sends "
                 f"`{port}`, and origins are compared as exact strings"
-            )
-        if (parts.scheme, port) in (("http", 80), ("https", 443)):
-            return (
-                f"`:{port}` is the default port for {parts.scheme} — a browser "
-                f"omits it, so this matches no Origin header. Drop it"
             )
     return None
 
@@ -237,17 +258,20 @@ def _redacted_origin(origin: str) -> str:
     was to the message, which is the entire point of this function.
     """
     scheme, sep, rest = origin.partition("://")
-    if not sep:
-        # No `scheme://`, so there is no authority to hold userinfo. Redact on
-        # a bare `@` anyway: the value is malformed, and a malformed value is
-        # exactly where a pasted credential is likeliest to be sitting.
-        return f"***@{origin.rpartition('@')[2]}" if "@" in origin else origin
-    authority = rest
+    # The authority is what precedes the first /, ? or # — in both branches. An
+    # earlier version applied that to the scheme-bearing path only and left the
+    # fallback doing a whole-string rpartition, so `clipfarm.ca/@handle` still
+    # came back `***@handle`: the exact bug the paragraph above says is fixed,
+    # surviving in the branch that paragraph did not describe.
+    authority = rest if sep else origin
     for delimiter in "/?#":
         authority = authority.partition(delimiter)[0]
     if "@" not in authority:
         return origin
-    return f"{scheme}://***@{rest[len(authority.rpartition('@')[0]) + 1:]}"
+    # Keep whatever followed the userinfo, delimiters included, so the operator
+    # can still recognise the entry they pasted.
+    kept = origin[origin.index(authority) + authority.rindex("@") + 1:]
+    return f"{scheme}://***@{kept}" if sep else f"***@{kept}"
 
 
 def cors_origins_error(problems: list[str]) -> str:

@@ -625,6 +625,70 @@ def test_a_rejected_origin_does_not_echo_its_password(clean_env, value):
     assert "clipfarm.ca" in message or "[bad]" in message
 
 
+@pytest.mark.parametrize("value", ["https://clipfarm.ca?", "https://clipfarm.ca#"])
+def test_production_rejects_an_empty_but_present_delimiter(clean_env, value):
+    """`urlsplit` reports query and fragment as "" whether the delimiter was
+    absent or present-and-empty, so a truthiness test cannot tell
+    `https://clipfarm.ca` from `https://clipfarm.ca?`.
+
+    The existing cases all use non-empty values (`?x=1`, `#frag`), which is why
+    the gap was invisible to them. Starlette compares exact strings, so the bare
+    delimiter matches nothing — the same silent outage as the trailing slash a
+    few lines above.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    assert "nothing after it" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("http://clipfarm.ca:080", "default port"),      # padded AND default
+        ("https://clipfarm.ca:0443", "default port"),
+        ("https://clipfarm.ca:08443", "zero-padded"),    # padded only
+    ],
+)
+def test_a_padded_default_port_costs_one_refused_boot_not_two(clean_env, value, expected):
+    """`:080` on http is both padded and the default. Reporting the padding
+    first sends the operator to `:80`, which the next boot refuses as the
+    default port — two refused production boots for one mistake.
+
+    "Drop it" is the right instruction whenever the effective port is the
+    default, so that check goes first; the padded message is left for ports
+    worth keeping.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    assert expected in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "clipfarm.ca/@handle",   # no scheme, `@` in the path
+        "clipfarm.ca?x=a@b",     # no scheme, `@` in the query
+    ],
+)
+def test_the_no_scheme_fallback_does_not_over_redact_either(clean_env, value):
+    """The over-redaction fix was applied to the scheme-bearing path only, and
+    the fallback kept doing a whole-string rpartition — so `clipfarm.ca/@handle`
+    still came back `***@handle`, host gone, with a `***@` falsely implying a
+    credential was found.
+
+    The docstring on `_redacted_origin` described the fix as covering the whole
+    function. This test is what makes that true rather than intended.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    message = str(exc.value)
+    assert "***" not in message
+    assert value in message
+
+
 @pytest.mark.parametrize(
     "value",
     [
