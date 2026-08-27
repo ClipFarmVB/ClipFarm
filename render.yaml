@@ -135,6 +135,24 @@ services:
       # deliberate act that makes it live. The web half has its own flag and
       # BOTH must be on — with the api's off the routes 404, and a web app with
       # only its own flag set renders a surface that cannot load anything.
+      #
+      # **Turned on with the epic's preconditions knowingly unmet**, which is a
+      # decision rather than an oversight and is recorded here so it is not
+      # rediscovered as a surprise. CF-186 (#189, rate limiting) and CF-116
+      # (abuse, moderation, counters) are both open, and this is what makes the
+      # anonymous read surface reachable.
+      #
+      # What bounds the exposure meanwhile: **nothing user-generated can be
+      # public.** Games and clips both default to private and no write path
+      # exists for either one's visibility, so a post can only ever be private
+      # — the composer now greys out the wider tiers for exactly that reason
+      # (CF-109), and create_post refuses them server-side regardless. The
+      # anonymous endpoints therefore reach the database and 404, which is a
+      # load question and not a disclosure one.
+      #
+      # The order that must hold: whoever ships the clip-visibility write path
+      # is the person who makes "public" real, and rate limiting has to land
+      # before they do. Reassess this flag then, not after.
       - key: SOCIAL_ENABLED
         value: "true"
       - key: JWT_SECRET               # legacy; Supabase JWKS is source of truth. Auto-generated.

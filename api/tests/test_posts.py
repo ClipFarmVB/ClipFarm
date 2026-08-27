@@ -22,7 +22,7 @@ from app.services import access  # noqa: E402
 AUTHOR = uuid.uuid4()
 STRANGER = uuid.uuid4()
 ANONYMOUS = None
-RANK = posts_router._RANK
+RANK = access._RANK
 
 
 class _Game:
@@ -66,13 +66,20 @@ class _Post:
 )
 def test_post_cannot_exceed_its_clips_visibility(clip_level, post_level, allowed):
     """The rule create_post enforces: publishing must not be a back door to
-    exposing footage the clip itself keeps private."""
-    assert (RANK[post_level] <= RANK[clip_level]) is allowed
+    exposing footage the clip itself keeps private.
+
+    Asserted against `access.at_most`, the function the router actually calls,
+    rather than by re-evaluating `RANK[a] <= RANK[b]` — which was the
+    implementation's own expression checked against a table of what that
+    expression does, and passed just as well if nothing consulted it.
+    `test_posts_endpoints.py` covers the same matrix through `create_post`.
+    """
+    assert access.at_most(post_level, clip_level) is allowed
 
 
 def test_rank_covers_every_visibility_value():
     """A new tier added to the enum without a rank would raise KeyError inside
-    create_post — at request time, not at import."""
+    `at_most` — at request time, not at import."""
     assert set(RANK) == set(Visibility)
 
 
@@ -104,10 +111,29 @@ def test_the_ladder_is_not_duplicated_in_the_router():
     ladder is a second place for it to drift, on the one table whose whole
     purpose is serving other people's footage. CF-110 changes both the
     object-level answer and the SQL one; a router copy would have picked up the
-    first and silently missed the second."""
-    assert not hasattr(posts_router, "_post_readable")
-    assert hasattr(access, "can_view_post")
-    assert hasattr(access, "apply_post_visibility")
+    first and silently missed the second.
+
+    Asserts what the router *imports*, not that some removed name is absent.
+    The previous version checked `not hasattr(posts_router, "_post_readable")`
+    — the name of a thing already deleted — while the module still carried
+    `_RANK` and its own `clip.visibility or game.visibility`. A test named for
+    a duplicate it reaches into two lines earlier is not guarding anything.
+
+    Both ladders now live in `access`: `may_read` decides who may read a tier,
+    `at_most` orders two, and `widest_allowed`/`effective` resolve the inherit
+    rule. The router calls all three and defines none.
+    """
+    import inspect
+
+    src = inspect.getsource(posts_router)
+    assert "access.at_most" in src, "the ordering ladder must be the shared one"
+    assert "access.widest_allowed" in src, "and so must the inherit rule"
+    assert "_RANK = {" not in src, "no second copy of the tier order"
+    assert "clip.visibility or game.visibility" not in src, (
+        "re-deriving the inherit rule here is the drift this test exists for"
+    )
+    for name in ("can_view_post", "apply_post_visibility", "at_most", "widest_allowed"):
+        assert hasattr(access, name)
 
 
 def test_followers_tier_is_closed_until_cf110():

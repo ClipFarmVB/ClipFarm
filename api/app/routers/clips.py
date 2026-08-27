@@ -151,6 +151,9 @@ async def list_clips(
         d = ClipOut.model_validate(c)
         d.player_name = player_map.get(c.player_id) if c.player_id else None  # type: ignore[arg-type]
         d.source_available = raw_available
+        # The ceiling for a post over this clip (CF-109). One game here, so it
+        # resolves without a lookup.
+        d.effective_visibility = access.widest_allowed(c, game)
         urls = _rewrite_urls(c)
         d.clip_url = urls["clip_url"]  # type: ignore[assignment]
         d.thumbnail_url = urls["thumbnail_url"]

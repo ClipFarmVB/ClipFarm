@@ -67,6 +67,25 @@ def _client():
     so an uncached client meant up to 200 constructions synchronously on the
     event loop for one request. The client is thread-safe for the signing calls
     made here, and its config is process-wide anyway.
+
+    **Not fork-safe, and that matters for CF-65b.** botocore clients are
+    thread-safe but not fork-safe: a client built before a fork is inherited by
+    every child, and its connection pool is then shared across processes. That
+    is harmless today only because both celery entry points pin `--pool=solo`
+    (`scripts/render-start-worker.sh`, `docker-compose.yml`) — and that script's
+    own comment says prefork concurrency is CF-65b. Whoever makes that switch
+    has to construct the client *after* the fork (a `worker_process_init` hook
+    calling `_client.cache_clear()` is the usual shape), because the symptom
+    otherwise is intermittent connection errors that will not look like this
+    cache.
+
+    It also freezes `settings.r2_*` at first call, process-wide. A test that
+    patches those after anything else has presigned signs against the old
+    config; `cache_clear()` is the fix there too.
+
+    Note the cache does not touch the per-object cost: `generate_presigned_url`
+    is a local HMAC, and a 100-post page still does 200 of them on the event
+    loop. Only the construction is avoided.
     """
     endpoint = f"https://{settings.r2_account_id}.r2.cloudflarestorage.com"
     return boto3.client(

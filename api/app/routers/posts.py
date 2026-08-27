@@ -12,7 +12,6 @@ from app.models.clip import Clip
 from app.models.game import Game
 from app.models.post import Post
 from app.models.user import User
-from app.models.visibility import Visibility
 from app.schemas.post import PostAuthor, PostCreate, PostOut, PostPlayback, PostUpdate
 from app.services import access, handles, storage
 
@@ -24,9 +23,10 @@ DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
 ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
 
-# Least → most visible. A post may never be wider than the clip behind it:
-# publishing a post cannot be a back door to exposing private footage.
-_RANK = {Visibility.private: 0, Visibility.followers: 1, Visibility.public: 2}
+# The ordering ladder lives in services/access (`at_most`), alongside the
+# readability one. It used to be a `_RANK` dict here next to its own copy of the
+# inherit rule — two copies of the same three-value order, in the one place the
+# module's docstring names as the most expensive for them to drift.
 
 
 def _serialize(post: Post, clip: Clip, author: User) -> PostOut:
@@ -133,16 +133,33 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
     if clip is None or game is None or game.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Clip not found")
 
-    clip_level = clip.visibility or game.visibility
-    if _RANK[body.visibility] > _RANK[clip_level]:
+    clip_level = access.widest_allowed(clip, game)
+    if not access.at_most(body.visibility, clip_level):
         # Refuse rather than silently widening the clip. Raising the clip's
         # visibility exposes the whole game's footage and has to be a separate,
         # deliberate act by the owner (CF-109: "never a silent side effect").
+        #
+        # **This is a UX guarantee, not the security boundary.** There is a
+        # window between this check and the INSERT in which the clip can go
+        # private, leaving a stored `visibility` wider than the clip allows.
+        # That row is harmless because nothing trusts it: `can_view_post` and
+        # `apply_post_visibility` both re-derive the clip's tier on every read,
+        # and `test_a_public_post_over_a_private_clip_is_still_unreadable` pins
+        # it. Anything that denormalizes `posts.visibility` into a feed query or
+        # a cache — rather than joining the clip — breaks that property.
+        #
+        # The message names the ceiling but no longer prescribes a remedy: no
+        # write path for a clip's or a game's visibility exists yet, so telling
+        # the user to "change the clip's visibility first" pointed at something
+        # the product cannot do. `ClipOut.effective_visibility` carries the same
+        # ceiling to clients so the composer can grey out what it cannot offer
+        # instead of letting the user find it here.
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Clip is {clip_level.value}; a {body.visibility.value} post would expose "
-                f"more than the clip allows. Change the clip's visibility first."
+                f"This clip is {clip_level.value}, so it can only be posted to "
+                f"{clip_level.value}. A {body.visibility.value} post would show "
+                f"more of the footage than the clip itself does."
             ),
         )
 
