@@ -984,7 +984,7 @@ def test_a_boot_error_names_the_env_var_not_the_field(clean_env, monkeypatch):
     monkeypatch.setenv("CONDENSE_MODE", "banana")
 
     with pytest.raises(RuntimeError) as exc:
-        _settings_or_boot_error()
+        _settings_or_boot_error(_env_file=None)
 
     message = str(exc.value)
     assert "CONDENSE_MODE:" in message
@@ -1055,6 +1055,72 @@ def test_production_rejects_a_backslash(clean_env):
         _production_with_cors("https://clipfarm.ca\\evil.com")
 
     assert "nothing after it" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("char", "name"),
+    [("\x01", "SOH"), ("\x00", "NUL"), ("\x7f", "DEL")],
+)
+def test_production_rejects_a_control_character(clean_env, char, name):
+    """`str.isspace()` is False for every C0 control and for DEL, and
+    `cors_origins_list` strips only whitespace — so a control-bearing entry was
+    ACCEPTED and handed to Starlette, matching no Origin header.
+
+    The silent outage this whole guard exists to prevent, admitted by the check
+    written to catch it.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(f"https://clip{char}farm.ca")
+
+    assert "invisible or control character" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("char", "name"),
+    [("\u200b", "ZWSP"), ("\ufeff", "BOM"), ("\u2060", "WORD JOINER")],
+)
+def test_a_zero_width_character_is_not_called_a_punycode_problem(
+    clean_env, char, name
+):
+    """These are not `isspace()` either, and being non-ASCII they fell through
+    to the punycode branch — so a host that displays as plain ASCII was told to
+    "use the xn-- spelling".
+
+    A BOM is a routine paste artefact. That advice is unactionable, and the
+    entry needs retyping rather than inspecting, which is why the message is
+    separate from the whitespace one.
+    """
+    problems = _origin_problems(f"https://clip{char}farm.ca")
+
+    assert problems == [
+        "contains an invisible or control character — no browser can send this "
+        "as an Origin; retype the value rather than editing it"
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://\u043a\u043b\u0438\u043f.\u0440\u0444/ a",
+        "https://\u043a\u043b\u0438\u043f.\u0440\u0444?x= y",
+        "https://u er@\u043a\u043b\u0438\u043f.\u0440\u0444",
+    ],
+)
+def test_whitespace_outside_the_host_does_not_hide_a_punycode_problem(
+    clean_env, value
+):
+    """The punycode suppression is gated on the HOST, not the entry.
+
+    Its justification is host-scoped — an invisible character in the host makes
+    the host non-ASCII, so the punycode advice would be wrong — but the test was
+    entry-scoped, so whitespace anywhere in the entry suppressed a genuine
+    punycode problem and cost a second refused boot. The comment said "host"
+    and the code said "entry".
+    """
+    problems = _origin_problems(value)
+
+    assert any("punycode" in problem for problem in problems)
+    assert any("whitespace" in problem for problem in problems)
 
 
 def test_whitespace_does_not_draw_punycode_advice(clean_env):
@@ -1389,7 +1455,7 @@ def test_the_boot_error_carries_no_input_values(clean_env, monkeypatch):
     monkeypatch.setenv("CORS_ORIGINS", "https://admin:hunter2@clipfarm.ca")
 
     with pytest.raises(RuntimeError) as exc:
-        _settings_or_boot_error()
+        _settings_or_boot_error(_env_file=None)
 
     message = str(exc.value)
     assert "input_value" not in message
@@ -1415,7 +1481,7 @@ def test_a_boot_error_still_names_every_problem(clean_env, monkeypatch):
     monkeypatch.setenv("CORS_ORIGINS", "https://clipfarm.ca/,https://*.clipfarm.ca")
 
     with pytest.raises(RuntimeError) as exc:
-        _settings_or_boot_error()
+        _settings_or_boot_error(_env_file=None)
 
     message = str(exc.value)
     assert "nothing after it" in message
@@ -1445,7 +1511,7 @@ def test_a_boot_error_names_every_pydantic_error_not_just_the_first(
     monkeypatch.setenv("DEBUG", "notabool")
 
     with pytest.raises(RuntimeError) as exc:
-        _settings_or_boot_error()
+        _settings_or_boot_error(_env_file=None)
 
     message = str(exc.value).lower()
     assert "condense_mode" in message

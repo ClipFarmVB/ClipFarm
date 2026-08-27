@@ -1,3 +1,4 @@
+import unicodedata
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -115,6 +116,36 @@ def production_config_error(missing: list[str]) -> str:
 _ALLOWED_ORIGIN_SCHEMES = ("http", "https")
 
 
+def _is_invisible(character: str) -> bool:
+    """Would `character` be invisible or unsendable in an Origin header?
+
+    Broader than `str.isspace()`, which was the first version of this test and
+    covered neither direction of the problem:
+
+      C0 controls and DEL are not `isspace()` — `"\x01".isspace()` is False —
+      and `cors_origins_list` strips only whitespace, so a control-bearing entry
+      was ACCEPTED and handed to Starlette, matching no Origin header. The
+      silent outage this whole guard exists to prevent, admitted by the check
+      meant to catch it.
+
+      Zero-width space and the BOM are not `isspace()` either, and being
+      non-ASCII they fell through to the punycode branch — so a host that
+      displays as plain ASCII was told to "use the xn-- spelling". A BOM is a
+      routine paste artefact, and that is advice nobody can act on.
+
+    Categories rather than a character list: Cc is control, Cf is format
+    (zero-width joiners, the BOM, bidi marks), and Zs/Zl/Zp are the space
+    separators `isspace()` mostly already covers.
+    """
+    return character.isspace() or unicodedata.category(character) in (
+        "Cc",
+        "Cf",
+        "Zs",
+        "Zl",
+        "Zp",
+    )
+
+
 def _origin_problems(origin: str) -> list[str]:
     """Every reason `origin` cannot work as a CORS allow-list entry.
 
@@ -164,7 +195,7 @@ def _origin_problems(origin: str) -> list[str]:
     # The early returns below are the cases where nothing further can be said:
     # the entry cannot be parsed, so every other check would be guessing.
 
-    whitespace_problem: list[str] = []
+    invisible_problem: list[str] = []
     # Against the RAW entry, because urlsplit strips tab, CR and LF out of the
     # value before parsing — so `https://clip\tfarm.ca` arrives with hostname
     # `clipfarm.ca` and a host-side check sees nothing wrong. `cors_origins_list`
@@ -179,8 +210,17 @@ def _origin_problems(origin: str) -> list[str]:
     # second refused boot this function exists to prevent. It is collected first
     # only so it leads the list, being the defect that explains the others.
     if any(c.isspace() for c in origin):
-        whitespace_problem.append(
+        invisible_problem.append(
             "contains whitespace — no browser can send this as an Origin"
+        )
+    elif any(_is_invisible(c) for c in origin):
+        # Separate message, because the advice differs: a space is visible in
+        # the dashboard box and a zero-width joiner is not, so "look again" is
+        # useless for the second and the operator needs to be told to retype the
+        # value rather than inspect it.
+        invisible_problem.append(
+            "contains an invisible or control character — no browser can send "
+            "this as an Origin; retype the value rather than editing it"
         )
 
     try:
@@ -191,7 +231,7 @@ def _origin_problems(origin: str) -> list[str]:
         # operator got a bare ValueError naming neither CORS_ORIGINS nor a
         # deploy doc, and because it killed the comprehension that builds
         # `problems`, every other bad entry went unreported too.
-        return whitespace_problem + [
+        return invisible_problem + [
             "the host could not be parsed — not a scheme://host origin"
         ]
 
@@ -199,11 +239,11 @@ def _origin_problems(origin: str) -> list[str]:
     # .path with no scheme, and a bare `https://` has nothing after it. Neither
     # gives any later check something to read, so nothing else can be said.
     if not parts.netloc:
-        return whitespace_problem + [
+        return invisible_problem + [
             "not a scheme://host origin — expected http:// or https:// and a host"
         ]
 
-    problems: list[str] = list(whitespace_problem)
+    problems: list[str] = list(invisible_problem)
     # The netloc with any userinfo removed. Needed by the case check and by the
     # percent-escape carve-out, which were computing it separately.
     host_and_port = parts.netloc.rpartition("@")[2]
@@ -315,7 +355,15 @@ def _origin_problems(origin: str) -> list[str]:
         # operator cannot act on — the fix is to delete the space, after which
         # the host may be plain ASCII. One refused boot either way, but the
         # wrong instruction is worse than one fewer line.
-        if not parts.hostname.isascii() and not whitespace_problem:
+        # Gated on the HOST, not the entry. The suppression exists because an
+        # invisible character in the host makes it non-ASCII and the punycode
+        # advice is then wrong — but an entry-scoped test also suppressed a
+        # GENUINE punycode problem whenever the entry contained a space
+        # anywhere, which a missing comma supplies:
+        # `https://клипфарм.рф https://x.ca` lost it, costing a second refused
+        # boot. The comment said "host" while the code said "entry".
+        host_is_invisible = any(_is_invisible(c) for c in parts.hostname)
+        if not parts.hostname.isascii() and not host_is_invisible:
             problems.append(
                 "a browser sends the punycode form of an internationalised host, "
                 "so this matches nothing — use the xn-- spelling"
@@ -987,7 +1035,7 @@ class Settings(BaseSettings):
         return self
 
 
-def _settings_or_boot_error() -> Settings:
+def _settings_or_boot_error(**overrides: object) -> Settings:
     """Build Settings, or fail with a message that carries no input values.
 
     pydantic attaches the entire input mapping to a ValidationError, and `str()`
@@ -1011,8 +1059,18 @@ def _settings_or_boot_error() -> Settings:
     handler — still sees it. CF-289 (#337) is that, and is wider than this
     module.
     """
+    # `**overrides` exists for the tests, which pass `_env_file=None`. Without
+    # it they read whatever `.env` the developer has: env vars set by
+    # monkeypatch win, but any key the test does not set leaks in from the file.
+    #
+    # It does NOT rescue collection. The module-level `settings` singleton below
+    # validates at import, so a `.env` holding one bad value still fails the
+    # whole test module before any test runs — verified, not assumed. That
+    # predates this PR (`settings = Settings()` behaved identically) and is
+    # arguably right for the app; it is only surprising in a test run, and a
+    # stray `.env` left behind by tooling is enough to trigger it.
     try:
-        return Settings()
+        return Settings(**overrides)  # type: ignore[arg-type]
     except ValidationError as exc:
         raise RuntimeError(_boot_error(exc)) from None
 
