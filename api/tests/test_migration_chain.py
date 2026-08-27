@@ -14,9 +14,14 @@ until CF-243's review. Checked against the pinned alembic (1.14.0) on this
 repo's own `versions/` plus CF-109's historical `014_posts.py`, in a scratch
 directory with no database: alembic warns `Revision 014 is present more than
 once`, and then `RevisionMap._revision_map` puts *both* `Revision` objects into
-`heads` and prunes only `map_[downrev]` — the one that won the id. `Revision`
-defines no `__eq__`, so that discard removes one object and the loser stays a
-head forever. The tree ends with two heads printing the same string: `alembic
+`heads`, while `map_[id]` keeps only the file read last — `014_upload_id_text.py`
+here, with `014_posts.py` dropped from the map and left in `heads`. Nothing
+takes it out again: the only removal is `heads.discard(map_[downrev])`, which
+reaches a revision through the map *by its parent's id*, and with both `014`
+files at the tip the `downrev` in hand is `013` — so no duplicate is pruned at
+all. `Revision` defines neither `__eq__` nor `__hash__`, so the two objects do
+not collapse into one either. The tree ends with two heads printing the same
+string: `alembic
 heads` emits `014 (head)` twice, and `alembic upgrade head` resolves `head`
 through `get_current_head()`, raises `MultipleHeads`, prints `FAILED: Multiple
 head revisions are present for given argument 'head'` and exits 255 with
@@ -43,6 +48,14 @@ Parsed from the files rather than by building alembic's graph: no database, no
 config, and — deliberately — no `pytest.importorskip`. A guard that can skip
 itself into a green pass is the failure mode this file exists to prevent, so it
 uses nothing outside the standard library.
+
+What that costs is cycle detection, and six green here does not mean the chain
+is sound. Alembic builds the graph and raises `CycleDetected`; this file only
+reads declared ids, and a loop among them can leave every check below happy.
+Measured on this repo's `versions/` with `001`'s `down_revision` set to `"014"`
+and `003`'s to `"001"`: one head, no duplicates, every parent resolving, all six
+tests pass — and alembic 1.14 refuses the same directory with `Cycle is detected
+in revisions (001, 002, ..., 014)`. See the merge note below.
 """
 import collections
 import pathlib
@@ -64,6 +77,11 @@ VERSIONS = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
 # open PR, which turns a parent missing from versions/ into a declared
 # merge-order dependency instead of a failure, plus a test that forces the
 # entry out again once that PR lands. This file has no equivalent. Keep it.
+#
+# Theirs also has test_the_chain_is_a_single_line — no revision may be the
+# parent of two others — and that is not redundant with the head count here: a
+# fork paired with a cycle still leaves exactly one head, so all six tests below
+# pass on a tree alembic rejects outright (module docstring). Keep it too.
 #
 # This one parses into a LIST — see `_parsed()`. Theirs parses into
 # `dict[revision_id, down_revision]`, where two files claiming one id collapse
@@ -114,6 +132,12 @@ _QUOTED = re.compile(r'^(?P<q>["\'])(?P<id>[^"\']+)(?P=q)$')
 # editor's `.#014_x.py` lock file are invisible to alembic, and a test that
 # demanded a `revision = ...` from them would be failing on something that
 # cannot break a deploy. Every other `*.py` here alembic *does* try to read.
+#
+# It is a byte-for-byte copy of a *private* constant, not an import, so nothing
+# warns if the two drift apart. When the pinned alembic moves, re-read
+# `_only_source_rev_file` in `alembic/script/base.py` and make this match it —
+# if alembic starts excluding more names, this file fails on something alembic
+# never reads; if it excludes fewer, this file stops checking a file that can.
 _ALEMBIC_REV_FILE = re.compile(r"(?!\.\#|__init__)(.*\.py)$")
 
 
@@ -343,7 +367,8 @@ def test_every_down_revision_resolves():
     by a different route, and reported even less helpfully.
 
     Alembic 1.14 warns `Revision 099 referenced from ... is not present` and
-    then, on the very next line, indexes the map with that same id — so the
+    then, in the statement immediately after the warning, indexes the map with
+    that same id (`down_revision = map_[downrev]`) — so the
     command dies with a bare `KeyError: '099'` traceback out of
     `RevisionMap._revision_map`, not with a message about migrations at all.
     (`Can't locate revision identified by ...` is a different path: resolving
