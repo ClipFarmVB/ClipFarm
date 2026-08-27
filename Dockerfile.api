@@ -21,7 +21,13 @@ COPY api/requirements.txt /tmp/api-requirements.txt
 # boundary as a pickle. A numpy-2 pickle names `numpy._core`, which a numpy-1.x
 # image cannot import, so a version split here fails at *deserialization* on the
 # far side — which the caller can only see as "Modal failed", one warning line.
-# Bump these three files together or not at all.
+# Bump these files together or not at all: this one, ml/requirements.txt and
+# ml/modal_pose.py — and, for numpy, api/requirements-dev.txt as well, which
+# pins it (CF-276) so the tests run against the major the pipeline ships. The
+# pin-consistency test requires the numpy pin in all four (the dev file is
+# optional only for packages it has no business pinning, like opencv), so a
+# split and a removal both fail it; the gate script's own test asserts the dev
+# pin stays a plain `==` line besides.
 RUN pip install --upgrade pip \
     && pip install -r /tmp/api-requirements.txt \
     && pip install ffmpeg-python opencv-python-headless==4.10.0.84 numpy==1.26.4 greenlet

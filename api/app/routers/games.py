@@ -24,6 +24,7 @@ from app.schemas.game import (
     UploadTicket,
 )
 from app.services import access, quota, storage
+from app.services.filenames import condensed_download_filename
 from app.workers.tasks import process_game_task
 
 logger = logging.getLogger(__name__)
@@ -410,7 +411,7 @@ async def get_game(game_id: uuid.UUID, db: DB, viewer_id: ViewerId = None):
     if out.condensed_video_url:
         out.condensed_video_url = storage.presign_from_stored_url(
             out.condensed_video_url,
-            download_filename=f"{game.title} (condensed).mp4",
+            download_filename=condensed_download_filename(game.title),
         )
     return out
 

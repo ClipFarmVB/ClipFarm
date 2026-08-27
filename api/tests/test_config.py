@@ -835,3 +835,44 @@ def test_the_cors_message_points_at_both_deploy_paths():
     assert "DEPLOY_RENDER.md" in message
     assert "DEPLOY.md" in message
     assert ".env.docker" in message
+
+# ── CF-187 — condense_mode is a closed set, checked at load ────────────────
+#
+# The failure this guards is the quiet kind. `condense_mode` selects the
+# keep-window builder, and the worker's fallback treats an unknown name the same
+# way it treats a builder that raised: warn once, use "rules". That is right for
+# a genuine builder failure and wrong for a typo — `CONDENSE_MODE=Guarded` boots
+# clean and then runs the path the operator was trying to leave, one warning per
+# game, for as long as nobody reads the logs. A Literal moves that to load.
+
+
+def test_a_misspelled_condense_mode_fails_at_load(clean_env):
+    """Capitalisation is the realistic typo, and it is the one that used to
+    survive: pydantic accepted any str, so "Guarded" reached the worker and fell
+    through to "rules" because the equality test is case-sensitive.
+    """
+    clean_env.setenv("CONDENSE_MODE", "Guarded")
+
+    with pytest.raises(Exception) as excinfo:
+        Settings(_env_file=None)
+
+    assert "condense_mode" in str(excinfo.value).lower()
+
+
+def test_an_unknown_condense_mode_fails_at_load(clean_env):
+    with pytest.raises(Exception) as excinfo:
+        _settings(condense_mode="banana")
+
+    assert "condense_mode" in str(excinfo.value).lower()
+
+
+def test_both_shipping_modes_still_load(clean_env):
+    """The companion to the two above: closing the set must not close it around
+    the wrong values. Both names here are dispatched on by
+    `tasks._build_condense_windows` and `ml/eval/harness.py`, so a Literal that
+    admitted only the default would fail the run it was meant to protect.
+    """
+    for mode in ("rules", "guarded"):
+        assert _settings(condense_mode=mode).condense_mode == mode
+
+    assert _settings().condense_mode == "guarded", "the default must stay guarded"

@@ -183,7 +183,8 @@ docker compose --env-file .env.docker up --build
 #   web  → http://localhost:3000
 #   api  → http://localhost:8000  (docs at /docs)
 
-# 3. Enable the pre-commit hook (runs most of what CI runs — not api/tests)
+# 3. Enable the pre-commit hook (runs most of what CI runs; api/tests too,
+#    once the dev install under "Tests" below is done)
 git config core.hooksPath .hooks
 ```
 
@@ -192,13 +193,19 @@ Tests:
 ```bash
 # Installs, once per worktree. The pip line supplies pytest for BOTH suites
 # below — it is pinned in api/requirements-dev.txt and not in requirements.txt.
+# Use Python 3.11: numpy 1.26.4 (pinned to match the image) has no wheel for
+# 3.12+, so on a newer interpreter pip tries to build it and the whole install
+# fails in compiler output. See the note at the top of requirements-dev.txt.
 npm ci                                   # at the repo root
 pip install -r api/requirements-dev.txt  # runtime deps + test-only deps
 
 npm run test --workspace=web             # vitest, ~1s
 npm run test:watch --workspace=web       # same suite, watch mode
 python -m pytest ml/tests/               # ml eval metrics + dead-time
-cd api && python -m pytest tests/        # api (CI runs this; the hook does not)
+cd api && python -m pytest tests/        # api (CI and the hook run this too,
+                                         # once requirements-dev is installed;
+                                         # ~12s, the hook's slowest step —
+                                         # CLIPFARM_SKIP_API_TESTS=1 opts out)
 ```
 
 The api suite needs `requirements-dev.txt`, not just `requirements.txt`. Almost

@@ -1,0 +1,142 @@
+{
+  "test_id": "test3",
+  "labeler": "Owen",
+  "labeled_at": "2026-08-07",
+  "labeling": "independent",
+  "source_video_file": "DeadtimeLabel3.mp4",
+  "source_video_md5": "80eaf04e3cda07acd165ae518cd413d2",
+  "source_r2_key": "raw/0c2f3d99-b260-43e6-a8b5-d9f817d5ded0.mp4",
+  "video_duration_sec": 627.96,
+  "note": "Tier-less dead-time pass (CF-173 validation): spans are ball-in-play, serve contact to point end; dead time is the complement. md5 + duration pinned from the local file (1920x1080@30). EXCLUDED from dead-time model training for now: this gym does not use the yellow/blue Mikasa balls, so the ball tracker (volleyball-ball-tracking-0eo7r/3) produces a sparse, low-confidence track (0.76 samples/s, median conf 0.61 vs ~1.6/s, 0.80 on test2) and both rule-based and ML condense fail. Keep as a labeled repro case for CF-171 (ball model generalization); re-include once tracking works on this footage.",
+  "spans": [
+    {
+      "start": "0:02",
+      "end": "0:03"
+    },
+    {
+      "start": "0:14",
+      "end": "0:17"
+    },
+    {
+      "start": "0:33",
+      "end": "0:35"
+    },
+    {
+      "start": "0:43",
+      "end": "0:50"
+    },
+    {
+      "start": "1:02",
+      "end": "1:10"
+    },
+    {
+      "start": "1:19",
+      "end": "1:25"
+    },
+    {
+      "start": "1:32",
+      "end": "1:34"
+    },
+    {
+      "start": "1:43",
+      "end": "1:54"
+    },
+    {
+      "start": "2:07",
+      "end": "2:09"
+    },
+    {
+      "start": "2:20",
+      "end": "2:27"
+    },
+    {
+      "start": "2:35",
+      "end": "2:38"
+    },
+    {
+      "start": "2:46",
+      "end": "3:00"
+    },
+    {
+      "start": "3:11",
+      "end": "3:18"
+    },
+    {
+      "start": "3:34",
+      "end": "3:36"
+    },
+    {
+      "start": "3:55",
+      "end": "3:57"
+    },
+    {
+      "start": "4:06",
+      "end": "4:20"
+    },
+    {
+      "start": "4:31",
+      "end": "4:34"
+    },
+    {
+      "start": "4:45",
+      "end": "5:03"
+    },
+    {
+      "start": "5:23",
+      "end": "5:30"
+    },
+    {
+      "start": "5:49",
+      "end": "5:50"
+    },
+    {
+      "start": "6:03",
+      "end": "6:08"
+    },
+    {
+      "start": "6:23",
+      "end": "6:42"
+    },
+    {
+      "start": "6:55",
+      "end": "7:02"
+    },
+    {
+      "start": "7:17",
+      "end": "7:24"
+    },
+    {
+      "start": "7:37",
+      "end": "7:39"
+    },
+    {
+      "start": "7:49",
+      "end": "7:56"
+    },
+    {
+      "start": "8:07",
+      "end": "8:08"
+    },
+    {
+      "start": "8:19",
+      "end": "8:26"
+    },
+    {
+      "start": "8:36",
+      "end": "8:40"
+    },
+    {
+      "start": "8:52",
+      "end": "9:10"
+    },
+    {
+      "start": "9:26",
+      "end": "9:36"
+    },
+    {
+      "start": "10:15",
+      "end": "10:22"
+    }
+  ],
+  "source_frame_height": 1080
+}

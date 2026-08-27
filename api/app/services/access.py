@@ -6,9 +6,13 @@ moment one of them is allowed to return someone else's content, the others are
 the leak surface. This module is the single place that answers "may this viewer
 read this?", for both single-object fetches and list queries.
 
-Three entry points, deliberately kept in step:
+Four entry points, deliberately kept in step:
 
 * ``can_view_game`` / ``can_view_clip`` — for an object already loaded.
+* ``can_identify`` — may a caller attach the game's title and its players'
+  names. Not the same question as reading the clip; see the asymmetry below.
+  Unlike the others this one is a single endpoint's gate rather than a rule the
+  system keeps — its docstring says which, and CF-283 (#330) settles it.
 * ``visible_games_filter`` — a predicate for a game list. The rule is over
   ``Game`` alone, so it needs no join and there is nothing to get wrong.
 * ``apply_clip_visibility`` — takes the whole statement and returns it joined
@@ -23,13 +27,23 @@ Writes are NOT covered here. Creating, editing and deleting stay owner-only, and
 the routers keep their own ownership checks for those paths.
 
 **Unauthenticated surface.** Allowing anonymous reads means ``GET /games/{id}``,
-``GET /games/{id}/clips`` and ``GET /clips/{id}/share`` now reach the database
-without a credential, joining ``GET /users/{handle}`` from CF-107 — four
-unthrottled endpoints where there were none. Nothing can be public yet, so all
-of that traffic 404s today, making this a load question rather than a disclosure
-one. Rate limiting is tracked in CF-186 (#189) and needs to land before anything
-is actually publishable; the 404-not-403 choice below means none of them is an
-existence oracle in the meantime.
+``GET /games/{id}/clips``, ``GET /clips/{id}/share`` and
+``GET /clips/{id}/download`` now reach the database without a credential,
+joining ``GET /users/{handle}`` from CF-107 — five unthrottled endpoints where
+there were none. The download one is the most expensive: it mints an attachment
+URL for the full clip, so an unthrottled caller can pull the bytes rather than
+just a row. Nothing can be public yet, so all of that traffic 404s today, making
+this a load question rather than a disclosure one.
+
+**That last sentence expires with CF-109.** The safety here is not the 404
+choice, it is that no row can be set `public` — so the moment CF-109 lands the
+visibility setter, an unauthenticated caller can walk ``/clips/{id}/download``
+and pull full clip bytes, unthrottled, with an egress bill attached. That makes
+rate limiting (CF-186, #189) a blocker on CF-109 rather than a parallel task,
+and this endpoint is what changed the severity of that ordering. The dependency
+is recorded on CF-109 (#139) too — a paragraph in a module nobody has to open
+is not an ordering constraint. The 404-not-403 choice below keeps none of them
+an existence oracle in the meantime.
 
 **One deliberate asymmetry.** A public clip inside a private game is reachable
 by direct link (``GET /clips/{id}/share``) and through a collection, but
@@ -91,6 +105,39 @@ def can_view_clip(viewer_id: uuid.UUID | None, clip: Clip | None, game: Game | N
     if clip is None or game is None or clip.game_id != game.id:
         return False
     return _may_read(viewer_id, game.owner_id, _effective(clip, game))
+
+
+def can_identify(viewer_id: uuid.UUID | None, game: Game | None) -> bool:
+    """Whether a caller may attach the game's title and its players' names.
+
+    **Scope: this is one endpoint's gate, not a module-wide invariant.** Unlike
+    its neighbours it does not describe how the system behaves — `collections.py`
+    hands `player_name` to every clip surviving `apply_clip_visibility`, which
+    gates on the *clip*, so for a public clip in a private game one signed-in
+    viewer gets two answers:
+
+        GET /clips/{id}/download        -> withholds the player's name
+        GET /collections/{id}/clips     -> returns it
+
+    CF-283 (#330) picks one. Read what follows as the argument for the answer
+    this side took, not as the rule in force.
+
+    The argument: identification is a different question from readability, and
+    it differs in exactly the asymmetric case above. A public clip inside a
+    private game is readable by direct link, but the game's title and the
+    tagged player's real name are not — /share discloses neither and list_clips
+    is gated on the game — so naming the file after them would hand both to a
+    caller who could not otherwise reach either, on footage of named young
+    people. That argues for the game's own predicate, which is what this
+    returns.
+
+    It is named rather than inlined because the question recurs: CF-100's
+    download filename asks it (the name rides in the presigned URL in
+    cleartext), CF-101's zip entries will ask it again, and a rule living
+    inline in one router is one the second caller re-derives — differently.
+    Whichever way CF-283 settles, it settles here.
+    """
+    return can_view_game(viewer_id, game)
 
 
 def visible_games_filter(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:

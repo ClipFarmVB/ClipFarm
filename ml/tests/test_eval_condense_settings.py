@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 REPO = Path(__file__).resolve().parents[2]
 CONFIG_PY = REPO / "api" / "app" / "config.py"
 TUNE_PY = REPO / "ml" / "eval" / "tune_contacts.py"
+DEAD_TIME_PY = REPO / "ml" / "pipeline" / "dead_time.py"
 
 # tune_contacts constant -> the app.config setting it copies.
 COND_TO_SETTING = {
@@ -37,6 +38,22 @@ BRIDGE_TO_SETTING = {
     "fast_fraction": "condense_bridge_fast_fraction",
     "max_bridge_seconds": "condense_bridge_max_seconds",
 }
+# app.config setting -> the active_windows_guarded() kwarg it feeds. The guarded
+# path (CF-187) is the default, so these are the numbers production runs; the
+# function's defaults are what deadtime_variants.v5 scores in the eval harness,
+# and the two must agree or the comparison stops describing production.
+GUARD_TO_KWARG = {
+    "condense_guard_gate_speed": "gate_speed",
+    "condense_guard_anchor_speed": "anchor_speed",
+    "condense_guard_pad_before": "pad_before",
+    "condense_guard_pad_after": "pad_after",
+    "condense_guard_merge_gap_seconds": "merge_gap_seconds",
+    "condense_guard_min_track_rate": "min_track_rate",
+}
+# Mode switches, not tunables: not copied into tune_contacts, which sweeps the
+# rule-based path only. Listed here so the coverage test stays a conscious
+# checkpoint for every new condense_* knob.
+SWITCH_SETTINGS = {"condense_mode"}
 
 
 def _settings_defaults() -> dict[str, object]:
@@ -54,15 +71,44 @@ def _settings_defaults() -> dict[str, object]:
     return out
 
 
+def _kwarg_defaults(module_py: Path, func_name: str) -> dict[str, object]:
+    """
+    Literal keyword-only defaults of a top-level function, without importing it.
+
+    Defaults that name a module constant (`anchor_pad: float = ANCHOR_PAD`) are
+    skipped: a reference cannot drift from the value it points at, so there is
+    no second copy for this file to police.
+    """
+    tree = ast.parse(module_py.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            args = node.args
+            out: dict[str, object] = {}
+            for a, d in zip(args.kwonlyargs, args.kw_defaults):
+                if d is None:
+                    continue
+                try:
+                    out[a.arg] = ast.literal_eval(d)
+                except ValueError:
+                    pass  # a named constant, not a copied number
+            return out
+    raise AssertionError(f"{func_name} not found in {module_py.name}")
+
+
 def _tune_constant(name: str) -> dict[str, object]:
     """The dict literal assigned to COND / BRIDGE in tune_contacts.py."""
     tree = ast.parse(TUNE_PY.read_text(encoding="utf-8"))
     for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == name for t in node.targets
-        ):
+        # Either form: `COND = dict(...)` or the annotated `COND: dict[str, Any] = dict(...)`
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == name for t in targets):
             # dict(...) call, not a {} literal
-            return {kw.arg: ast.literal_eval(kw.value) for kw in node.value.keywords}
+            return {kw.arg: ast.literal_eval(kw.value) for kw in value.keywords}
     raise AssertionError(f"{name} not found in {TUNE_PY.name}")
 
 
@@ -92,8 +138,37 @@ class TestTuneContactsMatchesProduction:
         """A new condense_* knob should be mapped here, not silently skipped."""
         settings = _settings_defaults()
         condense_settings = {k for k in settings if k.startswith("condense_")}
-        mapped = set(COND_TO_SETTING.values()) | set(BRIDGE_TO_SETTING.values())
+        mapped = (
+            set(COND_TO_SETTING.values())
+            | set(BRIDGE_TO_SETTING.values())
+            | set(GUARD_TO_KWARG)
+            | SWITCH_SETTINGS
+        )
         assert condense_settings == mapped, (
             f"unmapped condense settings: {sorted(condense_settings - mapped)} - "
             "add them to tune_contacts and to the maps in this test"
         )
+
+
+class TestGuardedDefaultsMatchProduction:
+    """
+    The guarded builder's kwarg defaults are a second copy of the
+    condense_guard_* settings: the eval harness scores v5 through those defaults
+    (no app installed), production passes the settings. Drift and the comparison
+    silently starts describing a configuration nothing runs.
+    """
+
+    def test_guard_settings_match_builder_defaults(self):
+        settings = _settings_defaults()
+        defaults = _kwarg_defaults(DEAD_TIME_PY, "active_windows_guarded")
+        for setting, kwarg in GUARD_TO_KWARG.items():
+            assert kwarg in defaults, f"active_windows_guarded lost the {kwarg!r} kwarg"
+            assert defaults[kwarg] == settings[setting], (
+                f"active_windows_guarded {kwarg}={defaults[kwarg]} but app.config "
+                f"{setting}={settings[setting]} - deadtime_variants.v5 is scoring "
+                "a configuration production does not run"
+            )
+
+    def test_condense_mode_default_is_a_known_mode(self):
+        mode = _settings_defaults()["condense_mode"]
+        assert mode in {"rules", "guarded"}, f"unknown condense_mode default {mode!r}"
