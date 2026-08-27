@@ -137,6 +137,10 @@ services:
       # secrets: left unset the api boots clean, passes its health check, and
       # CORS-blocks every request from the real web origin — an outage with no
       # server-side symptom at all.
+      #
+      # Since CF-235 the shape of each entry is checked as well, so a value that
+      # is set but cannot work also refuses the boot, naming the entry and why.
+      # Bare origins only: scheme://host[:port], nothing after it.
       - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.ca
         sync: false
       - key: REDIS_URL
