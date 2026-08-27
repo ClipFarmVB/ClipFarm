@@ -61,12 +61,12 @@ RESOURCE_KEYS = (
 # inherits a resource limit" at a worker that had merely gained a restart
 # policy. Checked separately, by the one sub-key that means what RESOURCE_KEYS
 # means.
+DEPLOY_RESOURCES = ("deploy", "resources")
+
 # The `environment:` entries that size a container rather than configure it.
 # FFMPEG_THREADS is one because CF-224 was an OOM caused by a thread count; a
 # credential or a DSN is not, however it is spelled.
 RESOURCE_ENV_KEYS = ("FFMPEG_THREADS",)
-
-DEPLOY_RESOURCES = ("deploy", "resources")
 
 
 def _has_deploy_resources(service) -> bool:
@@ -590,6 +590,23 @@ def test_the_fast_overlay_is_faster_than_the_default_and_still_swapless():
     assert str(fast["memswap_limit"]) == str(fast["mem_limit"]), (
         "even the fast path stays swapless: swap makes `did it work` unreliable "
         "in a different way than it makes `did it fit` unreliable"
+    )
+
+    # _default, not _effective: the claim here is that the value is OVERRIDABLE.
+    # The documented small-engine command lowers WORKER_FFMPEG_THREADS alongside
+    # WORKER_CPUS, and a hardcoded thread count would leave that command handing
+    # 4 x264 threads to 2 CPUs - CF-224's oversubscription, silently.
+    fast_env = _env_map(fast)
+    assert "FFMPEG_THREADS" in fast_env, (
+        "docker-compose.fast.yml no longer pins FFMPEG_THREADS, so the fast path "
+        "inherits the default 1 and is only faster by CPU count"
+    )
+    assert "WORKER_FFMPEG_THREADS" in _interpolated_names(fast_env["FFMPEG_THREADS"]), (
+        f"docker-compose.fast.yml hardcodes FFMPEG_THREADS to "
+        f"{fast_env['FFMPEG_THREADS']!r}. README and DOCKER.md tell you to lower "
+        "WORKER_FFMPEG_THREADS with WORKER_CPUS on a smaller engine; hardcoded, "
+        "that command leaves 4 x264 threads on 2 CPUs — CF-224's oversubscription, "
+        "silently"
     )
 
 
