@@ -1637,3 +1637,464 @@ def test_both_shipping_modes_still_load(clean_env):
         assert _settings(condense_mode=mode).condense_mode == mode
 
     assert _settings().condense_mode == "guarded", "the default must stay guarded"
+
+
+# ── CF-92: the tools CI runs on are pinned ─────────────────────────────────
+#
+# Not a config-guard like the ones above, but the same failure shape: a value
+# that lives in a file nobody re-reads, and whose drift shows up as an
+# unrelated-looking red build.
+
+TOOLING_TXT = REPO_ROOT / "requirements-tooling.txt"
+CI_YML = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+
+
+def _pins(path):
+    """`name -> version` for the `==` requirements in a requirements file."""
+    out = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        name, _, version = line.partition("==")
+        out[name.strip().lower()] = version.strip()
+    return out
+
+
+def test_every_tool_ci_installs_is_pinned():
+    """An unpinned entry here is the whole bug: ruff 0.16.0 widened its default
+    rule set and turned #77 red with nine findings in code nobody had touched.
+    """
+    unpinned = [
+        line.strip()
+        for line in TOOLING_TXT.read_text(encoding="utf-8").splitlines()
+        if (stripped := line.split("#", 1)[0].strip())
+        and not stripped.startswith("-")
+        and "==" not in stripped
+    ]
+    assert not unpinned, (
+        f"requirements-tooling.txt has unpinned entries: {unpinned}. "
+        "A floating version means an upstream release can change CI's answer "
+        "on a branch nobody touched, which is what CF-92 exists to stop."
+    )
+    assert _pins(TOOLING_TXT), "no pins found — did the file format change?"
+
+
+def _run_steps(workflow):
+    """Every `run:` script in a workflow, as strings.
+
+    Parsed rather than grepped. The previous version of this test matched lines
+    starting `- run:`, which is only one of the several shapes a step can take:
+    a `- name:` step puts `run:` on its own line, and `run: |` puts the command
+    on the lines *after* it. Both were invisible to it, and both are ordinary
+    GitHub Actions syntax rather than anything exotic.
+    """
+    for job in (workflow.get("jobs") or {}).values():
+        for step in job.get("steps") or []:
+            if isinstance(step, dict) and isinstance(step.get("run"), str):
+                yield step["run"]
+
+
+# pip options that take their value as the NEXT argument. Without this list the
+# value is read as a package: `--index-url https://x/simple` reported the URL as
+# an unpinned install. `--opt=value` needs no entry — it is a single token.
+_PIP_OPTS_TAKING_A_VALUE = frozenset(
+    {
+        "-r", "--requirement",
+        "-c", "--constraint",
+        "-e", "--editable",
+        "-i", "--index-url",
+        "--extra-index-url",
+        "-f", "--find-links",
+        "-t", "--target",
+        "-d", "--dest",
+        "--prefix", "--root", "--src",
+        "--upgrade-strategy",
+        "--no-binary", "--only-binary",
+        "--config-settings", "--global-option", "--install-option",
+        "--proxy", "--trusted-host",
+        "--cache-dir", "--log",
+        "--timeout", "--retries",
+        "--exists-action",
+        "--python-version", "--platform", "--abi", "--implementation",
+        "--report", "--progress-bar",
+    }
+)
+
+# Tokens `shlex(punctuation_chars=True)` emits for shell plumbing. The first
+# group ends one command and begins another; the second redirects, and swallows
+# the token after it.
+_SHELL_SEPARATORS = frozenset({"|", "||", "&&", ";", "&", "(", ")"})
+_SHELL_REDIRECTS = frozenset({">", ">>", "<", "<<", ">&", "<&", ">|"})
+
+# Install targets that name something exact without carrying an `==`. Flagging
+# these would be unsatisfiable advice: there is no version specifier to add to a
+# local path, a built artifact, or a VCS URL already fixed at a revision.
+_VCS_SCHEMES = ("git+", "hg+", "svn+", "bzr+")
+_ARTIFACT_SUFFIXES = (".whl", ".tar.gz", ".tar.bz2", ".zip")
+
+
+def _shell_commands(script):
+    """A shell script as a list of commands, each a list of argument tokens.
+
+    Redirections and their targets are dropped, and pipelines / `&&` / `;` split
+    into separate commands, so nothing downstream can mistake shell plumbing for
+    packages someone asked pip to install. Splitting on whitespace did exactly
+    that: `> /dev/null` yielded `['>', '/dev/null']` and `2>&1 | tee pip.log`
+    yielded `['2>&1', '|', 'tee', 'pip.log']`, all reported as unpinned.
+    """
+    import shlex
+
+    # Join backslash-continued lines before tokenising: a `run: |` block wraps
+    # long commands that way, and neither fragment is a command on its own.
+    script = script.replace("\\\n", " ")
+
+    commands = []
+    for line in script.splitlines():
+        if not line.strip():
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            # Unbalanced quotes: not something this guard can read, and not its
+            # job to fail the build over — a malformed workflow fails in CI at
+            # the step itself, with a better message than this test could give.
+            continue
+
+        current = []
+        skip_next = False
+        for token in tokens:
+            if skip_next:
+                skip_next = False
+                continue
+            if token in _SHELL_SEPARATORS:
+                commands.append(current)
+                current = []
+                continue
+            if token in _SHELL_REDIRECTS:
+                # `2>&1` lexes as `2`, `>&`, `1`: the file descriptor has
+                # already been collected, so drop it, then skip the target.
+                if current and current[-1].isdigit():
+                    current.pop()
+                skip_next = True
+                continue
+            current.append(token)
+        commands.append(current)
+
+    return [c for c in commands if c]
+
+
+def _is_pinned(target):
+    """Whether an install target names an exact thing.
+
+    `==` is the usual way. A local path, a built artifact and a VCS URL fixed at
+    a revision are equally exact and have no version specifier to add, so
+    demanding one would be advice nobody could take.
+    """
+    if "==" in target:
+        return True
+    if target in (".", "..") or target.startswith(("./", "../", "/")):
+        return True
+    if target.startswith(_VCS_SCHEMES):
+        # `git+https://host/repo.git@v1.2.3` — pinned iff a revision follows the
+        # repo, i.e. there is an `@` past the scheme's own `://`.
+        return "@" in target.split("://", 1)[-1]
+    return target.endswith(_ARTIFACT_SUFFIXES)
+
+
+def _pip_install_targets(script):
+    """Package arguments of every `pip install` in a shell script.
+
+    Options and their values, `-r`/`-c` file pairs, and the pip/python words
+    themselves are dropped; what is left is what pip would resolve to a version.
+    Shell tokenising (see `_shell_commands`) is what keeps redirections, pipes
+    and option values out of that list.
+    """
+    import re
+
+    # `pip`, `pip3`, `pip3.11` — all of which install into the same environment
+    # and all of which are things people write in a workflow. Not `pipenv`.
+    is_pip = re.compile(r"pip3?(\.\d+)?$").fullmatch
+
+    for words in _shell_commands(script):
+        pip_at = next((i for i, w in enumerate(words) if is_pip(w)), None)
+        if pip_at is None or "install" not in words:
+            continue
+        if words.index("install") < pip_at:
+            continue
+        rest = words[words.index("install") + 1:]
+        skip_next = False
+        for word in rest:
+            if skip_next:
+                skip_next = False
+                continue
+            if word in _PIP_OPTS_TAKING_A_VALUE:
+                skip_next = True
+                continue
+            if word.startswith("-"):
+                continue
+            yield word
+
+
+def test_ci_installs_the_tooling_file_rather_than_naming_tools_inline():
+    """The durable half. Nothing else in the repo parses the workflow, so
+    without this a later PR can quietly restore `pip install ruff mypy pytest`
+    and the pins stop applying while every check stays green.
+
+    Now checks the *shape* of every install rather than looking for three tool
+    names in `- run:` lines. The name list was the weaker half of the two: it
+    could only ever catch the tools someone thought to list, so an inline
+    `pip install numpy` — equally unpinned, equally able to change CI's answer
+    on a branch nobody touched — went through. Anything pip resolves without a
+    `==` is the actual problem, whatever it is called.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(CI_YML.read_text(encoding="utf-8"))
+
+    installs = [
+        (script, target)
+        for script in _run_steps(workflow)
+        for target in _pip_install_targets(script)
+    ]
+    unpinned = sorted({t for _, t in installs if not _is_pinned(t)})
+
+    assert not unpinned, (
+        f"ci.yml installs {unpinned} inline without pinning it. Add it to "
+        "requirements-tooling.txt with a `==` instead — an unpinned name "
+        "resolves to whatever is current on the day the job runs, which is "
+        "what CF-92 exists to stop. (A local path, a built artifact and a VCS "
+        "URL fixed at a revision already name one exact thing and are allowed "
+        "as they are.)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # Shell plumbing is not a package list. Each of these reported the
+        # bracketed tokens as unpinned installs when this split on whitespace.
+        ("pip install -r requirements-tooling.txt > /dev/null", []),        # ['>', '/dev/null']
+        ("pip install -r requirements-tooling.txt 2>&1 | tee pip.log", []), # ['2>&1', '|', 'tee', 'pip.log']
+        ("pip install -r a.txt >> pip.log 2>&1", []),
+        # An option's value is not a package either.
+        ("pip install --index-url https://x/simple numpy==1.0", ["numpy==1.0"]),
+        ("pip install -i https://x/simple numpy==1.0", ["numpy==1.0"]),
+        ("pip install --index-url=https://x/simple numpy==1.0", ["numpy==1.0"]),
+        # ...and the real thing still comes through, including after plumbing.
+        ("pip install -r a.txt numpy", ["numpy"]),
+        ("pip install -r a.txt > /dev/null && pip install numpy", ["numpy"]),
+        ("pip install -r a.txt | grep x; pip install numpy", ["numpy"]),
+    ],
+)
+def test_shell_plumbing_is_not_read_as_packages(command, expected):
+    """The parser's job is to say what pip would resolve, and only that.
+
+    A false positive here is worse than it sounds: it fails a green build with a
+    message telling someone to pin `/dev/null`, which is advice they cannot take
+    and will eventually route around by deleting the guard.
+    """
+    assert list(_pip_install_targets(command)) == expected
+
+
+@pytest.mark.parametrize(
+    ("target", "pinned"),
+    [
+        ("numpy==1.26.4", True),
+        ("numpy", False),
+        (".", True),                                   # the repo being built
+        ("./api", True),
+        ("git+https://h/r.git@v1.2.3", True),          # fixed at a revision
+        ("git+https://h/r.git", False),                # tracks a branch head
+        ("dist/pkg-1.0-py3-none-any.whl", True),       # one exact file
+        ("pkg-1.0.tar.gz", True),
+        ("pip", False),                                # `--upgrade pip` is real
+    ],
+)
+def test_what_counts_as_pinned(target, pinned):
+    """`==` is the usual spelling, not the only one.
+
+    A local path, a built artifact and a VCS URL at a revision each name one
+    exact thing already; demanding a `==` on them would be unsatisfiable. A VCS
+    URL with no revision is the opposite case — it follows a branch, so it can
+    change CI's answer on an untouched branch exactly as a bare name can.
+    """
+    assert _is_pinned(target) is pinned
+
+
+def test_ci_still_installs_the_tooling_file():
+    """Separate from the shape check above, because the two fail for opposite
+    reasons: that one fires when something extra is installed, this one when
+    the pinned install is gone. Collapsed into one test, a PR that deleted the
+    tooling step entirely would leave nothing unpinned and read as a pass.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(CI_YML.read_text(encoding="utf-8"))
+
+    targets = [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
+    requirement_files = [
+        word
+        for script in _run_steps(workflow)
+        for word in script.split()
+        if word.endswith(".txt")
+    ]
+
+    assert "requirements-tooling.txt" in requirement_files, (
+        "ci.yml no longer installs requirements-tooling.txt — if the tooling "
+        "step moved, point this test at it; if it was inlined, the CF-92 pins "
+        f"are no longer in effect. Inline install targets seen: {targets}"
+    )
+
+
+# The four step shapes below are the ones the previous text-matching guard let
+# through. Asserted against synthetic workflows rather than by editing ci.yml,
+# so the coverage survives any later reshuffle of the real file.
+
+_SYNTHETIC = {
+    "-r file plus an inline package": """
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt numpy
+""",
+    "a separate inline install step": """
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt
+      - run: pip install numpy
+""",
+    "the `- name:` / `run:` two-line form": """
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt
+      - name: extra tooling
+        run: pip install numpy
+""",
+    "a `run: |` block scalar": """
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt
+      - run: |
+          pip install numpy
+""",
+    "chained with && inside one run": """
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt && pip install numpy
+""",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_SYNTHETIC))
+def test_an_unpinned_inline_install_is_detected_in_every_step_shape(shape):
+    """Each of these passed the old `- run:`-prefix-and-tool-name check.
+
+    The first is the one that matters most: it is what a maintainer would write
+    to add a package alongside the pinned file, and the old exclusion of any
+    line containing `-r ` swallowed the whole line.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(_SYNTHETIC[shape])
+
+    targets = [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
+
+    assert "numpy" in targets, f"{shape}: the inline install was not seen at all"
+    assert [t for t in targets if "==" not in t] == ["numpy"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pip install numpy",
+        "pip3 install numpy",
+        "pip3.11 install numpy",
+        "python -m pip install numpy",
+        "uv pip install numpy",
+    ],
+)
+def test_every_spelling_of_pip_is_recognised(command):
+    """`pip3` was missed by the first version of this parser.
+
+    It matched the bare word `pip`, so `pip3 install numpy` — the same install
+    into the same environment — read as not-a-pip-command and returned nothing.
+    A guard that depends on which of two interchangeable names someone typed is
+    the same shape of hole as the tool-name list this replaced.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(f"jobs:\n  api:\n    steps:\n      - run: {command}\n")
+    assert [t for s in _run_steps(workflow) for t in _pip_install_targets(s)] == ["numpy"]
+
+
+def test_pipenv_is_not_read_as_pip():
+    """The name check has to be exact at the end — `pipenv install` manages a
+    Pipfile and is not what this guard is about."""
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load("jobs:\n  api:\n    steps:\n      - run: pipenv install numpy\n")
+    assert not [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
+
+
+def test_a_pinned_inline_install_is_allowed():
+    """The guard is about drift, not about where a package is declared. Pinning
+    inline is worse style than the tooling file, but it cannot change CI's
+    answer on a branch nobody touched, so it is not this test's business.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load("""
+jobs:
+  api:
+    steps:
+      - run: pip install numpy==1.26.4
+""")
+    targets = [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
+    assert targets == ["numpy==1.26.4"]
+    assert not [t for t in targets if "==" not in t]
+
+
+def test_a_non_pip_install_is_not_mistaken_for_one():
+    """`npm ci --workspace=web` and `npm install` are in this same workflow."""
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load("""
+jobs:
+  web:
+    steps:
+      - run: npm install left-pad
+      - run: npm ci --workspace=web
+""")
+    assert not [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
+
+
+def test_requirement_and_constraint_files_are_not_read_as_packages():
+    """`-r`/`-c` take the next word. Without consuming it the filename itself
+    reads as an unpinned package and every correct workflow fails.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load("""
+jobs:
+  api:
+    steps:
+      - run: pip install -r requirements-tooling.txt -c constraints.txt --upgrade
+""")
+    assert not [t for s in _run_steps(workflow) for t in _pip_install_targets(s)]
+
+
+def test_the_two_pytest_pins_agree():
+    """`pytest ml/tests` runs on the tooling install; `pytest api/tests` runs
+    after requirements-dev is installed. If the two disagree, pip downgrades
+    mid-job and the suites run on different versions — which is the state this
+    change fixed, so it is worth keeping fixed.
+    """
+    tooling = _pins(TOOLING_TXT)
+    dev = _pins(REPO_ROOT / "api" / "requirements-dev.txt")
+
+    assert "pytest" in tooling and "pytest" in dev, "both files must pin pytest"
+    assert tooling["pytest"] == dev["pytest"], (
+        f"requirements-tooling.txt pins pytest=={tooling['pytest']} but "
+        f"api/requirements-dev.txt pins pytest=={dev['pytest']}. pip will "
+        "downgrade at the second install and the two test steps will run on "
+        "different versions."
+    )

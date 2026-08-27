@@ -40,6 +40,10 @@ changes that break rally boundaries.
 `pytest api/tests` (when the dev set is installed — see below), plus eslint,
 tsc and vitest for `web/`.
 
+- **Install the tools from `requirements-tooling.txt`**, not `pip install ruff
+  mypy pytest`. Those are the pinned versions CI runs (CF-92), so a finding in
+  the hook is a finding in CI; an unpinned install can disagree with CI in
+  either direction.
 - **A fresh worktree needs `npm ci` at the repo root first.** Without
   `node_modules`, the hook's eslint/tsc/vitest steps fail or hang, and the failure
   looks like a code problem rather than a missing install. This bites every new
