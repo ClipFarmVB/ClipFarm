@@ -53,7 +53,7 @@ def _serialize(post: Post, clip: Clip, author: User) -> PostOut:
         like_count=post.like_count,
         comment_count=post.comment_count,
         created_at=post.created_at,
-        author=PostAuthor.model_validate(author),
+        author=PostAuthor.from_author(author),
         playback=PostPlayback(
             clip_url=clip_url,
             thumbnail_url=thumb,

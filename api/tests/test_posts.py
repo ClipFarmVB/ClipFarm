@@ -167,12 +167,31 @@ def test_the_post_query_owns_its_joins():
 
 
 def test_the_list_endpoint_does_not_filter_after_the_limit():
-    """Pins the fix at the call site, not just in the helper."""
+    """Pins the fix at the call site, not just in the helper.
+
+    Asserted on the compiled SQL rather than on the source. The previous version
+    checked `"continue" not in src`, which is brittle in both directions: it
+    passes for a list comprehension with an `if`, which reintroduces exactly the
+    post-LIMIT filtering it exists to prevent, and it would fail on an unrelated
+    `continue` somewhere else in the function.
+
+    What actually matters is that both gates reach the WHERE clause, so the
+    LIMIT counts only rows this viewer may see.
+    """
     import inspect
 
     src = inspect.getsource(posts_router.list_user_posts)
     assert "apply_post_visibility" in src
-    assert "continue" not in src, "a skip in the loop is post-LIMIT filtering"
+
+    from sqlalchemy import select
+
+    from app.models.post import Post as PostModel
+
+    sql = _sql(access.apply_post_visibility(select(PostModel), STRANGER)).lower()
+    where_at = sql.index("where ")
+    where = sql[where_at:]
+    assert "posts.visibility" in where, "the post gate must be in the WHERE clause"
+    assert "clips.visibility" in where, "and the clip gate too"
 
 
 def test_a_public_post_over_a_private_clip_is_still_unreadable():
@@ -281,3 +300,47 @@ def test_the_two_principals_are_not_interchangeable():
     sig = inspect.signature(access.can_view_post)
     assert sig.parameters["viewer_follows_author"].default is False
     assert sig.parameters["viewer_follows_owner"].default is False
+
+# ── a generated handle must not ride out on a post ──────────────────────────
+
+
+class _Author:
+    def __init__(self, username, generated):
+        self.id = AUTHOR
+        self.username = username
+        self.display_name = "Someone"
+        self.avatar_url = None
+        self.username_is_generated = generated
+
+
+def test_a_generated_handle_is_withheld_from_the_post_author():
+    """The third door.
+
+    `get_profile` and `_findable_author` both refuse to resolve a generated
+    handle, because the CF-107 backfill derives them from email local parts —
+    `john.smith@…` becomes `johnsmith`. But `create_post` never requires a
+    claimed handle, so a backfilled user can post publicly, and serializing the
+    author straight from the row handed that handle to an anonymous
+    `GET /posts/{id}`.
+    """
+    from app.schemas.post import PostAuthor
+
+    generated = PostAuthor.from_author(_Author("johnsmith", True))
+    assert generated.username is None, "a generated handle must not be published"
+    assert generated.display_name == "Someone", "the rest of the card still renders"
+
+    chosen = PostAuthor.from_author(_Author("matt", False))
+    assert chosen.username == "matt", "a claimed handle is exactly what should show"
+
+
+def test_the_router_never_serializes_an_author_the_raw_way():
+    """`model_validate` skips the withholding entirely, so the constructor is
+    the only supported path — and this is what stops the next serializer from
+    reaching around it."""
+    import inspect
+
+    src = inspect.getsource(posts_router)
+    assert "PostAuthor.from_author" in src
+    assert "PostAuthor.model_validate" not in src, (
+        "model_validate copies username verbatim, generated or not"
+    )

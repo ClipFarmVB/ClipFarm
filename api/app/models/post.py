@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Enum as SAEnum
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -32,7 +32,7 @@ class Post(Base):
     __tablename__ = "posts"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    # No index=True: the composite (author_id, created_at) in migration 014
+    # No index=True: the composite (author_id, created_at) in the posts migration
     # covers author lookups, and declaring one here would have autogenerate
     # keep proposing the redundant single-column index back.
     author_id: Mapped[uuid.UUID] = mapped_column(
@@ -64,4 +64,13 @@ class Post(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+    )
+
+    # The composite the migration creates, declared so it reaches
+    # Base.metadata. Without it `alembic revision --autogenerate` sees an index
+    # in the database that the models don't know about and emits drop_index —
+    # the same drift class test_models_registered.py was added here to catch,
+    # one level down. upload_event.py sets the precedent for declaring it.
+    __table_args__ = (
+        Index("ix_posts_author_created", "author_id", "created_at"),
     )

@@ -22,10 +22,29 @@ describe("apiErrorMessage", () => {
     expect(apiErrorMessage("", FALLBACK)).toBe(FALLBACK);
   });
 
-  it("falls back when detail is a validation-error array", () => {
-    // 422 puts objects there; rendering them helps nobody.
-    const body = JSON.stringify({ detail: [{ loc: ["body", "title"], msg: "required" }] });
+  it("renders a validation-error array as the messages the user can act on", () => {
+    // 422 puts {loc, msg, type} objects here. These used to fall back, so a
+    // validation failure showed a generic line — and the post composer grew a
+    // private copy of this parsing to read them. `msg` is the actionable half;
+    // `loc` and `type` are for us and stay out.
+    const body = JSON.stringify({
+      detail: [{ loc: ["body", "caption"], msg: "String should have at most 500 characters" }],
+    });
+    expect(apiErrorMessage(body, FALLBACK)).toBe("String should have at most 500 characters");
+  });
+
+  it("joins several validation messages", () => {
+    const body = JSON.stringify({
+      detail: [{ msg: "field required" }, { msg: "must be a valid uuid" }],
+    });
+    expect(apiErrorMessage(body, FALLBACK)).toBe("field required; must be a valid uuid");
+  });
+
+  it("falls back when the array carries nothing renderable", () => {
+    // An array of objects with no usable msg is still for us, not the user.
+    const body = JSON.stringify({ detail: [{ loc: ["body"], type: "missing" }] });
     expect(apiErrorMessage(body, FALLBACK)).toBe(FALLBACK);
+    expect(apiErrorMessage(JSON.stringify({ detail: [] }), FALLBACK)).toBe(FALLBACK);
   });
 
   it("falls back on a blank detail", () => {

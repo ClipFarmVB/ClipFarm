@@ -47,12 +47,21 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
         if (e.key === "Escape") setComposingFor(null);
         return;
       }
-      // Any other text field on the page gets the same courtesy.
+      // Arrow keys only: a focused text field must keep its own caret
+      // movement. Escape is deliberately NOT gated on this — a modal that
+      // cannot be dismissed because focus happens to sit in a background input
+      // is a trap, and the previous version made Escape a silent no-op there.
+      //
+      // ClipModal has no text fields of its own, so this only fires when focus
+      // reached something behind the overlay by Tab.
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
       const el = e.target as HTMLElement | null;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
         return;
       }
-      if (e.key === "Escape")     onClose();
       if (e.key === "ArrowLeft")  onPrev?.();
       if (e.key === "ArrowRight") onNext?.();
     }
