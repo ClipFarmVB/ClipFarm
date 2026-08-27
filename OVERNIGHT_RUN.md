@@ -355,6 +355,21 @@ night's ticket list.
 Before relying on any capability, check it, and record the result in the log in
 one block. The first run discovered three gaps separately, mid-work.
 
+- **`gh` itself.** Run `gh --version`. **Every command in this brief is written
+  in `gh`, and some environments have none of it** — the web/remote sandbox
+  provides GitHub access only as MCP tools (`mcp__github__*`). If `gh` is
+  missing, the machinery still applies unchanged; only the invocations differ,
+  and you translate them yourself. Three differences bite:
+  - **Reading labels off a PR.** `issue_read` with `get_labels` fails on a pull
+    request number (`Could not resolve to an Issue`). Read labels from
+    `list_pull_requests` instead, and use it to *verify a label landed* — the
+    write returns success either way.
+  - **List calls blow the context budget.** `list_issues` / `list_pull_requests`
+    return full issue bodies even with `minimal_output`, and a default page is
+    large enough to be refused outright. Pass a small `perPage` (1–5) and page.
+  - **Writing labels replaces the whole set**, so read the current labels first
+    or you will silently drop one.
+
 - **Projects v2** — `gh project item-list 1 --owner ClipFarmVB --format json`.
   Needs the `project` token scope, which is often absent. This does **not** gate
   any work, and it does **not** stop cards reaching the board — see below. It
@@ -1502,6 +1517,36 @@ looks wrong. **Verify claims against the repository** rather than trusting the P
 description — that has caught real errors here more than once. Never mark a
 finding confirmed without checking it.
 
+**Executing a claim is necessary and not sufficient — the inputs have to be able
+to disprove it.** The worst error of the third run was a comment calling a live
+branch unreachable, "verified" by running two values that were *both blank after
+stripping*. Both shared the property under test, so neither could have
+disproved the claim, and the real way in (`CORS_ORIGINS=","`) was already listed
+in that same file and already pinned by a passing test. Before believing a
+check: ask which input would make the claim false, and confirm your set contains
+it. A green suite proves nothing until a control mutation shows the harness can
+go red at all.
+
+**Ask what the repository already asserts before deriving anything.** Six times
+in one run the answer was already written down — in another line of the same
+file, in an existing test, or in the installed package's own source. Reading it
+is cheaper and more reliable than re-deriving it, and a file that contradicts
+itself is itself the finding.
+
+**Check claims about anything outside the diff, and check them again at settle
+time.** The costliest class here is not a claim that was wrong when written — it
+is one that was *right* when written and went false while the PR sat open. One
+PR body carried six: a test count, a file that had since been renamed on another
+branch, a sibling PR described in the present tense that had not landed, and a
+pre-commit behaviour that `main` had since replaced. None was careless; nothing
+re-checked them. So before settling a PR, list every assertion it makes about
+something it does not itself contain — another branch, another PR, `main`, a
+tool's behaviour, a hook — and re-verify each against current state. This is a
+grep and a handful of reads, not a review round, and it is where the most
+valuable finding of the third run came from: a merge note that told the next
+person which checks to keep from a parallel branch stack, and named the wrong
+ones.
+
 **The reviewer runs on the same model as this session.** A spawned agent takes
 its model from its definition's frontmatter when it has one, and only inherits
 the parent's otherwise — so a definition added later can quietly review at a
@@ -1681,6 +1726,26 @@ presents the same choice again. A PR can cycle indefinitely on nits alone,
 spending budget every lap, and nits are what the settle bar deliberately
 tolerates. Leaving one is the terminating move; file a card if it is worth more
 than that.
+
+**Freeze the head once nothing Critical or Medium is open.** The rule above
+still leaves one loop, and the third run walked straight into it: a semi-cold
+round closed the last Medium and raised a nit, the nit was fixed *before* the
+settling round (which the rule permits), the new SHA needed a fresh cold round,
+and that round found new nits — three times over, until the budget ran out and a
+converged PR was labelled `unsettled: ran out of rounds`. Nothing was wrong with
+any single step. So: **from the moment a round reports no Critical and no Medium
+outstanding, only a Critical or Medium may change that head.** Nits found from
+then on go to a card, however cheap they look. "Cheap" is what makes this loop
+attractive on every lap.
+
+**A finding against the PR body is not a finding against the head.** It still
+has to be fixed — a body is editable and a body edit is not a commit, so it
+changes no SHA and disturbs no marker — but it must not block settling, and it
+must not spend a round. The same run ended with a cleared codebase and an
+`unsettled` label because the only surviving Medium was in the PR description.
+The code at that head had been reviewed and found clean; the label said
+otherwise. Judge the head on the head. Fix the body, say in the settle comment
+that you did, and settle.
 
 ##### When you cannot fix it: choosing a reason
 
@@ -2169,6 +2234,26 @@ opening a PR.
   number; do not infer it from the issue count.
 - A closed issue may be `COMPLETED` or `NOT_PLANNED` — opposite facts behind the
   same `state`. Always read `stateReason`.
+- **The clone may be shallow, and a shallow clone fakes a clean merge check.**
+  `git merge-tree <base> <head> | grep -c '^<<<<'` returns `0` when the command
+  produced *no output at all*, which is what a missing history looks like — and
+  `0` reads as "no conflicts". Run `git fetch --unshallow origin` before
+  believing any merge or `origin/main..` comparison. A real conflict was hidden
+  this way.
+- **Stale `__pycache__` makes a mutation look like it survived.** Before every
+  mutation run: delete `__pycache__` and export `PYTHONDONTWRITEBYTECODE=1`.
+  The direction matters — stale bytecode can only produce false *survivals*,
+  never false kills, so an unexpected "the test still passed" is the case to
+  distrust.
+- **A mis-anchored substitution prints a clean pass indistinguishable from a
+  survival.** Every mutation must assert three things: the anchor appears
+  exactly once, it was actually applied, and it is gone after restoring. Two
+  mutations "passed" this way before that check existed — an em dash silently
+  became a double hyphen, and a 12-space anchor matched the tail of a 16-space
+  line.
+- **Apply edits one at a time, never as a batch script.** A five-edit script
+  that asserts partway through writes nothing, while the verification run after
+  it looks entirely normal.
 
 ### Reporting
 
