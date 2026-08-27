@@ -228,7 +228,9 @@ export function getClipShareUrl(clipId: string): Promise<{ url: string }> {
  *
  * Note the browser does the naming from that header, not from an <a download>
  * attribute: download is ignored for cross-origin URLs, and R2 is a different
- * origin. So the caller navigates to this URL and lets the header do the work.
+ * origin. So the caller points the browser at this URL and lets the header do
+ * the work — through lib/download.ts, which explains why that is a hidden frame
+ * rather than window.location.
  */
 export function getClipDownloadUrl(clipId: string): Promise<{ url: string }> {
   return request<{ url: string }>(`/clips/${clipId}/download`);

@@ -6,9 +6,11 @@ moment one of them is allowed to return someone else's content, the others are
 the leak surface. This module is the single place that answers "may this viewer
 read this?", for both single-object fetches and list queries.
 
-Three entry points, deliberately kept in step:
+Four entry points, deliberately kept in step:
 
 * ``can_view_game`` / ``can_view_clip`` — for an object already loaded.
+* ``can_identify`` — may this viewer be told *whose* footage this is. Not the
+  same question as reading the clip; see the asymmetry below.
 * ``visible_games_filter`` — a predicate for a game list. The rule is over
   ``Game`` alone, so it needs no join and there is nothing to get wrong.
 * ``apply_clip_visibility`` — takes the whole statement and returns it joined
@@ -23,15 +25,16 @@ Writes are NOT covered here. Creating, editing and deleting stay owner-only, and
 the routers keep their own ownership checks for those paths.
 
 **Unauthenticated surface.** Allowing anonymous reads means ``GET /games/{id}``,
-``GET /games/{id}/clips``, ``GET /clips/{id}/share`` and ``GET /clips/{id}/download``
-now reach the database without a credential, joining ``GET /users/{handle}`` from
-CF-107 — five unthrottled endpoints where there were none. The download one is the
-most expensive of them: it mints an attachment URL for the full clip, so an
-unthrottled caller can pull the bytes rather than just a row. Nothing can be public yet, so all
-of that traffic 404s today, making this a load question rather than a disclosure
-one. Rate limiting is tracked in CF-186 (#189) and needs to land before anything
-is actually publishable; the 404-not-403 choice below means none of them is an
-existence oracle in the meantime.
+``GET /games/{id}/clips``, ``GET /clips/{id}/share`` and
+``GET /clips/{id}/download`` now reach the database without a credential,
+joining ``GET /users/{handle}`` from CF-107 — five unthrottled endpoints where
+there were none. The download one is the most expensive: it mints an attachment
+URL for the full clip, so an unthrottled caller can pull the bytes rather than
+just a row. Nothing can be public yet, so all of that traffic 404s today, making
+this a load question rather than a disclosure one. Rate limiting is tracked in
+CF-186 (#189) and needs to land before anything is actually publishable; the
+404-not-403 choice below means none of them is an existence oracle in the
+meantime.
 
 **One deliberate asymmetry.** A public clip inside a private game is reachable
 by direct link (``GET /clips/{id}/share``) and through a collection, but
@@ -93,6 +96,33 @@ def can_view_clip(viewer_id: uuid.UUID | None, clip: Clip | None, game: Game | N
     if clip is None or game is None or clip.game_id != game.id:
         return False
     return _may_read(viewer_id, game.owner_id, _effective(clip, game))
+
+
+def can_identify(viewer_id: uuid.UUID | None, game: Game | None) -> bool:
+    """May this viewer be told *whose* footage this is, and from which game?
+
+    A separate question from `can_view_clip`, and it differs in exactly one
+    case: the asymmetry above. A public clip inside a private game is readable
+    by direct link, but the game's title and the tagged player's real name are
+    not — /share discloses neither, and list_clips is gated on the game. An
+    override publishes *that clip*, not the game it came from or who is in it,
+    and this is footage of named young people.
+
+    The rule is therefore the game's own: whoever may see the game may be told
+    what it is called and who played in it.
+
+    "Told" is exact rather than pedantic. collections.py already hands
+    player_name to any signed-in viewer who saved that public clip, so this is
+    stricter than that neighbour; reconciling the two is a separate question and
+    does not belong in whichever router asked first.
+
+    Currently the same predicate as `can_view_game`, which is the point of
+    naming it separately rather than inlining the call: CF-100's download
+    filename asks this question because the name rides in the presigned URL in
+    cleartext, CF-101's zip entries will ask it again, and a rule that lives
+    inline in one router is a rule the second caller re-derives — differently.
+    """
+    return can_view_game(viewer_id, game)
 
 
 def visible_games_filter(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Play, User, ChevronLeft, ChevronRight, Tag, Check, Bookmark, Download } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { type Clip, type Player, type ActionType, tagClip, updateClipLabels, trimClip, getClipDownloadUrl } from "@/lib/api";
+import { startCrossOriginDownload } from "@/lib/download";
 import { cn } from "@/lib/utils";
 
 const LABEL_OPTIONS = ["spike", "serve", "dig", "set", "block", "not_an_action"];
@@ -30,6 +31,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
   const [localEnd, setLocalEnd] = useState(clip.end_time);
   const [trimLoading, setTrimLoading] = useState(false);
   const [labelLoading, setLabelLoading] = useState(false);
+  const [downloadLoading, setDownloadLoading] = useState(false);
 
   // CF-194: the raw upload is deleted after its retention window, and a re-cut
   // reads from it. Undefined means an older payload without the field — treat
@@ -37,13 +39,20 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
   const canTrim = clip.source_available !== false;
 
   async function handleDownload() {
+    // Guarded like labelLoading and trimLoading on this card: without it a
+    // double-click mints two presigned URLs and starts two downloads of the
+    // same clip, which Chrome saves as `… (1).mp4`.
+    if (downloadLoading) return;
+    setDownloadLoading(true);
     try {
       const { url } = await getClipDownloadUrl(clip.id);
-      // See ClipModal: <a download> is ignored cross-origin, so the api asks R2
-      // for a Content-Disposition header and we simply navigate to the URL.
-      window.location.href = url;
+      // Not window.location: see lib/download.ts — a rejected presigned GET
+      // would render R2's XML error in place of the app.
+      startCrossOriginDownload(url);
     } catch {
       alert("Could not prepare the download.");
+    } finally {
+      setDownloadLoading(false);
     }
   }
 
@@ -201,7 +210,8 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
           <div className="flex flex-wrap items-center justify-end gap-0.5 shrink-0">
             <button
               onClick={handleDownload}
-              className="flex min-h-8 items-center gap-1 rounded px-2 py-1.5 text-[10px] text-subtle hover:text-muted hover:bg-surface-hover transition-colors"
+              disabled={downloadLoading}
+              className="flex min-h-8 items-center gap-1 rounded px-2 py-1.5 text-[10px] text-subtle hover:text-muted hover:bg-surface-hover transition-colors disabled:opacity-50"
               title="Download this clip"
             >
               <Download size={9} />

@@ -2,6 +2,7 @@
 import uuid
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from urllib.parse import quote
 
 import boto3
 from botocore.config import Config
@@ -201,6 +202,52 @@ def abort_multipart(key: str, upload_id: str) -> None:
     )
 
 
+def content_disposition(filename: str) -> str:
+    """`attachment` plus the filename, in both forms RFC 6266 defines.
+
+    Two parameters, deliberately. `filename=` is a quoted string and can only
+    carry ASCII, so a Cyrillic or CJK name has to be spelled a second time as
+    RFC 5987's `filename*=UTF-8''…` — every current browser prefers `filename*`
+    when both are present, and the ASCII one is what an old client falls back
+    to. Emitting only the escaped form would name the file for nobody; emitting
+    only the ASCII form is what dropped non-Latin titles on the floor.
+
+    The filtering here is a header concern, not a filename one — services/
+    filenames.py has already removed what is illegal *on disk*. What is left to
+    close is the quoted string itself: a surviving `"` ends it and lets the rest
+    of the value be read as further parameters, and a CR or LF would split the
+    header outright. `filename*` is percent-encoded, so it cannot carry either,
+    but it is filtered on the same pass rather than trusted to the encoder.
+
+    The ASCII form falls back to "download" when no ASCII survives, keeping the
+    extension: `filename=""` names the file after the URL's last path segment,
+    which is the UUID this whole scheme exists to replace.
+    """
+    kept = "".join(
+        c for c in filename if c.isprintable() and c not in '";\\'
+    ).strip(" .-")
+    # The extension is held out of that fold rather than trimmed with the rest.
+    # "Матч.mp4" reduces to ".mp4", and stripping the leading dot off it — which
+    # has to happen, or the fallback names a hidden file — would leave a bare
+    # "mp4" that no player will open.
+    stem, _, ext = kept.rpartition(".")
+    if not stem:
+        stem, ext = kept, ""
+    # Dropping the non-ASCII characters leaves behind the gaps and separators
+    # they sat between ("Матч - spike" -> " - spike"), so the fallback is
+    # re-collapsed and re-stripped rather than handed over as-is.
+    ascii_stem = "".join(c for c in stem if c.isascii())
+    ascii_stem = " ".join(ascii_stem.split()).strip(" .-") or "download"
+    ascii_ext = "".join(c for c in ext if c.isascii())
+    ascii_name = f"{ascii_stem}.{ascii_ext}" if ascii_ext else ascii_stem
+    header = f'attachment; filename="{ascii_name}"'
+    if kept and not kept.isascii():
+        # safe="" so nothing outside RFC 5987's attr-char set survives
+        # unencoded; over-encoding is explicitly allowed, under-encoding is not.
+        header += "; filename*=UTF-8''" + quote(kept, safe="")
+    return header
+
+
 def presign_url(key: str, expires_in: int = 3600, download_filename: str | None = None) -> str:
     """
     Generate a presigned URL for reading a file from R2 (default 1 hour).
@@ -212,13 +259,7 @@ def presign_url(key: str, expires_in: int = 3600, download_filename: str | None 
     """
     params: dict[str, str] = {"Bucket": settings.r2_bucket_name, "Key": key}
     if download_filename:
-        # R2 reflects this into a response header — keep it printable ASCII
-        # and quote-free so it can't escape the quoted-string.
-        safe = "".join(
-            c for c in download_filename
-            if c.isascii() and c.isprintable() and c not in '";\\'
-        ).strip() or "download"
-        params["ResponseContentDisposition"] = f'attachment; filename="{safe}"'
+        params["ResponseContentDisposition"] = content_disposition(download_filename)
     return _client().generate_presigned_url(
         "get_object",
         Params=params,

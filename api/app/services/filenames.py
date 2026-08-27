@@ -7,21 +7,27 @@ scheme the next caller reimplements slightly differently.
 
 **Deliberately not shared with `games._sanitize_filename`.** That one guards a
 *storage key*: it neutralises `/`, `\\` and `..` so a crafted upload name cannot
-escape the key prefix. This one guards a *header value* and the file a browser
-then writes to disk, which is a wider problem — it must also survive
-`Content-Disposition: attachment; filename="..."` unescaped, and land on Windows
-and macOS filesystems. Merging them would mean one set of rules serving two
-threat models, and the looser of the two would win.
+escape the key prefix. This one guards the file a browser then writes to disk,
+which is a wider problem — it must land on Windows and macOS filesystems.
+Merging them would mean one set of rules serving two threat models, and the
+looser of the two would win.
+
+**What this module does not do is encode a header.** It returns a filename, in
+whatever script the game and the players are named in; turning that into a
+`Content-Disposition` value — the ASCII fallback, the RFC 5987 `filename*`, the
+quoted-string escaping — lives with the code that builds the header, in
+`storage.presign_url`. Splitting it the other way would mean this module knowing
+about HTTP so that CF-101, which writes these names into a zip's central
+directory and sends no header at all, could ignore what it knew.
 """
 from __future__ import annotations
 
 # Windows rejects all of these in a filename; `:` is the one that actually bites
 # here, because a mm:ss timestamp is the obvious way to write the position in
 # the game and it is illegal on Windows and awkward on macOS. `"`, `;` and `\`
-# additionally have to go so the value cannot break out of the quoted string in
-# Content-Disposition — storage.presign_url strips those again as a second line
-# of defence, but a value that only becomes safe downstream is one nobody can
-# reason about here.
+# are in the set for the header's sake even though the header is not built here
+# — a name that only becomes safe downstream is one nobody can reason about at
+# the point it is written, and storage.presign_url strips them again anyway.
 _FORBIDDEN = set('";\\/:*?<>|')
 
 # Game titles and player names are both String(255). Concatenated with the
@@ -29,24 +35,45 @@ _FORBIDDEN = set('";\\/:*?<>|')
 # capped rather than the whole — truncating the joined string would silently
 # drop the timestamp, which is the component that makes two clips from one game
 # distinguishable.
-MAX_COMPONENT_CHARS = 80
+#
+# Bytes rather than characters, because a component is not ASCII-only: 80
+# characters of Cyrillic is 160 bytes and of CJK is 240, and bytes are what both
+# the filesystem limit below and the header budget are measured in.
+MAX_COMPONENT_BYTES = 80
 
 # Most filesystems cap a single name at 255 bytes. Four capped components plus
 # their separators reach 258, so the joined stem is capped too — otherwise the
 # one input that overflows is the one nobody tests.
-MAX_FILENAME_CHARS = 255
+MAX_FILENAME_BYTES = 255
 
 
-def sanitize_component(value: str | None, max_chars: int = MAX_COMPONENT_CHARS) -> str:
-    """One filename component: printable ASCII, no separators, length-capped.
+def _truncate_bytes(text: str, max_bytes: int, *, from_end: bool = False) -> str:
+    """Cut `text` to at most `max_bytes` of UTF-8, never mid-character.
 
-    `max_chars` defaults to the per-component budget of the multi-part clip
+    `errors="ignore"` is what makes that true: slicing the encoded form can land
+    inside a multi-byte sequence, and the partial sequence is then dropped
+    rather than decoded into a replacement character that would itself be
+    written to disk.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    cut = encoded[-max_bytes:] if from_end else encoded[:max_bytes]
+    return cut.decode("utf-8", errors="ignore")
+
+
+def sanitize_component(value: str | None, max_bytes: int = MAX_COMPONENT_BYTES) -> str:
+    """One filename component: printable, no separators, length-capped.
+
+    `max_bytes` defaults to the per-component budget of the multi-part clip
     scheme. A single-component name has the whole filename to itself and should
     say so rather than inherit a cap sized for four.
 
-    Non-ASCII is dropped rather than transliterated. That loses information for
-    a title written in a non-Latin script, which is why the caller must cope
-    with an empty result instead of assuming every component survives.
+    **Non-ASCII survives.** Dropping it meant a Cyrillic-titled game with a
+    non-Latin player name sanitising away to nothing but a timestamp — every
+    clip in that game downloading as `00-04-12.mp4`, which is the case the
+    scheme exists to prevent. The caller must still cope with an empty result: a
+    component that is nothing but forbidden characters still yields one.
     """
     if not value:
         return ""
@@ -54,10 +81,11 @@ def sanitize_component(value: str | None, max_chars: int = MAX_COMPONENT_CHARS) 
     # is not printable, so filtering first deletes it and welds the words either
     # side together — "Semi\tFinal" would come out "SemiFinal".
     spaced = "".join(" " if c.isspace() else c for c in value)
-    kept = [
-        c for c in spaced
-        if c.isascii() and c.isprintable() and c not in _FORBIDDEN
-    ]
+    # `isprintable()` is False for control characters and for the non-ASCII
+    # separators and format characters (U+00A0, U+200B, the bidi overrides), so
+    # this keeps letters in any script while still closing CR/LF and the
+    # right-to-left override trick that makes "…fdp.exe" read as "…exe.pdf".
+    kept = [c for c in spaced if c.isprintable() and c not in _FORBIDDEN]
     # Collapse runs of dots. Stripping `/` out of `../../etc/passwd` leaves
     # `....etcpasswd`, which cannot traverse anything once the separators are
     # gone but is an ugly thing to hand someone as a filename — and a leading
@@ -71,21 +99,28 @@ def sanitize_component(value: str | None, max_chars: int = MAX_COMPONENT_CHARS) 
     # mangle a title that legitimately starts with a dot (".38 Special" becomes
     # "38 Special"), which is the accepted cost rather than an oversight.
     collapsed = " ".join(text.split()).lstrip(". -")
-    return collapsed[:max_chars].strip()
+    # Strip *after* the cap, and at the other end too: the cap can land in the
+    # middle of a component and leave a trailing dot or space, which Windows
+    # then silently drops from the name it writes. `"x" * 79 + ".abc"` came out
+    # `…x. - spike - …`.
+    return _truncate_bytes(collapsed, max_bytes).rstrip(". -")
 
 
 def format_timestamp(seconds: float) -> str:
-    """`h-mm-ss`, always, with dashes rather than colons.
+    """`hh-mm-ss`, always, with dashes rather than colons.
 
     A colon is illegal in a Windows filename, which is why this does not read
-    `h:mm:ss` the way the UI does.
+    `hh:mm:ss` the way the UI does.
 
-    **The hour is always present, even when it is zero**, and that is the whole
+    **The hour is always present and always padded**, and that is the whole
     point rather than verbosity. These names land together in one downloads
     folder, so they are sorted as strings — and mixing `59-59` with `1-00-00`
     puts the 59-minute clip *after* the three-hour one, because "5" sorts after
-    "1". `0-59-59` and `1-00-00` order correctly. Uploads cap at four hours, so
-    a single hour digit is enough and never needs padding of its own.
+    "1". Padding is the same argument one digit further out: unpadded, `9-00-00`
+    sorts after `10-00-00`. One digit happens to be enough while uploads are
+    capped at four hours, but that cap is `max_upload_duration_seconds`, a
+    settings field somebody may raise — and the sort invariant should not be a
+    downstream consequence of a configuration value.
 
     It carries hours at all for the same reason the UI does: without the
     rollover a late clip reads `239-59` where ClipCard and ClipModal both show
@@ -100,7 +135,7 @@ def format_timestamp(seconds: float) -> str:
     total = max(0, int(seconds))
     hours, rest = divmod(total, 3600)
     minutes, secs = divmod(rest, 60)
-    return f"{hours}-{minutes:02d}-{secs:02d}"
+    return f"{hours:02d}-{minutes:02d}-{secs:02d}"
 
 
 def clip_download_filename(
@@ -109,12 +144,12 @@ def clip_download_filename(
     player_name: str | None,
     start_seconds: float,
 ) -> str:
-    """`{game} - {action} - {player} - {mm-ss}.mp4`, minus whatever is missing.
+    """`{game} - {action} - {player} - {hh-mm-ss}.mp4`, minus what is missing.
 
     Components that sanitise away entirely are dropped rather than left as empty
-    separators, so an untagged clip is `Match - spike - 04-12.mp4` and not
-    `Match - spike -  - 04-12.mp4`. The timestamp always survives, which is what
-    keeps two clips from one game apart when everything else is stripped.
+    separators, so an untagged clip is `Match - spike - 00-04-12.mp4` and not
+    `Match - spike -  - 00-04-12.mp4`. The timestamp always survives, which is
+    what keeps two clips from one game apart when everything else is stripped.
     """
     parts = [
         sanitize_component(game_title),
@@ -125,7 +160,9 @@ def clip_download_filename(
     name = " - ".join(p for p in parts if p)
     # Trim from the front so the timestamp survives: it is what keeps two clips
     # from one game apart once a long title has eaten the budget.
-    stem = name[-(MAX_FILENAME_CHARS - len(".mp4")):].lstrip(". -")
+    stem = _truncate_bytes(
+        name, MAX_FILENAME_BYTES - len(".mp4"), from_end=True
+    ).lstrip(". -")
     # Only reachable if the timestamp were somehow empty, which it cannot be —
     # belt and braces, because the alternative is a bare ".mp4".
     return f"{stem}.mp4" if stem else "clip.mp4"
@@ -146,5 +183,5 @@ def condensed_download_filename(game_title: str | None) -> str:
     # single variable part, and capping it at 80 would silently shorten a
     # filename users already receive for long-titled games.
     suffix = " (condensed).mp4"
-    title = sanitize_component(game_title, max_chars=MAX_FILENAME_CHARS - len(suffix))
+    title = sanitize_component(game_title, max_bytes=MAX_FILENAME_BYTES - len(suffix))
     return f"{title}{suffix}" if title else "condensed.mp4"

@@ -401,21 +401,9 @@ async def download_clip(
     # The filename is part of the response, not just decoration: presign_url
     # puts it in the URL's ResponseContentDisposition, in cleartext. So the
     # question is not only "may this viewer have the bytes" but "may they have
-    # these strings", and the two differ in exactly one case.
-    #
-    # A public clip inside a private game is reachable by direct link — the
-    # asymmetry access.py documents. There, /share discloses nothing and
-    # list_clips is gated on the game, so the game's title and the tagged
-    # player's real name are unreachable *anonymously*. Naming the file after
-    # them would hand both to an anonymous caller, on footage of a named young
-    # person. The override publishes *that clip*, not the game it came from or
-    # who is in it.
-    #
-    # "Anonymously" is exact rather than pedantic: collections.py already hands
-    # player_name to any signed-in viewer who saved that public clip, so this
-    # gate is stricter than that neighbour. Reconciling the two is a separate
-    # question and does not belong in a download endpoint.
-    identify = access.can_view_game(viewer_id, game)
+    # these strings" — a different question, answered in access.py alongside
+    # the asymmetry that makes the two differ. CF-101's zip needs the same gate.
+    identify = access.can_identify(viewer_id, game)
 
     # Explicit fetch, not clip.player: the relationship is not eagerly loaded
     # anywhere, and touching it here would lazy-load inside the event loop and
@@ -434,9 +422,20 @@ async def download_clip(
     # detector sets it to the dominant action by summed confidence, and
     # update_clip_labels rewrites it from the corrected labels, so a correction
     # already reaches it. It is also what ClipModal badges beside this button.
+    #
+    # ...with one exception, so the file matches the badge the user clicked
+    # Download beside. update_clip_labels writes labels=["not_an_action"] and
+    # action_type=unknown together, and ClipCard badges that pair `removed` —
+    # so naming the file `- unknown -` describes a clip the grid says is
+    # removed. The second arm of the condition is the grid's own: a clip the
+    # detector could not classify arrives as unknown at zero confidence and is
+    # dimmed the same way.
+    discarded = "not_an_action" in (clip.labels or []) or (
+        clip.action_type is ActionType.unknown and not clip.confidence
+    )
     filename = clip_download_filename(
         game_title=game.title if identify else None,
-        action=clip.action_type.value,
+        action="removed" if discarded else clip.action_type.value,
         player_name=player.name if player else None,
         start_seconds=clip.start_time,
     )

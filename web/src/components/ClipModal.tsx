@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, ChevronLeft, ChevronRight, Link2, Download } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { type Clip, getClipDownloadUrl, getClipShareUrl } from "@/lib/api";
+import { startCrossOriginDownload } from "@/lib/download";
 import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 
 interface ClipModalProps {
@@ -17,6 +18,8 @@ interface ClipModalProps {
 export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   const videoRef  = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  // Guards a double-click: two presigns and two downloads of the same clip.
+  const [downloading, setDownloading] = useState(false);
 
   // Auto-play when clip changes
   useEffect(() => {
@@ -52,15 +55,21 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   }
 
   async function handleDownload() {
+    if (downloading) return;
+    setDownloading(true);
     try {
       const { url } = await getClipDownloadUrl(clip.id);
-      // Navigate rather than using <a download>: that attribute is ignored for
-      // cross-origin URLs and R2 is a different origin, so the file is named by
-      // the Content-Disposition header the api asked R2 to send. Because that
-      // header says `attachment`, this downloads instead of navigating away.
-      window.location.href = url;
+      // Not <a download>: that attribute is ignored for cross-origin URLs and
+      // R2 is a different origin, so the file is named by the
+      // Content-Disposition header the api asked R2 to send. lib/download.ts
+      // explains why the request goes through a hidden frame rather than
+      // window.location — briefly, an R2 error would otherwise render in place
+      // of the app.
+      startCrossOriginDownload(url);
     } catch {
       alert("Could not prepare the download.");
+    } finally {
+      setDownloading(false);
     }
   }
 
@@ -86,7 +95,8 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           <div className="flex shrink-0 items-center gap-1">
             <button
               onClick={handleDownload}
-              className="flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted hover:text-foreground hover:bg-surface-high transition-colors sm:h-auto sm:py-1.5"
+              disabled={downloading}
+              className="flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted hover:text-foreground hover:bg-surface-high transition-colors disabled:opacity-50 sm:h-auto sm:py-1.5"
             >
               <Download size={12} />
               Download
