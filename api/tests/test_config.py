@@ -913,7 +913,15 @@ def test_idna_does_not_lower_case_an_ascii_label(clean_env):
     operator to a value that is refused again on the next boot, which is the
     two-boot failure this branch exists to end.
 
-    An ASCII capital is exactly the part punycode will not fix.
+    An ASCII capital is the part punycode usually will not fix. Not always: a
+    capital INSIDE a non-ASCII label is folded away with the rest of it, since
+    the whole label is re-encoded — `"WWWклипфарм.рф".encode("idna")` gives
+    `xn--www-8cd3blhkzl6b.xn--p1ai`. That over-reports by one line and costs no
+    extra boot.
+
+    An earlier version of this sentence stated the rule as absolute. It was
+    retracted in `config.py` and left standing here — the sixth time on this
+    branch a correction has reached one of two copies.
     """
     mixed = "https://WWW.\u043a\u043b\u0438\u043f\u0444\u0430\u0440\u043c.\u0440\u0444"
     pure = "https://\u041a\u041b\u0418\u041f\u0424\u0410\u0420\u041c.\u0420\u0424"
@@ -951,6 +959,41 @@ def test_whitespace_is_still_reported_alongside_a_parse_failure(clean_env, value
 
     assert len(problems) == 2
     assert "whitespace" in problems[0]
+
+
+def test_a_boot_error_names_the_env_var_not_the_field(clean_env, monkeypatch):
+    """`loc` carries the FIELD name and the operator sets an environment
+    variable. `Settings.env_name_for()` exists for exactly this, the module
+    comment at the top of config.py mandates it, and `production_config_error`
+    has always used it — this function printed the raw field name instead.
+
+    A message whose stated justification is telling the operator which setting
+    is wrong should name it the way they set it.
+    """
+    for name, value in PRODUCTION_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("CONDENSE_MODE", "banana")
+
+    with pytest.raises(RuntimeError) as exc:
+        _settings_or_boot_error()
+
+    message = str(exc.value)
+    assert "CONDENSE_MODE:" in message
+    assert "condense_mode:" not in message
+
+
+def test_a_backslash_does_not_also_report_a_bad_port(clean_env):
+    """urlsplit leaves the backslash in the netloc, so `https://x.ca:8443\\`
+    reported an invalid port as well — and deleting the backslash fixes both.
+
+    A third implied pair, after the padded default port and the upper-case
+    unicode host. The docstring said there were two.
+    """
+    assert _origin_problems("https://clipfarm.ca:8443\\") == [
+        "an Origin is scheme://host[:port] with nothing after it; a trailing "
+        "slash, backslash, path, query or fragment matches no browser Origin "
+        "header"
+    ]
 
 
 def test_production_rejects_a_backslash(clean_env):

@@ -138,7 +138,10 @@ def _origin_problems(origin: str) -> list[str]:
       an upper-case unicode host, where writing the punycode form lower-cases
       it as a side effect — handled by suppressing the case message, but only
       for the capitals punycode actually removes. IDNA leaves an already-ASCII
-      label alone, so `WWW.клипфарм.рф` still gets both.
+      label alone, so `WWW.клипфарм.рф` still gets both;
+
+      a backslash, which urlsplit leaves in the netloc and which therefore also
+      breaks the port — handled by skipping the port checks when one is present.
 
     An earlier version of this paragraph said the second was "ordered below"
     like the first. It was not ordered at all, and both messages were printed.
@@ -238,7 +241,8 @@ def _origin_problems(origin: str) -> list[str]:
     if parts.path or "?" in origin or "#" in origin or "\\" in origin:
         problems.append(
             "an Origin is scheme://host[:port] with nothing after it; a trailing "
-            "slash, path, query or fragment matches no browser Origin header"
+            "slash, backslash, path, query or fragment matches no browser Origin "
+            "header"
         )
 
     if parts.username is not None:
@@ -364,8 +368,12 @@ def _origin_problems(origin: str) -> list[str]:
         # its own message below and would otherwise get both.
         problems.append("no host — an Origin is scheme://host[:port]")
 
+    # Skipped when a backslash is present: urlsplit leaves it in the netloc, so
+    # `https://x.ca:8443\` reported an invalid port as well — and deleting the
+    # backslash fixes both. A THIRD implied pair, after the padded default port
+    # and the upper-case unicode host.
     try:
-        port = parts.port
+        port = None if "\\" in origin else parts.port
     except ValueError:
         # urlsplit only raises here — it does not validate on parse.
         problems.append("port must be a number in 1-65535")
@@ -426,7 +434,7 @@ def _redacted_origin(origin: str) -> str:
     identifies the entry by its position in the list rather than by its text.
 
     That is blunt on purpose, and it is the fifth shape this function has had.
-    The first three tried to print as much of the entry as was "safe", and each
+    The first four tried to print as much of the entry as was "safe", and each
     was wrong in a way only found by execution:
 
       * whole-string search       — destroyed the host: `clipfarm.ca/@handle`
@@ -457,7 +465,15 @@ def _redacted_origin(origin: str) -> str:
     So the entry is not parsed at all. The tie-break the previous versions kept
     getting wrong in alternating directions — a printed secret is
     unrecoverable, a message that is harder to act on is not — is applied once,
-    here, to every entry that could possibly carry one.
+    here, to every entry carrying an `@` or a `%40`.
+
+    NOT to every entry that could possibly hold a secret — an earlier version of
+    this sentence said that, contradicting the paragraph above it.
+    `https://admin:hunter2` has no `@` at all and is echoed whole. That is the
+    documented trade: without the `@` there is no userinfo syntax, the entry is
+    shape-identical to `https://clipfarm.ca:abc` whose text the operator needs,
+    and redacting on that shape would blank the message for every ordinary
+    malformed port.
     """
     # `%40` counts: a pasted credential that went through a URL-encoder still
     # carries the secret, and the encoded form is the likelier paste of the two
@@ -984,15 +1000,30 @@ def _boot_error(exc: ValidationError) -> str:
     line and taking only the message drops it. A first version of this did, and
     turned `CONDENSE_MODE=banana` into a bare "Input should be 'rules' or
     'guarded'" — true, and useless, because the operator is not told which of
-    setting it is about, out of dozens. The model-validator errors have an empty
-    `loc` and
-    already name their variable in the message, so they are left alone.
+    setting it is about.
+
+    The name goes through `Settings.env_name_for()` rather than being printed
+    raw. `loc` carries the FIELD name and the operator sets an environment
+    variable — the module comment at the top of this file says so, and
+    `production_config_error` has always obeyed it. This function did not, which
+    made it the second place on this branch where new code re-derived something
+    the module already had a helper for.
+
+    Model-validator errors have an empty `loc` and already name their variable
+    in the message, so they are left alone.
     """
     problems = []
     for error in exc.errors():
-        field = ".".join(str(part) for part in error["loc"])
+        location = error["loc"]
+        field = str(location[0]) if location else ""
+        try:
+            name = Settings.env_name_for(field) if field else ""
+        except KeyError:
+            # A nested or synthetic loc that names no field on the model.
+            # Better the raw path than nothing.
+            name = ".".join(str(part) for part in location)
         message = str(error["msg"])
-        problems.append(f"{field}: {message}" if field else message)
+        problems.append(f"{name}: {message}" if name else message)
     return "Configuration is not usable: " + "; ".join(problems)
 
 
