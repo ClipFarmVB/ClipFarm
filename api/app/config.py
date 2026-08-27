@@ -248,24 +248,26 @@ class Settings(BaseSettings):
     #   "rules"    the two blocks above: contacts + motion bridge (CF-46)
     #   "guarded"  speed-gated contacts + motion anchors + tight pads, abstaining
     #              when the ball track is too sparse to judge (CF-187)
-    # The figures below pre-date the NaN change (242dbb0) and are not re-scored:
-    # over-ceiling speed samples no longer vote "fast" at the motion anchor, which
-    # can only remove anchor coverage, so each is an upper bound on dead time
-    # removed and a lower bound on live play cut. See ml/eval/README.md for how
-    # narrow that bound is and why the earlier cap experiments do not cover it.
+    # Default is "guarded". Measured at 42b582f from the R2 ball caches, with
+    # mode=rules reproducing its documented figures exactly on four of five
+    # fixtures as a control (the fifth, test5's 9.6% rules baseline, was a
+    # long-standing doc error and is corrected).
     #
-    # Default is "guarded", and it is not a clean sweep in either direction.
-    # Dead time: it removes more on three of the four it condenses (test2, test4,
-    # test5) and 2.8 points less on test1. Live play: it cuts less than "rules"
-    # on two (176s->97s, 83s->48s) and more on two (2s->10s, 0s->10s), and on
+    # Dead time: it removes more on all four it condenses (+2.2 points on test1,
+    # +41 test2, +29 test4, +40 test5). Live play: it cuts 50s LESS than "rules"
+    # on test1 and more on the other three (2s->12s, 83s->100s, 0s->20s), and on
     # the fifth it abstains rather than cut 118s of rally.
-    # Net at the harness' 4:1 live-cut exchange rate: +649s vs +116s
-    # over the three fixtures that are comparable across games. Counting all
-    # five gives +1552s vs +615s, and that larger figure is the misleading one:
-    # test1 and test3 supply 404s of the gap and their own fixture notes exclude
-    # them from cross-game comparison. Three of the five were held out while it
-    # was tuned. Raising the gate or anchor speeds widens those two paid trades
-    # — see ml/eval/README.md.
+    #
+    # Net at the harness' 4:1 live-cut exchange rate: +533s vs +134s over the
+    # three fixtures comparable across games. Counting all five gives +1440s vs
+    # +633s, and that larger figure is the misleading one: test1 and test3 supply
+    # most of the gap and their own fixture notes exclude them from cross-game
+    # comparison. Three of the five were held out while it was tuned.
+    #
+    # Worth reading past the net: across those three comparable fixtures "rules"
+    # cuts 85s of live play and "guarded" cuts 132s, so the default cuts 47s more
+    # of the thing this repo protects and buys it back with dead time at 4:1.
+    # Raising the gate or anchor speeds widens that — see ml/eval/README.md.
     # Literal, not str: an unknown value here (CONDENSE_MODE=Guarded) would
     # otherwise load fine and silently run "rules" forever behind one warning
     # per game. Note what "fail at load" means for an operator: Settings is

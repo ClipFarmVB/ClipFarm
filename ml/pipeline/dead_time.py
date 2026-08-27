@@ -81,22 +81,26 @@ MAX_SAMPLE_SPACING = 1.5   # a longer gap is a tracking dropout, not motion
 # 226 of test1's 5636 usable samples (4.0%) exceed it against 2 under a literal
 # px/s cap.
 #
-# UNMEASURED SINCE THE NaN CHANGE. That asymmetry used to cost nothing, and the
-# evidence was a fixture re-run with this cap at the px/s equivalent and with it
-# removed entirely: byte-identical windows and nets on all five. That
-# measurement does NOT carry over, and it is worth being explicit about why —
-# all three variants it compared leave a believable number above the anchor's
-# 0.40 bar, so all three vote "fast" and of course agree. NaN is the first
-# variant that votes *not fast*, which is the whole point of it, and therefore
-# the first that measurement cannot speak for.
+# That asymmetry used to cost nothing under the old clamp, and the evidence was
+# a fixture re-run with this cap at the px/s equivalent and with it removed
+# entirely: byte-identical windows and nets on all five. That measurement does
+# NOT carry over to NaN, and it is worth being explicit about why — all three
+# variants it compared leave a believable magnitude at or above the anchor's
+# per-sample speed bar of 0.30, so all three vote "fast" and of course agree.
+# (0.30 is the speed a sample must reach; ANCHOR_MIN_FRACTION, 0.40, is what
+# share of a window must reach it. Different numbers, easy to conflate.) NaN is
+# the first variant that votes *not fast*, which is the whole point of it, and
+# therefore the first that measurement cannot speak for.
 #
-# What bounds it instead, from driving motion_anchor_windows directly: an anchor
-# is lost only where believable-fast samples fall under ANCHOR_MIN_FRACTION —
-# ~80% of a window over-ceiling if nothing else in it is slow, ~30% if half the
-# window already sits below the bar (pinned in test_dead_time.py). Against
-# test1's 4.0% global rate that is comfortable; the open question is *local*
-# clustering, and track hops bunch precisely where the tracker is confused. So
-# the fixtures want re-scoring before this merges — see ml/eval/README.md.
+# What bounds it, from driving motion_anchor_windows directly: an anchor is lost
+# only where believable-fast samples fall under ANCHOR_MIN_FRACTION — ~80% of a
+# window over-ceiling if nothing else in it is slow, ~30% if half the window
+# already sits below the bar (pinned in test_dead_time.py). Against test1's 4.0%
+# global rate that is comfortable, and the fixture re-score at 42b582f bears out
+# the direction without the collapse: coverage did go — every fixture now
+# removes more dead time than under the clamp and cuts more live play with it,
+# which is exactly what losing keep-windows looks like — but none fell off the
+# way the ~80% case would. See ml/eval/README.md for the measured table.
 MAX_PLAUSIBLE_SPEED_FH = 1.11
 
 CONTACT_SPEED_HALF_WINDOW = 1.5   # median speed is taken over ±this around a contact

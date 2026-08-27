@@ -166,29 +166,25 @@ lives in `ml/pipeline/dead_time.py`:
 | `guarded` | `active_windows_guarded` | **the default.** Speed-gated contacts, motion anchors, tight pads, and an abstain when the ball track is too sparse |
 
 The guarded path became the default on the fixture numbers below, not on a
-clean sweep — it buys dead time with live play on two of them, and that trade is
-the thing to look at before touching its tunables:
+clean sweep — it buys dead time with live play on three of the four it
+condenses, and that trade is the thing to look at before touching its tunables:
 
-> **These figures pre-date the NaN change (CF-187, `242dbb0`) and have not been
-> re-scored.** Over-ceiling speed samples used to be clamped to
-> `MAX_PLAUSIBLE_SPEED_FH`, which left them voting "fast" at the motion anchor;
-> they are now NaN and vote for neither side. That can only *remove* anchor
-> coverage, never add it, so every row below is an upper bound on dead time
-> removed and a lower bound on live play cut. The bound is narrow — an anchor is
-> lost only where believable-fast samples fall under `ANCHOR_MIN_FRACTION`,
-> which needs ~80% of a window over-ceiling (~30% if half of it is already slow),
-> against a 4.0% global rate on test1 — but local clustering is unmeasured, and
-> track hops bunch where the tracker is confused. **Re-run the ladder before
-> treating these as current**; the earlier cap-at-px/s-equivalent and cap-removed
-> runs do not stand in for it, because all of those variants still voted "fast".
+> **Measured at `42b582f`, after the NaN change**, from the five R2 ball caches
+> (`ball-cache/{md5}-volleyball-ball-tracking-0eo7r-3-s{N}.json`, `s10` except
+> test4's `s20`), two consecutive runs byte-identical. The control is what makes
+> them trustworthy: `v0` (`mode=rules`) reproduces its documented figures
+> exactly on four of five fixtures, so a `v5` difference is the builder having
+> changed, not the environment. The fifth is test5, whose `rules` baseline is
+> **9.6%, not the 4.6%** published until now — a doc error independent of this
+> card, corrected below.
 
 | fixture | dead removed | live cut | |
 |---|---|---|---|
-| test1*† | 56.2% → 53.4% | 176s → **97s** | 79s less play cut, 2.8 points less dead time |
-| test2 | 9.5% → **48.3%** | 2s → 10s | +8s of play for 39 points of dead time |
+| test1*† | 56.2% → **58.4%** | 176s → **126s** | strictly better |
+| test2 | 9.5% → **50.8%** | 2s → 12s | +10s of play for 41 points of dead time |
 | test3*† | 76.5% → 0.0% | 118s → **0s** | abstains rather than cut 118s of rally |
-| test4 | 44.2% → **62.7%** | 83s → **48s** | strictly better |
-| test5* | 4.6% → **39.3%** | 0s → 10s | +10s of play for 35 points of dead time |
+| test4 | 44.2% → **73.3%** | 83s → 100s | +17s of play for 29 points of dead time |
+| test5* | 9.6% → **49.8%** | 0s → 20s | +20s of play for 40 points of dead time |
 
 `* = held out while the variants were tuned.`
 `† = excluded from the headline net` — see `EXCLUDED_FROM_TOTALS` in
@@ -196,16 +192,21 @@ the thing to look at before touching its tunables:
 test3 is a game the ball tracker cannot follow, so both measure something other
 than which builder is better.
 
-Strictly better on two, a paid trade on two, an abstain on one. At the 4:1
-live-cut exchange rate the harness and trainer share, that nets **+649s against
-`rules`' +116s** over the three comparable fixtures. Counting all five gives
-+1552s against +615s, and that larger figure is the misleading one: test1 and
-test3 supply 404s of the 937s gap, so nearly half of it comes from the two games
-excluded from cross-game comparison. The paid trades are real either way, and
-live play is the axis this repo protects, so a change that widens them needs more
-than a better net.
+Strictly better on one, a paid trade on three, an abstain on one. At the 4:1
+live-cut exchange rate the harness and trainer share, that nets **+533s against
+`rules`' +134s** over the three comparable fixtures. Counting all five gives
++1440s against +633s, and that larger figure is the misleading one: test1 and
+test3 supply most of the gap, and both are excluded from cross-game comparison.
 
-**On the comparable fixtures `v4` and `v5` score identically (+649s each).**
+**Read the live-play column before the net.** On the three comparable fixtures
+`rules` cuts 85s of live play and `guarded` cuts 132s — 47s *more*, on the axis
+this repo protects, on every one of them. The net still favours `guarded` by a
+wide margin, but it does so entirely by buying that play back with dead time at
+4:1. Whether that exchange rate justifies the default is a judgement about what
+the product owes its users, not something these numbers settle: a change that
+widens the trades further needs more than a better net.
+
+**On the comparable fixtures `v4` and `v5` score identically (+533s each).**
 Their only difference is the abstain, and the abstain fires only on test3. The
 shipping default's one advantage over the aggressive rung is therefore evidenced
 by a single excluded fixture — worth knowing before treating `min_track_rate` as
