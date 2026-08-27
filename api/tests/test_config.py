@@ -850,6 +850,42 @@ def test_every_problem_with_an_entry_is_reported_at_once(clean_env, value, expec
         assert any(fragment in problem for problem in problems), fragment
 
 
+def test_a_disallowed_scheme_does_not_withhold_the_rest(clean_env):
+    """`ftp://admin:hunter2@clipfarm.ca` parses cleanly — netloc
+    `admin:hunter2@clipfarm.ca`, username `admin` — so the credential is
+    readable, and withholding it costs a second refused boot.
+
+    The early return exists for entries that cannot be parsed at all
+    (`clipfarm.ca`, a bare `https://`), and a disallowed scheme was swept in
+    with them.
+
+    Also pins that the scheme itself is not echoed: a secret pasted where a
+    scheme belongs is exactly what `_redacted_origin` is for, and a message
+    quoting the value would undo it. The first version of this message did
+    interpolate it.
+    """
+    problems = _origin_problems("ftp://admin:hunter2@clipfarm.ca")
+
+    assert len(problems) == 2
+    assert any("not http or https" in problem for problem in problems)
+    assert any("user:password" in problem for problem in problems)
+    assert not any("ftp" in problem for problem in problems)
+
+
+def test_an_invalid_port_does_not_invent_a_case_problem(clean_env):
+    """A capital can only reach the port when the port is invalid, and the
+    invalid port is reported on its own.
+
+    Spanning the port in the case check invented "must be lower-case" against
+    `clipfarm.ca`, which is already lower-case — telling the operator to fix
+    something that is not wrong, in the message they read when production will
+    not boot.
+    """
+    assert _origin_problems("https://clipfarm.ca:80A") == [
+        "port must be a number in 1-65535"
+    ]
+
+
 def test_capitals_inside_a_credential_are_not_a_case_problem(clean_env):
     """`https://admin:Hunter2@clipfarm.ca` has capitals only in userinfo, which
     has to go anyway. Reporting "must be lower-case" as well would be advice the
@@ -907,18 +943,30 @@ def test_an_uppercase_credential_costs_one_refused_boot(clean_env):
     assert "lower-case" not in problem
 
 
-def test_an_uppercase_unicode_host_costs_one_refused_boot(clean_env):
-    """`https://КЛИПФАРМ.РФ` is both upper-case and unlatinised. Reporting the
-    case first sends the operator to the lower-cased form, which the next boot
-    refuses for punycode — two refused production boots for one mistake.
+def test_an_uppercase_unicode_host_reports_only_the_punycode_problem(clean_env):
+    """Writing the host in punycode lower-cases it as a side effect, so the two
+    are an implied pair and only one message is worth printing.
 
-    Same ordering argument the port block makes a few lines below, which is
-    where it was already applied and here where it was not.
+    The previous version of this test asserted `"punycode" in str(exc.value)`
+    and was named for an ordering the code does not have. It passed while a
+    redundant "must be lower-case" line was printed alongside, because a
+    substring check cannot see an extra line. Asserting the exact list is what
+    makes the implied-pair claim in `_origin_problems` true rather than
+    intended.
+
+    A scheme in capitals is NOT implied by the punycode fix and is still
+    reported.
     """
-    with pytest.raises(ValidationError) as exc:
-        _production_with_cors("https://\u041a\u041b\u0418\u041f\u0424\u0410\u0420\u041c.\u0420\u0424")
+    upper = "https://\u041a\u041b\u0418\u041f\u0424\u0410\u0420\u041c.\u0420\u0424"
 
-    assert "punycode" in str(exc.value)
+    assert _origin_problems(upper) == [
+        "a browser sends the punycode form of an internationalised host, "
+        "so this matches nothing — use the xn-- spelling"
+    ]
+    assert len(_origin_problems(upper.replace("https", "HTTPS"))) == 2
+    # The punycode spelling must still pass, or the guard breaks the deploy it
+    # exists to protect.
+    assert _production_with_cors("https://xn--80ak6aa92e.com").cors_origins_list
 
 
 def test_production_rejects_a_raw_unicode_host(clean_env):

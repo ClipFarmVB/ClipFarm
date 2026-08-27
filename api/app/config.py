@@ -126,10 +126,20 @@ def _origin_problems(origin: str) -> list[str]:
     Three rounds of review tried to fix that by ORDERING the checks so the more
     important problem is reported first. That cannot work, and the reasoning is
     worth keeping: with two independent defects, whichever is reported, fixing
-    it leaves the other. The ordering argument only ever applied to pairs where
-    one problem *implies* the other — a zero-padded default port, an upper-case
-    unicode host — and those are still ordered below for that reason. For
-    genuinely independent defects the only fix is to report them all.
+    it leaves the other. For genuinely independent defects the only fix is to
+    report them all.
+
+    Two pairs here are NOT independent — one fix resolves both — and those are
+    reported once rather than twice:
+
+      a zero-padded default port (`:080` on http), where "drop it" is the
+      answer to both, handled by ordering the two port checks;
+
+      an upper-case unicode host, where writing the punycode form lower-cases
+      it as a side effect, handled by suppressing the case message.
+
+    An earlier version of this paragraph said the second was "ordered below"
+    like the first. It was not ordered at all, and both messages were printed.
 
     Deliberately not pydantic's AnyHttpUrl: in 2.x that *appends* a trailing
     slash while normalizing, which would quietly undo the check below rather
@@ -163,14 +173,31 @@ def _origin_problems(origin: str) -> list[str]:
         # `problems`, every other bad entry went unreported too.
         return ["the host could not be parsed — not a scheme://host origin"]
 
-    # scheme and netloc must BOTH be present: `clipfarm.ca` parses to an empty
-    # scheme with the whole string in .path, and a bare `https://` parses to an
-    # empty netloc. Checking only path/query/fragment would misreport the first
-    # and accept the second.
-    if parts.scheme not in _ALLOWED_ORIGIN_SCHEMES or not parts.netloc:
+    # An empty netloc IS a parse failure: `clipfarm.ca` puts the whole string in
+    # .path with no scheme, and a bare `https://` has nothing after it. Neither
+    # gives any later check something to read, so nothing else can be said.
+    if not parts.netloc:
         return ["not a scheme://host origin — expected http:// or https:// and a host"]
 
     problems: list[str] = []
+
+    # A disallowed scheme is NOT a parse failure, and treating it as one cost a
+    # refused boot: `ftp://admin:hunter2@clipfarm.ca` parses cleanly — netloc
+    # `admin:hunter2@clipfarm.ca`, username `admin` — so the credential is
+    # readable and was withheld anyway, to be discovered on the next boot. The
+    # early return above is justified for an unparseable entry and was applied
+    # to this one as well.
+    if parts.scheme not in _ALLOWED_ORIGIN_SCHEMES:
+        # The scheme is NOT echoed. The first version of this message
+        # interpolated it, and `test_only_a_scheme_this_guard_accepts_is_echoed`
+        # caught the consequence immediately: `hunter2://admin@clipfarm.ca` is a
+        # secret pasted where a scheme belongs, and `_redacted_origin` exists
+        # precisely because that happens. A message that reproduces the value
+        # the redaction is hiding undoes it.
+        problems.append(
+            "the scheme is not http or https — an Origin here is "
+            "scheme://host[:port]"
+        )
 
     # `?` and `#` are tested on the RAW entry, not on parts.query/parts.fragment.
     # urlsplit reports both as "" whether the delimiter was absent or present and
@@ -190,16 +217,34 @@ def _origin_problems(origin: str) -> list[str]:
             "can never match a browser Origin header"
         )
 
-    # The case check runs on scheme + host[:port] with any userinfo removed,
-    # rather than on the whole entry. `https://admin:Hunter2@clipfarm.ca` is not
-    # a case problem — the capitals are in a credential that has to go anyway —
-    # and reporting one would be advice the operator cannot act on separately.
+    # The case check runs on the scheme and the HOST, with userinfo and port
+    # excluded, rather than on the whole entry. Three things it must not do:
+    #
+    #   `https://admin:Hunter2@clipfarm.ca` — capitals in a credential that has
+    #   to go anyway, so a case message is advice the operator cannot act on.
+    #
+    #   `https://clipfarm.ca:80A` — a capital can only reach the port when the
+    #   port is invalid, which is reported on its own. Spanning the port
+    #   INVENTED "must be lower-case" against an already-lower-case host.
+    #
+    #   `https://КЛИПФАРМ.РФ` — writing the host in punycode lower-cases it as a
+    #   side effect, so the two are an implied pair and only the punycode
+    #   message is worth printing. A scheme in capitals is NOT implied by it and
+    #   is still reported.
     scheme_text, _, after_scheme = origin.partition("://")
     authority = after_scheme
     for delimiter in "/?#":
         authority = authority.partition(delimiter)[0]
-    cased = f"{scheme_text}{authority.rpartition('@')[2]}"
-    if cased != cased.lower():
+    host_text = authority.rpartition("@")[2]
+    if host_text.startswith("["):
+        close = host_text.find("]")
+        raw_host = host_text if close == -1 else host_text[: close + 1]
+    else:
+        raw_host = host_text.partition(":")[0]
+    host_is_unicode = parts.hostname is not None and not parts.hostname.isascii()
+    if scheme_text != scheme_text.lower() or (
+        raw_host != raw_host.lower() and not host_is_unicode
+    ):
         problems.append("must be lower-case — origins are compared as exact strings")
 
     if parts.hostname:
@@ -281,7 +326,14 @@ def _origin_problems(origin: str) -> list[str]:
 
 
 def _origin_problem(origin: str) -> str | None:
-    """The first problem with `origin`, or None. For callers wanting one line."""
+    """The first problem with `origin`, or None.
+
+    Test-only: nothing in `api/app` calls this since the validator moved to
+    `_origin_problems`. Kept because several tests assert on a single message
+    and reading `[0]` at each call site would be noisier than one shim — and
+    said plainly here, because "for callers wanting one line" described a caller
+    that does not exist.
+    """
     problems = _origin_problems(origin)
     return problems[0] if problems else None
 
