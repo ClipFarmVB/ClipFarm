@@ -840,8 +840,12 @@ def test_every_problem_with_an_entry_is_reported_at_once(clean_env, value, expec
 
     Three rounds tried to fix this by ORDERING the checks. That cannot work:
     with two independent defects, whichever is reported first, fixing it leaves
-    the other. Ordering only helps where one problem *implies* the other — a
-    zero-padded default port — and those pairs are still ordered.
+    the other.
+
+    Two pairs here are not independent and are still reported once: a
+    zero-padded default port, handled by ordering the two port checks, and an
+    upper-case unicode host, handled by suppressing the case message. An earlier
+    version of this docstring said both were handled by ordering.
     """
     problems = _origin_problems(value)
 
@@ -870,6 +874,52 @@ def test_a_disallowed_scheme_does_not_withhold_the_rest(clean_env):
     assert any("not http or https" in problem for problem in problems)
     assert any("user:password" in problem for problem in problems)
     assert not any("ftp" in problem for problem in problems)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_count"),
+    [
+        ("//clipfarm.ca:8O", 2),      # scheme + invalid port, NOT a case problem
+        ("//A@b.ca", 2),              # scheme + userinfo; the capital is in userinfo
+        ("//clipfarm.ca/PATH", 2),    # scheme + path; the capitals are in the path
+        ("//clipfarm.ca", 1),         # scheme alone
+        ("//X.ca", 2),                # scheme + a genuine host capital
+    ],
+)
+def test_a_protocol_relative_entry_is_not_over_reported(clean_env, value, expected_count):
+    """These reach the case check only because a disallowed scheme now
+    accumulates instead of returning early.
+
+    The check used to slice the raw entry by hand, and `origin.partition("://")`
+    returns the WHOLE string when there is no `://` — so the entire entry landed
+    in `scheme_text` and every capital anywhere in it became a case problem,
+    re-inventing the two defects the check had just been rewritten to avoid.
+    Reading `parts.netloc` instead is what fixes it: urlsplit has already
+    stripped path, query and fragment, and preserves case.
+
+    `//X.ca` is in the list to prove the fix did not simply switch the check
+    off — a genuine host capital is still reported.
+    """
+    assert len(_origin_problems(value)) == expected_count
+
+
+def test_idna_does_not_lower_case_an_ascii_label(clean_env):
+    """The implied-pair suppression has to be narrower than "the host is
+    non-ASCII".
+
+    `"WWW.\u043a\u043b\u0438\u043f\u0444\u0430\u0440\u043c.\u0440\u0444".encode("idna")`
+    gives `WWW.xn--80apfehqi4a.xn--p1ai` — IDNA leaves an already-ASCII label
+    alone. So suppressing the case message for any non-ASCII host sent the
+    operator to a value that is refused again on the next boot, which is the
+    two-boot failure this branch exists to end.
+
+    An ASCII capital is exactly the part punycode will not fix.
+    """
+    mixed = "https://WWW.\u043a\u043b\u0438\u043f\u0444\u0430\u0440\u043c.\u0440\u0444"
+    pure = "https://\u041a\u041b\u0418\u041f\u0424\u0410\u0420\u041c.\u0420\u0424"
+
+    assert len(_origin_problems(mixed)) == 2
+    assert len(_origin_problems(pure)) == 1
 
 
 def test_an_invalid_port_does_not_invent_a_case_problem(clean_env):

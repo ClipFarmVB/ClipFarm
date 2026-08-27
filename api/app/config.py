@@ -136,7 +136,9 @@ def _origin_problems(origin: str) -> list[str]:
       answer to both, handled by ordering the two port checks;
 
       an upper-case unicode host, where writing the punycode form lower-cases
-      it as a side effect, handled by suppressing the case message.
+      it as a side effect — handled by suppressing the case message, but only
+      for the capitals punycode actually removes. IDNA leaves an already-ASCII
+      label alone, so `WWW.клипфарм.рф` still gets both.
 
     An earlier version of this paragraph said the second was "ordered below"
     like the first. It was not ordered at all, and both messages were printed.
@@ -217,33 +219,49 @@ def _origin_problems(origin: str) -> list[str]:
             "can never match a browser Origin header"
         )
 
-    # The case check runs on the scheme and the HOST, with userinfo and port
-    # excluded, rather than on the whole entry. Three things it must not do:
+    # The case check covers the scheme and the HOST — not userinfo, not the
+    # port, and not the path. It reads `parts.netloc`, which urlsplit has
+    # already stripped of path, query and fragment while PRESERVING case
+    # (`parts.hostname` is lower-cased and useless here).
+    #
+    # It used to slice the raw entry by hand, and that broke on a
+    # protocol-relative entry: `origin.partition("://")` returns the whole
+    # string when there is no `://`, so `//x.ca:8O` put the entire entry in
+    # `scheme_text` and re-invented every defect this check was rewritten to
+    # avoid. Those entries reach here only because a disallowed scheme now
+    # accumulates rather than returning early — the fix before this one admitted
+    # them, and the hand-rolled slicing was waiting for them.
+    #
+    # Three things it must not do:
     #
     #   `https://admin:Hunter2@clipfarm.ca` — capitals in a credential that has
     #   to go anyway, so a case message is advice the operator cannot act on.
     #
     #   `https://clipfarm.ca:80A` — a capital can only reach the port when the
-    #   port is invalid, which is reported on its own. Spanning the port
-    #   INVENTED "must be lower-case" against an already-lower-case host.
+    #   port is invalid, which is reported on its own.
     #
     #   `https://КЛИПФАРМ.РФ` — writing the host in punycode lower-cases it as a
     #   side effect, so the two are an implied pair and only the punycode
-    #   message is worth printing. A scheme in capitals is NOT implied by it and
-    #   is still reported.
-    scheme_text, _, after_scheme = origin.partition("://")
-    authority = after_scheme
-    for delimiter in "/?#":
-        authority = authority.partition(delimiter)[0]
-    host_text = authority.rpartition("@")[2]
-    if host_text.startswith("["):
-        close = host_text.find("]")
-        raw_host = host_text if close == -1 else host_text[: close + 1]
+    #   message is worth printing.
+    #
+    # That last one is why the host test is for an ASCII capital specifically.
+    # IDNA does NOT lower-case a label that is already ASCII —
+    # `"WWW.клипфарм.рф".encode("idna")` gives `WWW.xn--80apfehqi4a.xn--p1ai` —
+    # so suppressing the case message for any non-ASCII host sent the operator
+    # to a value that is refused again, which is the two-boot failure this
+    # branch exists to end. An ASCII capital is exactly the part punycode will
+    # not fix. (A percent-escape in a host, `%2A`, reads as one of those. It is
+    # not a shape any browser sends, and the entry is refused either way.)
+    scheme_text = origin[: origin.index("://")] if "://" in origin else ""
+    raw_host = parts.netloc.rpartition("@")[2]
+    if raw_host.startswith("["):
+        close = raw_host.find("]")
+        if close != -1:
+            raw_host = raw_host[: close + 1]
     else:
-        raw_host = host_text.partition(":")[0]
-    host_is_unicode = parts.hostname is not None and not parts.hostname.isascii()
-    if scheme_text != scheme_text.lower() or (
-        raw_host != raw_host.lower() and not host_is_unicode
+        raw_host = raw_host.partition(":")[0]
+    if scheme_text != scheme_text.lower() or any(
+        c.isupper() and c.isascii() for c in raw_host
     ):
         problems.append("must be lower-case — origins are compared as exact strings")
 
@@ -329,10 +347,9 @@ def _origin_problem(origin: str) -> str | None:
     """The first problem with `origin`, or None.
 
     Test-only: nothing in `api/app` calls this since the validator moved to
-    `_origin_problems`. Kept because several tests assert on a single message
-    and reading `[0]` at each call site would be noisier than one shim — and
-    said plainly here, because "for callers wanting one line" described a caller
-    that does not exist.
+    `_origin_problems`, and there is exactly one call site in the suite. Kept
+    only because that test reads better without a `[0]`; delete it and inline
+    the index if a second reason to keep it never appears.
     """
     problems = _origin_problems(origin)
     return problems[0] if problems else None
