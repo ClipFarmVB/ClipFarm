@@ -41,9 +41,17 @@ _FORBIDDEN = set('";\\/:*?<>|')
 # the filesystem limit below and the header budget are measured in.
 MAX_COMPONENT_BYTES = 80
 
-# Most filesystems cap a single name at 255 bytes. Four capped components plus
-# their separators reach 258, so the joined stem is capped too — otherwise the
-# one input that overflows is the one nobody tests.
+# Most filesystems cap a single name at 255 bytes, and four 80-byte components
+# with their separators would reach 257 — so the joined stem is capped too.
+#
+# For *this* scheme that cap is unreachable, and the arithmetic above is why it
+# looks like it isn't: `action` comes from ActionType, whose longest value is 7
+# bytes, so the real worst case is 80 + 3 + 7 + 3 + 80 + 3 + 8 = 184 against a
+# 251-byte budget. The cap is not dead code — it is what holds for a caller
+# passing a longer field set, which is what CF-101 does when it names zip
+# entries, and TestFilenameLengthBound reaches it by passing an unbounded
+# action. But no *route* can reach it, so do not read a green test there as
+# evidence that production exercises this path.
 MAX_FILENAME_BYTES = 255
 
 

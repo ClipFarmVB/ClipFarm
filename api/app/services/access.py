@@ -31,10 +31,17 @@ joining ``GET /users/{handle}`` from CF-107 — five unthrottled endpoints where
 there were none. The download one is the most expensive: it mints an attachment
 URL for the full clip, so an unthrottled caller can pull the bytes rather than
 just a row. Nothing can be public yet, so all of that traffic 404s today, making
-this a load question rather than a disclosure one. Rate limiting is tracked in
-CF-186 (#189) and needs to land before anything is actually publishable; the
-404-not-403 choice below means none of them is an existence oracle in the
-meantime.
+this a load question rather than a disclosure one.
+
+**That last sentence expires with CF-109.** The safety here is not the 404
+choice, it is that no row can be set `public` — so the moment CF-109 lands the
+visibility setter, an unauthenticated caller can walk ``/clips/{id}/download``
+and pull full clip bytes, unthrottled, with an egress bill attached. That makes
+rate limiting (CF-186, #189) a blocker on CF-109 rather than a parallel task,
+and this endpoint is what changed the severity of that ordering. The dependency
+is recorded on CF-109 (#139) too — a paragraph in a module nobody has to open
+is not an ordering constraint. The 404-not-403 choice below keeps none of them
+an existence oracle in the meantime.
 
 **One deliberate asymmetry.** A public clip inside a private game is reachable
 by direct link (``GET /clips/{id}/share``) and through a collection, but
@@ -108,13 +115,22 @@ def can_identify(viewer_id: uuid.UUID | None, game: Game | None) -> bool:
     override publishes *that clip*, not the game it came from or who is in it,
     and this is footage of named young people.
 
-    The rule is therefore the game's own: whoever may see the game may be told
-    what it is called and who played in it.
+    The rule this states is the game's own: whoever may see the game may be
+    told what it is called and who played in it.
 
-    "Told" is exact rather than pedantic. collections.py already hands
-    player_name to any signed-in viewer who saved that public clip, so this is
-    stricter than that neighbour; reconciling the two is a separate question and
-    does not belong in whichever router asked first.
+    **It is an intention, not yet an invariant, and the gap is on purpose.**
+    `collections.py` hands `player_name` to every clip that survives
+    `apply_clip_visibility`, which gates on the *clip*. So for a public clip in
+    a private game, one signed-in viewer gets two answers:
+
+        GET /clips/{id}/download        -> withholds the player's name
+        GET /collections/{id}/clips     -> returns it
+
+    Only the download path enforces this. Reconciling them is CF-283 (#330) —
+    either collections tightens to this rule, or this loosens to that one and
+    the paragraph above is wrong about what an override publishes. Until that
+    is settled, do not read this docstring as a description of the system: it
+    describes one endpoint and an argument for extending it.
 
     Currently the same predicate as `can_view_game`, which is the point of
     naming it separately rather than inlining the call: CF-100's download

@@ -18,7 +18,7 @@ interface ClipModalProps {
 export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   const videoRef  = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
-  // Guards a double-click: two presigns and two downloads of the same clip.
+  // Serialises the presign call only — see the note in ClipCard's handler.
   const [downloading, setDownloading] = useState(false);
 
   // Auto-play when clip changes
@@ -96,6 +96,8 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
             <button
               onClick={handleDownload}
               disabled={downloading}
+              aria-busy={downloading}
+              title="Download this clip"
               className="flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted hover:text-foreground hover:bg-surface-high transition-colors disabled:opacity-50 sm:h-auto sm:py-1.5"
             >
               <Download size={12} />

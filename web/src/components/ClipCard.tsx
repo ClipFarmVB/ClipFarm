@@ -39,9 +39,14 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
   const canTrim = clip.source_available !== false;
 
   async function handleDownload() {
-    // Guarded like labelLoading and trimLoading on this card: without it a
-    // double-click mints two presigned URLs and starts two downloads of the
-    // same clip, which Chrome saves as `… (1).mp4`.
+    // Serialises the presign call, the way labelLoading and trimLoading
+    // serialise theirs — no more than that. It is released as soon as
+    // startCrossOriginDownload appends the frame, so two clicks far enough
+    // apart still start two transfers of the same clip and Chrome still saves
+    // the second as `… (1).mp4`. Holding it for the transfer is not available:
+    // the frame is cross-origin, so there is no event that says the download
+    // finished, and a timer long enough to cover a slow one would leave the
+    // button dead after every fast one.
     if (downloadLoading) return;
     setDownloadLoading(true);
     try {
@@ -211,6 +216,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
             <button
               onClick={handleDownload}
               disabled={downloadLoading}
+              aria-busy={downloadLoading}
               className="flex min-h-8 items-center gap-1 rounded px-2 py-1.5 text-[10px] text-subtle hover:text-muted hover:bg-surface-hover transition-colors disabled:opacity-50"
               title="Download this clip"
             >
