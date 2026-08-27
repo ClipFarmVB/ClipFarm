@@ -244,9 +244,13 @@ def check_upload_allowed(
 
     `content_type` and `size_bytes` may be None when the caller has no
     trustworthy value and the check belongs elsewhere — the presigned flow
-    validates the type at presign and R2 enforces it from the signature, so
-    re-deriving it from a HEAD at completion would risk rejecting an upload
-    that already succeeded on a storage quirk. A None `duration_seconds` is
+    validates the type at presign, and re-deriving it from a HEAD at completion
+    would compare the allowlist against itself: R2 enforces the signed *header*,
+    so the stored ContentType is necessarily the value that already passed here.
+    The only way it differs is R2 omitting the header, which would be a false
+    rejection. Correct advice, but not for the reason once written here — the
+    signature says nothing about the bytes, which is why confirm_upload sniffs
+    them (CF-244). A None `duration_seconds` is
     *not* skipped: it is priced from the size instead — see `charge_for`.
 
     Callers that go on to accept the upload must use `reserve_upload`, which

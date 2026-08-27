@@ -8,8 +8,10 @@ export default defineConfig({
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
   test: {
-    // Everything covered so far is pure logic. Add `jsdom` here (and the
-    // dependency) when the first component test arrives.
+    // Everything here is pure logic except the focus-trap suite (CF-227), which
+    // opts into jsdom with a `// @vitest-environment jsdom` docblock of its own.
+    // Left as `node` deliberately: a per-file opt-in keeps the other seven
+    // suites off a document they have no use for.
     environment: "node",
     // `.tsx` is included so the first component test runs instead of being
     // silently skipped — the existing suites would still match, so vitest would

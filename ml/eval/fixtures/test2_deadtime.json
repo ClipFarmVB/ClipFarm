@@ -1,0 +1,122 @@
+{
+  "test_id": "test2",
+  "labeler": "Owen",
+  "labeled_at": "2026-08-07",
+  "labeling": "independent",
+  "source_video_file": "DeadtimeLabel2.mp4",
+  "source_video_md5": "c45aefe7bef435beeb1fad2a7bedcce8",
+  "source_r2_key": "raw/87737039-c22d-4b8b-a4ec-c42d97ded476.mp4",
+  "video_duration_sec": 645.25,
+  "note": "Tier-less dead-time pass (CF-173 validation): spans are ball-in-play, serve contact to point end; dead time is the complement. md5 + duration pinned from the repaired local file (1920x1080). Upload this exact file unmodified or the md5 will not match the ball-cache key.",
+  "spans": [
+    {
+      "start": "0:00",
+      "end": "0:10"
+    },
+    {
+      "start": "0:28",
+      "end": "0:38"
+    },
+    {
+      "start": "0:51",
+      "end": "0:54"
+    },
+    {
+      "start": "1:03",
+      "end": "1:23"
+    },
+    {
+      "start": "1:43",
+      "end": "1:49"
+    },
+    {
+      "start": "2:09",
+      "end": "2:11"
+    },
+    {
+      "start": "2:29",
+      "end": "2:40"
+    },
+    {
+      "start": "3:02",
+      "end": "3:03"
+    },
+    {
+      "start": "3:17",
+      "end": "3:21"
+    },
+    {
+      "start": "3:37",
+      "end": "3:45"
+    },
+    {
+      "start": "3:58",
+      "end": "4:01"
+    },
+    {
+      "start": "4:10",
+      "end": "4:19"
+    },
+    {
+      "start": "4:47",
+      "end": "4:55"
+    },
+    {
+      "start": "5:08",
+      "end": "5:16"
+    },
+    {
+      "start": "5:29",
+      "end": "5:31"
+    },
+    {
+      "start": "5:45",
+      "end": "6:03"
+    },
+    {
+      "start": "6:19",
+      "end": "6:25"
+    },
+    {
+      "start": "6:47",
+      "end": "6:52"
+    },
+    {
+      "start": "7:09",
+      "end": "7:19"
+    },
+    {
+      "start": "7:31",
+      "end": "7:42"
+    },
+    {
+      "start": "8:02",
+      "end": "8:08"
+    },
+    {
+      "start": "8:26",
+      "end": "8:50"
+    },
+    {
+      "start": "9:01",
+      "end": "9:03"
+    },
+    {
+      "start": "9:15",
+      "end": "9:23"
+    },
+    {
+      "start": "9:35",
+      "end": "9:39"
+    },
+    {
+      "start": "9:49",
+      "end": "10:03"
+    },
+    {
+      "start": "10:17",
+      "end": "10:28"
+    }
+  ],
+  "source_frame_height": 1080
+}

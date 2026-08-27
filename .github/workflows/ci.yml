@@ -61,14 +61,31 @@ jobs:
             api/requirements.txt
       # Pinned (CF-92) — an upstream release must not be able to change CI's
       # answer on a branch nobody touched. Add a tool to requirements-tooling.txt
-      # rather than to this line; test_ci_tooling_is_pinned enforces that.
+      # rather than appending it to this line;
+      # test_ci_installs_the_tooling_file_rather_than_naming_tools_inline
+      # enforces that, and test_every_tool_ci_installs_is_pinned enforces the
+      # pin itself.
+      #
+      # A separate `pip install` step is fine when ORDER matters — see the numpy
+      # one below, which has to run after mypy and is pinned in place. What the
+      # guard forbids is an install target with no `==`, wherever it appears.
       - run: pip install -r requirements-tooling.txt
       - run: ruff check api/
       - run: mypy api/app --ignore-missing-imports
       # ml/eval is pure, unit-tested logic — lint it too (rest of ml/ is not yet covered).
       - run: ruff check ml/eval
       - run: mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
-      # ml unit tests (eval metrics + dead-time) — stdlib-only, runs in seconds.
+      # numpy is installed AFTER the lint/type steps, for the same reason the api
+      # dependencies below are: ruff and mypy are tuned against a dependency-free
+      # environment, and numpy ships py.typed, so its presence changes what
+      # --ignore-missing-imports resolves and hence the error set mypy reports.
+      #
+      # Pinned to the version the worker image and api tests use
+      # (ml/requirements.txt, api/requirements-dev.txt). Unpinned it resolves to
+      # numpy 2.x, so the guarded builder's speed math would be validated here
+      # against a different major version than anything that runs it.
+      - run: pip install "numpy==1.26.4"
+      # ml unit tests (eval metrics + dead-time) — stdlib + numpy, runs in seconds.
       - run: python -m pytest ml/tests/
       # api unit tests now need the application's own dependencies:
       # app.observability imports app.config, which imports pydantic-settings.
