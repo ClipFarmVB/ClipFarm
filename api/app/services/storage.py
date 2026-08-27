@@ -123,6 +123,27 @@ def object_exists(key: str) -> bool:
     return head_object(key) is not None
 
 
+def head_bytes(key: str, count: int) -> bytes | None:
+    """First `count` bytes of an object; None on missing or any error.
+
+    A probe, never raises — same contract as head_object, and for the same
+    reason: the caller is better placed to decide what a missing answer means
+    than this function is. confirm_upload treats None as "allow", which is the
+    opposite of what it does with a None from head_object; see the reasoning
+    there.
+
+    Ranged so that sniffing a container header costs a few bytes rather than a
+    download — the objects on this path run to 8 GB.
+    """
+    try:
+        resp = _client().get_object(
+            Bucket=settings.r2_bucket_name, Key=key, Range=f"bytes=0-{count - 1}"
+        )
+        return resp["Body"].read(count)
+    except Exception:
+        return None
+
+
 # ── Presigned direct-to-R2 uploads (CF-163) ──────────────────────────────────
 # The browser sends video straight to R2 so the api never handles the bytes.
 # generate_presigned_url is pure local signing — no network, safe to call on
@@ -134,9 +155,13 @@ def presign_put(key: str, content_type: str, expires_in: int) -> str:
     """
     Presigned URL for a single-shot PUT of a whole object.
 
-    ContentType is deliberately signed into the URL: R2 rejects the request if
-    the browser's Content-Type header doesn't match, which makes the file-type
-    check a real pre-transfer control rather than an advisory one.
+    ContentType is deliberately signed into the URL, so R2 rejects a PUT whose
+    Content-Type *header* differs from the signed value.
+
+    That binds the header, not the bytes (CF-244). A client can declare
+    video/mp4, send the matching header so the signature verifies, and upload
+    anything at all. This is a control over what the object is *labelled*, not
+    over what it contains — confirm_upload sniffs the stored bytes for that.
     """
     return _client().generate_presigned_url(
         "put_object",
