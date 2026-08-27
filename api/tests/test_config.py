@@ -971,7 +971,10 @@ def test_a_boot_error_names_the_env_var_not_the_field(clean_env, monkeypatch):
     """`loc` carries the FIELD name and the operator sets an environment
     variable. `Settings.env_name_for()` exists for exactly this, the module
     comment at the top of config.py mandates it, and `production_config_error`
-    has always used it — this function printed the raw field name instead.
+    uses it for CF-172's message — this function printed the raw field name
+    instead. (`production_config_error` has never called it; `git log -L` on
+    that function says so. An earlier version of this docstring credited it, and
+    the correction reached config.py and not here.)
 
     A message whose stated justification is telling the operator which setting
     is wrong should name it the way they set it.
@@ -1015,11 +1018,19 @@ def test_a_backslash_does_not_hide_a_real_port_problem(clean_env, value, extra):
     spurious "not a number" printed beside the backslash message.
 
     Skipping the port checks whenever a backslash appeared fixed that and lost
-    three real problems — the first version of this test asserted exactly that
-    loss, calling it a third implied pair. It is not one: the implication holds
+    three real problems. It is not a third implied pair: the implication holds
     only where the backslash is in the netloc AND the port is otherwise valid,
     one case of the four below. The port is read from the entry with the
     backslash removed instead, which needs no carve-out.
+
+    The first version of this test did NOT pin that loss, though an earlier
+    version of this docstring said it did. It asserted a single entry —
+    `https://clipfarm.ca:8443` plus a backslash — which is the one case of four
+    where nothing is lost, so it passed against the buggy code and the fixed
+    code alike. That is the whole reason the parametrize list below has four
+    rows: one example
+    cannot distinguish a rule from a coincidence, which is also how the rule it
+    was written for came to be wrong.
     """
     problems = _origin_problems(value)
 

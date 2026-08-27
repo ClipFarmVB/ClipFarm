@@ -386,6 +386,11 @@ def _origin_problems(origin: str) -> list[str]:
         try:
             port_source = urlsplit(origin.replace("\\", ""))
         except ValueError:
+            # Not known to be reachable: removing backslashes cannot move the
+            # netloc boundary (fixed by the first /?#) or unbalance a bracket,
+            # and a brute-force search found no entry where the raw parses and
+            # the cleaned raises. Kept anyway because this runs at boot, where
+            # an uncaught exception replaces a useful message with a traceback.
             port_source = parts
     try:
         port = port_source.port
