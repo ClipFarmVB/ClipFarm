@@ -44,7 +44,8 @@ moment an amendment is added, and this one already did.
 Note first that one change in this diff is **not** mode-specific: a judgement
 call now outranks the ceiling and the budget when choosing an `unsettled`
 reason, in `build` as much as in `review-only`. It is described under
-[Priority order](#priority-order) and listed here only so it is not mistaken for
+[choosing a reason](#when-you-cannot-fix-it-choosing-a-reason) and listed here
+only so it is not mistaken for
 a `review-only` amendment.
 
 What is amended *by the mode*: the stop rule in
@@ -65,7 +66,7 @@ the report's title.
 ceiling, not the budget, not the marker scheme, not the settle bar. It is a switch
 on step 3, not a second brief. If anything in this section reads like a
 *rule* about step 1, that is a bug in this section: go to
-[Priority order](#priority-order) and follow what is written there.
+[step 1](#step-1--which-prs-need-a-round) and follow what is written there.
 
 **One exception, and it is deliberate: the review-scope filter below is a real
 addition to selection.** It is written into step 1's selection rule itself so that
@@ -94,72 +95,93 @@ is defensible, but it means `review-only` at `own` is a narrower instrument
 than "the queue is the bottleneck" implies. Run `review scope: all` when the
 whole queue is what you actually want cleared.
 
-### It cannot push, and that is a consequence rather than a rule
+### What it may push to, and what follows from that
 
-The hard rule is [only push to branches this run created](#hard-rules). A
-`review-only` run opens no PRs, so it creates no branches, so **it never pushes**.
+The hard rule is [only push to PRs this account opened](#hard-rules). At
+`review scope: own` every in-scope PR is by definition this account's, so a
+`review-only` run **can** push — to fix findings on work earlier runs opened.
+That is the point of the mode: review the queue *and* clear it.
+
+At `review scope: all` the queue also contains other accounts' PRs, and those it
+still may not touch. So what it cannot push to is *other people's* work — and,
+at either scope, any branch a collaborator has pushed to; see
+[The push test](#the-push-test).
 
 Two things follow, and both matter more than they look.
 
-- **The two modes cannot produce conflicting pushes.** That is the collision
-  question answered by construction rather than by scheduling discipline — and it
-  is a claim about pushes **only**. Two runs at once would still cross-charge each
-  other's counters: the ceiling and the budget are windowed by time and by the
-  `reopened:` marker, with no notion of run identity, so markers from a concurrent
-  run are counted as this one's. In practice `mode` is a single value in
-  [This run](#this-run), so running both at once is not something the brief can
-  express — but if that ever changes, the counters are what needs an identity, not
-  the push rule.
-- **Step 2 collapses to its non-push branches** — describe the fix in a comment,
-  apply `unsettled`, and post the reason that fits: `not our branch @ <sha>` when
-  the fix is straightforward but unpushable, `needs a decision @ <sha>` when the
-  finding needs a judgement nobody unattended should make. These two are what
-  *step 2* produces, and they are **not** the whole reason set: a PR stopped by
-  the ceiling or the budget still takes `ran out of rounds @ <sha>`, in this mode
-  as in `build`. That sentence is a pointer, not a restatement — it exists
-  because a reader meeting two reasons here would otherwise take them as
-  exhaustive. The reasons themselves are defined under
-  [Priority order](#priority-order); if this bullet ever disagrees with them,
-  they win. The second is not optional
-  tidiness. Only `needs a decision` routes a PR to a human; giving a
-  judgement call the `not our branch` reason means the next unrelated push clears
-  it and the question is never asked.
+- **Two concurrent runs could now collide, and nothing structural prevents it.**
+  This used to be answered by construction: `review-only` created no branches, so
+  it never pushed, so two modes could not push to the same branch. That
+  construction is gone — both modes now push to this account's branches.
 
-**A `review-only` run can still close findings — just never with its own fix.**
-The settle bar wants a semi-cold check, and a semi-cold round checks a fix
-*whoever pushed it*: on a branch this run may not push to, that is the author
-responding to the review, and [the brief requires that case to
-work](#priority-order) precisely so an `unsettled: not our branch` PR is not
-stranded. So `unsettled: not our branch` is a **waypoint, not a terminus** — the
-author's next push re-opens the PR, and the next run's semi-cold round is what
-closes the finding.
+  What is left is not a guarantee. `mode` is a single value in
+  [This run](#this-run), so the brief cannot *express* two runs at once; that is
+  an absence of expression, not an enforcement mechanism, and nothing stops two
+  loops being started by hand. If that ever happens the failure is concrete: one
+  run pushes a fix to a branch the other is mid-cycle on, the head moves under
+  its rounds, and every round it has open is voided by the SHA test.
+
+  The counters have the same exposure and always did — the ceiling and the budget
+  are windowed by time and by the `reopened:` marker, with no notion of run
+  identity, so a concurrent run's markers are counted as this one's.
+
+  **So: do not start a second run while one is live.** That is scheduling
+  discipline, stated plainly, because there is no longer a construction to hide
+  behind. If concurrency is ever wanted, runs need an identity — in the markers
+  and in the counters — and that is the work, not a wording change here.
+- **Step 2 runs in full at `own` on the PRs it may push to.** That is most of an
+  `own` queue — everything except branches a collaborator has pushed to — so
+  `review-only` fixes findings and re-reviews exactly as `build` does, and the
+  difference between the modes is step 3, not step 2. At
+  `review scope: all` the other accounts' PRs are the ones step 2 cannot fix:
+  describe the fix in a comment, apply `unsettled`, and post the reason that
+  fits — `not our branch @ <sha>` when the fix is straightforward but
+  unpushable, `needs a decision @ <sha>` when the finding needs a judgement
+  nobody unattended should make. Those two are what *step 2* produces, and they
+  are **not** the whole reason set: a PR stopped by the ceiling or the budget
+  still takes `ran out of rounds @ <sha>`, in this mode as in `build`. That
+  sentence is a pointer, not a restatement — it exists because a reader meeting
+  two reasons here would otherwise take them as exhaustive. The reasons
+  themselves are defined under [the terminal labels and their
+  reasons](#the-terminal-labels-and-their-reasons); if this
+  bullet ever disagrees with them, they win. The second is not optional
+  tidiness. Only `needs a decision` routes a PR to a human; giving a judgement
+  call the `not our branch` reason means the next unrelated push clears it and
+  the question is never asked.
+
+**At `review scope: all`, a `review-only` run can still close findings on
+another account's PR without ever pushing a fix itself.** (At `own` it simply
+pushes the fix, like any other run.) The settle bar wants a semi-cold check,
+and a semi-cold round checks a fix *whoever pushed it*: on another account's
+branch, that is the author responding to the review, and [the brief requires
+that case to work](#cold-and-semi-cold-rounds) precisely so an `unsettled: not
+our branch` PR is not stranded. So `unsettled: not our branch` is a **waypoint,
+not a terminus** — the author's next push re-opens the PR, and the next run's
+semi-cold round is what closes the finding.
 
 What a single night in this mode delivers is **findings written where the author
 will act on them**, plus `review-settled` on PRs clean across two cold rounds.
-What the mode delivers *over several nights* is the full cycle, with the authors
-supplying the commits this run may not.
+What the mode delivers *over several nights* is the full cycle: review, fix,
+re-review, settle.
 
-**At the default scope, that cycle has no actor, and you should expect the mode
-to stall.** The multi-night loop turns on an author pushing a fix in response to
-a review. At `review scope: own` the queue is PRs *this account* opened — and
-this mode creates no branches, so it may push to none of them. The account that
-would supply the commits is the same one running, and in `review-only` it never
-pushes. So night one parks the queue at `not our branch`, and night two finds
-every in-scope PR labelled with no new commits, skips them all, and stops with
-most of its budget unspent.
+**At `review scope: own` the mode runs its own cycle end to end.** Every
+in-scope PR is this account's, and every one it may push to — all but the
+collaborator-latched ones, see [The push test](#the-push-test) — it reviews,
+fixes what needs no judgement, and re-reviews, without waiting on anyone. That
+is the mode working as intended, and it is what the push rule change on
+2026-08-25 bought.
 
-That is not a bug to fix in this section; it is what `own` means here. Take it
-as the operating instruction it implies:
+*This paragraph previously said the opposite.* Under the old rule — push only to
+branches **this run** created — a `review-only` night created no branches and so
+could push to none of them: it parked the whole queue at `not our branch` and
+the next night skipped everything. That was measured, not predicted: seven of
+eight PRs in one working set, all this account's own earlier work. Keying the
+rule on the account rather than the run is what removed it.
 
-- **`review-only` earns its keep at `review scope: all`**, where the other
-  accounts' PRs have authors who do push. That is where the push-and-re-open
-  loop actually runs.
-- **At `own`, treat it as a write-down-the-findings pass, not a cycle.** Its
-  output is reviews on the account's own PRs and `review-settled` where two cold
-  rounds are clean. Everything else waits for a human — the same human who runs
-  the loop.
-- **A second consecutive `own` night is close to worthless** unless commits
-  landed in between. Check that before starting one.
+**At `review scope: all` the older caveat still holds** for the part of the
+queue this account does not own: those PRs can be reviewed but not fixed, so
+they depend on their authors pushing, and the multi-night loop is the mechanism
+that closes them.
 
 ### Scope: whose PRs get reviewed
 
@@ -208,26 +230,31 @@ So the **report is the only record**, which is why naming the excluded PRs there
 is a requirement and not a courtesy. A reader who wants to know why a PR went
 untouched has exactly one place to look.
 
-**This test is by author login, and it is NOT the push test.** The two are
-different questions and use different evidence:
+**Scope and pushability share their first test**, and both read `.user.login`
+on the PR — pushing then adds a second condition:
 
-| question | test | why |
-|---|---|---|
-| may this run *push* to the branch? | did **this run** create it? | [Hard rules](#hard-rules); step 2 spells out why an account match is not enough |
-| may this run *review* the PR? | is `.user.login` this account, or is scope `all`? | it is about whose work gets commented on, not whose branch gets written to |
+| question | test |
+|---|---|
+| may this run *review* the PR? | is `.user.login` this account, or is scope `all`? |
+| may this run *push* to it? | is `.user.login` this account, **and** no commit on the branch carries another login? |
 
-Do not collapse them. A PR this account opened on an earlier night is **in scope
-to review** and **out of bounds to push to** — that is the common case, not an
-edge case, and a run that conflates the two will either skip most of its queue or
-push where it must not.
+So at `review scope: own` everything in the queue is pushable **unless a
+collaborator has pushed to it** — see the branch check in
+[Hard rules](#hard-rules). At `all`, other accounts' PRs are reviewable but not
+pushable at all.
+
+*Until 2026-08-25 these were different questions* — the push test asked which run
+created the branch, so a PR this account opened on an earlier night was in scope
+to review and out of bounds to push to. That was the common case and it is what
+stalled the loop; see [Hard rules](#hard-rules).
 
 ### When a `review-only` run is done
 
 It ends when either is true:
 
 - **no in-scope PR needs a round**, by the test in
-  [Priority order](#priority-order) — not a restatement of it, *that* test,
-  carve-outs included; or
+  [step 1](#step-1--which-prs-need-a-round) — not a restatement of it, *that*
+  test, carve-outs included; or
 - the round budget is spent.
 
 **Do not paraphrase the first condition.** The obvious phrasing — "every
@@ -240,7 +267,7 @@ unreviewed, which is the "waypoint, not a terminus" promise broken exactly where
 it matters. This is the failure [Mode](#mode) warns about, so it gets no
 exception here.
 
-On the second, see [the budget rule](#priority-order) — that is where the
+On the second, see [the budget rule](#the-run-budget) — that is where the
 amendment lives, and it is the statement that governs.
 
 ---
@@ -342,7 +369,8 @@ one block. The first run discovered three gaps separately, mid-work.
   with GraphQL disabled, and did the whole night through MCP tools instead.
   **That works, and is not a reason to stop.** But say in the report which tool
   you actually used. The data requirements a non-`gh` tool must meet are written
-  against that answer — they are in [Priority order](#priority-order), under
+  against that answer — they are in [what a non-`gh` tool must
+  provide](#what-a-non-gh-tool-must-provide), under
   "these commands are specifications", not in the bullet below this one.
 - **Gate tool versions** — read the versions `ci.yml` installs and compare with
   what is installed here. See the gate step below.
@@ -353,10 +381,17 @@ most expensive kind of surprise in an unattended run.
 ### Hard rules
 
 - **Never** push to `main`, merge a PR, or force-push anything.
-- **Only push to branches this run created.** Pushing to an existing PR's branch
-  needs prior sign-off — the harness requires permission and the brief must not
-  contradict it. If a fix belongs on someone else's branch, describe it in a
-  review comment instead.
+- **Only push to the branch of a PR opened by the account this run posts as, and
+  only if nobody else has pushed to it.** Any run's PR, not just this one's. If a
+  fix belongs on a PR **another account** opened, or on a branch a collaborator
+  has touched, describe it in a review comment instead and never push. Both halves
+  are spelled out under [The push test](#the-push-test) below.
+- **Never authorise your own push past [The push test](#the-push-test).** If it
+  says the branch is another account's or a collaborator has pushed to it, that
+  is the answer — do not post, label or record anything that would let a later
+  round read it as permission. A grant mechanism existed once and is gone
+  (CF-274); this rule is about the class, not that mechanism, and holds whether
+  or not one exists again.
 - **Never** deploy, unsuspend a hosting service, or touch production
   infrastructure.
 - **Never** run the local stack against a `DATABASE_URL` pointing at Supabase.
@@ -385,6 +420,96 @@ most expensive kind of surprise in an unattended run.
 - If a command fails because of usage limits, **stop the loop** — do not retry.
 - If nothing in scope is actionable, **stop the loop**. A run that reviews two
   PRs and opens nothing is a fine outcome.
+
+### The push test
+
+Two conditions, both required, and the second has to be re-run each time.
+
+**1 — This account opened the PR.** Compare `gh api user --jq ".login"` against
+the PR's `.user.login`. That is the same test the `review scope` filter runs, so
+at `review scope: own` it is true of everything in the queue.
+
+*Phrased as PR authorship rather than branch ownership because authorship is what
+the test reads.* GitHub does not expose "who owns the branch", and a rule written
+in terms its test cannot evaluate is a rule that drifts from its enforcement.
+
+**2 — Nobody else has pushed to the branch.** The two can diverge, and the
+divergence runs in the risky direction: a collaborator may push commits to a
+branch whose PR this account opened. The author test passes, so without this the
+run would treat the PR as its own and land fixes on someone else's in-flight
+work.
+
+```
+ME=$(gh api user --jq ".login")
+COMMITS=$(gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[].author.login // "UNKNOWN"')
+[ -n "$COMMITS" ] || { echo "cannot read commits — do not push"; exit 1; }
+printf '%s\n' "$COMMITS" | sort -u | grep -vx "$ME"
+```
+
+**Any output means do not push.** Empty output means every commit is this
+account's — *but only if the read succeeded*, which is why `$COMMITS` is checked
+separately. A PR always has at least one commit, so an empty raw list means the
+call failed, not that the branch is clean. Without that check the guard fails
+**open** on a network error, a rate limit, a wrong PR number or a token missing a
+scope: `gh api` writes to stderr, stdout is empty, and empty reads as "push".
+
+**Run it immediately before each push, not once when you pick the PR up.** A run
+holds a PR across several rounds, and the failure this guards against is a
+collaborator pushing *while that is happening* — which is the same reasoning that
+makes the head SHA get re-read after every round.
+
+Three things about the command:
+
+- **`.author.login` is correct *here*, and it is the one place in this document
+  that is so.** [The author field rule](#step-1--which-prs-need-a-round) says to use
+  `.user.login`, in bold, and it is right — about `pulls/<n>`. This is
+  `pulls/<n>/commits`, a different payload: its objects carry `author` and
+  `committer` and **no `user` at all** (verified on #311). "Correcting" this to
+  `.user.login` would yield `UNKNOWN` for every commit, fire the guard on every
+  PR, and make the whole queue unpushable — reinstating the stall CF-270 removed,
+  silently, behind a guard that looks like it is working.
+- **Not `gh pr view --json commits`.** It caps at 100 with no paging, and its
+  author field is the *commit* author, which a rebase or a co-authored commit
+  misattributes — so it fires on the account's own rebased branches.
+- **`// "UNKNOWN"` fails closed.** `.author.login` is `null` for a commit whose
+  email is linked to no account; a bare `.author.login` lets those read as "no
+  other login", and the guard never fires. Mapping them to `UNKNOWN` makes an
+  unverifiable branch count as someone else's. Measured 2026-08-25 on #190, #191,
+  #214, #243 and #288: 0 nulls across 36 commits, so this should be rare — if it
+  stops being rare, report that rather than working around it.
+
+**The bound this command does not clear.** `pulls/<n>/commits` returns at most
+250 commits however you page it (`per_page` itself caps at 100). Past 250 the
+guard examines a prefix, and a collaborator commit beyond it reads as absent —
+a fail-open in the guard whose other decisions all fail closed. No PR here is
+near that, so this is a stated bound rather than a live problem: **if you meet a
+PR with more than 250 commits, do not trust the guard — treat it as latched,
+apply `unsettled: latched @ <sha>`, and say so in the report.** Not "treat it as
+another account's": that phrase routes to `not our branch`, whose commits
+carve-out would re-open the PR on every push and start the loop this reason
+exists to avoid.
+
+**Report this case in its own words, because the remedy differs.** Since CF-274
+there is no override, so `latched` is a permanent exit from the loop — and a PR
+latched *because the guard could not see far enough* is not one a collaborator
+has pushed to. The person reading the report needs to know which: one wants a
+decision about two people on a branch, the other wants someone to confirm the
+branch is in fact this account's and take it from there. Say so in the report's
+own words — *"latched because the guard could not verify a branch over 250
+commits"* — as prose, not as a marker. The comment on the PR is still
+`unsettled: latched @ <sha>`: the four round forms and the `unsettled:` prefixes
+are the only shapes anything reads back, and inventing a fifth makes it
+invisible to every rule that does.
+
+*This was "branches this run created" until 2026-08-25.* That rule was
+conditioned on a sign-off it never received, and the cost was measured: of the
+eight PRs in one night's working set, seven ended `unsettled: not our branch`
+and **all seven were this account's own work from earlier runs**. The loop could
+review everything it had built and fix none of it. The sign-off is now given:
+earlier runs of this account are this account.
+
+**If the harness still refuses the push, that is a separate gate and this rule
+does not override it.** Report the refusal rather than working around it.
 
 ### Log before you finish each iteration
 
@@ -423,7 +548,8 @@ itself into the log is not a near miss: everything downstream compares strings,
 `$` sorts below every digit, so a literal `$(date …)` on that line makes every
 comparison true and the per-run bounds silently become all-time ones. Several
 bounds are recovered by comparing against this line after a compaction — see
-[Priority order](#priority-order). Write it before the first iteration does
+[the counting windows](#logging-and-the-counting-windows). Write it before the
+first iteration does
 anything.
 
 ### Priority order
@@ -435,6 +561,8 @@ queue.** Read them as: pick a PR that needs a review, then carry *that* PR
 through review and fix and re-review until it reaches a terminal state, then
 pick the next one. Running step 1 across every open PR and only then starting
 step 2 is the breadth-first pass ruled out below.
+
+#### Step 1 — which PRs need a round
 
 **1 — Review open PRs that need one.** One test, not two:
 
@@ -472,9 +600,12 @@ nothing. It is the same REST-versus-GraphQL trap as `created_at` against
 gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".user.login"
 ```
 
-Note this is an **author** test and the push rule is a **branch-creation** test.
-They are different questions on purpose, and the paragraph below on ownership is
-about the second — do not read it as an argument against the first.
+Note that scope and pushability now share a test rather than being unrelated
+questions: both ask whether the PR's `.user.login` is this account. Pushing adds
+one further condition — that no collaborator has pushed to the branch, see
+[The push test](#the-push-test) — so a PR in scope at `own` is one this run may
+push to *unless it is latched*. They were wholly different questions while the
+push rule keyed on which run created the branch.
 
 The obvious phrasing — "no marker at all, or commits since the last marker" —
 leaves a hole. A PR sitting on its first `cold: clean` with no new commits has a
@@ -490,6 +621,8 @@ that is what tells a round's review from a human's — but every selection and
 counting rule here is phrased against marker **comments**, and a rule phrased
 against reviews would be counting an artifact that is deliberately outside the
 budget and the ceiling.
+
+##### What a non-`gh` tool must provide
 
 **If you are not running `gh`, these commands are specifications.** Whatever
 tool you use must give you **every numbered item below**, to the end of the
@@ -538,6 +671,8 @@ sentence. The failure if any item is missing is silent rather than loud:
 tool in the report. A run that cannot establish point 1 should say so and treat
 every marker read as unverified rather than assuming it saw the newest.
 
+##### Markers: what a round writes
+
 **Every round leaves one marker comment, and selection reads it.** Timestamps
 alone cannot tell a PR stopped mid-cycle from one nobody has touched: a run can
 die at any moment, including between a fix and the round that would settle it,
@@ -567,35 +702,80 @@ can ever fire, and nothing settles:
 gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]"
 ```
 
-Routing reads the latest marker **and** compares its SHA with the PR's current
-head:
+##### Routing: what the marker tells the run to do next
 
-- `cold: findings`, SHA **matches** head — the findings stand against this code.
-  Next: step 2, fix them.
-- `cold: findings`, SHA **differs** — a fix has already been pushed, and this is
-  the case a marker alone cannot express. Next: a **semi-cold** round checking
-  those findings against the new head. Without this row a compaction mid-fix
-  routes the run back to step 2 forever, and the settle bar is never reachable.
-- `cold: clean`, SHA matches — settle it **if the settle bar is met** (nothing
-  Critical or Medium still open from *any* round), or one more cold round if the
-  PR has never had a finding. A clean round is not by itself permission to
-  label; see the settle bar.
-- `cold: clean`, SHA differs — new code nothing has looked at. Next: a cold
-  round, and see the re-open rule below.
-- `semi-cold: closes` — a fix was checked, it closes the finding it claimed to,
-  **and the round raised nothing new above a nit**. Next: a cold round.
-- `semi-cold: does not close` — either the finding is still open, or the fix
-  introduced a Critical or Medium of its own. Both are open findings and both
-  route the same way. Next: step 2, fix it again. A cold round cannot rescue
-  this one: the settle bar requires a semi-cold check to close a finding, and a
+Routing reads the latest marker and compares its SHA with the PR's current
+head. Those two pick the row. The `cold: clean` rows at a matching SHA need one
+more fact each, named in the third column and drawn from three sources —
+whether a finding is still open, whether one was raised in the counting window,
+and how many head-matching `cold: clean` markers the PR carries. Read each from
+the list under the table; do not count the rows or the sources against this
+sentence, for the reason [the numbered list
+above](#what-a-non-gh-tool-must-provide) gives:
+
+| latest round marker | SHA vs head | further condition | next |
+|---|---|---|---|
+| *none* | — | — | **cold round** — the first-look case |
+| `cold: findings` | matches | — | **step 2** — the findings stand against this code, fix them |
+| `cold: findings` | differs | — | **semi-cold** — a fix has already been pushed; check those findings against the new head |
+| `cold: clean` | matches | a finding is still open, **and** commits have landed since the marker that raised it | **semi-cold** — that fix is what needs checking; only a semi-cold can close a finding |
+| `cold: clean` | matches | a finding is still open, **and** nothing has landed since the marker that raised it | **step 2** — nothing to check, so spend no round; fix it |
+| `cold: clean` | matches | nothing open, and a finding was raised **in the counting window** | **settle it** — apply `review-settled` |
+| `cold: clean` | matches | nothing open, none raised in the window, and this is its **only** head-matching `cold: clean` | **cold round** — the second of the two that case requires |
+| `cold: clean` | matches | nothing open, none raised in the window, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled` |
+| `cold: clean` | differs | — | **cold round** — new code nothing has looked at; see the re-open rule below |
+| `semi-cold: closes` | — | — | **cold round** |
+| `semi-cold: does not close` | matches | — | **step 2** — fix it again |
+| `semi-cold: does not close` | differs | — | **semi-cold** — another fix has landed since; check it |
+
+Why several of those rows exist, since each was added to close a specific way
+the run could get stuck:
+
+- **The two `differs` rows for findings** — `cold: findings` and
+  `semi-cold: does not close` — exist because a marker alone cannot express "a
+  fix has already been pushed". Without them a compaction mid-fix routes the run
+  back to step 2 forever, and the settle bar is never reachable.
+- **`semi-cold: closes` requires two things**, not one: the fix closes the
+  finding it claimed to, **and** the round raised nothing new above a nit. A
+  round that introduced a Critical or Medium of its own writes
+  `does not close`, because both are open findings and both route the same way.
+- **`semi-cold: does not close` at a matching SHA cannot be rescued by a cold
+  round.** The settle bar requires a semi-cold check to close a finding, and a
   cold round posted on top would make its own marker the latest and hide the
   open finding from this very rule.
-- `semi-cold: does not close`, SHA **differs** — another fix has landed since.
-  Next: another semi-cold round against the new head. Without this row a
-  compaction after a second fix routes back to step 2 forever, exactly as the
-  `cold: findings` case would.
-- *no round marker at all* — the query below prints nothing. The PR has never
-  had a round. Next: a cold round, the first-look case.
+- **The two open-finding rows are what this table adds rather than restates.**
+  The state is reachable — a cold round posted over an unclosed finding leaves
+  exactly this — and the bullets this table replaced routed it nowhere. They
+  split on whether there is anything to check. Where a fix has landed since the
+  finding's marker, a semi-cold round checks it, because only a semi-cold can
+  close a finding: sending that to step 2 instead does not terminate — the fix
+  moves the head, the `differs` row calls a cold round, a clean cold round lands
+  back here with the finding still unclosed, and the PR burns to its ceiling on
+  code that was already fixed. Where nothing has landed, the verdict is settled
+  before a reviewer could read anything, so **spawn no round**: go straight to
+  step 2, spend nothing against the ceiling or the budget, and let the fix create
+  something for the next round to check.
+- **"Still open" is read from the marker stream, not from memory.** A finding is
+  open when the PR carries a `cold: findings` or `semi-cold: does not close`
+  marker with no later `semi-cold: closes`. That is the test routing uses — a
+  proxy, with the settle bar still the authority, since a `semi-cold: closes`
+  checking one finding says nothing about a second raised by the same round. It
+  survives a compaction, and identifies *the marker that raised the finding*
+  — the latest such marker with no `closes` after it. Do not substitute a count
+  of findings *raised*: the `FINDINGS` query below never returns to zero once a
+  PR has had one, so routing on it would hold a converged PR on these rows until
+  the ceiling stopped it.
+- **"In the counting window" is not "ever".** On a PR that has been re-opened the
+  window starts at its latest `reopened:` marker, exactly as
+  [the finding count](#reading-state-back-queries-labels-counts-and-windows)
+  specifies. A PR re-opened by a push, carrying a finding closed before the
+  re-open and none since, is the never-had-a-finding case for settling and needs
+  its two clean rounds. Settling it on one because it once had a finding fails
+  toward less review, which is the direction this document guards hardest.
+- **A clean round is not by itself permission to label.** Most rows starting from
+  `cold: clean` do not settle. The full bar, including what "nothing open" means
+  across rounds, is the [settle bar](#the-cycle-and-the-settle-bar) — the table
+  routes on it, it does not replace it.
 
 **Routing reads the latest `cold:` or `semi-cold:` marker — a round.** Two other
 prefixes are written to the same stream and are deliberately *not* routed on:
@@ -648,6 +828,17 @@ not strand the PR:
 ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
 ```
 
+**Every block that uses it re-declares it, and that repetition is deliberate —
+do not factor it out.** The blocks below are meant to be run as they stand, and
+an agent landing mid-document copies one block, not the section around it. With
+`ROUNDS` unset the filter becomes `test("")`, which matches **every** comment on
+the PR (verified against `gh`'s own jq: 4 of 4 strings, against 1 of 4 for the
+real pattern). In the round-counting block that makes the count come back as the
+PR's total number of comments, which reads as a spent ceiling and labels
+`ran out of rounds` a PR that has spent none — a fail-open in the one direction
+this document guards hardest. The
+same hazard is stated for `FINDINGS` below, for the same reason.
+
 **It matches the four routed forms and nothing else**, and it requires the SHA.
 A broader pattern would match `cold: no findings @ abc1234` or a marker with no
 SHA at all: selection would pick it up, the ceiling would be charged for it, and
@@ -664,9 +855,11 @@ not rounds and must never be counted as any.
 
 **Set `ROUNDS` in every shell that uses it**, including the round-counting query
 hundreds of lines below, which runs in a later iteration and possibly after a
-compaction. It is a pattern to re-declare, not state that persists. An unset
-`ROUNDS` makes that filter `test("")`, which matches every comment on the PR and
-returns exactly the count the marker scheme exists to avoid.
+compaction. It is a pattern to re-declare, not state that persists. What an
+unset `ROUNDS` does, and why every block here declares it, is stated with the
+pattern itself above.
+
+##### Posting a round: comment and review
 
 **Every machine-written comment goes through `gh pr comment` — rounds and
 non-rounds alike.** That includes `reopened:` and `unsettled:`, which are
@@ -735,9 +928,12 @@ comment and does not violate it. Do not collapse the two into one artifact in
 either direction: a marker inside a review is unreadable, and findings with no
 review are uncounted.
 
+##### Reading state back: queries, labels, counts and windows
+
 Read the latest marker, and route on it:
 
 ```
+ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
 gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1
 ```
 
@@ -770,16 +966,20 @@ line is sliced or compared for equality, which routing now does.
 
 **The terminal signal is the label, not the marker.** A PR carrying neither
 `review-settled` nor `unsettled` is mid-cycle whatever its latest marker says,
-and needs the round that marker names — including `cold: clean`, whose own
-bullet above gives it a next action. The gap between a settling round and the
-label it earns is a window like any other: no commit, no label, and a run can
-die in it. Reading `cold: clean` as terminal is what strands such a PR, and it
-strands the never-had-a-finding case twice over — once between its two clean
-rounds, once after the second.
+and needs the round that marker names — including `cold: clean`, which [the
+routing table](#routing-what-the-marker-tells-the-run-to-do-next) gives several
+next actions depending on what else is true of the PR. The gap between a
+settling round and the label it earns is a window like any other: no commit, no
+label, and a run can die in it. Reading `cold: clean` as terminal is what
+strands such a PR, and it strands the never-had-a-finding case twice over —
+once between its two clean rounds, once after the second.
 
 A `cold: clean` marker on an unlabelled PR therefore means: apply the label now
-— settle bar permitting — unless the PR has never had a finding and carries only
-one such marker, in which case it wants its second clean cold round first.
+— settle bar permitting — unless one of the routing table's exceptions applies.
+Two do: a PR with a finding still open takes a semi-cold round, or step 2 where
+nothing has landed since the finding's marker, rather than settling; and a PR
+with no finding raised in the counting window that carries only one such marker
+wants its second clean cold round first.
 
 **Count only `cold: clean` markers whose SHA is the current head.** The rule is
 about *this code* having been read clean twice, not about the PR's history: a
@@ -842,6 +1042,8 @@ the second means nothing has been found since it was re-opened. Either way it is
 the case that needs two clean cold rounds — a semi-cold round only exists
 because a finding did, so no marker means no finding.
 
+##### The terminal labels and their reasons
+
 **Skip PRs labelled `review-settled`** unless commits have landed since the
 label was applied. That label is the record that a cold round cleared the bar
 below — no Critical and no Medium finding, nits permitted. Without it, "already
@@ -864,6 +1066,36 @@ of which reason applies, and it is what a later run reads back:
 - `unsettled: not our branch @ <sha>`
 - `unsettled: needs a decision @ <sha>`
 - `unsettled: ran out of rounds @ <sha>`
+- `unsettled: latched @ <sha>`
+
+The four differ in what clears them, and that is the property to check before
+choosing one — a reason that clears itself on a commit is the wrong reason for
+something a commit does not fix:
+
+| reason | what it records | what re-opens it | round count |
+|---|---|---|---|
+| `ran out of rounds` | the ceiling or the budget stopped it, findings still open | **new commits**, no human needed | reset |
+| `not our branch` | findings are fixable, but the branch belongs to **another account** and this run may not push | **new commits**, no human needed | reset |
+| `needs a decision` | a finding needs a judgement nobody unattended should make | **a human removing the label** — commits do not | — |
+| `latched` | this account's PR, but [the push test](#the-push-test) forbids pushing — a collaborator has pushed to the branch, **or** the branch is over 250 commits and the guard cannot see far enough to tell | **a human, outside the loop** — no run can clear it | — |
+
+**When more than one is true, `needs a decision` wins**, over each of the other
+three; note the losing one in the comment as context rather than as the reason.
+Among the rest, `latched` beats `ran out of rounds`, and `not our branch` beats
+`ran out of rounds` too — though where **those** two coincide the choice is
+cosmetic, since both clear on a commit and both reset the count, and `not our
+branch` wins only because it says why this run could not have fixed the PR at
+any budget. `not our branch` and `latched` cannot both apply: the first is only
+ever another account's PR, the second only ever this account's.
+
+Why that order and not another: the two commit-cleared reasons discharge
+themselves on the author's next push, so a PR that also needs a judgement would
+have that question dissolved by an unrelated commit and the human never asked.
+The reason that needs a human therefore has to win, or it is not a reason at
+all. The pairings involving `needs a decision` are worked through case by case
+in [choosing a reason](#when-you-cannot-fix-it-choosing-a-reason); the two that
+do not involve it are stated here, and repeated only as a pointer in the
+tie-break note there.
 
 **Whatever the reason, the label needs a round from *this run* behind it.** The
 label asserts that findings are open and this run cannot close them; with no
@@ -878,24 +1110,73 @@ tells you to fix what you can and *push* before labelling, so by the time the
 label goes on, the head has moved past the last round's marker. An author
 pushing between a round and a `not our branch` label does the same. Requiring a
 head-matching marker would make both cases impossible to label at all, while
-[the rule against leaving open findings unlabelled](#priority-order) still
-demands one.
+the rule against leaving open findings unlabelled — stated above, and again
+with the budget — still demands one.
 
-Only one of the three needs a human to clear it:
+Each reason in full — what it means, and why it clears the way the table says:
 
 - `ran out of rounds` — the ceiling or the budget stopped it. New commits
   re-open it, round count reset: a PR that has since been fixed must not look
   like one nobody touched.
-- `not our branch` — the findings are fixable, but this run did not create the
-  branch and may not push to it. **New commits re-open it**, round count reset.
-  A commit is exactly what resolves this one: the author reading the review and
-  pushing a fix is the intended path, and it must not need a human to also clear
-  a label by hand.
+- `not our branch` — the findings are fixable, but the branch belongs to
+  **another account**, so this run may not push to it. **New commits re-open
+  it**, round count reset. A commit is exactly what resolves this one: the author
+  reading the review and pushing a fix is the intended path, and it must not need
+  a human to also clear a label by hand.
+
+  **This reason is only ever about another account's PR**, and those reach the
+  queue only at `review scope: all`. A branch a collaborator has pushed to is a
+  different case with its own reason, below.
 - `needs a decision` — a finding requires a judgement nobody unattended should
   make. Only a human removing the label re-opens it. Commits do not, because the
   decision is not something a commit clears; the author pushing something
   unrelated would otherwise buy fresh rounds to re-derive the same finding off
   the same unchanged lines.
+- `latched` — this account opened the PR, but [The push test](#the-push-test)
+  forbids pushing to it: either a collaborator has pushed to the branch, or the
+  branch is over 250 commits and the guard cannot see far enough to rule that
+  out. Both take this reason; the report distinguishes them. The findings
+  may be entirely mechanical; what is blocked is not any one of them but the
+  PR-level question of whether to write over someone else's in-flight work.
+
+  **Commits do not re-open it, and that is the whole point.** At `own` the
+  account that pushes is the one running, so a commits carve-out would re-open
+  the PR on each of its own pushes, burn a cold round re-deriving findings it
+  still may not fix, and re-park — forever. The carve-out's usual justification
+  (*the author reading the review and pushing a fix is the intended path*)
+  assumes the author is somebody else. Here the author is this account, and it is
+  the one actor that cannot act.
+
+  **It is cleared by a human, outside the loop, and there is deliberately no way
+  for a run to clear it.** Merge the PR, push the fix yourself, or ask the
+  collaborator to — whichever fits. What there is *not* is a comment or a label a
+  run can act on to authorise itself past the person whose work is on that
+  branch.
+
+  That was tried. A `latch-override:` grant was added on 2026-08-25 and removed
+  on 2026-08-26, and in between it produced the worst defect in the change that
+  introduced it: the run could post its own override and clear its own latch.
+  Closing that took an author filter, a hard rule, a verdict match, a SHA
+  validity check, an identity-based freshness test and a four-branch parser —
+  and successive reviews kept finding more, including a query that never
+  executed at all. It was the only thing here that *granted* a permission
+  rather than withholding one, and that asymmetry is what made it hard to get
+  right. Removed under CF-274.
+
+  **The cost is real and intended.** A latched PR cannot be finished by the loop.
+  Report it by name so a human picks it up — that is the only route out, and the
+  report is the only place it is visible.
+
+  **The latch is permanent by design, and since the grant went there is nothing
+  to soften it.** The guard reads the branch's whole history, so one commit from
+  a collaborator keeps the PR latched however many times this account pushes
+  afterwards — and no run can now lift it. Both halves are deliberate, and the
+  second is why the first matters more than it used to: scoping the guard to
+  "since this account's last push" would let a run overwrite exactly the
+  in-flight work being guarded, so the permanence stays, and the cost of it
+  lands on the report line rather than on a mechanism.
+
+##### Record comments, human removal, and re-opening
 
 **Applying either terminal label posts a record comment**, and that is what
 makes a human's removal detectable at all:
@@ -907,11 +1188,12 @@ makes a human's removal detectable at all:
 run did re-opened it. So when you pick up a PR carrying one of those record
 comments but *not* its label — a maintainer removed it — **write the
 `reopened: <sha>` marker yourself before the first round**, then let the routing
-table pick the round, exactly as for a carve-out re-open. Do not force a cold
-one: a maintainer who clears `unsettled: not our branch` *after* the author
-pushed a fix leaves a PR whose last round is `cold: findings` at a stale SHA,
-which wants a semi-cold check. Forcing cold there cannot close the finding, so
-the settle bar stays unreachable and the PR burns to the ceiling.
+table pick the round, exactly as for a carve-out re-open.
+
+Do not force a cold one: a maintainer who clears `unsettled: not our branch`
+*after* the author pushed a fix leaves a PR whose last round is `cold: findings`
+at a stale SHA, which wants a semi-cold check. Forcing cold there cannot close
+the finding, so the settle bar stays unreachable and the PR burns to the ceiling.
 
 Both labels need the marker. Without it for `review-settled`, a maintainer who
 removes the label to ask for another look gets it silently re-applied with zero
@@ -925,6 +1207,22 @@ it, each new `reopened:` marker pushes `FROM` forward, and the round count
 resets to zero on a PR that has been cycling all night. Otherwise the counting
 windows silently revert to the PR's whole life, and the two-clean rule reads
 clean markers from before the finding was ever raised.
+
+**`unsettled: latched` is the exception to the two rules above** — the
+`reopened:` marker and the routing that follows it. It still posts its record
+comment like every other reason; what it does not get is a `reopened:` marker or
+a route back into the cycle. Nothing about
+a latch is cleared by removing a label: the collaborator's commits are still on
+the branch, so the push test latches the PR again on the next round. If the
+branch is unchanged, re-apply `unsettled: latched @ <sha>`.
+
+**Say in the report that the label was removed while the branch was still
+latched**, and say it every time it happens. Removing the label is the only
+thing a maintainer *can* try — there is no override to post any more — so
+without that line the loop re-applies it nightly, forever, with no explanation
+reaching the person undoing it. That is the cost of having no in-loop route out,
+and the report is the only place it is payable. Nothing unsafe follows either
+way: the push test runs before every push.
 
 **When a carve-out re-opens a PR, take the label off — and let the routing table
 decide the round.** Do not force a cold one: what the PR needs depends on what
@@ -952,8 +1250,9 @@ that has since landed. So:
   was `unsettled: not our branch` it means a **semi-cold** round: its last round
   was `cold: findings`, and the author's push is a fix to check. Do not force
   cold here. Only a semi-cold round can close a finding for the settle bar, so
-  forcing cold on an author-fixed PR makes its terminal state unreachable — on
-  exactly the PRs this document says are most of the queue.
+  forcing cold on an author-fixed PR makes its terminal state unreachable. That
+  case is `review scope: all` only now, but the routing is the same either way:
+  the marker says what the next round is, not who pushed.
 - **Re-read the round count, bounded by the `reopened:` marker you just
   posted.** Removing the label resets nothing on its own — no count lives in a
   label. Removing it makes the PR *eligible*; the marker *bounds the count*.
@@ -1029,9 +1328,12 @@ do not read it as clean.
 *written*, not when it was pushed: an author who committed on Tuesday and pushed
 on Thursday produces a commit older than a Wednesday review, and a date test
 concludes nothing has landed. That silently disables the
-`unsettled: not our branch` carve-out, which is the mechanism this document
-relies on for most of the queue — the case where the author's push is the only
-thing that can continue the cycle. Identity has no such failure mode.
+`unsettled: not our branch` carve-out — the case where another account's push is
+the only thing that can continue the cycle. That case is `all`-scope only since
+the push rule changed, but the carve-out still has to work when it arises, and a
+date test breaks it silently. Identity has no such failure mode.
+
+##### Cold and semi-cold rounds
 
 **Never review from this session. Spawn a subagent and let it review cold.**
 The session that wrote the code is the most anchored possible reviewer: once it
@@ -1054,16 +1356,18 @@ same mechanism, pointed at a diff. **The first round on a PR is always cold**,
 and so is the round that awards `review-settled`.
 
 A **semi-cold** round is for checking a fix — **whoever pushed it.** Usually
-that is this run; on a branch this run may not push to, it is the author
-responding to the review, and that case has to work or a
-`unsettled: not our branch` PR could never satisfy the settle bar and would burn
-to the ceiling on every visit. It gets the finding it is checking, the commits
-that landed since the marker that raised it, and any reply on the thread — and
-it is asked to judge whether that finding is actually closed, then review the
-new head for anything the change introduced. It is anchored by construction: it will check
-the delta rather than re-derive the whole diff. That is the trade, and it buys
-the one thing a cold round cannot do — someone other than the author confirming
-the fix does what the finding asked.
+that is this run; on another account's branch, it is the author responding to
+the review, and that case has to work or a `unsettled: not our branch` PR could
+never satisfy the settle bar and would burn to the ceiling on every visit. It
+gets the finding it is checking, the commits that landed since the marker that
+raised it, and any reply on the thread — and it is asked to judge whether that
+finding is actually closed, then review the new head for anything the change
+introduced. It is anchored by construction: it will check the delta rather than
+re-derive the whole diff. That is the trade, and it buys the one thing a cold
+round cannot do — someone other than the author confirming the fix does what
+the finding asked.
+##### The semi-cold reviewer's brief
+
 
 **It posts one marker comment like every other round** — body starting with the
 literal `semi-cold: closes @ <sha>` or `semi-cold: does not close @ <sha>`,
@@ -1088,10 +1392,29 @@ the two bookkeeping sources — your logged round count and the marker count on
 the PR — then disagree with nothing to say which is right. If it did not land,
 re-post it correctly; that repost is not a new round and does not spend budget.
 
+**Measure the commits to check from the marker that raised the finding, never
+from a later `cold: clean`.** Where a clean round was posted over a still-open
+finding, that clean marker matching the head says only that nothing has landed
+since *it* — the finding may be several commits older, and a fix may sit between
+the two. That fix is precisely what the round exists to check. Reading emptiness
+off the clean marker instead would write `does not close` against already-fixed
+code, for the reason
+[the routing table](#routing-what-the-marker-tells-the-run-to-do-next) gives
+under its open-finding rows.
+
+**If a round is ever dispatched with nothing to check, write `does not close`.**
+Routing does not send one: the open-finding rows split on whether anything
+landed since the finding's marker, and the empty case goes to step 2 without
+spending a round. This is the answer if some other path produces one anyway —
+nothing landed, so the finding is unfixed by definition. Do not improvise a
+verdict from an empty diff.
+
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, apply the `unsettled` label with a
-comment naming the reason that fits — `not our branch` or `needs a decision` —
-record it, and move on. It does not become closed by being argued with.
+comment naming the reason that fits — any of the four, and note that a
+collaborator pushing mid-cycle makes `latched` reachable here by the shortest
+route in the document — record it, and move on. It does not become closed by
+being argued with.
 
 **Never let a semi-cold round settle a PR.** It was handed the previous
 reviewer's conclusions, so its silence inherits their blind spots; treating that
@@ -1115,13 +1438,15 @@ none of your local settings, so the no-stamp rule has to travel with it or its
 review arrives signed.
 
 **Capture the head SHA yourself, before spawning, and pass it in.** Do not let
-the reviewer fetch its own: most of the queue is branches this run does not
-control, a push can land while the round is running, and the reviewer would then
+the reviewer fetch its own: a push can land while the round is running — from
+another account at `all` scope, or from a concurrent process — and it would then
 stamp a SHA it never read — after which the SHA test reports "same" and the new
 code is never looked at. Read it once, hand it over, and **re-read it when the
 round finishes**: if the head moved during the round, that round is void. It
 does not count against the ceiling, and the PR needs a fresh one against the new
 head.
+
+##### The cold reviewer's brief
 
 Its brief: run `/code-review high` on that PR, post one marker comment, and
 submit its findings as a review. Give it the head SHA you captured, and require
@@ -1133,9 +1458,9 @@ formatting, since that whole line is what selection matches and routes on.
 means at least one Critical or Medium. A round that found *only* nits, or
 nothing at all, writes `cold: clean` — the settle bar permits nits, and a round
 that reports one as `cold: findings` routes the PR to a fix it does not need,
-which on a branch this run cannot push to ends as `unsettled` on a PR that had
-actually cleared the bar. The nits go in the review, as they would for any
-other round; the comment stays a marker line either way.
+which on another account's branch ends as `unsettled` on a PR that had actually
+cleared the bar. The nits go in the review, as they would for any other round;
+the comment stays a marker line either way.
 
 A summary may follow on the same line (`cold: findings @ 2c1a865 — 2 Critical,
 1 Medium`); nothing may precede the
@@ -1195,15 +1520,42 @@ alongside `low`…`max`, it launches a multi-agent review in the cloud, is bille
 separately and is user-triggered — none of which an unattended run should reach
 for.
 
-**2 — Address the review findings on the PR you are carrying**, if **this run**
-created its branch. Not merely if the account matches: `gh api user -q .login`
-returns *your login*, and matching it against `.user.login` also matches PRs
-this account opened on earlier nights — pushing to those is what the hard rule
-against pushing to branches this run did not create forbids.
+#### Step 2 — fix what the round found
 
-For a PR you may not push to, describe the fix in a comment, apply `unsettled`
-and post `unsettled: not our branch @ <sha>`. That is the cheap terminal state,
-not a dead end: the author pushing a fix re-opens it on its own.
+**2 — Address the review findings on the PR you are carrying**, if this account
+opened it **and** no one else has pushed to the branch. The first half is the
+same test the `review scope` filter runs — `gh api user --jq ".login"` against
+the PR's `.user.login` — so at `review scope: own` it is true of every PR in the
+queue. The second half is the collaborator check in
+[The push test](#the-push-test), and it is run **immediately before each push**,
+not once when you pick the PR up — a run holds a PR across several rounds, and
+the case it guards against is a collaborator pushing while that is happening.
+
+So step 2 applies to most of an `own` queue, not all of it by construction.
+
+For a PR you may not push to, describe the fix in a comment and apply
+`unsettled` with the reason that fits:
+
+- **Another account's PR** — `unsettled: not our branch @ <sha>`. Only reaches
+  the queue at `review scope: all`. A cheap terminal state, not a dead end: the
+  author's next push re-opens it.
+- **A branch a collaborator has pushed to** — `unsettled: latched @ <sha>`. Can
+  arise at either scope. **Commits do not re-open this one**, deliberately, and
+  no run can clear it: a human handles the PR outside the loop. **Report it by
+  name and say what is blocking it** — either who pushed to the branch, or that
+  the guard could not verify it (see the 250-commit bound in
+  [The push test](#the-push-test)), plus the fact that the findings are written
+  up in the review. Those two are different problems: one wants a decision about
+  two people on a branch, the other wants someone to confirm whose branch it is.
+  The report is the only place a latched PR is visible; without that line it sits
+  outside the loop with nobody aware.
+
+  **Unless a finding also needs a judgement — then `needs a decision` wins**,
+  per the precedence under [the terminal labels and their
+  reasons](#the-terminal-labels-and-their-reasons). The two want different
+  things from different people: a judgement call needs the reviewer's question
+  answered, a latch needs someone to decide what to do about a branch two
+  people are working on.
 
 **Read the findings out of the round's review.** The marker comment carries the
 prefix, the SHA and at most a count; the findings are in the review that round
@@ -1255,6 +1607,8 @@ If a fix needs no human decision, implement it, push to that PR's branch, and
 reply on the thread saying what changed. If it needs a judgement call, log it
 and leave it.
 
+##### The cycle and the settle bar
+
 **This is a cycle, and the order matters.** A cold subagent posts the first
 review. *Then* you push the fix and reply saying what changed. *Then* a
 **semi-cold** subagent checks that fix against the finding it claims to close.
@@ -1299,10 +1653,11 @@ anyone looking again.
 **A PR that has never had a finding needs two `cold: clean` markers in a row,
 not one.** Everywhere else, settling rests on something a reviewer confirmed: a
 semi-cold round said this fix closes this finding. A PR clean on its first look
-has no such confirmation anywhere — one reviewer's silence would carry the whole
-terminal state, and silence is the evidence this document rejects everywhere
-else. Two independent cold passes is the weakest confirmation available when
-there is nothing concrete to check, and it is the least that label should cost.
+has no such confirmation anywhere — one reviewer's silence would carry the
+whole terminal state, and silence is the evidence this document rejects
+everywhere else. Two independent cold passes is the weakest confirmation
+available when there is nothing concrete to check, and it is the least that
+label should cost.
 
 The gap between those two rounds is a mid-cycle window like any other: no
 commit, no label, nothing for the timestamp test to see. The first round's
@@ -1327,15 +1682,34 @@ spending budget every lap, and nits are what the settle bar deliberately
 tolerates. Leaving one is the terminating move; file a card if it is worth more
 than that.
 
-**A finding you cannot fix stops the *cycling*, not the work.** What "the work"
-means depends on why you cannot fix it, and the three cases part company here:
+##### When you cannot fix it: choosing a reason
 
-- *A branch this run did not create.* You cannot push anything, so the work is
+**A finding you cannot fix stops the *cycling*, not the work.** What "the work"
+means depends on why you cannot fix it, and the four cases part company here:
+
+- *Another account's PR.* You cannot push anything, so the work is
   writing the findings down where the author will act on them: **all** of them,
   including the ones that would have been a one-line fix, in the review comment
   and in a reply describing what you would have changed. Then apply `unsettled`
   with an `unsettled: not our branch @ <sha>` comment. The author's next push
   re-opens it.
+- *This account's PR, but a collaborator has pushed to the branch.* Same work —
+  write every finding down, including the mechanical ones — but apply
+  `unsettled: latched @ <sha>` instead. **Not `not our branch`**: that reason
+  re-opens on any commit, and at `own` the account that pushes is the one
+  running, so the PR would re-open on its own pushes and cycle forever.
+
+  **Unless a finding also needs a judgement — then `needs a decision` wins**, per
+  the precedence under [the terminal labels and their
+  reasons](#the-terminal-labels-and-their-reasons), with the latch named in
+  the comment as context. Where no finding needs one, `latched` is right and
+  `needs a decision` would be wrong: the blocked question is the PR-level one
+  about writing over someone else's work, not anything a reviewer raised.
+
+  The distinction matters because the two are answered by different people doing
+  different things. A latch is resolved by whoever decides what to do about a
+  branch two people are working on; a judgement call is resolved by answering the
+  reviewer's question. Filing one as the other loses it.
 - *A finding needing a human decision, on a branch you may push to.* First fix
   everything else that round raised and push it — those findings are real and
   abandoning them wastes the round that found them. *Then* apply `unsettled`
@@ -1353,13 +1727,15 @@ unsticks the PR, not by who owns the branch.** Ask "would the author's next push
 actually resolve this?" — if not, `not our branch` is wrong, because its
 carve-out fires on a commit that fixed nothing.
 
-**This is a tie-break between those two, not a general test.** Read as a general
-rule it would rule out `ran out of rounds` for every ceiling- or budget-stopped
-PR — a push does not resolve those either, it only resets the count — leaving
-`needs a decision` as the only reason the document could ever apply. That is not
-the intent. A PR stopped by the ceiling or the budget with nothing needing a
-judgement takes `ran out of rounds`, and its carve-out firing on a commit is
-correct: new code genuinely does deserve fresh rounds.
+**This is a tie-break between those two, not a general test.** (Precedence
+across all four is stated under the table in [the terminal labels and their
+reasons](#the-terminal-labels-and-their-reasons).)
+Read as a general rule it would rule out `ran out of rounds` for every ceiling-
+or budget-stopped PR — a push does not resolve those either, it only resets the
+count — leaving `needs a decision` as the only reason the document could ever
+apply. That is not the intent. A PR stopped by the ceiling or the budget with
+nothing needing a judgement takes `ran out of rounds`, and its carve-out firing
+on a commit is correct: new code genuinely does deserve fresh rounds.
 
 **Where a judgement call is open, that outranks the ceiling and the budget** —
 in **both** modes, so this changes `build` too, and deliberately. Both tell you
@@ -1377,13 +1753,12 @@ comment as context rather than as the reason.
 
 **State the cost, because it is real.** `needs a decision` has no commit
 carve-out, so parking a PR under it parks *every* finding on that PR behind a
-human, including the ones the author could have fixed unprompted. On a branch
-this run cannot push to, that is the whole PR. In `review-only` mode, where
-almost nothing is pushable, it is potentially the whole queue. The trade is
-deliberate — a judgement call quietly dissolved by an unrelated commit is worse
-than a PR that waits — but write the other findings up in full first, so the
-human clearing the label finds everything they need in one place rather than
-just the question.
+human, including the ones the author could have fixed unprompted. On another
+account's branch, that is the whole PR — which at `review scope: all` could be
+most of the queue. The trade is deliberate — a judgement call quietly dissolved
+by an unrelated commit is worse than a PR that waits — but write the other
+findings up in full first, so the human clearing the label finds everything
+they need in one place rather than just the question.
 
 Either way, record what is left in the log and the report, and move on. Do not
 spend further rounds on it: a new round is cold to your reasoning but not to the
@@ -1393,11 +1768,27 @@ code, so it re-derives the same finding off the same unchanged lines.
 saying what unsticks it, and the difference is whether it clears itself on the
 author's next commit or waits for a human who has not been told they are needed.
 
+#### Step 3 — ticket work
+
+**3 — Only when 1 and 2 are clear**, take one ticket from "This run".
+
+**This step does not run in `review-only` mode**, and neither does anything under
+[Working a ticket](#working-a-ticket). Everything else below still does — in
+particular [Filing cards](#filing-cards-for-out-of-scope-findings), because
+reviewing is exactly when out-of-scope problems surface, and the 6-card cap
+applies in both modes.
+
+#### The ceiling, and the settling exception
+
 **Ceiling: six rounds per PR per run, cold and semi-cold together**, so a
 pathological PR cannot consume the whole night. Counting only cold rounds would
 leave the semi-cold ones unbounded — every fix buys another check — and half of
 a ceiling is not a ceiling. Six covers a PR with two rounds of findings and the
-cold round that settles it — five by the cost model above, with one spare.
+cold round that settles it — five by the cost model below, with one spare. The
+spare is now allocated: a PR that lands on the routing table's open-finding row
+spends it on the semi-cold round that recovers from a clean marker posted over
+an unclosed finding. A PR needing that detour twice will hit the ceiling, which
+is the intended outcome — twice is not a convergence.
 Hitting it is the same outcome: fix what you can, apply `unsettled` with an
 `unsettled: ran out of rounds @ <sha>` comment, record, move on.
 
@@ -1424,6 +1815,8 @@ the counting query charges them automatically; unlike a `reopened:` marker or a
 re-posted marker, nothing here is free. The exception lifts the *per-PR*
 ceiling, never the run-wide budget.
 
+#### Order of work: one PR at a time
+
 **Take one PR all the way through before opening the next.** Review it, fix it,
 check the fix, settle or label it — then move on. Do not run a pass over every
 open PR and come back for a second lap.
@@ -1444,6 +1837,8 @@ PRs carry no labels at all, so in practice this is mostly "oldest first" — whi
 is the intent, since the oldest have waited longest. Do not order by the
 `overnight-ok` label: that is the *issue* selection gate from
 [Choosing work](#choosing-work) and no PR carries it.
+
+#### The run budget
 
 **Run budget: 32 rounds per run**, cold and semi-cold together. *Rounds*, not
 reviews: each round now submits a GitHub review as well as posting its marker,
@@ -1473,6 +1868,8 @@ the ceiling: `unsettled`, recorded, move on. Never leave a PR with open findings
 carrying no label — unlabelled and unreviewed are indistinguishable to the next
 run, which is the whole reason these labels exist.
 
+#### Logging, and the counting windows
+
 **Log every round as you finish it** — `PR #<n> — <cold|semi-cold>, round
 <k>/6, budget <used>/32` plus the tiers found. A round granted by the settling
 exception is logged as `settling, budget <used>/32` instead of a `<k>/6` — it is
@@ -1485,6 +1882,7 @@ per-PR round count, and the run-wide budget, which is the sum of this run's
 markers across every PR it touched:
 
 ```
+ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
 for n in $(gh pr list --state open --json number --jq '.[].number'); do
   gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/$n/comments" --jq ".[] | select(.created_at > \"$SINCE\") | select(.body | test(\"$ROUNDS\"; \"i\")) | .id"
 done | wc -l
@@ -1513,15 +1911,17 @@ touched it. So count markers newer than the run's start time, which the
 `run start: ` line — found by matching that line, never by position.
 
 **When a PR was re-opened mid-run, count from the `reopened:` marker instead —
-but only if that marker falls inside this run.** There is no label event to read
-here; re-opening writes that marker precisely so this bound survives the label
-being removed. Three states carry a commits-since carve-out — `review-settled`,
-and the `ran out of rounds` and `not our branch` reasons for `unsettled` — and
-each re-opens the same way, so each gets the same bound. (`needs a decision` has
-no carve-out and never needs it.) The bound you want is the *later* of the run
-start and that marker: a `reopened:` marker from last night is older than the
-run start, so counting from it sweeps in markers this run has already spent and
-the ceiling arrives early on a PR just promised a reset.
+but only if that marker falls inside this run.** There is no label event to
+read here; re-opening writes that marker precisely so this bound survives the
+label being removed. Three states carry a commits-since carve-out —
+`review-settled`, and the `ran out of rounds` and `not our branch` reasons for
+`unsettled` — and each re-opens the same way, so each gets the same bound.
+(`needs a decision` and `latched` have no carve-out and never need it: both
+wait for a human, and neither is cleared by anything a run can do.) The bound
+you want is the *later* of the run start and that marker: a `reopened:` marker
+from last night is older than the run start, so counting from it sweeps in
+markers this run has already spent and the ceiling arrives early on a PR just
+promised a reset.
 
 `.created_at > "$SINCE"` is a lexicographic string compare against GitHub's
 `2026-08-24T23:08:57Z`, so `SINCE` must be UTC with the `Z` suffix and nothing
@@ -1546,18 +1946,28 @@ hitting the ceiling early — the failure this section exists to prevent. Sortin
 `Z`-suffixed UTC lexicographically picks the later; an empty `REOPENED` sorts
 first and leaves `SINCE`.
 
-**What this costs, plainly — and it depends on who owns the branch.**
+#### What a night costs
 
-*PRs this run opened*, at most five, are the ones it can cycle. Clean on first
-look costs two reviews; one round of findings costs three — cold, semi-cold on
-the fix, cold to settle; two rounds costs five, which is most of the six-round
-ceiling.
+**What this costs, plainly — and it depends on who opened the PR.**
 
-*PRs from earlier nights*, which is most of the queue, cost **one or two
-reviews and then stop.** The run can review them but not push to them, so a
-Critical or Medium ends in `unsettled: not our branch` after a single cold
-round, and a clean one settles after two. The fix loop does not run on them at
-all — the author's own push is what continues it, on a later night.
+*Every PR this account owns* — this run's and earlier runs' alike — is cycled in
+full. Clean on first look costs two reviews; one round of findings costs three —
+cold, semi-cold on the fix, cold to settle; two rounds costs five, which is most
+of the six-round ceiling.
+
+**That is the number to plan the night from, and it changed on 2026-08-25.**
+Before the push rule keyed on the account, PRs from earlier nights cost one or
+two rounds and stopped, because the run could review them but not push to them.
+They now cost three to five like any other. At `review scope: own` the whole
+queue is in that category, so **budget three to five rounds per PR, not one or
+two** — a night planned on the old figure binds around its fourth PR while the
+text promises it will clear the queue.
+
+*Other accounts' PRs*, which only enter the queue at `review scope: all`, still
+cost one or two reviews and then stop: reviewable, not pushable, so a Critical or
+Medium ends in `unsettled: not our branch` after a single cold round and a clean
+one settles after two. Their fix loop runs on the author's push, on a later
+night.
 
 **The budget will bind on the first night, and that is expected.** Twenty-odd
 PRs are open, none carrying a marker, so a first pass over the queue alone costs
@@ -1582,9 +1992,12 @@ the rest**, and later nights are cheap, because a PR that reached
 `review-settled` or `unsettled` is skipped until its head SHA changes. The
 budget is a bound on one night's spend, not a promise to cover the backlog.
 
-The **ceiling**, by contrast, will rarely bind at all: it only applies to a PR
-this run owns and keeps finding things in, since a PR from an earlier night
-stops after one or two rounds regardless.
+The **ceiling** now binds far more often than it used to. It applies to any PR
+this account owns that keeps yielding findings — which at `review scope: own`
+is every PR in the queue it may push to, not just the handful this run opened.
+The old reasoning (*a PR from an earlier night stops after one or two rounds
+regardless*) was a consequence of not being able to push to it, and no longer
+holds.
 
 **So on a backlogged night — at `review scope: all`, see above — step 3 does
 not happen, and the 5-PR cap is not reachable.** Twenty-odd PRs at one to two
@@ -1615,10 +2028,20 @@ reviewable by this run — a draft nobody has looked at is exactly what the hard
 rules forbid leaving behind. If the budget cannot cover a review, step 3 writes
 the plan into the log instead of opening a PR.
 
-This is a deliberate narrowing, and it is the honest consequence of the hard
-rule against pushing to branches this run did not create. The alternative is
-sign-off to push to other people's branches, which is a decision for a human and
-not something to assume unattended.
+**That reason stands on its own, and it used to stand on another one that is
+gone.** Under the old push rule, no later run could touch a branch this run
+created, so a PR this run did not review would never be reviewed by anything —
+the reserve was the only thing standing between step 3 and an abandoned draft.
+Since 2026-08-25 a later run of this account can review *and* fix it, so that
+argument no longer holds.
+
+Keep the reserve anyway: **an unreviewed draft is a harm at the moment it is
+opened**, not only if nobody ever gets to it. The hard rules say so
+independently of who can push. The point of writing this down is that the
+obsolete justification is exactly how a rule gets dropped — whoever next
+re-derives it will find the old reason false and may conclude the rule is too.
+
+#### Why the machinery is shaped this way
 
 The semi-cold round is not defended on cost — it is defended on what silence
 can and cannot establish. It asks a narrow question a reviewer can actually
@@ -1641,14 +2064,6 @@ independent one: it finds *different* things, not *all* things, and the returns
 diminish across rounds without reaching zero. That is exactly why there is a
 ceiling and not just a clean bar. This cuts how many rounds a human has to run
 by hand; it does not answer when a PR is actually done.
-
-**3 — Only when 1 and 2 are clear**, take one ticket from "This run".
-
-**This step does not run in `review-only` mode**, and neither does anything under
-[Working a ticket](#working-a-ticket). Everything else below still does — in
-particular [Filing cards](#filing-cards-for-out-of-scope-findings), because
-reviewing is exactly when out-of-scope problems surface, and the 6-card cap
-applies in both modes.
 
 ### Working a ticket
 
@@ -1790,10 +2205,34 @@ The report contains:
   cards are missing from it
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
-- PRs labelled `unsettled`, split by the three reasons their `unsettled:`
-  comment gives — `needs a decision` (only these want a human), `not our branch`
-  (the author's next push re-opens it), and `ran out of rounds` (the per-PR
-  ceiling, or the run-wide budget) — and what is still outstanding on each
+- PRs labelled `unsettled`, split by the four reasons their `unsettled:` comment
+  gives — `needs a decision` (a reviewer found a judgement call), `latched` (a
+  collaborator pushed to the branch, **or** the guard could not verify it),
+  `not our branch` (the author's next push
+  re-opens it), and `ran out of rounds` (the per-PR ceiling, or the run-wide
+  budget) — and what is still outstanding on each
+- **Latched PRs by name, each saying why it latched.** Two of these reasons want
+  a human and want *different* humans doing different things: a judgement call
+  needs the reviewer's question answered, a latch needs someone to decide what to
+  do about a branch. A single "N need a human" figure hides that, which is the
+  same signal loss the bullet below describes for the bounds.
+
+  A latch has two causes and they want different responses, so name the cause,
+  not just the state:
+
+  > `#312` is latched — `@sam` has pushed to the branch, so the run may not.
+  > 2 Medium and 3 nits are written up in the review. Someone needs to take this
+  > one over: merge it, push the fix, or hand it back to `@sam`.
+
+  > `#288` is latched — the guard could not verify it, because the branch has
+  > more than 250 commits. Nobody may have pushed to it at all. Someone needs to
+  > confirm whose branch it is; the findings are in the review either way.
+
+  **These PRs cannot be returned to the loop by anything a run does**, which is
+  why the report line is not optional: it is the only place a latched PR is
+  visible, and the only prompt anyone gets. A run that latches a PR and does not
+  name it has parked work where nobody will find it.
+
 - **Which PRs hit the ceiling or the budget**, whatever reason they ended up
   labelled with. A PR that hit the ceiling *and* carries a judgement call is
   filed under `needs a decision`, so the reason breakdown above is no longer a

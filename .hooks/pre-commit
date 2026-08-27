@@ -9,7 +9,7 @@
 #   git config core.hooksPath .hooks
 #
 # Requirements: ruff, mypy, pytest, and npm on PATH. For the full api/tests step:
-#   pip install -r api/requirements-dev.txt     # app deps + pytest + fakeredis
+#   pip install -r api/requirements-dev.txt     # app deps + the test-only pins
 # Install that and every step runs. With only `pip install ruff mypy pytest`,
 # the api/tests step skips (loudly) rather than erroring — the app-importing
 # tests can't collect without the app's own deps.
@@ -56,19 +56,59 @@ echo "ok"
 # the tests do `from app... import ...`.
 #
 # Unlike ml/tests these need the application's own dependencies, plus the
-# test-only ones. The probe is `fakeredis`, not an app runtime dep: it is the one
-# importorskip target that lives only in requirements-dev.txt, so importing it
-# proves the whole dev set is present. (pytest is pinned there too, but it is
-# already assumed on PATH for the ml/tests step above, so it can't discriminate a
-# dev install from a plain one.) Probing a runtime dep (pydantic-settings, etc.)
-# would pass after a plain `pip install -r requirements.txt` and then let
-# test_worker_safety.py's CF-65a Redis-lock test silently importorskip — the
-# exact passing-without-executing failure the requirements-dev install exists to
-# end. Treat a set without fakeredis as "not runnable here" and leave it to CI
-# rather than blocking the commit on a setup step nobody was told to do.
+# test-only ones, so the step is gated on the dev set being installed. Probing a
+# runtime dep (pydantic-settings, etc.) would pass after a plain
+# `pip install -r requirements.txt` and then let the guarded tests silently
+# importorskip themselves — the exact passing-without-executing failure the
+# requirements-dev install exists to end. A set without it is "not runnable
+# here": leave it to CI rather than blocking the commit on a setup step nobody
+# was told to do.
+#
+# The gate reads the `name==version` pins reachable from requirements-dev.txt
+# (following its `-r` include) and checks each is *present* — not importing one
+# chosen package, because a chosen package is what broke this. The probe used
+# to be `fakeredis`, which CF-184 removed from that file when the lock moved to
+# Postgres — after which the probe could never succeed, this step skipped on
+# every correct dev install, and the hook still exited 0 saying all checks
+# passed. It had been doing that silently ever since. Swapping in another name
+# would reinstate the same failure one rename later, and neither candidate
+# discriminates anyway: PyYAML arrives with unrelated tooling (conan depends on
+# it) and numpy is on half the machines in the world.
+#
+# Presence, deliberately not version equality, for every pin: an absent
+# dependency kills collection, which is the case this gate exists to decline,
+# while gating on versions made any drift in the same virtualenv — a tool
+# bumping a patch release, numpy resolved elsewhere by other work — skip
+# api/tests while the hook exited 0, the silent-green shape this gate replaced
+# on a wider trigger. Version consistency across the files that matter is
+# test_pipeline_deps_are_pinned_to_one_version_everywhere's job, and CI runs
+# the suite in an environment built exactly from requirements-dev.txt.
+#
+# The check lives in api/scripts/check_dev_set.py rather than inline here, so
+# the `ruff check api/` step above lints it and api/tests tests it — this
+# block's predecessor rotted for the lack of both. Its exact scope (extras,
+# whitespace, what is skipped) is documented in the script.
+#
+# It does not fail the commit, it declines to run the step and says why: an
+# incomplete dev set is "not runnable here", not a reason to block someone who
+# was never told to install it.
+#
+# The reason arrives on stdout and only stdout is captured, so a genuine
+# breakage in the script — a traceback, a moved file — lands on the terminal
+# instead of being printed as if it were the reason, and the fallback message
+# below blames the check rather than the dev set. An earlier version captured
+# stderr and claimed the opposite in this very comment.
+# It is also the hook's slowest step by some margin — ~12s against ~2s for tsc
+# and well under 1s for everything else, because it imports fastapi, sqlalchemy
+# and celery at collection. That is worth an explicit way out: without one the
+# only lever is `--no-verify`, which skips every check in this file rather than
+# the one that costs the time. Loud on purpose, and never the default.
 printf "  pytest api/tests ... "
-if ! python -c "import fakeredis" >/dev/null 2>&1; then
-  echo "skipped (pip install -r api/requirements-dev.txt to run these locally)"
+if [ -n "$CLIPFARM_SKIP_API_TESTS" ]; then
+  echo "skipped — CLIPFARM_SKIP_API_TESTS is set"
+  _api_tests_skipped=1
+elif ! _api_dev_reason=$(python api/scripts/check_dev_set.py); then
+  echo "skipped — ${_api_dev_reason:-the dev-set check itself failed, see the traceback above}; pip install -r api/requirements-dev.txt"
   _api_tests_skipped=1
 elif ! _api_pytest_out=$(cd api && python -m pytest tests/ -q --no-header 2>&1); then
   echo "FAIL"

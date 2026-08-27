@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, ChevronLeft, ChevronRight, Link2 } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Link2, Download } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
-import { type Clip, getClipShareUrl } from "@/lib/api";
+import { type Clip, getClipDownloadUrl, getClipShareUrl } from "@/lib/api";
+import { startCrossOriginDownload } from "@/lib/download";
 import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 import { useFocusTrap } from "@/lib/useFocusTrap";
 
@@ -19,6 +20,8 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   const videoRef  = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  // Serialises the presign call only — see the note in ClipCard's handler.
+  const [downloading, setDownloading] = useState(false);
 
   // Auto-play when clip changes
   useEffect(() => {
@@ -49,8 +52,11 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   // guarantee.
   useFocusTrap(cardRef, true, {
     // The dialog card, not a control inside it. Two things that rules out:
-    // the default (first FOCUSABLE) is "Copy link", where the first Space or
-    // Enter after opening fires a request and overwrites the clipboard; and
+    // the default is the first FOCUSABLE, which since CF-100 (#305) added a
+    // Download button ahead of it is no longer "Copy link" but "Download",
+    // where the first Space or Enter after opening fires a presign request
+    // instead of overwriting the clipboard. The control changed under this
+    // and the hazard did not, which is the case for focusing neither; and
     // focusing the player instead makes the arrow keys belong to the video, so
     // ← → stop navigating clips until the user Tabs away — while the footer
     // still advertises them. A tabindex="-1" container has neither problem:
@@ -103,6 +109,25 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
     }
   }
 
+  async function handleDownload() {
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      const { url } = await getClipDownloadUrl(clip.id);
+      // Not <a download>: that attribute is ignored for cross-origin URLs and
+      // R2 is a different origin, so the file is named by the
+      // Content-Disposition header the api asked R2 to send. lib/download.ts
+      // explains why the request goes through a hidden frame rather than
+      // window.location — briefly, an R2 error would otherwise render in place
+      // of the app.
+      startCrossOriginDownload(url);
+    } catch {
+      alert("Could not prepare the download.");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   return createPortal(
     <div
       ref={overlayRef}
@@ -148,6 +173,16 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
+            <button
+              onClick={handleDownload}
+              disabled={downloading}
+              aria-busy={downloading}
+              title="Download this clip"
+              className="flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted hover:text-foreground hover:bg-surface-high transition-colors disabled:opacity-50 sm:h-auto sm:py-1.5"
+            >
+              <Download size={12} />
+              Download
+            </button>
             <button
               onClick={handleShare}
               className="flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted hover:text-foreground hover:bg-surface-high transition-colors sm:h-auto sm:py-1.5"
