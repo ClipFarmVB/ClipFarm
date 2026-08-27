@@ -165,6 +165,26 @@ def _origin_problem(origin: str) -> str | None:
             "an Origin is scheme://host[:port] with nothing after it; a trailing "
             "slash, path, query or fragment matches no browser Origin header"
         )
+    # Non-ASCII BEFORE the case check, so one mistake costs one refused boot.
+    # `https://КЛИПФАРМ.РФ` is both upper-case and unlatinised; reporting the
+    # case first sends the operator to `https://клипфарм.рф`, which the next
+    # boot refuses for punycode. Same ordering argument as the port block below,
+    # and this is where it was not applied.
+    #
+    # A raw-unicode host can never match: browsers send the punycode form in an
+    # Origin header, so it allows nobody while looking correct in a dashboard —
+    # the same silent outage as the wildcard. The punycode spelling of the same
+    # host is ASCII and still passes. An earlier comment cited IDNs as a *reason
+    # for* accepting unusual hosts, which had it backwards.
+    #
+    # Guarded on `parts.hostname` because it is None for `https://:8443`, which
+    # reaches its own message further down; an unguarded `.isascii()` here would
+    # be an AttributeError at boot rather than a rejection.
+    if parts.hostname and not parts.hostname.isascii():
+        return (
+            "a browser sends the punycode form of an internationalised host, so "
+            "this matches nothing — use the xn-- spelling"
+        )
     if origin != origin.lower():
         return "must be lower-case — origins are compared as exact strings"
     # netloc must be a bare host[:port]. The checks above constrain the parts
@@ -204,18 +224,6 @@ def _origin_problem(origin: str) -> str | None:
         return (
             "wildcard hosts are not supported — origins are compared as exact "
             "strings, so this matches nothing; list each subdomain explicitly"
-        )
-    # A raw-unicode host can never match: browsers send the punycode form in an
-    # Origin header, so `https://клипфарм.рф` allows nobody while looking
-    # correct in a dashboard — the same silent outage as the wildcard. The
-    # punycode spelling of the same host is ASCII and still passes.
-    #
-    # An earlier version of this comment cited IDNs as a *reason for* accepting
-    # unusual hosts, which had it backwards.
-    if not parts.hostname.isascii():
-        return (
-            "a browser sends the punycode form of an internationalised host, so "
-            "this matches nothing — use the xn-- spelling"
         )
     # Beyond `*` and non-ASCII, host characters are not checked. `clipfarm.ca.`
     # (browsers drop the FQDN root dot) and `clipfarm_ca` (underscore is not
@@ -259,11 +267,12 @@ def _origin_problem(origin: str) -> str | None:
 def _redacted_origin(origin: str) -> str:
     """`origin` reduced to something safe to echo into an error message.
 
-    An entry containing `@` is shown as `scheme://***`, and nothing else about
-    it is printed. Callers number the problems, so the operator identifies the
-    entry by its position in the list rather than by its text.
+    An entry containing `@` (or `%40`) is shown as `scheme://***` when the
+    scheme is one this guard accepts, and as a bare `***` otherwise — nothing
+    else about it is printed. Callers number the problems, so the operator
+    identifies the entry by its position in the list rather than by its text.
 
-    That is blunt on purpose, and it is the fourth shape this function has had.
+    That is blunt on purpose, and it is the fifth shape this function has had.
     The first three tried to print as much of the entry as was "safe", and each
     was wrong in a way only found by execution:
 

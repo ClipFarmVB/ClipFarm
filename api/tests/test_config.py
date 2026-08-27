@@ -803,6 +803,20 @@ def test_only_a_scheme_this_guard_accepts_is_echoed(clean_env):
     assert "'***'" in message
 
 
+def test_an_uppercase_unicode_host_costs_one_refused_boot(clean_env):
+    """`https://КЛИПФАРМ.РФ` is both upper-case and unlatinised. Reporting the
+    case first sends the operator to the lower-cased form, which the next boot
+    refuses for punycode — two refused production boots for one mistake.
+
+    Same ordering argument the port block makes a few lines below, which is
+    where it was already applied and here where it was not.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors("https://\u041a\u041b\u0418\u041f\u0424\u0410\u0420\u041c.\u0420\u0424")
+
+    assert "punycode" in str(exc.value)
+
+
 def test_production_rejects_a_raw_unicode_host(clean_env):
     """Browsers send the punycode form in an Origin header, so a raw-unicode
     host allows nobody while looking correct in a dashboard — the same silent
@@ -884,6 +898,12 @@ def test_each_problem_reads_as_a_sentence(clean_env):
         "https://clipfarm.ca,http://localhost:3000",   # port must stay valid
         "http://127.0.0.1:3000",
         "http://[::1]:3000",           # IPv6 — the host checks must not break it
+        # Bare IPv6, unported. This one pins the `port is not None` guard on the
+        # port block: without it, `'[::1]'.rpartition(':')` yields "port text"
+        # `1]` and the entry is rejected as zero-padded. Only the *ported* form
+        # was listed here, so mutating that guard to `if True:` passed the whole
+        # suite while refusing a production boot for a legitimate origin.
+        "http://[::1]",
         "https://clipfarm.ca:1",       # boundary — the port checks must not
         "https://clipfarm.ca:65535",   # narrow the range they validate
 
