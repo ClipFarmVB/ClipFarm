@@ -267,7 +267,12 @@ class Settings(BaseSettings):
     # Worth reading past the net: across those three comparable fixtures "rules"
     # cuts 85s of live play and "guarded" cuts 132s, so the default cuts 47s more
     # of the thing this repo protects and buys it back with dead time at 4:1.
-    # Raising the gate or anchor speeds widens that — see ml/eval/README.md.
+    # That trade was taken deliberately — the dead-time win is large and holds on
+    # every fixture it condenses, and 4:1 is the rate this repo's own harness
+    # scores against — but it was a judgement, not something the numbers decided.
+    # Weigh live play more heavily and CONDENSE_MODE=rules is the reasonable
+    # read. Raising the gate or anchor speeds widens the trade further, which is
+    # the change that should reopen the question — see ml/eval/README.md.
     # Literal, not str: an unknown value here (CONDENSE_MODE=Guarded) would
     # otherwise load fine and silently run "rules" forever behind one warning
     # per game. Note what "fail at load" means for an operator: Settings is

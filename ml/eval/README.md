@@ -202,9 +202,20 @@ test3 supply most of the gap, and both are excluded from cross-game comparison.
 `rules` cuts 85s of live play and `guarded` cuts 132s — 47s *more*, on the axis
 this repo protects, on every one of them. The net still favours `guarded` by a
 wide margin, but it does so entirely by buying that play back with dead time at
-4:1. Whether that exchange rate justifies the default is a judgement about what
-the product owes its users, not something these numbers settle: a change that
-widens the trades further needs more than a better net.
+4:1.
+
+**That trade was taken deliberately, and it is worth knowing it was a call
+rather than a result.** The dead-time win is large and consistent — every fixture
+it condenses improves, three of them by 29-41 points — and 4:1 is the rate this
+repo's own harness and trainer score against. So `guarded` ships as the default
+on the judgement that the win is worth 47s more play across those three games.
+The numbers above do not make that decision by themselves; a different weighting
+of live play would read them the other way and reach for `CONDENSE_MODE=rules`.
+
+What should reopen it: a real game where the extra cut lands inside a rally
+anyone notices, or any change that widens the trades further (raising the gate or
+anchor speeds does exactly that). The known local-vs-global anchor limitation in
+`motion_anchor_windows` is the likeliest source of the first.
 
 **On the comparable fixtures `v4` and `v5` score identically (+533s each).**
 Their only difference is the abstain, and the abstain fires only on test3. The
