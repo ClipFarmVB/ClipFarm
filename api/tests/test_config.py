@@ -735,6 +735,47 @@ def test_each_problem_is_numbered_so_a_redacted_entry_is_identifiable(clean_env)
     assert "entry 4 'https://***'" in message
     # The good entries are counted but not reported.
     assert "entry 1" not in message and "entry 3" not in message
+    # One problem per line. This assertion used to live in its own test, which
+    # a rewrite of the surrounding block deleted as collateral — leaving the
+    # `"; "` join, itself a finding from an earlier round, with nothing holding
+    # it. Two of the messages carry their own semicolon, so a joined form gives
+    # no way to see where one problem ends.
+    lines = [line for line in message.splitlines() if line.startswith("  - ")]
+    assert len(lines) == 2
+
+
+def test_the_entry_number_matches_what_was_pasted(clean_env):
+    """`cors_origins_list` drops blank entries, so numbering over it counts the
+    survivors rather than the positions. With a doubled comma the operator's
+    third entry was reported as "entry 1", pointing at a comma.
+
+    That number is the only handle they have on an entry whose text has been
+    redacted, so a wrong one is worse than none.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(",,https://admin:hunter2@clipfarm.ca")
+
+    assert "entry 3 'https://***'" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://admin:hunter2%40clipfarm.ca",
+        "https://admin:hunter2%40clipfarm.ca/x",
+    ],
+)
+def test_a_percent_encoded_at_sign_is_still_userinfo(clean_env, value):
+    """A pasted credential that went through a URL-encoder still carries the
+    secret, and `%40` is the likelier of the two forms when the value came out
+    of a connection string.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    message = str(exc.value)
+    assert "hunter2" not in message.lower()
+    assert "***" in message
 
 
 @pytest.mark.parametrize(

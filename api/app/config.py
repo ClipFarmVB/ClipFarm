@@ -272,7 +272,17 @@ def _redacted_origin(origin: str) -> str:
     unrecoverable, a message that is harder to act on is not — is applied once,
     here, to every entry that could possibly carry one.
     """
-    if "@" not in origin:
+    # `%40` counts: a pasted credential that went through a URL-encoder still
+    # carries the secret, and the encoded form is the likelier paste of the two
+    # when the value came out of a connection string.
+    #
+    # A value holding a secret with no `@` at all — `https://admin:hunter2` —
+    # is NOT redacted, and cannot be: it is the same shape as
+    # `https://clipfarm.ca:abc`, which carries nothing and whose text the
+    # operator needs. Redacting on that shape would blank a message for every
+    # ordinary malformed port. The `@` is the only signal that userinfo was
+    # meant, so it is the only one acted on.
+    if "@" not in origin and "%40" not in origin.lower():
         return origin
     scheme, sep, _ = origin.partition("://")
     return f"{scheme}://***" if sep else "***"
@@ -715,10 +725,17 @@ class Settings(BaseSettings):
         # Numbered, because a redacted entry prints as `scheme://***` and two of
         # them would otherwise be indistinguishable. The position is what makes
         # the message actionable once the text cannot be shown.
+        #
+        # Counted over the RAW split rather than over `origins`, which drops
+        # blanks: with `,,https://a:b@x.ca` the operator's third entry was
+        # reported as "entry 1", pointing at a comma. A number that does not
+        # match what they pasted is worse than no number, because it is the one
+        # handle they have on an entry whose text has been redacted away.
         problems = [
-            f"entry {position} {_redacted_origin(origin)!r}: {why}"
-            for position, origin in enumerate(origins, 1)
-            if (why := _origin_problem(origin)) is not None
+            f"entry {position} {_redacted_origin(entry)!r}: {why}"
+            for position, raw in enumerate(self.cors_origins.split(","), 1)
+            if (entry := raw.strip())
+            and (why := _origin_problem(entry)) is not None
         ]
         if problems:
             raise ValueError(cors_origins_error(problems))
