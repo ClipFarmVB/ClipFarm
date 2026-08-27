@@ -1,14 +1,33 @@
 """Every migration file must declare an id nobody else claims (CF-243).
 
-The api container runs `alembic upgrade head` on startup, and CF-189 does the
-same locally whenever `DATABASE_URL` is local. So a broken revision graph is not
-a failed test — it is a boot failure, and it takes every endpoint with it.
+`alembic upgrade head` runs on the production deploy, as Render's
+`preDeployCommand` (DEPLOY_RENDER.md), and in the api container ahead of
+uvicorn — behind `&&`, and only when `DATABASE_URL` is local
+(`api/scripts/auto_migrate.py`, CF-189). So a broken revision graph is not a
+failed test. It is a failed deploy on one path and a container that never
+serves on the other, and it takes every endpoint with it.
 
-**Why a duplicate id is the dangerous shape.** Alembic does not refuse it. It
-emits `UserWarning: Revision NNN is present more than once`, resolves the id to
-one of the two files, and computes an upgrade path that silently omits the
-other. `alembic upgrade head` then exits 0 having skipped a migration, so the
-deploy reports success and the missing table surfaces later as a 500.
+**Why a duplicate id is the dangerous shape — and it is not that it is quiet.**
+The card said alembic resolves the id to one file, skips the other, and exits 0
+with a migration silently unapplied. That is wrong, and this file said it too
+until CF-243's review. Checked against the pinned alembic (1.14.0) on this
+repo's own `versions/` plus CF-109's historical `014_posts.py`, in a scratch
+directory with no database: alembic warns `Revision 014 is present more than
+once`, and then `RevisionMap._revision_map` puts *both* `Revision` objects into
+`heads` and prunes only `map_[downrev]` — the one that won the id. `Revision`
+defines no `__eq__`, so that discard removes one object and the loser stays a
+head forever. The tree ends with two heads printing the same string: `alembic
+heads` emits `014 (head)` twice, and `alembic upgrade head` resolves `head`
+through `get_current_head()`, raises `MultipleHeads`, prints `FAILED: Multiple
+head revisions are present for given argument 'head'` and exits 255 with
+nothing applied. Both shapes do this — the CF-109 pair sharing a
+`down_revision`, and a pair with different parents alike.
+
+So it is loud. What it is not is recognisable: the message says *multiple
+heads*, which reads as a branch somebody forked on purpose, while the two heads
+print as one id and `versions/` contains no fork at all. It lands on the
+command above, at deploy time, pointing at the wrong thing. This file exists to
+name the collision, in the words that fix it, at merge time instead.
 
 This repo had it loaded. When this file was written, `main` carried
 `014_upload_id_text.py` with `revision = "014"` and the CF-109 social stack
@@ -63,9 +82,18 @@ VERSIONS = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
 # uses and that alembic 1.14's own `script.py.mako` emits, and the bare
 # `revision = "014"` that older alembic templates emitted and that a hand-written
 # file may still carry. A regex that matched only one would parse zero files and
-# report a clean chain — which `test_every_migration_file_declares_a_revision`
-# is what catches.
-_REVISION = re.compile(r'^revision\s*(?::[^=]+)?=\s*["\']([^"\']+)["\']', re.M)
+# report a clean chain — which is what
+# `test_every_migration_file_declares_a_revision` catches.
+#
+# The `(?P=q)` backreference is load-bearing: `["\']...["\']` would accept
+# `"014'`, which is not a Python string at all — the file would not import, and
+# alembic would never get an id out of it. Reading `014` from it instead lets a
+# file that cannot be loaded look like a well-formed revision. Requiring the
+# quotes to match makes it a miss, which is what
+# test_every_migration_file_declares_a_revision names.
+_REVISION = re.compile(
+    r'^revision\s*(?::[^=]+)?=\s*(?P<q>["\'])(?P<id>[^"\']+)(?P=q)', re.M
+)
 # Captures whatever is on the right of the `=` rather than only the two shapes
 # we accept. The two regexes are deliberately asymmetric in what a miss means:
 # a missing `revision` is caught by test_every_migration_file_declares_a_revision,
@@ -74,11 +102,23 @@ _REVISION = re.compile(r'^revision\s*(?::[^=]+)?=\s*["\']([^"\']+)["\']', re.M)
 # surface as a phantom extra head rather than as a parse failure. Keeping the raw
 # text is what lets test_every_down_revision_is_a_string_or_none say so directly.
 _DOWN_RAW = re.compile(r"^down_revision\s*(?::[^=]+)?=\s*(.+?)\s*(?:#.*)?$", re.M)
-_QUOTED = re.compile(r'^["\']([^"\']+)["\']$')
+# Same matched-quote requirement, and the same reason: `"013'` is a syntax
+# error, not a parent id. Read as `013` it would pass every check below while
+# the file it came from could not be imported.
+_QUOTED = re.compile(r'^(?P<q>["\'])(?P<id>[^"\']+)(?P=q)$')
+
+
+# Alembic's own filter on `versions/`, copied from `_only_source_rev_file` in
+# alembic/script/base.py (1.14.0): a leading `__init__` or `.#` disqualifies a
+# filename from being a revision file at all. So `versions/__init__.py` and an
+# editor's `.#014_x.py` lock file are invisible to alembic, and a test that
+# demanded a `revision = ...` from them would be failing on something that
+# cannot break a deploy. Every other `*.py` here alembic *does* try to read.
+_ALEMBIC_REV_FILE = re.compile(r"(?!\.\#|__init__)(.*\.py)$")
 
 
 def _files():
-    return sorted(VERSIONS.glob("*.py"))
+    return sorted(p for p in VERSIONS.glob("*.py") if _ALEMBIC_REV_FILE.match(p.name))
 
 
 def _parsed() -> list[tuple[str, str, str | None, str | None]]:
@@ -94,8 +134,9 @@ def _parsed() -> list[tuple[str, str, str | None, str | None]]:
     "root":
 
       - `raw_down is None` — no `down_revision` line was found at all,
-      - `raw_down` set but unquoted — a line this file cannot read, such as
-        alembic's merge form `("013", "014")`.
+      - `raw_down` set but not a matched-quote string literal — a line this
+        file cannot read, such as alembic's merge form `("013", "014")`, a bare
+        name, or mismatched quotes.
 
     Both are reported by `test_every_down_revision_is_a_string_or_none`. Only
     `raw_down == "None"` is a real root.
@@ -110,8 +151,8 @@ def _parsed() -> list[tuple[str, str, str | None, str | None]]:
         raw = raw_match.group(1) if raw_match else None
         down: str | None = None
         if raw is not None and (quoted := _QUOTED.match(raw)):
-            down = quoted.group(1)
-        out.append((path.name, rev.group(1), down, raw))
+            down = quoted.group("id")
+        out.append((path.name, rev.group("id"), down, raw))
     return out
 
 
@@ -128,19 +169,24 @@ def test_every_migration_file_declares_a_revision():
         f"these files in versions/ declare no `revision = ...`: {sorted(missed)}."
         " If they are migrations, the declaration style has changed and the "
         "regexes in this file no longer match it — until they do, every check "
-        "below is reading an incomplete chain. If they are not migrations, they "
-        "are new: versions/ has held nothing but revision files so far (it is "
-        "not even a package), so decide whether that is intended and skip them "
-        "here if it is."
+        "below is reading an incomplete chain. If they are not migrations, "
+        "move them: alembic reads every `*.py` in versions/ except the "
+        "`__init__`/`.#` names it excludes by rule, and dies on one it cannot "
+        "get an id from — `Could not determine revision id from filename "
+        "<name>`. There is no exemption to add here; versions/ holds revision "
+        "files only."
     )
     assert parsed, "no migrations found at all — is the versions/ path right?"
 
 
 def test_no_revision_id_is_claimed_twice():
-    """The failure alembic only warns about.
+    """The failure that arrives under the wrong name.
 
     Two files with the same id do not conflict in git when the filenames differ,
-    so this is caught here or at container boot, and nowhere in between.
+    so this is caught here or at deploy time, and nowhere in between — and at
+    deploy time it is reported as `Multiple head revisions are present`, which
+    describes a fork that is not there. See the module docstring for the
+    measurement.
     """
     parsed = _parsed()
     counts = collections.Counter(rev for _, rev, _, _ in parsed)
@@ -150,10 +196,13 @@ def test_no_revision_id_is_claimed_twice():
         if n > 1
     }
     assert not dupes, (
-        f"two migrations declare the same revision id: {dupes}. Alembic only "
-        "WARNS on this, resolves the id to one of them, and computes an upgrade "
-        "path that skips the other — so `alembic upgrade head` exits 0 with a "
-        "migration silently unapplied. Renumber the later one onto the other."
+        f"two migrations declare the same revision id: {dupes}. Alembic warns "
+        "`Revision NNN is present more than once` and then keeps both in its "
+        "head set, so the tree has two heads printing the same id: `alembic "
+        "upgrade head` fails with `Multiple head revisions are present for "
+        "given argument 'head'` and exits 255, applying nothing. That message "
+        "names a fork, not a duplicate, which is why this is worth failing on "
+        "here. Renumber the later one onto the other."
     )
 
 
@@ -175,10 +224,17 @@ def test_the_filename_prefix_matches_the_revision_id():
     written. A duplicate is visible only once both files share a tree, which is
     `test_no_revision_id_is_claimed_twice`'s job, not this one's.
     """
+    # Split the *stem*, not the filename: `name.split("_")[0]` on a file with no
+    # underscore yields `015.py`, which is not `isdigit()`, so the whole check
+    # skipped exactly the names most likely to have been renumbered by hand.
+    # The `isdigit()` guard itself stays: it scopes this check to the numbered
+    # scheme this repo uses, so a file named some other way is not reported as a
+    # mismatch against a prefix that was never meant to be a revision id.
     mismatched = {
         name: rev
         for name, rev, _, _ in _parsed()
-        if (prefix := name.split("_", 1)[0]) != rev and prefix.isdigit()
+        if (prefix := pathlib.Path(name).stem.split("_", 1)[0]) != rev
+        and prefix.isdigit()
     }
     assert not mismatched, (
         f"filename prefix and revision id disagree: {mismatched}. Rename the "
@@ -194,15 +250,16 @@ def test_every_down_revision_is_a_string_or_none():
     Two shapes reach here, and both otherwise read as a legitimate root:
 
     *No line at all.* Alembic's template always emits `down_revision`, `None`
-    for a root, so a file missing it is a hand-edit. Without this assertion the
-    only failure is the head test's `expected one head, found [...]` — deleting
-    007's line reports `['006', '014']` — which names neither the file nor the
-    missing line, and points at renumbering.
+    for a root, so a file missing it is a hand-edit. Deleting 007's line makes
+    the head test fail too, at `006` and `014` — but that test can only report
+    the two ids, and this one names the file and the missing line.
 
-    *A line in a shape the regexes do not accept* — the one that matters being
-    alembic's merge revision, `("013", "014")`. Same misdiagnosis, and the
-    actual answer is that this repo does not use merge revisions at all
-    (CLAUDE.md: the chain is linear).
+    *A line in a shape the regexes do not accept* — the merge revision
+    `("013", "014")` being the one that matters, since this repo does not use
+    merge revisions at all (CLAUDE.md: the chain is linear), and mismatched
+    quotes such as `"013'` being the one most likely to be a typo.
+
+    Both are the actionable half of a failure the head test can only count.
     """
     absent = sorted(name for name, _, _, raw in _parsed() if raw is None)
     assert not absent, (
@@ -219,9 +276,10 @@ def test_every_down_revision_is_a_string_or_none():
     assert not unreadable, (
         f"down_revision is neither a quoted id nor None: {unreadable}. A tuple "
         "means a merge revision, and this repo keeps a linear chain (CLAUDE.md) "
-        "— so rebase onto the current head instead of merging two. Anything "
-        "else means the declaration style changed and the regexes in this file "
-        "need updating; until then the chain below is being read wrong."
+        "— so rebase onto the current head instead of merging two. Mismatched "
+        "quotes (`\"013'`) mean the file will not import at all. Anything else "
+        "means the declaration style changed and the regexes in this file need "
+        "updating; until then the chain below is being read wrong."
     )
 
 
@@ -231,20 +289,66 @@ def test_there_is_exactly_one_head():
     Computed over the distinct ids so that a duplicate does not surface here as
     a confusing head count — `test_no_revision_id_is_claimed_twice` owns that
     failure and says something useful about it.
+
+    This test knows one thing: which ids nothing else names as a parent. It
+    cannot tell *why* there is more than one, because several unrelated faults
+    land on the same count — a genuine fork, a `down_revision` pointing outside
+    `versions/`, one this file could not read or that is missing entirely, and a
+    `revision` line the regexes missed, which drops a file out of the chain and
+    strands its parent. Each has its own test, and each of those says which file
+    and which line. So this message reports what it computed and lists the
+    states that produce it, rather than naming a cause it has not established;
+    it used to assert "two migrations share a parent", which is wrong for all
+    but the first.
     """
     parsed = _parsed()
     revisions = {rev for _, rev, _, _ in parsed}
     parents = {down for _, _, down, _ in parsed if down is not None}
     heads = sorted(revisions - parents)
+
+    def describe(head: str) -> str:
+        """What the files themselves say about a head — no inference."""
+        for name, rev, down, raw in parsed:
+            if rev != head:
+                continue
+            if raw is None:
+                return f"{head} ({name}: no down_revision line at all)"
+            if down is not None:
+                return f"{head} ({name}: down_revision {down!r})"
+            if raw == "None":
+                return f"{head} ({name}: down_revision None, a declared root)"
+            return f"{head} ({name}: down_revision {raw}, unreadable)"
+        return f"{head} (named as a parent, but no file declares it)"
+
     assert len(heads) == 1, (
-        f"expected one head, found {heads}. Two migrations share a parent — "
-        "renumber one onto the other and coordinate the merge order."
+        f"expected one head, found {len(heads)}: "
+        f"{'; '.join(describe(h) for h in heads)}. A head is an id no file "
+        "names as its down_revision, and that is all this check knows — it "
+        "cannot tell which fault produced these. The states that do: two files "
+        "declaring different ids on the same parent (a real fork — renumber one "
+        "onto the other and coordinate the merge order); a down_revision "
+        "pointing at a revision not in versions/, which leaves its own parent "
+        "looking like a head; a down_revision missing or unreadable, which "
+        "reads as a second root; and a `revision` line this file could not "
+        "parse, which drops that file out of the chain and strands its parent. "
+        "If test_every_down_revision_resolves, "
+        "test_every_down_revision_is_a_string_or_none or "
+        "test_every_migration_file_declares_a_revision also failed, fix that "
+        "first and name the file — this count is downstream of it."
     )
 
 
 def test_every_down_revision_resolves():
-    """A parent that is not in the directory is `Can't locate revision ...` at
-    boot, which is the same outage as a duplicate by a different route."""
+    """A parent that is not in the directory is the same outage as a duplicate
+    by a different route, and reported even less helpfully.
+
+    Alembic 1.14 warns `Revision 099 referenced from ... is not present` and
+    then, on the very next line, indexes the map with that same id — so the
+    command dies with a bare `KeyError: '099'` traceback out of
+    `RevisionMap._revision_map`, not with a message about migrations at all.
+    (`Can't locate revision identified by ...` is a different path: resolving
+    an identifier, such as the version the database is stamped with.)
+    """
     parsed = _parsed()
     revisions = {rev for _, rev, _, _ in parsed}
     dangling = {
