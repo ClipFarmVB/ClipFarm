@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Enum as SAEnum
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Enum as SAEnum, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -65,8 +65,16 @@ class Post(Base):
     # No index=True: every read of this table enters through author_id (a
     # profile grid, or CF-111's follow set) and takes the composite below. See
     # the posts migration for why a bare created_at index has no reader.
+    # server_default mirrors the migration's `sa.func.now()`. Without it the
+    # column is only ever filled by the Python default, so a row written by
+    # anything that isn't this ORM — a backfill, a psql insert, a future COPY —
+    # would violate NOT NULL, and autogenerate would keep proposing to drop the
+    # default the database actually has.
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        default=lambda: datetime.now(timezone.utc),
     )
 
     # The composite the migration creates, declared so it reaches

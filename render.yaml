@@ -150,6 +150,19 @@ services:
       # anonymous endpoints therefore reach the database and 404, which is a
       # load question and not a disclosure one.
       #
+      # Naming the endpoint that is actually anonymous, since "no footage can be
+      # public" does not by itself cover it: **GET /posts?username=** takes no
+      # credential and reaches the database on every call. Two things bound it.
+      # It resolves the handle through the shared finder, which 404s a
+      # *generated* handle, so it cannot be used to test whether an email-derived
+      # account exists; and it filters through apply_post_visibility with
+      # viewer_id=None, which for an anonymous caller admits only public posts
+      # over public clips — the set that cannot be non-empty today.
+      #
+      # What is left is genuinely a load and enumeration-rate concern on an
+      # unthrottled route, and that is CF-186 (#189). It is the reason the
+      # ordering below is not optional.
+      #
       # The order that must hold: whoever ships the clip-visibility write path
       # is the person who makes "public" real, and rate limiting has to land
       # before they do. Reassess this flag then, not after.
