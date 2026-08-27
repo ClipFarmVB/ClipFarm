@@ -25,6 +25,10 @@ const TIER_ICON: Record<Visibility, typeof Lock> = {
  * experience is CF-112's feed. This is the owner's inventory and the visitor's
  * proof the profile has something on it.
  */
+/** Matches the API's own default. Requested explicitly so a full page is
+ *  detectable rather than a number the client has to assume. */
+const PAGE = 50;
+
 export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }) {
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -34,15 +38,11 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
     let cancelled = false;
     setPosts(null);
     setError(null);
-    getUserPosts(handle)
+    getUserPosts(handle, PAGE)
       .then((data) => {
         if (!cancelled) setPosts(data);
       })
       .catch((e) => {
-        // The endpoint 404s a profile the viewer can't see, which is the same
-        // response as a handle that doesn't exist — by design (CF-108). The
-        // profile header has already rendered by then, so an empty state reads
-        // better here than an error.
         if (!cancelled) {
           setError(e instanceof Error ? e.message : "Could not load posts");
           setPosts([]);
@@ -72,6 +72,19 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
     return (
       <div className="mt-8 flex justify-center py-10">
         <Loader2 className="h-5 w-5 animate-spin text-muted" />
+      </div>
+    );
+  }
+
+  // A failed load is not an empty profile, and the two must not render the
+  // same. The catch above sets `posts` to [] so the grid has something to map,
+  // which meant this early return fired first and reported "No posts yet." for
+  // every failure — swallowing the message it had just stored. Error first.
+  if (error && posts.length === 0) {
+    return (
+      <div className="mt-8 rounded-md border border-dashed border-border px-4 py-10 text-center">
+        <p className="text-sm text-muted">Couldn&apos;t load posts.</p>
+        <p className="mt-1 text-xs text-subtle">{error}</p>
       </div>
     );
   }
@@ -148,6 +161,16 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
           );
         })}
       </div>
+      {posts.length === PAGE && (
+        // The cap is deliberate (CF-109 defers cursor paging to when a profile
+        // actually needs it), but it must not be *invisible*: this is the only
+        // place a post can be taken down, so an author with more than a page of
+        // them would otherwise have no way to know the rest exist.
+        <p className="mt-3 text-center text-[11px] text-subtle">
+          Showing the {PAGE} most recent posts.
+          {isSelf ? " Older ones aren't listed here yet." : ""}
+        </p>
+      )}
     </div>
   );
 }

@@ -48,6 +48,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // input" — on *success*. Every DELETE here returns 204, and handling it here
   // is what lets them all share this helper: deleteGame used to hand-roll its
   // own fetch purely to sidestep the JSON parse.
+  //
+  // The content-length arm is deliberately wider than that: it catches *any*
+  // empty body, including a 200 with none. Both are the same bug from the
+  // caller's side — a `T` that was never sent — and returning undefined is
+  // honest about it, where res.json() would throw a parse error that reads
+  // like the response was malformed rather than absent.
   if (res.status === 204 || res.headers.get("content-length") === "0") {
     return undefined as T;
   }
@@ -451,8 +457,18 @@ export function createPost(
   });
 }
 
-export function getUserPosts(username: string): Promise<Post[]> {
-  return request<Post[]>(`/posts?username=${encodeURIComponent(username)}`);
+/**
+ * Posts by one author — what a profile grid renders.
+ *
+ * Capped, not paged (CF-109). The caller passes the limit it intends to render
+ * so it can tell a full page from a truncated one: getting exactly `limit` back
+ * means there may be older posts it is not showing. That matters because the
+ * profile is currently the only surface for *unpublishing*, so a silently
+ * truncated list is a post the author cannot reach.
+ */
+export function getUserPosts(username: string, limit = 50): Promise<Post[]> {
+  const params = new URLSearchParams({ username, limit: String(limit) });
+  return request<Post[]>(`/posts?${params}`);
 }
 
 export function deletePost(postId: string): Promise<void> {
