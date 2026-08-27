@@ -3,10 +3,10 @@
 A post is a caption plus a reference to an existing clip — no video is copied,
 so there is nothing to backfill and nothing in R2 to migrate.
 
-Numbered 013 (not 012) so the chain stays linear: 012 is taken by #185
+Numbered 016, revising 015. It has moved twice: 012 -> 013 when #185 took
 (CF-163 presigned uploads), which opened first and has already renumbered
 once. This PR is third in a stack behind CF-107 and CF-108, so it merges
-last by construction — which means it also needs #185 merged first.
+last by construction — which means it also needs #229 (CF-226) merged first, which holds 015.
 
 Revision ID: 016
 Revises: 015

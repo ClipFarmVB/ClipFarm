@@ -11,6 +11,12 @@ class PostAuthor(BaseModel):
 
     A feed card needs the handle and avatar to render; making the client fetch
     each author separately would be one request per card.
+
+    Built through `from_author`, never `model_validate`, because a **generated**
+    handle must not appear here. The CF-107 backfill derives handles from email
+    local parts, so publishing one turns any response carrying it into an
+    existence oracle keyed to a real address — which `get_profile` and
+    `_findable_author` both refuse, and which this schema was reaching around.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -19,6 +25,27 @@ class PostAuthor(BaseModel):
     username: str | None
     display_name: str | None
     avatar_url: str | None
+
+    @classmethod
+    def from_author(cls, author) -> "PostAuthor":
+        """Withhold a handle its owner never chose.
+
+        `create_post` does not require a claimed handle, so a backfilled user
+        can post publicly and an anonymous read would have returned
+        `johnsmith` — derived from `john.smith@…`. Nulled here rather than
+        filtered in the router because every path that serializes a post goes
+        through this schema, and the next one should not have to remember.
+
+        Nulling rather than omitting keeps the response shape stable; clients
+        already handle a null username, since a user who has not claimed a
+        handle legitimately has none.
+        """
+        return cls(
+            id=author.id,
+            username=None if getattr(author, "username_is_generated", False) else author.username,
+            display_name=author.display_name,
+            avatar_url=author.avatar_url,
+        )
 
 
 class PostPlayback(BaseModel):

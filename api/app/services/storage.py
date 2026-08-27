@@ -3,6 +3,8 @@ import uuid
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
+from functools import lru_cache
+
 import boto3
 from botocore.config import Config
 
@@ -58,7 +60,14 @@ _BOTO_CONFIG = Config(
 )
 
 
+@lru_cache(maxsize=1)
 def _client():
+    """Cached: constructing a boto3 client is not free, and presigning is a
+    per-object call. A 100-post page presigns a clip URL and a thumbnail each,
+    so an uncached client meant up to 200 constructions synchronously on the
+    event loop for one request. The client is thread-safe for the signing calls
+    made here, and its config is process-wide anyway.
+    """
     endpoint = f"https://{settings.r2_account_id}.r2.cloudflarestorage.com"
     return boto3.client(
         "s3",
