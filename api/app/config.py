@@ -202,17 +202,17 @@ def _origin_problem(origin: str) -> str | None:
     # Read from the raw netloc rather than parts.port, which has already
     # normalised `:080` to 80. rpartition is bracket-safe — `[::1]:3000` splits
     # at the last colon, and a bare `[::1]` yields no separator at all.
-    if parts.port is not None:
+    if port is not None:
         _, sep, port_text = parts.netloc.rpartition(":")
-        if sep and port_text != str(parts.port):
+        if sep and port_text != str(port):
             return (
                 f"port `{port_text}` is zero-padded — a browser sends "
-                f"`{parts.port}`, and origins are compared as exact strings"
+                f"`{port}`, and origins are compared as exact strings"
             )
-        if (parts.scheme, parts.port) in (("http", 80), ("https", 443)):
+        if (parts.scheme, port) in (("http", 80), ("https", 443)):
             return (
-                f"`:{parts.port}` is the default port for {parts.scheme} — a "
-                "browser omits it, so this matches no Origin header; drop it"
+                f"`:{port}` is the default port for {parts.scheme} — a browser "
+                f"omits it, so this matches no Origin header. Drop it"
             )
     return None
 
@@ -229,12 +229,25 @@ def _redacted_origin(origin: str) -> str:
     Purely textual, so it also covers the entry `urlsplit` cannot parse — and it
     cannot itself raise while building an error message, which is the one place
     a second exception is least welcome.
+
+    Only the AUTHORITY is searched for the `@`. A first version searched the
+    whole string and so redacted `https://clipfarm.ca/@handle` to
+    `https://***@handle` — losing the host, which leaves the operator unable to
+    tell which entry was rejected. No credential was at risk there; the damage
+    was to the message, which is the entire point of this function.
     """
-    if "@" not in origin:
-        return origin
     scheme, sep, rest = origin.partition("://")
-    host = (rest if sep else origin).rpartition("@")[2]
-    return f"{scheme}://***@{host}" if sep else f"***@{host}"
+    if not sep:
+        # No `scheme://`, so there is no authority to hold userinfo. Redact on
+        # a bare `@` anyway: the value is malformed, and a malformed value is
+        # exactly where a pasted credential is likeliest to be sitting.
+        return f"***@{origin.rpartition('@')[2]}" if "@" in origin else origin
+    authority = rest
+    for delimiter in "/?#":
+        authority = authority.partition(delimiter)[0]
+    if "@" not in authority:
+        return origin
+    return f"{scheme}://***@{rest[len(authority.rpartition('@')[0]) + 1:]}"
 
 
 def cors_origins_error(problems: list[str]) -> str:
@@ -242,10 +255,14 @@ def cors_origins_error(problems: list[str]) -> str:
     that one says "not set" and explains that a localhost default may still be
     in place, which is the wrong sentence for a value someone did set.
     """
+    # One problem per line rather than "; "-joined. Two of the messages now carry
+    # their own semicolon, so the joined form gave no way to tell where one
+    # problem ended and the next began — in the text an operator reads at the
+    # moment production will not boot, with as many entries as they pasted.
     return (
-        "ENVIRONMENT=production but CORS_ORIGINS is not usable: "
-        + "; ".join(problems)
-        + ". It is a comma-separated list of bare origins, e.g. "
+        "ENVIRONMENT=production but CORS_ORIGINS is not usable:\n"
+        + "\n".join(f"  - {problem}" for problem in problems)
+        + "\nIt is a comma-separated list of bare origins, e.g. "
         "`https://clipfarm.ca,https://www.clipfarm.ca`. On Render it is "
         "`sync: false` and pasted by hand (DEPLOY_RENDER.md § Fill the "
         "secrets); on the VPS it comes from .env.docker (DEPLOY.md § 4)."

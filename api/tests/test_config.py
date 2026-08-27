@@ -626,6 +626,44 @@ def test_a_rejected_origin_does_not_echo_its_password(clean_env, value):
 
 
 @pytest.mark.parametrize(
+    "value",
+    [
+        "https://clipfarm.ca/@handle",   # `@` in the path
+        "https://clipfarm.ca/?x=a@b",    # `@` in the query
+    ],
+)
+def test_a_rejected_origin_without_userinfo_is_echoed_intact(clean_env, value):
+    """The other half of the redaction, and a bug the first version had.
+
+    Searching the whole string for `@` redacted `https://clipfarm.ca/@handle` to
+    `https://***@handle` — no credential was at risk, but the host was lost, so
+    the operator could not tell which entry had been rejected. Redacting the
+    error message into uselessness defeats the point of having one. Only the
+    authority is searched now.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    message = str(exc.value)
+    assert "***" not in message
+    assert value in message
+
+
+def test_each_problem_is_delimited(clean_env):
+    """The problems used to be joined with `; `, and two of the messages carry
+    their own semicolon — so with several bad entries there was no way to see
+    where one problem ended. One per line instead.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors("https://*.clipfarm.ca,https://clipfarm.ca:080")
+
+    lines = [ln for ln in str(exc.value).splitlines() if ln.startswith("  - ")]
+    assert len(lines) == 2
+    assert "*.clipfarm.ca" in lines[0]
+    assert ":080" in lines[1]
+
+
+@pytest.mark.parametrize(
     ("value", "expected"),
     [
         ("https://clipfarm.ca:443", "default port"),
