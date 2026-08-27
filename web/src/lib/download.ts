@@ -23,7 +23,24 @@
  * did nothing. That is a worse-to-debug outcome traded for a much less costly
  * one.
  *
- * Everything below is about one consequence of that trade: **a frame removed
+ * **Why not a new tab.** `window.open` — opened synchronously on the click so
+ * the activation survives the presign `await`, then pointed at the URL — needs
+ * none of the state below, and turns the silent failure above into a visible
+ * one, which is a real advantage this module does not have an answer to. It
+ * was not chosen for the workflow rather than the mechanism: the control this
+ * serves sits on every card in a grid, and the batch download it exists for
+ * (the CF-101 case) means a run of clicks. Each one flashes a tab, and on iOS
+ * Safari each one *switches away from the app* — an attachment closes it again
+ * immediately, but the user has still been taken out of the grid they were
+ * working down. The failure path costs a tab that has to be closed by hand
+ * when the presign fails, and `window.open` returns null under a strict popup
+ * blocker, so the handler needs this path as a fallback anyway.
+ *
+ * That is a judgement about which cost is worse, not a proof. If the team
+ * would rather have loud failures than an undisturbed grid, the swap is small
+ * and this module is the only thing that changes.
+ *
+ * Everything below is about one consequence of the trade: **a frame removed
  * while its transfer is still running kills the download and reports nothing.**
  * Firefox and Safari tie the request to the frame's lifetime, which is why the
  * frame cannot be removed synchronously — and that fact does not stop being
@@ -101,12 +118,14 @@ export function startCrossOriginDownload(
   // against our own bucket, so this is not a live hole. `allow-downloads` is
   // the one capability kept, and it is the only one the frame is for.
   //
-  // Note the failure mode if an engine does not honour that token: an
-  // unrecognised sandbox token is ignored while the sandbox itself still
-  // applies, so the download is blocked outright rather than degraded — and
-  // this module cannot report that. Current Chrome, Firefox and Safari all
-  // support it; the pre-merge browser pass has to confirm a file actually
-  // *saves*, not merely that its name is right.
+  // An earlier version of this comment worried that an engine ignoring the
+  // token would block the download outright, since an unrecognised sandbox
+  // token is dropped while the sandbox still applies. That inverts the
+  // history: blocking downloads in sandboxed frames and `allow-downloads` are
+  // the same change — Chrome shipped both in 83 — so the token is unrecognised
+  // only where there is no block to opt out of. Old engine, no sandbox
+  // download restriction; new engine, restriction plus the opt-out we set.
+  // Neither leaves a gap.
   frame.setAttribute("sandbox", "allow-downloads");
   frame.style.display = "none";
   frame.src = url;

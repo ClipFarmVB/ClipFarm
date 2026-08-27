@@ -421,15 +421,19 @@ async def download_clip(
     # restarts. `action_type` is the primary action by construction: the
     # detector sets it to the dominant action by summed confidence, and
     # update_clip_labels rewrites it from the corrected labels, so a correction
-    # already reaches it. It is also what ClipModal badges beside this button.
+    # already reaches it.
     #
-    # ...with one exception, so the file matches the badge the user clicked
-    # Download beside. update_clip_labels writes labels=["not_an_action"] and
-    # action_type=unknown together, and ClipCard badges that pair `removed` —
-    # so naming the file `- unknown -` describes a clip the grid says is
-    # removed. The second arm of the condition is the grid's own: a clip the
-    # detector could not classify arrives as unknown at zero confidence and is
-    # dimmed the same way.
+    # ...with one exception, so the file matches what ClipCard shows.
+    # update_clip_labels writes labels=["not_an_action"] and action_type=unknown
+    # together, and ClipCard badges that pair `removed` — so naming the file
+    # `- unknown -` describes a clip the grid says is removed. The second arm of
+    # the condition is ClipCard's own: a clip the detector could not classify
+    # arrives as unknown at zero confidence and is dimmed the same way.
+    #
+    # ClipCard specifically, not "the UI": ClipModal badges clip.action_type
+    # with no discarded branch, so it shows `unknown` where the card shows
+    # `removed`. That disagreement predates this endpoint and is not resolved
+    # here — the filename follows the grid, which is where a clip is picked.
     discarded = "not_an_action" in (clip.labels or []) or (
         clip.action_type is ActionType.unknown and not clip.confidence
     )

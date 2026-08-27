@@ -1,4 +1,5 @@
 """Cloudflare R2 (or AWS S3) object storage helpers."""
+import re
 import uuid
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -202,6 +203,12 @@ def abort_multipart(key: str, upload_id: str) -> None:
     )
 
 
+# A dash flanked by whitespace, repeated — i.e. two or more separators that
+# ended up adjacent once what sat between them was dropped. Anchored on the
+# spaces so "00-04-12" and "Under-14" are not separators and cannot match.
+_ORPHANED_SEPARATORS = re.compile(r"\s-(?:\s*-)+\s")
+
+
 def content_disposition(filename: str) -> str:
     """`attachment` plus the filename, in both forms RFC 6266 defines.
 
@@ -222,6 +229,15 @@ def content_disposition(filename: str) -> str:
     The ASCII form falls back to "download" when no ASCII survives, keeping the
     extension: `filename=""` names the file after the URL's last path segment,
     which is the UUID this whole scheme exists to replace.
+
+    **The fallback degrades and is meant to.** Where a name's only distinguishing
+    text is non-ASCII, what is left is the scheme's fixed parts: two Cyrillic-
+    titled games both fall back to `(condensed).mp4`, and nothing here can tell
+    them apart short of transliterating, which would invent a spelling nobody
+    chose. The clip scheme survives this because the timestamp is ASCII. It is
+    accepted rather than fixed because `filename*` has been honoured by every
+    shipping browser for over a decade — this parameter is for clients that are
+    already reading a header from 2011.
     """
     kept = "".join(
         c for c in filename if c.isprintable() and c not in '";\\'
@@ -237,7 +253,13 @@ def content_disposition(filename: str) -> str:
     # they sat between ("Матч - spike" -> " - spike"), so the fallback is
     # re-collapsed and re-stripped rather than handed over as-is.
     ascii_stem = "".join(c for c in stem if c.isascii())
-    ascii_stem = " ".join(ascii_stem.split()).strip(" .-") or "download"
+    ascii_stem = " ".join(ascii_stem.split())
+    # Collapsing the whitespace is not enough on its own: a component between
+    # two others leaves the separators on *both* sides of it, and they survive
+    # as an orphaned run — a Cyrillic title with a Cyrillic player gave
+    # "spike - - 00-04-12". Only a dash flanked by spaces is a separator here,
+    # so this cannot touch the timestamp or a hyphenated word.
+    ascii_stem = _ORPHANED_SEPARATORS.sub(" - ", ascii_stem).strip(" .-") or "download"
     ascii_ext = "".join(c for c in ext if c.isascii())
     ascii_name = f"{ascii_stem}.{ascii_ext}" if ascii_ext else ascii_stem
     header = f'attachment; filename="{ascii_name}"'

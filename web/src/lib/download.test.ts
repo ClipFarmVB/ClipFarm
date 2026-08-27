@@ -10,18 +10,26 @@ import {
 
 interface StubFrame extends Record<string, unknown> {
   removed: boolean;
+  attrs: Record<string, string>;
 }
 
 function stubHost() {
   const appended: StubFrame[] = [];
   const host: DownloadHost = {
     createElement: () => {
+      // Attributes are kept apart from properties on purpose. An earlier stub
+      // aliased setAttribute onto the object, so `frame.sandbox` read back the
+      // string that had been set as an attribute — which is not how a real
+      // HTMLIFrameElement behaves (`.sandbox` is a DOMTokenList), and made the
+      // assertion pass for a reason unrelated to the code under test.
       const el: StubFrame = {
         hidden: false,
         src: "",
         removed: false,
+        attrs: {},
         style: {} as CSSStyleDeclaration,
-        setAttribute(name: string, value: string) { el[name] = value; },
+        setAttribute(name: string, value: string) { el.attrs[name] = value; },
+        getAttribute(name: string) { return el.attrs[name] ?? null; },
         remove() { el.removed = true; },
       };
       return el as unknown as HTMLIFrameElement;
@@ -67,7 +75,7 @@ describe("startCrossOriginDownload", () => {
   it("sandboxes the frame down to the one capability it needs", () => {
     const { host, appended, pool, now } = stubHost();
     startCrossOriginDownload("https://r2.example/signed", host, pool, now);
-    expect(appended[0].sandbox).toBe("allow-downloads");
+    expect(appended[0].attrs.sandbox).toBe("allow-downloads");
   });
 
   // Removing a frame kills the transfer it started: Firefox and Safari tie the

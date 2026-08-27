@@ -543,6 +543,35 @@ class TestContentDisposition:
         header = content_disposition("Матч - spike.mp4")
         assert 'filename="spike.mp4"' in header
 
+    def test_two_dropped_components_do_not_leave_an_orphaned_separator(self):
+        """The motivating case, and the one the single-gap test above missed.
+
+        A non-Latin title *and* a non-Latin player leaves the separators on
+        both sides of the middle component, which collapsing whitespace alone
+        does not join: the fallback read `spike - - 00-04-12.mp4`.
+        """
+        header = content_disposition("Матч - spike - Ирина - 00-04-12.mp4")
+        assert 'filename="spike - 00-04-12.mp4"' in header
+
+    def test_collapsing_separators_cannot_touch_the_timestamp_or_a_hyphen(self):
+        # Only a dash flanked by spaces is a separator, so `00-04-12` and a
+        # hyphenated title survive the collapse intact.
+        header = content_disposition("Under-14 County Final - spike - Ирина - 00-04-12.mp4")
+        assert 'filename="Under-14 County Final - spike - 00-04-12.mp4"' in header
+
+    def test_a_fallback_with_nothing_distinguishing_left_is_accepted(self):
+        """Documented residual, pinned so it is a decision rather than a bug.
+
+        Where the only distinguishing text is non-ASCII the fallback keeps the
+        scheme's fixed parts and nothing else, so two Cyrillic-titled games
+        both fall back to the same name. Only transliteration could fix it, and
+        that invents a spelling nobody chose. The clip scheme escapes this
+        because its timestamp is ASCII; the condensed one has no such part.
+        """
+        header = content_disposition(condensed_download_filename("Матч"))
+        assert 'filename="(condensed).mp4"' in header
+        assert "filename*=UTF-8''" in header
+
     def test_a_name_with_no_ascii_at_all_still_names_the_file(self):
         # filename="" makes the browser fall back to the URL's last path
         # segment, which is the UUID this whole card exists to replace. The

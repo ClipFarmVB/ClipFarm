@@ -9,8 +9,10 @@ read this?", for both single-object fetches and list queries.
 Four entry points, deliberately kept in step:
 
 * ``can_view_game`` / ``can_view_clip`` — for an object already loaded.
-* ``can_identify`` — may this viewer be told *whose* footage this is. Not the
-  same question as reading the clip; see the asymmetry below.
+* ``can_identify`` — may a caller attach the game's title and its players'
+  names. Not the same question as reading the clip; see the asymmetry below.
+  Unlike the others this one is a single endpoint's gate rather than a rule the
+  system keeps — its docstring says which, and CF-283 (#330) settles it.
 * ``visible_games_filter`` — a predicate for a game list. The rule is over
   ``Game`` alone, so it needs no join and there is nothing to get wrong.
 * ``apply_clip_visibility`` — takes the whole statement and returns it joined
@@ -106,37 +108,34 @@ def can_view_clip(viewer_id: uuid.UUID | None, clip: Clip | None, game: Game | N
 
 
 def can_identify(viewer_id: uuid.UUID | None, game: Game | None) -> bool:
-    """May this viewer be told *whose* footage this is, and from which game?
+    """Whether a caller may attach the game's title and its players' names.
 
-    A separate question from `can_view_clip`, and it differs in exactly one
-    case: the asymmetry above. A public clip inside a private game is readable
-    by direct link, but the game's title and the tagged player's real name are
-    not — /share discloses neither, and list_clips is gated on the game. An
-    override publishes *that clip*, not the game it came from or who is in it,
-    and this is footage of named young people.
-
-    The rule this states is the game's own: whoever may see the game may be
-    told what it is called and who played in it.
-
-    **It is an intention, not yet an invariant, and the gap is on purpose.**
-    `collections.py` hands `player_name` to every clip that survives
-    `apply_clip_visibility`, which gates on the *clip*. So for a public clip in
-    a private game, one signed-in viewer gets two answers:
+    **Scope: this is one endpoint's gate, not a module-wide invariant.** Unlike
+    its neighbours it does not describe how the system behaves — `collections.py`
+    hands `player_name` to every clip surviving `apply_clip_visibility`, which
+    gates on the *clip*, so for a public clip in a private game one signed-in
+    viewer gets two answers:
 
         GET /clips/{id}/download        -> withholds the player's name
         GET /collections/{id}/clips     -> returns it
 
-    Only the download path enforces this. Reconciling them is CF-283 (#330) —
-    either collections tightens to this rule, or this loosens to that one and
-    the paragraph above is wrong about what an override publishes. Until that
-    is settled, do not read this docstring as a description of the system: it
-    describes one endpoint and an argument for extending it.
+    CF-283 (#330) picks one. Read what follows as the argument for the answer
+    this side took, not as the rule in force.
 
-    Currently the same predicate as `can_view_game`, which is the point of
-    naming it separately rather than inlining the call: CF-100's download
-    filename asks this question because the name rides in the presigned URL in
-    cleartext, CF-101's zip entries will ask it again, and a rule that lives
-    inline in one router is a rule the second caller re-derives — differently.
+    The argument: identification is a different question from readability, and
+    it differs in exactly the asymmetric case above. A public clip inside a
+    private game is readable by direct link, but the game's title and the
+    tagged player's real name are not — /share discloses neither and list_clips
+    is gated on the game — so naming the file after them would hand both to a
+    caller who could not otherwise reach either, on footage of named young
+    people. That argues for the game's own predicate, which is what this
+    returns.
+
+    It is named rather than inlined because the question recurs: CF-100's
+    download filename asks it (the name rides in the presigned URL in
+    cleartext), CF-101's zip entries will ask it again, and a rule living
+    inline in one router is one the second caller re-derives — differently.
+    Whichever way CF-283 settles, it settles here.
     """
     return can_view_game(viewer_id, game)
 
