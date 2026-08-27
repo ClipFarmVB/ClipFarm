@@ -51,7 +51,25 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install ruff mypy pytest
+          # Named explicitly: setup-python's default pip glob is
+          # `**/requirements.txt`, which matches neither of the files this job
+          # actually installs. Without this, bumping a pin below does not
+          # invalidate the cache key.
+          cache-dependency-path: |
+            requirements-tooling.txt
+            api/requirements-dev.txt
+            api/requirements.txt
+      # Pinned (CF-92) — an upstream release must not be able to change CI's
+      # answer on a branch nobody touched. Add a tool to requirements-tooling.txt
+      # rather than appending it to this line;
+      # test_ci_installs_the_tooling_file_rather_than_naming_tools_inline
+      # enforces that, and test_every_tool_ci_installs_is_pinned enforces the
+      # pin itself.
+      #
+      # A separate `pip install` step is fine when ORDER matters — see the numpy
+      # one below, which has to run after mypy and is pinned in place. What the
+      # guard forbids is an install target with no `==`, wherever it appears.
+      - run: pip install -r requirements-tooling.txt
       - run: ruff check api/
       - run: mypy api/app --ignore-missing-imports
       # ml/eval is pure, unit-tested logic — lint it too (rest of ml/ is not yet covered).
@@ -74,7 +92,7 @@ jobs:
       # CF-102 anticipated this and deliberately deferred the install until
       # something actually required it; test_observability.py is that moment.
       #
-      # Installed HERE rather than beside `pip install ruff mypy pytest` above,
+      # Installed HERE rather than beside the tooling install above,
       # so ruff and mypy keep running in the dependency-free environment they
       # were tuned against. With the real packages present, mypy
       # --ignore-missing-imports resolves stubs it previously skipped and
