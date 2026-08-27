@@ -61,8 +61,13 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   // lands in the same dead state.
   //
   // The trap owns the key in both states instead, and the input's handler no
-  // longer duplicates the cancel. Escape therefore always does something, and
-  // does the nearer thing first.
+  // longer duplicates the cancel, so Escape does the nearer thing first:
+  // cancel the field if it is open, otherwise close the picker.
+  //
+  // With one deliberate exception — an in-flight create, where the guard below
+  // makes it do nothing. That is not the dead zone this replaced: it is a
+  // refusal for the duration of a request, with a reason stated at the guard,
+  // rather than a state the design forgot.
   //
   // The card, not the backdrop: the trap should bound the same element that
   // claims to be the dialog. They hold the same controls today only because the

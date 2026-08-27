@@ -238,9 +238,16 @@ export function useFocusTrap(
     // remains load-bearing and enforced by nothing — two live traps would each
     // handle the same Escape and the same Tab. It holds today because the three
     // callers cannot be mounted together, but that is a property of the call
-    // graph rather than of this hook, so nesting is NOT supported. Capture
-    // makes the guard tractable when it is wanted, since the outermost trap
-    // now sees the event first: CF-282 (#328).
+    // graph rather than of this hook, so nesting is NOT supported: CF-282
+    // (#328).
+    //
+    // Capture does not help with that. Every trap binds to the same node, and
+    // same-node listeners run in registration order within a phase, so the
+    // outer trap fires first — from mount order, exactly as it did on the
+    // window. And outer-first is the wrong end to start from: a nested trap
+    // wants the INNERMOST one to claim the key, so the guard has to be the
+    // outer trap detecting a live inner trap and standing down, not simply
+    // whoever is called first handling it.
     const doc = container.ownerDocument;
     doc.addEventListener("keydown", onKey, true);
     return () => {

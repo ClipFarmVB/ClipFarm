@@ -108,7 +108,13 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
         // Focusable, but not a Tab stop — FOCUSABLE excludes tabindex="-1".
         // This is where focus lands on open; see useFocusTrap below.
         tabIndex={-1}
-        className="relative flex h-full w-full flex-col overflow-hidden border-border bg-surface sm:h-auto sm:max-w-4xl sm:rounded-xl sm:border sm:shadow-2xl sm:shadow-black/60"
+        // focus:outline-none because tabIndex={-1} above makes this a focus
+        // target rather than a control: opened from the keyboard,
+        // :focus-visible matches the programmatic focus and the UA rings the
+        // whole dialog. Nothing global suppresses it — globals.css scopes its
+        // only `outline: none` to input[type="range"] — and a mouse-opened
+        // modal never shows it, which is how this survives a click-through.
+        className="relative flex h-full w-full flex-col overflow-hidden border-border bg-surface focus:outline-none sm:h-auto sm:max-w-4xl sm:rounded-xl sm:border sm:shadow-2xl sm:shadow-black/60"
       >
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-2.5 border-b border-border sm:px-4">
