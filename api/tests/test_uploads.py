@@ -803,6 +803,44 @@ def test_an_object_shorter_than_the_read_window_still_completes(fake_storage, fa
     assert len(fake_task.calls) == 1
 
 
+@pytest.mark.parametrize("returned", [b"", b"\x00\x00\x00\x20", b"\x00\x00\x00\x20fty"])
+def test_a_short_read_is_unreadable_not_a_verdict(returned, fake_storage, fake_task):
+    """`head_bytes` hands back whatever `read()` gave it.
+
+    So a truncated response arrives as a few bytes rather than as None, and
+    sniffing those finds no container — putting a storage hiccup on the branch
+    that deletes the row and the object and answers 415 with no retry. The
+    object is already known to be at least MIN_CONTAINER_BYTES long by the time
+    the read happens, so an answer shorter than one box header cannot be a small
+    file; it is the same class of event as the None this fails open on.
+    """
+    assert len(returned) < games_router.MIN_SNIFFABLE_BYTES
+    fake_storage["_header"]["value"] = returned
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert fake_storage["delete_file"] == [], "a short read must not destroy the upload"
+    assert len(fake_task.calls) == 1
+
+
+def test_a_full_read_of_junk_is_still_a_verdict(fake_storage, fake_task):
+    """The counterpart: the short-read escape hatch must not swallow the check.
+
+    Eight bytes is enough to say `PK\x03\x04...` is not a container, so this
+    goes to the reject branch rather than fail-open.
+    """
+    fake_storage["_header"]["value"] = ZIP_HEADER[:games_router.MIN_SNIFFABLE_BYTES]
+    game = _uploading_game()
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert exc.value.status_code == 415
+    assert fake_storage["delete_file"] == ["raw/abc.mp4"]
+    assert fake_task.calls == []
+
+
 def test_oversize_object_is_deleted_and_rejected(fake_storage, fake_task, monkeypatch):
     """A presigned PUT cannot enforce Content-Length, so a client can declare a
     small file and upload a large one. This is where that is caught — after the

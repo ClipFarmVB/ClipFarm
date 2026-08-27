@@ -54,6 +54,10 @@ VIDEO_SIGNATURE_BYTES = 64
 # widening of the window rejected more real files; this only has to sit below
 # the shortest header worth sniffing.
 MIN_CONTAINER_BYTES = 16
+# The least a sniff can work with: one ISO-BMFF box header (4-byte size, 4-byte
+# type). Below it there is nothing to read, so a header this short is treated as
+# an unreadable probe rather than as a verdict — see confirm_upload.
+MIN_SNIFFABLE_BYTES = 8
 _EBML_MAGIC = b"\x1a\x45\xdf\xa3"
 
 # Box types that identify the ISO-BMFF/QTFF family when one of them leads the
@@ -452,9 +456,18 @@ async def complete_upload(
     # widening the read must not widen what gets deleted (CF-244 review). A
     # short object is read and sniffed on whatever bytes exist.
     too_short = head["size"] < MIN_CONTAINER_BYTES
-    header = None if too_short else await run_in_threadpool(
+    read = None if too_short else await run_in_threadpool(
         storage.head_bytes, key, VIDEO_SIGNATURE_BYTES
     )
+    # A SHORT read is an unreadable probe, not a verdict (CF-244 review).
+    # head_bytes returns whatever `read()` handed back, so a truncated response
+    # arrives here as a few bytes rather than as None, and would otherwise be
+    # sniffed — finding no container in four bytes — and sent to the branch that
+    # deletes the upload. The object is already known to be at least
+    # MIN_CONTAINER_BYTES long, so a shorter answer than that is storage being
+    # odd rather than a small file, and it belongs with the other unreadable
+    # probes below.
+    header = read if read is not None and len(read) >= MIN_SNIFFABLE_BYTES else None
     if too_short or (header is not None and _sniff_video_container(header) is None):
         logger.warning(
             "Upload for game %s is not a video container — discarding", game_id
