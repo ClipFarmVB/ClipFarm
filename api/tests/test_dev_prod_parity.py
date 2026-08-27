@@ -61,6 +61,11 @@ RESOURCE_KEYS = (
 # inherits a resource limit" at a worker that had merely gained a restart
 # policy. Checked separately, by the one sub-key that means what RESOURCE_KEYS
 # means.
+# The `environment:` entries that size a container rather than configure it.
+# FFMPEG_THREADS is one because CF-224 was an OOM caused by a thread count; a
+# credential or a DSN is not, however it is spelled.
+RESOURCE_ENV_KEYS = ("FFMPEG_THREADS",)
+
 DEPLOY_RESOURCES = ("deploy", "resources")
 
 
@@ -185,6 +190,21 @@ def _interpolated_names(value: str) -> list[str]:
     return re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", value.replace("$$", ""))
 
 
+def _effective(expr: str) -> str:
+    """What Compose resolves `expr` to with nothing set: the `:-default`, or the
+    literal.
+
+    `_default()` is the strict one — it asserts the value IS overridable, which
+    is the claim being made about the base file's knobs. Anywhere that merely
+    wants the resulting number, a literal is a perfectly good answer and the
+    strict form reports a confusing failure about override syntax instead.
+    """
+    expr = expr.strip()
+    if expr.startswith('${') and ':-' in expr and expr.endswith('}'):
+        return expr[:-1].split(':-', 1)[1]
+    return expr
+
+
 def _assert_sets(filename: str, service, keys) -> None:
     """Presence, before anything indexes these.
 
@@ -223,7 +243,12 @@ def _assert_no_interpolation(filename: str, service, prefix: str | None = None) 
     fields = {k: service.get(k) for k in RESOURCE_KEYS if k in service}
     if "deploy" in service:
         fields["deploy"] = service["deploy"]
-    fields.update(_env_map(service))
+    # RESOURCE_ENV_KEYS, not the whole `environment:` map. This guard is about
+    # what sizes a container, and production legitimately interpolates other
+    # things — `SENTRY_DSN: ${SENTRY_DSN}` is normal and would otherwise fail a
+    # parity test with a message about resource tuning.
+    env = _env_map(service)
+    fields.update({k: env[k] for k in RESOURCE_ENV_KEYS if k in env})
     for key, value in fields.items():
         names = _interpolated_names(str(value))
         if prefix is None:
@@ -398,7 +423,9 @@ def test_eval_service_is_unconstrained_and_not_started_by_default():
         "eval must not carry the broker URLs: with them, `run --rm eval celery ...` "
         "drains the real queue and runs those games unconstrained. Nothing on an "
         "eval path reads them, and without them Settings falls back to localhost "
-        "inside a container with no redis — impossible beats discouraged"
+        "inside a container with no redis. Not impossible — eval still loads "
+        "`.env.docker`, so a broker URL set there reaches it, which no test can "
+        "see — but nothing in the repo should hand it the queue"
     )
 
     worker = _compose_service(REPO_ROOT / "docker-compose.yml", "worker")
@@ -579,14 +606,30 @@ def test_no_overlay_hands_out_more_ffmpeg_threads_than_cpus():
     variable at a time, and the only guard against that is that every documented
     invocation moves both.
     """
-    for filename in ("docker-compose.yml", "docker-compose.fast.yml"):
-        worker = _compose_service(REPO_ROOT / filename, "worker")
+    # Globbed, not listed: a hand-written pair fails open the moment someone adds
+    # a third overlay, which is the failure mode this whole file argues against.
+    # The two exclusions are by name, with reasons, the way NOT_ON_THE_VPS is.
+    exempt = {
+        "docker-compose.repro.yml",  # unbalanced on purpose: that is the repro
+        "docker-compose.prod.yml",   # a different box, sized under CF-223
+    }
+    candidates = sorted(
+        p for p in REPO_ROOT.glob("docker-compose*.yml") if p.name not in exempt
+    )
+    assert candidates, "no docker-compose files found — this test is checking nothing"
+
+    for path in candidates:
+        filename = path.name
+        services = _load_compose(path).get("services") or {}
+        if "worker" not in services:
+            continue
+        worker = services["worker"]
         env = _env_map(worker)
         if "FFMPEG_THREADS" not in env or "cpus" not in worker:
             continue
 
-        threads = int(_default(env["FFMPEG_THREADS"]))
-        cpus = float(_default(str(worker["cpus"])))
+        threads = int(_effective(env["FFMPEG_THREADS"]))
+        cpus = float(_effective(str(worker["cpus"])))
         assert threads <= max(1, round(cpus)), (
             f"{filename} gives the worker {threads} ffmpeg threads on {cpus} CPU. "
             "Roughly one thread per whole CPU (CF-224 measured 2 threads at 0.5 CPU "
