@@ -1,4 +1,3 @@
-import unicodedata
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -116,36 +115,6 @@ def production_config_error(missing: list[str]) -> str:
 _ALLOWED_ORIGIN_SCHEMES = ("http", "https")
 
 
-def _is_invisible(character: str) -> bool:
-    """Would `character` be invisible or unsendable in an Origin header?
-
-    Broader than `str.isspace()`, which was the first version of this test and
-    covered neither direction of the problem:
-
-      C0 controls and DEL are not `isspace()` — `"\x01".isspace()` is False —
-      and `cors_origins_list` strips only whitespace, so a control-bearing entry
-      was ACCEPTED and handed to Starlette, matching no Origin header. The
-      silent outage this whole guard exists to prevent, admitted by the check
-      meant to catch it.
-
-      Zero-width space and the BOM are not `isspace()` either, and being
-      non-ASCII they fell through to the punycode branch — so a host that
-      displays as plain ASCII was told to "use the xn-- spelling". A BOM is a
-      routine paste artefact, and that is advice nobody can act on.
-
-    Categories rather than a character list: Cc is control, Cf is format
-    (zero-width joiners, the BOM, bidi marks), and Zs/Zl/Zp are the space
-    separators `isspace()` mostly already covers.
-    """
-    return character.isspace() or unicodedata.category(character) in (
-        "Cc",
-        "Cf",
-        "Zs",
-        "Zl",
-        "Zp",
-    )
-
-
 def _origin_problems(origin: str) -> list[str]:
     """Every reason `origin` cannot work as a CORS allow-list entry.
 
@@ -209,15 +178,31 @@ def _origin_problems(origin: str) -> list[str]:
     # case the early returns below are for, and reporting it alone cost the
     # second refused boot this function exists to prevent. It is collected first
     # only so it leads the list, being the defect that explains the others.
+    # Two independent checks, not an if/elif. An entry can carry both — a space
+    # AND a zero-width joiner — and reporting only the first cost the second
+    # refused boot this function exists to avoid, while giving the WORSE of the
+    # two pieces of advice: "look for the space" for a value whose real problem
+    # is invisible.
+    #
+    # `isprintable()` rather than Unicode categories, matching
+    # `filenames.py`'s `sanitize` — it is False for control characters and for
+    # the non-ASCII separators and format characters (U+00A0, U+200B, the bidi
+    # overrides) while staying True for letters in any script. An earlier
+    # version of this hand-rolled `Cc/Cf/Zs/Zl/Zp`, which is the same set by a
+    # longer road; the Zs/Zl/Zp half was entirely redundant with `isspace()`
+    # (all 19 such characters are `isspace()`).
+    #
+    # Whitespace is tested first and excluded from the second check, because a
+    # space IS printable and would otherwise fall through it.
     if any(c.isspace() for c in origin):
         invisible_problem.append(
             "contains whitespace — no browser can send this as an Origin"
         )
-    elif any(_is_invisible(c) for c in origin):
-        # Separate message, because the advice differs: a space is visible in
+    if any(not c.isprintable() and not c.isspace() for c in origin):
+        # A separate message because the advice differs: a space is visible in
         # the dashboard box and a zero-width joiner is not, so "look again" is
-        # useless for the second and the operator needs to be told to retype the
-        # value rather than inspect it.
+        # useless for the second and the operator needs to retype the value
+        # rather than inspect it.
         invisible_problem.append(
             "contains an invisible or control character — no browser can send "
             "this as an Origin; retype the value rather than editing it"
@@ -360,9 +345,16 @@ def _origin_problems(origin: str) -> list[str]:
         # advice is then wrong — but an entry-scoped test also suppressed a
         # GENUINE punycode problem whenever the entry contained a space
         # anywhere, which a missing comma supplies:
-        # `https://клипфарм.рф https://x.ca` lost it, costing a second refused
-        # boot. The comment said "host" while the code said "entry".
-        host_is_invisible = any(_is_invisible(c) for c in parts.hostname)
+        # `https://клипфарм.рф/ a` lost it, costing a second refused boot. The
+        # comment said "host" while the code said "entry".
+        #
+        # NOT `https://клипфарм.рф https://x.ca`, which an earlier version of
+        # this comment cited: urlsplit puts that space inside the netloc, making
+        # the hostname `клипфарм.рф https`, so suppression is right there. The
+        # commit message retracted that example and this comment kept it.
+        host_is_invisible = any(
+            not c.isprintable() or c.isspace() for c in parts.hostname
+        )
         if not parts.hostname.isascii() and not host_is_invisible:
             problems.append(
                 "a browser sends the punycode form of an internationalised host, "

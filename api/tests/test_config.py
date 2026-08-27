@@ -1123,6 +1123,39 @@ def test_whitespace_outside_the_host_does_not_hide_a_punycode_problem(
     assert any("whitespace" in problem for problem in problems)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://cl ip\u200bfarm.ca",          # space and a zero-width space
+        "\ufeffhttps://clipfarm.ca two.ca",    # BOM and a space
+        "https://clip\x01farm.ca two.ca",      # control and a space
+    ],
+)
+def test_both_invisible_problems_are_reported(clean_env, value):
+    """An entry can carry a space AND an invisible character. An `if`/`elif`
+    reported only the first, which cost the second refused boot this function
+    exists to avoid — and gave the WORSE of the two pieces of advice: "look for
+    the space" for a value whose real problem cannot be seen.
+
+    Two independent checks now, which is what the rest of the function does.
+    """
+    problems = _origin_problems(value)
+
+    assert any("whitespace" in problem for problem in problems)
+    assert any("invisible or control" in problem for problem in problems)
+
+
+def test_a_plain_space_is_not_also_called_invisible(clean_env):
+    """The other half: a space is `isprintable()`, so without excluding
+    whitespace from the second check it would report both messages for one
+    defect — the over-reporting failure, arriving from the fix for
+    under-reporting.
+    """
+    assert _origin_problems("https://clip farm.ca") == [
+        "contains whitespace — no browser can send this as an Origin"
+    ]
+
+
 def test_whitespace_does_not_draw_punycode_advice(clean_env):
     """A non-breaking space makes the host non-ASCII, so the punycode check
     fired alongside the whitespace one — and "use the xn-- spelling" is advice
