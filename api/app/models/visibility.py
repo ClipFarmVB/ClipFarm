@@ -31,6 +31,7 @@ class Visibility(str, enum.Enum):
 # real rows, and the anonymous HTTP paths. The 44-case matrix in
 # api/tests/test_access.py is unit-level, over hand-built stand-ins. The test
 # worth having is one that flips a row to `public` in the database and drives
-# GET /games/{id}, GET /games/{id}/clips and GET /clips/{id}/share — it needs a
-# database fixture the api suite doesn't have yet, so it belongs with the setter
-# in CF-109 rather than being faked here.
+# GET /games/{id}, GET /games/{id}/clips, GET /clips/{id}/share and
+# GET /clips/{id}/download — it needs a database fixture the api suite doesn't
+# have yet, so it belongs with the setter in CF-109 rather than being faked
+# here.
