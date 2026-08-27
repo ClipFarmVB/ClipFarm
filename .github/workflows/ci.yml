@@ -57,7 +57,17 @@ jobs:
       # ml/eval is pure, unit-tested logic — lint it too (rest of ml/ is not yet covered).
       - run: ruff check ml/eval
       - run: mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
-      # ml unit tests (eval metrics + dead-time) — stdlib-only, runs in seconds.
+      # numpy is installed AFTER the lint/type steps, for the same reason the api
+      # dependencies below are: ruff and mypy are tuned against a dependency-free
+      # environment, and numpy ships py.typed, so its presence changes what
+      # --ignore-missing-imports resolves and hence the error set mypy reports.
+      #
+      # Pinned to the version the worker image and api tests use
+      # (ml/requirements.txt, api/requirements-dev.txt). Unpinned it resolves to
+      # numpy 2.x, so the guarded builder's speed math would be validated here
+      # against a different major version than anything that runs it.
+      - run: pip install "numpy==1.26.4"
+      # ml unit tests (eval metrics + dead-time) — stdlib + numpy, runs in seconds.
       - run: python -m pytest ml/tests/
       # api unit tests now need the application's own dependencies:
       # app.observability imports app.config, which imports pydantic-settings.

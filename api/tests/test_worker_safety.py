@@ -151,8 +151,14 @@ def test_every_require_lock_checkpoint_routes_to_a_locklost_handler():
         and isinstance(n.func, ast.Name)
         and n.func.id == "_require_lock"
     ]
-    assert len(calls) == 3, (
-        f"expected 3 _require_lock() checkpoints, found {len(calls)} — update "
+    # 4 checkpoints: three around the clip-save/condense upload path, plus the
+    # one that clears a previous run's condensed cut when this run ships none
+    # (CF-187 review). That clear is a DB write guarded by `except Exception`,
+    # which is exactly the shape this test exists to police — it needs its own
+    # `except LockLost: raise` ahead of the broad handler, and the loop below
+    # checks that it has one.
+    assert len(calls) == 4, (
+        f"expected 4 _require_lock() checkpoints, found {len(calls)} — update "
         "this test if a checkpoint was added or removed"
     )
 
