@@ -34,6 +34,25 @@ def _serialize(post: Post, clip: Clip, author: User) -> PostOut:
 
     Resolved per request rather than stored on the post so a trim (CF-52) or a
     re-materialized file is reflected without touching post rows.
+
+    **A presigned URL outlives the revocation the read path enforces.** The
+    signature is valid for an hour and is bearer authority on the object: once
+    it has been handed out, deleting the post, deleting the clip, or narrowing
+    either one's visibility stops the *API* serving it and does nothing to the
+    URL. So "delete the clip and the post 404s" is a true statement about this
+    service and not about the footage, and the honest window is up to an hour.
+
+    Not shortened here, because the tradeoff is real in both directions: the
+    feed (CF-111/CF-112) holds a page of these across a scroll session, so a
+    short expiry trades a narrower revocation window for playback that dies
+    mid-scroll — and re-presigning on failure just moves the same problem. The
+    actual fix is the one CF-112's review already named: a stable URL through
+    an endpoint that re-checks visibility per request, with the object private.
+    That is a storage change, not a posts one.
+
+    Recorded rather than quietly accepted so that whoever writes the takedown
+    path (CF-116) knows the guarantee they are inheriting is "within the hour",
+    and can decide whether that is good enough for a moderation action.
     """
     if storage.r2_configured():
         clip_url = storage.presign_from_stored_url(clip.clip_url, expires_in=3600)

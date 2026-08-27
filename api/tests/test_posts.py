@@ -330,3 +330,44 @@ def test_the_router_never_serializes_an_author_the_raw_way():
     assert "PostAuthor.model_validate" not in src, (
         "model_validate copies username verbatim, generated or not"
     )
+
+
+def test_every_clip_response_resolves_its_derived_fields():
+    """CF-109: `effective_visibility` must not depend on an echo remembering it.
+
+    It is derived from the *game*, so `ClipOut.model_validate(clip)` alone
+    always leaves it at its `private` default. The three PATCH handlers did
+    exactly that while setting `source_available` beside it, so toggling a label
+    on a clip in a public game made the composer grey out the wider tiers with
+    "this clip is private" until a reload — the dead end the field exists to
+    remove, reintroduced through the write path.
+
+    Asserted structurally rather than by behaviour because the failure is an
+    *omission*: there is no wrong value to catch, only a missing line at a call
+    site that does not exist yet. One constructor is the invariant.
+
+    Parsed with `ast` rather than grepped: the previous round rightly objected
+    to substring assertions, and this module's own docstring names the call it
+    forbids — a text count sees two and fails on prose.
+    """
+    import ast
+    import inspect
+
+    from app.routers import clips as clips_router
+
+    tree = ast.parse(inspect.getsource(clips_router))
+    builders = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Attribute)
+        and node.attr == "model_validate"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "ClipOut"
+    }
+    assert builders == {"_clip_out"}, (
+        f"ClipOut is built in {sorted(builders)}; it must be built only in "
+        "_clip_out, because every other field on it is derived from the game "
+        "and an echo will forget one"
+    )

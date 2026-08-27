@@ -11,6 +11,21 @@ import { cn } from "@/lib/utils";
 const RANK: Record<Visibility, number> = { private: 0, followers: 1, public: 2 };
 
 /**
+ * How the ceiling reads in a sentence.
+ *
+ * The tier names are adjectives in one case and a noun in another, so
+ * interpolating them directly produced "this clip is followers". Only the first
+ * two can ever render — nothing is blocked when the ceiling is `public` — but
+ * the third is here so the map stays total and a new tier is a compile error
+ * rather than a sentence that reads wrong in production.
+ */
+const CEILING_PHRASE: Record<Visibility, string> = {
+  private: "this clip is private",
+  followers: "this clip is only shared with followers",
+  public: "this clip is public",
+};
+
+/**
  * Whether `tier` is wider than this clip allows, and so must be offered
  * disabled rather than offered and refused.
  *
@@ -81,8 +96,6 @@ export function PostComposerModal({
   // own default. A clip payload that predates this field offers "Only me"
   // rather than offering everything.
   const ceiling: Visibility = clip.effective_visibility ?? "private";
-  const ceilingLabel =
-    OPTIONS.find((o) => o.value === ceiling)?.label.toLowerCase() ?? ceiling;
 
   const [caption, setCaption] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("private");
@@ -202,8 +215,8 @@ export function PostComposerModal({
                   <span className="block text-[11px] text-muted">
                     {blocked ? (
                       <span id={`vis-${value}-why`}>
-                        Not available — this clip is {ceilingLabel === "only me" ? "private" : ceilingLabel}, and a
-                        post can&apos;t show more of the footage than the clip does.
+                        Not available — {CEILING_PHRASE[ceiling]}, and a post
+                        can&apos;t show more of the footage than the clip does.
                       </span>
                     ) : (
                       blurb

@@ -86,6 +86,28 @@ def _rewrite_urls(clip: Clip) -> dict[str, str | None]:
         "thumbnail_url": clip.thumbnail_url,
     }
 
+def _clip_out(clip: Clip, game: Game, *, player_name: str | None = None) -> ClipOut:
+    """The one way to build a ClipOut in this router.
+
+    Every field here is *derived* — it lives on the game, or on storage config,
+    not on the clip row — so `ClipOut.model_validate(clip)` alone always
+    produces a partly-wrong object, and every echo has to remember the same
+    three lines. It didn't: the three PATCH handlers set `source_available` and
+    silently left `effective_visibility` at its `private` default, so toggling a
+    label on a clip in a public game made the composer grey out Followers and
+    Everyone with "this clip is private" until the page was reloaded — the exact
+    dead end the field was added to remove, reintroduced through the write path.
+    A constructor is what stops the fourth echo from doing it again.
+    """
+    out = ClipOut.model_validate(clip)
+    out.player_name = player_name  # type: ignore[assignment]
+    out.source_available = game.raw_video_url is not None
+    out.effective_visibility = access.widest_allowed(clip, game)
+    urls = _rewrite_urls(clip)
+    out.clip_url = urls["clip_url"]  # type: ignore[assignment]
+    out.thumbnail_url = urls["thumbnail_url"]
+    return out
+
 
 @router.get("/games/{game_id}/clips", response_model=list[ClipOut])
 async def list_clips(
@@ -143,22 +165,12 @@ async def list_clips(
         for p in pr.scalars():
             player_map[p.id] = p.name
 
-    # One game, so one lookup: False once its raw upload has been swept (CF-194).
-    raw_available = game is not None and game.raw_video_url is not None
-
-    out = []
-    for c in clips:
-        d = ClipOut.model_validate(c)
-        d.player_name = player_map.get(c.player_id) if c.player_id else None  # type: ignore[arg-type]
-        d.source_available = raw_available
-        # The ceiling for a post over this clip (CF-109). One game here, so it
-        # resolves without a lookup.
-        d.effective_visibility = access.widest_allowed(c, game)
-        urls = _rewrite_urls(c)
-        d.clip_url = urls["clip_url"]  # type: ignore[assignment]
-        d.thumbnail_url = urls["thumbnail_url"]
-        out.append(d)
-    return out
+    # Narrowed by assert_can_view_game above, which 404s a None game.
+    assert game is not None
+    return [
+        _clip_out(c, game, player_name=player_map.get(c.player_id) if c.player_id else None)
+        for c in clips
+    ]
 
 
 @router.patch("/clips/{clip_id}/tag", response_model=ClipOut)
@@ -178,10 +190,7 @@ async def tag_clip(
     await db.commit()
     await db.refresh(clip)
 
-    out = ClipOut.model_validate(clip)
-    out.player_name = player.name
-    out.source_available = game.raw_video_url is not None
-    return out
+    return _clip_out(clip, game, player_name=player.name)
 
 
 VALID_LABELS = {"spike", "serve", "dig", "set", "block", "not_an_action"}
@@ -251,12 +260,7 @@ async def update_clip_labels(
     await db.commit()
     await db.refresh(clip)
 
-    out = ClipOut.model_validate(clip)
-    out.source_available = game.raw_video_url is not None
-    urls = _rewrite_urls(clip)
-    out.clip_url = urls["clip_url"]  # type: ignore[assignment]
-    out.thumbnail_url = urls["thumbnail_url"]
-    return out
+    return _clip_out(clip, game)
 
 
 TRIM_STEP = 2.0  # seconds
@@ -310,12 +314,7 @@ async def trim_clip(
         args=[str(clip.id), str(clip.game_id), game.raw_video_url, new_start, new_end],
     )
 
-    out = ClipOut.model_validate(clip)
-    out.source_available = game.raw_video_url is not None
-    urls = _rewrite_urls(clip)
-    out.clip_url = urls["clip_url"]  # type: ignore[assignment]
-    out.thumbnail_url = urls["thumbnail_url"]
-    return out
+    return _clip_out(clip, game)
 
 
 @router.post("/clips/delete")
