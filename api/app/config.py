@@ -205,20 +205,37 @@ def _origin_problem(origin: str) -> str | None:
             "wildcard hosts are not supported — origins are compared as exact "
             "strings, so this matches nothing; list each subdomain explicitly"
         )
-    # `*` is the only host CHARACTER this rejects. `clipfarm.ca.` (browsers drop
-    # the FQDN root dot) and `clipfarm_ca` (underscore is not valid in a
-    # hostname) are still accepted and still match nothing. That is a scope
-    # call, not an oversight: a general hostname-shape check is where a guard
-    # like this starts refusing production boots for origins that were fine —
-    # IDNs, single-label internal names, `host.docker.internal` — and a false
-    # rejection here is worse than the bug, because it takes the service down on
-    # deploy. The wildcard is carved out because it is the mistake operators
-    # actually make, being an intention the config language cannot express.
+    # A raw-unicode host can never match: browsers send the punycode form in an
+    # Origin header, so `https://клипфарм.рф` allows nobody while looking
+    # correct in a dashboard — the same silent outage as the wildcard. The
+    # punycode spelling of the same host is ASCII and still passes.
+    #
+    # An earlier version of this comment cited IDNs as a *reason for* accepting
+    # unusual hosts, which had it backwards.
+    if not parts.hostname.isascii():
+        return (
+            "a browser sends the punycode form of an internationalised host, so "
+            "this matches nothing — use the xn-- spelling"
+        )
+    # Beyond `*` and non-ASCII, host characters are not checked. `clipfarm.ca.`
+    # (browsers drop the FQDN root dot) and `clipfarm_ca` (underscore is not
+    # valid in a hostname) are still accepted and still match nothing. That is a
+    # scope call: a general hostname-shape check is where a guard like this
+    # starts refusing production boots for hosts that were fine — single-label
+    # internal names, `host.docker.internal` — and a false rejection is worse
+    # than the bug, because it takes the service down on deploy. The two carved
+    # out are the ones with no legitimate reading at all.
     # A port a browser never sends is the same silent class as the trailing
     # slash: it looks deliberate in a dashboard and matches no Origin header.
     # Read from the raw netloc rather than parts.port, which has already
-    # normalised `:080` to 80. rpartition is bracket-safe — `[::1]:3000` splits
-    # at the last colon, and a bare `[::1]` yields no separator at all.
+    # normalised `:080` to 80.
+    #
+    # `rpartition(":")` is NOT bracket-aware — `'[::1]'.rpartition(':')` returns
+    # `('[:', ':', '1]')`, so on a bare IPv6 literal the "port text" is `1]`.
+    # An earlier version of this comment claimed otherwise. What makes it safe
+    # is the `port is not None` guard: urlsplit reports no port for `[::1]`, so
+    # the block never runs. Hoisting either check above that guard would start
+    # rejecting `http://[::1]` as a zero-padded port.
     if port is not None:
         # Default BEFORE padded, and deliberately. Both can be true of `:080` on
         # http, and reporting the padding first sends the operator to `:80` —
@@ -284,8 +301,20 @@ def _redacted_origin(origin: str) -> str:
     # meant, so it is the only one acted on.
     if "@" not in origin and "%40" not in origin.lower():
         return origin
+    # The scheme is echoed only when it is one this guard would actually accept.
+    # `partition("://")` splits at the FIRST `://` anywhere in the entry, so a
+    # single entry holding two URLs — `admin:hunter2@clipfarm.ca https://x.ca`,
+    # which is what a missing comma produces — put the credential in `scheme`
+    # and printed it verbatim.
+    #
+    # Testing the scheme's *shape* instead would repeat the mistake this
+    # function was rewritten to escape: the paragraph above argues that no
+    # textual rule separates a credential from a legitimate value, and a shape
+    # test is exactly that rule. A closed set needs no such rule.
     scheme, sep, _ = origin.partition("://")
-    return f"{scheme}://***" if sep else "***"
+    if sep and scheme.lower() in _ALLOWED_ORIGIN_SCHEMES:
+        return f"{scheme}://***"
+    return "***"
 
 
 def cors_origins_error(problems: list[str]) -> str:

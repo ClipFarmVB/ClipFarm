@@ -761,6 +761,66 @@ def test_the_entry_number_matches_what_was_pasted(clean_env):
 @pytest.mark.parametrize(
     "value",
     [
+        # A missing comma, which is what actually produces this: one "entry"
+        # holding two URLs. `partition("://")` split at the FIRST `://`, so the
+        # credential landed in `scheme` and was echoed verbatim.
+        "admin:hunter2@clipfarm.ca https://clipfarm.ca",
+        "admin:hunter2@clipfarm.ca ftp://elsewhere.ca",
+        "postgres:hunter2@db https://clipfarm.ca",
+    ],
+)
+def test_a_credential_before_a_second_scheme_is_not_echoed(clean_env, value):
+    """The scheme is echoed only when it is one this guard would accept.
+
+    Testing the scheme's *shape* instead would repeat the mistake this function
+    was rewritten to escape — no textual rule separates a credential from a
+    legitimate value, and a shape test is exactly that rule. A closed set of two
+    schemes needs no rule at all.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors(value)
+
+    message = str(exc.value)
+    assert "hunter2" not in message.lower()
+    assert "'***'" in message
+
+
+def test_only_a_scheme_this_guard_accepts_is_echoed(clean_env):
+    """What separates the closed set from a shape test, which nothing else here
+    does — a mutation swapping `scheme.lower() in _ALLOWED_ORIGIN_SCHEMES` for
+    `scheme.isalnum()` passed the whole suite without this.
+
+    `hunter2://admin@clipfarm.ca` is a secret pasted where a scheme belongs. It
+    is alphanumeric, so a shape test echoes it; it is not http or https, so the
+    closed set does not. That is the complement a shape rule always leaves open,
+    and the reason this function stopped using one.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors("hunter2://admin@clipfarm.ca")
+
+    message = str(exc.value)
+    assert "hunter2" not in message.lower()
+    assert "'***'" in message
+
+
+def test_production_rejects_a_raw_unicode_host(clean_env):
+    """Browsers send the punycode form in an Origin header, so a raw-unicode
+    host allows nobody while looking correct in a dashboard — the same silent
+    outage as the wildcard.
+
+    The punycode spelling of the same host must still pass, or the guard breaks
+    the deploy it exists to protect.
+    """
+    with pytest.raises(ValidationError) as exc:
+        _production_with_cors("https://\u043a\u043b\u0438\u043f\u0444\u0430\u0440\u043c.\u0440\u0444")
+
+    assert "punycode" in str(exc.value)
+    assert _production_with_cors("https://xn--80ak6aa92e.com").cors_origins_list
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "https://admin:hunter2%40clipfarm.ca",
         "https://admin:hunter2%40clipfarm.ca/x",
     ],
