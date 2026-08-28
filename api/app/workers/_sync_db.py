@@ -183,15 +183,27 @@ def sync_settle_upload_charge(game_id: uuid.UUID, actual_seconds: float):
 def sync_set_condensed_result(
     game_id: uuid.UUID,
     *,
-    condensed_video_url: str,
-    condensed_duration: float,
+    condensed_video_url: str | None,
+    condensed_duration: float | None,
 ):
-    """Record the condense stage's output.
+    """Record the condense stage's output, or clear it with None.
 
     `original_duration` is deliberately not set here: it is written for every
     run as soon as the video is probed (see sync_set_original_duration), so
     re-writing the same measurement on the condense path only created a second
     place that had to agree.
+
+    None clears. A re-run that abstains, or whose builder returns no windows,
+    produces no cut — and leaving the previous run's URL in place would serve a
+    condensed video that no longer corresponds to any decision this pipeline
+    made. The row has to reflect this run.
+
+    That holds for the paths the condense stage completes. It does not hold when
+    the stage *raises*: the caller logs and ships the game without a cut, and a
+    previous run's URL survives, because a transient failure is a poor reason to
+    destroy a good artifact the operator can still watch. So a stale cut after a
+    failed re-run is possible by design; the stage's own log line is where that
+    shows up.
     """
     with Session(_engine) as s:
         game = s.get(Game, game_id)
@@ -200,6 +212,26 @@ def sync_set_condensed_result(
         game.condensed_video_url = condensed_video_url
         game.condensed_duration = condensed_duration
         s.commit()
+
+
+def sync_clear_condensed_result(game_id) -> str | None:
+    """Clear the condensed columns, returning the URL that was there.
+
+    The return value is what makes the caller able to clean up after itself
+    without guessing: the row is the only record of the object, so the caller
+    has to know whether there was one to delete. Without it every no-cut run
+    issues a delete for a key that has never existed, and the warning that
+    fires when cleanup genuinely fails is buried among no-ops.
+    """
+    with Session(_engine) as s:
+        game = s.get(Game, game_id)
+        if not game:
+            return None
+        previous = game.condensed_video_url
+        game.condensed_video_url = None
+        game.condensed_duration = None
+        s.commit()
+        return previous
 
 
 def sync_update_clip_url(

@@ -99,7 +99,7 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 
 **`clipfarm-api`:**
 - `API_BASE_URL` → this service's public URL (set after step 4, or its custom domain)
-- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.ca`. Checked at startup since **CF-172** — it has a localhost default, so unset it does not error, it silently CORS-blocks the whole frontend.
+- `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.ca`. Checked at startup since **CF-172** — it has a localhost default, so unset it does not error, it silently CORS-blocks the whole frontend. Since **CF-235** the *shape* of each entry is checked too, and the boot is refused for a value that is set but cannot work: a bare `*` (which with credentials on is a genuine cross-origin leak, not untidiness), and anything a browser can never send as an `Origin` — a trailing slash or path, upper case, `user:password@`, a wildcard host like `https://*.clipfarm.ca`, a default or padded port. Write bare origins: `scheme://host[:port]`, nothing else.
 
 **`clipfarm-worker`:**
 - `ROBOFLOW_API_KEY` → Roboflow → Settings → API Keys

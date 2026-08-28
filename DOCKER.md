@@ -4,8 +4,12 @@ This setup runs the full local stack with one command:
 - PostgreSQL
 - Redis
 - FastAPI API
-- Celery worker
+- Celery worker — **capped at production's box** (2 GB / 1 CPU / no swap,
+  `FFMPEG_THREADS=1`), so a laptop can reproduce a production OOM (CF-241)
 - Next.js web app
+
+A sixth service, `eval`, is profile-gated and never starts with the stack — see
+[step 3](#3-going-faster-or-smaller) and `ml/eval/README.md`.
 
 ## 1) Create env file
 
@@ -47,10 +51,57 @@ Open:
 - Web: http://localhost:3000
 - API health: http://localhost:8000/health
 
-Note: Postgres is not published to a host port to avoid `5432` conflicts.
-Use `docker compose exec db psql -U postgres -d clipfarm` if you need a DB shell.
+Note: Postgres **is** published, on `${POSTGRES_HOST_PORT:-5432}` — tests and
+tools outside the stack need to reach it (`api/tests`' advisory-lock tests
+auto-detect it and skip without one). If 5432 is already taken by a Postgres on
+your host, set `POSTGRES_HOST_PORT=5433` in `.env.docker`; that is interpolated,
+so it only applies to commands passing `--env-file .env.docker`. For a shell
+inside the container, `docker compose exec db psql -U postgres -d clipfarm`.
 
-## 3) Stop everything
+## 3) Going faster, or smaller
+
+The worker runs at production's size by default, which is the point — but it
+also means a local game processes at production's speed. Both directions are an
+overlay file, not a remembered env-var prefix:
+
+```bash
+docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.fast.yml up worker
+```
+```bash
+docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.repro.yml up worker
+```
+
+If `docker compose` refuses the fast overlay with `range of CPUs is from 0.01
+to N.00`, your engine has fewer than 4 — check `docker info --format
+'{{.NCPU}}'` and lower it. **Lower the thread count with it**: 4 x264 threads on
+2 CPUs is CF-224's oversubscription in miniature, costing memory and buying
+nothing.
+
+```bash
+WORKER_CPUS=2 WORKER_FFMPEG_THREADS=2 WORKER_MEM_LIMIT=4g docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.fast.yml up worker
+```
+
+The first is the fast path for "does the pipeline work". It costs the fidelity
+the defaults exist for, so **no timing or memory claim may come from such a
+run** — the rule is written in the file. The second reproduces the CF-224 OOM,
+and a run under it that *completes* is the interesting result.
+
+**Keep `--env-file .env.docker`** on every one of these, exactly as in step 2.
+It is what Compose interpolates `${...}` from. Without it, `POSTGRES_HOST_PORT`
+and friends come from a `./.env` if you happen to have one and from the built-in
+defaults otherwise — either way not from `.env.docker`, and the db container
+tries to bind 5432 whatever that file says.
+
+CPU-bound work that is *not* about production's box — the eval harness, the
+tuning scripts — goes on the unconstrained `eval` service instead:
+
+```bash
+docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.harness --help
+```
+
+Full detail in `README.md` § Local Development.
+
+## 4) Stop everything
 
 ```bash
 docker compose down

@@ -14,6 +14,12 @@ from pathlib import Path
 
 import pytest
 
+# One definition of how an `-r` include is spelled, shared with the pre-commit
+# gate rather than copied. Duplicated, drifting requirements parsing is what
+# this branch spent a round removing; re-adding a second copy here would be the
+# same mistake in a new place.
+from scripts.check_dev_set import INCLUDE
+
 pytest.importorskip("celery")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -293,8 +299,10 @@ def test_numpy_scalars_never_reach_the_modal_boundary(monkeypatch):
     import, so a version split fails at *deserialization* on the far side — and
     the caller sees only "Modal failed", then silently skips pose because there
     is no local runtime. It is also data-dependent: `classify_contact_action`
-    computes `min(0.88, 0.65 + sp_after / 1500.0)`, so the numpy operand only
-    wins the `min()` below ~345 px/s and faster contacts serialize fine.
+    computes `min(0.88, 0.65 + sp_after / 1500.0)` inside a branch guarded by
+    `sp_after > 180.0` (`ball.py:394`), so the numpy operand wins the `min()`
+    only between ~180 and ~345 px/s. Slower contacts never reach the expression
+    and faster ones take the plain 0.88.
 
     Pins keep the two images aligned; this keeps the payload plain regardless.
     """
@@ -313,10 +321,16 @@ def test_numpy_scalars_never_reach_the_modal_boundary(monkeypatch):
         "start": np.float64(1.0),
         "end": 6.0,
         "action": "spike",
-        # Exactly the expression ball.py evaluates for a slower contact.
-        "confidence": round(min(0.88, 0.65 + np.hypot(np.float64(120.0), 60.0) / 1500.0), 2),
+        # Exactly the expression ball.py evaluates, at a velocity that actually
+        # reaches it: the branch needs `vy_after > 60.0` (strict) as well as
+        # `sp_after > 180.0`, so hypot(200, 70) ≈ 212 clears both, and sits
+        # below the ~345 where the constant 0.88 wins the min() instead.
+        "confidence": round(min(0.88, 0.65 + np.hypot(np.float64(200.0), 70.0) / 1500.0), 2),
         "labels": ["spike"],
-        "features": {"contact_count": np.int64(3), "speeds": np.array([1.5, 2.5])},
+        # The np.int64 *key* matters as much as the values: keys ride the same
+        # pickle, and a copy that unwraps values only would ship it green.
+        "features": {"contact_count": np.int64(3), "speeds": np.array([1.5, 2.5]),
+                     "contacts_by_player": {np.int64(0): 2}},
     }]
     assert isinstance(windows[0]["confidence"], np.floating), "fixture must reproduce the leak"
 
@@ -326,6 +340,7 @@ def test_numpy_scalars_never_reach_the_modal_boundary(monkeypatch):
         assert not hasattr(value, "dtype"), f"numpy object survived to the wire at {path}"
         if isinstance(value, dict):
             for k, v in value.items():
+                assert_plain(k, f"{path}.<key {k!r}>")
                 assert_plain(v, f"{path}.{k}")
         elif isinstance(value, list):
             for i, v in enumerate(value):
@@ -501,9 +516,12 @@ def _requirements_packages(path: Path) -> set[str]:
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
-        if line.startswith("-r"):
-            nested = line[2:].strip()
-            names |= _requirements_packages((path.parent / nested).resolve())
+        # All three include spellings pip accepts, via the gate's own pattern:
+        # `-r <file>` alone would silently treat `--requirement <file>` as a
+        # package named `--requirement` and drop everything behind the include.
+        inc = INCLUDE.fullmatch(line)
+        if inc:
+            names |= _requirements_packages((path.parent / inc.group(1)).resolve())
             continue
         names.add(re.split(r"[\[<>=!;\s]", line, 1)[0].lower())
     return names
@@ -589,21 +607,39 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
     the two runtimes disagreeing is its own bug; catch it here rather than in a
     silent label regression.
     """
-    sources = {
-        "Dockerfile.api": REPO_ROOT / "Dockerfile.api",
-        "ml/requirements.txt": REPO_ROOT / "ml" / "requirements.txt",
-        "ml/modal_pose.py": REPO_ROOT / "ml" / "modal_pose.py",
-    }
-    pattern = re.compile(re.escape(package) + r"==([0-9][0-9A-Za-z.\-]*)")
+    # requirements-dev.txt must pin numpy — the dev pin IS the card (CF-276),
+    # and requiring it here is what makes deleting it, loosening it to a range
+    # or hiding it behind an environment marker a failure rather than a skip.
+    # It has no business pinning opencv, so for every other package it is
+    # checked only if it names the package at all.
+    sources = [
+        ("Dockerfile.api", REPO_ROOT / "Dockerfile.api", True),
+        ("ml/requirements.txt", REPO_ROOT / "ml" / "requirements.txt", True),
+        ("ml/modal_pose.py", REPO_ROOT / "ml" / "modal_pose.py", True),
+        ("api/requirements-dev.txt", REPO_ROOT / "api" / "requirements-dev.txt",
+         package == "numpy"),
+    ]
+    # Whitespace around the operator because pip accepts it, and a reformatted
+    # pin must fail as a split or a removal rather than vanish. `[^\S\n]` and
+    # not `\s`: the text below is comment-stripped lines rejoined with "\n", so
+    # `\s` would let a match run across two lines and pair a package name with
+    # the next line's version.
+    pattern = re.compile(
+        re.escape(package) + r"[^\S\n]*==[^\S\n]*([0-9][0-9A-Za-z.\-]*)"
+    )
 
     found = {}
-    for label, path in sources.items():
+    for label, path, required in sources:
         text = "\n".join(
             line for line in path.read_text(encoding="utf-8").splitlines()
             if not line.lstrip().startswith("#")
         )
         matches = set(pattern.findall(text))
-        assert matches, f"{label} does not pin {package} — it must, see this test's docstring"
+        if not matches:
+            assert not required, (
+                f"{label} does not pin {package} — it must, see this test's docstring"
+            )
+            continue
         assert len(matches) == 1, f"{label} pins {package} to several versions: {matches}"
         found[label] = matches.pop()
 

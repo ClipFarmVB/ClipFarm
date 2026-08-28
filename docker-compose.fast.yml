@@ -1,0 +1,42 @@
+# docker-compose.fast.yml — CF-241: the sanctioned fast path for local runs.
+#
+#   docker compose --env-file .env.docker \
+#     -f docker-compose.yml -f docker-compose.fast.yml up worker
+#
+# A file rather than a remembered env-var prefix, for the same reason `eval` is
+# a service rather than a documented override: an incantation people have to
+# remember is one they will get wrong.
+#
+# THE RULE: **no timing or memory claim may come from a run under this overlay.**
+# Not "was it fast", not "did it fit in 2 GB", not a STAGE_TIMING line worth
+# quoting. This overlay answers exactly one question — *does the pipeline work
+# end to end* — and waiting on production's single core to answer it is just
+# waiting. Anything about cost, headroom or duration needs the default limits.
+#
+# It reads the same WORKER_* knobs as docker-compose.yml, deliberately: they
+# mean "the worker's size" wherever the worker is defined, and this file only
+# moves their defaults. **Raise threads in step with CPUs** — a thread the
+# container cannot schedule costs memory and buys nothing (CF-224), so on an
+# engine with fewer cores lower both:
+#
+#   WORKER_CPUS=2 WORKER_FFMPEG_THREADS=2 WORKER_MEM_LIMIT=4g \
+#     docker compose --env-file .env.docker \
+#     -f docker-compose.yml -f docker-compose.fast.yml up worker
+#
+# You will need that: Docker refuses a container asking for more CPU than the
+# engine owns — `range of CPUs is from 0.01 to 2.00` on a 2-CPU Docker Desktop
+# VM. `docker info --format '{{.NCPU}}'` is the number to stay under.
+#
+# docker-compose.repro.yml takes the opposite line and allows no interpolation
+# at all, because its numbers are a measurement rather than a convenience.
+services:
+  worker:
+    # memswap tracks mem as it does in the base file — no swap, or even the
+    # "does it work" answer stops meaning anything.
+    mem_limit: ${WORKER_MEM_LIMIT:-8g}
+    memswap_limit: ${WORKER_MEM_LIMIT:-8g}
+    cpus: ${WORKER_CPUS:-4}
+    # A map, so Compose merges rather than replaces: the broker URLs and every
+    # other value the base file sets on this service survive.
+    environment:
+      FFMPEG_THREADS: "${WORKER_FFMPEG_THREADS:-4}"

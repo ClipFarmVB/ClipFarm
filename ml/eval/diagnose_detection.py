@@ -21,9 +21,10 @@ It also dumps the raw positions and contacts to JSON so the rejection case can
 be iterated on locally at zero cost (no container, no video download), the same
 way --dump-windows lets the harness re-score offline runs.
 
-Run it where the worker deps live:
+Run it where the worker deps live — the `eval` service, not `worker`, which
+carries production's 1-CPU limit since CF-241:
 
-  docker compose run --rm --no-deps worker \
+  docker compose --env-file .env.docker run --rm --no-deps eval \
     python -m ml.eval.diagnose_detection --test test1
 """
 from __future__ import annotations
