@@ -1,7 +1,9 @@
 """Cloudflare R2 (or AWS S3) object storage helpers."""
+import re
 import uuid
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from urllib.parse import quote
 
 from functools import lru_cache
 
@@ -149,6 +151,27 @@ def object_exists(key: str) -> bool:
     return head_object(key) is not None
 
 
+def head_bytes(key: str, count: int) -> bytes | None:
+    """First `count` bytes of an object; None on missing or any error.
+
+    A probe, never raises — same contract as head_object, and for the same
+    reason: the caller is better placed to decide what a missing answer means
+    than this function is. confirm_upload treats None as "allow", which is the
+    opposite of what it does with a None from head_object; see the reasoning
+    there.
+
+    Ranged so that sniffing a container header costs a few bytes rather than a
+    download — the objects on this path run to 8 GB.
+    """
+    try:
+        resp = _client().get_object(
+            Bucket=settings.r2_bucket_name, Key=key, Range=f"bytes=0-{count - 1}"
+        )
+        return resp["Body"].read(count)
+    except Exception:
+        return None
+
+
 # ── Presigned direct-to-R2 uploads (CF-163) ──────────────────────────────────
 # The browser sends video straight to R2 so the api never handles the bytes.
 # generate_presigned_url is pure local signing — no network, safe to call on
@@ -160,9 +183,13 @@ def presign_put(key: str, content_type: str, expires_in: int) -> str:
     """
     Presigned URL for a single-shot PUT of a whole object.
 
-    ContentType is deliberately signed into the URL: R2 rejects the request if
-    the browser's Content-Type header doesn't match, which makes the file-type
-    check a real pre-transfer control rather than an advisory one.
+    ContentType is deliberately signed into the URL, so R2 rejects a PUT whose
+    Content-Type *header* differs from the signed value.
+
+    That binds the header, not the bytes (CF-244). A client can declare
+    video/mp4, send the matching header so the signature verifies, and upload
+    anything at all. This is a control over what the object is *labelled*, not
+    over what it contains — confirm_upload sniffs the stored bytes for that.
     """
     return _client().generate_presigned_url(
         "put_object",
@@ -229,6 +256,73 @@ def abort_multipart(key: str, upload_id: str) -> None:
     )
 
 
+# A dash flanked by whitespace, repeated — i.e. two or more separators that
+# ended up adjacent once what sat between them was dropped. Anchored on the
+# spaces so "00-04-12" and "Under-14" are not separators and cannot match.
+_ORPHANED_SEPARATORS = re.compile(r"\s-(?:\s*-)+\s")
+
+
+def content_disposition(filename: str) -> str:
+    """`attachment` plus the filename, in both forms RFC 6266 defines.
+
+    Two parameters, deliberately. `filename=` is a quoted string and can only
+    carry ASCII, so a Cyrillic or CJK name has to be spelled a second time as
+    RFC 5987's `filename*=UTF-8''…` — every current browser prefers `filename*`
+    when both are present, and the ASCII one is what an old client falls back
+    to. Emitting only the escaped form would name the file for nobody; emitting
+    only the ASCII form is what dropped non-Latin titles on the floor.
+
+    The filtering here is a header concern, not a filename one — services/
+    filenames.py has already removed what is illegal *on disk*. What is left to
+    close is the quoted string itself: a surviving `"` ends it and lets the rest
+    of the value be read as further parameters, and a CR or LF would split the
+    header outright. `filename*` is percent-encoded, so it cannot carry either,
+    but it is filtered on the same pass rather than trusted to the encoder.
+
+    The ASCII form falls back to "download" when no ASCII survives, keeping the
+    extension: `filename=""` names the file after the URL's last path segment,
+    which is the UUID this whole scheme exists to replace.
+
+    **The fallback degrades and is meant to.** Where a name's only distinguishing
+    text is non-ASCII, what is left is the scheme's fixed parts: two Cyrillic-
+    titled games both fall back to `(condensed).mp4`, and nothing here can tell
+    them apart short of transliterating, which would invent a spelling nobody
+    chose. The clip scheme survives this because the timestamp is ASCII. It is
+    accepted rather than fixed because `filename*` has been honoured by every
+    shipping browser for over a decade — this parameter is for clients that are
+    already reading a header from 2011.
+    """
+    kept = "".join(
+        c for c in filename if c.isprintable() and c not in '";\\'
+    ).strip(" .-")
+    # The extension is held out of that fold rather than trimmed with the rest.
+    # "Матч.mp4" reduces to ".mp4", and stripping the leading dot off it — which
+    # has to happen, or the fallback names a hidden file — would leave a bare
+    # "mp4" that no player will open.
+    stem, _, ext = kept.rpartition(".")
+    if not stem:
+        stem, ext = kept, ""
+    # Dropping the non-ASCII characters leaves behind the gaps and separators
+    # they sat between ("Матч - spike" -> " - spike"), so the fallback is
+    # re-collapsed and re-stripped rather than handed over as-is.
+    ascii_stem = "".join(c for c in stem if c.isascii())
+    ascii_stem = " ".join(ascii_stem.split())
+    # Collapsing the whitespace is not enough on its own: a component between
+    # two others leaves the separators on *both* sides of it, and they survive
+    # as an orphaned run — a Cyrillic title with a Cyrillic player gave
+    # "spike - - 00-04-12". Only a dash flanked by spaces is a separator here,
+    # so this cannot touch the timestamp or a hyphenated word.
+    ascii_stem = _ORPHANED_SEPARATORS.sub(" - ", ascii_stem).strip(" .-") or "download"
+    ascii_ext = "".join(c for c in ext if c.isascii())
+    ascii_name = f"{ascii_stem}.{ascii_ext}" if ascii_ext else ascii_stem
+    header = f'attachment; filename="{ascii_name}"'
+    if kept and not kept.isascii():
+        # safe="" so nothing outside RFC 5987's attr-char set survives
+        # unencoded; over-encoding is explicitly allowed, under-encoding is not.
+        header += "; filename*=UTF-8''" + quote(kept, safe="")
+    return header
+
+
 def presign_url(key: str, expires_in: int = 3600, download_filename: str | None = None) -> str:
     """
     Generate a presigned URL for reading a file from R2 (default 1 hour).
@@ -240,13 +334,7 @@ def presign_url(key: str, expires_in: int = 3600, download_filename: str | None 
     """
     params: dict[str, str] = {"Bucket": settings.r2_bucket_name, "Key": key}
     if download_filename:
-        # R2 reflects this into a response header — keep it printable ASCII
-        # and quote-free so it can't escape the quoted-string.
-        safe = "".join(
-            c for c in download_filename
-            if c.isascii() and c.isprintable() and c not in '";\\'
-        ).strip() or "download"
-        params["ResponseContentDisposition"] = f'attachment; filename="{safe}"'
+        params["ResponseContentDisposition"] = content_disposition(download_filename)
     return _client().generate_presigned_url(
         "get_object",
         Params=params,

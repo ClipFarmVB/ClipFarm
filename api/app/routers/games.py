@@ -24,11 +24,121 @@ from app.schemas.game import (
     UploadTicket,
 )
 from app.services import access, follow_graph, quota, storage
+from app.services.filenames import condensed_download_filename
 from app.workers.tasks import process_game_task
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/games", tags=["games"])
+
+# CF-244: the presigned PUT binds the declared Content-Type to the signature as
+# a *header*, so R2 rejects a mismatched header and accepts any bytes behind it.
+# These identify the container the bytes actually are.
+#
+# Deliberately no new dependency, following CF-236 (#253), which sniffs avatar
+# uploads the same way: python-magic pulls in a C library to recognise hundreds
+# of formats when four are permitted.
+#
+# FAMILY, not MIME type. The four allowed types collapse into two containers —
+# video/mp4 and video/quicktime are both ISO-BMFF, video/x-matroska and
+# video/webm are both EBML — and separating the pairs means reading an ISO brand
+# or an EBML DocType. Browsers fill File.type from the file extension, so a
+# QuickTime-branded .mov routinely arrives declared video/mp4; a strict
+# declared-vs-sniffed equality check would reject it. The declared allowlist in
+# quota.check_upload_allowed still governs what a client may *declare*; this is a
+# separate, coarser check on what it actually *sent*.
+# How much of the object to read. Wider than the 8 bytes a box header needs, so
+# the scan below can step over a leading box and look at the next one.
+VIDEO_SIGNATURE_BYTES = 64
+# The floor for "too small to be a container at all", deliberately NOT the read
+# size above. Sizing the destructive reject off the read window would mean every
+# widening of the window rejected more real files; this only has to sit below
+# the shortest header worth sniffing.
+MIN_CONTAINER_BYTES = 16
+# The least a sniff can work with: one ISO-BMFF box header (4-byte size, 4-byte
+# type). Below it there is nothing to read, so a header this short is treated as
+# an unreadable probe rather than as a verdict — see confirm_upload.
+MIN_SNIFFABLE_BYTES = 8
+_EBML_MAGIC = b"\x1a\x45\xdf\xa3"
+
+# Box types that identify the ISO-BMFF/QTFF family when one of them leads the
+# file.
+#
+# NOT just `ftyp` (CF-244 review). ISO/IEC 14496-12 requires `ftyp` early, so an
+# MP4 always carries it — but `video/quicktime` is on the allowlist too, and
+# QTFF does not require it: a .mov may legally begin with `wide`, `moov`,
+# `mdat`, `free`, `skip` or `pnot`. Measured rather than reasoned about —
+# replacing the 20-byte `ftyp` of an ffmpeg-produced .mov with a same-length
+# `free` box (same length, so every chunk offset in the moov stays valid) leaves
+# a file ffprobe reports as `format_name=mov,mp4,m4a,3gp,3g2,mj2` with its
+# duration intact and exit 0, while an `ftyp`-only check called it not-a-video.
+#
+# Getting this wrong is expensive in one direction only. The reject path deletes
+# the Game row and the R2 object and answers 415 with no retry, so the user
+# re-transfers up to 8 GB — the same cost the fail-open decision below is
+# written to avoid, except paid on a confident wrong answer instead of an
+# uncertain one.
+_ISO_BMFF_BOX_TYPES = frozenset({
+    b"ftyp",  # ISO-BMFF brand — required early in MP4, optional in QuickTime
+    b"styp",  # fragmented mp4 segment
+    b"moov",  # movie header; leads a faststart / streaming-ordered file
+    b"mdat",  # media data
+    b"wide",  # 64-bit-size placeholder ffmpeg's mov muxer emits before mdat
+    b"free",  # padding, and what stripping an atom in place leaves behind
+    b"skip",  # padding, the other spelling
+    b"junk",  # padding, as written by some capture tools
+    b"pnot",  # preview, on old QuickTime files
+})
+# Enough to step over a couple of small leading boxes. The read window bounds
+# the walk anyway; this just keeps it obviously finite.
+_ISO_BMFF_MAX_BOXES = 4
+
+
+def _sniff_video_container(header: bytes) -> str | None:
+    """The container family `header` belongs to, or None if it is neither."""
+    if header.startswith(_EBML_MAGIC):
+        return "ebml"
+    if _opens_with_iso_bmff_box(header):
+        return "iso-bmff"
+    return None
+
+
+def _opens_with_iso_bmff_box(header: bytes) -> bool:
+    """Whether `header` opens with a recognisable ISO-BMFF/QTFF box chain.
+
+    Walks a few boxes instead of testing only the first, because the set of
+    types that may lead a QuickTime file is open-ended and any fixed list will
+    be narrower than the decoder's. ffmpeg does not match on the leading type at
+    all — it follows the chain — which is why the same .mov with its first atom
+    relabelled to a type nothing recognises still probes as
+    `mov,mp4,m4a,3gp,3g2,mj2`. Stepping over an unrecognised but well-formed box
+    keeps this from deleting such a file.
+
+    What bounds the cost of that is the size field: a box declares its own
+    length before its type, and only a plausible length lets the walk continue,
+    so arbitrary bytes have to survive a chain of them to reach an accept.
+    """
+    offset = 0
+    for _ in range(_ISO_BMFF_MAX_BOXES):
+        # ISO-BMFF puts a 4-byte box size first, so the type is at offset 4.
+        if offset + 8 > len(header):
+            return False
+        size = int.from_bytes(header[offset:offset + 4], "big")
+        if header[offset + 4:offset + 8] in _ISO_BMFF_BOX_TYPES:
+            return True
+        if size == 1:
+            # `1` means the real, 64-bit size follows the type.
+            if offset + 16 > len(header):
+                return False
+            size = int.from_bytes(header[offset + 8:offset + 16], "big")
+        if size < 8:
+            # `0` means "runs to the end of the file", legal only for the last
+            # box — so there is nothing after it to step to. 2..7 cannot hold a
+            # box header at all, so these are not boxes.
+            return False
+        offset += size
+    return False
+
 
 DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
@@ -158,9 +268,11 @@ async def create_upload(body: UploadCreate, user_id: UserId, db: DB) -> UploadTi
     Validate an intended upload and hand back presigned URLs for it.
 
     Every check here happens before a single byte moves. The content type is
-    signed into the URL, so R2 itself rejects a mismatched upload; the declared
-    size is checked against the cap and re-verified against the real object in
-    complete_upload, because a presigned PUT cannot enforce Content-Length.
+    signed into the URL, so R2 rejects a PUT whose Content-Type *header* differs
+    — but that binds the header, not the bytes (CF-244), so the stored object is
+    sniffed in complete_upload. The declared size is checked against the cap and
+    re-verified against the real object there too, because a presigned PUT
+    cannot enforce Content-Length.
 
     The quota check (CF-91) is a **preview**, not the claim: it exists so a user
     who is already over their limit finds out now rather than after transferring
@@ -319,6 +431,79 @@ async def complete_upload(
             ),
         )
 
+    # CF-244: the only look at what was actually stored. The signature bound the
+    # declared type to the PUT's Content-Type *header*, so a client that sends
+    # the header it signed can put anything behind it.
+    #
+    # Fails OPEN on an unreadable probe, which is the opposite of what the HEAD
+    # above does with its None — deliberately. A None from head_object means
+    # there is no object, so there is nothing to accept and 400 is the only
+    # answer. A None here means R2 would not hand over the first few bytes of an
+    # object we have already seen: the transfer completed, possibly 8 GB of it,
+    # and discarding it over a storage hiccup costs the user far more than
+    # letting a mislabelled file through to a worker that will fail to decode it
+    # anyway. The cheaper wrong answer differs between the two, so the direction
+    # does.
+    # Decided from the size we already have rather than from the read below.
+    # An object too short to carry a container header is definitively not a
+    # video, and a ranged read is the wrong instrument for it: a ranged read of
+    # a zero-length object is unsatisfiable, so R2 answers 416, head_bytes
+    # returns None, and the fail-open path waves it through. Reading the size
+    # keeps the verdict independent of how storage chooses to answer that
+    # request — and saves the request entirely.
+    #
+    # MIN_CONTAINER_BYTES, not VIDEO_SIGNATURE_BYTES: the window is sized for
+    # how far the sniff may need to walk, and this is the destructive branch, so
+    # widening the read must not widen what gets deleted (CF-244 review). A
+    # short object is read and sniffed on whatever bytes exist.
+    too_short = head["size"] < MIN_CONTAINER_BYTES
+    read = None if too_short else await run_in_threadpool(
+        storage.head_bytes, key, VIDEO_SIGNATURE_BYTES
+    )
+    # A SHORT read is an unreadable probe, not a verdict (CF-244 review).
+    # head_bytes returns whatever `read()` handed back, so a truncated response
+    # arrives here as a few bytes rather than as None, and would otherwise be
+    # sniffed — finding no container in four bytes — and sent to the branch that
+    # deletes the upload. The object is already known to be at least
+    # MIN_CONTAINER_BYTES long, so a shorter answer than that is storage being
+    # odd rather than a small file, and it belongs with the other unreadable
+    # probes below.
+    header = read if read is not None and len(read) >= MIN_SNIFFABLE_BYTES else None
+    if too_short or (header is not None and _sniff_video_container(header) is None):
+        logger.warning(
+            "Upload for game %s is not a video container — discarding", game_id
+        )
+        # The conditional delete, not the unguarded one the oversize path above
+        # uses. A sibling completion may have claimed this game while we were in
+        # the HEAD, and the row's own `uploading` state is what makes exactly one
+        # caller able to dispose of it — the same reason the quota rejection
+        # below is written this way. The verdict itself is deterministic per
+        # object, so both callers would reject; the guard costs nothing and
+        # keeps the two rejection paths from disagreeing about concurrency.
+        discarded = await db.execute(
+            sa_delete(Game).where(Game.id == game_id, Game.status == GameStatus.uploading)
+        )
+        if discarded.rowcount != 1:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="This upload is already complete")
+        await db.commit()
+        try:
+            await run_in_threadpool(storage.delete_file, key)
+        except Exception:
+            logger.warning("Cleanup of non-video upload failed for %s", key, exc_info=True)
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                "The uploaded file is not a video. Allowed formats: "
+                f"{', '.join(sorted(settings.allowed_content_types_set))}."
+            ),
+        )
+    if header is None and not too_short:
+        logger.warning(
+            "Could not read the header of game %s to check its container — "
+            "allowing the upload through", game_id,
+        )
+
     # Charge the quota (CF-91). This is the binding claim, taken here rather
     # than at presign because this is the point the upload becomes queued work:
     # an abandoned ticket never reaches it, so it is never charged, and the
@@ -341,8 +526,12 @@ async def complete_upload(
         # Keyed to the game, so a double-submit shares one charge instead of
         # the second call being rejected on the slot the first just took.
         game_id=game_id,
-        # Type was validated at presign and signed into the URL, so R2 already
-        # rejected any mismatch — nothing left to check here.
+        # Not re-derived from the HEAD, and the reason is not the one that used
+        # to be written here (CF-244). R2 enforced the signed *header*, so the
+        # stored ContentType is necessarily the value this api already validated
+        # at presign — re-checking it would compare the allowlist against itself.
+        # The one case where it differs is R2 omitting the header, which would be
+        # a false rejection. The bytes are what get checked, above.
         content_type=None,
         size_bytes=head["size"],
         duration_seconds=declared_duration,
@@ -415,7 +604,7 @@ async def get_game(game_id: uuid.UUID, db: DB, viewer_id: ViewerId = None):
     if out.condensed_video_url:
         out.condensed_video_url = storage.presign_from_stored_url(
             out.condensed_video_url,
-            download_filename=f"{game.title} (condensed).mp4",
+            download_filename=condensed_download_filename(game.title),
         )
     return out
 

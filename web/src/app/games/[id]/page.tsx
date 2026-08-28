@@ -295,7 +295,11 @@ export default function GamePage() {
           )}
           {game.condense_requested && !game.condensed_video_url && (
             <p className="mb-5 rounded-md border border-border bg-surface px-3 py-2.5 text-[12px] text-muted">
-              A condensed video was requested but couldn&apos;t be generated for this game.
+              No condensed video for this game. Either there wasn&apos;t enough downtime
+              worth cutting, the ball couldn&apos;t be tracked reliably enough to tell
+              rallies from downtime — in which case the full video is kept rather than
+              risk cutting play — or something went wrong while generating it. Your
+              clips and the original are unaffected.
             </p>
           )}
 

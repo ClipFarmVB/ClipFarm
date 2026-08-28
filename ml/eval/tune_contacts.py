@@ -9,22 +9,27 @@ only the dump from diagnose_detection.py, which the container mounts.
 Step 0 reproduces the recorded container baseline. If that row doesn't match
 exactly, nothing below it is trustworthy, so it prints the expected values.
 
-  docker compose run --rm --no-deps worker python -m ml.eval.tune_contacts
+  docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
 """
 from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from ml.eval.harness import RESULTS_DIR, load_deadtime_fixture
 from ml.eval.metrics import evaluate_deadtime
 from ml.pipeline import ball as B
 from ml.pipeline.dead_time import active_windows_from_contacts, bridge_windows_by_motion
 
-# Production condense settings, as recorded in the baseline result row.
-COND = dict(gap_seconds=10.0, pad_before=5.0, pad_after=4.0,
-            min_contacts=1, merge_gap_seconds=5.0)
-BRIDGE = dict(speed_pxps=150.0, fast_fraction=0.35, max_bridge_seconds=20.0)
+# Production condense settings for the rule-based path (condense_mode="rules"),
+# as recorded in the baseline result row. Annotated Any because the values are
+# mixed — min_contacts is an int, and an inferred dict[str, float] makes every
+# **COND call site a type error. test_eval_condense_settings.py holds these to
+# the app.config defaults.
+COND: dict[str, Any] = dict(gap_seconds=10.0, pad_before=5.0, pad_after=4.0,
+                            min_contacts=1, merge_gap_seconds=5.0)
+BRIDGE: dict[str, Any] = dict(speed_pxps=150.0, fast_fraction=0.35, max_bridge_seconds=20.0)
 
 TUNABLES = (
     "CONTACT_RESIDUAL_RATIO", "CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_HIT_SPEED_PXPS",

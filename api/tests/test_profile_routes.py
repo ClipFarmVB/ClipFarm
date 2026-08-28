@@ -16,6 +16,7 @@ Follows the house pattern from test_corrections.py — a stand-in session and
 direct calls into the router, no TestClient and no database.
 """
 import asyncio
+import io
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -82,6 +83,38 @@ def _patch(user, **kwargs):
     session = _FakeSession(user, **kwargs)
     body = ProfileUpdate(username=kwargs.pop("username", "newhandle"))
     return session, asyncio.run(profiles.update_me(body, user.id, session))
+
+
+# Real signatures, padded to something an image-sized read cannot exhaust. The
+# CF-236 block near the bottom is the main consumer, but the presign tests above
+# it upload too, so both live up here with the other shared stubs.
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 40
+JPEG_EXIF = b"\xff\xd8\xff\xe1" + b"\x00" * 40
+WEBP = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"\x00" * 40
+
+
+def _upload(payload: bytes, content_type: str | None):
+    """An UploadFile-shaped stub over real bytes.
+
+    `starlette.UploadFile` wraps a SpooledTemporaryFile and exposes async
+    read/seek; the route uses those, so the stub does too. `content_type` is
+    None for a multipart part that declared no type at all — that is what
+    Starlette hands the route there, not an empty string.
+    """
+
+    class _Upload:
+        def __init__(self):
+            self.content_type = content_type
+            self.file = io.BytesIO(payload)
+
+        async def read(self, n=-1):
+            return self.file.read(n)
+
+        async def seek(self, pos):
+            return self.file.seek(pos)
+
+    return _Upload()
 
 
 # ── the public/private split ────────────────────────────────────────────────
@@ -316,12 +349,215 @@ def test_stored_avatar_url_has_no_query_string(monkeypatch):
     monkeypatch.setattr(storage, "LimitedReader", lambda f, cap: f)
     monkeypatch.setattr(storage, "presign_from_stored_url", lambda url, **kw: "signed")
 
-    class _Upload:
-        content_type = "image/png"
-        file = object()
-
     user = _FakeUser()
-    asyncio.run(profiles.upload_avatar(user.id, _FakeSession(user), _Upload()))
+    asyncio.run(
+        profiles.upload_avatar(user.id, _FakeSession(user), _upload(PNG, "image/png"))
+    )
 
     assert user.avatar_url == stored
     assert "?" not in user.avatar_url
+
+
+# ── CF-236: the bytes decide, not the declared type ─────────────────────────
+
+def _upload_avatar(payload, declared, monkeypatch, stored="https://pub.r2.dev/avatars/abc"):
+    """Drive the route with R2 stubbed.
+
+    Returns `(user, seen)`, where `seen` is what the stubbed upload was handed:
+    `seen["content_type"]` is the type the object is stored under and
+    `seen["body"]` the bytes that reached it.
+    """
+    seen = {}
+
+    def _fake_upload(fileobj, key, content_type=None):
+        seen["content_type"] = content_type
+        seen["body"] = fileobj.read()
+        return stored
+
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+    monkeypatch.setattr(storage, "LimitedReader", lambda f, cap: f)
+    monkeypatch.setattr(storage, "upload_fileobj", _fake_upload)
+    monkeypatch.setattr(storage, "presign_from_stored_url", lambda url, **kw: "signed")
+
+    user = _FakeUser()
+    asyncio.run(profiles.upload_avatar(user.id, _FakeSession(user), _upload(payload, declared)))
+    return user, seen
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [(PNG, "image/png"), (JPEG, "image/jpeg"), (JPEG_EXIF, "image/jpeg"), (WEBP, "image/webp")],
+)
+def test_the_three_real_formats_still_upload(payload, expected, monkeypatch):
+    """Acceptance: the legitimate formats keep working. JPEG is covered twice
+    because JFIF and EXIF differ at the fourth byte and only the first three
+    are the signature."""
+    _, seen = _upload_avatar(payload, expected, monkeypatch)
+    assert seen["content_type"] == expected
+
+
+def test_a_non_image_declared_as_png_is_rejected(monkeypatch):
+    """The hole this closes: nothing inspected the bytes, so any payload could
+    claim image/png."""
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+    user = _FakeUser()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            profiles.upload_avatar(
+                user.id,
+                _FakeSession(user),
+                _upload(b"<svg xmlns=\'http://www.w3.org/2000/svg\'><script/></svg>", "image/png"),
+            )
+        )
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"",                                   # empty
+        b"\x89PNG",                            # truncated PNG signature
+        b"RIFF\x00\x00\x00\x00AVI " + b"\x00" * 20,  # RIFF, but not WebP
+        b"\xff\xd8\x00" + b"\x00" * 40,          # FF D8 but not the third FF
+        b"GIF89a" + b"\x00" * 40,              # a real image, still not allowed
+        b"<!doctype html><html></html>",       # HTML
+    ],
+)
+def test_bytes_that_are_not_one_of_the_three_are_rejected(payload, monkeypatch):
+    """RIFF is the one ASCII-clean prefix, so the fourcc at offset 8 is what
+    stops a WAV or an AVI passing. GIF is a real image and still rejected —
+    the sniffer must not widen the allowlist."""
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+    user = _FakeUser()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            profiles.upload_avatar(user.id, _FakeSession(user), _upload(payload, "image/png"))
+        )
+    assert exc.value.status_code == 400
+
+
+def test_a_png_named_dot_jpg_is_accepted_and_stored_as_png(monkeypatch):
+    """The browser fills File.type from the extension, so a screenshot saved as
+    photo.jpg arrives declared image/jpeg with PNG bytes. Rejecting that would
+    fail a legitimate upload; instead the sniffed type is what gets stored, so
+    R2 serves the right ContentType on an extensionless key."""
+    _, seen = _upload_avatar(PNG, "image/jpeg", monkeypatch)
+    assert seen["content_type"] == "image/png"
+
+
+def test_the_whole_file_is_uploaded_after_sniffing(monkeypatch):
+    """The sniff reads 12 bytes off the stream. LimitedReader exposes only
+    read(), so s3transfer never seeks — without the rewind every avatar would
+    reach R2 with its first bytes missing, and nothing would raise."""
+    _, seen = _upload_avatar(PNG, "image/png", monkeypatch)
+    assert seen["body"] == PNG
+
+
+def test_a_declared_type_that_is_present_and_disallowed_is_rejected_before_any_read():
+    """The declared-type gate governs what a client may *claim*, and it stays
+    first: it is cheaper, and its message names the allowlist. image/gif is a
+    real claim and not on the allowlist, so it never reaches the bytes — the
+    file object is None here and nothing touches it."""
+    class _Upload:
+        content_type = "image/gif"
+        file = None
+
+    user = _FakeUser()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(profiles.upload_avatar(user.id, _FakeSession(user), _Upload()))
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize("declared", [None, "", "application/octet-stream"])
+def test_a_client_that_declares_nothing_usable_lets_the_bytes_decide(declared, monkeypatch):
+    """A file with no extension is typed "" by the browser, and the FormData
+    encoding sends `application/octet-stream` for that; a part with no
+    Content-Type header at all arrives as None. None of the three is a claim
+    about the payload, so there is nothing for the gate to govern and refusing
+    them would mean a byte-valid PNG never reached the sniff."""
+    _, seen = _upload_avatar(PNG, declared, monkeypatch)
+    assert seen["content_type"] == "image/png"
+
+
+@pytest.mark.parametrize("declared", [None, "", "application/octet-stream"])
+def test_declaring_nothing_usable_does_not_widen_what_is_accepted(declared, monkeypatch):
+    """The carve-out lets the bytes decide; it does not let them off. Anything
+    the sniffer does not recognise is still a 4xx."""
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+    user = _FakeUser()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            profiles.upload_avatar(
+                user.id, _FakeSession(user), _upload(b"<!doctype html><html></html>", declared)
+            )
+        )
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [(b"\xff\xd8\xff", "image/jpeg"), (b"\x89PNG\r\n\x1a\n", "image/png")],
+)
+def test_a_payload_shorter_than_the_signature_window_still_sniffs(payload, expected, monkeypatch):
+    """Why the prefixes are per-format rather than one twelve-byte window:
+    JPEG's signature is three bytes and PNG's is eight, and comparing a fixed
+    twelve would fail on a payload that has all of its own signature and simply
+    stops. Twelve is what WebP needs, not what the others do."""
+    _, seen = _upload_avatar(payload, expected, monkeypatch)
+    assert seen["content_type"] == expected
+
+
+def test_a_polyglot_still_passes_the_sniff(monkeypatch):
+    """The residual the card names, pinned rather than left implicit: the sniff
+    reads a prefix, so HTML behind a PNG signature is stored as image/png.
+    Neutralising that needs re-encoding, which CF-236 defers. What the sniff
+    buys is that the same HTML *without* the prefix no longer gets through."""
+    _, seen = _upload_avatar(PNG[:8] + b"<html><script>x</script></html>", None, monkeypatch)
+    assert seen["content_type"] == "image/png"
+
+
+def test_a_mislabelled_but_valid_avatar_is_logged_findably(monkeypatch, caplog):
+    """The one signal that says whether the declared type and the bytes
+    disagree in practice, and it carries the user id so a report can be traced
+    back. The upload still succeeds — this is a note, not a rejection."""
+    with caplog.at_level("INFO"):
+        user, seen = _upload_avatar(PNG, "image/jpeg", monkeypatch)
+
+    assert seen["content_type"] == "image/png"
+    line = "\n".join(r.getMessage() for r in caplog.records)
+    assert str(user.id) in line
+    assert "image/jpeg" in line and "image/png" in line
+
+
+def test_a_rejected_upload_is_logged(monkeypatch, caplog):
+    """A rejection with no trace is invisible in production."""
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+    user = _FakeUser()
+    with caplog.at_level("INFO"), pytest.raises(HTTPException):
+        asyncio.run(
+            profiles.upload_avatar(
+                user.id, _FakeSession(user), _upload(b"GIF89a" + b"\x00" * 40, "image/png")
+            )
+        )
+    assert str(user.id) in "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_a_logging_failure_does_not_break_the_upload(monkeypatch):
+    """Reporting must never break processing: the signal degrades, the avatar
+    still uploads."""
+    def _boom(*a, **kw):
+        raise RuntimeError("handler exploded")
+
+    monkeypatch.setattr(profiles.logger, "info", _boom)
+    _, seen = _upload_avatar(PNG, "image/jpeg", monkeypatch)
+    assert seen["content_type"] == "image/png"
+
+
+def test_the_sniffer_recognises_exactly_the_allowlist():
+    """A sniffer that returns a type the route would then reject, or that adds
+    one the allowlist does not carry, is a bug in one direction or the other."""
+    recognised = {
+        profiles._sniff_image_type(p) for p in (PNG, JPEG, JPEG_EXIF, WEBP)
+    }
+    assert recognised == profiles.ALLOWED_AVATAR_TYPES
+    assert profiles._sniff_image_type(b"<svg/>") is None
