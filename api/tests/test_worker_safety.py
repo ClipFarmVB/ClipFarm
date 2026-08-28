@@ -702,13 +702,27 @@ def test_lock_dies_with_the_worker(pg_locks):
 # `str(exc)` from an arbitrary failure; a remote Modal traceback is not a rare
 # shape for it.
 
-def test_error_message_is_clamped_to_the_column_width():
-    from app.models.game import Game
+def test_error_message_is_clamped_to_the_column_width(monkeypatch):
+    """The middle-cut contract, pinned at a width rather than at the column's.
+
+    This read the width off the column and skipped once CF-226 made it
+    unbounded — which left `_fit_error_message`'s actual behaviour asserted by
+    nothing at all. A review round replaced its body with the naive tail cut its
+    own docstring calls wrong, and the file still passed.
+
+    `_fit_error_message` is not dead code after CF-226. It is what runs in the
+    window the guard in `process_game_task` exists for: an image carrying `Text`
+    against a column that is still varchar(1024), where `_ERROR_MESSAGE_MAX` is
+    whatever the model said and the clamp is load-bearing again. Pinning the
+    contract at a fixed width keeps it honest in that window; the column being
+    unbounded today is what `test_error_message_is_unbounded` asserts, and the
+    two are different claims.
+    """
+    from app.workers import _sync_db
     from app.workers._sync_db import _fit_error_message
 
-    width = getattr(Game.__table__.c.error_message.type, "length", None)
-    if not width:
-        pytest.skip("error_message is unbounded (Text) — nothing to clamp")
+    width = 1024
+    monkeypatch.setattr(_sync_db, "_ERROR_MESSAGE_MAX", width)
 
     fitted = _fit_error_message("HEAD" + "x" * (width * 5) + "TAIL")
 
@@ -719,6 +733,159 @@ def test_error_message_is_clamped_to_the_column_width():
     )
     assert "…" in fitted, "a silent cut reads as a complete message"
     assert _fit_error_message("short") == "short", "and nothing else is touched"
+
+
+def test_error_message_is_unbounded():
+    """CF-226's acceptance, asserted rather than skipped.
+
+    The test above guards on the width and now skips, which records the change
+    only as an absence — a suite that skips a test reads the same whether the
+    column was widened or the test was quietly broken. This is the positive
+    half: it fails if anyone re-bounds the column, which is the regression that
+    would strand games again.
+    """
+    from app.models.game import Game
+    from app.workers import _sync_db
+
+    col = Game.__table__.c.error_message.type
+    assert getattr(col, "length", None) is None, (
+        f"error_message is bounded again ({col!r}) — an over-long value raises "
+        "DataError inside the task's except handler and strands the game"
+    )
+    assert _sync_db._ERROR_MESSAGE_MAX is None, "so the clamp must be inert"
+
+    long_message = "x" * 50_000
+    assert _sync_db._fit_error_message(long_message) == long_message, (
+        "and a full traceback must survive it unchanged"
+    )
+
+
+def test_the_unbounded_failure_report_is_wrapped():
+    """The one status write whose payload is `str(exc)` stays wrapped.
+
+    Structural, in the same idiom as the lock-checkpoint test above, because
+    `process_game_task` has no seam to call — and structural is all it is.
+    **It pins the shape, not the recovery**: it cannot tell whether the handler
+    does something useful, only that a broad one exists and does not merely
+    re-raise. The behaviour it protects is described where the guard lives
+    (`app/workers/tasks.py`, above the call); this test exists so that guard
+    cannot be quietly deleted, not to prove it works.
+
+    Two known ways past it, both inherent to reading the AST rather than
+    running it, recorded so nobody mistakes silence here for proof: moving the
+    handler body into a helper that re-raises leaves no `ast.Raise` node to
+    find, and a `finally: raise` is not in `handler.body` at all. Neither
+    happens by accident; both are visible in review.
+    """
+    source = (pathlib.Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks.py")
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+
+    def writes_str_exc(node) -> bool:
+        """`sync_set_game_status(..., "failed", error_message=str(<name>))`."""
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            return False
+        if node.func.id != "sync_set_game_status":
+            return False
+        if not any(
+            isinstance(a, ast.Constant) and a.value == "failed" for a in node.args
+        ):
+            return False
+        for kw in node.keywords:
+            if kw.arg != "error_message":
+                continue
+            v = kw.value
+            if (
+                isinstance(v, ast.Call)
+                and isinstance(v.func, ast.Name)
+                and v.func.id == "str"
+            ):
+                return True
+        return False
+
+    def reraises(handler) -> bool:
+        """Does this handler let the exception back out?
+
+        Any `raise` at all: a handler that raises propagates, so the call still
+        kills the enclosing except — shaped like a guard, behaves like none.
+        `any`, not `all` over a bare-only body: both shapes are already live in
+        tasks.py, so neither is hypothetical — `except Retry: raise` (:1131) is
+        bare-only, and `_mark_failed_if_lock_free(str(lost)); raise` (:1133)
+        does work first and re-raises anyway. Also catches `raise e` and
+        `raise RuntimeError(...)`.
+
+        Conservative in three further ways, all failing closed: a handler
+        re-raising on only one branch counts; so does one whose `raise` sits in
+        a nested `try` that catches it; so does one containing a nested `def`
+        that raises. None is a shape this guard wants.
+        """
+        return any(isinstance(n, ast.Raise) for st in handler.body for n in ast.walk(st))
+
+    def catches_everything(handler) -> bool:
+        """A handler broad enough to be a guard rather than a filter.
+
+        `except ValueError:` would satisfy "is inside a try with a handler"
+        while catching none of what this actually protects against — the DB
+        failures are heterogeneous (DataError, OperationalError, whatever the
+        driver raises next), so a narrow handler is the same bug wearing a
+        try block.
+        """
+        if handler.type is None:                       # bare `except:`
+            return True
+        names = (
+            handler.type.elts
+            if isinstance(handler.type, ast.Tuple)
+            else [handler.type]
+        )
+        return any(
+            isinstance(n, ast.Name) and n.id in {"Exception", "BaseException"}
+            for n in names
+        )
+
+    def actually_guards(node) -> bool:
+        """A broad handler is not enough — it has to be the one that runs.
+
+        Python matches handlers in order, so `except DataError: raise` sitting
+        in *front* of `except Exception:` intercepts the exception this guard
+        exists for and propagates it, while a per-handler `any()` still sees a
+        broad handler and calls the call guarded. That is a real hole this test
+        had, found by review after three earlier ones.
+
+        So: if any handler in the chain re-raises, the `try` does not guard,
+        whatever else is in it. Conservative — a re-raising handler for some
+        unrelated exception is rejected too — and conservative is the right
+        direction, because the failure it prevents is silent and the failure it
+        causes is a loud test.
+        """
+        if any(reraises(h) for h in node.handlers):
+            return False
+        return any(catches_everything(h) for h in node.handlers)
+
+    # Every such call lexically inside a `try:` that actually guards it.
+    guarded = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        if not actually_guards(node):
+            continue
+        for stmt in node.body:
+            for inner in ast.walk(stmt):
+                if writes_str_exc(inner):
+                    guarded.add(inner.lineno)
+
+    found = {n.lineno for n in ast.walk(tree) if writes_str_exc(n)}
+
+    assert found, (
+        "no `sync_set_game_status(..., \"failed\", error_message=str(exc))` in "
+        "tasks.py — if the call was renamed or restructured, re-point this test "
+        "rather than deleting it"
+    )
+    assert found <= guarded, (
+        f"tasks.py:{sorted(found - guarded)} reports a failure with an unbounded "
+        "`str(exc)` outside any try/except broad enough to catch a DB error. It "
+        "runs from inside the task's own "
+        "except handler, so raising there costs the `failed` write and the retry "
+        "decision and strands the game in `processing`"
+    )
 
 
 @pytest.mark.parametrize("width", [1, 2, 8, 9, 10, 64, 1024])
@@ -743,15 +910,56 @@ def test_the_clamp_reads_the_width_off_the_column():
     did for games.upload_id after the same overflow), and that change must not
     need a matching edit here to stay correct — the clamp no-ops on its own.
 
-    `getattr` rather than a plain attribute access, and not only to satisfy
-    mypy: `Text` genuinely has no `length`, so the direct form would break at
-    exactly the moment that card lands."""
+    `getattr` rather than a plain attribute access. The reason given here until
+    CF-226 landed was that `Text` "genuinely has no `length`, so the direct form
+    would break at exactly the moment that card lands" — and that is false:
+    `sa.Text().length` exists and is `None`. A plain attribute access would have
+    worked. `getattr` is defensive against a future type that really lacks the
+    attribute, not load-bearing against this one, and the distinction is worth
+    keeping straight: a guard justified by a false claim is one someone removes
+    the day they check the claim."""
     from app.models.game import Game
     from app.workers import _sync_db
 
     assert _sync_db._ERROR_MESSAGE_MAX is getattr(
         Game.__table__.c.error_message.type, "length", None
     )
+
+
+def test_the_width_still_tracks_a_bounded_column():
+    """The assertion above went vacuous the moment CF-226 landed.
+
+    `Text` carries no width, so `_ERROR_MESSAGE_MAX` is `None` and comparing it
+    to the column's `length` reads `None is None` — which a hardcoded
+    `_ERROR_MESSAGE_MAX = None` satisfies just as well. That mutation passes the
+    whole suite, and it is not an idle one: `None` is precisely what switches
+    the clamp off, and the skew window `process_game_task`'s guard exists for is
+    where the clamp is load-bearing again against a still-bounded column.
+
+    So re-derive the constant against a bounded column — the way a worker image
+    that starts before the api has run the migration sees it — and require it to
+    follow. Reload rather than reassign: the width is read once at import, which
+    is the property under test.
+    """
+    import importlib
+
+    import sqlalchemy as sa
+
+    from app.models.game import Game
+    from app.workers import _sync_db
+
+    column = Game.__table__.c.error_message
+    original = column.type
+    column.type = sa.String(1024)
+    try:
+        assert importlib.reload(_sync_db)._ERROR_MESSAGE_MAX == 1024
+    finally:
+        # Restore before the second reload, so the module the rest of the
+        # session imports is the one built from the real column.
+        column.type = original
+        importlib.reload(_sync_db)
+
+    assert _sync_db._ERROR_MESSAGE_MAX is getattr(original, "length", None)
 
 
 def test_every_error_message_writer_goes_through_the_clamp():
