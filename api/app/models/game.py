@@ -30,7 +30,14 @@ class Game(Base):
         SAEnum(GameStatus), default=GameStatus.queued, nullable=False
     )
     raw_video_url: Mapped[str | None] = mapped_column(String(2048))
-    error_message: Mapped[str | None] = mapped_column(String(1024))
+    # Text, not String(1024): the value is `str(exc)` from an arbitrary failure,
+    # and a Modal remote traceback reliably exceeds any width worth naming. The
+    # overflow does not just lose the message — `sync_set_game_status(…,
+    # "failed", …)` runs from inside the task's own `except` handler, so a
+    # DataError raised there costs the `failed` write and the retry decision and
+    # strands the row in `processing` (CF-226, the same overflow as `upload_id`
+    # below, reached from the code that exists to explain a failure).
+    error_message: Mapped[str | None] = mapped_column(Text)
     # S3 multipart upload id, held only while status == uploading. Stored so a
     # delete (or the abandoned-upload sweep) can abort the upload and stop
     # paying for its parts, rather than waiting on a lifecycle rule.

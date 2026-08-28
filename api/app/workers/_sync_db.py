@@ -16,8 +16,8 @@ _sync_url = settings.database_url.replace("+asyncpg", "")
 _engine = create_engine(_sync_url, pool_pre_ping=True)
 
 
-# games.error_message is a bounded column and nothing on the write path enforced
-# that. The value is `str(exc)` from an arbitrary failure — a Modal error
+# games.error_message was a bounded column and nothing on the write path
+# enforced that. The value is `str(exc)` from an arbitrary failure — a Modal error
 # carrying a remote traceback runs long. Overflowing raised DataError from
 # *inside* the task's own `except` handler, which cost the `failed` write and
 # the retry decision (the `finally` still ran, so the lock was released), so the
@@ -27,13 +27,21 @@ _engine = create_engine(_sync_url, pool_pre_ping=True)
 #
 # The width is read off the model, not repeated: it is the column that imposes
 # this, so a column that changes must not need a matching edit here to stay
-# correct. Unbounded means no clamp at all — which is how CF-226 lands. That
-# card widens the column to Text (as CF-217 did for games.upload_id, the same
-# class of overflow), and this file should not appear in its diff.
+# correct. Unbounded means no clamp at all — which is how CF-226 lands, widening
+# the column to Text (as CF-217 did for games.upload_id, the same class of
+# overflow) with no functional change here. That is the design working, not a
+# reason to delete this.
 #
-# Until then this is a mitigation, not a fix: the value that overflows is a
-# Modal remote traceback, i.e. the operator-actionable half of the failure, so
-# the clamp truncates the diagnostic someone opened the row to read.
+# Read off the *model*, note, so this goes inert when the image says Text —
+# which is not the same moment the column becomes Text. process_game_task
+# carries the guard for that gap and explains it; see the wrapped
+# sync_set_game_status(..., "failed", ...) there rather than a second copy of
+# the reasoning here.
+#
+# While it is load-bearing it is a mitigation, not a fix, and the reason is
+# worth keeping: the value that overflows is a Modal remote traceback, i.e. the
+# operator-actionable half of the failure, so the clamp truncates the diagnostic
+# someone opened the row to read.
 # getattr, not a plain attribute: an unbounded column type need not carry a
 # `length` at all, and that case is exactly the one this must survive.
 _ERROR_MESSAGE_MAX = getattr(Game.__table__.c.error_message.type, "length", None)
