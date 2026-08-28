@@ -171,12 +171,15 @@ MIN_SPEED_PXPS            = 120.0   # px/s: ignore near-stationary ball (rolling
 # Read the cap as damage control, NOT as 4K support. It moves the floor and
 # cannot move the ceiling, so the admissible band keeps closing with resolution:
 #
-#     360p   floor 0.667  ceiling 3.333 frame-heights/s   band 5.00x
-#     720p   floor 0.667  ceiling 1.667                   band 2.50x
-#    1080p   floor 0.667  ceiling 1.111                   band 1.67x
-#    1440p   floor 0.667  ceiling 0.833                   band 1.25x
+#     360p   floor 0.611  ceiling 3.333 frame-heights/s   band 5.45x
+#     720p   floor 0.611  ceiling 1.667                   band 2.73x
+#    1080p   floor 0.611  ceiling 1.111                   band 1.82x
+#    1440p   floor 0.611  ceiling 0.833                   band 1.36x
 #    2160p   floor 0.444  ceiling 0.556  (capped)         band 1.25x
 #
+# Recomputed for CF-103's 220 px/s floor: the unclamped collision moves from
+# 1800p to ~1964p and the clamp height from 1800 to ~1571, so the bands widen
+# slightly but the shape is unchanged.
 # Read the last row carefully: the floor drops to 0.444. Below the clamp the
 # scale tracks resolution and the floor stays put at the validated 0.667 while
 # only the ceiling closes — degradation, but in the right direction. Past the
