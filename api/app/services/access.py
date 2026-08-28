@@ -49,7 +49,12 @@ pins the current behaviour so flipping it has to be deliberate; CF-116 is where
 that argument belongs if it is had.
 
 Writes are NOT covered here. Creating, editing and deleting stay owner-only, and
-the routers keep their own ownership checks for those paths.
+the routers keep their own ownership checks for those paths. One of those checks
+is now shared between routers rather than restated — `players.get_owned_player`,
+which clips.py calls when tagging (CF-234). That is the exception, not a second
+front door: the read rule still lives here, and a write-side helper that grows a
+third caller belongs in a services/ module rather than in whichever router
+happened to define it first.
 
 **Unauthenticated surface.** Allowing anonymous reads means ``GET /games/{id}``,
 ``GET /games/{id}/clips``, ``GET /clips/{id}/share`` and
