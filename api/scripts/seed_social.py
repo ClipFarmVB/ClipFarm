@@ -207,9 +207,20 @@ async def main() -> None:
     else:
         print("\nNo follow edges yet - the follow graph arrives with CF-110, so "
               "the feed has nothing in it until #191 merges.")
+    # Says what the docstring says. These two disagreed: the header was
+    # corrected to "you cannot sign in as these accounts" and this line, which
+    # is the half an operator actually reads, still told them to create a
+    # Supabase user with the same email. Following it produces a 500 loop —
+    # `users.email` is UNIQUE and the upsert is on the id index, so the first
+    # authenticated request collides — and the error points at auth rather than
+    # at this script.
     print(
-        "Sign in as one of them (create the Supabase user with the same email), "
-        "or curl the api directly with DEBUG on."
+        "\nYou cannot sign in as these accounts: the ids are uuid5 over the "
+        "email and a real Supabase `sub` is random, so they will never match. "
+        "Creating a Supabase user with the same email makes it worse, not "
+        "better (users.email is UNIQUE; the first request 500s until the "
+        "seeded row is deleted by hand). Use them anonymously, or curl the api "
+        "with DEBUG on — the post ids above are what you need."
     )
     await engine.dispose()
 

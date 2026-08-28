@@ -125,8 +125,11 @@ async def list_clips(
 ):
     # The game itself must be viewable, else 404 (indistinguishable from a
     # game that doesn't exist — see access.assert_can_view_game).
-    game = await db.get(Game, game_id)
-    access.assert_can_view_game(viewer_id, game)
+    # Take the return value: assert_can_view_game 404s a None game and hands
+    # back the narrowed one, so this needs no `assert` further down. The bare
+    # assert that used to do the narrowing is stripped by `python -O`, which
+    # would turn a contract into nothing on an optimised interpreter.
+    game = access.assert_can_view_game(viewer_id, await db.get(Game, game_id))
 
     # Clips are filtered IN SQL (CF-108). Post-filtering the page in Python
     # would silently break pagination — ask for 50, get however many survived —
@@ -166,8 +169,6 @@ async def list_clips(
         for p in pr.scalars():
             player_map[p.id] = p.name
 
-    # Narrowed by assert_can_view_game above, which 404s a None game.
-    assert game is not None
     return [
         _clip_out(c, game, player_name=player_map.get(c.player_id) if c.player_id else None)
         for c in clips

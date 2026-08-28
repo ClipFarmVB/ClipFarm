@@ -33,6 +33,13 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  // Whether the *server* filled the page, captured at load rather than derived
+  // from `posts.length` later. Deleting one post from a full page takes the
+  // array to 49 and silently retired the notice below, at exactly the moment
+  // it mattered most: the older posts are still there, still unreachable, and
+  // this is the only surface that can unpublish them. The count changes; what
+  // the server said does not.
+  const [wasFullPage, setWasFullPage] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,7 +47,10 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
     setError(null);
     getUserPosts(handle, PAGE)
       .then((data) => {
-        if (!cancelled) setPosts(data);
+        if (!cancelled) {
+          setPosts(data);
+          setWasFullPage(data.length === PAGE);
+        }
       })
       .catch((e) => {
         if (!cancelled) {
@@ -166,7 +176,7 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
           );
         })}
       </div>
-      {posts.length === PAGE && (
+      {wasFullPage && (
         // The cap is deliberate (CF-109 defers cursor paging to when a profile
         // actually needs it), but it must not be *invisible*: this is the only
         // place a post can be taken down, so an author with more than a page of

@@ -455,9 +455,16 @@ export function createPost(
  * profile is currently the only surface for *unpublishing*, so a silently
  * truncated list is a post the author cannot reach.
  */
-export function getUserPosts(username: string, limit = 50): Promise<Post[]> {
+export async function getUserPosts(username: string, limit = 50): Promise<Post[]> {
   const params = new URLSearchParams({ username, limit: String(limit) });
-  return request<Post[]>(`/posts?${params}`);
+  // `?? []` because `request` returns `undefined as T` for an empty body — a
+  // 204, or a 200 with none. That is right for the DELETEs it was added for and
+  // a lie for a list: the caller is handed `undefined` typed as `Post[]`, and
+  // the first `.length` throws a TypeError somewhere far from here. PostGrid's
+  // `posts === null` loading guard does not catch it either, since undefined is
+  // not null, so the failure renders as a blank page rather than as its error
+  // card. An absent body means no posts; say so here, where the shape is known.
+  return (await request<Post[]>(`/posts?${params}`)) ?? [];
 }
 
 export function deletePost(postId: string): Promise<void> {

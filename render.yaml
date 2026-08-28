@@ -166,6 +166,14 @@ services:
       # The order that must hold: whoever ships the clip-visibility write path
       # is the person who makes "public" real, and rate limiting has to land
       # before they do. Reassess this flag then, not after.
+      #
+      # That ordering is a test, not a hope: api/tests/
+      # test_no_visibility_write_path.py fails the day a router can widen a
+      # clip or a game. The bound above is a property of the current schema,
+      # and a comment in a deploy file is not something the PR adding a
+      # visibility setter would ever be pointed at — so the constraint lives
+      # where that PR will run into it. Deleting that test is a legitimate
+      # move; doing it in the same PR is what puts the decision in a diff.
       - key: SOCIAL_ENABLED
         value: "true"
       - key: JWT_SECRET               # legacy; Supabase JWKS is source of truth. Auto-generated.
