@@ -30,6 +30,7 @@ pytest.importorskip("fastapi")
 from fastapi import HTTPException  # noqa: E402
 
 from app.models.clip import ActionType  # noqa: E402
+from app.models.visibility import Visibility  # noqa: E402
 from app.routers import clips  # noqa: E402
 from app.schemas.clip import ClipTagRequest  # noqa: E402
 
@@ -52,10 +53,16 @@ class _Player:
 
 
 class _Game:
-    def __init__(self, owner_id, raw_video_url="raw/x.mp4"):
+    def __init__(self, owner_id, raw_video_url="raw/x.mp4",
+                 visibility=Visibility.private):
         self.id = uuid.uuid4()
         self.owner_id = owner_id
         self.raw_video_url = raw_video_url
+        # CF-108 landed after this branch was cut: ClipOut now carries an
+        # effective_visibility resolved from the clip's override and its game,
+        # so a fake without it fails in access.widest_allowed rather than in
+        # anything this test is about. `private` is the model default.
+        self.visibility = visibility
 
 
 class _Clip:
@@ -74,6 +81,8 @@ class _Clip:
         self.thumbnail_url = None
         self.labels = ["spike"]
         self.created_at = datetime.now(timezone.utc)
+        # NULL is the column default (CF-108): inherit the game's visibility.
+        self.visibility = None
 
 
 class _FakeSession:
