@@ -1,0 +1,45 @@
+# docker-compose.repro.yml — CF-241: reproduce CF-224's production OOM locally.
+#
+#   docker compose --env-file .env.docker \
+#     -f docker-compose.yml -f docker-compose.repro.yml up worker
+#
+# Render's old `starter` box: 512 MB, half a CPU, no swap. Process a game under
+# this and `cutting_clips` should die exactly as it did in production on 20 and
+# 22 August — that is the check, and a run that *completes* is the interesting
+# result, not the boring one.
+#
+# The numbers are not free-form, which is why they live in a file. Every one of
+# them is load-bearing:
+#
+#   - 512m / 0.5 CPU is the box that failed. `memswap_limit` matches so there is
+#     no swap; Render had none, and 512 MB of swap is enough to turn this run
+#     green while production still dies.
+#   - FFMPEG_THREADS=4 is deliberately *un*balanced against half a CPU, and is
+#     the opposite of the base file's "raise threads with CPUs" advice. CF-224
+#     measured the ceiling: 1 thread peaks at 407 MB and survives, 2 at 468 MB,
+#     and only 4-or-unbounded blows 512 MB. Run this at 1 thread and it finishes
+#     at ~408 MB and reads as "already fixed".
+#
+# So: change these and you are no longer running the repro. If a run under this
+# overlay does not OOM, check `docker info` for "No swap limit support" before
+# concluding anything — without kernel swap accounting Docker ignores both
+# memory fields and the container had the host all along.
+#
+# LITERALS, not `${WORKER_MEM_LIMIT:-512m}`. Every documented command passes
+# `--env-file .env.docker`, which makes that file an interpolation source — so
+# a WORKER_MEM_LIMIT parked there for some earlier experiment would quietly
+# resize this overlay, the run would pass, and the pass would be read as
+# evidence. The knobs in docker-compose.yml exist precisely so an ad-hoc size
+# does not need to be spelled here; this file is the fixed one, and
+# api/tests/test_dev_prod_parity.py fails it if it stops being.
+#
+# The opposite direction lives in docker-compose.fast.yml.
+services:
+  worker:
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 0.5
+    # A map, so Compose merges rather than replaces — see the note in
+    # docker-compose.fast.yml.
+    environment:
+      FFMPEG_THREADS: "4"

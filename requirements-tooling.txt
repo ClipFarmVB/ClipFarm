@@ -1,0 +1,29 @@
+# Lint, type-check and test tooling, pinned (CF-92).
+#
+# These run in CI's dependency-light step — before api/requirements-dev.txt is
+# installed — so a new upstream release used to change CI results on a branch
+# nobody had touched. That is not hypothetical: ruff 0.16.0 widened its default
+# rule set and reddened #77 with nine findings in untouched code. `api/ruff.toml`
+# survived because it pins an explicit `select`; `ml/eval` had no config and
+# inherited the new defaults. Both now set `select` (see ml/ruff.toml), so this
+# file is the second line of defence rather than the first — but the first one
+# only covers ruff, and only its rule selection.
+#
+# Bumping a version here is a deliberate, reviewable commit. That is the whole
+# point; nothing bumps it automatically (this repo has no dependabot config).
+#
+# Deliberately NOT api/requirements-dev.txt. CI installs ruff and mypy into an
+# environment with none of the app's own packages, and .github/workflows/ci.yml
+# explains why: with the real packages present, `mypy --ignore-missing-imports`
+# resolves stubs it otherwise skips and reports a different, larger error set.
+# Moving these into requirements-dev would quietly change what mypy checks.
+#
+# `.hooks/pre-commit` invokes all three as `python -m`, so installing this file
+# locally governs the hook too and keeps a developer's results matching CI's.
+ruff==0.16.4
+mypy==2.3.1
+# Must equal the pin in api/requirements-dev.txt. Two files need it because
+# `pytest ml/tests` runs before requirements-dev is installed, and a mismatch
+# means pip downgrades mid-job and the two suites run on different versions —
+# which is what happened before this file existed. A test pins them together.
+pytest==8.3.4

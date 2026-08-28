@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Clapperboard, Upload, LayoutGrid, LogOut, Menu, Sun, Moon, FolderOpen, Home, X } from "lucide-react";
@@ -8,14 +8,10 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { SOCIAL_ENABLED } from "@/lib/features";
 import { useBodyScrollLockBelowLg } from "@/lib/useBodyScrollLock";
+import { useFocusTrap } from "@/lib/useFocusTrap";
 import { useIsDesktopLayout } from "@/lib/useIsDesktopLayout";
 import { clearMe, needsHandle, useMe } from "@/lib/useMe";
 import { cn } from "@/lib/utils";
-
-// Tab order inside the drawer, for the wrap-around below. Deliberately the
-// plain set: everything focusable here is a link or a button.
-const FOCUSABLE =
-  'a[href], button:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 const NAV_ITEMS = [
   // Feed first, and only with social on — it is the post-login landing page
@@ -32,8 +28,8 @@ export function Sidebar() {
   // column and `open` stops mattering — the lg: classes pin it open.
   const [open, setOpen] = useState(false);
   const asideRef = useRef<HTMLElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   // Everything that navigates from inside the drawer closes it on the way
   // out, so it never sits over the page it just opened. Closing on `pathname`
   // instead would be the cascading-render pattern React warns about, and
@@ -66,47 +62,27 @@ export function Sidebar() {
   // itself above `lg`, where the aside is a column and there is no backdrop.
   useBodyScrollLockBelowLg(open);
 
-  // Everything a drawer covering the page owes the keyboard: Escape closes it,
-  // focus moves in on open and back to the trigger on close, and Tab stays
-  // inside rather than walking into the page behind the backdrop. None of it
-  // applies from `lg`, where the aside is an ordinary column in the page.
-  useEffect(() => {
-    if (!open || isDesktop) return;
-    const trigger = triggerRef.current;
-    closeRef.current?.focus();
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { setOpen(false); return; }
-      if (e.key !== "Tab") return;
-      const aside = asideRef.current;
-      if (!aside) return;
-      const items = aside.querySelectorAll<HTMLElement>(FOCUSABLE);
-      if (items.length === 0) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      const active = document.activeElement;
-      // Focus outside the drawer wraps in *either* direction. It lands there
-      // by clicking chrome inside the drawer that cannot hold focus — the
-      // "Workspace" heading, the padding — which leaves it on <body>. Guarding
-      // only the shift branch let a forward Tab from there fall through to the
-      // hamburger behind the backdrop and walk on into <main>.
-      const outside = !aside.contains(active);
-      const leaving = e.shiftKey ? active === first : active === last;
-      if (outside || leaving) {
-        e.preventDefault();
-        (e.shiftKey ? last : first).focus();
-      }
-    };
-
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      // Only when the drawer actually closed. This cleanup also runs when the
-      // viewport crosses into the desktop layout, and the trigger is display:
-      // none there — focusing it would drop focus to the body instead.
-      if (trigger?.isConnected && trigger.offsetParent !== null) trigger.focus();
-    };
-  }, [open, isDesktop]);
+  // Everything a drawer covering the page owes the keyboard, now shared with
+  // the two modal overlays (CF-227): Escape closes it, focus moves in on open
+  // and back to the hamburger on close, and Tab stays inside rather than
+  // walking into the page behind the backdrop. None of it applies from `lg`,
+  // where the aside is an ordinary column in the page.
+  //
+  // The hook restores focus to whatever held it when the trap engaged, which
+  // is unreliable on WebKit, so this drawer passes its trigger explicitly. The
+  // display:none guard it needed when crossing into the desktop layout now
+  // lives in restoreFocusTo.
+  const closeDrawer = useCallback(() => setOpen(false), []);
+  useFocusTrap(asideRef, open && !isDesktop, {
+    initialFocus: () => closeRef.current,
+    // Explicit rather than relying on the captured activeElement: WebKit does
+    // not focus a button on click or tap, and this drawer only exists below
+    // `lg` — iOS Safari is its primary environment. The capture would be
+    // <body> there, so CF-60's restore-to-the-hamburger would quietly stop
+    // working on the one platform it was written for.
+    restoreFocusRef: triggerRef,
+    onEscape: closeDrawer,
+  });
 
   return (
     <>
@@ -114,11 +90,11 @@ export function Sidebar() {
           <main> reserves its 52px with padding, so it never covers content. */}
       <header className="fixed inset-x-0 top-0 z-20 flex h-[52px] items-center gap-1 border-b border-border bg-background px-2 lg:hidden">
         <button
-          ref={triggerRef}
           onClick={() => setOpen(true)}
           aria-label="Open navigation"
           aria-expanded={open}
           aria-controls="app-sidebar"
+          ref={triggerRef}
           className="flex h-11 w-11 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface hover:text-foreground focus-ring"
         >
           <Menu size={18} />
@@ -156,8 +132,18 @@ export function Sidebar() {
           the backdrop. Closed, or as the desktop column, it is ordinary page
           furniture and goes back to being a plain complementary landmark.
           `inert` already hides the closed drawer from the a11y tree, but
-          `aria-modal` on a DOM-present element is handled inconsistently
-          across assistive tech, so it should not be sitting there at all. */}
+          `aria-modal` left on an element that is NOT currently a modal is
+          handled inconsistently across assistive tech, so it should not be
+          sitting there at all.
+
+          That is a narrower claim than it used to make, and the distinction
+          matters because the two modals rely on the opposite half of it. This
+          is about a STALE `aria-modal` on the closed drawer, not about whether
+          the attribute works while the dialog is genuinely open. What is true
+          in both places is that `aria-modal` is honoured by convention and its
+          support is uneven — none of the three overlays marks the page behind
+          them `inert`, which is what CF-227's card actually asked for and what
+          would cover this without relying on convention. CF-285 (#333). */}
       <aside
         ref={asideRef}
         id="app-sidebar"

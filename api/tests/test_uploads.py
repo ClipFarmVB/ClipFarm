@@ -185,6 +185,30 @@ class FakeTask:
         self.calls.append((args, kwargs))
 
 
+# Container headers, hand-built rather than sliced off a fixture video: the
+# check reads only the first few dozen bytes, so a real file would add megabytes
+# to the repo to exercise the same handful.
+ISO_BMFF_HEADER = b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00"   # .mp4
+QUICKTIME_HEADER = b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00"   # .mov
+FRAGMENTED_MP4_HEADER = b"\x00\x00\x00\x18stypmsdh\x00\x00\x00\x00"
+EBML_HEADER = b"\x1a\x45\xdf\xa3\x93\x42\x82\x88matroska"       # .mkv / .webm
+ZIP_HEADER = b"PK\x03\x04\x14\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00"
+
+
+def _qt_header(lead: bytes, *, lead_size: int = 20) -> bytes:
+    """A QuickTime file that opens with `lead` instead of `ftyp`.
+
+    Shaped like the file measured in CF-244's review: a small leading box, then
+    the `wide`/`mdat` pair ffmpeg's mov muxer writes. QTFF does not require
+    `ftyp`, so each of these is a legal .mov rather than a contrived one.
+    """
+    return (
+        lead_size.to_bytes(4, "big") + lead + b"\x00" * (lead_size - 8)
+        + b"\x00\x00\x00\x08wide"
+        + b"\x00\x00\x07\x54mdat"
+    )
+
+
 @pytest.fixture
 def fake_storage(monkeypatch):
     """Stub every R2 call the handlers make, recording what was asked for."""
@@ -193,6 +217,11 @@ def fake_storage(monkeypatch):
         "complete_multipart": [], "abort_multipart": [], "delete_file": [],
     }
     head: dict[str, dict | None] = {"value": {"size": 1024, "content_type": "video/mp4"}}
+    # CF-244: complete_upload now reads the object's first bytes to check the
+    # container. Defaulted to a valid ISO-BMFF header so every test that merely
+    # passes *through* completion keeps testing what it was written to test;
+    # the tests that care set `_header["value"]` themselves.
+    header: dict[str, bytes | None] = {"value": ISO_BMFF_HEADER}
 
     def presign_put(key, content_type, expires_in):
         calls["presign_put"].append((key, content_type, expires_in))
@@ -216,8 +245,10 @@ def fake_storage(monkeypatch):
     monkeypatch.setattr(storage, "delete_file",
                         lambda k: calls["delete_file"].append(k))
     monkeypatch.setattr(storage, "head_object", lambda _k: head["value"])
+    monkeypatch.setattr(storage, "head_bytes", lambda _k, _n: header["value"])
 
     calls["_head"] = head  # type: ignore[assignment]
+    calls["_header"] = header  # type: ignore[assignment]
     return calls
 
 
@@ -380,9 +411,16 @@ def test_large_file_gets_multipart_with_one_url_per_part(fake_storage, monkeypat
     assert db.added[0].upload_id == "upload-id-123"
 
 
-def test_content_type_is_signed_into_the_url(fake_storage, monkeypatch):
-    """R2 enforces the signed Content-Type, which is what makes the file-type
-    check a real control rather than an advisory one."""
+def test_the_declared_content_type_is_signed_into_the_url(fake_storage, monkeypatch):
+    """R2 rejects a PUT whose Content-Type header differs from the signed value.
+
+    Renamed from `test_content_type_is_signed_into_the_url`, whose name read as
+    a claim that the file-type check was a real control over the upload. It
+    binds the header only (CF-244) — a client that sends the header it signed
+    can put anything behind it. What this pins is that the *declared* type
+    reaches the signature, which is still worth pinning; the bytes are checked
+    in test_a_non_video_upload_is_deleted_and_rejected.
+    """
     monkeypatch.setattr(settings, "single_put_max_bytes", 10_000)
     asyncio.run(games_router.create_upload(_create(100, "video/webm"), USER, FakeDB()))
     _key, content_type, _ttl = fake_storage["presign_put"][0]
@@ -518,6 +556,288 @@ def test_multipart_completion_requires_its_parts(fake_storage, fake_task):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
     assert exc.value.status_code == 400
+    assert fake_task.calls == []
+
+
+# ── CF-244: the stored bytes, not the declared type ─────────────────────────
+#
+# The presigned PUT binds the declared Content-Type to the signature as a
+# HEADER. A client that sends the header it signed can put anything behind it,
+# so these cover the only look the api takes at what was actually stored.
+
+
+@pytest.mark.parametrize(
+    "name,header",
+    [
+        ("mp4", ISO_BMFF_HEADER),
+        ("mov (QuickTime brand)", QUICKTIME_HEADER),
+        ("fragmented mp4 (styp)", FRAGMENTED_MP4_HEADER),
+        ("matroska / webm", EBML_HEADER),
+    ],
+)
+def test_every_allowed_container_family_completes(name, header, fake_storage, fake_task):
+    """The guard must not be the thing that breaks a legitimate upload.
+
+    The QuickTime case is the one to watch: browsers fill `File.type` from the
+    file extension, so a .mov declared `video/mp4` is ordinary rather than
+    adversarial, and a strict declared-vs-sniffed check would reject it.
+    """
+    fake_storage["_header"]["value"] = header
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert fake_storage["delete_file"] == []
+    assert len(fake_task.calls) == 1
+
+
+def test_a_non_video_upload_is_deleted_and_rejected(fake_storage, fake_task):
+    """The bug CF-244 is about. The declared type passed the allowlist at
+    presign and the signature verified, so nothing before this point looked at
+    the bytes at all."""
+    fake_storage["_header"]["value"] = ZIP_HEADER
+    game = _uploading_game()
+    db = FakeDB(game)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, db))
+
+    assert exc.value.status_code == 415
+    assert fake_storage["delete_file"] == ["raw/abc.mp4"]
+    assert fake_task.calls == [], "a rejected upload must never reach the worker"
+
+
+def test_a_zero_byte_upload_is_rejected(fake_storage, fake_task):
+    """The case the fail-open path would otherwise hide.
+
+    A ranged read of a zero-length object is unsatisfiable, so R2 answers 416,
+    `head_bytes` returns None, and "unreadable header" waves it through — an
+    empty file all the way to a GPU job. Decided from `head["size"]` instead,
+    which also keeps the verdict independent of exactly how storage answers an
+    unsatisfiable range.
+    """
+    fake_storage["_head"]["value"] = {"size": 0, "content_type": "video/mp4"}
+    fake_storage["_header"]["value"] = None
+    game = _uploading_game()
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert exc.value.status_code == 415
+    assert fake_storage["delete_file"] == ["raw/abc.mp4"]
+    assert fake_task.calls == []
+
+
+def test_an_object_too_short_to_sniff_is_not_read_at_all(fake_storage, fake_task, monkeypatch):
+    """Rejecting on size saves the ranged request rather than making one that
+    cannot succeed."""
+    reads: list = []
+    monkeypatch.setattr(storage, "head_bytes", lambda k, n: reads.append((k, n)))
+    fake_storage["_head"]["value"] = {"size": 4, "content_type": "video/mp4"}
+    game = _uploading_game()
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert exc.value.status_code == 415
+    assert reads == [], "no point asking storage for the header of a 4-byte object"
+
+
+def test_an_unreadable_header_allows_the_upload_through(fake_storage, fake_task):
+    """Fails OPEN, which is the opposite of what a None from head_object does
+    four lines above it — and deliberately.
+
+    No object at all means there is nothing to accept, so 400 is the only
+    answer. A header that cannot be read means R2 would not hand over the head
+    of an object it has already confirmed: the transfer completed, possibly 8 GB
+    of it, and discarding that over a storage hiccup costs the user far more
+    than letting a mislabelled file reach a worker that will fail to decode it.
+    The cheaper wrong answer differs, so the direction does.
+
+    It does mean the check is bypassable by anyone who can make the ranged read
+    fail. That is the accepted cost, recorded here rather than left implicit.
+    """
+    fake_storage["_header"]["value"] = None
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert fake_storage["delete_file"] == []
+    assert len(fake_task.calls) == 1
+
+
+def test_a_truncated_or_misaligned_header_is_not_a_container():
+    """Straight at the sniffer: driving these through the handler would only
+    prove the fake returned what it was told to."""
+    assert games_router._sniff_video_container(b"") is None
+    assert games_router._sniff_video_container(b"\x00\x00\x00\x20fty") is None
+    # `ftyp` present but not at offset 4 — a prefix check without the offset
+    # would accept this.
+    assert games_router._sniff_video_container(b"ftyp\x00\x00\x00\x20isom") is None
+
+
+def test_the_sniff_reads_only_the_signature_window(fake_storage, fake_task, monkeypatch):
+    """A ranged read, not a download. These objects run to 8 GB."""
+    seen: list[tuple] = []
+
+    def recording_head_bytes(key, count):
+        seen.append((key, count))
+        return ISO_BMFF_HEADER
+
+    monkeypatch.setattr(storage, "head_bytes", recording_head_bytes)
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert seen == [("raw/abc.mp4", games_router.VIDEO_SIGNATURE_BYTES)]
+    assert games_router.VIDEO_SIGNATURE_BYTES <= 64, (
+        "the window only has to reach the ISO-BMFF brand at offset 8; a large "
+        "read here is bytes transferred on every completion for nothing"
+    )
+
+
+# ── CF-244 review: QuickTime does not require `ftyp` ────────────────────────
+#
+# The first version of this check accepted ISO-BMFF only on a leading `ftyp` or
+# `styp`. That is right for MP4 — ISO/IEC 14496-12 requires `ftyp` early — but
+# `video/quicktime` is on the allowlist too and QTFF has no such requirement, so
+# these files were being deleted with a 415 and no retry path.
+#
+# Demonstrated on real bytes before these were written: take an ffmpeg-produced
+# .mov and replace its 20-byte `ftyp` with a same-length `free` box, so every
+# chunk offset in the moov stays valid. ffprobe reports
+# `format_name=mov,mp4,m4a,3gp,3g2,mj2`, duration intact, exit 0. The old sniff
+# returned None for the same bytes.
+
+
+@pytest.mark.parametrize("lead", [b"wide", b"moov", b"mdat", b"free", b"skip", b"pnot", b"junk"])
+def test_quicktime_without_ftyp_is_a_video(lead):
+    """Each of these may legally open a .mov. None of them is `ftyp`."""
+    assert games_router._sniff_video_container(_qt_header(lead)) == "iso-bmff"
+
+
+def test_a_quicktime_without_ftyp_completes(fake_storage, fake_task):
+    """Through the handler, not just the sniffer: the cost of the old answer was
+    paid on the reject branch, which deletes the row and the object."""
+    fake_storage["_header"]["value"] = _qt_header(b"wide")
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert fake_storage["delete_file"] == [], "a legal .mov must not be destroyed"
+    assert len(fake_task.calls) == 1
+
+
+def test_an_unrecognised_leading_box_is_stepped_over():
+    """A type list will always be narrower than the decoder's.
+
+    ffmpeg does not match on the leading atom at all — it walks the chain — so
+    the same .mov with its first atom relabelled to a type nothing recognises
+    still probes as `mov,mp4,m4a,3gp,3g2,mj2` (checked with ffprobe). Anything
+    that only widened the list would still delete that file.
+    """
+    assert games_router._sniff_video_container(_qt_header(b"XXXX")) == "iso-bmff"
+
+
+def test_the_walk_needs_the_box_sizes_to_be_plausible():
+    """What keeps the step-over from accepting anything at all.
+
+    A box states its length before its type, so arbitrary bytes have to carry a
+    chain of usable lengths to reach a type this recognises. Each case below is
+    built so that dropping the length guard flips the verdict to "video" —
+    asserting on bytes that reject either way would pin nothing.
+    """
+    # size 4: too small to hold a box header, so the chain stops. Without the
+    # guard the walk lands on `mdat` at offset 4 and calls this a video.
+    assert games_router._sniff_video_container(
+        b"\x00\x00\x00\x04XXXXmdat" + b"\x00" * 8
+    ) is None
+    # size 0 means "runs to the end of the file", so nothing follows it.
+    # Without the guard the walk never advances and re-reads the same bytes.
+    assert games_router._sniff_video_container(
+        b"\x00\x00\x00\x00XXXXmdat" + b"\x00" * 8
+    ) is None
+    # A size that walks past the window rather than onto a known type.
+    assert games_router._sniff_video_container(b"\x7f\xff\xff\xffXXXX" + b"\x00" * 56) is None
+
+
+def test_still_not_a_video(fake_storage):
+    """The widening must not have turned the check off."""
+    assert games_router._sniff_video_container(ZIP_HEADER) is None
+    assert games_router._sniff_video_container(b"not a video, just some prose about one." * 2) is None
+    assert games_router._sniff_video_container(b"\x89PNG\r\n\x1a\n" + b"\x00" * 56) is None
+
+
+def test_a_box_using_the_64_bit_size_form_is_walked():
+    """Size `1` means the real, 64-bit length follows the type.
+
+    Not a curiosity at this repo's limits: a 32-bit box size tops out at 4 GiB
+    and uploads run to 8 GB, so a large `mdat` has to use this form. A walk that
+    read the literal `1` would treat the box as malformed and stop.
+    """
+    header = (
+        b"\x00\x00\x00\x01" + b"XXXX" + (16).to_bytes(8, "big")
+        + b"\x00\x00\x07\x54mdat" + b"\x00" * 8
+    )
+    assert games_router._sniff_video_container(header) == "iso-bmff"
+
+
+def test_an_object_shorter_than_the_read_window_still_completes(fake_storage, fake_task):
+    """The read window and the delete-unread floor are separate numbers.
+
+    `too_short` drives the destructive branch; the window is sized for how far
+    the sniff may have to walk. Tying them together would mean every widening of
+    the read deleted more real files, so this object is deliberately longer than
+    MIN_CONTAINER_BYTES and shorter than VIDEO_SIGNATURE_BYTES.
+    """
+    assert games_router.MIN_CONTAINER_BYTES < 32 < games_router.VIDEO_SIGNATURE_BYTES
+    fake_storage["_head"]["value"] = {"size": 32, "content_type": "video/mp4"}
+    fake_storage["_header"]["value"] = ISO_BMFF_HEADER
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert fake_storage["delete_file"] == [], (
+        "a 32-byte object is not too short to sniff; only the floor decides that"
+    )
+    assert len(fake_task.calls) == 1
+
+
+@pytest.mark.parametrize("returned", [b"", b"\x00\x00\x00\x20", b"\x00\x00\x00\x20fty"])
+def test_a_short_read_is_unreadable_not_a_verdict(returned, fake_storage, fake_task):
+    """`head_bytes` hands back whatever `read()` gave it.
+
+    So a truncated response arrives as a few bytes rather than as None, and
+    sniffing those finds no container — putting a storage hiccup on the branch
+    that deletes the row and the object and answers 415 with no retry. The
+    object is already known to be at least MIN_CONTAINER_BYTES long by the time
+    the read happens, so an answer shorter than one box header cannot be a small
+    file; it is the same class of event as the None this fails open on.
+    """
+    assert len(returned) < games_router.MIN_SNIFFABLE_BYTES
+    fake_storage["_header"]["value"] = returned
+    game = _uploading_game()
+
+    asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert fake_storage["delete_file"] == [], "a short read must not destroy the upload"
+    assert len(fake_task.calls) == 1
+
+
+def test_a_full_read_of_junk_is_still_a_verdict(fake_storage, fake_task):
+    """The counterpart: the short-read escape hatch must not swallow the check.
+
+    Eight bytes is enough to say `PK\x03\x04...` is not a container, so this
+    goes to the reject branch rather than fail-open.
+    """
+    fake_storage["_header"]["value"] = ZIP_HEADER[:games_router.MIN_SNIFFABLE_BYTES]
+    game = _uploading_game()
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.complete_upload(game.id, UploadComplete(), USER, FakeDB(game)))
+
+    assert exc.value.status_code == 415
+    assert fake_storage["delete_file"] == ["raw/abc.mp4"]
     assert fake_task.calls == []
 
 
