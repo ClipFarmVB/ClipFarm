@@ -3,7 +3,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user_id, get_optional_user_id
@@ -13,7 +13,7 @@ from app.models.game import Game
 from app.models.post import Post
 from app.models.user import User
 from app.schemas.post import PostAuthor, PostCreate, PostOut, PostPlayback, PostUpdate
-from app.services import access, handles, storage
+from app.services import access, follow_graph, profiles, storage
 
 logger = logging.getLogger(__name__)
 
@@ -103,39 +103,36 @@ async def _load_for_read(
     if clip is None or game is None or author is None:
         raise HTTPException(status_code=404, detail="Post not found")
 
-    if not access.can_view_post(viewer_id, post, clip, game):
+    # One lookup when the two principals coincide, which is every post today —
+    # create_post refuses to publish footage you don't own. Resolved separately
+    # when they don't, rather than assuming: the author's edge decides the
+    # post's tier and the owner's decides the clip's, and answering the second
+    # question with the first one's result is how a future ownership transfer
+    # would quietly hand someone else's footage to the wrong follower.
+    #
+    # resolve_follow skips the query entirely unless a tier is `followers`, so
+    # the common path still costs nothing.
+    clip_level = access.effective(clip, game)
+    follows_author = await follow_graph.resolve_follow(
+        db, viewer_id, post.author_id, post.visibility, clip_level
+    )
+    follows_owner = (
+        follows_author
+        if post.author_id == game.owner_id
+        else await follow_graph.resolve_follow(db, viewer_id, game.owner_id, clip_level)
+    )
+    if not access.can_view_post(
+        viewer_id,
+        post,
+        clip,
+        game,
+        viewer_follows_author=follows_author,
+        viewer_follows_owner=follows_owner,
+    ):
         # 404 not 403 — consistent with CF-108; a 403 confirms the id is real.
         raise HTTPException(status_code=404, detail="Post not found")
 
     return post, clip, author
-
-
-async def _findable_author(username: str, db: AsyncSession) -> User:
-    """Resolve a **publicly findable** handle, or 404.
-
-    Two rules, both borrowed from CF-107's `get_profile` rather than reinvented:
-
-    * `handles.normalize`, not `.lower()` — it also strips, so `" matt "`
-      resolves here exactly as it does at `/u/{handle}`. Two endpoints
-      disagreeing about whether a handle exists is its own small bug.
-    * a **generated** handle 404s. The CF-107 backfill derives handles from
-      email local parts, so answering for them turns this into an existence
-      oracle keyed to real addresses — `john.smith@…` becomes `johnsmith` —
-      for accounts that never chose to be findable. `get_profile` refuses them
-      for that reason and this route reaches the same rows by another door.
-
-    CF-110 lifts this into `services/profiles.py` once a third caller needs it;
-    until then the rule is duplicated rather than absent, which is the safer of
-    the two failure modes.
-    """
-    author = (
-        await db.execute(
-            select(User).where(func.lower(User.username) == handles.normalize(username))
-        )
-    ).scalar_one_or_none()
-    if author is None or author.username_is_generated:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    return author
 
 
 @router.post("", response_model=PostOut, status_code=status.HTTP_201_CREATED)
@@ -222,7 +219,9 @@ async def list_user_posts(
     re-counts from the top on every page, so a post published mid-scroll
     duplicates one row at the boundary and skips another.
     """
-    author = await _findable_author(username, db)
+    # Shared resolver: normalizes like every other handle route and 404s a
+    # generated handle, so the email-derived backfill can't be probed here.
+    author = await profiles.by_handle(username, db)
 
     # One joined query, not a fetch per post: the clip is needed to resolve
     # playback and the game to resolve inherited visibility, so loading them per
