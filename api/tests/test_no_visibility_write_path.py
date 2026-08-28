@@ -26,23 +26,36 @@ visibility setter is wrong; it is a claim that landing one is a decision about
 CF-186's ordering. Whoever makes that decision deletes this file in the same
 PR, and the diff is where the argument gets recorded.
 
-**What it can and cannot see.** It reads the routers' AST for writes to a Clip
-or Game `visibility` attribute and for Core `update()` statements naming the
-column. It would not catch a write funnelled through a helper in `services/`
-that the routers merely call, nor raw SQL in a string. Both are visible in
-review in a way an ordinary `clip.visibility = ...` is not, and a guard that
-catches the shape people actually write is worth more than none.
+**What it can and cannot see.** It reads the AST of every module under
+`app/` for writes to a Clip or Game `visibility` attribute and for Core
+`update()` statements naming the column. Raw SQL in a string would still get
+past it; that is visible in review in a way an ordinary
+`clip.visibility = ...` is not.
+
+**The whole package, not just `app/routers/`.** The first version of this file
+globbed the routers alone, which was the wrong scope in the one direction that
+mattered: CF-109 moves the visibility ladder into `app/services/access.py`
+— `widest_allowed`, `at_most`, `_effective` all live there — so a setter is
+now *more* likely to be written as a service helper than as router-local code,
+and the router would just call it. The guard would have passed, and it is the
+only thing standing between an ordinary-looking feature PR and an unthrottled
+anonymous read surface serving real footage. A guard that misses the idiomatic
+home of the thing it guards is worse than none, because the green check is
+what stops anyone looking.
 """
 import ast
 import pathlib
 
 import pytest
 
-ROUTERS = pathlib.Path(__file__).resolve().parents[1] / "app" / "routers"
+APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 
-# The response-shaping attribute CF-109 added to ClipOut. It is derived from the
-# clip and the game and sent to clients; assigning it changes no stored row.
-_DERIVED = {"effective_visibility"}
+# Matched exactly, which is what keeps `ClipOut.effective_visibility` out of
+# this without an exemption list: it is a response field derived from the clip
+# and its game, and assigning it stores nothing. An earlier version carried a
+# `_DERIVED = {"effective_visibility"}` set as well — dead code, since a name
+# that is not `visibility` never reaches it. The exact match is the rule.
+_COLUMN = "visibility"
 
 # Objects whose own visibility a router may legitimately set. A post's tier is
 # chosen at publish time and bounded by the clip's — that is the feature.
@@ -70,9 +83,7 @@ def _attribute_writes(tree: ast.AST) -> list[tuple[int, str]]:
             targets.append(node.target)
 
     for t in targets:
-        if not (isinstance(t, ast.Attribute) and t.attr == "visibility"):
-            continue
-        if t.attr in _DERIVED:
+        if not (isinstance(t, ast.Attribute) and t.attr == _COLUMN):
             continue
         owner = _owner_name(t.value)
         if owner in _WRITABLE_OWNERS:
@@ -85,7 +96,7 @@ def _attribute_writes(tree: ast.AST) -> list[tuple[int, str]]:
         if node.func.id != "setattr" or len(node.args) < 2:
             continue
         name = node.args[1]
-        if isinstance(name, ast.Constant) and name.value == "visibility":
+        if isinstance(name, ast.Constant) and name.value == _COLUMN:
             owner = _owner_name(node.args[0])
             if owner not in _WRITABLE_OWNERS:
                 found.append((node.lineno, f'setattr({owner}, "visibility", ...)'))
@@ -101,7 +112,7 @@ def _core_update_writes(tree: ast.AST) -> list[tuple[int, str]]:
             continue
         if node.func.attr != "values":
             continue
-        if not any(kw.arg == "visibility" for kw in node.keywords):
+        if not any(kw.arg == _COLUMN for kw in node.keywords):
             continue
         # Which entity? Walk back down the chain for update(<Entity>).
         entity = ""
@@ -119,19 +130,42 @@ def _core_update_writes(tree: ast.AST) -> list[tuple[int, str]]:
     return found
 
 
-@pytest.mark.parametrize("path", sorted(ROUTERS.glob("*.py")), ids=lambda p: p.name)
-def test_no_router_widens_a_clip_or_a_game(path):
+# Recursive, and ids carry the subpackage: two `__init__.py` under one flat
+# `p.name` would collide into a single ambiguous test id.
+@pytest.mark.parametrize(
+    "path",
+    sorted(APP.rglob("*.py")),
+    ids=lambda p: str(p.relative_to(APP)).replace("\\", "/"),
+)
+def test_nothing_in_the_app_widens_a_clip_or_a_game(path):
     tree = ast.parse(path.read_text(encoding="utf-8"))
     writes = _attribute_writes(tree) + _core_update_writes(tree)
 
+    rel = path.relative_to(APP)
     assert not writes, (
-        f"{path.name} writes a clip's or a game's visibility: {writes}. That is "
+        f"{rel} writes a clip's or a game's visibility: {writes}. That is "
         "the change render.yaml's SOCIAL_ENABLED comment names as the one which "
         "makes 'public' reachable — and with it the unthrottled anonymous read "
         "endpoints, /clips/{id}/download among them. CF-186 (#189, rate "
         "limiting) has to land first. If it has, or the ordering has been "
         "reconsidered, delete this file in the same PR so the decision is in "
         "the diff rather than in a silenced test."
+    )
+
+
+def test_the_guard_actually_reads_the_services_layer():
+    """The scope fix, pinned so it cannot quietly narrow again.
+
+    `app/services/access.py` is where CF-109 put the visibility ladder, so it
+    is where a setter would most naturally go — and it is precisely what the
+    routers-only glob missed. Asserting the file is in the parametrised set is
+    cheap; noticing it had dropped out, six months from now, is not.
+    """
+    scanned = {p.relative_to(APP).as_posix() for p in APP.rglob("*.py")}
+    assert "services/access.py" in scanned
+    assert "routers/posts.py" in scanned
+    assert any(f.startswith("workers/") for f in scanned), (
+        "the worker writes game rows too; it must not fall outside the scan"
     )
 
 

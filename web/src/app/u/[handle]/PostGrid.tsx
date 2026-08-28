@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { Globe, Loader2, Lock, Trash2, Users } from "lucide-react";
 import { deletePost, getUserPosts, type Post, type Visibility } from "@/lib/api";
+import { SOCIAL_ENABLED } from "@/lib/features";
+import { useMe } from "@/lib/useMe";
 
 const TIER_ICON: Record<Visibility, typeof Lock> = {
   private: Lock,
@@ -40,6 +42,11 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
   // this is the only surface that can unpublish them. The count changes; what
   // the server said does not.
   const [wasFullPage, setWasFullPage] = useState(false);
+  // Null when signed out. PostGrid subscribes rather than taking a prop:
+  // `isSelf` above is a different question (is this MY profile) and is false
+  // for a stranger both signed in and signed out, so it cannot stand in for
+  // "who is asking". useMe shares one cached request across subscribers.
+  const viewerId = useMe(SOCIAL_ENABLED)?.id ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -61,7 +68,23 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
     return () => {
       cancelled = true;
     };
-  }, [handle]);
+    // `viewerId`, not just `handle`: the response is scoped to the viewer, and
+    // the viewer can change without the route doing so. Signing out on your own
+    // profile left every private post — tiles, tiers and thumbnails — rendered
+    // to a session that could no longer request them, because the effect had no
+    // reason to re-run. The private half of the grid is exactly what must not
+    // survive a sign-out.
+    //
+    // The id rather than the object: `useMe` republishes a fresh `Me` to every
+    // subscriber on avatar upload and rename, and refetching the grid because
+    // someone changed their display name is a request for nothing.
+    //
+    // Note what this does *not* undo. The thumbnails already on screen are
+    // presigned for an hour, so they stay fetchable by URL until they expire —
+    // the revocation window `_serialize` documents on the api side. Clearing
+    // them from the DOM is the half a client can fix; the other half is
+    // CF-112's stable-URL endpoint.
+  }, [handle, viewerId]);
 
   async function remove(id: string) {
     // No confirm dialog: the post is a pointer, so removing it destroys no
