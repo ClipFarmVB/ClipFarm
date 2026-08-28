@@ -1426,7 +1426,52 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             )
             return
         logger.exception("Processing failed for game %s", game_id)
-        sync_set_game_status(gid, "failed", error_message=str(exc))
+        # Reporting must never break processing. This is the only status write
+        # whose payload is unbounded — `str(exc)` of an arbitrary failure — and
+        # it runs from inside this `except`, so anything it raises costs the
+        # `failed` write AND the retry decision below, leaving the row in
+        # `processing`: CF-184's stranded-game symptom, reached by the code that
+        # exists to explain a failure.
+        #
+        # CF-226 widened the column to Text and removes the cause. This guard is
+        # not that fix repeated — it is here because the model and the database
+        # can disagree. `_ERROR_MESSAGE_MAX` is read off the model at import,
+        # so a worker image carrying `Text` that starts before the api has run
+        # the migration turns the CF-225 clamp off while the column is still
+        # varchar(1024). `clipfarm-worker` is a separate Render service with its
+        # own `autoDeploy: false` and no migration in its start path — only the
+        # api has a `preDeployCommand` — so worker-before-api is a deploy order
+        # someone can pick, not a hypothetical.
+        try:
+            sync_set_game_status(gid, "failed", error_message=str(exc))
+        except Exception:
+            logger.exception(
+                "Could not record the failure message for game %s — retrying the "
+                "status write without it", game_id,
+            )
+            # A fresh Session per call, so the first one's failed transaction
+            # does not poison this. Status without the message still gets the
+            # row out of `processing`; the traceback is in the log above and in
+            # Sentry either way.
+            try:
+                sync_set_game_status(gid, "failed")
+            except Exception:
+                # Say which of the two exits below this run is heading for. A
+                # permanent condition returns without retrying, so "a retry may
+                # settle it" would be false in exactly the case where the row is
+                # already stranded for good — and this line is what an operator
+                # greps to decide whether to wait or intervene.
+                next_step = (
+                    "this failure is permanent, so nothing below will retry it "
+                    "— it needs a human now"
+                    if isinstance(exc, PermanentPipelineError)
+                    else "a retry below may still settle it; if the attempts run "
+                    "out it needs a human"
+                )
+                logger.exception(
+                    "Could not mark game %s failed at all — it is still in "
+                    "`processing`. %s", game_id, next_step,
+                )
         if isinstance(exc, PermanentPipelineError):
             # Identical on every attempt — retrying re-runs the pipeline's most
             # expensive path to reach the same failure. Settle on `failed` now.
