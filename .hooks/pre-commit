@@ -8,7 +8,11 @@
 # Install for your clone:
 #   git config core.hooksPath .hooks
 #
-# Requirements: ruff, mypy, pytest, and npm on PATH.
+# Requirements: a working Python (see "Locate a working Python" below), with
+# ruff, mypy and pytest installed *into it*, plus npm on PATH. The steps invoke
+# the tools as modules (`-m ruff`) rather than as bare `ruff`/`mypy` commands:
+# on Windows the Scripts/ directory holding those shims is routinely absent from
+# PATH even when the interpreter itself is fine.
 #
 #   pip install -r requirements-tooling.txt     # ruff + mypy + pytest, pinned
 #   pip install -r api/requirements-dev.txt     # app deps + the test-only pins
@@ -32,27 +36,53 @@ set -e
 
 echo "pre-commit: running CI checks..."
 
+# ── Locate a working Python ───────────────────────────────────────────────────
+# `python` is not a safe assumption. On a standard Windows setup the Microsoft
+# Store ships `python` and `python3` alias stubs in
+# %LOCALAPPDATA%\Microsoft\WindowsApps, and that directory precedes a real
+# install on PATH — so both names resolve, and both fail with "Python was not
+# found..." and exit 49, killing the hook on its first step.
+#
+# So candidates are probed by *running* one, not by `command -v`: the stub is
+# present and executable, it just refuses to be an interpreter. `py` (the Windows
+# launcher) comes second because it exists nowhere else; `python3` last, for the
+# Linux/macOS installs that ship no bare `python`.
+PY=
+for _candidate in python py python3; do
+  if "$_candidate" -c "" >/dev/null 2>&1; then
+    PY=$_candidate
+    break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "pre-commit: no working Python found — tried python, py, python3." >&2
+  echo "  Each was either missing or refused to run (on Windows, the Microsoft" >&2
+  echo "  Store 'python' stub does the latter). Install Python, or put a real" >&2
+  echo "  interpreter ahead of the stub on PATH, and commit again." >&2
+  exit 1
+fi
+
 # ── API: ruff lint ────────────────────────────────────────────────────────────
 printf "  ruff check api/ ... "
-python -m ruff check api/
+"$PY" -m ruff check api/
 echo "ok"
 
 # ── API: mypy type-check ──────────────────────────────────────────────────────
 printf "  mypy api/app ...     "
-python -m mypy api/app --ignore-missing-imports
+"$PY" -m mypy api/app --ignore-missing-imports
 echo "ok"
 
 # ── ML eval: ruff + mypy ──────────────────────────────────────────────────────
 printf "  ruff check ml/eval . "
-python -m ruff check ml/eval
+"$PY" -m ruff check ml/eval
 echo "ok"
 printf "  mypy ml/eval ...     "
-python -m mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
+"$PY" -m mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
 echo "ok"
 
 # ── ML: unit tests (eval metrics + dead-time) ─────────────────────────────────
 printf "  pytest ml/tests ...  "
-if ! _pytest_out=$(python -m pytest ml/tests/ -q --no-header 2>&1); then
+if ! _pytest_out=$("$PY" -m pytest ml/tests/ -q --no-header 2>&1); then
   echo "FAIL"
   echo "$_pytest_out"
   exit 1
@@ -157,7 +187,7 @@ elif [ ! -f "$_dev_set_probe" ]; then
   # survive being read on its own, without the line above it.
   echo "skipped — $_dev_set_probe is not in this working tree; if other branches have it, this hook is shared across checkouts (an absolute core.hooksPath, or a copy in .git/hooks): git config core.hooksPath .hooks"
   _api_tests_skipped="this tree has no $_dev_set_probe; if other branches do, this hook is shared across checkouts — run: git config core.hooksPath .hooks"
-elif ! _api_dev_reason=$(python "$_dev_set_probe"); then
+elif ! _api_dev_reason=$("$PY" "$_dev_set_probe"); then
   # The probe declines for three different reasons — an incomplete dev set, a
   # requirements file it cannot find, and its own crash — and only the first is
   # fixed by installing anything. `$_api_dev_reason` already distinguishes them
@@ -174,7 +204,7 @@ elif ! _api_dev_reason=$(python "$_dev_set_probe"); then
       echo "skipped — $_api_dev_reason"
       _api_tests_skipped="$_api_dev_reason" ;;
   esac
-elif ! _api_pytest_out=$(cd api && python -m pytest tests/ -q --no-header 2>&1); then
+elif ! _api_pytest_out=$(cd api && "$PY" -m pytest tests/ -q --no-header 2>&1); then
   echo "FAIL"
   echo "$_api_pytest_out"
   exit 1
