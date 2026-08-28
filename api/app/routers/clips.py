@@ -21,6 +21,7 @@ from app.schemas.clip import (
     ClipTrimRequest,
 )
 from app.services import access, follow_graph, storage
+from app.services.filenames import clip_download_filename
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -384,3 +385,79 @@ async def share_clip(
     # short expiry is user-hostile, while a long one is a bearer token nobody
     # can revoke. Left as-is here rather than changed without a decision.
     return {"url": storage.presign_from_stored_url(clip.clip_url, expires_in=3600)}
+
+
+@router.get("/clips/{clip_id}/download")
+async def download_clip(
+    clip_id: uuid.UUID,
+    db: DB,
+    viewer_id: ViewerId = None,
+):
+    """The same object as /share, under a name a human can read (CF-100).
+
+    A sibling endpoint rather than a flag on /share, because the two mint
+    genuinely different URLs: /share's is meant to be passed around and to play
+    inline, and this one carries Content-Disposition: attachment. Folding them
+    together would mean one caller's query parameter deciding whether the other
+    caller's link plays or downloads.
+
+    Authorization is /share's, via the same helper — downloading is a read, and
+    the deliberate asymmetry access.py documents (a public clip inside a private
+    game is reachable by direct link) applies here for the same reason.
+
+    Same 3600s expiry as /share, deliberately: that expiry is an open question
+    flagged there, and answering it differently in two places would settle it by
+    accident.
+    """
+    clip, game = await _get_viewable_clip(clip_id, viewer_id, db)
+
+    # The filename is part of the response, not just decoration: presign_url
+    # puts it in the URL's ResponseContentDisposition, in cleartext. So the
+    # question is not only "may this viewer have the bytes" but "may they have
+    # these strings" — a different question, answered in access.py alongside
+    # the asymmetry that makes the two differ. CF-101's zip needs the same gate.
+    identify = access.can_identify(viewer_id, game)
+
+    # Explicit fetch, not clip.player: the relationship is not eagerly loaded
+    # anywhere, and touching it here would lazy-load inside the event loop and
+    # raise MissingGreenlet. list_clips and tag_clip both fetch the same way.
+    player = (
+        await db.get(Player, clip.player_id)
+        if identify and clip.player_id
+        else None
+    )
+
+    # action_type, not labels[0]. `labels` is written by the detector on every
+    # clip — first-seen action types within the rally (ml/pipeline/detect.py) —
+    # so it is not a human-correction marker, and update_clip_labels stores it
+    # through `list(set(...))`, which makes its order non-deterministic across
+    # restarts. `action_type` is the primary action by construction: the
+    # detector sets it to the dominant action by summed confidence, and
+    # update_clip_labels rewrites it from the corrected labels, so a correction
+    # already reaches it.
+    #
+    # ...with one exception, so the file matches what ClipCard shows.
+    # update_clip_labels writes labels=["not_an_action"] and action_type=unknown
+    # together, and ClipCard badges that pair `removed` — so naming the file
+    # `- unknown -` describes a clip the grid says is removed. The second arm of
+    # the condition is ClipCard's own: a clip the detector could not classify
+    # arrives as unknown at zero confidence and is dimmed the same way.
+    #
+    # ClipCard specifically, not "the UI": ClipModal badges clip.action_type
+    # with no discarded branch, so it shows `unknown` where the card shows
+    # `removed`. That disagreement predates this endpoint and is not resolved
+    # here — the filename follows the grid, which is where a clip is picked.
+    discarded = "not_an_action" in (clip.labels or []) or (
+        clip.action_type is ActionType.unknown and not clip.confidence
+    )
+    filename = clip_download_filename(
+        game_title=game.title if identify else None,
+        action="removed" if discarded else clip.action_type.value,
+        player_name=player.name if player else None,
+        start_seconds=clip.start_time,
+    )
+    return {
+        "url": storage.presign_from_stored_url(
+            clip.clip_url, expires_in=3600, download_filename=filename
+        )
+    }

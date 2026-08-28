@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Play, User, ChevronLeft, ChevronRight, Tag, Check, Bookmark } from "lucide-react";
+import { Play, User, ChevronLeft, ChevronRight, Tag, Check, Bookmark, Download } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
-import { type Clip, type Player, type ActionType, tagClip, updateClipLabels, trimClip } from "@/lib/api";
+import { type Clip, type Player, type ActionType, tagClip, updateClipLabels, trimClip, getClipDownloadUrl } from "@/lib/api";
+import { startCrossOriginDownload } from "@/lib/download";
 import { cn } from "@/lib/utils";
 
 const LABEL_OPTIONS = ["spike", "serve", "dig", "set", "block", "not_an_action"];
@@ -30,11 +31,35 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
   const [localEnd, setLocalEnd] = useState(clip.end_time);
   const [trimLoading, setTrimLoading] = useState(false);
   const [labelLoading, setLabelLoading] = useState(false);
+  const [downloadLoading, setDownloadLoading] = useState(false);
 
   // CF-194: the raw upload is deleted after its retention window, and a re-cut
   // reads from it. Undefined means an older payload without the field — treat
   // that as available so trimming isn't hidden on a stale response.
   const canTrim = clip.source_available !== false;
+
+  async function handleDownload() {
+    // Serialises the presign call, the way labelLoading and trimLoading
+    // serialise theirs — no more than that. It is released as soon as
+    // startCrossOriginDownload appends the frame, so two clicks far enough
+    // apart still start two transfers of the same clip and Chrome still saves
+    // the second as `… (1).mp4`. Holding it for the transfer is not available:
+    // the frame is cross-origin, so there is no event that says the download
+    // finished, and a timer long enough to cover a slow one would leave the
+    // button dead after every fast one.
+    if (downloadLoading) return;
+    setDownloadLoading(true);
+    try {
+      const { url } = await getClipDownloadUrl(clip.id);
+      // Not window.location: see lib/download.ts — a rejected presigned GET
+      // would render R2's XML error in place of the app.
+      startCrossOriginDownload(url);
+    } catch {
+      alert("Could not prepare the download.");
+    } finally {
+      setDownloadLoading(false);
+    }
+  }
 
   async function handleTag(playerId: string) {
     setTagging(false);
@@ -188,6 +213,17 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
 
           {/* Right: action buttons */}
           <div className="flex flex-wrap items-center justify-end gap-0.5 shrink-0">
+            <button
+              onClick={handleDownload}
+              disabled={downloadLoading}
+              aria-busy={downloadLoading}
+              className="flex min-h-8 items-center gap-1 rounded px-2 py-1.5 text-[10px] text-subtle hover:text-muted hover:bg-surface-hover transition-colors disabled:opacity-50"
+              title="Download this clip"
+            >
+              <Download size={9} />
+              Download
+            </button>
+
             <button
               onClick={() => {
                 if (!labeling && localLabels.length === 0 && localAction !== "unknown") {
