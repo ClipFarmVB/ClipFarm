@@ -10,6 +10,7 @@ what is easy to get wrong. It does **not** re-describe the project — for that:
 | Running it locally, env vars | `README.md` — Local Development, Configuration |
 | Evaluating detection / dead-time changes | `ml/eval/README.md` |
 | Deploying | `DEPLOY_RENDER.md` (production, Render), `DEPLOY.md` (backend on a VPS), `DOCKER.md` |
+| Running an unattended `/loop` overnight | `docs/overnight/README.md`, then `docs/overnight/REFERENCE.md` |
 
 Read the relevant section before changing detection or pipeline code. The
 `Key Concepts` section in the README exists specifically to prevent well-meaning

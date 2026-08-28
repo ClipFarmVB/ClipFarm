@@ -6,8 +6,12 @@ any stretch where questions cannot be answered.
 Start one with:
 
 ```
-/loop Read OVERNIGHT_RUN.md and follow it exactly. Re-read .claude/overnight-log.md first each iteration so you do not repeat work.
+/loop Read docs/overnight/README.md and follow docs/overnight/REFERENCE.md exactly, per the reading protocol in the README. Re-read .claude/overnight-log.md first each iteration so you do not repeat work.
 ```
+
+[`README.md`](./README.md) in this folder carries the reading protocol — read
+this file in full on the first iteration, and re-read the sections the work
+touches after that rather than the whole thing every lap.
 
 The log stays gitignored on purpose: it is scratch memory for one run. The report
 that has to survive is posted as an issue — see [Reporting](#reporting).
@@ -360,6 +364,10 @@ one block. The first run discovered three gaps separately, mid-work.
   any work, and it does **not** stop cards reaching the board — see below. It
   only affects *editing* the board: without it you cannot remove the report
   issue or change a field. Note that, and carry on.
+- **`gh` itself** — `gh --version`. Every command here is written in `gh` and
+  some environments have none of it. That is an expected case, not a blocker:
+  see [What a non-`gh` tool must provide](#what-a-non-gh-tool-must-provide),
+  and name the tool you used in the report.
 - **Docker** — `docker info`. If absent, the local stack and the eval harness
   cannot run at all.
 - **`gh` against this repo** — `gh api repos/ClipFarmVB/ClipFarm --jq .full_name`.
@@ -670,6 +678,27 @@ sentence. The failure if any item is missing is silent rather than loud:
 **Confirm your tool paginates before you trust a marker read**, and name the
 tool in the report. A run that cannot establish point 1 should say so and treat
 every marker read as unverified rather than assuming it saw the newest.
+
+**Where the GitHub MCP tools fail these, specifically.** They are the expected
+non-`gh` tool in the web sandbox, and they satisfy the list — but three of the
+failures are silent, and all three were hit in the run of 2026-08-27:
+
+- **Labels cannot be read off a PR the obvious way.** `issue_read` with
+  `get_labels` returns `Could not resolve to an Issue` for a pull request
+  number. Read them from `list_pull_requests` instead. Use that to *verify a
+  label landed*, too: the write returns success whether or not it did, so a
+  settle that never took looks identical to one that did.
+- **Writing labels replaces the whole set.** Read the current labels first or
+  you will silently drop one. On a PR carrying only your own label this is
+  invisible.
+- **The list calls can exceed the context budget outright.** `list_issues` and
+  `list_pull_requests` return full issue and PR bodies even with
+  `minimal_output: true`, and on this repository a default page is refused for
+  size — which costs a call and returns nothing. Pass a small `perPage` (1–5)
+  and page. This is why point 1's pagination requirement is not academic here.
+
+None of these changes a rule. They change what "I checked" is worth, which is
+the same class of problem as everything else in this section.
 
 ##### Markers: what a round writes
 
@@ -1502,6 +1531,36 @@ looks wrong. **Verify claims against the repository** rather than trusting the P
 description — that has caught real errors here more than once. Never mark a
 finding confirmed without checking it.
 
+**Executing a claim is necessary and not sufficient — the inputs have to be able
+to disprove it.** The worst error of the third run was a comment calling a live
+branch unreachable, "verified" by running two values that were *both blank after
+stripping*. Both shared the property under test, so neither could have
+disproved the claim, and the real way in (`CORS_ORIGINS=","`) was already listed
+in that same file and already pinned by a passing test. Before believing a
+check: ask which input would make the claim false, and confirm your set contains
+it. A green suite proves nothing until a control mutation shows the harness can
+go red at all.
+
+**Ask what the repository already asserts before deriving anything.** Six times
+in one run the answer was already written down — in another line of the same
+file, in an existing test, or in the installed package's own source. Reading it
+is cheaper and more reliable than re-deriving it, and a file that contradicts
+itself is itself the finding.
+
+**Check claims about anything outside the diff, and check them again at settle
+time.** The costliest class here is not a claim that was wrong when written — it
+is one that was *right* when written and went false while the PR sat open. One
+PR body carried six: a test count, a file that had since been renamed on another
+branch, a sibling PR described in the present tense that had not landed, and a
+pre-commit behaviour that `main` had since replaced. None was careless; nothing
+re-checked them. So before settling a PR, list every assertion it makes about
+something it does not itself contain — another branch, another PR, `main`, a
+tool's behaviour, a hook — and re-verify each against current state. This is a
+grep and a handful of reads, not a review round, and it is where the most
+valuable finding of the third run came from: a merge note that told the next
+person which checks to keep from a parallel branch stack, and named the wrong
+ones.
+
 **The reviewer runs on the same model as this session.** A spawned agent takes
 its model from its definition's frontmatter when it has one, and only inherits
 the parent's otherwise — so a definition added later can quietly review at a
@@ -1674,13 +1733,44 @@ the label" test never sees it: the label would certify a head no reviewer has
 looked at, and the PR would be skipped forever. This is the same shape as the
 mistake in the second run, described two paragraphs down.
 
-So: **fix nits before the settling round, or leave them.** Those are the
-options. Do not push a nit fix after the label either — it re-opens the PR by
+So: **fix nits before the settling round, or leave them** — and once nothing
+Critical or Medium is open, leaving them is the only option, per the freeze
+below. Do not push a nit fix after the label either — it re-opens the PR by
 design, which buys another cold round, which can surface another nit, which
 presents the same choice again. A PR can cycle indefinitely on nits alone,
 spending budget every lap, and nits are what the settle bar deliberately
 tolerates. Leaving one is the terminating move; file a card if it is worth more
 than that.
+
+**Freeze the head once nothing Critical or Medium is open.** The rule above
+still leaves one loop, and the third run walked straight into it: a semi-cold
+round closed the last Medium and raised a nit, the nit was fixed *before* the
+settling round (which the rule permits), the new SHA needed a fresh cold round,
+and that round found new nits — three times over, until the budget ran out and a
+converged PR was labelled `unsettled: ran out of rounds`. Nothing was wrong with
+any single step. So: **from the moment a round reports no Critical and no Medium
+outstanding, only a Critical or Medium may change that head.** Nits found from
+then on go to a card, however cheap they look. "Cheap" is what makes this loop
+attractive on every lap.
+
+**A finding against the PR body is not a finding against the head.** It still
+has to be fixed — a body is editable and a body edit is not a commit, so it
+changes no SHA and disturbs no marker — but it must not block settling, and it
+must not spend a round. The same run ended with a cleared codebase and an
+`unsettled` label because the only surviving Medium was in the PR description.
+The code at that head had been reviewed and found clean; the label said
+otherwise. Judge the head on the head. Fix the body, say in the settle comment
+that you did, and settle.
+
+Two things that carve-out has to be explicit about. **It overrides the settle
+bar's "closed by a semi-cold check" for this one case**, because that bar is
+about findings against the head and a body carries none — requiring a round to
+check a description would spend the budget the carve-out exists to save.
+And **confirm the body fix actually landed by reading the body back**, the same
+way a label is verified: an update call reports success whether or not the new
+text took, so an unverified body edit and a lost one are indistinguishable.
+Quote the corrected line in the settle comment so the record shows what was
+checked.
 
 ##### When you cannot fix it: choosing a reason
 
@@ -2169,6 +2259,26 @@ opening a PR.
   number; do not infer it from the issue count.
 - A closed issue may be `COMPLETED` or `NOT_PLANNED` — opposite facts behind the
   same `state`. Always read `stateReason`.
+- **The clone may be shallow, and a shallow clone fakes a clean merge check.**
+  `git merge-tree <base> <head> | grep -c '^<<<<'` returns `0` when the command
+  produced *no output at all*, which is what a missing history looks like — and
+  `0` reads as "no conflicts". Run `git fetch --unshallow origin` before
+  believing any merge or `origin/main..` comparison. A real conflict was hidden
+  this way.
+- **Stale `__pycache__` makes a mutation look like it survived.** Before every
+  mutation run: delete `__pycache__` and export `PYTHONDONTWRITEBYTECODE=1`.
+  The direction matters — stale bytecode can only produce false *survivals*,
+  never false kills, so an unexpected "the test still passed" is the case to
+  distrust.
+- **A mis-anchored substitution prints a clean pass indistinguishable from a
+  survival.** Every mutation must assert three things: the anchor appears
+  exactly once, it was actually applied, and it is gone after restoring. Two
+  mutations "passed" this way before that check existed — an em dash silently
+  became a double hyphen, and a 12-space anchor matched the tail of a 16-space
+  line.
+- **Apply edits one at a time, never as a batch script.** A five-edit script
+  that asserts partway through writes nothing, while the verification run after
+  it looks entirely normal.
 
 ### Reporting
 
