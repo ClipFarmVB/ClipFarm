@@ -1184,10 +1184,21 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             try:
                 sync_set_game_status(gid, "failed")
             except Exception:
+                # Say which of the two exits below this run is heading for. A
+                # permanent condition returns without retrying, so "a retry may
+                # settle it" would be false in exactly the case where the row is
+                # already stranded for good — and this line is what an operator
+                # greps to decide whether to wait or intervene.
+                next_step = (
+                    "this failure is permanent, so nothing below will retry it "
+                    "— it needs a human now"
+                    if isinstance(exc, PermanentPipelineError)
+                    else "a retry below may still settle it; if the attempts run "
+                    "out it needs a human"
+                )
                 logger.exception(
                     "Could not mark game %s failed at all — it is still in "
-                    "`processing`. A retry below may still settle it; if the "
-                    "attempts run out it needs a human", game_id,
+                    "`processing`. %s", game_id, next_step,
                 )
         if isinstance(exc, PermanentPipelineError):
             # Identical on every attempt — retrying re-runs the pipeline's most

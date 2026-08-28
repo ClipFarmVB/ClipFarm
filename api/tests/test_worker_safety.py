@@ -920,6 +920,42 @@ def test_the_clamp_reads_the_width_off_the_column():
     )
 
 
+def test_the_width_still_tracks_a_bounded_column():
+    """The assertion above went vacuous the moment CF-226 landed.
+
+    `Text` carries no width, so `_ERROR_MESSAGE_MAX` is `None` and comparing it
+    to the column's `length` reads `None is None` — which a hardcoded
+    `_ERROR_MESSAGE_MAX = None` satisfies just as well. That mutation passes the
+    whole suite, and it is not an idle one: `None` is precisely what switches
+    the clamp off, and the skew window `process_game_task`'s guard exists for is
+    where the clamp is load-bearing again against a still-bounded column.
+
+    So re-derive the constant against a bounded column — the way a worker image
+    that starts before the api has run the migration sees it — and require it to
+    follow. Reload rather than reassign: the width is read once at import, which
+    is the property under test.
+    """
+    import importlib
+
+    import sqlalchemy as sa
+
+    from app.models.game import Game
+    from app.workers import _sync_db
+
+    column = Game.__table__.c.error_message
+    original = column.type
+    column.type = sa.String(1024)
+    try:
+        assert importlib.reload(_sync_db)._ERROR_MESSAGE_MAX == 1024
+    finally:
+        # Restore before the second reload, so the module the rest of the
+        # session imports is the one built from the real column.
+        column.type = original
+        importlib.reload(_sync_db)
+
+    assert _sync_db._ERROR_MESSAGE_MAX is getattr(original, "length", None)
+
+
 def test_every_error_message_writer_goes_through_the_clamp():
     """Pinned as an invariant over the module, not over today's two call sites.
 
