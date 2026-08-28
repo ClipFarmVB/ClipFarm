@@ -1,0 +1,90 @@
+"""Add posts (CF-109)
+
+A post is a caption plus a reference to an existing clip — no video is copied,
+so there is nothing to backfill and nothing in R2 to migrate.
+
+Numbered 016, revising 015. It has moved twice: 012 -> 013 when #185 took
+(CF-163 presigned uploads), which opened first and has already renumbered
+once. This PR is third in a stack behind CF-107 and CF-108, so it merges
+last by construction — which means it also needs #229 (CF-226) merged first, which holds 015.
+
+Revision ID: 016
+Revises: 015
+Create Date: 2026-08-07
+"""
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+from sqlalchemy.dialects import postgresql
+
+revision: str = "016"
+down_revision: Union[str, None] = "015"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        "posts",
+        sa.Column("id", sa.UUID(), primary_key=True),
+        sa.Column(
+            "author_id",
+            sa.UUID(),
+            sa.ForeignKey("users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        # CASCADE: a post whose clip is gone has nothing to play.
+        sa.Column(
+            "clip_id",
+            sa.UUID(),
+            sa.ForeignKey("clips.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("caption", sa.String(length=500), nullable=True),
+        # Reuses the enum type created by 011. Must be postgresql.ENUM, not
+        # sa.Enum: `create_type` is a postgresql-dialect option, and the generic
+        # type silently ignores it and re-emits CREATE TYPE inside create_table,
+        # which fails because 011 already made it.
+        sa.Column(
+            "visibility",
+            postgresql.ENUM(
+                "private", "followers", "public", name="visibility", create_type=False
+            ),
+            nullable=False,
+            server_default="private",
+        ),
+        sa.Column("like_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("comment_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+    )
+    # clip_id earns its own: the ON DELETE CASCADE from `clips` has to find
+    # posts by it, and Postgres does not index a foreign key for you.
+    op.create_index("ix_posts_clip_id", "posts", ["clip_id"])
+    # The feed's ordering (CF-111) is (created_at DESC, id DESC) scoped by
+    # author. Added here so the feed query has its index the day it lands.
+    #
+    # No separate ix_posts_author_id: a btree on (author_id, created_at) already
+    # serves a lookup on author_id alone, and the planner picks it — checked
+    # over 20k rows, where a bare `WHERE author_id = $1` chose this index and
+    # never touched the single-column one. That index would have been pure
+    # write cost on a table the pipeline appends to per post.
+    op.create_index("ix_posts_author_created", "posts", ["author_id", "created_at"])
+    # No bare ix_posts_created_at. It was here without an argument, and held to
+    # the same standard as the paragraph above it there is no reader for one:
+    # the profile query is author-scoped and CF-111's feed is scoped to a follow
+    # set, so both enter through author_id and take the composite. A global
+    # created_at btree would be write cost on an append-heavy table for a
+    # "newest posts anywhere" query that does not exist. If discovery (CF-115)
+    # wants one, it wants it with that query's actual shape.
+
+
+def downgrade() -> None:
+    # IF EXISTS: dev databases drift and a partial upgrade must stay reversible
+    # (the 008 lesson). The visibility type belongs to 011 — leave it alone.
+    op.execute("DROP TABLE IF EXISTS posts")

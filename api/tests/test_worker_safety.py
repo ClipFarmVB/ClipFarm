@@ -13,15 +13,22 @@ compose `db` service is enough) or take LOCK_TEST_DATABASE_URL, which is what CI
 sets for its throwaway server; they skip only when there is no database at all.
 """
 import ast
-import os
 import pathlib
 import socket
 import struct
 import time
 import uuid
-from urllib.parse import urlsplit
 
 import pytest
+
+# Postgres discovery for the real-server tests below. Shared with the CF-109
+# post-visibility suite: two copies of "which database do the integration tests
+# use" is how one of them ends up pointed at a shared server, and the rule it
+# carries — localhost only, never `settings.database_url` — is a safety rule
+# rather than a convenience. At the top rather than beside its use: a mid-file
+# import is an E402, and the section marker below is where the *tests* start,
+# not where their imports have to.
+from tests._pg import pg_url
 
 pytest.importorskip("celery")
 
@@ -515,58 +522,8 @@ def test_release_warns_when_the_lock_was_already_gone(monkeypatch, caplog):
 
 # ── Against a real Postgres ──────────────────────────────────────────────────
 
-# Tried in order when LOCK_TEST_DATABASE_URL is unset. Localhost only, and
-# never `settings.database_url`: auto-detection must not be able to take locks
-# on a shared database because someone ran the suite. The compose `db` service
-# publishes 5432, so a running dev stack is enough for these to execute — in the
-# pre-commit hook as well as CI, which is the point (they are the tests that
-# actually demonstrate CF-184).
-_LOCAL_CANDIDATES = (
-    "postgresql://postgres:postgres@localhost:5432/clipfarm",
-    "postgresql://postgres:postgres@localhost:5432/postgres",
-)
-
-
-def _reachable(url: str) -> bool:
-    """Can we open a session on `url`? Cheap probe first, so a machine with no
-    Postgres at all costs a refused TCP connect rather than a connect timeout."""
-    import psycopg2
-
-    parts = urlsplit(url)
-    with socket.socket() as probe:
-        probe.settimeout(0.5)
-        if probe.connect_ex((parts.hostname or "localhost", parts.port or 5432)) != 0:
-            return False
-    try:
-        psycopg2.connect(url, connect_timeout=2).close()
-        return True
-    except Exception:
-        return False
-
-
-# Detection runs once per session: it is the same answer every time, and paying
-# it per test is what makes an unrunnable suite feel slow.
-_RESOLVED_URL: str | None = None
-
-
 def _lock_db_url() -> str:
-    """A Postgres URL for the lock tests, or skip.
-
-    An explicit LOCK_TEST_DATABASE_URL wins (CI sets it). Otherwise a local
-    Postgres is auto-detected, so a developer with the compose stack up runs
-    these without opting in.
-    """
-    global _RESOLVED_URL
-    if _RESOLVED_URL is None:
-        _RESOLVED_URL = os.environ.get("LOCK_TEST_DATABASE_URL", "") or next(
-            (c for c in _LOCAL_CANDIDATES if _reachable(c)), ""
-        )
-    if not _RESOLVED_URL:
-        pytest.skip(
-            "no local Postgres (start the compose stack, or set "
-            "LOCK_TEST_DATABASE_URL) — the advisory-lock tests need a real server"
-        )
-    return _RESOLVED_URL
+    return pg_url("the advisory-lock tests need a real server")
 
 
 @pytest.fixture

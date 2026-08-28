@@ -44,6 +44,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // real, actionable sentences into `detail` — "you have 60 min of your
   // 360 min per 24 hours left" — which the raw form buried inside JSON.
   if (!res.ok) await throwApiError(res);
+  // A 204 has no body, so res.json() rejects with "Unexpected end of JSON
+  // input" — on *success*. Every DELETE here returns 204, and handling it here
+  // is what lets them all share this helper: deleteGame used to hand-roll its
+  // own fetch purely to sidestep the JSON parse.
+  //
+  // The content-length arm is deliberately wider than that: it catches *any*
+  // empty body, including a 200 with none. Both are the same bug from the
+  // caller's side — a `T` that was never sent — and returning undefined is
+  // honest about it, where res.json() would throw a parse error that reads
+  // like the response was malformed rather than absent.
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
   return res.json() as Promise<T>;
 }
 
@@ -81,13 +94,8 @@ export function renameGame(id: string, title: string): Promise<Game> {
   });
 }
 
-export async function deleteGame(id: string): Promise<void> {
-  const authHeaders = await getAuthHeaders();
-  const res = await fetch(`${API_URL}/games/${id}`, {
-    method: "DELETE",
-    headers: authHeaders,
-  });
-  if (!res.ok) await throwApiError(res);
+export function deleteGame(id: string): Promise<void> {
+  return request<void>(`/games/${id}`, { method: "DELETE" });
 }
 
 // ─── Uploads ─────────────────────────────────────────────────────────────────
@@ -190,6 +198,15 @@ export interface Clip {
   // False once the game's raw upload has passed its retention window (CF-194):
   // the clip still plays, but it can no longer be re-cut, so trimming is off.
   source_available?: boolean;
+  // The widest tier a post over this clip may take — the clip's own visibility
+  // or its game's, resolved server-side (CF-109). The composer greys out
+  // anything above it; without this the only way to learn the ceiling was to
+  // submit and read the 409, and since nothing can raise a clip's visibility
+  // yet that was a dead end rather than a step.
+  //
+  // Optional, and absent means `private`: a response from a path that hasn't
+  // been taught to resolve it offers less, never more.
+  effective_visibility?: Visibility;
 }
 
 export interface ClipFilters {
@@ -387,4 +404,69 @@ export async function uploadAvatar(file: File): Promise<Me> {
   });
   if (!res.ok) await throwApiError(res);
   return res.json() as Promise<Me>;
+}
+
+// ─── Posts (CF-109) ───────────────────────────────────────────────────────────
+
+export type Visibility = "private" | "followers" | "public";
+
+export interface PostPlayback {
+  clip_url: string | null;
+  thumbnail_url: string | null;
+  proxy_url: string | null;
+  start_time: number;
+  end_time: number;
+}
+
+export interface Post {
+  id: string;
+  clip_id: string;
+  caption: string | null;
+  visibility: Visibility;
+  like_count: number;
+  comment_count: number;
+  created_at: string;
+  author: {
+    id: string;
+    username: string | null;
+    display_name: string | null;
+    avatar_url: string | null;
+  };
+  playback: PostPlayback;
+}
+
+export function createPost(
+  clipId: string,
+  caption: string,
+  visibility: Visibility,
+): Promise<Post> {
+  return request<Post>("/posts", {
+    method: "POST",
+    body: JSON.stringify({ clip_id: clipId, caption, visibility }),
+  });
+}
+
+/**
+ * Posts by one author — what a profile grid renders.
+ *
+ * Capped, not paged (CF-109). The caller passes the limit it intends to render
+ * so it can tell a full page from a truncated one: getting exactly `limit` back
+ * means there may be older posts it is not showing. That matters because the
+ * profile is currently the only surface for *unpublishing*, so a silently
+ * truncated list is a post the author cannot reach.
+ */
+export async function getUserPosts(username: string, limit = 50): Promise<Post[]> {
+  const params = new URLSearchParams({ username, limit: String(limit) });
+  // `?? []` because `request` returns `undefined as T` for an empty body — a
+  // 204, or a 200 with none. That is right for the DELETEs it was added for and
+  // a lie for a list: the caller is handed `undefined` typed as `Post[]`, and
+  // the first `.length` throws a TypeError somewhere far from here. PostGrid's
+  // `posts === null` loading guard does not catch it either, since undefined is
+  // not null, so the failure renders as a blank page rather than as its error
+  // card. An absent body means no posts; say so here, where the shape is known.
+  return (await request<Post[]>(`/posts?${params}`)) ?? [];
+}
+
+export function deletePost(postId: string): Promise<void> {
+  return request<void>(`/posts/${postId}`, { method: "DELETE" });
 }

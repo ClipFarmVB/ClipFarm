@@ -113,20 +113,33 @@ async def list_collection_clips(collection_id: uuid.UUID, user_id: UserId, db: D
             player_map[p.id] = p.name
 
     # A collection spans games, so source_available (CF-194) needs one lookup
-    # per distinct game rather than the single game a clip listing has.
+    # per distinct game rather than the single game a clip listing has. The same
+    # rows carry the game's visibility, which a clip that inherits (NULL) needs
+    # to resolve the ceiling for a post over it (CF-109).
+    #
+    # Whole Game rows rather than the three columns actually read, so the
+    # inherit rule can go through `access.widest_allowed` instead of being
+    # spelled out a third time here. That rule already lives in two places for
+    # good reasons — `access._effective` and the `widest_allowed` the clips
+    # router calls — and a private copy in this loop is the drift services/access
+    # exists to prevent: it would keep answering `clip.visibility or game's`
+    # after the shared one has learned about, say, an account-level clamp, and
+    # drifting *wide* here means offering the composer a tier create_post then
+    # refuses. A collection spans a handful of games, so the extra columns cost
+    # nothing measurable.
     game_ids = {c.game_id for c in clips}
-    raw_available: dict[uuid.UUID, bool] = {}
+    games: dict[uuid.UUID, Game] = {}
     if game_ids:
-        gr = await db.execute(
-            select(Game.id, Game.raw_video_url).where(Game.id.in_(game_ids))
-        )
-        raw_available = {gid: url is not None for gid, url in gr}
+        gr = await db.execute(select(Game).where(Game.id.in_(game_ids)))
+        games = {g.id: g for g in gr.scalars()}
 
     out = []
     for c in clips:
+        game = games.get(c.game_id)
         d = ClipOut.model_validate(c)
         d.player_name = player_map.get(c.player_id) if c.player_id else None  # type: ignore[arg-type]
-        d.source_available = raw_available.get(c.game_id, False)
+        d.source_available = game is not None and game.raw_video_url is not None
+        d.effective_visibility = access.widest_allowed(c, game)
         if storage.r2_configured():
             d.clip_url = storage.presign_from_stored_url(c.clip_url, expires_in=3600)  # type: ignore[assignment]
             d.thumbnail_url = (

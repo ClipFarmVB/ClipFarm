@@ -197,6 +197,32 @@ def _parsed() -> list[tuple[str, str, str | None, str | None]]:
     return out
 
 
+# Revisions this branch's chain depends on that live on another branch, with the
+# PR that brings them. An entry here is a **merge-order dependency**: merging
+# this branch first boots the api into a broken chain.
+#
+# Carried over from the CF-109 stack in the add/add resolution on this path, per
+# the merge note above — this file had no equivalent, and without it a parent
+# that is merely *not merged yet* is indistinguishable from one that is gone.
+#
+# Delete the entry once that PR has merged and the file is present;
+# `test_pending_upstream_entries_are_still_pending` fails if you don't, so the
+# list cannot rot into a permanent exemption.
+PENDING_UPSTREAM: dict[str, tuple[str, str]] = {
+    # revision: (its down_revision, the PR that brings it)
+    #
+    # Empty, which is the state to keep it in — an entry is a merge blocker,
+    # not a configuration. It held "015" (CF-226) while that P1 sat unmerged
+    # ahead of this stack: 015 was going to take the next number after CF-109,
+    # which gated a P1 behind two feature PRs, so the dependency was inverted
+    # and posts moved to 016. #320 merged as 42f0d8d and the entry came out in
+    # the same commit that merged main back into this branch, which is the only
+    # order that keeps the three guards below honest — dropping it earlier
+    # un-gates a chain that still cannot resolve, and later leaves 014 looking
+    # like the parent of both the real 015 and this dict's synthetic one.
+}
+
+
 def test_every_migration_file_declares_a_revision():
     """Pins the parser against the files rather than against a magic number.
 
@@ -361,8 +387,13 @@ def test_there_is_exactly_one_head():
     but the first.
     """
     parsed = _parsed()
-    revisions = {rev for _, rev, _, _ in parsed}
+    # A revision waiting upstream counts as present: that is the state the chain
+    # will be in once its PR merges, and that is the state which has to be
+    # single-headed. Without it, this branch's own root looks like a second head
+    # simply because the file that claims it is not here yet.
+    revisions = {rev for _, rev, _, _ in parsed} | set(PENDING_UPSTREAM)
     parents = {down for _, _, down, _ in parsed if down is not None}
+    parents |= {down for down, _ in PENDING_UPSTREAM.values()}
     heads = sorted(revisions - parents)
 
     def describe(head: str) -> str:
@@ -415,10 +446,67 @@ def test_every_down_revision_resolves():
     dangling = {
         name: down
         for name, _, down, _ in parsed
-        if down is not None and down not in revisions
+        if down is not None and down not in revisions and down not in PENDING_UPSTREAM
     }
     assert not dangling, (
         f"down_revision points at a revision that is not here: {dangling}. "
         "Either the file is missing, or it is still on another branch — in "
-        "which case this branch cannot boot until that one merges."
+        "which case add it to PENDING_UPSTREAM with the PR that brings it, so "
+        "the dependency is declared rather than merely broken."
+    )
+
+
+def test_the_chain_is_a_single_line():
+    """No revision may be the parent of two others.
+
+    Not redundant with the head count, per the merge note at the top: that
+    check rejects most forks only as a side effect, and misses the one that
+    orphans exactly one revision into being the sole head. The same edit always
+    leaves some revision the parent of two, which is what this sees.
+    """
+    seen: dict[str, str] = {}
+    rows = [(name, down) for name, _, down, _ in _parsed() if down is not None]
+    rows += [(f"{rev} (pending)", down) for rev, (down, _) in PENDING_UPSTREAM.items()]
+    for name, down in rows:
+        assert down not in seen, (
+            f"{down} is the parent of both {seen[down]} and {name} — a fork. "
+            "Renumber one onto the other and coordinate the merge order."
+        )
+        seen[down] = name
+
+
+def test_pending_upstream_entries_are_still_pending():
+    """Forces the list to be cleaned up.
+
+    Once the upstream PR merges and its file lands here, the exemption stops
+    describing reality — and a stale exemption is how a genuinely dangling
+    parent slips through later.
+    """
+    present = {rev for _, rev, _, _ in _parsed()}
+    landed = {rev: why for rev, (_, why) in PENDING_UPSTREAM.items() if rev in present}
+    assert not landed, (
+        f"these have landed and no longer need an exemption: {landed}. "
+        "Remove them from PENDING_UPSTREAM."
+    )
+
+
+def test_the_chain_is_not_currently_bootable_if_anything_is_pending():
+    """The exemption must not read as "fine" — it is a merge blocker.
+
+    PENDING_UPSTREAM keeps the checks above from reporting a *dangling parent*,
+    which is the right call: the parent is not missing, it is unmerged, and
+    those tests would otherwise name the wrong fault. But it must not also make
+    the suite green in the state where `alembic upgrade head` cannot resolve the
+    chain at all. A red check is a merge gate; a dict literal in a test file is
+    something a reviewer has to notice.
+
+    `docker-compose.yml` runs `auto_migrate.py && uvicorn`, so while an entry
+    stands the api container does not start — locally, for everyone on the
+    branch. That is worth failing over rather than commenting about.
+    """
+    assert not PENDING_UPSTREAM, (
+        "this branch's migration chain depends on revisions that have not "
+        f"merged yet: {PENDING_UPSTREAM}. `alembic upgrade head` cannot resolve "
+        "the chain until they land, so the api will not boot and this branch "
+        "must not merge first. Merge those PRs, then delete the entries."
     )

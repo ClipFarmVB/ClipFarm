@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.models.clip import ActionType
+from app.models.visibility import Visibility
 
 
 class ClipOut(BaseModel):
@@ -26,6 +27,18 @@ class ClipOut(BaseModel):
     # (CF-194) — the clip still plays, but it can no longer be re-cut, so the
     # UI disables trimming instead of firing a request that 400s.
     source_available: bool = True
+    # The widest tier a *post* over this clip may take — the clip's own
+    # visibility, or its game's where the clip inherits (NULL).
+    #
+    # Sent so the composer can grey out the tiers this clip cannot support with
+    # the reason inline. Without it the only way to discover the ceiling was to
+    # pick a tier and read the 409, and since nothing in the product can raise a
+    # clip's visibility yet, that was a dead end rather than a step.
+    #
+    # Defaults to `private`, which is the fail-closed direction: a path that
+    # forgets to resolve it offers less than it could, never more. It is a hint
+    # for the UI either way — `create_post` re-derives it server-side.
+    effective_visibility: Visibility = Visibility.private
 
 
 class ClipTagRequest(BaseModel):

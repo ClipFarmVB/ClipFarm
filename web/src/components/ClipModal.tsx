@@ -2,8 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, ChevronLeft, ChevronRight, Link2, Download } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Link2, Download, Send } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
+import { PostComposerModal } from "@/components/PostComposerModal";
+import { SOCIAL_ENABLED } from "@/lib/features";
+import { needsHandle, useMe } from "@/lib/useMe";
 import { type Clip, getClipDownloadUrl, getClipShareUrl } from "@/lib/api";
 import { startCrossOriginDownload } from "@/lib/download";
 import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
@@ -69,9 +72,40 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
     initialFocus: () => cardRef.current,
   });
 
+  // Which clip the composer was opened for, rather than a bare boolean.
+  // Derived, so the composer closes itself when the clip changes underneath it
+  // — otherwise a draft written for one clip stays mounted over the next and
+  // Post publishes it against footage the user never chose, possibly at a
+  // different visibility. Syncing that with an effect would be a cascading
+  // render; this needs no effect at all.
+  const [composingFor, setComposingFor] = useState<string | null>(null);
+  const composing = composingFor === clip.id;
+
+  // Posting needs a claimed handle. `PostAuthor` withholds a *generated* one —
+  // the CF-107 backfill derives handles from email local parts, so publishing
+  // one is an existence oracle — which means a handle-less author posts a card
+  // that names nobody and links nowhere.
+  //
+  // The model comment on `User.username` has always said "the frontend blocks
+  // posting until one is claimed"; until now nothing did. The claim banner in
+  // layout.tsx is already the route out, so this hides the entry point rather
+  // than inventing a second prompt.
+  const me = useMe(SOCIAL_ENABLED);
+  const canPost = SOCIAL_ENABLED && me !== null && !needsHandle(me);
+
   // Keyboard navigation
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // The composer owns the keyboard while it's open. Otherwise ← to fix a
+      // typo in the caption navigates to the previous clip.
+      //
+      // Escape is NOT handled here — the composer registers a focus trap and
+      // is therefore innermost (CF-282), so its `onEscape` closes it and this
+      // listener must not also fire. Closing the composer from both places
+      // happened to agree, which is the problem with leaving it: it reads as
+      // load-bearing, and the day the two handlers do different things the
+      // duplicate is invisible. Bailing on every key is the whole rule.
+      if (composing) return;
       if (e.key === "Escape") {
         // Leaving the player's fullscreen fires Escape at the page as well as
         // at the UA, so without this one press exits fullscreen AND closes the
@@ -93,7 +127,7 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, onPrev, onNext]);
+  }, [onClose, onPrev, onNext, composing]);
 
   // Click-outside: close only when clicking the overlay itself, not the modal card
   function handleOverlayClick(e: React.MouseEvent<HTMLDivElement>) {
@@ -239,6 +273,18 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           <span className="text-[11px] text-subtle">
             {formatDuration(clip.end_time - clip.start_time)}
           </span>
+          {canPost && (
+          <button
+            onClick={() => setComposingFor(clip.id)}
+            className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-muted hover:bg-surface-high hover:text-foreground transition-colors focus-ring"
+            title="Post this clip"
+          >
+            <Send size={12} />
+            Post
+          </button>
+          )}
+          {/* Keyboard hints are desktop-only (CF-60) — there is no Esc or arrow
+              key on a phone, and the row was pushing the Post button off-screen. */}
           <div className="ml-auto hidden items-center gap-2 text-[10px] text-subtle sm:flex">
             {/* Gated on the same props as the chevrons above: with no sibling
                 clip there is nothing for ← → to navigate to, and the hint was
@@ -270,6 +316,9 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
           </div>
         </div>
       </div>
+      {composing && (
+        <PostComposerModal clip={clip} onClose={() => setComposingFor(null)} />
+      )}
     </div>,
     document.body
   );

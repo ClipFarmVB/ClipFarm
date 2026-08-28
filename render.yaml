@@ -129,6 +129,53 @@ services:
       - fromGroup: clipfarm-shared
       - key: DEBUG
         value: "false"
+      # The social layer (CF-106 epic: profiles, posts, follows, feed). Off by
+      # default in app/config.py so the stack could merge to main incrementally
+      # without exposing a half-built surface; turning it on here is the
+      # deliberate act that makes it live. The web half has its own flag and
+      # BOTH must be on — with the api's off the routes 404, and a web app with
+      # only its own flag set renders a surface that cannot load anything.
+      #
+      # **Turned on with the epic's preconditions knowingly unmet**, which is a
+      # decision rather than an oversight and is recorded here so it is not
+      # rediscovered as a surprise. CF-186 (#189, rate limiting) and CF-116
+      # (abuse, moderation, counters) are both open, and this is what makes the
+      # anonymous read surface reachable.
+      #
+      # What bounds the exposure meanwhile: **nothing user-generated can be
+      # public.** Games and clips both default to private and no write path
+      # exists for either one's visibility, so a post can only ever be private
+      # — the composer now greys out the wider tiers for exactly that reason
+      # (CF-109), and create_post refuses them server-side regardless. The
+      # anonymous endpoints therefore reach the database and 404, which is a
+      # load question and not a disclosure one.
+      #
+      # Naming the endpoint that is actually anonymous, since "no footage can be
+      # public" does not by itself cover it: **GET /posts?username=** takes no
+      # credential and reaches the database on every call. Two things bound it.
+      # It resolves the handle through the shared finder, which 404s a
+      # *generated* handle, so it cannot be used to test whether an email-derived
+      # account exists; and it filters through apply_post_visibility with
+      # viewer_id=None, which for an anonymous caller admits only public posts
+      # over public clips — the set that cannot be non-empty today.
+      #
+      # What is left is genuinely a load and enumeration-rate concern on an
+      # unthrottled route, and that is CF-186 (#189). It is the reason the
+      # ordering below is not optional.
+      #
+      # The order that must hold: whoever ships the clip-visibility write path
+      # is the person who makes "public" real, and rate limiting has to land
+      # before they do. Reassess this flag then, not after.
+      #
+      # That ordering is a test, not a hope: api/tests/
+      # test_no_visibility_write_path.py fails the day a router can widen a
+      # clip or a game. The bound above is a property of the current schema,
+      # and a comment in a deploy file is not something the PR adding a
+      # visibility setter would ever be pointed at — so the constraint lives
+      # where that PR will run into it. Deleting that test is a legitimate
+      # move; doing it in the same PR is what puts the decision in a diff.
+      - key: SOCIAL_ENABLED
+        value: "true"
       - key: JWT_SECRET               # legacy; Supabase JWKS is source of truth. Auto-generated.
         generateValue: true
       - key: API_BASE_URL             # this service's own public URL (custom domain or *.onrender.com)
@@ -322,6 +369,10 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "20"
+      # Must match SOCIAL_ENABLED on clipfarm-api. NEXT_PUBLIC_* is inlined at
+      # build time, so flipping this needs a redeploy, not a restart.
+      - key: NEXT_PUBLIC_SOCIAL_ENABLED
+        value: "true"
       - key: NEXT_PUBLIC_SUPABASE_URL
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY

@@ -8,20 +8,45 @@ read this?", for both single-object fetches and list queries.
 
 Four entry points, deliberately kept in step:
 
-* ``can_view_game`` / ``can_view_clip`` — for an object already loaded.
+* ``can_view_game`` / ``can_view_clip`` / ``can_view_post`` — for an object
+  already loaded.
 * ``can_identify`` — may a caller attach the game's title and its players'
   names. Not the same question as reading the clip; see the asymmetry below.
   Unlike the others this one is a single endpoint's gate rather than a rule the
   system keeps — its docstring says which, and CF-283 (#330) settles it.
 * ``visible_games_filter`` — a predicate for a game list. The rule is over
   ``Game`` alone, so it needs no join and there is nothing to get wrong.
-* ``apply_clip_visibility`` — takes the whole statement and returns it joined
-  and filtered. A predicate would not be safe here: the clip rule reads
-  ``games.visibility``, and a caller who forgets the join gets a cartesian
-  product that fails *open* with no warning from SQLAlchemy.
+* ``apply_clip_visibility`` / ``apply_post_visibility`` — take the whole
+  statement and return it joined and filtered. A predicate would not be safe
+  here: the clip rule reads ``games.visibility``, and a caller who forgets the
+  join gets a cartesian product that fails *open* with no warning from
+  SQLAlchemy.
 
 Both list forms filter **in SQL**. Post-filtering a page in Python silently
 breaks pagination (ask for 50, get 11) and reads rows the viewer may not see.
+
+**Posts live here too, not in the posts router.** A post is the one object
+whose whole purpose is serving someone else's footage, so a second copy of the
+private/followers/public ladder next to it is the most expensive place in the
+codebase for the two copies to drift. CF-110 swaps ``is_follower`` for a real
+lookup *and* the list filters for an EXISTS; a router-local predicate would have
+picked up the first half and silently missed the second, leaving the followers
+tier for posts filtering in Python.
+
+**`users.is_private` does not enter into any of this**, and that is a decision
+rather than an oversight. Visibility is a property of the content: a private
+account's `public` post is readable by a signed-out stranger, because the author
+chose `public` for that post. The account flag governs one thing only — whether
+following requires approval.
+
+The alternative reading is that the account switch should be an outer bound
+clamping every post beneath it, and CF-110 took that view for follower *lists*
+(owner-only when the account is private, because who follows you is information
+about you). The two are reconcilable — a list is about other people, a post is
+about the thing you deliberately published — but the asymmetry is worth knowing
+before either is changed. `test_account_privacy_does_not_clamp_post_visibility`
+pins the current behaviour so flipping it has to be deliberate; CF-116 is where
+that argument belongs if it is had.
 
 Writes are NOT covered here. Creating, editing and deleting stay owner-only, and
 the routers keep their own ownership checks for those paths.
@@ -59,6 +84,7 @@ from sqlalchemy import ColumnElement, Select, and_, or_
 
 from app.models.clip import Clip
 from app.models.game import Game
+from app.models.post import Post
 from app.models.visibility import Visibility
 
 
@@ -82,7 +108,44 @@ def _effective(clip: Clip, game: Game) -> Visibility:
     return clip.visibility or game.visibility
 
 
-def _may_read(viewer_id: uuid.UUID | None, owner_id: uuid.UUID, level: Visibility) -> bool:
+# Least → most visible. Exported because publishing needs to *compare* two
+# tiers, not just evaluate one: a post may never be wider than the clip behind
+# it. The comparison lived in the posts router next to a second copy of
+# `clip.visibility or game.visibility`, which is the duplication this module's
+# docstring argues against — the readability ladder moved and the ordering one
+# did not.
+_RANK = {Visibility.private: 0, Visibility.followers: 1, Visibility.public: 2}
+
+
+def at_most(requested: Visibility, allowed: Visibility) -> bool:
+    """Is `requested` no wider than `allowed`?
+
+    A *write*-side rule, unlike everything else here, and deliberately so: it is
+    the same ladder, and a second ordering of the same three values is exactly
+    what drifts when a tier is added.
+    """
+    return _RANK[requested] <= _RANK[allowed]
+
+
+def widest_allowed(clip: Clip | None, game: Game | None) -> Visibility:
+    """The most permissive tier a post over this clip may take.
+
+    Named separately from `effective` because the API hands this to clients so
+    the composer can grey out what it cannot offer, and "the ceiling for a post"
+    is the thing being published rather than an internal detail of the clip.
+    Falls back to `private` when either side is missing — fail closed.
+    """
+    if clip is None or game is None:
+        return Visibility.private
+    return _effective(clip, game)
+
+
+def may_read(viewer_id: uuid.UUID | None, owner_id: uuid.UUID, level: Visibility) -> bool:
+    """The tier ladder itself, for any object that carries an owner and a level.
+
+    Public rather than private because posts need the same ladder, and the only
+    thing worse than exporting it is having it written out a second time.
+    """
     if viewer_id is not None and viewer_id == owner_id:
         return True  # the owner always sees their own content
     if level is Visibility.public:
@@ -96,7 +159,7 @@ def can_view_game(viewer_id: uuid.UUID | None, game: Game | None) -> bool:
     """`viewer_id` is None for a signed-out visitor."""
     if game is None:
         return False
-    return _may_read(viewer_id, game.owner_id, game.visibility)
+    return may_read(viewer_id, game.owner_id, game.visibility)
 
 
 def can_view_clip(viewer_id: uuid.UUID | None, clip: Clip | None, game: Game | None) -> bool:
@@ -104,7 +167,7 @@ def can_view_clip(viewer_id: uuid.UUID | None, clip: Clip | None, game: Game | N
     visibility may be NULL meaning "inherit"."""
     if clip is None or game is None or clip.game_id != game.id:
         return False
-    return _may_read(viewer_id, game.owner_id, _effective(clip, game))
+    return may_read(viewer_id, game.owner_id, _effective(clip, game))
 
 
 def can_identify(viewer_id: uuid.UUID | None, game: Game | None) -> bool:
@@ -186,6 +249,56 @@ def apply_clip_visibility(stmt: Select, viewer_id: uuid.UUID | None) -> Select:
     The caller supplies the rest of the query; do not join `Game` yourself.
     """
     return stmt.join(Game, Clip.game_id == Game.id).where(_clips_predicate(viewer_id))
+
+
+def can_view_post(
+    viewer_id: uuid.UUID | None,
+    post: Post | None,
+    clip: Clip | None,
+    game: Game | None,
+) -> bool:
+    """Two gates, both required.
+
+    The post's own tier decides whether it was published to this viewer; the
+    clip's decides whether the footage behind it is still theirs to see. A clip
+    that goes private after being posted must take its post with it, so a post
+    can never be readable on its own say-so.
+    """
+    if post is None or clip is None or post.clip_id != clip.id:
+        return False
+    return may_read(viewer_id, post.author_id, post.visibility) and can_view_clip(
+        viewer_id, clip, game
+    )
+
+
+def _posts_predicate(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
+    """The post's own tier. Private, like the clip one — a post query is only
+    correct with the clip gate alongside it, which `apply_post_visibility` is
+    what guarantees."""
+    clauses = [Post.visibility == Visibility.public]
+    if viewer_id is not None:
+        clauses.append(Post.author_id == viewer_id)
+    # No `followers` clause until CF-110, for the same reason as games above.
+    return or_(*clauses)
+
+
+def apply_post_visibility(stmt: Select, viewer_id: uuid.UUID | None) -> Select:
+    """Join `Clip` and `Game` and filter a post query to what `viewer_id` may read.
+
+    Both gates land in the WHERE clause, which is the point: filtering posts in
+    Python after a `LIMIT` breaks the page rather than the query. An author with
+    60 private posts followed by 20 public ones would return an *empty* page to
+    a stranger asking for 50 — and no amount of paging would ever reach the
+    readable rows, because the limit counted rows the viewer can't see.
+
+    The caller supplies the rest of the query; do not join `Clip` or `Game`
+    yourself.
+    """
+    return (
+        stmt.join(Clip, Post.clip_id == Clip.id)
+        .join(Game, Clip.game_id == Game.id)
+        .where(_posts_predicate(viewer_id), _clips_predicate(viewer_id))
+    )
 
 
 def assert_can_view_game(viewer_id: uuid.UUID | None, game: Game | None) -> Game:

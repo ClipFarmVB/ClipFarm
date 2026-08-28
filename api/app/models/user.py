@@ -20,7 +20,11 @@ class User(Base):
     # ── Public identity (CF-107) ──────────────────────────────────────────────
     # Nullable: existing rows predate this and Supabase Auth remains the account
     # source of truth. A user without a username has no public presence yet —
-    # the frontend blocks posting until one is claimed.
+    # the frontend hides the Post button until one is claimed (ClipModal, via
+    # `needsHandle`), which is what keeps this comment true: `create_post` does
+    # not check, and a *generated* handle is withheld from every post response
+    # (`PostAuthor.from_author`), so a handle-less author would otherwise
+    # publish a card that names nobody and links nowhere.
     #
     # Stored lower-cased; uniqueness is enforced by a functional index on
     # lower(username) so "Matt" and "matt" can't both exist (see migration 010).
