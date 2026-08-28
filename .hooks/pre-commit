@@ -8,11 +8,19 @@
 # Install for your clone:
 #   git config core.hooksPath .hooks
 #
-# Requirements: ruff, mypy, pytest, and npm on PATH. For the full api/tests step:
-#   pip install -r api/requirements-dev.txt     # app deps + pytest + fakeredis
-# Install that and every step runs. With only `pip install ruff mypy pytest`,
-# the api/tests step skips (loudly) rather than erroring — the app-importing
-# tests can't collect without the app's own deps.
+# Requirements: ruff, mypy, pytest, and npm on PATH.
+#
+#   pip install -r requirements-tooling.txt     # ruff + mypy + pytest, pinned
+#   pip install -r api/requirements-dev.txt     # app deps + the test-only pins
+#
+# Use the tooling file rather than `pip install ruff mypy pytest`: those are the
+# versions CI runs (CF-92), so a finding here is a finding there. Unpinned, a
+# fresh install can disagree with CI in either direction — ruff 0.16.0 widened
+# its default rule set and reddened a branch nobody had touched.
+#
+# Install both and every step runs. With only the tooling file, the api/tests
+# step skips (loudly) rather than erroring — the app-importing tests can't
+# collect without the app's own deps, and the dev-set gate below says so.
 #
 # One consequence of the single environment: with the api deps installed, the
 # mypy step below sees stubs CI's dependency-light run does not, so it can report
@@ -56,20 +64,116 @@ echo "ok"
 # the tests do `from app... import ...`.
 #
 # Unlike ml/tests these need the application's own dependencies, plus the
-# test-only ones. The probe is `fakeredis`, not an app runtime dep: it is the one
-# importorskip target that lives only in requirements-dev.txt, so importing it
-# proves the whole dev set is present. (pytest is pinned there too, but it is
-# already assumed on PATH for the ml/tests step above, so it can't discriminate a
-# dev install from a plain one.) Probing a runtime dep (pydantic-settings, etc.)
-# would pass after a plain `pip install -r requirements.txt` and then let
-# test_worker_safety.py's CF-65a Redis-lock test silently importorskip — the
-# exact passing-without-executing failure the requirements-dev install exists to
-# end. Treat a set without fakeredis as "not runnable here" and leave it to CI
-# rather than blocking the commit on a setup step nobody was told to do.
+# test-only ones, so the step is gated on the dev set being installed. Probing a
+# runtime dep (pydantic-settings, etc.) would pass after a plain
+# `pip install -r requirements.txt` and then let the guarded tests silently
+# importorskip themselves — the exact passing-without-executing failure the
+# requirements-dev install exists to end. A set without it is "not runnable
+# here": leave it to CI rather than blocking the commit on a setup step nobody
+# was told to do.
+#
+# The gate reads the `name==version` pins reachable from requirements-dev.txt
+# (following its `-r` include) and checks each is *present* — not importing one
+# chosen package, because a chosen package is what broke this. The probe used
+# to be `fakeredis`, which CF-184 removed from that file when the lock moved to
+# Postgres — after which the probe could never succeed, this step skipped on
+# every correct dev install, and the hook still exited 0 saying all checks
+# passed. It had been doing that silently ever since. Swapping in another name
+# would reinstate the same failure one rename later, and neither candidate
+# discriminates anyway: PyYAML arrives with unrelated tooling (conan depends on
+# it) and numpy is on half the machines in the world.
+#
+# Presence, deliberately not version equality, for every pin: an absent
+# dependency kills collection, which is the case this gate exists to decline,
+# while gating on versions made any drift in the same virtualenv — a tool
+# bumping a patch release, numpy resolved elsewhere by other work — skip
+# api/tests while the hook exited 0, the silent-green shape this gate replaced
+# on a wider trigger. Version consistency across the files that matter is
+# test_pipeline_deps_are_pinned_to_one_version_everywhere's job, and CI runs
+# the suite in an environment built exactly from requirements-dev.txt.
+#
+# The check lives in api/scripts/check_dev_set.py rather than inline here, so
+# the `ruff check api/` step above lints it and api/tests tests it — this
+# block's predecessor rotted for the lack of both. Its exact scope (extras,
+# whitespace, what is skipped) is documented in the script.
+#
+# It does not fail the commit, it declines to run the step and says why: an
+# incomplete dev set is "not runnable here", not a reason to block someone who
+# was never told to install it.
+#
+# The reason arrives on stdout and only stdout is captured, so a genuine
+# breakage in the script — a traceback, a moved file — lands on the terminal
+# instead of being printed as if it were the reason, and the fallback message
+# below blames the check rather than the dev set. An earlier version captured
+# stderr and claimed the opposite in this very comment.
+# It is also the hook's slowest step by some margin — ~12s against ~2s for tsc
+# and well under 1s for everything else, because it imports fastapi, sqlalchemy
+# and celery at collection. That is worth an explicit way out: without one the
+# only lever is `--no-verify`, which skips every check in this file rather than
+# the one that costs the time. Loud on purpose, and never the default.
+#
+# Locating the probe is its own problem, and getting it wrong is invisible.
+# A bare `python api/scripts/check_dev_set.py` resolves against the CWD, which
+# is the tree being committed in. That is right, and it is what this does — but
+# only if it is allowed to fail honestly when the file is not there.
+#
+# Why a tree can lack it: this file can be SHARED across checkouts, and then it
+# runs against a tree it did not come from. Two ways in, not one:
+#
+#   An absolute `core.hooksPath` — every worktree runs that one checkout's hook.
+#
+#   A copy in `.git/hooks/pre-commit`. `hooks` lives in the COMMON dir, so a
+#   linked worktree resolves it to the main repo's `.git/hooks` rather than to
+#   anything of its own, and gets the same shared file.
+#
+# Set relative instead, as `git config core.hooksPath .hooks` at the top of this
+# file and in README.md prescribe, and git resolves it against each working
+# tree's own root — so a worktree runs its own hook, matched to its own `api/`,
+# and hook and probe can never disagree. That one setting fixes both causes,
+# because `core.hooksPath` takes precedence over `.git/hooks`.
+#
+# That is a misconfiguration rather than a case to work around, and the
+# tempting workaround is worse than the bug. Falling back to the copy beside
+# this hook would run a FOREIGN checkout's probe: check_dev_set.py resolves its
+# requirements file from its own __file__, so it would validate the hook
+# checkout's dependency set and then hand a pass to a pytest run over this
+# tree's tests. Where the two trees have diverged — which is precisely when the
+# fallback would fire — the probe says yes, collection dies on an import, and
+# the FAIL branch below `exit 1`s. That turns a gate which promises never to
+# block a commit into one that blocks it for a dependency the committer was
+# never asked to install.
+#
+# So: this tree's probe, or an honest skip.
+_dev_set_probe=api/scripts/check_dev_set.py
+
 printf "  pytest api/tests ... "
-if ! python -c "import fakeredis" >/dev/null 2>&1; then
-  echo "skipped (pip install -r api/requirements-dev.txt to run these locally)"
-  _api_tests_skipped=1
+if [ -n "$CLIPFARM_SKIP_API_TESTS" ]; then
+  echo "skipped — CLIPFARM_SKIP_API_TESTS is set"
+  _api_tests_skipped="unset CLIPFARM_SKIP_API_TESTS to run them"
+elif [ ! -f "$_dev_set_probe" ]; then
+  # Its own branch because no install fixes it: pointing at pip would send
+  # someone down a road that cannot end. Self-contained on purpose — the
+  # summary at the bottom is the last thing a reader sees, so the remedy has to
+  # survive being read on its own, without the line above it.
+  echo "skipped — $_dev_set_probe is not in this working tree; if other branches have it, this hook is shared across checkouts (an absolute core.hooksPath, or a copy in .git/hooks): git config core.hooksPath .hooks"
+  _api_tests_skipped="this tree has no $_dev_set_probe; if other branches do, this hook is shared across checkouts — run: git config core.hooksPath .hooks"
+elif ! _api_dev_reason=$(python "$_dev_set_probe"); then
+  # The probe declines for three different reasons — an incomplete dev set, a
+  # requirements file it cannot find, and its own crash — and only the first is
+  # fixed by installing anything. `$_api_dev_reason` already distinguishes them
+  # on the line above; carry the same distinction into the summary rather than
+  # prescribing pip for all three.
+  case "$_api_dev_reason" in
+    missing:*)
+      echo "skipped — $_api_dev_reason; pip install -r api/requirements-dev.txt"
+      _api_tests_skipped="pip install -r api/requirements-dev.txt to run them" ;;
+    "")
+      echo "skipped — the dev-set check itself failed, see the traceback above"
+      _api_tests_skipped="$_dev_set_probe failed; see its traceback above" ;;
+    *)
+      echo "skipped — $_api_dev_reason"
+      _api_tests_skipped="$_api_dev_reason" ;;
+  esac
 elif ! _api_pytest_out=$(cd api && python -m pytest tests/ -q --no-header 2>&1); then
   echo "FAIL"
   echo "$_api_pytest_out"
@@ -98,7 +202,10 @@ fi
 echo "ok"
 
 if [ -n "$_api_tests_skipped" ]; then
-  echo "pre-commit: all checks passed (api/tests skipped — pip install -r api/requirements-dev.txt to run them)."
+  # The remedy comes from whichever branch skipped, because they do not share
+  # one. Hard-coding the dev-set install here told someone whose install was
+  # fine to reinstall it, which is how the missing-probe bug stayed invisible.
+  echo "pre-commit: all checks passed (api/tests skipped — ${_api_tests_skipped})."
 else
   echo "pre-commit: all checks passed."
 fi

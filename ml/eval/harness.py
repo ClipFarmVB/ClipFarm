@@ -279,6 +279,25 @@ def run(
     return pre, post
 
 
+def _require_r2_key(raw: dict, test_id: str) -> str:
+    """
+    The fixture's source video in R2, or a readable exit.
+
+    Not every fixture has one: a video labeled from a local file (test5) is
+    pinned by md5 and duration only, and --offline has nothing to download. That
+    is a documented state, so say so instead of dying on a bare KeyError.
+    """
+    r2_key = raw.get("source_r2_key")
+    if not r2_key:
+        raise SystemExit(
+            f"{test_id}: fixture has no source_r2_key, so --offline has no video to "
+            "fetch (the clip was labeled from a local file and never uploaded). "
+            "Score a dumped keep-window list with --windows-json instead, or run "
+            "python -m ml.eval.visualize_deadtime, which reads ml/eval/ball_caches/."
+        )
+    return r2_key
+
+
 def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     """
     Re-run the detection + scoring stages against the fixture's source video,
@@ -287,7 +306,8 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     (pre_gate = all scored rallies, post_gate = those above the gate).
 
     Runs impure edges (R2, ffmpeg, cv2, app config) behind lazy imports — must
-    be invoked where those deps live (the worker container).
+    be invoked where those deps live — the `eval` service, not `worker`,
+    which carries production's resource limits (CF-241).
     """
     import tempfile
 
@@ -301,7 +321,7 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     from ml.pipeline.score import score_highlights
 
     fixture = load_fixture(test_id)
-    r2_key = fixture.raw["source_r2_key"]
+    r2_key = _require_r2_key(fixture.raw, test_id)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -394,19 +414,25 @@ def load_windows_json(path: Path) -> list[Interval]:
     return [(parse_timestamp(w["start"]), parse_timestamp(w["end"])) for w in items]
 
 
-def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval]]:
+def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval], str, str]:
     """
     Derive the condense keep-windows from the fixture's source video, mirroring
     process_game_task's stage-5 condense path (dead_time.py). Ball positions load
     from the R2 cache (free unless model/sample-rate changed), so no re-tracking.
 
-    Returns (pre_bridge, post_bridge): keep-windows before and after CF-46 motion
-    bridging. post_bridge is what the condense stage actually ships; pre_bridge is
-    returned alongside so the harness can attribute any over-cut/re-admitted dead
-    time to the bridge step specifically.
+    Follows `condense_mode`, so this scores the builder production actually runs
+    rather than a fixed one — the whole point of the offline path is that its
+    numbers transfer.
+
+    Returns (companion, shipped, comparison_title, companion_tag). `shipped` is
+    what the condense stage would produce under the current mode; `companion` is
+    the one-step-back configuration it is worth attributing the difference to —
+    pre-bridge windows under "rules", the whole rule-based path under the modes
+    that replace it.
 
     Runs impure edges (R2, ffmpeg, cv2, app config) behind lazy imports — must be
-    invoked where those deps live (the worker container).
+    invoked where those deps live — the `eval` service, not `worker`,
+    which carries production's resource limits (CF-241).
     """
     import tempfile
 
@@ -417,12 +443,14 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval]]
     from app.workers.tasks import _track_ball_cached
     from ml.pipeline.ball import find_contacts
     from ml.pipeline.dead_time import (
+        Abstained,
         active_windows_from_contacts,
+        active_windows_guarded,
         bridge_windows_by_motion,
     )
 
     fixture = load_deadtime_fixture(test_id)
-    r2_key = fixture.raw["source_r2_key"]
+    r2_key = _require_r2_key(fixture.raw, test_id)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -435,6 +463,19 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval]]
         frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
+
+        # A container OpenCV cannot decode reports 0 here, and every guarded
+        # speed threshold is normalized by frame height — so the builder would
+        # raise ValueError several frames of stack away from the cause. This
+        # function's other bad-input paths all exit with instructions; so does
+        # this one.
+        if frame_h <= 0:
+            raise SystemExit(
+                f"Offline deadtime: OpenCV read a frame height of {frame_h} from "
+                f"{r2_key}. Its codec is probably unavailable in this environment "
+                "— check the file plays locally, or score a dumped keep-window "
+                "list with --windows-json instead."
+            )
         # Prefer the fixture's declared duration (the same value that anchors the
         # dead-time complement); fall back to the decoded frame count.
         duration = fixture.duration or (n_frames / fps)
@@ -445,18 +486,6 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval]]
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
         contacts = find_contacts(tracker, frame_height=frame_h)
 
-        # Offline mode is the ball-cache path by design ("no re-tracking"). An
-        # empty contact list means the cache produced no ball signal; the
-        # production fallback here is a ~30-min pose-first CPU re-detect, which
-        # this mode deliberately does not run. Fail loudly instead of scoring an
-        # empty condense as if it were the model's real output.
-        if not contacts:
-            raise SystemExit(
-                f"Offline deadtime: ball cache for {r2_key} yielded no contacts. "
-                "Score the pose-first fallback via --windows-json with a dumped "
-                "keep-window list instead."
-            )
-
         pre_bridge = active_windows_from_contacts(
             contacts, duration,
             gap_seconds=settings.condense_gap_seconds,
@@ -465,7 +494,31 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval]]
             min_contacts=settings.condense_min_contacts,
             merge_gap_seconds=settings.condense_merge_gap_seconds,
         )
-        positions = [{"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions]
+        # Mirrors what process_game_task keeps for the condense stage.
+        positions = [
+            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+        ]
+
+        mode = settings.condense_mode
+        # Offline mode is the ball-cache path by design ("no re-tracking"). No
+        # ball signal at all means the cache is empty; the production fallback
+        # is a ~30-min pose-first CPU re-detect, which this mode deliberately
+        # does not run. Fail loudly rather than score that as the model's output.
+        #
+        # Zero *contacts* is no longer that case for the guarded builder: CF-187
+        # gave it motion anchors precisely so a rally the detector never saw
+        # still opens a window (19 of test4's 46 rallies produce no contact),
+        # so contact-free input with a real track is a legitimate thing to
+        # score — and refusing it here would decline exactly the case the
+        # builder was added for. It still needs a track: with no positions
+        # either, there is nothing for anchors to work from.
+        if not contacts and not (mode == "guarded" and positions):
+            raise SystemExit(
+                f"Offline deadtime: ball cache for {r2_key} yielded no contacts"
+                f"{' and no positions' if mode == 'guarded' else ''}. "
+                "Score the pose-first fallback via --windows-json with a dumped "
+                "keep-window list instead."
+            )
         post_bridge = bridge_windows_by_motion(
             pre_bridge, positions,
             speed_pxps=settings.condense_bridge_speed_pxps,
@@ -473,11 +526,47 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval]]
             max_bridge_seconds=settings.condense_bridge_max_seconds,
         )
 
-        print(
-            f"Offline deadtime: {len(contacts)} contacts → "
-            f"{len(pre_bridge)} windows → {len(post_bridge)} after motion bridge"
-        )
-        return pre_bridge, post_bridge
+        if mode == "rules":
+            print(
+                f"Offline deadtime [mode=rules]: {len(contacts)} contacts → "
+                f"{len(pre_bridge)} windows → {len(post_bridge)} after motion bridge"
+            )
+            return pre_bridge, post_bridge, "MOTION BRIDGE (CF-46)", "nobridge"
+
+        if mode == "guarded":
+            shipped = active_windows_guarded(
+                contacts, positions, duration, frame_h,
+                gap_seconds=settings.condense_gap_seconds,
+                min_contacts=settings.condense_min_contacts,
+                pad_before=settings.condense_guard_pad_before,
+                pad_after=settings.condense_guard_pad_after,
+                merge_gap_seconds=settings.condense_guard_merge_gap_seconds,
+                gate_speed=settings.condense_guard_gate_speed,
+                anchor_speed=settings.condense_guard_anchor_speed,
+                min_track_rate=settings.condense_guard_min_track_rate,
+            )
+            title = "GUARDED vs RULES (CF-187)"
+        else:
+            # Unreachable via settings since condense_mode became a Literal (a
+            # typo now fails at Settings construction). Kept because this reads
+            # settings directly, so it is the one guard left if that annotation
+            # is ever widened back to str — unlike tasks._build_condense_windows'
+            # twin, which also still serves direct callers passing a mode string.
+            raise SystemExit(f"Unknown condense_mode {mode!r} — expected rules or guarded")
+
+        # The abstain (one whole-video window) is a real outcome worth seeing in
+        # the report, not an error — say so, because a 0% dead-removed row
+        # otherwise reads as a broken run. Asked of the builder's own result
+        # rather than matched on shape: a genuine condense that happens to keep
+        # everything is the same list and a different decision.
+        if isinstance(shipped, Abstained):
+            print(f"Offline deadtime [mode={mode}]: ABSTAINED — ball track too sparse to condense")
+        else:
+            print(
+                f"Offline deadtime [mode={mode}]: {len(contacts)} contacts → "
+                f"{len(shipped)} windows (rule-based path: {len(post_bridge)})"
+            )
+        return post_bridge, shipped, title, "rules"
 
 
 def format_deadtime(s: DeadTimeSignals) -> str:
@@ -647,42 +736,42 @@ def main() -> None:
                 record=not args.no_record, audit_limit=args.audit_limit,
             )
         elif args.offline:
-            pre_bridge, post_bridge = _run_offline_deadtime(args.test)
+            companion, shipped, title, tag = _run_offline_deadtime(args.test)
             if args.dump_windows:
                 # keep = shipping windows, the ones --windows-json reads back.
-                # pre_bridge rides along under a key the loader ignores, so the
-                # CF-46 comparison can be reconstructed from the dump too.
+                # The companion rides along under a key the loader ignores, so
+                # the comparison can be reconstructed from the dump too.
                 spans_of = lambda ws: [  # noqa: E731
                     {"start": round(a, 3), "end": round(b, 3)} for a, b in ws
                 ]
                 args.dump_windows.write_text(
                     json.dumps(
-                        {"keep": spans_of(post_bridge), "keep_pre_bridge": spans_of(pre_bridge)},
+                        {"keep": spans_of(shipped), f"keep_{tag}": spans_of(companion)},
                         indent=2,
                     ) + "\n",
                     encoding="utf-8",
                 )
                 print(f"Dumped keep-windows -> {args.dump_windows}")
-            # Report + record the shipping (post-bridge) windows — that's the
-            # configuration under test. Then score pre-bridge silently and show
-            # only what CF-46's motion bridge moved: a second full report would
-            # double an already long audit to say very little.
+            # Report + record the shipping windows — that's the configuration
+            # under test. Then score the companion silently and show only what
+            # the mode moved: a second full report would double an already long
+            # audit to say very little.
             post = run_deadtime(
-                args.test, args.version, post_bridge,
+                args.test, args.version, shipped,
                 record=not args.no_record, audit_limit=args.audit_limit,
             )
-            if pre_bridge != post_bridge:
+            if companion != shipped:
                 pre = run_deadtime(
-                    args.test, f"{args.version}-nobridge", pre_bridge,
+                    args.test, f"{args.version}-{tag}", companion,
                     record=False, report=False,
                 )
                 print()
                 print(format_deadtime_comparison(
-                    "MOTION BRIDGE (CF-46) - not recorded",
-                    "bridge off", pre, "shipping", post,
+                    f"{title} - not recorded",
+                    tag, pre, "shipping", post,
                 ))
             else:
-                print("\n(motion bridge changed nothing this run)")
+                print(f"\n({title} changed nothing this run)")
         else:
             ap.error("--mode deadtime needs --windows-json or --offline")
         return

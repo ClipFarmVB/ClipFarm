@@ -39,6 +39,88 @@ USERNAME_CHANGE_COOLDOWN = timedelta(days=30)
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
+# A declared type that carries no information. An empty string is what a part
+# with no Content-Type header at all reduces to (Starlette leaves
+# `UploadFile.content_type` as None there), and `application/octet-stream` is
+# what the FormData encoding sends for a File whose `.type` is empty — which is
+# the case for a file with no extension, since the browser fills `.type` in from
+# the extension. Neither is a claim about the payload, so neither is something
+# the declared-type gate can govern; they fall through to the sniff.
+UNDECLARED_AVATAR_TYPES = {"", "application/octet-stream"}
+
+# CF-236: the declared Content-Type is the client's word for it, so the bytes
+# get the final say. Not a dependency — python-magic pulls in a C library to
+# recognise hundreds of formats when three are permitted, and `imghdr` was
+# removed from the stdlib in 3.13, so leaning on it would break on upgrade.
+#
+# Deliberately no SVG entry. SVG is the type that carries script, and a sniffer
+# that *added* formats would be a regression rather than a hardening.
+#
+# What it does not buy, and the card says so: a polyglot survives. Prepend eight
+# bytes of PNG signature to an HTML document and it sniffs as image/png, exactly
+# as a bare `.html` would not. Only re-encoding the pixels neutralises that, and
+# the card defers it to whenever image processing lands for other reasons. What
+# the sniff does buy is that a payload which is not an image *at all* — the
+# ordinary mislabelling, and the naive attempt — no longer reaches storage
+# wearing a type it does not have.
+#
+# The prefixes are per-format rather than one fixed window. JPEG's signature is
+# three bytes and PNG's eight; twelve is only what WebP needs, because its
+# fourcc sits at offset 8. Comparing a fixed twelve would refuse a payload that
+# carries all of its own signature and then simply stops.
+AVATAR_SIGNATURE_BYTES = 12
+
+
+def _sniff_image_type(header: bytes) -> str | None:
+    """The content type `header` actually is, or None if it is not one we allow.
+
+    JPEG: every variant — JFIF, EXIF, Adobe, quantization-table-first — shares
+    `FF D8 FF`. PNG's signature is fixed by the spec. WebP is a RIFF container,
+    so the fourcc at offset 8 is what distinguishes it from a WAV or an AVI;
+    VP8, VP8L and VP8X all carry it and differ only at offset 12.
+    """
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _bad_avatar_type(reason: str) -> HTTPException:
+    """A 400 naming the allowlist.
+
+    Both avatar rejections end the same way and differ only in the reason, so
+    the allowlist half lives here once rather than being spelled out twice and
+    drifting.
+    """
+    allowed = ", ".join(sorted(ALLOWED_AVATAR_TYPES))
+    return HTTPException(status_code=400, detail=f"{reason} Allowed: {allowed}")
+
+
+def _log_avatar_type(event: str, user_id: uuid.UUID, declared: str, sniffed: str | None) -> None:
+    """Record what the header claimed next to what the bytes turned out to be.
+
+    This is the only signal that says whether CF-236 fires in practice, and how
+    often the two disagree on an upload that is nonetheless fine.
+
+    Reporting must never break processing, so a failure here loses the line
+    rather than the upload. Unlike `_report` in ml/pipeline/clip.py, the except
+    does not log: the thing that just failed is the logger, so a second call to
+    it is not a fallback.
+    """
+    try:
+        logger.info(
+            "Avatar %s for user %s: declared %s, sniffed %s",
+            event,
+            user_id,
+            declared or "nothing",
+            sniffed or "nothing recognised",
+        )
+    except Exception:
+        pass
+
 
 _Schema = TypeVar("_Schema", bound=ProfileOut)
 
@@ -221,14 +303,52 @@ async def upload_avatar(user_id: UserId, db: DB, file: UploadFile = File(...)):
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    content_type = (file.content_type or "").split(";")[0].strip().lower()
-    if content_type not in ALLOWED_AVATAR_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported image type. Allowed: {', '.join(sorted(ALLOWED_AVATAR_TYPES))}",
-        )
+    # Two checks, two jobs. This one governs what a client may *declare*; the
+    # sniff below governs what it actually *sent*. They are not rival answers to
+    # one question, so neither replaces the other, and dropping this one would
+    # widen what the endpoint accepts beyond what CF-236 asked for. CF-244 makes
+    # the same split on the video upload path.
+    #
+    # The exception is a client that declares nothing usable. There is no claim
+    # to govern then, so the bytes decide alone — an extensionless PNG is a
+    # normal upload, not an attack, and refusing it here would mean the sniff
+    # never ran. Nothing is widened by that: whatever the sniff does not
+    # recognise is still a 400 a few lines down.
+    declared = (file.content_type or "").split(";")[0].strip().lower()
+    if declared not in ALLOWED_AVATAR_TYPES and declared not in UNDECLARED_AVATAR_TYPES:
+        _log_avatar_type("rejected on its declared type", user_id, declared, None)
+        raise _bad_avatar_type("Unsupported image type.")
+
     if not storage.r2_configured():
         raise HTTPException(status_code=503, detail="Storage is not configured")
+
+    # The bytes decide, not the header (CF-236). Read through UploadFile's async
+    # wrappers rather than touching `file.file` directly: on a payload large
+    # enough to have rolled to disk they hop to a threadpool, which is the same
+    # reason the upload below is offloaded (CF-63).
+    #
+    # The seek matters more than it looks. LimitedReader exposes only read(), so
+    # s3transfer treats the stream as non-seekable and uploads from wherever the
+    # position happens to be — without this, every avatar would arrive at R2
+    # with its first bytes missing and nothing would raise.
+    header = await file.read(AVATAR_SIGNATURE_BYTES)
+    await file.seek(0)
+
+    sniffed = _sniff_image_type(header)
+    if sniffed is None:
+        _log_avatar_type("rejected on its bytes", user_id, declared, None)
+        raise _bad_avatar_type("That file isn't a JPEG, PNG or WebP image.")
+
+    if declared in ALLOWED_AVATAR_TYPES and declared != sniffed:
+        _log_avatar_type("mislabelled", user_id, declared, sniffed)
+
+    # Store what it *is*, not what the client called it. A PNG saved as
+    # `photo.jpg` arrives declared image/jpeg, because the browser fills
+    # File.type in from the extension — both types are on the allowlist, so the
+    # gate above passes it and only the bytes can tell the two apart. It matters
+    # downstream too: avatar_key is deliberately extensionless, so the object's
+    # ContentType is the only record of format.
+    content_type = sniffed
 
     key = storage.avatar_key(user.id)
     try:

@@ -101,7 +101,9 @@ lists, or read them from the results log, which always stores every span.
 python -m ml.eval.harness --mode deadtime --test test1 --version my-change \
   --windows-json keep_dump.json
 
-# in the worker container: derive keep-windows from the real video (R2 ball-cache)
+# in the eval container: derive keep-windows from the real video (R2 ball-cache)
+# (`docker compose --env-file .env.docker run --rm --no-deps eval ...` — not `worker`, which carries
+#  production's resource limits since CF-241)
 python -m ml.eval.harness --mode deadtime --test test1 --version my-change --offline
 ```
 
@@ -110,16 +112,19 @@ The fast loop: pass `--dump-windows ml/eval/results/test1_keep.json` to an
 via `--windows-json` — no Docker, no video download. A fresh `--offline` run is
 only needed when the condense logic or its `condense_*` settings change (the
 dump records what the model *did*, so metric/fixture/report changes don't
-invalidate it). The dump also carries the pre-bridge windows under
-`keep_pre_bridge`, which `--windows-json` ignores but keeps the CF-46
-comparison reconstructible.
+invalidate it). The dump also carries the companion windows the run compared
+against, under a `keep_{tag}` key that `--windows-json` ignores — `keep_nobridge`
+under `condense_mode="rules"`, `keep_rules` under the modes that replace it.
 
 `keep_dump.json` is `{"keep": [{"start": "...", "end": "..."}, ...]}` — the
 model's keep-windows; `--windows-json` needs no video, so it runs on a laptop.
 
 `--offline` derives the windows from the fixture's `source_r2_key` video via
-`dead_time.py`, exactly as the condense stage does (ball-cache → contacts →
-`active_windows_from_contacts` → `bridge_windows_by_motion`). It scores the
-shipping post-bridge windows (and records that row), then prints the pre-bridge
-windows unrecorded so you can see what CF-46's motion bridging changed. It needs
-the worker deps (R2, cv2, app config) and a ball-cache hit for the video.
+`dead_time.py`, exactly as the condense stage does — and it follows
+`condense_mode`, so it scores whichever builder production is set to run
+(`guarded` by default, CF-187). It records that row, then prints an unrecorded
+companion row so you can see what the mode changed: pre-bridge windows under
+`rules`, the whole rule-based path under `guarded`. Under `guarded` the
+run may print `ABSTAINED` — the ball track was too sparse to condense on, which
+is a real outcome and not a failed run. It needs the worker deps (R2, cv2, app
+config) and a ball-cache hit for the video.
