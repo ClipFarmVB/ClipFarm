@@ -1,0 +1,426 @@
+# Standing rules
+
+Read on **every iteration**. The rules that apply no matter which step the lap is doing — what is forbidden, what may be pushed to, what must be logged, and the counters that decide whether the run continues.
+
+Part of the unattended-run brief — see [`README.md`](./README.md).
+
+| file | when to read it |
+|---|---|
+| [`START.md`](./START.md) | once, at the start of a run |
+| [`RULES.md`](./RULES.md) | **every iteration** |
+| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
+| [`FIX.md`](./FIX.md) | a lap that fixes findings |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket |
+| [`REPORTING.md`](./REPORTING.md) | end of the run |
+| [`RATIONALE.md`](./RATIONALE.md) | optional background |
+
+---
+
+> **Update `START.md` before starting.** Everything in this file and the phase
+> files holds every time. `START.md` does not, and an agent given a stale scope
+> will work confidently on the wrong things. This repository has been bitten by
+> exactly that: CF-192's worst-case reasoning was invalidated by CF-224 without
+> the text changing, and CF-224 read as "fixed" while production was still
+> failing.
+>
+> **Nothing that is discardable may carry a rule.** `START.md` holds scope —
+> what tonight's environment looks like, and any narrowing of it — and never
+> behaviour. If a run learns something that should change how future runs act,
+> that belongs in this file or the phase file it governs, even when the lesson
+> came from tonight's scope. A fix written into a section the next reader is
+> told to replace has not been made: it will be discarded unread, while whoever
+> wrote it believes it landed. That happened twice in the first real run, and
+> one of the two was reported as done.
+>
+> This is also why the brief is split by phase rather than summarised into a
+> shorter file: a summary is a second copy of every rule, and the copy that is
+> not amended is the one someone reads.
+
+### Hard rules
+
+- **Never** push to `main`, merge a PR, or force-push anything.
+- **Only push to the branch of a PR opened by the account this run posts as, and
+  only if nobody else has pushed to it.** Any run's PR, not just this one's. If a
+  fix belongs on a PR **another account** opened, or on a branch a collaborator
+  has touched, describe it in a review comment instead and never push. Both halves
+  are spelled out under [The push test](#the-push-test) below.
+- **Never authorise your own push past [The push test](#the-push-test).** If it
+  says the branch is another account's or a collaborator has pushed to it, that
+  is the answer — do not post, label or record anything that would let a later
+  round read it as permission. A grant mechanism existed once and is gone
+  (CF-274); this rule is about the class, not that mechanism, and holds whether
+  or not one exists again.
+- **Never** deploy, unsuspend a hosting service, or touch production
+  infrastructure.
+- **Never** run the local stack against a `DATABASE_URL` pointing at Supabase.
+  Confirm `.env.docker` names the local `db` container first.
+- **Never** read, echo, or commit `.env.docker` or any credential.
+- Every PR opens as a **draft**. It is work nobody has vetted yet, and draft is
+  the honest signal for that. A draft reviews and takes pushes exactly like any
+  other PR. You never merge, never deploy.
+- **You are never the reviewer.** Every PR still gets reviewed — by a subagent
+  spawned per step 1, whether or not this session wrote the diff.
+- **Maximum 5 new PRs** and **6 new cards** per run.
+- **No attribution stamps that you write.** Do not add "Generated with Claude
+  Code", a `Co-Authored-By` trailer, a session link, or any similar footer to
+  commits, PR bodies, reviews, comments, or issues. Local settings suppress
+  these but a sandbox does not inherit them, so this is on you.
+  **The two named above are never exempt**: both are emitted client-side and
+  both are suppressible, so an agent finding one on its own output has a setting
+  to fix, not an exception to claim.
+
+  The exemption is for footer text you cannot prevent — identify it by
+  reproducing it, not by reasoning about where it came from: post once, read the
+  result back, and if text you did not write is present, quote it verbatim in
+  the report and carry on. Never hand-edit a comment to strip it. "It must be
+  server-side" is not a test the run can perform, and it is exactly the reasoning
+  that would let a stray `Co-Authored-By` through.
+- If a command fails because of usage limits, **stop the loop** — do not retry.
+- If nothing in scope is actionable, **stop the loop**. A run that reviews two
+  PRs and opens nothing is a fine outcome.
+
+### The push test
+
+Two conditions, both required, and the second has to be re-run each time.
+
+**1 — This account opened the PR.** Compare `gh api user --jq ".login"` against
+the PR's `.user.login`. That is the same test the `review scope` filter runs, so
+at `review scope: own` it is true of everything in the queue.
+
+*Phrased as PR authorship rather than branch ownership because authorship is what
+the test reads.* GitHub does not expose "who owns the branch", and a rule written
+in terms its test cannot evaluate is a rule that drifts from its enforcement.
+
+**2 — Nobody else has pushed to the branch.** The two can diverge, and the
+divergence runs in the risky direction: a collaborator may push commits to a
+branch whose PR this account opened. The author test passes, so without this the
+run would treat the PR as its own and land fixes on someone else's in-flight
+work.
+
+```
+ME=$(gh api user --jq ".login")
+COMMITS=$(gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[].author.login // "UNKNOWN"')
+[ -n "$COMMITS" ] || { echo "cannot read commits — do not push"; exit 1; }
+printf '%s\n' "$COMMITS" | sort -u | grep -vx "$ME"
+```
+
+**Any output means do not push.** Empty output means every commit is this
+account's — *but only if the read succeeded*, which is why `$COMMITS` is checked
+separately. A PR always has at least one commit, so an empty raw list means the
+call failed, not that the branch is clean. Without that check the guard fails
+**open** on a network error, a rate limit, a wrong PR number or a token missing a
+scope: `gh api` writes to stderr, stdout is empty, and empty reads as "push".
+
+**Run it immediately before each push, not once when you pick the PR up.** A run
+holds a PR across several rounds, and the failure this guards against is a
+collaborator pushing *while that is happening* — which is the same reasoning that
+makes the head SHA get re-read after every round.
+
+Three things about the command:
+
+- **`.author.login` is correct *here*, and it is the one place in this document
+  that is so.** [The author field rule](REVIEW.md#step-1--which-prs-need-a-round) says to use
+  `.user.login`, in bold, and it is right — about `pulls/<n>`. This is
+  `pulls/<n>/commits`, a different payload: its objects carry `author` and
+  `committer` and **no `user` at all** (verified on #311). "Correcting" this to
+  `.user.login` would yield `UNKNOWN` for every commit, fire the guard on every
+  PR, and make the whole queue unpushable — reinstating the stall CF-270 removed,
+  silently, behind a guard that looks like it is working.
+- **Not `gh pr view --json commits`.** It caps at 100 with no paging, and its
+  author field is the *commit* author, which a rebase or a co-authored commit
+  misattributes — so it fires on the account's own rebased branches.
+- **`// "UNKNOWN"` fails closed.** `.author.login` is `null` for a commit whose
+  email is linked to no account; a bare `.author.login` lets those read as "no
+  other login", and the guard never fires. Mapping them to `UNKNOWN` makes an
+  unverifiable branch count as someone else's. Measured 2026-08-25 on #190, #191,
+  #214, #243 and #288: 0 nulls across 36 commits, so this should be rare — if it
+  stops being rare, report that rather than working around it.
+
+**The bound this command does not clear.** `pulls/<n>/commits` returns at most
+250 commits however you page it (`per_page` itself caps at 100). Past 250 the
+guard examines a prefix, and a collaborator commit beyond it reads as absent —
+a fail-open in the guard whose other decisions all fail closed. No PR here is
+near that, so this is a stated bound rather than a live problem: **if you meet a
+PR with more than 250 commits, do not trust the guard — treat it as latched,
+apply `unsettled: latched @ <sha>`, and say so in the report.** Not "treat it as
+another account's": that phrase routes to `not our branch`, whose commits
+carve-out would re-open the PR on every push and start the loop this reason
+exists to avoid.
+
+**Report this case in its own words, because the remedy differs.** Since CF-274
+there is no override, so `latched` is a permanent exit from the loop — and a PR
+latched *because the guard could not see far enough* is not one a collaborator
+has pushed to. The person reading the report needs to know which: one wants a
+decision about two people on a branch, the other wants someone to confirm the
+branch is in fact this account's and take it from there. Say so in the report's
+own words — *"latched because the guard could not verify a branch over 250
+commits"* — as prose, not as a marker. The comment on the PR is still
+`unsettled: latched @ <sha>`: the four round forms and the `unsettled:` prefixes
+are the only shapes anything reads back, and inventing a fifth makes it
+invisible to every rule that does.
+
+*This was "branches this run created" until 2026-08-25.* That rule was
+conditioned on a sign-off it never received, and the cost was measured: of the
+eight PRs in one night's working set, seven ended `unsettled: not our branch`
+and **all seven were this account's own work from earlier runs**. The loop could
+review everything it had built and fix none of it. The sign-off is now given:
+earlier runs of this account are this account.
+
+**If the harness still refuses the push, that is a separate gate and this rule
+does not override it.** Report the refusal rather than working around it.
+
+### Log before you finish each iteration
+
+Append a dated section to `.claude/overnight-log.md`: what you did, what you
+decided and why, and anything needing a human call. **Read it at the start of
+every iteration.** Context may be compacted between iterations; the log is the
+only thing that survives.
+
+**One thing goes in at the start of the run, not the end of an iteration:** the
+run's own start time, in this shape, on a line of its own:
+
+```
+run start: 2026-08-25T04:12:09Z
+```
+
+**Find it by matching the line, never by reading the log's first line.** The
+first line is not load-bearing and nothing guarantees what sits there — an
+iteration that appends before the count runs, or a partly-written entry, owns it
+just as easily:
+
+```
+SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
+[ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
+```
+
+`tail -1`, not `grep -m1`. The log is truncated at the end of each run — see
+[Reporting](REPORTING.md#then-reset-the-log-and-only-then) — so it should hold
+exactly one `run start:` line and the two would agree. Take the last anyway:
+a run that died before its reset leaves the previous run's line above this
+one's, and `grep -m1` would then window this run's counts against a night that
+is already over. And guard the empty case —
+an unset `SINCE` makes `.created_at > ""` true for every comment, which turns
+every per-run bound into an all-time one silently. The guard **exits**; a guard
+that only prints lets the failure it detected proceed anyway. Both failures point the same
+way as the `$(date …)` trap below: they widen the window rather than narrowing
+it, so nothing errors and the ceiling arrives early.
+
+A resolved timestamp, UTC and `Z`-suffixed — produce it with
+`date -u +%Y-%m-%dT%H:%M:%SZ` and write the **result**. Writing the command
+itself into the log is not a near miss: everything downstream compares strings,
+`$` sorts below every digit, so a literal `$(date …)` on that line makes every
+comparison true and the per-run bounds silently become all-time ones. Several
+bounds are recovered by comparing against this line after a compaction — see
+[the counting windows](#logging-and-the-counting-windows). Write it before the
+first iteration does
+anything.
+
+### Priority order
+
+Finish work already in flight before starting anything new.
+
+**Steps 1 and 2 are the two halves of one PR's cycle, not two sweeps over the
+queue.** Read them as: pick a PR that needs a review, then carry *that* PR
+through review and fix and re-review until it reaches a terminal state, then
+pick the next one. Running step 1 across every open PR and only then starting
+step 2 is the breadth-first pass ruled out below.
+
+#### The ceiling, and the settling exception
+
+**Ceiling: six rounds per PR per run, cold and semi-cold together**, so a
+pathological PR cannot consume the whole night. Counting only cold rounds would
+leave the semi-cold ones unbounded — every fix buys another check — and half of
+a ceiling is not a ceiling. Six covers a PR with two rounds of findings and the
+cold round that settles it — five by the cost model below, with one spare. The
+spare is now allocated: a PR that lands on the routing table's open-finding row
+spends it on the semi-cold round that recovers from a clean marker posted over
+an unclosed finding. A PR needing that detour twice will hit the ceiling, which
+is the intended outcome — twice is not a convergence.
+Hitting it is the same outcome: fix what you can, apply `unsettled` with an
+`unsettled: ran out of rounds @ <sha>` comment, record, move on.
+
+**One exception: a PR with nothing open may run the rounds settling needs, past
+the ceiling.** If the sixth round leaves no Critical and no Medium outstanding,
+settling still needs a fresh cold round, and refusing it labels a converged PR
+`unsettled: ran out of rounds` on arithmetic alone. That happened on #291 in the
+first real run: six rounds ending `semi-cold: closes — 4 of 4 Mediums closed,
+nothing new above a nit`, nothing open, and the failure label applied anyway.
+
+**"The rounds settling needs" is usually one, and is two for a PR that has never
+had a finding** — that case wants two consecutive `cold: clean` markers, so
+granting a single round would strand it exactly as the ceiling did. Grant what
+the settle bar asks for, no more.
+
+The exception terminates, which is why it is safe: **any finding ends it
+immediately.** An extra round that raises a Critical or Medium stops the PR
+there, and `unsettled: ran out of rounds` is then accurate rather than
+arithmetic. Rounds that stay clean can only run until the bar is met, and then
+the PR settles. There is no path that keeps granting rounds.
+
+**These rounds are charged to the 32-round budget.** They are real reviews and
+the counting query charges them automatically; unlike a `reopened:` marker or a
+re-posted marker, nothing here is free. The exception lifts the *per-PR*
+ceiling, never the run-wide budget.
+
+#### Order of work: one PR at a time
+
+**Take one PR all the way through before opening the next.** Review it, fix it,
+check the fix, settle or label it — then move on. Do not run a pass over every
+open PR and come back for a second lap.
+
+The reason is that this loop gets interrupted: context is compacted between
+iterations, and a usage limit stops the run outright, at no point of your
+choosing. Finishing PRs one at a time means whenever that happens, everything
+touched so far is in a terminal state — `review-settled`, `unsettled`, or
+untouched — and the next run can tell those apart. A breadth-first pass that is
+cut off leaves every PR half-cycled, which is precisely the "abandoned
+mid-cycle looks identical to reviewed clean" condition these labels exist to
+prevent. It also keeps the state you carry small: one PR's findings, not twenty.
+
+The cost is real: if the run dies early, PRs at the back of the queue got
+nothing at all. So the order matters. Take them: PRs this run opened, then any
+carrying a priority label, highest first, then oldest first. Note that most open
+PRs carry no labels at all, so in practice this is mostly "oldest first" — which
+is the intent, since the oldest have waited longest. Do not order by the
+`overnight-ok` label: that is the *issue* selection gate from
+[Choosing work](START.md#choosing-work) and no PR carries it.
+
+#### The run budget
+
+**Run budget: 32 rounds per run**, cold and semi-cold together. *Rounds*, not
+reviews: each round now submits a GitHub review as well as posting its marker,
+so counting "reviews" would be ambiguous about which artifact is meant. The
+budget counts rounds, and a round is one marker comment. Six rounds
+across a queue this size would permit far more — a whole night of nothing but
+reviewing, which together with "stop on usage limits" means step 3 never
+happens. **When the budget is spent, stop reviewing and go to step 3** — but
+step 3 may then only plan and file, **not open PRs**, because a PR opened with
+no review budget left is a draft this run cannot review, which the hard rules
+forbid. Say so in the report. A spent budget clears steps 1 and 2 for the rest of the run;
+without that fall-through the brief would forbid reviewing and gate ticket work
+behind reviews that can no longer happen, and specify nothing to do next.
+
+**In `review-only` mode there is no step 3 to go to, so a spent budget ends the
+run.** Do not read the fall-through above as permission to keep reviewing past the
+budget because the destination is missing.
+
+**"Ends the run" means it starts no new round — not that it stops mid-carry.**
+Everything the paragraph below requires still happens: label the PR you are
+holding, post its reason comment, and record it. A run that reads "ends" as
+immediate leaves exactly the unlabelled-with-open-findings PR that paragraph
+forbids.
+
+If the budget runs out with findings open on a PR, it gets the same treatment as
+the ceiling: `unsettled`, recorded, move on. Never leave a PR with open findings
+carrying no label — unlabelled and unreviewed are indistinguishable to the next
+run, which is the whole reason these labels exist.
+
+#### Logging, and the counting windows
+
+**Log every round as you finish it** — `PR #<n> — <cold|semi-cold>, round
+<k>/6, budget <used>/32` plus the tiers found. A round granted by the settling
+exception is logged as `settling, budget <used>/32` instead of a `<k>/6` — it is
+outside the ceiling, and writing `7/6` reads as a counting bug to the very
+cross-check that is meant to catch one. Neither bound is enforceable
+unless the count survives: context may be compacted mid-run, and counts you hold
+in your head reset to zero when it is. Recover both from the log at the start of
+every iteration, and cross-check **both** counts against the markers — the
+per-PR round count, and the run-wide budget, which is the sum of this run's
+markers across every PR it touched:
+
+```
+ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
+for n in $(gh pr list --state open --json number --jq '.[].number'); do
+  gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/$n/comments" --jq ".[] | select(.created_at > \"$SINCE\") | select(.body | test(\"$ROUNDS\"; \"i\")) | .id"
+done | wc -l
+```
+
+The budget needs this as much as the ceiling does. Recovering it from the log
+alone leans on the one source this same paragraph says a compaction can lose
+entries from, and losing entries makes the budget read *low* — so the run keeps
+reviewing past 32 and starves step 3, failing toward more reviewing rather than
+less.
+
+When log and markers disagree, **the markers win.** The log records
+what a round intended; the markers record what the PR actually carries, and
+every other rule here reads the PR. A log ahead of the markers means a round's
+marker did not land, which the check above is there to catch at the time; a log
+behind them means a compaction lost an entry. Neither is a reason to trust the
+log over the thing the rules read. Count markers, not comments: comments also
+carry your step 2 fix replies and anything a human wrote.
+
+**Count only markers from this run.** Markers persist for the life of the PR;
+the ceiling is six rounds *per run*, and an `unsettled: ran out of rounds` PR is
+promised a reset when new commits land. A raw count undoes both — a PR that
+spent six rounds last night would read as already at the ceiling before this run
+touched it. So count markers newer than the run's start time, which the
+[logging rule](#log-before-you-finish-each-iteration) puts on its own
+`run start: ` line — found by matching that line, never by position.
+
+**When a PR was re-opened mid-run, count from the `reopened:` marker instead —
+but only if that marker falls inside this run.** There is no label event to
+read here; re-opening writes that marker precisely so this bound survives the
+label being removed. Three states carry a commits-since carve-out —
+`review-settled`, and the `ran out of rounds` and `not our branch` reasons for
+`unsettled` — and each re-opens the same way, so each gets the same bound.
+(`needs a decision` and `latched` have no carve-out and never need it: both
+wait for a human, and neither is cleared by anything a run can do.) The bound
+you want is the *later* of the run start and that marker: a `reopened:` marker
+from last night is older than the run start, so counting from it sweeps in
+markers this run has already spent and the ceiling arrives early on a PR just
+promised a reset.
+
+`.created_at > "$SINCE"` is a lexicographic string compare against GitHub's
+`2026-08-24T23:08:57Z`, so `SINCE` must be UTC with the `Z` suffix and nothing
+else — which is what `date -u +%Y-%m-%dT%H:%M:%SZ` produces, and why the run
+start is recorded in that form. An offset form like `2026-08-25T01:08:57+02:00`
+sorts wrong against it and the count comes back low or zero — which reads as "no
+rounds this run" and hands the PR a fresh six-round ceiling:
+
+```
+ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
+SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
+[ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
+REOPENED=$(gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"^reopened:\"; \"i\")) | .created_at" | tail -1)
+FROM=$(printf '%s\n%s\n' "$SINCE" "$REOPENED" | sort | tail -1)
+gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.created_at > \"$FROM\") | select(.body | test(\"$ROUNDS\"; \"i\")) | .id" | wc -l
+```
+
+`FROM` is the later of the two, which is what the rule above says and what
+`$SINCE` alone does not give you: a PR re-opened earlier tonight would otherwise
+be counted from the run start, sweeping in the rounds it already spent and
+hitting the ceiling early — the failure this section exists to prevent. Sorting
+`Z`-suffixed UTC lexicographically picks the later; an empty `REOPENED` sorts
+first and leaves `SINCE`.
+
+### Repo traps that have already cost time
+
+- Migration numbers collide. Check `api/alembic/versions/` for the current head;
+  never assume.
+- `api/tests/` exists and CI runs it. Test-only dependencies go in
+  `api/requirements-dev.txt`, never `requirements.txt` — that file builds the
+  production image.
+- CF numbers have drifted from issue numbers. Check the highest existing `CF-`
+  number; do not infer it from the issue count.
+- A closed issue may be `COMPLETED` or `NOT_PLANNED` — opposite facts behind the
+  same `state`. Always read `stateReason`.
+- **The clone may be shallow, and a shallow clone fakes a clean merge check.**
+  `git merge-tree <base> <head> | grep -c '^<<<<'` returns `0` when the command
+  produced *no output at all*, which is what a missing history looks like — and
+  `0` reads as "no conflicts". Run `git fetch --unshallow origin` before
+  believing any merge or `origin/main..` comparison. A real conflict was hidden
+  this way.
+- **Stale `__pycache__` makes a mutation look like it survived.** Before every
+  mutation run: delete `__pycache__` and export `PYTHONDONTWRITEBYTECODE=1`.
+  The direction matters — stale bytecode can only produce false *survivals*,
+  never false kills, so an unexpected "the test still passed" is the case to
+  distrust.
+- **A mis-anchored substitution prints a clean pass indistinguishable from a
+  survival.** Every mutation must assert three things: the anchor appears
+  exactly once, it was actually applied, and it is gone after restoring. Two
+  mutations "passed" this way before that check existed — an em dash silently
+  became a double hyphen, and a 12-space anchor matched the tail of a 16-space
+  line.
+- **Apply edits one at a time, never as a batch script.** A five-edit script
+  that asserts partway through writes nothing, while the verification run after
+  it looks entirely normal.
