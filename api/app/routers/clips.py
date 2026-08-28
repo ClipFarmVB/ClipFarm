@@ -20,7 +20,7 @@ from app.schemas.clip import (
     ClipTagRequest,
     ClipTrimRequest,
 )
-from app.services import access, storage
+from app.services import access, follow_graph, storage
 from app.services.filenames import clip_download_filename
 from app.workers.celery_app import celery_app
 
@@ -44,7 +44,15 @@ async def _get_viewable_clip(
     """
     clip = await db.get(Clip, clip_id)
     game = await db.get(Game, clip.game_id) if clip else None
-    if not access.can_view_clip(viewer_id, clip, game):
+    # Costs a query only when the effective tier is `followers` — see
+    # follow_graph.resolve_follow.
+    follows = await follow_graph.resolve_follow(
+        db,
+        viewer_id,
+        game.owner_id if game else None,
+        (clip.visibility or game.visibility) if (clip and game) else None,
+    )
+    if not access.can_view_clip(viewer_id, clip, game, viewer_follows_owner=follows):
         # 404 not 403 — a 403 would confirm the clip exists to anyone probing.
         raise HTTPException(status_code=404, detail="Clip not found")
     assert clip is not None and game is not None  # narrowed by can_view_clip
@@ -129,7 +137,14 @@ async def list_clips(
     # back the narrowed one, so this needs no `assert` further down. The bare
     # assert that used to do the narrowing is stripped by `python -O`, which
     # would turn a contract into nothing on an optimised interpreter.
-    game = access.assert_can_view_game(viewer_id, await db.get(Game, game_id))
+    #
+    # The row is fetched first because resolve_follow needs the owner and the
+    # tier to decide whether the edge is worth a query at all (CF-110).
+    game = await db.get(Game, game_id)
+    follows = await follow_graph.resolve_follow(
+        db, viewer_id, game.owner_id if game else None, game.visibility if game else None
+    )
+    game = access.assert_can_view_game(viewer_id, game, viewer_follows_owner=follows)
 
     # Clips are filtered IN SQL (CF-108). Post-filtering the page in Python
     # would silently break pagination — ask for 50, get however many survived —
