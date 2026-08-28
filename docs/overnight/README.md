@@ -25,8 +25,11 @@ not the ones it is not. Every rule lives in exactly one file.
 | [`RATIONALE.md`](./RATIONALE.md) | optional background — what a night costs, why the machinery is shaped this way | 1.8k |
 
 `.claude/overnight-log.md` is scratch memory for one run, gitignored on purpose.
-**Read it at the start of every iteration.** The report that has to survive is
-posted as an issue — see [`REPORTING.md`](./REPORTING.md).
+**Read it at the start of every iteration**, and **truncate it as the last act
+of the run**, once the report issue is posted and confirmed — see
+[`REPORTING.md`](./REPORTING.md). The report is the copy that survives; the log
+is not, so a lesson worth keeping has to reach `RULES.md` or a phase file in the
+run that learned it.
 
 ## Reading protocol
 

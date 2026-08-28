@@ -183,17 +183,22 @@ run's own start time, in this shape, on a line of its own:
 run start: 2026-08-25T04:12:09Z
 ```
 
-**Find it by matching the line, never by reading the log's first line.**
-[Reporting](REPORTING.md#reporting) puts the run summary at the top of this same file, so
-whichever is written last owns the first line:
+**Find it by matching the line, never by reading the log's first line.** The
+first line is not load-bearing and nothing guarantees what sits there — an
+iteration that appends before the count runs, or a partly-written entry, owns it
+just as easily:
 
 ```
 SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
 [ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
 ```
 
-`tail -1`, not `grep -m1`: nothing truncates this log, so the first match is the
-*oldest* run's start and the newest is what you want. And guard the empty case —
+`tail -1`, not `grep -m1`. The log is truncated at the end of each run — see
+[Reporting](REPORTING.md#then-reset-the-log-and-only-then) — so it should hold
+exactly one `run start:` line and the two would agree. Take the last anyway:
+a run that died before its reset leaves the previous run's line above this
+one's, and `grep -m1` would then window this run's counts against a night that
+is already over. And guard the empty case —
 an unset `SINCE` makes `.created_at > ""` true for every comment, which turns
 every per-run bound into an all-time one silently. The guard **exits**; a guard
 that only prints lets the failure it detected proceed anyway. Both failures point the same

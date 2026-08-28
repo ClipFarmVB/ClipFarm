@@ -38,7 +38,35 @@ in the first line which run this was.
 mode ran. A reader cannot otherwise tell "reviewed nothing new" from "was not
 looking".
 
-Put the same summary at the top of `.claude/overnight-log.md`.
+### Then reset the log, and only then
+
+`.claude/overnight-log.md` is scratch memory for **one** run. Once the report
+issue exists, the log has no reader left: everything durable is in the issue,
+and everything a later run needs about a PR is in that PR's markers and labels.
+Left alone it accumulates — it reached 288K, some 74k tokens, across four runs,
+re-read on every iteration of every night that followed, which cost more per lap
+than the whole brief.
+
+So, as the **last action of the run**, in this order:
+
+1. Post the report issue.
+2. **Confirm it exists** — read back the issue number or URL the API returned.
+3. Only then truncate the log to empty.
+
+**Never truncate before step 2.** A truncate that runs after a failed post loses
+the night with nothing to show for it, and that is unrecoverable — the file is
+gitignored, so there is no version of it anywhere.
+
+Do not write a summary into the log on the way out. The issue is the copy that
+survives; a second copy in a file that is about to be deleted is the discardable
+rule-carrier this brief refuses everywhere else. The next run writes its own
+`run start:` line as its first act, into an empty file.
+
+**A lesson that mattered does not survive this.** If a run learned something
+that should change how future runs behave, it belongs in
+[`RULES.md`](RULES.md) or the phase file it governs, in the same run that
+learned it. Truncation is what makes that non-optional: a lesson left only in
+the log is gone at dawn.
 
 The report contains:
 
