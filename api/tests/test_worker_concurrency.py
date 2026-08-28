@@ -1,7 +1,8 @@
 """CF-65b: prefork pool config + fork-safety of inherited process state.
 
-Guarded with importorskip like the other api tests — the api CI job installs only
-ruff/mypy/pytest today (CF-102/#113 wires the rest).
+Guarded with importorskip like the other api tests. Every target here must be in
+api/requirements-dev.txt — test_dev_dependencies.py fails the suite otherwise
+(CF-276), which is what stops a guard from skipping itself into a green run.
 """
 import os
 
@@ -45,57 +46,53 @@ def test_sync_engine_uses_nullpool():
     assert isinstance(_sync_db._engine.pool, NullPool)
 
 
-def test_lock_client_is_rebuilt_in_a_new_process(monkeypatch):
-    """The lock client must not be reused across a fork.
+def test_lock_engine_is_rebuilt_after_a_fork(monkeypatch):
+    """The lock engine must not be reused across a fork.
 
-    Simulated by changing the observed pid: a client cached under a different pid
-    is discarded and rebuilt rather than shared.
+    Since CF-184 the per-game lock is a *session-scoped Postgres advisory lock*,
+    held by one connection. A prefork child inheriting the parent's engine would
+    share that socket — so a child could release, or appear to hold, the parent's
+    lock. This is sharper than the Redis TTL lock this test originally covered,
+    where sharing a client only risked interleaved bytes.
     """
-    pytest.importorskip("redis")
-    fakeredis = pytest.importorskip("fakeredis")
     from app.workers import locks
 
-    built = []
+    disposed = {}
 
-    def _fake_from_url(*_a, **_kw):
-        client = fakeredis.FakeStrictRedis()
-        built.append(client)
-        return client
+    class _FakeEngine:
+        def dispose(self, close=True):
+            disposed["close"] = close
 
-    monkeypatch.setattr(locks.redis.Redis, "from_url", staticmethod(_fake_from_url))
-    locks.reset_client()
+    monkeypatch.setattr(locks, "_engine", _FakeEngine())
 
-    first, _ = locks._get_client()
-    assert locks._get_client()[0] is first, "same process should reuse its client"
+    locks.reset_engine()
 
-    forked_pid = os.getpid() + 1  # resolve now — a lambda calling os.getpid()
-    monkeypatch.setattr(locks.os, "getpid", lambda: forked_pid)  # would recurse
-    second, _ = locks._get_client()
-
-    assert second is not first, "a forked child must not inherit the parent's client"
-    assert len(built) == 2
+    assert locks._engine is None, "the inherited engine must be dropped"
+    assert disposed == {"close": False}, (
+        "dispose(close=False): closing would take the parent's live lock "
+        "connection down with it"
+    )
 
 
-def test_lock_still_works_through_the_factory(monkeypatch):
-    """Behaviour from CF-65a must be unchanged by the per-process indirection."""
-    fakeredis = pytest.importorskip("fakeredis")
+def test_reset_engine_is_a_noop_when_nothing_was_built(monkeypatch):
+    """Solo pool, or a child that has not acquired yet — nothing to dispose."""
     from app.workers import locks
 
-    fake = fakeredis.FakeStrictRedis()
-    try:
-        fake.eval("return 1", 0)
-    except Exception:
-        pytest.skip("fakeredis without Lua support (install fakeredis[lua])")
+    monkeypatch.setattr(locks, "_engine", None)
+    locks.reset_engine()
+    assert locks._engine is None
 
-    monkeypatch.setattr(locks.redis.Redis, "from_url", staticmethod(lambda *a, **k: fake))
-    locks.reset_client()
 
-    a = locks.GameLock("game-cf65b", ttl_seconds=60)
-    b = locks.GameLock("game-cf65b", ttl_seconds=60)
-    assert a.acquire() is True
-    assert b.acquire() is False
-    a.release()
-    assert b.acquire() is True
+def test_the_post_fork_hook_resets_the_lock_engine(monkeypatch):
+    """The wiring, not just the reset: forksafe must actually call it."""
+    from app.workers import forksafe, locks
+
+    called = []
+    monkeypatch.setattr(locks, "reset_engine", lambda: called.append(True))
+
+    forksafe._reset_lock_engine()
+
+    assert called == [True]
 
 
 _THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
