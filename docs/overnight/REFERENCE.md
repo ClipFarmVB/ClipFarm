@@ -6,7 +6,7 @@ any stretch where questions cannot be answered.
 Start one with:
 
 ```
-/loop Read docs/overnight/README.md, then docs/overnight/REFERENCE.md in full, and follow it exactly. Re-read .claude/overnight-log.md first each iteration so you do not repeat work.
+/loop Read docs/overnight/README.md and follow docs/overnight/REFERENCE.md exactly, per the reading protocol in the README. Re-read .claude/overnight-log.md first each iteration so you do not repeat work.
 ```
 
 [`README.md`](./README.md) in this folder carries the reading protocol — read
@@ -1733,8 +1733,9 @@ the label" test never sees it: the label would certify a head no reviewer has
 looked at, and the PR would be skipped forever. This is the same shape as the
 mistake in the second run, described two paragraphs down.
 
-So: **fix nits before the settling round, or leave them.** Those are the
-options. Do not push a nit fix after the label either — it re-opens the PR by
+So: **fix nits before the settling round, or leave them** — and once nothing
+Critical or Medium is open, leaving them is the only option, per the freeze
+below. Do not push a nit fix after the label either — it re-opens the PR by
 design, which buys another cold round, which can surface another nit, which
 presents the same choice again. A PR can cycle indefinitely on nits alone,
 spending budget every lap, and nits are what the settle bar deliberately
@@ -1760,6 +1761,16 @@ must not spend a round. The same run ended with a cleared codebase and an
 The code at that head had been reviewed and found clean; the label said
 otherwise. Judge the head on the head. Fix the body, say in the settle comment
 that you did, and settle.
+
+Two things that carve-out has to be explicit about. **It overrides the settle
+bar's "closed by a semi-cold check" for this one case**, because that bar is
+about findings against the head and a body carries none — requiring a round to
+check a description would spend the budget the carve-out exists to save.
+And **confirm the body fix actually landed by reading the body back**, the same
+way a label is verified: an update call reports success whether or not the new
+text took, so an unverified body edit and a lost one are indistinguishable.
+Quote the corrected line in the settle comment so the record shows what was
+checked.
 
 ##### When you cannot fix it: choosing a reason
 
