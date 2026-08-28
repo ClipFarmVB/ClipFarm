@@ -172,24 +172,29 @@ MAX_SAMPLE_GAP_SEC        = 1.0     # skip triples spanning a detection gap
 # SEG_MAX_SPEED_PXPS. _segment_track splits any pair faster than that ceiling,
 # so speed inside a segment is always below it — once CONTACT_HIT_SPEED_PXPS *
 # scale meets it the two constraints are disjoint and find_contacts returns
-# nothing at all. Unclamped that lands at 1800p, and phones shoot 2160p.
+# nothing at all. Unclamped that lands at ~1964p, and phones shoot 2160p.
 #
 # Read the cap as damage control, NOT as 4K support. It moves the floor and
 # cannot move the ceiling, so the admissible band keeps closing with resolution:
 #
-#     360p   floor 0.667  ceiling 3.333 frame-heights/s   band 5.00x
-#     720p   floor 0.667  ceiling 1.667                   band 2.50x
-#    1080p   floor 0.667  ceiling 1.111                   band 1.67x
-#    1440p   floor 0.667  ceiling 0.833                   band 1.25x  <- clamp
+#     360p   floor 0.611  ceiling 3.333 frame-heights/s   band 5.45x
+#     720p   floor 0.611  ceiling 1.667                   band 2.73x
+#    1080p   floor 0.611  ceiling 1.111                   band 1.82x
+#    1440p   floor 0.611  ceiling 0.833                   band 1.36x
+#    1571p   floor 0.611  ceiling 0.764                   band 1.25x  <- clamp
 #
 # Every row above ships. What the cap would give past the clamp point does not,
 # and is listed only because it is the reason for the row under it:
 #
 #    2160p   floor 0.444  ceiling 0.556  (frozen scale)   band 1.25x  rejected
-#    2160p   floor 0.111  ceiling 0.556  (unscaled)       band 5.00x  shipped
+#    2160p   floor 0.102  ceiling 0.556  (unscaled)       band 5.45x  shipped
+#
+# Recomputed for CF-103's 220 px/s floor. The unclamped collision moves 1800p ->
+# ~1964p and the clamp point 1440p -> ~1571p, so the bands widen slightly and
+# 1440p now scales normally instead of sitting on the clamp. Shape unchanged.
 #
 # Read the rejected row carefully: the floor drops to 0.444. Below the clamp the
-# scale tracks resolution and the floor stays put at the validated 0.667 while
+# scale tracks resolution and the floor stays put at the validated 0.611 while
 # only the ceiling closes — degradation, but in the right direction. Past the
 # clamp the scale is frozen under a growing frame, so the whole band slides
 # below where real play lives (0.3-0.9 fh/s). Measured on real tracks: at 2160p

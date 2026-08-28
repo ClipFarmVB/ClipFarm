@@ -296,8 +296,23 @@ class TestPastTheClampPointItRevertsRatherThanExtrapolating:
     """
 
     def test_the_collision_is_real_without_a_cap(self):
-        """The premise: unclamped, the floor meets the ceiling at 1800p."""
-        unclamped = 1800 / REFERENCE_FRAME_HEIGHT
+        """The premise: unclamped, the floor eventually meets the ceiling — at a
+        height people actually shoot, which is what makes the cap necessary.
+
+        Derived from the constants rather than hardcoded. CF-103 lowering
+        CONTACT_HIT_SPEED_PXPS from 240 to 220 moves this from 1800p to ~1964p;
+        a test asserting the old number fails on a change that does not weaken
+        the premise at all, and one asserting the new number would rot the same
+        way at the next tune.
+        """
+        collision_fh = (
+            REFERENCE_FRAME_HEIGHT * SEG_MAX_SPEED_PXPS / ball.CONTACT_HIT_SPEED_PXPS
+        )
+        assert collision_fh <= 2160, (
+            f"the floor meets the ceiling only at {collision_fh:.0f}p, above the "
+            "2160p phones shoot — the cap would be guarding nothing"
+        )
+        unclamped = collision_fh / REFERENCE_FRAME_HEIGHT
         assert ball.CONTACT_HIT_SPEED_PXPS * unclamped >= SEG_MAX_SPEED_PXPS
 
     def test_past_the_clamp_point_reverts_to_unscaled(self):

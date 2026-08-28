@@ -56,6 +56,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ml.eval.harness import EVAL_DIR, DeadFixture, load_deadtime_fixture
 from ml.eval.metrics import DeadTimeSignals, evaluate_deadtime, union
@@ -67,9 +68,14 @@ BALL_CACHE_DIR = EVAL_DIR / "ball_caches"
 # Production condense settings. These are a hand copy of the app.config defaults
 # — this tool runs with no app installed — and ml/tests/test_eval_condense_settings.py
 # fails the build if the two drift, so keep them as plain dict(...) literals.
-COND = dict(gap_seconds=10.0, pad_before=5.0, pad_after=4.0,
+# Annotated Any, not inferred: the values are mixed — min_contacts is an int and
+# the rest are floats — and ml/eval/deadtime_variants.py and visualize_deadtime.py
+# (CF-187) both splat these into callees that require that int. Without the
+# annotation mypy infers dict[str, float] here and fails at their call sites, not
+# at this one.
+COND: dict[str, Any] = dict(gap_seconds=10.0, pad_before=5.0, pad_after=4.0,
             min_contacts=1, merge_gap_seconds=5.0)
-BRIDGE = dict(speed_pxps=150.0, fast_fraction=0.35, max_bridge_seconds=20.0)
+BRIDGE: dict[str, Any] = dict(speed_pxps=150.0, fast_fraction=0.35, max_bridge_seconds=20.0)
 
 # 1s of wrongly cut play costs this many seconds of kept dead time. Matches the
 # repo posture (CF-46): keeping some dead time beats cutting play.
