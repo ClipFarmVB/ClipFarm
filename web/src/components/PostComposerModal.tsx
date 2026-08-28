@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { Check, Globe, Lock, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { createPost, type Clip, type Visibility } from "@/lib/api";
-import { apiErrorMessage } from "@/lib/apiError";
+import { useFocusTrap } from "@/lib/useFocusTrap";
 import { cn } from "@/lib/utils";
 
 const RANK: Record<Visibility, number> = { private: 0, followers: 1, public: 2 };
@@ -104,6 +104,35 @@ export function PostComposerModal({
   const [done, setDone] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const captionRef = useRef<HTMLTextAreaElement>(null);
+
+  // A nested overlay has to declare itself one (CF-282), and this did not.
+  //
+  // ClipModal traps Tab inside its own card, and the trap stack only yields to
+  // an inner trap that registers. With none here, ClipModal stayed innermost
+  // and kept wrapping Tab through the controls *behind* this dialog: the
+  // caption box, the three tiers, Cancel and Post were in nobody's Tab cycle,
+  // so a keyboard user could see the composer and reach nothing in it. Focus
+  // was never moved in on open or restored on close either.
+  //
+  // The caption box as initialFocus, not the default first focusable — which
+  // here is the X, where the first Space after opening would discard the
+  // dialog. ClipModal's comment argues the same point and lands on its card;
+  // this one has an obvious safe target, and it is the thing the user opened
+  // the composer to type in.
+  //
+  // onEscape rather than the window listener that used to sit here: it runs on
+  // document capture, so no child's stopPropagation can silence it, and it
+  // preventDefaults — which the old listener did not, leaving Firefox to
+  // revert the caption field on the same keypress that closed the dialog.
+  // ClipModal's own `composing` guard still earns its place: it keeps the
+  // arrow keys from paging clips underneath while a caption is being typed,
+  // and that is not something a focus trap intercepts.
+  useFocusTrap(cardRef, true, {
+    initialFocus: () => captionRef.current,
+    onEscape: onClose,
+  });
 
   // The success pause holds a reference to this component for 900ms. Cancelling
   // Post within that window would otherwise fire onClose a second time after
@@ -112,21 +141,6 @@ export function PostComposerModal({
   useEffect(() => {
     return () => { if (closeTimer.current) clearTimeout(closeTimer.current); };
   }, []);
-
-  // Escape closes the composer, not the ClipModal underneath it.
-  //
-  // What makes that true is ClipModal's `composing` guard, which returns before
-  // it reads the key — NOT stopPropagation. Both listeners are on `window`, so
-  // neither can stop the other: stopPropagation only halts a bubbling event
-  // between DOM nodes, and these are siblings on the same target. The call is
-  // gone rather than left in place looking load-bearing.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   async function submit() {
     setSaving(true);
@@ -137,14 +151,20 @@ export function PostComposerModal({
       onPosted?.();
       closeTimer.current = setTimeout(onClose, 900);
     } catch (e) {
-      // Shared helper — it understands the 422 array shape now, so the
-      // composer no longer needs a private copy of that logic.
-      setError(
-        apiErrorMessage(
-          (e instanceof Error ? e.message : "").replace(/^API error \d+:\s*/, ""),
-          "Could not post",
-        ),
-      );
+      // Already decoded. `throwApiError` runs the body through
+      // `apiErrorMessage` and throws the result, so `e.message` IS the server's
+      // sentence — the 409's "this clip is private, so it can only be posted
+      // to private…", or a 422's joined `msg` list.
+      //
+      // Decoding it a second time here is what this used to do, and it undid
+      // the first: `JSON.parse` of a plain sentence throws, so every failure
+      // fell back to "Could not post". The 409 is the backstop for a clip that
+      // goes private between page load and click — the one case the greyed-out
+      // tiers cannot cover — and it was arriving with its reason stripped.
+      // Ironically the 422 branch added to `apiErrorMessage` for this composer
+      // widened the hole: making the first decode succeed is exactly what makes
+      // the second one fail.
+      setError(e instanceof Error && e.message ? e.message : "Could not post");
     } finally {
       setSaving(false);
     }
@@ -159,9 +179,17 @@ export function PostComposerModal({
       // never fired for the composer.
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
-      <div className="w-full max-w-md rounded-lg border border-border bg-background p-5">
+      <div
+        ref={cardRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="post-composer-title"
+        className="w-full max-w-md rounded-lg border border-border bg-background p-5"
+      >
         <div className="flex items-start justify-between">
-          <h2 className="text-lg font-semibold tracking-tight">Post this clip</h2>
+          <h2 id="post-composer-title" className="text-lg font-semibold tracking-tight">
+            Post this clip
+          </h2>
           <button
             onClick={onClose}
             className="rounded p-1 text-subtle hover:text-foreground"
@@ -176,6 +204,7 @@ export function PostComposerModal({
         </p>
 
         <textarea
+          ref={captionRef}
           value={caption}
           onChange={(e) => setCaption(e.target.value)}
           maxLength={500}

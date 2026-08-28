@@ -58,6 +58,11 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
     // footage — the clip stays in the library and can be posted again. Worth
     // saying in the button's title rather than in a modal.
     setDeleting(id);
+    // Clear first, or a failed delete leaves its banner up for the life of the
+    // page: nothing else resets it once the load effect has run, so a retry
+    // that succeeds removes the row from the grid while the message above it
+    // still says the delete failed.
+    setError(null);
     try {
       await deletePost(id);
       setPosts((prev) => (prev ?? []).filter((p) => p.id !== id));

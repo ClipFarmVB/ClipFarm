@@ -97,12 +97,15 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       // The composer owns the keyboard while it's open. Otherwise ← to fix a
-      // typo in the caption navigates to the previous clip, and Escape throws
-      // the draft away by closing this modal instead of just the composer.
-      if (composing) {
-        if (e.key === "Escape") setComposingFor(null);
-        return;
-      }
+      // typo in the caption navigates to the previous clip.
+      //
+      // Escape is NOT handled here — the composer registers a focus trap and
+      // is therefore innermost (CF-282), so its `onEscape` closes it and this
+      // listener must not also fire. Closing the composer from both places
+      // happened to agree, which is the problem with leaving it: it reads as
+      // load-bearing, and the day the two handlers do different things the
+      // duplicate is invisible. Bailing on every key is the whole rule.
+      if (composing) return;
       if (e.key === "Escape") {
         // Leaving the player's fullscreen fires Escape at the page as well as
         // at the UA, so without this one press exits fullscreen AND closes the

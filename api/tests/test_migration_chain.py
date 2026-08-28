@@ -211,12 +211,15 @@ def _parsed() -> list[tuple[str, str, str | None, str | None]]:
 PENDING_UPSTREAM: dict[str, tuple[str, str]] = {
     # revision: (its down_revision, the PR that brings it)
     #
-    # 015 is CF-226, a one-line widening of games.error_message. It was going to
-    # take the next number after this stack; that gated a P1 behind two feature
-    # PRs, so the dependency was inverted and it takes 015 while posts moved to
-    # 016. The PR is #320 — #229 is the *issue*, which is not a thing anyone can
-    # merge, and merge order is what this dict encodes.
-    "015": ("014", "PR #320 — CF-226 (#229) widen games.error_message"),
+    # Empty, which is the state to keep it in — an entry is a merge blocker,
+    # not a configuration. It held "015" (CF-226) while that P1 sat unmerged
+    # ahead of this stack: 015 was going to take the next number after CF-109,
+    # which gated a P1 behind two feature PRs, so the dependency was inverted
+    # and posts moved to 016. #320 merged as 42f0d8d and the entry came out in
+    # the same commit that merged main back into this branch, which is the only
+    # order that keeps the three guards below honest — dropping it earlier
+    # un-gates a chain that still cannot resolve, and later leaves 014 looking
+    # like the parent of both the real 015 and this dict's synthetic one.
 }
 
 

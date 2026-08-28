@@ -54,4 +54,26 @@ describe("apiErrorMessage", () => {
   it("ignores a JSON body with no detail field", () => {
     expect(apiErrorMessage(JSON.stringify({ error: "nope" }), FALLBACK)).toBe(FALLBACK);
   });
+
+  it("is not idempotent — decoding an already-decoded message destroys it", () => {
+    // Not a property of this function so much as the rule its callers have to
+    // know, pinned here because getting it wrong is silent and looked correct
+    // in review. `throwApiError` runs a response body through this and throws
+    // the RESULT, so a catch block holds the finished sentence: passing it back
+    // in makes JSON.parse throw and returns the fallback, replacing a real
+    // explanation with a generic one.
+    //
+    // PostComposerModal did exactly that, so the 409 naming the clip's
+    // visibility ceiling — the backstop for a clip that goes private between
+    // page load and click, the one case the greyed-out tiers cannot cover —
+    // always reached the user as "Could not post". The 422 branch above made it
+    // worse rather than better: a first decode that now succeeds is a second
+    // decode that now fails.
+    //
+    // The rule: decode once, at the throw site. A catch block uses e.message.
+    const body = JSON.stringify({ detail: "This clip is private." });
+    const once = apiErrorMessage(body, FALLBACK);
+    expect(once).toBe("This clip is private.");
+    expect(apiErrorMessage(once, "Could not post")).toBe("Could not post");
+  });
 });
