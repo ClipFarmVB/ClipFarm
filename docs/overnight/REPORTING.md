@@ -80,27 +80,32 @@ The report contains:
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
 - PRs labelled `unsettled`, split by the four reasons their `unsettled:` comment
-  gives — `needs a decision` (a reviewer found a judgement call), `latched` (a
-  collaborator pushed to the branch, **or** the guard could not verify it),
-  `not our branch` (the author's next push
-  re-opens it), and `ran out of rounds` (the per-PR ceiling, or the run-wide
-  budget) — and what is still outstanding on each
-- **Latched PRs by name, each saying why it latched.** Two of these reasons want
-  a human and want *different* humans doing different things: a judgement call
-  needs the reviewer's question answered, a latch needs someone to decide what to
-  do about a branch. A single "N need a human" figure hides that, which is the
+  gives — `needs a decision` (a reviewer found a judgement call), `latched` (the
+  harness refused the push), `not our branch` (the author's next push re-opens
+  it), and `ran out of rounds` (the per-PR ceiling, or the run-wide budget) — and
+  what is still outstanding on each
+- **Latched PRs by name, each saying exactly what refused the push.** Two of
+  these reasons want a human and want *different* humans doing different things:
+  a judgement call needs the reviewer's question answered, a latch needs someone
+  to unblock the push. A single "N need a human" figure hides that, which is the
   same signal loss the bullet below describes for the bounds.
 
-  A latch has two causes and they want different responses, so name the cause,
-  not just the state:
+  Name the refusal, not just the state — the error, and what you had tried to
+  push:
 
-  > `#312` is latched — `@sam` has pushed to the branch, so the run may not.
-  > 2 Medium and 3 nits are written up in the review. Someone needs to take this
-  > one over: merge it, push the fix, or hand it back to `@sam`.
+  > `#312` is latched — the push was refused by the harness (`permission denied
+  > by the auto mode classifier`), retried once with the same result. 2 Medium
+  > and 3 nits are written up in the review, and the patch is in the
+  > `unsettled:` comment. Someone needs to push it, or grant the run the
+  > permission.
 
-  > `#288` is latched — the guard could not verify it, because the branch has
-  > more than 250 commits. Nobody may have pushed to it at all. Someone needs to
-  > confirm whose branch it is; the findings are in the review either way.
+  **A latch should now be rare and is worth treating as an environment fault.**
+  Until 2026-08-29 the commonest cause was a collaborator's commit on the branch;
+  that condition was removed from the push test after it fired on ten of eleven
+  PRs in one queue and was a false positive every time. What is left is the push
+  machinery genuinely saying no, which is closer to something broken than to a
+  routine outcome — so if latches are common again, report *that* as the finding
+  rather than the individual PRs.
 
   **These PRs cannot be returned to the loop by anything a run does**, which is
   why the report line is not optional: it is the only place a latched PR is

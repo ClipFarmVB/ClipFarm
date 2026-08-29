@@ -39,17 +39,15 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 ### Hard rules
 
 - **Never** push to `main`, merge a PR, or force-push anything.
-- **Only push to the branch of a PR opened by the account this run posts as, and
-  only if nobody else has pushed to it.** Any run's PR, not just this one's. If a
-  fix belongs on a PR **another account** opened, or on a branch a collaborator
-  has touched, describe it in a review comment instead and never push. Both halves
-  are spelled out under [The push test](#the-push-test) below.
+- **Only push to the branch of a PR opened by the account this run posts as.**
+  Any run's PR, not just this one's. If a fix belongs on a PR **another account**
+  opened, describe it in a review comment instead and never push. See
+  [The push test](#the-push-test) below.
 - **Never authorise your own push past [The push test](#the-push-test).** If it
-  says the branch is another account's or a collaborator has pushed to it, that
-  is the answer — do not post, label or record anything that would let a later
-  round read it as permission. A grant mechanism existed once and is gone
-  (CF-274); this rule is about the class, not that mechanism, and holds whether
-  or not one exists again.
+  says the PR is another account's, that is the answer — do not post, label or
+  record anything that would let a later round read it as permission. A grant
+  mechanism existed once and is gone (CF-274); this rule is about the class, not
+  that mechanism, and holds whether or not one exists again.
 - **Never** deploy, unsuspend a hosting service, or touch production
   infrastructure.
 - **Never** run the local stack against a `DATABASE_URL` pointing at Supabase.
@@ -81,83 +79,93 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 
 ### The push test
 
-Two conditions, both required, and the second has to be re-run each time.
+**One condition: this account opened the PR.** Compare `gh api user --jq ".login"`
+against the PR's `.user.login`. That is the same test the `review scope` filter
+runs, so at `review scope: own` it is true of everything in the queue.
 
-**1 — This account opened the PR.** Compare `gh api user --jq ".login"` against
-the PR's `.user.login`. That is the same test the `review scope` filter runs, so
-at `review scope: own` it is true of everything in the queue.
+```
+ME=$(gh api user --jq ".login")
+AUTHOR=$(gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".user.login")
+[ -n "$AUTHOR" ] || { echo "cannot read the PR author — do not push"; exit 1; }
+[ "$AUTHOR" = "$ME" ] || { echo "another account's PR — do not push"; exit 1; }
+```
+
+**Guard the empty read.** A PR always has an author, so an empty `$AUTHOR` means
+the call failed — a network error, a rate limit, a wrong PR number, a token
+missing a scope — not that the PR is unowned. Without that check the comparison
+against an empty string is simply false and the guard *looks* like it fired for
+the right reason. Both guards **exit**; one that only prints lets the push it
+detected go out anyway.
 
 *Phrased as PR authorship rather than branch ownership because authorship is what
 the test reads.* GitHub does not expose "who owns the branch", and a rule written
 in terms its test cannot evaluate is a rule that drifts from its enforcement.
 
-**2 — Nobody else has pushed to the branch.** The two can diverge, and the
-divergence runs in the risky direction: a collaborator may push commits to a
-branch whose PR this account opened. The author test passes, so without this the
-run would treat the PR as its own and land fixes on someone else's in-flight
-work.
+#### The second condition, and why it is gone
 
-```
-ME=$(gh api user --jq ".login")
-COMMITS=$(gh api --paginate repos/ClipFarmVB/ClipFarm/pulls/<n>/commits --jq '.[].author.login // "UNKNOWN"')
-[ -n "$COMMITS" ] || { echo "cannot read commits — do not push"; exit 1; }
-printf '%s\n' "$COMMITS" | sort -u | grep -vx "$ME"
-```
+Until 2026-08-29 there was a second condition — **nobody else has pushed to the
+branch** — tested by reading `.author.login` off every commit in
+`pulls/<n>/commits` and refusing on any login but this account's. It was there to
+stop the run landing fixes on a collaborator's in-flight work, since a
+collaborator can push to a branch whose PR this account opened.
 
-**Any output means do not push.** Empty output means every commit is this
-account's — *but only if the read succeeded*, which is why `$COMMITS` is checked
-separately. A PR always has at least one commit, so an empty raw list means the
-call failed, not that the branch is clean. Without that check the guard fails
-**open** on a network error, a rate limit, a wrong PR number or a token missing a
-scope: `gh api` writes to stderr, stdout is empty, and empty reads as "push".
+**It was removed because it does not test that.** Commit authorship records where
+code *came from*, not who is holding the branch, and the two are decoupled by
+every ordinary history operation — rebase, cherry-pick, replay, squash. A branch
+this run creates by replaying someone else's commit carries their authorship
+forever, and reads to the guard exactly like a branch they are actively working
+on. The two cases are byte-identical in the data, so no threshold or refinement
+of that query separates them.
 
-**Run it immediately before each push, not once when you pick the PR up.** A run
-holds a PR across several rounds, and the failure this guards against is a
-collaborator pushing *while that is happening* — which is the same reasoning that
-makes the head SHA get re-read after every round.
+Measured on the queue of 2026-08-29, eleven PRs all opened by this account:
 
-Three things about the command:
+| commit authorship of the PR's own commits | PRs |
+|---|---|
+| the bot identity every Claude-written commit carries | five |
+| a teammate's, from commits **this run replayed onto a fresh branch** | three |
+| both | two |
+| this account's own | one |
 
-- **`.author.login` is correct *here*, and it is the one place in this document
-  that is so.** [The author field rule](REVIEW.md#step-1--which-prs-need-a-round) says to use
-  `.user.login`, in bold, and it is right — about `pulls/<n>`. This is
-  `pulls/<n>/commits`, a different payload: its objects carry `author` and
-  `committer` and **no `user` at all** (verified on #311). "Correcting" this to
-  `.user.login` would yield `UNKNOWN` for every commit, fire the guard on every
-  PR, and make the whole queue unpushable — reinstating the stall CF-270 removed,
-  silently, behind a guard that looks like it is working.
-- **Not `gh pr view --json commits`.** It caps at 100 with no paging, and its
-  author field is the *commit* author, which a rebase or a co-authored commit
-  misattributes — so it fires on the account's own rebased branches.
-- **`// "UNKNOWN"` fails closed.** `.author.login` is `null` for a commit whose
-  email is linked to no account; a bare `.author.login` lets those read as "no
-  other login", and the guard never fires. Mapping them to `UNKNOWN` makes an
-  unverifiable branch count as someone else's. Measured 2026-08-25 on #190, #191,
-  #214, #243 and #288: 0 nulls across 36 commits, so this should be rare — if it
-  stops being rare, report that rather than working around it.
+Ten of eleven refused. Not one was a collaborator working on the branch: five
+were the identity this environment stamps on everything it writes, and five
+carried preserved authorship from rebuilds this account had performed itself a
+day earlier. The guard's entire yield was false positives, and it made the loop
+unable to fix code on any PR in its own queue — the same stall CF-270 removed,
+arriving by a different route.
 
-**The bound this command does not clear.** `pulls/<n>/commits` returns at most
-250 commits however you page it (`per_page` itself caps at 100). Past 250 the
-guard examines a prefix, and a collaborator commit beyond it reads as absent —
-a fail-open in the guard whose other decisions all fail closed. No PR here is
-near that, so this is a stated bound rather than a live problem: **if you meet a
-PR with more than 250 commits, do not trust the guard — treat it as latched,
-apply `unsettled: latched @ <sha>`, and say so in the report.** Not "treat it as
-another account's": that phrase routes to `not our branch`, whose commits
-carve-out would re-open the PR on every push and start the loop this reason
-exists to avoid.
+**Excluding the bot identity was considered and rejected.** It would have cleared
+five of the ten and left the five replayed-authorship refusals untouched, because
+those name real people. It also cannot be right in principle: as more of the
+repository is written through Claude, a genuine collaborator's commits carry the
+bot identity too, so the exclusion blinds the guard to exactly the case it exists
+for while still firing on rebases. A test that is wrong in both directions is not
+improved by narrowing it.
 
-**Report this case in its own words, because the remedy differs.** Since CF-274
-there is no override, so `latched` is a permanent exit from the loop — and a PR
-latched *because the guard could not see far enough* is not one a collaborator
-has pushed to. The person reading the report needs to know which: one wants a
-decision about two people on a branch, the other wants someone to confirm the
-branch is in fact this account's and take it from there. Say so in the report's
-own words — *"latched because the guard could not verify a branch over 250
-commits"* — as prose, not as a marker. The comment on the PR is still
-`unsettled: latched @ <sha>`: the four round forms and the `unsettled:` prefixes
-are the only shapes anything reads back, and inventing a fifth makes it
-invisible to every rule that does.
+**What the removed condition protected is real but narrow**, and worth stating so
+it is not silently assumed handled: a teammate with the branch checked out gets a
+rejected push, or force-pushes over a fix, if the run writes to it underneath
+them. Nothing is lost — git keeps both sides — but it is disruptive and nobody
+asked for it.
+
+**If that hazard is ever worth a guard again, the signal is the pusher, not the
+author** — who most recently pushed to the ref, which GitHub exposes separately
+from commit metadata and which no history rewrite launders. That is a different
+rule and it should be written only when the hazard has actually bitten, with the
+incident named. Do not reinstate an authorship check.
+
+**Two consequences to hold on to.** A branch a collaborator is working on is now
+pushable as far as this document is concerned, so **read the PR before pushing to
+it** — a conversation about work in progress is a reason to write a comment
+instead, and that judgement now sits with the run rather than with a query. And
+the run may now push to a branch carrying commits it did not write, so the head
+SHA on every marker is doing more work than before: it is the only thing left
+that detects a head moving under an open round.
+
+**If the harness refuses the push, that is a separate gate and this rule does not
+override it.** Report the refusal rather than working around it, and label the PR
+`unsettled: latched @ <sha>` — see [the terminal labels and their
+reasons](REVIEW.md#the-terminal-labels-and-their-reasons), where `latched` is now
+defined by that refusal rather than by a collaborator's commits.
 
 *This was "branches this run created" until 2026-08-25.* That rule was
 conditioned on a sign-off it never received, and the cost was measured: of the
@@ -165,9 +173,6 @@ eight PRs in one night's working set, seven ended `unsettled: not our branch`
 and **all seven were this account's own work from earlier runs**. The loop could
 review everything it had built and fix none of it. The sign-off is now given:
 earlier runs of this account are this account.
-
-**If the harness still refuses the push, that is a separate gate and this rule
-does not override it.** Report the refusal rather than working around it.
 
 ### Log before you finish each iteration
 

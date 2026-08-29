@@ -89,9 +89,9 @@ The hard rule is [only push to PRs this account opened](RULES.md#hard-rules). At
 That is the point of the mode: review the queue *and* clear it.
 
 At `review scope: all` the queue also contains other accounts' PRs, and those it
-still may not touch. So what it cannot push to is *other people's* work — and,
-at either scope, any branch a collaborator has pushed to; see
-[The push test](RULES.md#the-push-test).
+still may not touch. So what it cannot push to is *other people's* work — and
+since 2026-08-29 that is the whole of it; see
+[The push test](RULES.md#the-push-test), which no longer reads commit authorship.
 
 Two things follow, and both matter more than they look.
 
@@ -115,10 +115,10 @@ Two things follow, and both matter more than they look.
   discipline, stated plainly, because there is no longer a construction to hide
   behind. If concurrency is ever wanted, runs need an identity — in the markers
   and in the counters — and that is the work, not a wording change here.
-- **Step 2 runs in full at `own` on the PRs it may push to.** That is most of an
-  `own` queue — everything except branches a collaborator has pushed to — so
-  `review-only` fixes findings and re-reviews exactly as `build` does, and the
-  difference between the modes is step 3, not step 2. At
+- **Step 2 runs in full at `own`.** That is the whole of an `own` queue since the
+  push test stopped reading commit authorship, so `review-only` fixes findings and
+  re-reviews exactly as `build` does, and the difference between the modes is step
+  3, not step 2. At
   `review scope: all` the other accounts' PRs are the ones step 2 cannot fix:
   describe the fix in a comment, apply `unsettled`, and post the reason that
   fits — `not our branch @ <sha>` when the fix is straightforward but
@@ -151,11 +151,11 @@ What the mode delivers *over several nights* is the full cycle: review, fix,
 re-review, settle.
 
 **At `review scope: own` the mode runs its own cycle end to end.** Every
-in-scope PR is this account's, and every one it may push to — all but the
-collaborator-latched ones, see [The push test](RULES.md#the-push-test) — it reviews,
-fixes what needs no judgement, and re-reviews, without waiting on anyone. That
-is the mode working as intended, and it is what the push rule change on
-2026-08-25 bought.
+in-scope PR is this account's, and every one is one it may push to — see
+[The push test](RULES.md#the-push-test) — so it reviews, fixes what needs no
+judgement, and re-reviews, without waiting on anyone. That is the mode working as
+intended, and it is what the push rule changes of 2026-08-25 and 2026-08-29
+bought.
 
 *This paragraph previously said the opposite.* Under the old rule — push only to
 branches **this run** created — a `review-only` night created no branches and so
@@ -216,23 +216,25 @@ So the **report is the only record**, which is why naming the excluded PRs there
 is a requirement and not a courtesy. A reader who wants to know why a PR went
 untouched has exactly one place to look.
 
-**Scope and pushability share their first test**, and both read `.user.login`
-on the PR — pushing then adds a second condition:
+**Scope and pushability are the same test**, and both read `.user.login` on the
+PR:
 
 | question | test |
 |---|---|
 | may this run *review* the PR? | is `.user.login` this account, or is scope `all`? |
-| may this run *push* to it? | is `.user.login` this account, **and** no commit on the branch carries another login? |
+| may this run *push* to it? | is `.user.login` this account? |
 
-So at `review scope: own` everything in the queue is pushable **unless a
-collaborator has pushed to it** — see the branch check in
-[Hard rules](RULES.md#hard-rules). At `all`, other accounts' PRs are reviewable but not
-pushable at all.
+So at `review scope: own` everything in the queue is pushable. At `all`, other
+accounts' PRs are reviewable but not pushable at all.
 
-*Until 2026-08-25 these were different questions* — the push test asked which run
-created the branch, so a PR this account opened on an earlier night was in scope
-to review and out of bounds to push to. That was the common case and it is what
-stalled the loop; see [Hard rules](RULES.md#hard-rules).
+*These have been three different rules.* Until 2026-08-25 the push test asked
+which run created the branch, so a PR this account opened on an earlier night was
+in scope to review and out of bounds to push to — the common case, and what
+stalled the loop. Until 2026-08-29 it also refused any branch carrying a commit
+authored by another login, which fired on ten of eleven PRs in one measured
+queue and was a false positive every time; see
+[The push test](RULES.md#the-push-test) for why authorship cannot answer the
+question it was being asked.
 
 ### When a `review-only` run is done
 
