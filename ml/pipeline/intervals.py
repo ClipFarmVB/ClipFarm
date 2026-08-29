@@ -8,10 +8,20 @@ same thing.
 
 Its own module rather than a corner of dead_time.py (CF-95): ml/eval/metrics.py
 documents itself as having no app, no DB and no I/O imports, and reached into a
-pipeline module for merge_intervals to keep that promise. dead_time.py happens
-to be stdlib-only today, but nothing obliges it to stay that way — it derives
-keep windows and is free to grow a dependency. This module is the thing that is
-obliged.
+pipeline module for merge_intervals to keep that promise.
+
+**dead_time.py no longer keeps it.** It imports numpy — CF-187 (#243) added
+that, and it is correct there: it is a pipeline module deriving keep windows and
+is entitled to a dependency. What it is not is a safe place for metrics.py to
+reach into, which is why this module exists and why CF-95 is a fix rather than a
+refactor. This module is the thing that is obliged to stay import-light; that one
+never was.
+
+(The original wording here said dead_time "happens to be stdlib-only today, but
+nothing obliges it to stay that way". That was true when written and had gone
+false by the time the change landed — which is precisely the coupling it was
+warning about, so leaving it would have told the next reader the risk was still
+theoretical.)
 
 Nothing is imported here on purpose, and it should stay that way: anything
 reachable from metrics.py has to work without numpy or cv2.
