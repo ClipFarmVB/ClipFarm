@@ -11,9 +11,13 @@ import { Clapperboard } from "lucide-react";
  * site because the two differ for real reasons: the rail's version closes the
  * drawer on navigate and shares a flex row with a close button.
  *
- * The hover state is `group-hover:`, so it relies on that wrapping <Link>
- * carrying `group`. Both call sites do — noted here rather than left to be
- * rediscovered by breaking it.
+ * That means both of this component's couplings to its parent live on that
+ * <Link>, because it returns a bare fragment: `flex items-center gap-2.5` is
+ * what lays the mark and wordmark out beside each other, and `group` is what
+ * drives the `group-hover:` on the mark. Both call sites carry all of it. The
+ * layout half breaks visibly the moment it is missing; the hover half just
+ * stops working quietly, which is why both are written down here rather than
+ * left to be rediscovered by breaking them.
  */
 export function BrandMark() {
   return (
