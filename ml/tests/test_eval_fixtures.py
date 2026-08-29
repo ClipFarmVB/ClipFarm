@@ -25,6 +25,16 @@ DEADTIME_IDS = sorted(
     if p.name != "demo_deadtime.json"
 )
 
+# Every highlight fixture, discovered rather than named. `test1` was the only
+# one when the tier checks below were written, and hardcoding it meant a second
+# highlight fixture inherited none of them: one added with a mis-cased tier and
+# an untagged clip left the whole suite green while the loader silently scored
+# 2 of its 3 clips. Deadtime fixtures are a different shape read by a different
+# loader, so they are excluded here rather than merged in.
+HIGHLIGHT_IDS = sorted(
+    p.stem for p in FIXTURES_DIR.glob("*.json") if not p.stem.endswith("_deadtime")
+)
+
 
 class TestEveryDeadtimeFixture:
     """
@@ -233,36 +243,79 @@ class TestGroundTruthTierFilter:
 
         assert fx.clips == [(10.0, 20.0), (30.0, 40.0)]
 
-    def test_the_shipped_fixture_declares_a_tier_for_every_clip(self):
-        """Guards the premise the tests above rest on.
+    def test_the_highlight_fixtures_are_discovered(self):
+        """A glob that silently matches nothing makes every case below vacuous —
+        the same guard the dead-time class carries, for the same reason."""
+        assert HIGHLIGHT_IDS, "no highlight fixtures found"
+        assert "test1" in HIGHLIGHT_IDS, HIGHLIGHT_IDS
+
+    @pytest.mark.parametrize("test_id", HIGHLIGHT_IDS)
+    def test_every_highlight_fixture_declares_a_known_tier_for_every_clip(self, test_id):
+        """Guards the premise the tests above rest on, for every highlight
+        fixture rather than the one that happened to exist when this was
+        written.
 
         The filter is permissive about a missing tier, so an unlabelled clip
-        that slips into `test1.json` is scored rather than reported. That is the
-        right default for the loader and the wrong state for ground truth.
+        that slips in is scored rather than reported. That is the right default
+        for the loader and the wrong state for ground truth.
 
-        A *wrong* tier is checked as well as a missing one, and it is the more
-        likely authoring mistake: a value the legend does not define is neither
-        `None` nor selected, so `load_fixture` drops the clip silently and the
-        fixture quietly shrinks. Asserting only `is not None` cannot see that —
-        changing one clip's tier from "C" to "c" left this test green, and the
-        only thing that caught it was an unrelated test comparing against the
-        dead-time twin, which a future fixture without a twin would not have.
+        A *wrong* tier matters as much as a missing one, and is the likelier
+        authoring mistake: a value the legend does not define is neither `None`
+        nor selected, so `load_fixture` drops the clip silently and the fixture
+        quietly shrinks. Asserting only `is not None` could not see that —
+        changing one clip's tier from "C" to "c" left the earlier version of
+        this test green, and the only thing that caught it was an unrelated
+        comparison against the dead-time twin, which a fixture without a twin
+        does not have.
         """
-        raw = load_fixture("test1").raw
+        raw = load_fixture(test_id).raw
+
+        assert "tier_legend" in raw, (
+            f"{test_id}.json has no tier_legend, so no tier can be validated "
+            f"against it — every check below would pass vacuously"
+        )
         legend = set(raw["tier_legend"])
 
         untagged = [c for c in raw["clips"] if c.get("tier") is None]
-        assert not untagged, f"clips in test1.json with no tier: {untagged}"
+        assert not untagged, f"clips in {test_id}.json with no tier: {untagged}"
 
         unknown = sorted(
             {c["tier"] for c in raw["clips"] if c.get("tier") not in legend}
         )
         assert not unknown, (
-            f"clips in test1.json carry tiers the legend does not define: "
+            f"clips in {test_id}.json carry tiers the legend does not define: "
             f"{unknown}. `load_fixture` drops these silently, so the fixture "
             f"scores fewer clips than it appears to contain."
         )
 
-        assert set(raw["ground_truth_tiers"]) <= legend, (
-            "ground_truth_tiers names a tier the legend does not define"
+        assert set(raw.get("ground_truth_tiers", [])) <= legend, (
+            f"{test_id}.json: ground_truth_tiers names a tier the legend does "
+            f"not define"
+        )
+
+    def test_test1_still_scores_every_clip_it_ships(self):
+        """The shrink the checks above cannot see.
+
+        A clip re-tiered from `C` to `N`, or a `ground_truth_tiers` narrowed to
+        `["M"]`, is legal on every axis asserted above — the tier is in the
+        legend and the set is a subset of it — and quietly drops clips from
+        scoring. Both were green here, caught only by the dead-time twin
+        comparison, which is a coincidence of this fixture having a twin.
+
+        Asserting membership in `ground_truth_tiers` would over-reach: the
+        loader is *documented* to exclude tiers, and a fixture is entitled to
+        do so deliberately. What is not intended is doing it by accident, so
+        this pins the count instead. If a re-labelling pass genuinely changes
+        it, update the number in the same commit and the diff records the
+        decision.
+        """
+        raw = load_fixture("test1").raw
+        scored = load_fixture("test1").clips
+
+        assert len(raw["clips"]) == 41, "test1.json ships 41 clips"
+        assert len(scored) == 41, (
+            f"test1.json ships {len(raw['clips'])} clips but scores "
+            f"{len(scored)}. Every clip is M or C and both are in "
+            f"ground_truth_tiers, so a shortfall means a clip was re-tiered "
+            f"out of scoring or ground_truth_tiers was narrowed."
         )
