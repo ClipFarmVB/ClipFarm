@@ -1539,14 +1539,25 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 sync_set_game_status(gid, "failed")
                 reported = True
             except Exception:
-                # Say which of the two exits below this run is heading for. A
-                # permanent condition returns without retrying, so "a retry may
-                # settle it" would be false in exactly the case where the row is
-                # already stranded for good — and this line is what an operator
-                # greps to decide whether to wait or intervene.
+                # Say what an operator should do, and say it truthfully. Both
+                # writes failed to reach this line, so `reported` is False here
+                # by construction and the gate below cannot return — **a retry
+                # always follows from this point, whatever the exception type**.
+                #
+                # This message used to branch to "nothing below will retry it"
+                # for a permanent failure. That branch was correct when the gate
+                # read the exception type alone; adding `reported` to the gate
+                # made it unreachable and left it asserting the opposite of what
+                # happens. An operator greps this line to decide whether to wait
+                # or intervene, so it saying "nothing will retry" while a retry
+                # runs is worse than saying nothing.
+                #
+                # The type still changes what the retry can *achieve*, which is
+                # the part worth telling them.
                 next_step = (
-                    "this failure is permanent, so nothing below will retry it "
-                    "— it needs a human now"
+                    "a retry follows, but the failure itself is permanent — the "
+                    "retry can only get the status written, not make the job "
+                    "succeed; if the attempts run out it needs a human"
                     if isinstance(exc, PermanentPipelineError)
                     else "a retry below may still settle it; if the attempts run "
                     "out it needs a human"
