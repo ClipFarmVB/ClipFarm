@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { FolderOpen, Plus, X, Check, Loader } from "lucide-react";
 import {
   getCollections,
@@ -166,7 +167,23 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
     }
   }
 
-  return (
+  // Portalled to document.body, like ClipModal — and it is not cosmetic
+  // symmetry. Rendered inline, this overlay is a descendant of the page's
+  // `.fade-up` wrapper, and `.fade-up` keeps `transform: translateY(0)`
+  // applied forever because its animation is `both`-filled. A transform that
+  // is not `none` makes an element a containing block for `position: fixed`
+  // descendants, so `inset-0` sized this to the *document* rather than the
+  // viewport and centred the card thousands of pixels below the fold: mounted,
+  // visible, opacity 1, and unreachable, with the scroll lock already holding
+  // the page still. Measured at ovTop 76 / ovH 11304 / cardTop 5647 in a 608px
+  // viewport (CF-347).
+  //
+  // The portal is the fix rather than editing the keyframe, because ending
+  // `fade-up` at `transform: none` would still leave the bug live for the
+  // 0.22s the animation is running — and because this way the overlay does not
+  // care what any ancestor does. `.fade-up` wraps most pages here, so an inline
+  // `fixed` child is a trap the next overlay would fall into too (CF-349).
+  return createPortal(
     <div
       ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
@@ -288,6 +305,7 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
