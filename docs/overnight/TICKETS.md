@@ -39,13 +39,28 @@ applies in both modes.
 4. **Run the full gate.** Every step `ci.yml` runs:
 
    ```
+   pip install -r requirements-tooling.txt
    ruff check api/
    mypy api/app --ignore-missing-imports
-   ruff check ml/eval
+   ruff check ml/                       # ml/ entire, not ml/eval (CF-254)
    mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
+   pip install "numpy==1.26.4"          # AFTER the lint/type steps — see below
    python -m pytest ml/tests/
+   pip install -r api/requirements-dev.txt
    cd api && python -m pytest tests/
    ```
+
+   **The three installs are part of the list and their order is load-bearing.**
+   `numpy` goes in after ruff and mypy on purpose: both are tuned against a
+   dependency-free environment and numpy ships `py.typed`, so its presence
+   changes what `--ignore-missing-imports` resolves and hence the error set mypy
+   reports. `api/requirements-dev.txt` goes in before the api suite because
+   several tests guard their imports with `pytest.importorskip` and **skip
+   silently** without it — a green run that checked nothing.
+
+   Note `ruff` widened to all of `ml/` while `mypy` is still `ml/eval` only.
+   That asymmetry is deliberate and lives in `ci.yml`'s own comment; do not
+   "fix" it by widening mypy to match.
 
    For web changes, all three — the test step is easy to forget:
 
@@ -55,16 +70,17 @@ applies in both modes.
    npm run test --workspace=web
    ```
 
-   **On tool versions.** `ci.yml` installs `ruff mypy pytest` **unpinned**, so CI
-   resolves whatever is latest on the day it runs. That means there is no pinned
-   version to match — the closest you can get is installing the same unpinned way
-   CI does, which the environment's setup script now handles. Do not claim a gate
-   matches CI's tooling; state the versions you actually ran in the report.
+   **On tool versions.** `ci.yml` installs `requirements-tooling.txt`, which is
+   **pinned**, so there is a version to match and you should match it — install
+   that file rather than `pip install ruff mypy pytest`, and a finding in your
+   gate is a finding in CI. State the versions you actually ran in the report
+   anyway; that is cheap and it is what catches a drift between the file and the
+   environment.
 
-   This is not a detail. The first run's reviews were checked with different
-   `ruff`/`mypy` than CI used, which the agent flagged against its own work —
-   CF-92 (#255) exists to pin them. **Once that lands, match the pinned versions
-   and drop this caveat.**
+   This mattered: the first run's reviews were checked with different
+   `ruff`/`mypy` than CI used, and ruff 0.16.0 widened its default rule set and
+   reddened a PR in untouched code. CF-92 (#255) pinned them and has since
+   landed, which is why this paragraph no longer says the opposite.
 
    Do not open a PR if any gate fails — log it and move on.
 5. **Open a draft PR** following `.github/pull_request_template.md`, including
