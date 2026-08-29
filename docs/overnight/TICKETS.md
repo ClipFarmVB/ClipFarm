@@ -47,8 +47,20 @@ applies in both modes.
    pip install "numpy==1.26.4"          # AFTER the lint/type steps — see below
    python -m pytest ml/tests/
    pip install -r api/requirements-dev.txt
-   cd api && python -m pytest tests/
+   cd api && LOCK_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres \
+       python -m pytest tests/
    ```
+
+   **`LOCK_TEST_DATABASE_URL` is part of the command, not optional.** Without it
+   `api/tests/_pg.py` probes two hardcoded `localhost:5432` candidates and, on a
+   machine whose Postgres is anywhere else, **skips** the CF-184 advisory-lock
+   suite and the post-visibility pg tests. Measured: 824 passed / 0 skipped with
+   it, **816 passed / 8 skipped — and green — without**. Point it at whatever
+   local cluster you have; the value above is CI's.
+
+   That is the silent-skip failure the paragraph below warns about, reached
+   through the environment rather than through a missing package, and it is why
+   the env var belongs in the list rather than in a reader's memory.
 
    **The three installs are part of the list and their order is load-bearing.**
    `numpy` goes in after ruff and mypy on purpose: both are tuned against a
@@ -62,9 +74,10 @@ applies in both modes.
    That asymmetry is deliberate and lives in `ci.yml`'s own comment; do not
    "fix" it by widening mypy to match.
 
-   For web changes, all three — the test step is easy to forget:
+   For web changes, all four — the test step is easy to forget:
 
    ```
+   npm ci --workspace=web
    npm run lint --workspace=web
    npm run typecheck --workspace=web
    npm run test --workspace=web
