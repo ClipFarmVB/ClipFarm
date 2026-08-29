@@ -117,6 +117,22 @@ class _FakeSession:
         return _Result(self._queued.pop(0))
 
 
+def _tables_touched(stmt):
+    """Every table the statement references, by name.
+
+    Not a substring scan of the compiled SQL. That was the first version, and
+    it forbade the literal strings "join", "teams" and "owner_id" anywhere in
+    the text — so a `joined_at` column, or a legitimate join added later to
+    fetch something unrelated, would fail the test with a message accusing
+    CF-263 of being reversed. Walking the statement asks the question the
+    decision actually cares about: does this query reach beyond `players`?
+    """
+    from sqlalchemy import Table
+    from sqlalchemy.sql import visitors
+
+    return {el.name for el in visitors.iterate(stmt) if isinstance(el, Table)}
+
+
 def _list(session, game, viewer_id):
     return asyncio.run(clips_router.list_clips(game.id, session, viewer_id))
 
@@ -204,15 +220,13 @@ def test_the_player_lookup_is_not_filtered_by_ownership():
     _list(session, game, ANONYMOUS)
 
     assert len(session.statements) == 2, "clip page, then player lookup"
-    sql = str(session.statements[1].compile(compile_kwargs={"literal_binds": False}))
+    touched = _tables_touched(session.statements[1])
 
-    assert "players" in sql.lower(), f"second query is not the player lookup: {sql}"
-    for forbidden in ("join", "owner_id", "teams"):
-        assert forbidden not in sql.lower(), (
-            f"the player lookup filters on {forbidden!r}, so a viewer no longer "
-            f"sees the name tagged on a clip they may read — that reverses "
-            f"CF-263 (#293). Statement was: {sql}"
-        )
+    assert touched == {"players"}, (
+        f"the player lookup reaches {sorted(touched)} rather than players "
+        f"alone, so it can gate the name on something other than the clip the "
+        f"viewer may already read — that reverses CF-263 (#293)."
+    )
 
 
 # ── The collection listing, which the decision covers equally ────────────────
@@ -265,7 +279,12 @@ def test_a_collection_clip_carries_its_player_name():
     """Same decision, second route. The viewer owns the collection but not the
     player — a collection spans owners once a public clip can be saved into it,
     which is exactly the case the ownership filter would break."""
-    game = _Game(Visibility.public)
+    # The game is owned by somebody else — that is the whole point. A viewer
+    # who owned the game too would still see the name under a route that gated
+    # the attach on `game.owner_id == user_id`, so this test would pass while
+    # the decision was reversed. The statement pin cannot cover that: a Python
+    # gate leaves the SQL untouched.
+    game = _Game(Visibility.public, owner_id=STRANGER)
     player = _Player()
     collection = _Collection(owner_id=OWNER)
     session = _FakeCollectionSession(collection, [_Clip(game, player)], [player], [game])
@@ -282,7 +301,7 @@ def test_a_collection_clip_carries_its_player_name():
 def test_the_collection_player_lookup_is_not_filtered_by_ownership():
     """The pin, for the second route. See the `list_clips` twin above — the
     result assertions cannot see a filter, only the statement can."""
-    game = _Game(Visibility.public)
+    game = _Game(Visibility.public, owner_id=STRANGER)
     player = _Player()
     collection = _Collection(owner_id=OWNER)
     session = _FakeCollectionSession(collection, [_Clip(game, player)], [player], [game])
@@ -290,11 +309,30 @@ def test_the_collection_player_lookup_is_not_filtered_by_ownership():
     _list_collection(session, collection, OWNER)
 
     assert len(session.statements) == 3, "clips, players, games"
-    sql = str(session.statements[1].compile(compile_kwargs={"literal_binds": False}))
+    touched = _tables_touched(session.statements[1])
 
-    assert "players" in sql.lower(), f"second query is not the player lookup: {sql}"
-    for forbidden in ("join", "owner_id", "teams"):
-        assert forbidden not in sql.lower(), (
-            f"the collection player lookup filters on {forbidden!r} — that "
-            f"reverses CF-263 (#293) for this route. Statement was: {sql}"
-        )
+    assert touched == {"players"}, (
+        f"the collection player lookup reaches {sorted(touched)} rather than "
+        f"players alone — that reverses CF-263 (#293) for this route."
+    )
+
+
+def test_a_collection_that_is_not_yours_404s_before_any_of_this():
+    """The twin of the private-game test above, for the second route. The
+    ownership gate here is on the *collection*, and it runs before the clip
+    query — so a caller who is not the owner never reaches the name at all.
+    Without this, `_FakeCollectionSession.get` only ever served the happy path
+    and the 404 branch of `_get_owned_collection` was unexercised.
+    """
+    from fastapi import HTTPException
+
+    game = _Game(Visibility.public, owner_id=STRANGER)
+    player = _Player()
+    collection = _Collection(owner_id=STRANGER)
+    session = _FakeCollectionSession(collection, [_Clip(game, player)], [player], [game])
+
+    with pytest.raises(HTTPException) as exc:
+        _list_collection(session, collection, OWNER)
+
+    assert exc.value.status_code == 404
+    assert session.executed == 0, "rejected before the clip query, let alone the name"
