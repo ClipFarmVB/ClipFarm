@@ -39,7 +39,7 @@ changes that break rally boundaries.
 `.hooks/pre-commit` runs most of what CI runs: `ruff check api/`,
 `mypy api/app`, `ruff check ml/eval`, `mypy ml/eval`, `pytest ml/tests`,
 `pytest api/tests` (when the dev set is installed — see below), plus eslint,
-tsc and vitest for `web/`.
+tsc and vitest for `web/` and for `mobile/`.
 
 - **Install the tools from `requirements-tooling.txt`**, not `pip install ruff
   mypy pytest`. Those are the pinned versions CI runs (CF-92), so a finding in
@@ -48,7 +48,11 @@ tsc and vitest for `web/`.
 - **A fresh worktree needs `npm ci` at the repo root first.** Without
   `node_modules`, the hook's eslint/tsc/vitest steps fail or hang, and the failure
   looks like a code problem rather than a missing install. This bites every new
-  worktree.
+  worktree. `mobile/` is a workspace too, so one root install covers both.
+- **`mobile/ios` and `mobile/android` are generated and gitignored** (CF-315).
+  `expo prebuild` rebuilds them from `app.json` and the config plugins in
+  `mobile/modules/`, so an edit inside either directory does not survive — and
+  committing them is what stops the plugins being the source of truth.
 - **`api/tests/` runs in the hook only when the dev set is installed.** CF-102
   closed the CI half of the gap; CF-276 restored the hook step, which had been
   silently skipped since CF-184. Without the install below the step skips

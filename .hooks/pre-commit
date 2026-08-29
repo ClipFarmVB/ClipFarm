@@ -201,6 +201,28 @@ if ! _vitest_out=$(npm run test --workspace=web --silent 2>&1); then
 fi
 echo "ok"
 
+# ── Mobile: ESLint ────────────────────────────────────────────────────────────
+printf "  eslint (mobile) ...  "
+npm run lint --workspace=mobile --silent
+echo "ok"
+
+# ── Mobile: TypeScript ────────────────────────────────────────────────────────
+printf "  tsc (mobile) ...     "
+npm run typecheck --workspace=mobile --silent
+echo "ok"
+
+# ── Mobile: unit tests (vitest) ───────────────────────────────────────────────
+# The contracts only (CF-315) — secure-store chunking, the upload mock, the clip
+# source. They run in plain Node: nothing here needs a simulator, which is the
+# whole reason they can live in the hook at all.
+printf "  vitest (mobile) ...  "
+if ! _mobile_vitest_out=$(npm run test --workspace=mobile --silent 2>&1); then
+  echo "FAIL"
+  echo "$_mobile_vitest_out"
+  exit 1
+fi
+echo "ok"
+
 if [ -n "$_api_tests_skipped" ]; then
   # The remedy comes from whichever branch skipped, because they do not share
   # one. Hard-coding the dev-set install here told someone whose install was
