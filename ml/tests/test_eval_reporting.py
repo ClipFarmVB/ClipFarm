@@ -106,7 +106,18 @@ def _floats(obj, path=""):
 
 
 def _noisy_signals(empty: bool = False):
-    """EvalSignals carrying the exact float tails the committed baseline has."""
+    """EvalSignals carrying a float tail on **every** field, so the rounding
+    test can fail for any of them.
+
+    Most values are the committed baseline's own tails. Two are not, and that is
+    deliberate: `bridge` is `0.0` in the baseline and `duration` is `3660.0`, both
+    already exact, so a fixture faithful to them cannot fail the rounding
+    assertion for those fields — dropping `_round` from either survives. They are
+    given tails of the same shape as their neighbours instead.
+
+    Do not "restore" them to the baseline's values. `human_keep_sec` and
+    `human_dead_sec` already diverge from it for the same reason.
+    """
     return metrics.EvalSignals(
         captured_pct=None if empty else 0.18506944444444462,
         buckets=metrics.CaptureBuckets(well_captured=3, butchered=1, missed=2, total=6),
@@ -116,7 +127,8 @@ def _noisy_signals(empty: bool = False):
             junk=59.99999999999943,
             lead_slop=5.000000000000014,
             tail_slop=11.833333333333414,
-            bridge=0.0,
+            # Interval-difference arithmetic, like junk and the two slops above.
+            bridge=2.8333333333333712,
         ),
         auc=None if empty else 0.8312500000000003,
         human_seconds=415.16666666666663,
@@ -136,7 +148,8 @@ def _noisy_deadtime(empty: bool = False):
         human_keep_sec=1241.6666666666665,
         human_dead_sec=2418.333333333333,
         model_keep_sec=1488.666666666667,
-        duration=3660.0,
+        # A sum of span lengths, so it carries a tail in a real run.
+        duration=3660.000000000001,
         over_cut_live=[(1.23456789, 2.3456789)],
         missed_dead=[(10.111111111, 20.222222222)],
     )
