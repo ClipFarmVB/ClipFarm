@@ -55,10 +55,13 @@ tsc and vitest for `web/`.
   checks at all and only finds out on the PR. `git config core.hooksPath`
   printing nothing means you are in that state.
 - **The hook picks its own Python; don't assume `python` works.** It probes
-  `python`, then `py`, then `python3`, and uses the first that actually *runs* —
-  on Windows the Microsoft Store ships `python`/`python3` stubs that resolve on
-  PATH and then fail (CF-259). Whichever it picks, ruff/mypy/pytest must be
-  installed into *that* interpreter; the steps invoke them as `-m` modules
+  `python`, then `py`, then `python3`, and uses the first that both runs *and*
+  has the tooling in it — on Windows the Microsoft Store ships `python`/`python3`
+  stubs that resolve on PATH and then fail, and a real-but-toolless `python` in
+  front of an equipped `py` is just as much of a trap (CF-259). It prints the one
+  it chose, so a `No module named ...` from a later step says where to install.
+  `CLIPFARM_PYTHON=<interpreter>` skips the search. Whichever runs, ruff/mypy/pytest
+  must be installed into *that* interpreter; the steps invoke them as `-m` modules
   because Python's `Scripts/` directory is often not on PATH.
 - **A fresh worktree needs `npm ci` at the repo root first.** Without
   `node_modules`, the hook's eslint/tsc/vitest steps fail or hang, and the failure
@@ -71,9 +74,14 @@ tsc and vitest for `web/`.
   machine, or run the suite by hand:
 
   ```bash
-  pip install -r api/requirements-dev.txt   # once — includes the test-only deps
-  cd api && python -m pytest tests/   # or `py -m pytest` — see the note above
+  python -m pip install -r api/requirements-dev.txt   # once — the test-only deps
+  cd api && python -m pytest tests/
   ```
+
+  **On Windows, substitute `py` for `python` on both lines.** Same Store-stub
+  problem the hook's probe works around, and it applies to the install as much
+  as the run — pytest has to land in the interpreter that runs it, which is also
+  why the install goes through `python -m pip` rather than a bare `pip`.
 
   **Install `requirements-dev.txt`, not `requirements.txt`.** Several tests guard
   their imports with `pytest.importorskip`, so without the test-only deps they
