@@ -145,6 +145,31 @@ def _tables_touched(stmt):
     return {el.name for el in visitors.iterate(stmt) if isinstance(el, Table)}
 
 
+def _filtered_columns(stmt):
+    """Every column the statement's WHERE clause compares, fully qualified.
+
+    Table names alone are not enough. A predicate that never leaves `players`
+    — `Player.team_id.isnot(None)`, say — reaches no second table, so the walk
+    above sees nothing wrong, and the fake session ignores the WHERE entirely
+    so no result changes either. Both blind spots line up, which is how an
+    orphan filter pushed down into SQL stayed green through five rounds.
+
+    The lookup is entitled to select players by id and by nothing else, so the
+    honest assertion is on the columns rather than on the tables.
+    """
+    from sqlalchemy.sql import visitors
+    from sqlalchemy.sql.elements import ColumnClause
+
+    where = stmt.whereclause
+    if where is None:
+        return set()
+    return {
+        f"{el.table.name}.{el.name}"
+        for el in visitors.iterate(where)
+        if isinstance(el, ColumnClause) and el.table is not None
+    }
+
+
 def _list(session, game, viewer_id):
     return asyncio.run(clips_router.list_clips(game.id, session, viewer_id))
 
@@ -240,6 +265,13 @@ def test_the_player_lookup_is_not_filtered_by_ownership():
         f"viewer may already read — that reverses CF-263 (#293)."
     )
 
+    filtered = _filtered_columns(session.statements[1])
+    assert filtered == {"players.id"}, (
+        f"the player lookup filters on {sorted(filtered)} rather than the id "
+        f"alone. A predicate that stays inside players reaches no second table, "
+        f"so the check above cannot see it — that reverses CF-263 (#293)."
+    )
+
 
 # ── The collection listing, which the decision covers equally ────────────────
 #
@@ -327,6 +359,12 @@ def test_the_collection_player_lookup_is_not_filtered_by_ownership():
     assert touched == {"players"}, (
         f"the collection player lookup reaches {sorted(touched)} rather than "
         f"players alone — that reverses CF-263 (#293) for this route."
+    )
+
+    filtered = _filtered_columns(session.statements[1])
+    assert filtered == {"players.id"}, (
+        f"the collection player lookup filters on {sorted(filtered)} rather "
+        f"than the id alone — that reverses CF-263 (#293) for this route."
     )
 
 
@@ -512,7 +550,10 @@ def test_every_tagged_collection_clip_gets_its_name():
     """The mixed-page case for the second route."""
     game_a = _Game(Visibility.public, owner_id=STRANGER)
     game_b = _Game(Visibility.followers, owner_id=STRANGER)
-    p1, p2 = _Player("Jordan Vance"), _Player("Alex Rivera")
+    # p2 is an orphan. The clips route had this covered and the collection
+    # twin did not — the same asymmetry, in the same commit that fixed the
+    # clip-tier one. Covering an axis on one route says nothing about the other.
+    p1, p2 = _Player("Jordan Vance"), _Player("Alex Rivera", team_id=None)
 
     # p2's clip is narrowed below its game — the clip's *own* tier is a
     # separate axis from the game's, and covering it on the clips route only
