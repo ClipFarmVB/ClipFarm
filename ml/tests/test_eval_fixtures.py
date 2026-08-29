@@ -239,11 +239,30 @@ class TestGroundTruthTierFilter:
         The filter is permissive about a missing tier, so an unlabelled clip
         that slips into `test1.json` is scored rather than reported. That is the
         right default for the loader and the wrong state for ground truth.
+
+        A *wrong* tier is checked as well as a missing one, and it is the more
+        likely authoring mistake: a value the legend does not define is neither
+        `None` nor selected, so `load_fixture` drops the clip silently and the
+        fixture quietly shrinks. Asserting only `is not None` cannot see that —
+        changing one clip's tier from "C" to "c" left this test green, and the
+        only thing that caught it was an unrelated test comparing against the
+        dead-time twin, which a future fixture without a twin would not have.
         """
         raw = load_fixture("test1").raw
-        untagged = [c for c in raw["clips"] if c.get("tier") is None]
+        legend = set(raw["tier_legend"])
 
+        untagged = [c for c in raw["clips"] if c.get("tier") is None]
         assert not untagged, f"clips in test1.json with no tier: {untagged}"
-        assert set(raw["ground_truth_tiers"]) <= set(raw["tier_legend"]), (
+
+        unknown = sorted(
+            {c["tier"] for c in raw["clips"] if c.get("tier") not in legend}
+        )
+        assert not unknown, (
+            f"clips in test1.json carry tiers the legend does not define: "
+            f"{unknown}. `load_fixture` drops these silently, so the fixture "
+            f"scores fewer clips than it appears to contain."
+        )
+
+        assert set(raw["ground_truth_tiers"]) <= legend, (
             "ground_truth_tiers names a tier the legend does not define"
         )
