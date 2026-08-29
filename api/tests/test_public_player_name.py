@@ -33,6 +33,9 @@ from app.models.visibility import Visibility  # noqa: E402
 from app.routers import clips as clips_router  # noqa: E402
 from app.routers import collections as collections_router  # noqa: E402
 
+# Sentinel so `team_id=None` is distinguishable from "not specified".
+_UNSET = object()
+
 OWNER = uuid.uuid4()
 STRANGER = uuid.uuid4()
 ANONYMOUS = None
@@ -47,19 +50,21 @@ class _Game:
 
 
 class _Player:
-    def __init__(self, name="Jordan Vance"):
+    def __init__(self, name="Jordan Vance", team_id=_UNSET):
         self.id = uuid.uuid4()
         self.name = name
         # Owned by nobody the viewer knows: the point is that ownership is not
         # consulted, so a player from an unrelated tenant renders the same.
-        self.team_id = uuid.uuid4()
+        # `team_id=None` is the orphan case — access.py asserts those stay
+        # visible through these listings, so it must be constructible here.
+        self.team_id = uuid.uuid4() if team_id is _UNSET else team_id
 
 
 class _Clip:
-    def __init__(self, game, player):
+    def __init__(self, game, player, visibility=None):
         self.id = uuid.uuid4()
         self.game_id = game.id
-        self.player_id = player.id
+        self.player_id = player.id if player is not None else None
         self.action_type = ActionType.spike
         self.confidence = 0.8
         self.highlight_score = 0.5
@@ -68,7 +73,11 @@ class _Clip:
         self.clip_url = "https://example.invalid/clip.mp4"
         self.thumbnail_url = None
         self.labels = ["spike"]
-        self.visibility = None
+        # NULL means "inherit the game's tier". Parametrised rather than
+        # hardcoded: a gate on the *clip's* own tier is invisible to a fixture
+        # that only ever produces one value, which is how three separate
+        # reversals reached green in review.
+        self.visibility = visibility
         self.created_at = datetime.now(timezone.utc)
 
 
@@ -422,3 +431,103 @@ def test_a_missing_collection_404s_before_the_lookup():
 
     assert exc.value.status_code == 404
     assert session.executed == 0
+
+
+# ── The shape of the data, not just the identity of the viewer ───────────────
+#
+# Four rounds of review each found a reversal the file could not see, and every
+# one was the same defect wearing a different hat: a fixture that produces one
+# value cannot detect a gate keyed on that value. The tests above vary who is
+# asking and what tier the *game* is. These vary the rest of the shape — the
+# clip's own tier, how many clips and players a page has, whether every clip is
+# tagged, and whether the player is an orphan.
+#
+# Written as a group deliberately. Adding one test per reversal someone happens
+# to think of is how this file got four rounds deep; the point of these is to
+# make the next unnamed gate fail too.
+
+
+@pytest.mark.parametrize(
+    "clip_tier",
+    [None, Visibility.public, Visibility.followers, Visibility.private],
+    ids=["inherit", "public", "followers", "private"],
+)
+def test_the_name_rides_along_at_every_clip_tier(clip_tier):
+    """A clip carries its own `visibility`, which may narrow below its game's.
+    The name follows read access, so it must not be keyed on that value —
+    every tier the route serves publishes the attribution with it."""
+    game = _Game(Visibility.public, owner_id=OWNER)
+    player = _Player()
+    clip = _Clip(game, player, visibility=clip_tier)
+    session = _FakeSession(game, [clip], [player])
+
+    out = _list(session, game, OWNER)
+
+    assert out[0].player_name == "Jordan Vance", (
+        f"a clip at tier {clip_tier!r} lost its attribution — the name follows "
+        f"read access, not any particular tier (CF-263)"
+    )
+
+
+def test_every_tagged_clip_on_a_mixed_page_gets_its_name():
+    """Two games, three players, one untagged clip, one clip narrowed below its
+    game. A single-clip fixture cannot see a reversal that is correct for the
+    first clip and wrong for the rest — attaching only to `clips[0]`, or only
+    when the page holds one player, or only when every clip is tagged."""
+    game_a = _Game(Visibility.public, owner_id=OWNER)
+    game_b = _Game(Visibility.followers, owner_id=STRANGER)
+    p1, p2, p3 = _Player("Jordan Vance"), _Player("Alex Rivera"), _Player("Sam Okafor")
+
+    tagged = [_Clip(game_a, p1), _Clip(game_a, p2, visibility=Visibility.private),
+              _Clip(game_b, p3)]
+    untagged = _Clip(game_a, None)
+    clips = [tagged[0], untagged, tagged[1], tagged[2]]
+
+    session = _FakeSession(game_a, clips, [p1, p2, p3])
+    out = _list(session, game_a, OWNER)
+
+    assert [c.player_name for c in out] == [
+        "Jordan Vance", None, "Alex Rivera", "Sam Okafor"
+    ], "every tagged clip on the page carries its own name, and only the untagged one does not"
+
+
+def test_an_orphan_player_still_carries_its_name():
+    """`access.py` states in as many words that a player with a NULL `team_id`
+    stays visible through these listings — that is what makes the orphan case
+    (CF-238, #241) a management problem rather than a disclosure one. A fixture
+    that always sets `team_id` cannot fail if the loop starts skipping them."""
+    game = _Game(Visibility.public, owner_id=OWNER)
+    player = _Player(team_id=None)
+    session = _FakeSession(game, [_Clip(game, player)], [player])
+
+    out = _list(session, game, ANONYMOUS)
+
+    assert out[0].player_name == "Jordan Vance", (
+        "an orphaned player lost its name — access.py asserts the opposite, "
+        "and CF-238 depends on these rows staying visible"
+    )
+
+
+def test_every_tagged_collection_clip_gets_its_name():
+    """The mixed-page case for the second route."""
+    game_a = _Game(Visibility.public, owner_id=STRANGER)
+    game_b = _Game(Visibility.followers, owner_id=STRANGER)
+    p1, p2 = _Player("Jordan Vance"), _Player("Alex Rivera")
+
+    # p2's clip is narrowed below its game — the clip's *own* tier is a
+    # separate axis from the game's, and covering it on the clips route only
+    # left this one open. Found by running the mutation matrix against both
+    # routes rather than assuming the twin was symmetric.
+    clips = [
+        _Clip(game_a, p1),
+        _Clip(game_a, None),
+        _Clip(game_b, p2, visibility=Visibility.private),
+    ]
+    collection = _Collection(owner_id=OWNER)
+    session = _FakeCollectionSession(
+        collection, clips, [p1, p2], [game_a, game_b]
+    )
+
+    out = _list_collection(session, collection, OWNER)
+
+    assert [c.player_name for c in out] == ["Jordan Vance", None, "Alex Rivera"]
