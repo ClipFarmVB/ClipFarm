@@ -70,14 +70,25 @@ is recorded on CF-109 (#139) too — a paragraph in a module nobody has to open
 is not an ordering constraint. The 404-not-403 choice below keeps none of them
 an existence oracle in the meantime.
 
-**Player names ride along with a viewable clip, by design (CF-263).** The
-listings attach ``player_name`` with a bare id lookup and no ownership filter,
-so whoever may read a clip may read the name tagged on it — including an
-anonymous viewer of a public one. That is the intended product behaviour:
-publishing a clip publishes it *with* its attribution, which is what makes a
-share link or a feed entry worth anything. It is written down here, and pinned
-by ``test_public_player_name.py``, because a missing ``where`` is otherwise
+**Player names ride along with a viewable clip in the two listings, by design
+(CF-263).** ``list_clips`` and ``list_collection_clips`` attach ``player_name``
+with a bare id lookup and no ownership filter, so whoever may read a clip there
+may read the name tagged on it — including an anonymous viewer of a public one
+on the clip listing. That is the intended product behaviour: publishing a clip
+publishes it *with* its attribution, which is what makes a share link or a feed
+entry worth anything. It is written down here, and pinned by
+``test_public_player_name.py``, because a missing ``where`` is otherwise
 indistinguishable from an oversight and the next reader will "fix" it.
+
+**Read that as being about the listings, not as a module-wide invariant**, and
+note that the download path disagrees with it: ``can_identify`` below gates on
+the *game*, so ``GET /clips/{id}/download`` withholds the name for a public clip
+in a private game while ``GET /collections/{id}/clips`` returns it. That
+inconsistency is real, it is described in full on ``can_identify``, and
+**CF-283 (#330) is the card that picks one**. Nothing here decides it. Stating
+the listings' behaviour as though it already held everywhere would resolve #330
+by assertion, in a docstring, which is precisely the kind of silent decision
+this module exists to prevent.
 
 Note what this does *not* license. The name is readable through a clip the
 viewer may already see; it is not enumerable, and no write path accepts a
