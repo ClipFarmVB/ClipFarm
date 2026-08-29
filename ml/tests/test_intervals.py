@@ -76,11 +76,20 @@ class TestTheImportStaysLight:
 
         # Drop anything already imported, or the fresh import is a cache hit and
         # the blocker never runs — the check would pass without checking.
+        #
+        # The whole `ml` tree, not just ml.eval and ml.pipeline. An earlier
+        # version purged only those two prefixes, so a heavy import reached
+        # through any other ml module — `ml` itself is a namespace package with
+        # real root modules — survived in sys.modules and satisfied the import
+        # from cache. Demonstrated: a violation added that way passed the full
+        # suite while failing when the file was run alone, which is the worst
+        # shape a guard can have. Purging `ml` also restores the parent
+        # packages' attributes, which the narrower predicate left pointing at
+        # stale module objects.
         saved = {
             k: v
             for k, v in sys.modules.items()
-            if k.split(".")[0] in self.BLOCKED
-            or k.startswith(("ml.eval", "ml.pipeline"))
+            if k.split(".")[0] in self.BLOCKED or k.split(".")[0] == "ml"
         }
         for k in saved:
             del sys.modules[k]
@@ -92,7 +101,7 @@ class TestTheImportStaysLight:
         finally:
             sys.meta_path.remove(blocker)
             for k in list(sys.modules):
-                if k.startswith(("ml.eval", "ml.pipeline")):
+                if k.split(".")[0] == "ml":
                     del sys.modules[k]
             sys.modules.update(saved)
 
