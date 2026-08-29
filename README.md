@@ -462,3 +462,4 @@ the backend on a VPS — an alternative, not the production path.
 - **Add an API endpoint** → `api/app/routers/` + wire in `api/app/main.py`.
 - **Change the frontend** → `web/` (⚠ read `web/AGENTS.md` first).
 - **Every configurable knob** → `api/app/config.py`.
+- **Mobile background uploads** → `docs/mobile/background-upload-spike.md` (CF-317).
