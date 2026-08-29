@@ -170,6 +170,21 @@ def _filtered_columns(stmt):
     }
 
 
+def _raw_sql_fragments(stmt):
+    """Any literal SQL text spliced into the statement.
+
+    `_filtered_columns` walks typed column objects, so a predicate written as
+    `text("players.team_id IS NOT NULL")` contributes no columns and reads as
+    an unfiltered query — the fifth-round finding routed around the fix for
+    the fifth-round finding. Raw text in this lookup has no legitimate use, so
+    the honest assertion is that there is none rather than trying to parse it.
+    """
+    from sqlalchemy.sql import visitors
+    from sqlalchemy.sql.elements import TextClause
+
+    return [str(el) for el in visitors.iterate(stmt) if isinstance(el, TextClause)]
+
+
 def _list(session, game, viewer_id):
     return asyncio.run(clips_router.list_clips(game.id, session, viewer_id))
 
@@ -272,6 +287,18 @@ def test_the_player_lookup_is_not_filtered_by_ownership():
         f"so the check above cannot see it — that reverses CF-263 (#293)."
     )
 
+    raw = _raw_sql_fragments(session.statements[1])
+    assert raw == [], (
+        f"the clips player lookup splices raw SQL: {raw}. Text is opaque to "
+        f"the column check above, so a filter written that way reverses "
+        f"CF-263 (#293) invisibly."
+    )
+
+    assert session.statements[1]._limit_clause is None, (
+        "the clips player lookup is limited, so a page with more tagged "
+        "players than the limit silently loses names — CF-263 (#293)."
+    )
+
 
 # ── The collection listing, which the decision covers equally ────────────────
 #
@@ -365,6 +392,18 @@ def test_the_collection_player_lookup_is_not_filtered_by_ownership():
     assert filtered == {"players.id"}, (
         f"the collection player lookup filters on {sorted(filtered)} rather "
         f"than the id alone — that reverses CF-263 (#293) for this route."
+    )
+
+    raw = _raw_sql_fragments(session.statements[1])
+    assert raw == [], (
+        f"the collections player lookup splices raw SQL: {raw}. Text is opaque to "
+        f"the column check above, so a filter written that way reverses "
+        f"CF-263 (#293) invisibly."
+    )
+
+    assert session.statements[1]._limit_clause is None, (
+        "the collections player lookup is limited, so a page with more tagged "
+        "players than the limit silently loses names — CF-263 (#293)."
     )
 
 
@@ -572,3 +611,47 @@ def test_every_tagged_collection_clip_gets_its_name():
     out = _list_collection(session, collection, OWNER)
 
     assert [c.player_name for c in out] == ["Jordan Vance", None, "Alex Rivera"]
+
+
+# ── The name has to survive serialisation, and the route has to emit it ──────
+#
+# Every assertion above reads `player_name` off the returned object. Nothing
+# leaves the process, so a reversal at the *schema* boundary is invisible to
+# all of them: `Field(default=None, exclude=True)` on ClipOut.player_name
+# strips the name from every response on both routes with the whole file green,
+# and `response_model_exclude={"player_name"}` on a route decorator does the
+# same per-route. Neither touches a router body, which is where every other
+# test in this file is looking.
+
+
+def test_the_name_survives_serialisation():
+    """`exclude=True` on the field would satisfy every attribute assertion in
+    this file and still strip the name from the wire. Dump it."""
+    from fastapi.encoders import jsonable_encoder
+
+    game = _Game(Visibility.public, owner_id=OWNER)
+    player = _Player()
+    session = _FakeSession(game, [_Clip(game, player)], [player])
+
+    out = _list(session, game, ANONYMOUS)
+
+    assert out[0].model_dump().get("player_name") == "Jordan Vance", (
+        "the name is on the object but not in its dump — a field-level "
+        "`exclude` reverses CF-263 without touching either router"
+    )
+    assert jsonable_encoder(out[0]).get("player_name") == "Jordan Vance"
+
+
+def test_no_route_excludes_the_name_from_its_response():
+    """The other half: `response_model_exclude` is declared on the decorator
+    and applied by FastAPI after the handler returns, so calling the handler
+    directly cannot see it. Read the route table instead."""
+    from app.routers import collections as _collections
+
+    for router in (clips_router.router, _collections.router):
+        for route in router.routes:
+            excluded = getattr(route, "response_model_exclude", None) or set()
+            assert "player_name" not in excluded, (
+                f"{route.path} excludes player_name from its response model, "
+                f"which reverses CF-263 (#293) for that route alone"
+            )
