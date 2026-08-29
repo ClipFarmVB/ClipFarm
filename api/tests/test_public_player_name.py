@@ -91,6 +91,9 @@ class _FakeSession:
     clip page, then the player lookup. Queue the results in that order."""
 
     def __init__(self, game, *result_sets):
+        # May be None: `get` serving a missing row is the other half of each
+        # 404 branch, and a fake that can only produce the ownership failure
+        # leaves "the row is not there" untested.
         self._game = game
         self._queued = list(result_sets)
         self.executed = 0
@@ -250,6 +253,7 @@ class _FakeCollectionSession:
     collection ownership check that runs before any of them."""
 
     def __init__(self, collection, *result_sets):
+        # May be None — see the note on _FakeSession.
         self._collection = collection
         self._queued = list(result_sets)
         self.executed = 0
@@ -336,3 +340,85 @@ def test_a_collection_that_is_not_yours_404s_before_any_of_this():
 
     assert exc.value.status_code == 404
     assert session.executed == 0, "rejected before the clip query, let alone the name"
+
+
+# ── Non-public tiers, because "entitled" is not "public" ─────────────────────
+#
+# Every game above is `Visibility.public` and no clip carries its own tier, so
+# a gate keyed on the *content's tier* rather than on the viewer is invisible
+# to all of them: adding `and widest_allowed(c, game) == public` to either
+# attach left the whole suite green. Two rounds varied who is asking; nobody
+# varied what the content is.
+#
+# The decision is that whoever may *read* a clip may read the name on it. Read
+# access at a non-public tier is exactly where that has teeth, and it is about
+# to matter more — CF-110 makes `followers` genuinely reachable by someone
+# other than the owner.
+
+
+def test_the_name_rides_along_at_a_non_public_tier():
+    """A private game, read by its owner. Unambiguously readable today, and
+    unambiguously not public — so a gate keyed on the tier blanks the name here
+    while every public-tier test above stays green."""
+    game = _Game(Visibility.private, owner_id=OWNER)
+    player = _Player()
+    session = _FakeSession(game, [_Clip(game, player)], [player])
+
+    out = _list(session, game, OWNER)
+
+    assert out[0].player_name == "Jordan Vance", (
+        "the name follows read access, not the public tier (CF-263) — a viewer "
+        "entitled to the clip is entitled to the name tagged on it"
+    )
+
+
+def test_the_collection_name_rides_along_at_a_non_public_tier():
+    """The same, for the collection route, at `followers`.
+
+    Owned by a stranger on purpose: this is the clip CF-110 makes reachable by
+    someone who is not the owner, and it is the case a tier-keyed gate would
+    silently blank at exactly the moment the follow graph starts serving it.
+    The route's SQL decides which clips come back; this asserts only that the
+    name rides along with whichever ones do.
+    """
+    game = _Game(Visibility.followers, owner_id=STRANGER)
+    player = _Player()
+    collection = _Collection(owner_id=OWNER)
+    session = _FakeCollectionSession(collection, [_Clip(game, player)], [player], [game])
+
+    out = _list_collection(session, collection, OWNER)
+
+    assert out[0].player_name == "Jordan Vance", (
+        "the collection listing publishes attribution at every tier it serves, "
+        "not only the public one (CF-263)"
+    )
+
+
+def test_a_missing_game_404s_before_the_lookup():
+    """The other half of the clip route's 404. The tests above exercise the
+    *visibility* refusal; this one is the row simply not being there, which
+    reaches the same guard by a different path and was never executed."""
+    from fastapi import HTTPException
+
+    session = _FakeSession(None)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(clips_router.list_clips(uuid.uuid4(), session, ANONYMOUS))
+
+    assert exc.value.status_code == 404
+    assert session.executed == 0
+
+
+def test_a_missing_collection_404s_before_the_lookup():
+    """The same for the collection route: `_get_owned_collection` refuses a
+    missing row and an unowned one through one condition, and only the unowned
+    half had a test."""
+    from fastapi import HTTPException
+
+    session = _FakeCollectionSession(None)
+
+    with pytest.raises(HTTPException) as exc:
+        _list_collection(session, _Collection(), OWNER)
+
+    assert exc.value.status_code == 404
+    assert session.executed == 0
