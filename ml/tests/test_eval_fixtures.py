@@ -35,6 +35,17 @@ HIGHLIGHT_IDS = sorted(
     p.stem for p in FIXTURES_DIR.glob("*.json") if not p.stem.endswith("_deadtime")
 )
 
+# The labelling vocabulary, for fixtures that declare no `tier_legend` of their
+# own. Hardcoded deliberately: the alternative tried here was to fall back to
+# `ground_truth_tiers`, which rejects a clip tagged with an *excluded* tier —
+# and load_fixture's own comment says such a clip "stays in the file for the
+# labelling record", `test_excluded_tiers_are_dropped` constructs one and
+# asserts it is dropped rather than rejected, and ml/eval/README.md documents
+# the format that way. A fallback that forbids the documented shape is worse
+# than no fallback. Sourced from test1.json's legend: must / can / no-clip /
+# break / outlier.
+KNOWN_TIERS = frozenset("MCNBO")
+
 
 class TestEveryDeadtimeFixture:
     """
@@ -274,11 +285,12 @@ class TestGroundTruthTierFilter:
         # `tier_legend` is NOT required. It is absent from the fixture format
         # documented in ml/eval/README.md, no code reads it, and only test1.json
         # carries it — so demanding it would make the README's own example fail
-        # this suite. Where a fixture does declare one it is the fuller
-        # vocabulary (it names the excluded tiers too), so it is the better
-        # thing to validate against; where it does not, the only tiers the
-        # fixture has declared at all are the scored ones.
-        declared = set(raw["tier_legend"]) if "tier_legend" in raw else scored
+        # this suite. Where a fixture declares one it is the fuller vocabulary
+        # (it names the excluded tiers too) and is the better thing to validate
+        # against; where it does not, fall back to the project vocabulary rather
+        # than to `ground_truth_tiers`, which would reject the documented and
+        # tested case of a clip tagged with an excluded tier.
+        declared = set(raw["tier_legend"]) if "tier_legend" in raw else KNOWN_TIERS
 
         untagged = [c for c in raw["clips"] if c.get("tier") is None]
         assert not untagged, f"clips in {test_id}.json with no tier: {untagged}"
@@ -294,8 +306,9 @@ class TestGroundTruthTierFilter:
         )
 
         assert scored <= declared, (
-            f"{test_id}.json: ground_truth_tiers names a tier the legend does "
-            f"not define"
+            f"{test_id}.json: ground_truth_tiers names {sorted(scored - declared)}, "
+            f"which is not in {'its tier_legend' if 'tier_legend' in raw else 'the project vocabulary'}. "
+            f"`load_fixture` would keep clips at a tier no clip can carry."
         )
 
         # Cheap half of "does this fixture score what it ships": every
