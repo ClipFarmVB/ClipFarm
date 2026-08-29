@@ -13,9 +13,18 @@ to be stdlib-only today, but nothing obliges it to stay that way — it derives
 keep windows and is free to grow a dependency. This module is the thing that is
 obliged.
 
-Nothing is imported here on purpose, and it should stay that way: the eval unit
-tests run in CI with only ruff, mypy and pytest installed, so anything reachable
-from metrics.py has to work without numpy or cv2.
+Nothing is imported here on purpose, and it should stay that way: anything
+reachable from metrics.py has to work without numpy or cv2.
+
+**CI does not enforce that, so a test does.** An earlier version of this
+paragraph said the eval unit tests "run in CI with only ruff, mypy and pytest
+installed". They do not — `.github/workflows/ci.yml` pins and installs
+`numpy==1.26.4` immediately before `python -m pytest ml/tests/`, deliberately
+and with its own comment saying why. Only `ruff check ml/eval` and
+`mypy ml/eval` run numpy-free, and neither executes an import, so nothing in CI
+was ever positioned to notice a heavy import here. `ml/tests/test_intervals.py`
+manufactures that environment instead, and its control asserts the blocker can
+fail before trusting that it did.
 """
 from __future__ import annotations
 
