@@ -269,28 +269,44 @@ class TestGroundTruthTierFilter:
         does not have.
         """
         raw = load_fixture(test_id).raw
+        scored = set(raw.get("ground_truth_tiers", []))
 
-        assert "tier_legend" in raw, (
-            f"{test_id}.json has no tier_legend, so no tier can be validated "
-            f"against it — every check below would pass vacuously"
-        )
-        legend = set(raw["tier_legend"])
+        # `tier_legend` is NOT required. It is absent from the fixture format
+        # documented in ml/eval/README.md, no code reads it, and only test1.json
+        # carries it — so demanding it would make the README's own example fail
+        # this suite. Where a fixture does declare one it is the fuller
+        # vocabulary (it names the excluded tiers too), so it is the better
+        # thing to validate against; where it does not, the only tiers the
+        # fixture has declared at all are the scored ones.
+        declared = set(raw["tier_legend"]) if "tier_legend" in raw else scored
 
         untagged = [c for c in raw["clips"] if c.get("tier") is None]
         assert not untagged, f"clips in {test_id}.json with no tier: {untagged}"
 
         unknown = sorted(
-            {c["tier"] for c in raw["clips"] if c.get("tier") not in legend}
+            {c["tier"] for c in raw["clips"] if c.get("tier") not in declared}
         )
         assert not unknown, (
-            f"clips in {test_id}.json carry tiers the legend does not define: "
-            f"{unknown}. `load_fixture` drops these silently, so the fixture "
-            f"scores fewer clips than it appears to contain."
+            f"clips in {test_id}.json carry tiers it never declares: {unknown}. "
+            f"`load_fixture` keeps only {sorted(scored)}, so an undeclared tier "
+            f"is dropped silently and the fixture scores fewer clips than it "
+            f"appears to contain."
         )
 
-        assert set(raw.get("ground_truth_tiers", [])) <= legend, (
+        assert scored <= declared, (
             f"{test_id}.json: ground_truth_tiers names a tier the legend does "
             f"not define"
+        )
+
+        # Cheap half of "does this fixture score what it ships": every
+        # highlight fixture must score *something*. An empty or fully-excluding
+        # `ground_truth_tiers` produces a fixture that loads, reports no clips,
+        # and scores every model output as a false positive — silent and
+        # plausible and wrong, which is the failure ml/eval/README.md warns
+        # about for the dead-time loader. Costs no per-fixture bookkeeping.
+        assert load_fixture(test_id).clips, (
+            f"{test_id}.json scores no clips at all — ground_truth_tiers "
+            f"{sorted(scored)} excludes every clip it ships"
         )
 
     def test_test1_still_scores_every_clip_it_ships(self):
