@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Upload, Film, AlertCircle, Loader } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import {
+  addGameToCache,
   completeUpload,
   createUpload,
   deleteGame,
@@ -13,7 +14,6 @@ import {
   type UploadTicket,
 } from "@/lib/api";
 import { uploadFileToR2 } from "@/lib/upload";
-import { addGameToCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
 
 // Used only until GET /games/upload-config answers, and as the fallback if it

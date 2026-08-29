@@ -19,11 +19,18 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm ci --workspace=web
+      - run: npm ci --workspace=web --workspace=packages/api-client
       - run: npm run lint --workspace=web
       - run: npm run typecheck --workspace=web
+      # The shared api client is its own workspace (CF-314). web's tsc already
+      # sees the source it imports; this checks the package on its own tsconfig,
+      # which is what a React Native consumer will compile it under.
+      - run: npm run typecheck --workspace=packages/api-client
       # Unit tests for web/ (CF-96). Pure logic, no browser — runs in ~1s.
       - run: npm run test --workspace=web
+      # The suites that moved into the package with their modules (CF-314).
+      # Without this line they stop running anywhere and nothing goes red.
+      - run: npm run test --workspace=packages/api-client
 
   api:
     name: API (ruff + mypy)
