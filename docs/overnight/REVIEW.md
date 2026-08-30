@@ -77,6 +77,51 @@ counting rule here is phrased against marker **comments**, and a rule phrased
 against reviews would be counting an artifact that is deliberately outside the
 budget and the ceiling.
 
+##### Reading the checks: before a round, and again before settling
+
+**Read the check runs on the PR's head commit.** Selection does not depend on
+them — a red PR still gets reviewed, for the reason below — but settling does,
+and the report does.
+
+The command and the two endpoints that look like it and are wrong here are
+[point 7](#what-a-non-gh-tool-must-provide).
+
+**Red does not block reviewing.** The run of 2026-08-25 spent six rounds on #307
+while every one of its CI runs failed, and those rounds produced real findings —
+the waste was not the reviewing, it was that nobody was told about the red. And
+the failure was a `jsdom`/`undici` incompatibility with the runner's Node, not
+anything in the diff, so refusing to review would have stranded a PR that
+reviewing could still improve. Review it; just do not settle it, and say so.
+
+**Read them again at settle time, not only at selection.** A carry runs several
+rounds and a push of its own; a check read at the start of it is stale by the
+end, which is exactly #307's shape. This is the same rule as [checking claims
+outside the diff at settle time](#the-cold-reviewers-brief) — the check is such a
+claim.
+
+**A check's name does not tell you what it ran**, so do not reason from it. On
+this repository `Web (lint + typecheck)` also runs `vitest`, and
+`API (ruff + mypy)` runs `ruff check ml/`, `pytest ml/tests` **and**
+`pytest api/tests`. Both names are load-bearing strings in the branch-protection
+ruleset — `ci.yml` carries a comment at each job saying not to rename them, the
+api one down at the `pytest tests/` step rather than beside the job name — so
+they will keep understating what they cover. If you need to know what a check
+covered, read `ci.yml`.
+
+**And a green check is not proof the suite ran.** #307 exited 1 with a
+human-readable tail reading `Test Files 7 passed (7)` — the failure was an
+unhandled error that killed the worker before the file loaded, and the file that
+never ran was the test file for the card under review. `claude-review.yml` has
+the same hazard documented for skipped runs, which report `success`.
+
+This is a different rule from the three already in the brief that say a green
+*local gate* proves nothing — the [Postgres probe](START.md#first-establish-what-you-can-actually-do),
+[the api-suite skip counts](TICKETS.md#working-a-ticket), and [the control
+mutation](#the-cold-reviewers-brief). Those are about the run's own commands;
+this is about a check GitHub ran. Same lesson, different subject, and it is
+written here rather than folded into one of those because none of them is read
+on a step-1 lap.
+
 ##### What a non-`gh` tool must provide
 
 **If you are not running `gh`, these commands are specifications.** Whatever
@@ -121,6 +166,33 @@ sentence. The failure if any item is missing is silent rather than loud:
    Confirm you get a login and not a null before trusting the filter. A `null`
    under `own` excludes every PR silently, and the run reports a full queue as a
    deliberate scoping decision having reviewed nothing.
+7. **The check runs on the PR's head commit** — each with its `name`, `status`
+   and `conclusion` — for [the check-status read](#reading-the-checks-before-a-round-and-again-before-settling).
+   Three surfaces look like this one and two of them are wrong here:
+
+   ```
+   SHA=$(gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha")
+   gh api repos/ClipFarmVB/ClipFarm/commits/$SHA/check-runs \
+     --jq '.check_runs[] | "\(.name) \(.status) \(.conclusion)"'
+   ```
+
+   **Not the combined commit status.** `/commits/<sha>/status` — and anything
+   built on it — returns `state: pending, total_count: 0` on this repository,
+   because nothing here posts a commit status; every check is a check *run*.
+   Measured on #422 and #307. A rule written against that endpoint reads pending
+   forever and is wrong in the direction that never fires.
+
+   **Not the required-checks set either.** Which contexts `main` requires lives
+   in the branch-protection ruleset, is admin-scoped, and a run may well get 403
+   reading it — so **the loop cannot compute "required"** and no rule here may
+   depend on it. It would also be wrong if it could: #428 carries a third check
+   run, `Mobile (lint + typecheck + test)`, from a job on an unmerged branch that
+   cannot be in the ruleset. Read every check run on the head and treat them all
+   as load-bearing.
+
+   REST rather than `gh pr view --json statusCheckRollup` deliberately: the
+   rollup is GraphQL, and the first unattended run had GraphQL disabled — see
+   [the capability checks](START.md#first-establish-what-you-can-actually-do).
 
 **Confirm your tool paginates before you trust a marker read**, and name the
 tool in the report. A run that cannot establish point 1 should say so and treat
@@ -143,6 +215,12 @@ failures are silent, and all three were hit in the run of 2026-08-27:
   `minimal_output: true`, and on this repository a default page is refused for
   size — which costs a call and returns nothing. Pass a small `perPage` (1–5)
   and page. This is why point 1's pagination requirement is not academic here.
+
+- **For point 7, `pull_request_read` with `get_check_runs` is the one that
+  works.** `get_status` on the same PR returns `state: pending, total_count: 0`
+  — not because anything is pending, but because this repository posts no commit
+  statuses at all. It is the silent-wrong-answer case, and the two calls are one
+  argument apart.
 
 None of these changes a rule. They change what "I checked" is worth, which is
 the same class of problem as everything else in this section.
@@ -196,9 +274,9 @@ above](#what-a-non-gh-tool-must-provide) gives:
 | `cold: findings` | differs | — | **semi-cold** — a fix has already been pushed; check those findings against the new head |
 | `cold: clean` | matches | a finding is still open, **and** commits have landed since the marker that raised it | **semi-cold** — that fix is what needs checking; only a semi-cold can close a finding |
 | `cold: clean` | matches | a finding is still open, **and** nothing has landed since the marker that raised it | **step 2** — nothing to check, so spend no round; fix it |
-| `cold: clean` | matches | nothing open, and a finding was raised **in the counting window** | **settle it** — apply `review-settled` |
+| `cold: clean` | matches | nothing open, and a finding was raised **in the counting window** | **settle it** — apply `review-settled`, unless [a check blocks it](#reading-the-checks-before-a-round-and-again-before-settling) |
 | `cold: clean` | matches | nothing open, none raised in the window, and this is its **only** head-matching `cold: clean` | **cold round** — the second of the two that case requires |
-| `cold: clean` | matches | nothing open, none raised in the window, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled` |
+| `cold: clean` | matches | nothing open, none raised in the window, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled`, unless [a check blocks it](#reading-the-checks-before-a-round-and-again-before-settling) |
 | `cold: clean` | differs | — | **cold round** — new code nothing has looked at; see the re-open rule below |
 | `semi-cold: closes` | — | — | **cold round** |
 | `semi-cold: does not close` | matches | — | **step 2** — fix it again |

@@ -79,6 +79,15 @@ The report contains:
   cards are missing from it
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
+- **PRs held back from settling by a check**, each with the check's name, its
+  conclusion, and whether that same check is red on `main` too. That last part is
+  what separates "this PR broke it" from "the runner or an upstream pin broke it",
+  and it is cheap — the same check name against the base SHA. These PRs carry **no
+  label** (see [the settle bar](FIX.md#the-cycle-and-the-settle-bar)), so this
+  bullet is the only place they are visible; without it they are indistinguishable
+  from PRs the run never reached. CF-275 is the case: six rounds against red CI
+  and nobody told, on a failure that was an upstream incompatibility rather than
+  anything in the diff.
 - PRs labelled `unsettled`, split by the four reasons their `unsettled:` comment
   gives — `needs a decision` (a reviewer found a judgement call), `latched` (the
   harness refused the push), `not our branch` (the author's next push re-opens

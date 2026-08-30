@@ -198,6 +198,46 @@ outstanding, only a Critical or Medium may change that head.** Nits found from
 then on go to a card, however cheap they look. "Cheap" is what makes this loop
 attractive on every lap.
 
+**Never settle over a check that failed, or over a head with no checks at all.**
+The settle bar is about what a reviewer found; this is about whether the code
+runs, and a green review over a red suite is the failure CF-275 was filed for —
+six rounds on #307 while every CI run failed, fixed only when a human noticed.
+So: do not apply `review-settled` while any check run on the head SHA concluded
+`failure`, `timed_out` or `cancelled`, or while `ci.yml` produced no check run
+for that SHA at all. `ci.yml` is `on: pull_request` with no path filter, so every
+PR gets every job — zero check runs means the workflow never fired, which is the
+non-running case rather than a quiet pass. How to read them, and the two
+endpoints that look right and are not, is
+[in step 1](REVIEW.md#reading-the-checks-before-a-round-and-again-before-settling).
+
+**Pending is not failed, and it is the ordinary case.** A carry pushes a fix and
+reaches the settle bar within a minute or two, while CI takes longer than that.
+Re-read once after a short wait; if it is still running, the PR is simply not
+settleable yet this lap. That is not a finding, not a label, and not a reason to
+spend a round.
+
+**Leave such a PR unlabelled, and name it in the report.** It needs no new
+`unsettled` reason and must not be given one: `unsettled` records open Critical
+or Medium findings that a round put there, and a PR that reviewed clean has none
+— the label would assert something false, and no carve-out could clear it, since
+a re-run going green moves no SHA for the [carve-out test](REVIEW.md#record-comments-human-removal-and-re-opening)
+to see. Unlabelled already means unfinished. The exit is clean: when CI goes
+green the head has not moved, so the head-matching `cold: clean` markers still
+stand and the next run settles it **spending no round at all**.
+
+**The cost, so it is not discovered instead of decided:** such a PR re-enters the
+queue every night until its CI goes green, and each visit costs the read above.
+That is bounded by the per-PR ceiling and it is the price of not inventing a
+label with no way out — which is what [CF-274](RULES.md#hard-rules) cost the last
+time this brief tried it.
+
+**This is the one thing that may move a frozen head.** The rule above says only a
+Critical or Medium may change the head once nothing is open. A red check is
+neither, so taken literally a converged-but-red PR could neither take the commit
+that would turn it green nor ever settle — no exit at all. It may take that
+commit. Nothing else about the freeze relaxes: the fix goes in, the head moves,
+and the PR takes the fresh cold round the routing table calls for.
+
 **A finding against the PR body is not a finding against the head.** It still
 has to be fixed — a body is editable and a body edit is not a commit, so it
 changes no SHA and disturbs no marker — but it must not block settling, and it
