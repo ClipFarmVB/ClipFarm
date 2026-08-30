@@ -13,6 +13,7 @@ from app.models.clip import Clip, ActionType
 from app.models.correction import Correction
 from app.models.player import Player
 from app.models.game import Game
+from app.routers.players import get_owned_player
 from app.schemas.clip import (
     ClipDeleteRequest,
     ClipLabelsRequest,
@@ -161,7 +162,10 @@ async def list_clips(
     result = await db.execute(q)
     clips = result.scalars().all()
 
-    # Attach player names
+    # No ownership filter here on purpose (CF-263): a viewer entitled to the
+    # clip is entitled to the name tagged on it, anonymous viewers of public
+    # clips included — publishing a clip publishes its attribution. The
+    # reasoning is in services/access.py; test_public_player_name.py pins it.
     player_ids = {c.player_id for c in clips if c.player_id}
     player_map: dict[uuid.UUID, str] = {}
     if player_ids:
@@ -184,9 +188,12 @@ async def tag_clip(
 ):
     clip, game = await _get_owned_clip(clip_id, user_id, db)
 
-    player = await db.get(Player, body.player_id)
-    if not player:
-        raise HTTPException(status_code=404, detail="Player not found")
+    # Ownership, not existence (CF-234). `db.get` here accepted any player id in
+    # the table, so a caller could stamp another tenant's player onto their own
+    # clip and read the name back off the response. 404 rather than 403, so the
+    # endpoint cannot confirm that an id exists — same convention as
+    # _get_owned_clip above and services/access.py.
+    player = await get_owned_player(body.player_id, user_id, db)
 
     clip.player_id = body.player_id
     await db.commit()

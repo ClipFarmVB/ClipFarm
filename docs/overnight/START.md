@@ -10,7 +10,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background |
 
@@ -89,9 +89,9 @@ The hard rule is [only push to PRs this account opened](RULES.md#hard-rules). At
 That is the point of the mode: review the queue *and* clear it.
 
 At `review scope: all` the queue also contains other accounts' PRs, and those it
-still may not touch. So what it cannot push to is *other people's* work — and,
-at either scope, any branch a collaborator has pushed to; see
-[The push test](RULES.md#the-push-test).
+still may not touch. So what it cannot push to is *other people's* work — and
+since 2026-08-29 that is the whole of it; see
+[The push test](RULES.md#the-push-test), which no longer reads commit authorship.
 
 Two things follow, and both matter more than they look.
 
@@ -115,10 +115,10 @@ Two things follow, and both matter more than they look.
   discipline, stated plainly, because there is no longer a construction to hide
   behind. If concurrency is ever wanted, runs need an identity — in the markers
   and in the counters — and that is the work, not a wording change here.
-- **Step 2 runs in full at `own` on the PRs it may push to.** That is most of an
-  `own` queue — everything except branches a collaborator has pushed to — so
-  `review-only` fixes findings and re-reviews exactly as `build` does, and the
-  difference between the modes is step 3, not step 2. At
+- **Step 2 runs in full at `own`.** That is the whole of an `own` queue since the
+  push test stopped reading commit authorship, so `review-only` fixes findings and
+  re-reviews exactly as `build` does, and the difference between the modes is step
+  3, not step 2. At
   `review scope: all` the other accounts' PRs are the ones step 2 cannot fix:
   describe the fix in a comment, apply `unsettled`, and post the reason that
   fits — `not our branch @ <sha>` when the fix is straightforward but
@@ -151,11 +151,11 @@ What the mode delivers *over several nights* is the full cycle: review, fix,
 re-review, settle.
 
 **At `review scope: own` the mode runs its own cycle end to end.** Every
-in-scope PR is this account's, and every one it may push to — all but the
-collaborator-latched ones, see [The push test](RULES.md#the-push-test) — it reviews,
-fixes what needs no judgement, and re-reviews, without waiting on anyone. That
-is the mode working as intended, and it is what the push rule change on
-2026-08-25 bought.
+in-scope PR is this account's, and every one is one it may push to — see
+[The push test](RULES.md#the-push-test) — so it reviews, fixes what needs no
+judgement, and re-reviews, without waiting on anyone. That is the mode working as
+intended, and it is what the push rule changes of 2026-08-25 and 2026-08-29
+bought.
 
 *This paragraph previously said the opposite.* Under the old rule — push only to
 branches **this run** created — a `review-only` night created no branches and so
@@ -216,23 +216,25 @@ So the **report is the only record**, which is why naming the excluded PRs there
 is a requirement and not a courtesy. A reader who wants to know why a PR went
 untouched has exactly one place to look.
 
-**Scope and pushability share their first test**, and both read `.user.login`
-on the PR — pushing then adds a second condition:
+**Scope and pushability are the same test**, and both read `.user.login` on the
+PR:
 
 | question | test |
 |---|---|
 | may this run *review* the PR? | is `.user.login` this account, or is scope `all`? |
-| may this run *push* to it? | is `.user.login` this account, **and** no commit on the branch carries another login? |
+| may this run *push* to it? | is `.user.login` this account? |
 
-So at `review scope: own` everything in the queue is pushable **unless a
-collaborator has pushed to it** — see the branch check in
-[Hard rules](RULES.md#hard-rules). At `all`, other accounts' PRs are reviewable but not
-pushable at all.
+So at `review scope: own` everything in the queue is pushable. At `all`, other
+accounts' PRs are reviewable but not pushable at all.
 
-*Until 2026-08-25 these were different questions* — the push test asked which run
-created the branch, so a PR this account opened on an earlier night was in scope
-to review and out of bounds to push to. That was the common case and it is what
-stalled the loop; see [Hard rules](RULES.md#hard-rules).
+*These have been three different rules.* Until 2026-08-25 the push test asked
+which run created the branch, so a PR this account opened on an earlier night was
+in scope to review and out of bounds to push to — the common case, and what
+stalled the loop. Until 2026-08-29 it also refused any branch carrying a commit
+authored by another login, which fired on ten of eleven PRs in one measured
+queue and was a false positive every time; see
+[The push test](RULES.md#the-push-test) for why authorship cannot answer the
+question it was being asked.
 
 ### When a `review-only` run is done
 
@@ -378,7 +380,23 @@ one block. The first run discovered three gaps separately, mid-work.
   provide](REVIEW.md#what-a-non-gh-tool-must-provide), under
   "these commands are specifications", not in the bullet below this one.
 - **Gate tool versions** — read the versions `ci.yml` installs and compare with
-  what is installed here. See the gate step below.
+  what is installed here. `requirements-tooling.txt` is pinned, so there is a
+  version to match; install that file rather than `pip install ruff mypy pytest`,
+  and report the versions you actually ran either way.
+- **A Postgres for the api suite** — `pg_isready -h localhost -p 5432`, which is
+  where `api/tests/_pg.py` probes. Without one the api suite still passes:
+  **8 skipped, exit 0**, the CF-184 advisory-lock and post-visibility tests
+  silently absent. That is the one capability gap on this list which does not
+  announce itself — everything else here fails loudly when missing, so a run
+  that skips this probe reports a green gate it did not run. If there is no
+  cluster, say so in the report and treat every api-suite result as eight tests
+  short. If yours is elsewhere, set `LOCK_TEST_DATABASE_URL` to it; `_pg.py`
+  takes a set value **unprobed**, so an unreachable one turns four of those
+  eight skips into hard errors and the exit non-zero — the other four still
+  skip. `build` runs meet this again in the gate list — see [Working a
+  ticket](TICKETS.md#working-a-ticket), which carries the counts for all three
+  states — but this list runs in `review-only` too, where the gate list is
+  never reached.
 
 State every gap in the report. A capability you assumed and did not have is the
 most expensive kind of surprise in an unattended run.

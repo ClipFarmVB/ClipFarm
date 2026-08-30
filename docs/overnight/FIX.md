@@ -10,7 +10,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background |
 
@@ -19,15 +19,19 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 #### Step 2 — fix what the round found
 
 **2 — Address the review findings on the PR you are carrying**, if this account
-opened it **and** no one else has pushed to the branch. The first half is the
-same test the `review scope` filter runs — `gh api user --jq ".login"` against
-the PR's `.user.login` — so at `review scope: own` it is true of every PR in the
-queue. The second half is the collaborator check in
-[The push test](RULES.md#the-push-test), and it is run **immediately before each push**,
-not once when you pick the PR up — a run holds a PR across several rounds, and
-the case it guards against is a collaborator pushing while that is happening.
+opened it. That is the same test the `review scope` filter runs —
+`gh api user --jq ".login"` against the PR's `.user.login` — so at
+`review scope: own` it is true of every PR in the queue. See
+[The push test](RULES.md#the-push-test).
 
-So step 2 applies to most of an `own` queue, not all of it by construction.
+So step 2 applies to the whole of an `own` queue.
+
+*It applied to "most of" one until 2026-08-29*, when the push test also read
+commit authorship. That condition is gone, and the paragraph it justified with
+it: a branch carrying someone else's commits is now pushable, and whether to
+push to it is a judgement the run makes by reading the PR rather than a gate a
+query answers. Where a conversation about work in progress is live, write a
+comment instead — and say in the report that you chose to.
 
 For a PR you may not push to, describe the fix in a comment and apply
 `unsettled` with the reason that fits:
@@ -35,23 +39,27 @@ For a PR you may not push to, describe the fix in a comment and apply
 - **Another account's PR** — `unsettled: not our branch @ <sha>`. Only reaches
   the queue at `review scope: all`. A cheap terminal state, not a dead end: the
   author's next push re-opens it.
-- **A branch a collaborator has pushed to** — `unsettled: latched @ <sha>`. Can
-  arise at either scope. **Commits do not re-open this one**, deliberately, and
-  no run can clear it: a human handles the PR outside the loop. **Report it by
-  name and say what is blocking it** — either who pushed to the branch, or that
-  the guard could not verify it (see the 250-commit bound in
-  [The push test](RULES.md#the-push-test)), plus the fact that the findings are written
-  up in the review. Those two are different problems: one wants a decision about
-  two people on a branch, the other wants someone to confirm whose branch it is.
-  The report is the only place a latched PR is visible; without that line it sits
-  outside the loop with nobody aware.
+- **A push the harness refuses** — `unsettled: latched @ <sha>`. Can arise at
+  either scope. **Commits do not re-open this one**, deliberately, and no run can
+  clear it: a human handles the PR outside the loop. **Report it by name and say
+  exactly what refused the push**, plus the fact that the findings are written up
+  in the review. The report is the only place a latched PR is visible; without
+  that line it sits outside the loop with nobody aware.
 
   **Unless a finding also needs a judgement — then `needs a decision` wins**,
   per the precedence under [the terminal labels and their
   reasons](REVIEW.md#the-terminal-labels-and-their-reasons). The two want different
   things from different people: a judgement call needs the reviewer's question
-  answered, a latch needs someone to decide what to do about a branch two
-  people are working on.
+  answered, a latch needs someone to unblock the push machinery.
+
+**When the thing you are fixing is a wrong claim, grep for every copy of it
+before calling it fixed.** A "one-line" documentation fix turned out to be three
+lines in three files, and the copy that mattered most — the onboarding path a
+fresh clone runs first — was the one left untouched, so the repo then stated two
+different things about one problem in two places. Correcting one instance of a
+claim is not a smaller version of correcting it; it can be worse than leaving all
+of them, because the surviving copies now have a contradicting neighbour to be
+read against.
 
 **Read the findings out of the round's review.** The marker comment carries the
 prefix, the SHA and at most a count; the findings are in the review that round
@@ -220,23 +228,23 @@ means depends on why you cannot fix it, and the four cases part company here:
   and in a reply describing what you would have changed. Then apply `unsettled`
   with an `unsettled: not our branch @ <sha>` comment. The author's next push
   re-opens it.
-- *This account's PR, but a collaborator has pushed to the branch.* Same work —
-  write every finding down, including the mechanical ones — but apply
-  `unsettled: latched @ <sha>` instead. **Not `not our branch`**: that reason
-  re-opens on any commit, and at `own` the account that pushes is the one
-  running, so the PR would re-open on its own pushes and cycle forever.
+- *This account's PR, but the push is refused.* Same work — write every finding
+  down, including the mechanical ones — but apply `unsettled: latched @ <sha>`
+  instead. **Not `not our branch`**: that reason re-opens on any commit, and at
+  `own` the account that pushes is the one running, so the PR would re-open on its
+  own pushes and cycle forever.
 
   **Unless a finding also needs a judgement — then `needs a decision` wins**, per
   the precedence under [the terminal labels and their
   reasons](REVIEW.md#the-terminal-labels-and-their-reasons), with the latch named in
   the comment as context. Where no finding needs one, `latched` is right and
-  `needs a decision` would be wrong: the blocked question is the PR-level one
-  about writing over someone else's work, not anything a reviewer raised.
+  `needs a decision` would be wrong: what is blocked is the mechanism, not
+  anything a reviewer raised.
 
   The distinction matters because the two are answered by different people doing
-  different things. A latch is resolved by whoever decides what to do about a
-  branch two people are working on; a judgement call is resolved by answering the
-  reviewer's question. Filing one as the other loses it.
+  different things. A latch is resolved by whoever can unblock the push; a
+  judgement call is resolved by answering the reviewer's question. Filing one as
+  the other loses it.
 - *A finding needing a human decision, on a branch you may push to.* First fix
   everything else that round raised and push it — those findings are real and
   abandoning them wastes the round that found them. *Then* apply `unsettled`

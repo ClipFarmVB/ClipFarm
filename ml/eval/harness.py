@@ -36,11 +36,11 @@ from ml.eval.metrics import (
     DeadTimeSignals,
     EvalSignals,
     IncorrectTime,
-    Interval,
     ModelWindow,
     evaluate,
     evaluate_deadtime,
 )
+from ml.pipeline.intervals import Interval
 
 EVAL_DIR = Path(__file__).resolve().parent
 FIXTURES_DIR = EVAL_DIR / "fixtures"

@@ -10,7 +10,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background |
 
@@ -54,12 +54,13 @@ nothing. It is the same REST-versus-GraphQL trap as `created_at` against
 gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".user.login"
 ```
 
-Note that scope and pushability now share a test rather than being unrelated
-questions: both ask whether the PR's `.user.login` is this account. Pushing adds
-one further condition — that no collaborator has pushed to the branch, see
-[The push test](RULES.md#the-push-test) — so a PR in scope at `own` is one this run may
-push to *unless it is latched*. They were wholly different questions while the
-push rule keyed on which run created the branch.
+Note that scope and pushability are now the **same** test, not merely a shared
+first half: both ask whether the PR's `.user.login` is this account, and since
+2026-08-29 pushing adds nothing further — see
+[The push test](RULES.md#the-push-test). So a PR in scope at `own` is one this run
+may push to, full stop, unless the harness itself refuses. They were wholly
+different questions while the push rule keyed on which run created the branch,
+and differed by one condition while it also read commit authorship.
 
 The obvious phrasing — "no marker at all, or commits since the last marker" —
 leaves a hole. A PR sitting on its first `cold: clean` with no new commits has a
@@ -552,7 +553,7 @@ something a commit does not fix:
 | `ran out of rounds` | the ceiling or the budget stopped it, findings still open | **new commits**, no human needed | reset |
 | `not our branch` | findings are fixable, but the branch belongs to **another account** and this run may not push | **new commits**, no human needed | reset |
 | `needs a decision` | a finding needs a judgement nobody unattended should make | **a human removing the label** — commits do not | — |
-| `latched` | this account's PR, but [the push test](RULES.md#the-push-test) forbids pushing — a collaborator has pushed to the branch, **or** the branch is over 250 commits and the guard cannot see far enough to tell | **a human, outside the loop** — no run can clear it | — |
+| `latched` | this account's PR and [the push test](RULES.md#the-push-test) passes, but the **harness** refuses the push | **a human, outside the loop** — no run can clear it | — |
 
 **When more than one is true, `needs a decision` wins**, over each of the other
 three; note the losing one in the comment as context rather than as the reason.
@@ -600,19 +601,26 @@ Each reason in full — what it means, and why it clears the way the table says:
   a human to also clear a label by hand.
 
   **This reason is only ever about another account's PR**, and those reach the
-  queue only at `review scope: all`. A branch a collaborator has pushed to is a
-  different case with its own reason, below.
+  queue only at `review scope: all`.
 - `needs a decision` — a finding requires a judgement nobody unattended should
   make. Only a human removing the label re-opens it. Commits do not, because the
   decision is not something a commit clears; the author pushing something
   unrelated would otherwise buy fresh rounds to re-derive the same finding off
   the same unchanged lines.
-- `latched` — this account opened the PR, but [The push test](RULES.md#the-push-test)
-  forbids pushing to it: either a collaborator has pushed to the branch, or the
-  branch is over 250 commits and the guard cannot see far enough to rule that
-  out. Both take this reason; the report distinguishes them. The findings
-  may be entirely mechanical; what is blocked is not any one of them but the
-  PR-level question of whether to write over someone else's in-flight work.
+- `latched` — this account opened the PR and [The push test](RULES.md#the-push-test)
+  passes, but the push does not go out: the harness refuses it, or the remote
+  rejects it for a reason no run can resolve. The findings may be entirely
+  mechanical; what is blocked is the mechanism, not any one of them.
+
+  **Since 2026-08-29 this reason no longer covers a collaborator's commits.** The
+  push test stopped reading commit authorship, because authorship records where
+  code came from rather than who is holding the branch, and rebases and replays
+  decouple the two — see [the push test](RULES.md#the-push-test) for the
+  measurement that retired it. A branch a teammate has pushed to is now
+  reviewable *and* pushable by the letter of this document, so **the judgement
+  moved to the run**: read the PR, and where a conversation about work in
+  progress is live, write a comment instead of pushing. That is discretion, not a
+  gate — say in the report when you exercised it.
 
   **Commits do not re-open it, and that is the whole point.** At `own` the
   account that pushes is the one running, so a commits carve-out would re-open
@@ -623,10 +631,9 @@ Each reason in full — what it means, and why it clears the way the table says:
   the one actor that cannot act.
 
   **It is cleared by a human, outside the loop, and there is deliberately no way
-  for a run to clear it.** Merge the PR, push the fix yourself, or ask the
-  collaborator to — whichever fits. What there is *not* is a comment or a label a
-  run can act on to authorise itself past the person whose work is on that
-  branch.
+  for a run to clear it.** Merge the PR, push the fix yourself, or fix whatever
+  is refusing the push — whichever fits. What there is *not* is a comment or a
+  label a run can act on to authorise itself past a gate that stopped it.
 
   That was tried. A `latch-override:` grant was added on 2026-08-25 and removed
   on 2026-08-26, and in between it produced the worst defect in the change that
@@ -643,13 +650,17 @@ Each reason in full — what it means, and why it clears the way the table says:
   report is the only place it is visible.
 
   **The latch is permanent by design, and since the grant went there is nothing
-  to soften it.** The guard reads the branch's whole history, so one commit from
-  a collaborator keeps the PR latched however many times this account pushes
-  afterwards — and no run can now lift it. Both halves are deliberate, and the
-  second is why the first matters more than it used to: scoping the guard to
-  "since this account's last push" would let a run overwrite exactly the
-  in-flight work being guarded, so the permanence stays, and the cost of it
-  lands on the report line rather than on a mechanism.
+  to soften it.** A refused push is not a condition a run can retry its way out
+  of: whatever refused it will refuse the next one too, so re-attempting only
+  spends budget re-deriving findings that still cannot be pushed. The cost of the
+  permanence lands on the report line rather than on a mechanism.
+
+  **It should now be rare.** Until 2026-08-29 the commonest way to latch was a
+  collaborator's commit on the branch, and on one measured queue that fired on
+  ten PRs of eleven, every one of them a false positive. With authorship out of
+  the push test, a latch means the push machinery itself said no — which is worth
+  reporting loudly, because it is closer to a broken environment than to a
+  routine outcome.
 
 ##### Record comments, human removal, and re-opening
 
@@ -686,10 +697,12 @@ clean markers from before the finding was ever raised.
 **`unsettled: latched` is the exception to the two rules above** — the
 `reopened:` marker and the routing that follows it. It still posts its record
 comment like every other reason; what it does not get is a `reopened:` marker or
-a route back into the cycle. Nothing about
-a latch is cleared by removing a label: the collaborator's commits are still on
-the branch, so the push test latches the PR again on the next round. If the
-branch is unchanged, re-apply `unsettled: latched @ <sha>`.
+a route back into the cycle. Nothing about a latch is cleared by removing a
+label: whatever refused the push will refuse the next one, so the PR latches
+again on the next round. **Retry the push once** before re-applying — a refusal
+can be transient in a way a collaborator's commits never were, and that is the
+one respect in which this reason got cheaper on 2026-08-29. If it is refused
+again, re-apply `unsettled: latched @ <sha>`.
 
 **Say in the report that the label was removed while the branch was still
 latched**, and say it every time it happens. Removing the label is the only
@@ -886,10 +899,8 @@ verdict from an empty diff.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, apply the `unsettled` label with a
-comment naming the reason that fits — any of the four, and note that a
-collaborator pushing mid-cycle makes `latched` reachable here by the shortest
-route in the document — record it, and move on. It does not become closed by
-being argued with.
+comment naming the reason that fits — any of the four — record it, and move on.
+It does not become closed by being argued with.
 
 **Never let a semi-cold round settle a PR.** It was handed the previous
 reviewer's conclusions, so its silence inherits their blind spots; treating that
@@ -986,6 +997,35 @@ in that same file and already pinned by a passing test. Before believing a
 check: ask which input would make the claim false, and confirm your set contains
 it. A green suite proves nothing until a control mutation shows the harness can
 go red at all.
+
+**Write the prose claiming a gap is closed *after* running the mutation, never
+before.** In one run the fix for "this guard can pass without checking"
+contained a smaller instance of itself three times on a single PR: a false
+reason recorded for a launch flag, a guarded import that swallowed the
+blocker's signal, and a premise test that launched a *different child* than the
+one it was a premise about — so the flag it existed to forbid left every test
+green. Each was caught by running the mutation; each had its explanatory comment
+written first. The comment is not evidence, and writing it first is what makes
+it feel like evidence.
+
+Two shapes worth knowing by name:
+
+- **A loop assertion with no length guard passes on an empty iterable.** Two
+  cases written to catch a missing CSS class iterated a helper that located
+  elements *by a string another test pins*; changing that string emptied the
+  list and both cases went green while both couplings were broken. Assert the
+  count before iterating.
+- **A premise test must run under the same launch path as the thing it is a
+  premise about.** The third instance above is this shape: two argv literals, so
+  the test vouching for the child was vouching for a child that did not exist.
+  Adding an isolation flag to the child under test left every case green; one
+  shared helper made that same mutation red.
+
+  Stated narrowly on purpose. The first version of this lesson said the flag
+  made the tests *vacuous*, and measurement said otherwise — the blocker still
+  fires, and a control matching on its message still discriminates. What the
+  flag costs is that the blocker becomes *redundant*, which is a different
+  failure and the only one the evidence supports.
 
 **Ask what the repository already asserts before deriving anything.** Six times
 in one run the answer was already written down — in another line of the same
