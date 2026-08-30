@@ -680,8 +680,10 @@ def _pose_first_fallback(
     `RuntimeError("Cannot open video: …")`, a decode error mid-run, or an OOM,
     and those dropped `ball_err` exactly like the case this guard was written
     for. The re-raise preserves permanence — a permanent failure stays
-    permanent, so the task handler still skips the retry — and nothing else
-    about the type, which no caller reads.
+    permanent, so the task handler skips the retry once it has recorded the
+    failure — and nothing else about the type, which no caller reads. (The
+    handler's gate is `reported and isinstance(...)`: if both status writes also
+    fail, it retries even a permanent failure, to get the status written.)
     """
     try:
         return _run_detection(video_path, r2_key)
@@ -1541,8 +1543,18 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             except Exception:
                 # Say what an operator should do, and say it truthfully. Both
                 # writes failed to reach this line, so `reported` is False here
-                # by construction and the gate below cannot return — **a retry
-                # always follows from this point, whatever the exception type**.
+                # by construction and the gate below cannot return: control
+                # always reaches `self.retry`, whatever the exception type.
+                #
+                # That is not the same as "a retry always follows". With
+                # `max_retries=2`, the third execution's `self.retry(exc=exc)`
+                # re-raises `exc` and schedules nothing — the row stays in
+                # `processing` and nobody comes back for it. An earlier version
+                # of this comment said a retry always follows; asserting the
+                # unconditional version of a conditional claim is the same
+                # mistake this block exists to undo, one line up from where it
+                # was made. The operator-facing string below already hedges it
+                # ("if the attempts run out"); the comment now does too.
                 #
                 # This message used to branch to "nothing below will retry it"
                 # for a permanent failure. That branch was correct when the gate
@@ -1562,9 +1574,18 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     else "a retry below may still settle it; if the attempts run "
                     "out it needs a human"
                 )
+                # Attempt numbers because the line's whole job is to let an
+                # operator decide whether to wait or intervene, and "if the
+                # attempts run out" is not actionable without knowing how many
+                # are left. `self.request.retries` is the count already made, so
+                # this is 1-based on the attempt being reported.
                 logger.exception(
                     "Could not mark game %s failed at all — it is still in "
-                    "`processing`. %s", game_id, next_step,
+                    "`processing` (attempt %s of %s). %s",
+                    game_id,
+                    self.request.retries + 1,
+                    self.max_retries + 1,
+                    next_step,
                 )
         # `reported` gates this, not just the exception type. A permanent failure
         # we could not write down is still worth another attempt at writing down:
