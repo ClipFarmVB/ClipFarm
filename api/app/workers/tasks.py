@@ -1564,21 +1564,36 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 # or intervene, so it saying "nothing will retry" while a retry
                 # runs is worse than saying nothing.
                 #
-                # The type still changes what the retry can *achieve*, which is
-                # the part worth telling them.
-                next_step = (
-                    "a retry follows, but the failure itself is permanent — the "
-                    "retry can only get the status written, not make the job "
-                    "succeed; if the attempts run out it needs a human"
-                    if isinstance(exc, PermanentPipelineError)
-                    else "a retry below may still settle it; if the attempts run "
-                    "out it needs a human"
-                )
+                # Two things change what to say. Whether any attempt remains,
+                # because on the last one no retry follows and "if the attempts
+                # run out" is a hedge the operator has to evaluate themselves
+                # while looking at the one line that already knows the answer.
+                # And the exception type, which changes what a retry can
+                # *achieve* rather than whether one happens.
+                #
+                # `self.retry` re-raises rather than scheduling once
+                # `request.retries` reaches `max_retries`, so that comparison is
+                # the same condition Celery is about to apply.
+                last_attempt = self.request.retries >= self.max_retries
+                if last_attempt:
+                    next_step = (
+                        "no retry follows — this was the last attempt, and the "
+                        "row is still in `processing` with nothing coming back "
+                        "for it; it needs a human now"
+                    )
+                elif isinstance(exc, PermanentPipelineError):
+                    next_step = (
+                        "a retry follows, but the failure itself is permanent — "
+                        "the retry can only get the status written, not make the "
+                        "job succeed"
+                    )
+                else:
+                    next_step = "a retry follows and may still settle it"
                 # Attempt numbers because the line's whole job is to let an
-                # operator decide whether to wait or intervene, and "if the
-                # attempts run out" is not actionable without knowing how many
-                # are left. `self.request.retries` is the count already made, so
-                # this is 1-based on the attempt being reported.
+                # operator decide whether to wait or intervene.
+                # `self.request.retries` is the count already made, so this is
+                # 1-based on the attempt being reported, and total executions are
+                # `max_retries + 1`.
                 logger.exception(
                     "Could not mark game %s failed at all — it is still in "
                     "`processing` (attempt %s of %s). %s",
