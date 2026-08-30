@@ -175,8 +175,15 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   // descendants, so `inset-0` sized this to the *document* rather than the
   // viewport and centred the card thousands of pixels below the fold: mounted,
   // visible, opacity 1, and unreachable, with the scroll lock already holding
-  // the page still. Measured at ovTop 76 / ovH 11304 / cardTop 5647 in a 608px
-  // viewport (CF-347).
+  // the page still. Measured on the deployed app at ovTop 76 / ovH 11304 /
+  // cardTop 5647 in a 608px viewport, stable across 60 frames (CF-347).
+  //
+  // Reproduced headless on a reduction of this layout — `.fade-up` verbatim
+  // from globals.css around a tall grid — which gives the same tell: inline,
+  // ovTop 76 and ovH 11508 against a 521px viewport; portalled, ovTop 0 and
+  // ovH 521. Setting the wrapper to `transform: none` makes the inline case
+  // identical to the portalled one, which is what pins the cause on the
+  // transform rather than on anything else in the page.
   //
   // The portal is the fix rather than editing the keyframe, because ending
   // `fade-up` at `transform: none` would still leave the bug live for the

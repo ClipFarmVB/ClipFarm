@@ -1,15 +1,8 @@
 // @vitest-environment jsdom
 //
-// CF-347: the picker must escape whatever the page wraps it in.
-//
-// It rendered inline, and both pages that open it wrap their content in
-// `.fade-up` — whose `both`-filled animation leaves `transform: translateY(0)`
-// applied permanently. A transform that is not `none` makes an element a
-// containing block for `position: fixed` descendants, so `inset-0` sized the
-// overlay to the *document* instead of the viewport and centred the dialog
-// thousands of pixels below the fold. Mounted, visible, opacity 1, unreachable
-// — measured at ovTop 76 / ovH 11304 / cardTop 5647 in a 608px viewport, stable
-// across 60 frames.
+// CF-347: the picker must escape whatever the page wraps it in. Why, and the
+// measurements, are in the comment above `createPortal` in
+// CollectionPickerModal.tsx — kept in one place so the two copies cannot drift.
 //
 // **This asserts the parent, not the position.** jsdom has no layout engine:
 // `getBoundingClientRect` returns zeros, transforms establish nothing, and a
