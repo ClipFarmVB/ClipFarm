@@ -13,7 +13,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background |
 
@@ -59,20 +59,33 @@ applies in both modes.
    verbatim, unprobed*, so the variable has two opposite failure modes:
 
    - **Unset, no local cluster** — the CF-184 advisory-lock suite and the
-     post-visibility pg tests **skip**. Measured: **816 passed / 8 skipped,
-     exit 0** — green, eight tests short. This is the silent-skip failure the
-     paragraph below warns about, reached through the environment rather than
-     through a missing package.
+     post-visibility pg tests **skip**: **8 skipped, exit 0** — green, eight
+     tests short. This is the silent-skip failure the paragraph below warns
+     about, reached through the environment rather than through a missing
+     package.
    - **Set but unreachable** — a hard `psycopg2.OperationalError` and a non-zero
-     exit. Measured against a dead port on this head: **816 passed / 4 skipped /
-     4 errors**. Since "do not open a PR if any gate fails" is two lines down,
-     pasting a URL your machine cannot reach costs you the PR on a gate that
-     would otherwise have been green.
+     exit: **4 skipped, 4 errors**. The split is not arbitrary and is worth
+     knowing, because only half of this state announces itself: the CF-184 lock
+     tests try the connection themselves and skip on failure
+     (`test_worker_safety.py:538`), so they degrade quietly exactly as if no
+     cluster existed; the post-visibility four build their database in a
+     fixture with no such guard, and those are what turn the run red. Since "do
+     not open a PR if any gate fails" is two lines down, pasting a URL your
+     machine cannot reach costs you the PR on a gate that would otherwise have
+     been green.
 
-   With a reachable cluster the suite is **824 passed / 0 skipped**. CI's value
-   is `postgresql://postgres:postgres@localhost:5432/postgres`; point the
-   variable at whatever local cluster you actually have, or leave it unset and
-   let the probe find one.
+   With a reachable cluster: **0 skipped**. CI's value is
+   `postgresql://postgres:postgres@localhost:5432/postgres`; point the variable
+   at whatever local cluster you actually have, or leave it unset and let the
+   probe find one.
+
+   **Read the skip count, not the passed count.** Those three states are told
+   apart by the skips and errors alone, and that is the whole reason this block
+   exists — a silent skip is invisible in an exit code. The passed total is
+   deliberately not recorded here: it moves with every merge that adds a test,
+   so a number written into this file is wrong by the next one and cannot be
+   told apart from the failure it is meant to signal. `0 skipped` is the state
+   to be in; `8` means you are eight tests short of having run the gate.
 
    **The three installs are part of the list and their order is load-bearing.**
    `numpy` goes in after ruff and mypy on purpose: both are tuned against a

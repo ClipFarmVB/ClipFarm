@@ -38,6 +38,11 @@ run that learned it.
 - **Every iteration after: `RULES.md`, plus the one phase file the lap needs.**
   Reviewing a PR → `REVIEW.md`. Fixing findings → `FIX.md`. Implementing a
   ticket → `TICKETS.md`. Writing the report → `REPORTING.md`.
+  **Filing a card → `TICKETS.md`**, whichever lap you are on. That is the one
+  entry here that is not a phase: `FIX.md` sends you to a card for a nit you
+  chose not to fix, and `review-only` runs never otherwise open `TICKETS.md`,
+  so without this line the instruction to file one points at a file the
+  protocol has just told you this lap does not need.
 - **Re-read `RULES.md` in full after any compaction**, and say in the log that
   you did. Compaction is exactly when a half-remembered rule reads like a real
   one.
