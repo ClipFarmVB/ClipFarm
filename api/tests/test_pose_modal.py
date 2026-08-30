@@ -13,6 +13,8 @@ import types
 from pathlib import Path
 
 import pytest
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
 
 # One definition of how an `-r` include is spelled, shared with the pre-commit
 # gate rather than copied. Duplicated, drifting requirements parsing is what
@@ -525,32 +527,42 @@ def _code_lines(path: Path) -> str:
     )
 
 
-def _satisfies(probe: tuple, operator: str, version: str) -> bool:
-    """Whether `probe` (a version tuple) satisfies one requirement specifier.
+# What `inference==1.3.3` will accept. The ball image's numpy has to land in
+# here or the image does not build (CF-359).
+INFERENCE_NUMPY_WINDOW = SpecifierSet(">=2.0.0,<2.4.0")
 
-    Deliberately small and approximate rather than pulling in `packaging`: the
-    only question asked of it is "does this constraint admit some numpy 2", and
-    the probes are chosen inside inference's own window. It is not a general
-    PEP 440 implementation and should not grow into one — if a case ever needs
-    more than this, take the dependency instead of extending the arithmetic.
+
+def _admits_a_numpy_2(constraint: str) -> bool:
+    """Whether a numpy requirement admits any version inference would accept.
+
+    Real PEP 440 semantics via `packaging` rather than arithmetic over version
+    tuples. The hand-rolled comparator this replaces was sound for the two
+    versions it sampled and wrong for every other point in the window — it
+    rejected `numpy==2.1.0` while asserting it "admits no numpy 2" — and the
+    dependency is free: `packaging` is one of pytest's own requirements, so it
+    is present anywhere this suite runs.
+
+    Candidates are the window's endpoints plus every version literal the
+    constraint itself names. That is what makes an exact pin work: the only
+    version `numpy==2.1.0` admits is one the constraint told us about.
     """
-    wanted = tuple(int(n) for n in re.findall(r"[0-9]+", version)[:3])
-    wanted += (0,) * (3 - len(wanted))
-    if operator in ("==", "==="):
-        # A wildcard pin (`1.*`) compares only the components it names.
-        depth = len(re.findall(r"[0-9]+", version)[:3]) if "*" in version else 3
-        return probe[:depth] == wanted[:depth]
-    if operator == "~=":
-        return probe >= wanted and probe[0] == wanted[0]
-    if operator == "!=":
-        return probe != wanted
-    if operator == "<=":
-        return probe <= wanted
-    if operator == ">=":
-        return probe >= wanted
-    if operator == "<":
-        return probe < wanted
-    return probe > wanted
+    try:
+        specifier = SpecifierSet(constraint)
+    except InvalidSpecifier as exc:  # a typo should be loud, not permissive
+        raise AssertionError(
+            f"ml/modal_app.py has an unparseable numpy constraint {constraint!r}: {exc}"
+        ) from exc
+
+    candidates = {Version("2.0.0"), Version("2.3.5")}
+    for literal in re.findall(r"[0-9][0-9A-Za-z.*+!]*", constraint):
+        try:
+            candidates.add(Version(literal.rstrip(".*")))
+        except InvalidVersion:
+            continue
+    return any(
+        v in INFERENCE_NUMPY_WINDOW and specifier.contains(v, prereleases=True)
+        for v in candidates
+    )
 
 
 ML_RUNTIME_PACKAGES = ("torch", "torchvision", "ultralytics", "transformers", "inference")
@@ -715,39 +727,34 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
     to learn it.
 
     So this asserts the constraint directly: constrain numpy there or do not,
-    but any constraint has to admit a 2.x. The whole specifier set is read, not
-    one operator: `numpy<2` is what CF-278 proposes as its option 2, `~=1.26.0`
-    is another spelling of it, and `numpy>=1.26,<2` is the ecosystem-standard
-    one — that last hid behind its own floor from the first two versions of
-    this guard, which is why the question asked here is the resolver's ("is
-    there a numpy 2 this admits?") rather than a rule per operator. A future numpy-2
+    but any constraint has to admit a version `inference==1.3.3` accepts. Three
+    versions of this guard were each defeated by one spelling further out —
+    `numpy<2` past an `==`-only check, `numpy>=1.26,<2` hiding its cap behind a
+    floor, `'numpy<2'` in single quotes past a double-quote anchor — so it now
+    anchors on the package name alone and evaluates the whole specifier set
+    with `packaging`, rather than pattern-matching operators. A future numpy-2
     migration of the whole repo (the open decision on #323) makes this test
     agree with the one above rather than needing to be deleted.
     """
-    # Whole requirement strings, not lone operators: a specifier set is read as
-    # a set. `numpy>=1.26,<2` is the ecosystem-standard spelling of "numpy 1
-    # only", and a pattern anchored on the first operator it meets never sees
-    # the cap behind the floor — which is how the previous version of this
-    # guard waved through the very edit it exists to reject.
-    requirements = re.findall(
-        r'"[^\S\n]*(numpy(?![A-Za-z0-9_.\-])[^"]*)"',
+    # Anchored on the package name, and on nothing else. Anchoring on a double
+    # quote — which an earlier version of this did — made `'numpy<2'` in single
+    # quotes invisible, and nothing in this repo enforces double quotes: neither
+    # ruff config selects the `Q` rules and no formatter runs. The name anchor
+    # also keeps a pin inside a `run_commands("pip install ...")` in scope,
+    # which the quote anchor had silently dropped.
+    #
+    # The whole comma-separated specifier set is captured, not the first
+    # operator: `numpy>=1.26,<2` is the ecosystem-standard spelling of "numpy 1
+    # only", and a pattern that stops at the floor never sees the cap behind it.
+    for constraint in re.findall(
+        r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
+        r"((?:[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*[^\s,'\"]+[^\S\n]*,?)*)",
         _code_lines(REPO_ROOT / "ml" / "modal_app.py"),
         re.IGNORECASE,
-    )
-    for requirement in requirements:
-        specifiers = re.findall(
-            r"(===|==|~=|!=|<=|>=|<|>)[^\S\n]*([^,\s\]]+)", requirement
-        )
-        # Ask the question the resolver asks — "is there a numpy 2 this admits?"
-        # — rather than reasoning per operator, which is what got the boundary
-        # cases wrong: `numpy<2.4` is legal (it is inference's own ceiling) and
-        # a major-only rule rejected it. Two probes span inference's window.
-        assert any(
-            all(_satisfies(probe, op, ver) for op, ver in specifiers)
-            for probe in ((2, 0, 0), (2, 3, 5))
-        ), (
-            f'ml/modal_app.py constrains numpy as "{requirement}", which admits '
-            "no numpy 2 — but inference==1.3.3 requires numpy>=2.0.0,<2.4.0, so "
+    ):
+        assert _admits_a_numpy_2(constraint), (
+            f'ml/modal_app.py constrains numpy as "numpy{constraint}", which '
+            "admits no version inference==1.3.3 accepts (>=2.0.0,<2.4.0), so "
             "this cannot resolve and the image build fails with "
             "ResolutionImpossible. See CF-359 (#440) and the decision on #323."
         )
