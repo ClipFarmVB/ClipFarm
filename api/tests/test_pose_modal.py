@@ -505,6 +505,26 @@ def test_streamable_demands_a_real_read_not_just_an_open(
 
 # ── Deploy invariant ─────────────────────────────────────────────────────────
 
+def _code_lines(path: Path) -> str:
+    """A file's non-comment lines, rejoined — shared by both pin checks.
+
+    Full-line comments only, deliberately: an inline trailing comment naming a
+    second version (`"numpy==2.3.5",  # not 1.26.4`) must still be seen, or a
+    pin could be hidden from these checks by writing one. Rejoined with a
+    newline so the horizontal-whitespace class the patterns below use cannot
+    pair a package name on one line with a version on the next.
+
+    One definition rather than two: the version guard below and the consistency
+    guard read the same files, and a review round pointed out that the drift
+    between their preprocessing is exactly what the version guard exists to
+    catch (CF-278).
+    """
+    return "\n".join(
+        line for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
 ML_RUNTIME_PACKAGES = ("torch", "torchvision", "ultralytics", "transformers", "inference")
 ML_RUNTIME_PACKAGES_SET = set(ML_RUNTIME_PACKAGES)
 
@@ -643,11 +663,7 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
 
     found = {}
     for label, path, required in sources:
-        text = "\n".join(
-            line for line in path.read_text(encoding="utf-8").splitlines()
-            if not line.lstrip().startswith("#")
-        )
-        matches = set(pattern.findall(text))
+        matches = set(pattern.findall(_code_lines(path)))
         if not matches:
             assert not required, (
                 f"{label} does not pin {package} — it must, see this test's docstring"
@@ -670,22 +686,29 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
     image build with a ResolutionImpossible, which is a slow and confusing way
     to learn it.
 
-    So this asserts the constraint directly: pin numpy there or do not, but if
-    you do, it has to be a 2.x. A future numpy-2 migration of the whole repo
-    (the open decision on #323) makes this test agree with the one above rather
-    than needing to be deleted.
+    So this asserts the constraint directly: constrain numpy there or do not,
+    but any constraint has to admit a 2.x. Every capping form is checked, not
+    just `==` — `numpy<2` is what CF-278 itself proposes as option 2, and
+    `~=1.26.0` is the other natural spelling, so a guard that read only `==`
+    would wave through the exact edit the card recommends. A future numpy-2
+    migration of the whole repo (the open decision on #323) makes this test
+    agree with the one above rather than needing to be deleted.
     """
-    text = "\n".join(
-        line for line in
-        (REPO_ROOT / "ml" / "modal_app.py").read_text(encoding="utf-8").splitlines()
-        if not line.lstrip().startswith("#")
+    specifiers = re.findall(
+        r"numpy[^\S\n]*(==|~=|<=|<)[^\S\n]*([0-9][0-9A-Za-z.\-]*)",
+        _code_lines(REPO_ROOT / "ml" / "modal_app.py"),
     )
-    pinned = re.findall(r"numpy[^\S\n]*==[^\S\n]*([0-9][0-9A-Za-z.\-]*)", text)
-    for version in pinned:
-        assert int(version.split(".")[0]) >= 2, (
-            f"ml/modal_app.py pins numpy=={version}, but inference==1.3.3 "
-            "requires numpy>=2.0.0,<2.4.0 — this cannot resolve and the image "
-            "build fails. See CF-278 (#323)."
+    for operator, version in specifiers:
+        parts = [int(n) for n in re.findall(r"[0-9]+", version)] or [0]
+        # `<` is the only one where naming 2 is still a rejection: `numpy<2`
+        # admits nothing at or above 2. For the rest, a 2 in the major position
+        # is what makes them legal.
+        permits_2 = parts[0] > 2 if operator == "<" else parts[0] >= 2
+        assert permits_2, (
+            f"ml/modal_app.py constrains numpy{operator}{version}, which admits "
+            "no numpy 2 — but inference==1.3.3 requires numpy>=2.0.0,<2.4.0, so "
+            "this cannot resolve and the image build fails with "
+            "ResolutionImpossible. See CF-278 (#323)."
         )
 
 
