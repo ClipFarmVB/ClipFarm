@@ -2,11 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertCircle, FolderOpen, Plus, Trash2, Pencil, Check, X } from "lucide-react";
+import { AlertCircle, FolderOpen, Plus, Trash2, Pencil, X } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { getCollections, createCollection, renameCollection, deleteCollection, type Collection } from "@/lib/api";
-import { cn } from "@/lib/utils";
 
 function CollectionsContent() {
   const [collections, setCollections] = useState<Collection[]>([]);
