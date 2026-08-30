@@ -35,6 +35,7 @@ from pathlib import Path
 from ml.eval.metrics import (
     DeadTimeSignals,
     EvalSignals,
+    IncorrectTime,
     Interval,
     ModelWindow,
     evaluate,
@@ -229,6 +230,32 @@ def _round(value: float | None, places: int = RESULT_FLOAT_PLACES) -> float | No
     return None if value is None else round(value, places)
 
 
+def _incorrect_seconds_to_dict(t: IncorrectTime) -> dict:
+    """The four parts, rounded, plus a `total` that is their sum.
+
+    `IncorrectTime.total` is a property over the *raw* parts, so rounding it
+    directly lets a written row disagree with itself: 60.0 + 5.0 + 11.8333 +
+    2.8333 is 79.6666 beside a written total of 79.6667. Nothing reads these
+    files back programmatically — humans diff them across runs, and a row whose
+    parts do not add up is exactly what misleads that reader. `_decompose_window`
+    documents the decomposition as exact, so the file should show it that way.
+
+    Summing the rounded parts moves `total` by at most four half-ulps at 4dp,
+    5e-5 s, which is three orders of magnitude below anything this metric means.
+    The outer `_round` is there because adding floats reintroduces a tail of its
+    own.
+    """
+    # `round`, not `_round`: these four are `float` on IncorrectTime and never
+    # None, and the type has to say so for `sum` below to typecheck.
+    parts: dict[str, float] = {
+        "junk": round(t.junk, RESULT_FLOAT_PLACES),
+        "lead_slop": round(t.lead_slop, RESULT_FLOAT_PLACES),
+        "tail_slop": round(t.tail_slop, RESULT_FLOAT_PLACES),
+        "bridge": round(t.bridge, RESULT_FLOAT_PLACES),
+    }
+    return {**parts, "total": round(sum(parts.values()), RESULT_FLOAT_PLACES)}
+
+
 def _signals_to_dict(s: EvalSignals) -> dict:
     return {
         "captured_pct": _round(s.captured_pct),
@@ -240,13 +267,7 @@ def _signals_to_dict(s: EvalSignals) -> dict:
             "missed": s.buckets.missed,
             "total": s.buckets.total,
         },
-        "incorrect_seconds": {
-            "junk": _round(s.incorrect.junk),
-            "lead_slop": _round(s.incorrect.lead_slop),
-            "tail_slop": _round(s.incorrect.tail_slop),
-            "bridge": _round(s.incorrect.bridge),
-            "total": _round(s.incorrect.total),
-        },
+        "incorrect_seconds": _incorrect_seconds_to_dict(s.incorrect),
         "auc": _round(s.auc),
         "human_seconds": _round(s.human_seconds),
         "model_seconds": _round(s.model_seconds),

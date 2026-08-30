@@ -6,6 +6,7 @@ dropped seconds from the totals, or a comparison column that misaligns signs,
 would misreport results while every metric underneath stays correct.
 """
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -109,14 +110,18 @@ def _noisy_signals(empty: bool = False):
     """EvalSignals carrying a float tail on **every** field, so the rounding
     test can fail for any of them.
 
-    Most values are the committed baseline's own tails. Two are not, and that is
-    deliberate: `bridge` is `0.0` in the baseline and `duration` is `3660.0`, both
-    already exact, so a fixture faithful to them cannot fail the rounding
-    assertion for those fields — dropping `_round` from either survives. They are
-    given tails of the same shape as their neighbours instead.
+    This is a **worst case, not a replica of the baseline**, and the two ideas
+    pull against each other. A field whose fixture value is already exact at the
+    rounding threshold makes `test_every_float_in_a_result_row_is_rounded`
+    vacuous for that field, silently — dropping `_round` from it survives the
+    suite. `bridge` is `0.0` in the committed baseline and `duration` is
+    `3660.0`, so faithful values there would do exactly that; `human_seconds` is
+    `480.0` and would too.
 
-    Do not "restore" them to the baseline's values. `human_keep_sec` and
-    `human_dead_sec` already diverge from it for the same reason.
+    Restoring any of these to the baseline is the tidy-looking change that
+    reopens the hole, so it is no longer left to this docstring to prevent:
+    `test_the_fixtures_can_actually_fail_the_rounding_assertion` asserts the
+    precondition for every float here, named or not.
     """
     return metrics.EvalSignals(
         captured_pct=None if empty else 0.18506944444444462,
@@ -148,7 +153,10 @@ def _noisy_deadtime(empty: bool = False):
         human_keep_sec=1241.6666666666665,
         human_dead_sec=2418.333333333333,
         model_keep_sec=1488.666666666667,
-        # A sum of span lengths, so it carries a tail in a real run.
+        # `n_frames / fps` in a real run — at 29.97 fps an hour of video gives
+        # 3660.6606606606606. (`duration` is a passthrough on DeadTimeSignals;
+        # its sources are `video_duration_sec`, a `max(rally ends)` fallback, or
+        # that division — the division is where the tail comes from.)
         duration=3660.000000000001,
         over_cut_live=[(1.23456789, 2.3456789)],
         missed_dead=[(10.111111111, 20.222222222)],
@@ -161,7 +169,60 @@ def _noisy_deadtime(empty: bool = False):
 # same number twice and reads as a change.
 
 
+# 4, spelled out rather than imported. A guard that reads RESULT_FLOAT_PLACES
+# to decide what counts as noisy agrees with whatever value the constant takes,
+# including one loosened far enough to put the float tails back into the
+# committed results — which is the condition CF-94 exists to prevent. The guard
+# has to be pinned to something the change under guard cannot move.
+EXPECTED_RESULT_FLOAT_PLACES = 4
+
+
 class TestResultRounding:
+    def test_the_rounding_threshold_has_not_moved(self):
+        """Nothing else fails if RESULT_FLOAT_PLACES is loosened. Control
+        mutation: setting it to 12 leaves the whole suite green while the
+        committed results go straight back to 12-place noise.
+        `test_rounding_does_not_move_a_value_meaningfully` bounds the other
+        direction, and only past 1e-3 — a drop to 3dp survives it too."""
+        assert harness.RESULT_FLOAT_PLACES == EXPECTED_RESULT_FLOAT_PLACES
+
+    def test_the_fixtures_can_actually_fail_the_rounding_assertion(self):
+        """Guards the guard. A fixture float already exact at the threshold
+        makes test_every_float_in_a_result_row_is_rounded vacuous for that
+        field — which is the CF-94 review finding for `bridge` and `duration`,
+        and what would happen to `human_seconds` if anyone restored it to the
+        baseline's 480.0.
+
+        Walks the dataclasses rather than the serialised rows: after
+        serialisation every float is rounded by construction, so the question
+        can only be asked of the pre-serialisation values."""
+        for name, raw in (("signals", _noisy_signals()), ("deadtime", _noisy_deadtime())):
+            for path, value in _floats(asdict(raw)):
+                places = len(repr(value).split(".")[-1])
+                assert places > EXPECTED_RESULT_FLOAT_PLACES, (
+                    f"{name}{path} = {value!r} is already exact at "
+                    f"{EXPECTED_RESULT_FLOAT_PLACES}dp — the rounding test "
+                    f"cannot fail for this field"
+                )
+
+    def test_the_written_parts_sum_to_the_written_total(self):
+        """CF-352. `IncorrectTime.total` sums the raw parts, so rounding it
+        directly produced a row that did not add up — 79.6666 against a written
+        79.6667. Nothing reads these files back, but they exist to be diffed by
+        humans, and `_decompose_window` documents the decomposition as exact."""
+        row = harness._signals_to_dict(_noisy_signals())["incorrect_seconds"]
+        parts = [row["junk"], row["lead_slop"], row["tail_slop"], row["bridge"]]
+
+        assert row["total"] == round(sum(parts), EXPECTED_RESULT_FLOAT_PLACES)
+        # And the fixture actually exercises the disagreement: rounding the raw
+        # total gives a different answer, so the assertion above would fail
+        # against the old serialiser rather than passing for free. This half is
+        # a fixture precondition like
+        # test_the_fixtures_can_actually_fail_the_rounding_assertion, and fails
+        # for the same reason — if bridge goes back to 0.0 the parts sum
+        # cleanly, and if the threshold is loosened both sides agree again.
+        assert row["total"] != harness._round(_noisy_signals().incorrect.total)
+
     def test_every_float_in_a_result_row_is_rounded(self):
         """Both serialisers, because there are two result files and the card
         named one. `test1_deadtime.jsonl` was as noisy as `test1.jsonl`."""
