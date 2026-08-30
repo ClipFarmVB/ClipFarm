@@ -79,10 +79,12 @@ tsc and vitest for `web/`.
   ```
 
   **If a bare `python` is not the right interpreter, substitute the one that
-  is** — `py` on Windows, `python3` on Debian/Ubuntu and most Linux distros,
-  where `python` frequently does not exist at all. Those are exactly the two
-  fallbacks the hook's own probe tries after `python` (`for _candidate in python
-  py python3`), and the reason it prints which one it chose.
+  is** — `py` on Windows, `python3` on Debian and Ubuntu, which ship no
+  `/usr/bin/python` unless `python-is-python3` is installed. (Arch and Fedora do
+  ship a bare `python`; the hook's own comment says "the Linux/macOS installs
+  that ship no bare `python`", which is the accurate scope.) Those are exactly
+  the two fallbacks its probe tries after `python` — `for _candidate in python
+  py python3`.
 
   It applies to the install as much as to the run: pytest has to land in the
   interpreter that runs it, which is also why the install goes through

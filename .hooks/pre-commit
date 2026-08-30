@@ -189,13 +189,10 @@ echo "ok"
 # the one that costs the time. Loud on purpose, and never the default.
 #
 # Locating the probe is its own problem, and getting it wrong is invisible.
-# The relative `"$PY" "$_dev_set_probe"` below resolves against the CWD, which
-# is the tree being committed in. That is right, and it is what this does — but
-# only if it is allowed to fail honestly when the file is not there.
-#
-# `$PY` rather than a bare `python`, for the reason this whole file exists: the
-# probe has to run in the same interpreter the pytest step will use, or it
-# answers a question about a different environment than the one under test.
+# `$_dev_set_probe` is relative, so the `"$PY" "$_dev_set_probe"` below resolves
+# it against the CWD, which is the tree being committed in. That is right, and
+# it is what this does — but only if it is allowed to fail honestly when the
+# file is not there.
 #
 # Why a tree can lack it: this file can be SHARED across checkouts, and then it
 # runs against a tree it did not come from. Two ways in, not one:
@@ -224,6 +221,13 @@ echo "ok"
 # never asked to install.
 #
 # So: this tree's probe, or an honest skip.
+#
+# And this tree's *interpreter*, which is the other half of the same point:
+# `$PY` rather than a bare `python`, because the probe has to answer for the one
+# the pytest step below will actually use. A probe run under a different
+# interpreter reports on a different environment than the one under test — the
+# same class of mismatch as the foreign-checkout case above, reached through
+# PATH instead of through a shared hook.
 _dev_set_probe=api/scripts/check_dev_set.py
 
 printf "  pytest api/tests ... "
