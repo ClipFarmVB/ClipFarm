@@ -211,10 +211,12 @@ cd api && python -m pytest tests/        # api (CI and the hook run this too,
 If a bare `python` is not the right interpreter on your machine, substitute the
 one that is throughout that block. On Windows that is `py`: the Microsoft Store
 ships `python`/`python3` stubs that resolve on PATH and then refuse to run. On
-Debian and Ubuntu it is `python3`, which is the more likely case here — those
-ship no `/usr/bin/python` at all unless `python-is-python3` is installed, and
-this block is the first thing a fresh clone runs. Both are what the pre-commit
-hook's interpreter probe walks (CF-259, and the `python` bullet in `CLAUDE.md`).
+Debian, Ubuntu and macOS 12.3+ it is `python3` — none of them ships a
+`/usr/bin/python` (Debian and Ubuntu unless `python-is-python3` is installed,
+macOS not at all since it dropped the system Python 2). That is the more likely
+case here, since this block is the first thing a fresh clone runs. Both
+substitutes are what the pre-commit hook's interpreter probe walks (CF-259, and
+the `python` bullet in `CLAUDE.md`).
 
 It applies to the install line as much as the test lines — pytest has to land in
 the interpreter that runs it, which is why that line goes through
