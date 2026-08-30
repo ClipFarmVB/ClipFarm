@@ -429,3 +429,21 @@ first and leaves `SINCE`.
 - **Apply edits one at a time, never as a batch script.** A five-edit script
   that asserts partway through writes nothing, while the verification run after
   it looks entirely normal.
+- **The restore step is where mutation testing goes wrong, not the mutation.**
+  Two restores destroyed work in one run, and a checksum caught both — nothing
+  in the test output looked wrong. Never mutate a string to the empty string:
+  replacing `""` back inserts the text at position 0, and a file began
+  ` group-hover:bg-brand/20import { Clapperboard } …`. Never restore with
+  `git checkout -- FILE` when the file carries uncommitted edits; it silently
+  deleted them, noticed only because a test count moved 148 to 147. Copy the
+  file first, restore with `cp`, and verify with `cmp` — not by eye and not by
+  `git status`, which says nothing about a file you have deliberately changed.
+- **`search_issues` can return `total_count: 0` for a query that has matches.**
+  A title search for existing run reports returned nothing while `list_issues`
+  on the same label immediately returned three. Cross-check any negative result
+  from it before reporting an absence; "I found none" and "there are none" are
+  different claims.
+- **GitHub's HTML sanitizer eats angle-bracket text even inside backticks.** A
+  run report's `git checkout -- <FILE>` posted as `git checkout -- `, with the
+  placeholder silently gone. Use a plain word in any command written into an
+  issue or comment.

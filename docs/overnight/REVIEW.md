@@ -998,6 +998,36 @@ check: ask which input would make the claim false, and confirm your set contains
 it. A green suite proves nothing until a control mutation shows the harness can
 go red at all.
 
+**Write the prose claiming a gap is closed *after* running the mutation, never
+before.** In one run the fix for "this guard can pass without checking"
+contained a smaller instance of itself three times on a single PR: a false
+reason recorded for a launch flag, a guarded import that swallowed the
+blocker's signal, and a premise test that launched a *different child* than the
+one it was a premise about — so the flag it existed to forbid left every test
+green. Each was caught by running the mutation; each had its explanatory comment
+written first. The comment is not evidence, and writing it first is what makes
+it feel like evidence.
+
+Two shapes worth knowing by name:
+
+- **A loop assertion with no length guard passes on an empty iterable.** Two
+  cases written to catch a missing CSS class iterated a helper that located
+  elements *by a string another test pins*; changing that string emptied the
+  list and both cases went green while both couplings were broken. Assert the
+  count before iterating.
+- **When you isolate an environment, check the isolation did not also remove
+  the thing under test.** An import guard run with `-S` passed — because with no
+  site-packages the blocked module is not installed at all, so the blocker stops
+  being what fails the import. The tests measured absence and nothing went red
+  to say so.
+
+**When a claim in a comment or doc turns out to be wrong, grep for every copy of
+it before calling it fixed.** A "one-line" documentation fix was three lines in
+three files, and the copy that mattered most — the onboarding path a fresh clone
+runs first — was the one not touched. Correcting one instance leaves the repo
+saying two different things about one problem, which is worse than the original
+error.
+
 **Ask what the repository already asserts before deriving anything.** Six times
 in one run the answer was already written down — in another line of the same
 file, in an existing test, or in the installed package's own source. Reading it
