@@ -20,7 +20,8 @@
 // says nothing about it. These cases make that omission fail here instead, for call sites in
 // Sidebar — every one that exists today, and not the CF-248 case of a third
 // one in another file. A third link inside Sidebar fails `has both of them`,
-// so it cannot be added without a deliberate update to this file.
+// so it cannot be added without a deliberate update to this file — it fails
+// four cases, since the length guards below pin the count too.
 //
 // They assert the coupling from both ends deliberately. Asserting only that
 // BrandMark emits `group-hover:` would pass while every call site had dropped
@@ -134,9 +135,38 @@ describe("Sidebar's BrandMark call sites", () => {
   }
 
   it("has both of them", () => {
-    // The mobile top bar and the desktop rail. If this drops to one, the case
-    // below is silently checking half of what it says it checks.
+    // The mobile top bar and the desktop rail. Both are unconditional JSX —
+    // neither is gated on `open`, `user` or `isDesktop` — so a drop to one is a
+    // real change rather than a mock coincidence. A *third* link inside Sidebar
+    // fails this case and both cases below, which is deliberate: adding one
+    // should require saying so here.
     expect(brandLinks().length).toBe(2);
+  });
+
+  it("renders the shared mark, not a copy of it that can drift", () => {
+    // What CF-260 is for. The suite finds these links by the wordmark's text,
+    // so inlining the mark's markup back into a call site keeps every other
+    // case green — and the duplication this PR removed is back, silently.
+    //
+    // Comparing each call site against a standalone render catches that the
+    // moment the two disagree, which is the harm: an inlined copy is identical
+    // on the day it is written and drifts on the day someone edits one of them.
+    // It does not catch an inlined copy that stays byte-identical forever, and
+    // nothing short of asserting on the import could.
+    act(() => root.render(<BrandMark />));
+    const shared = host.innerHTML;
+    act(() => root.unmount());
+    root = createRoot(host);
+
+    const links = brandLinks();
+
+    // Same length guard as the coupling cases below, and for the same reason: a
+    // bare loop over an empty list passes, and this helper empties on a
+    // wordmark change.
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link.innerHTML).toBe(shared);
+    }
   });
 
   it("supplies `group`, so the hover is not dead", () => {
