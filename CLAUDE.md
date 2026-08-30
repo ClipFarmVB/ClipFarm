@@ -81,9 +81,19 @@ tsc and vitest for `web/`.
   **If a bare `python` is not the right interpreter, substitute the one that
   is** — `py` on Windows, `python3` on the systems that ship no bare `python`:
   Debian and Ubuntu (unless `python-is-python3` is installed) and macOS 12.3+,
-  which dropped `/usr/bin/python` entirely. Not all of Linux — Arch and Fedora
-  do ship one. Those two are exactly the fallbacks the hook's probe tries after
-  `python`, in that order: `for _candidate in python py python3`.
+  which dropped `/usr/bin/python` entirely. Not all of Linux, though — Arch and
+  Fedora do ship one. `py` and `python3` are exactly the fallbacks the hook's
+  probe tries after `python`, in that order: `for _candidate in python py
+  python3`.
+
+  Whichever name you use, it has to be a **3.11**, which is what `ci.yml` and
+  `Dockerfile.api` run and what `api/requirements-dev.txt` says at the top —
+  numpy 1.26.4 publishes no wheel for 3.12+, so a newer interpreter tries to
+  build it from source and the whole install dies in compiler output. Worth
+  saying beside the substitution rather than only in that file: on macOS the
+  Command Line Tools `python3` is 3.9, so following the rename alone lands a
+  Mac reader on the wrong version. A Homebrew or python.org 3.11 also answers
+  to `python3`.
 
   It applies to the install as much as to the run: pytest has to land in the
   interpreter that runs it, which is also why the install goes through
