@@ -1,6 +1,9 @@
 # Step 3 — ticket work
 
-Read on a lap that **implements a ticket**, and whenever a card needs filing. Only reachable in `build` mode.
+Read on a lap that **implements a ticket**, and whenever a card needs filing.
+The gate list and everything under [Working a ticket](#working-a-ticket) are
+`build`-only; [Filing cards](#filing-cards-for-out-of-scope-findings) is reached
+in both modes, which is why this file is not.
 
 Part of the unattended-run brief — see [`README.md`](./README.md).
 

@@ -392,7 +392,7 @@ one block. The first run discovered three gaps separately, mid-work.
   it; `_pg.py` takes a set value **unprobed**, so an unreachable one turns those
   eight skips into four hard errors and a non-zero exit. `build` runs meet this
   again in the gate list — see [Working a ticket](TICKETS.md#working-a-ticket) —
-  but this list runs in `review-only` too, where that file is never read.
+  but this list runs in `review-only` too, where the gate list is never reached.
 
 State every gap in the report. A capability you assumed and did not have is the
 most expensive kind of surprise in an unattended run.
