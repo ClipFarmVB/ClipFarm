@@ -421,11 +421,35 @@ first and leaves `SINCE`.
   never false kills, so an unexpected "the test still passed" is the case to
   distrust.
 - **A mis-anchored substitution prints a clean pass indistinguishable from a
-  survival.** Every mutation must assert three things: the anchor appears
-  exactly once, it was actually applied, and it is gone after restoring. Two
+  survival.** Every mutation must assert two things: the anchor appears exactly
+  once, and it was actually applied. Restoring is the restore bullet below. Two
   mutations "passed" this way before that check existed — an em dash silently
   became a double hyphen, and a 12-space anchor matched the tail of a 16-space
   line.
 - **Apply edits one at a time, never as a batch script.** A five-edit script
   that asserts partway through writes nothing, while the verification run after
   it looks entirely normal.
+- **The restore step is where mutation testing goes wrong, not the mutation.**
+  Two restores destroyed work in one run: a checksum caught one, and a moved
+  test count caught the other. Neither announced itself — the mutation's own
+  result looked exactly as expected both times. Never mutate a string to the
+  empty string:
+  replacing `""` back inserts the text at position 0, and a file began
+  ` group-hover:bg-brand/20import { Clapperboard } …`. Never restore with
+  `git checkout -- FILE` when the file carries uncommitted edits; it silently
+  deleted them, noticed only because a test count moved 148 to 147. Copy the
+  file first, restore with `cp`, and verify with `cmp` — not by eye and not by
+  `git status`, which says nothing about a file you have deliberately changed.
+- **`search_issues` silently under-reports** — it is semantic matching, by its
+  own description, not literal search, and the failure looks like a fact. A
+  title query for existing run reports returned `0` and later `1`, against 5
+  that exist. Cross-check any negative or small result against `list_issues`
+  before stating an absence; "I found none" and "there are none" are different
+  claims.
+- **Tag-shaped text is deleted from anything you post, backticks or not.** Not
+  angle brackets in general: measured, `ComponentProps<"a">`, `a <= b` and
+  `x < y > z` all survive escaped, while a placeholder shaped like an HTML tag
+  is removed — inside backticks and outside. A run report's command posted as
+  `git checkout -- `, truncated with nothing to say it had been cut. Use a plain
+  word for placeholders in issues, comments and PR bodies; files in the repo go
+  through a different path.

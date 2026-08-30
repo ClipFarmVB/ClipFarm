@@ -80,9 +80,17 @@ async def create_player(body: PlayerCreate, db: DB, user_id: UserId):
 async def update_player(player_id: uuid.UUID, body: PlayerCreate, db: DB, user_id: UserId):
     player = await get_owned_player(player_id, user_id, db)
 
-    # If reassigning team, verify new team is also owned by user
     updates = body.model_dump(exclude_unset=True)
-    if "team_id" in updates and updates["team_id"] is not None:
+    # Nested, not two sibling conditions: CF-238 was a third path through a
+    # fused `in updates and is not None`, so every team_id present here must
+    # leave through one of these two branches.
+    if "team_id" in updates:
+        # Clearing orphans the player irrecoverably — _get_owned_player rejects
+        # team_id IS NULL and runs first, so every later PATCH 404s and nothing
+        # can put the team back. create_player already refuses a null team_id.
+        if updates["team_id"] is None:
+            raise HTTPException(status_code=400, detail="team_id cannot be cleared")
+        # Reassigning: the new team must be owned by the caller too.
         new_team = await db.get(Team, updates["team_id"])
         if not new_team or new_team.owner_id != user_id:
             raise HTTPException(status_code=404, detail="Team not found")

@@ -192,8 +192,9 @@ separate motion pass.
 
 ## Testing strategy
 
-- **Pure logic gets unit tests** (`ml/tests/test_dead_time.py`): interval math,
-  grouping, padding/clamping — fast, no video, no models.
+- **Pure logic gets unit tests** (`ml/tests/test_intervals.py`,
+  `ml/tests/test_dead_time.py`): interval math, grouping, padding/clamping —
+  fast, no video, no models.
 - **ffmpeg/cv2 behavior gets harness scripts**: run against real or synthetic
   footage locally in a personal scratch dir (git-ignored `ball-track/`);
   assertions on durations/streams, human eyeballs on output. Model behavior
