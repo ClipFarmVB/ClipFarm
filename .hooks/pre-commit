@@ -118,9 +118,11 @@ printf "  mypy api/app ...     "
 "$PY" -m mypy api/app --ignore-missing-imports
 echo "ok"
 
-# ── ML eval: ruff + mypy ──────────────────────────────────────────────────────
-printf "  ruff check ml/eval . "
-"$PY" -m ruff check ml/eval
+# ── ML: ruff over all of ml/, mypy over ml/eval ───────────────────────────────
+# ruff lints the working tree, not the staged set: an untracked scratch .py
+# anywhere under ml/ blocks every commit until it is cleaned up or ignored.
+printf "  ruff check ml/ ...   "
+"$PY" -m ruff check ml/
 echo "ok"
 printf "  mypy ml/eval ...     "
 "$PY" -m mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
