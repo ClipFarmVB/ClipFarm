@@ -1018,18 +1018,14 @@ Two shapes worth knowing by name:
 - **A premise test must run under the same launch path as the thing it is a
   premise about.** The third instance above is this shape: two argv literals, so
   the test vouching for the child was vouching for a child that did not exist.
-  One shared helper made the same mutation red.
+  Adding an isolation flag to the child under test left every case green; one
+  shared helper made that same mutation red.
 
-  Worth stating precisely, because the first version of this lesson was wrong
-  in an instructive way. It claimed `-S` made the tests *vacuous* — that with no
-  site-packages the blocked module is absent, so the blocker stops being what
-  fails the import. Measured, that is false: the blocker sits ahead of the path
-  finder and still raises, and the control matches on its message rather than on
-  the exception type, so `-S` plus a broken blocker is still red. What `-S`
-  actually costs is that the blocker becomes *redundant* — the tests would
-  measure absence rather than blocking, and nothing would go red to say so.
-  Redundant and vacuous are not the same failure, and only the narrower claim
-  survives measurement.
+  Stated narrowly on purpose. The first version of this lesson said the flag
+  made the tests *vacuous*, and measurement said otherwise — the blocker still
+  fires, and a control matching on its message still discriminates. What the
+  flag costs is that the blocker becomes *redundant*, which is a different
+  failure and the only one the evidence supports.
 
 **Ask what the repository already asserts before deriving anything.** Six times
 in one run the answer was already written down — in another line of the same

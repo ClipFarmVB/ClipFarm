@@ -422,7 +422,7 @@ first and leaves `SINCE`.
   distrust.
 - **A mis-anchored substitution prints a clean pass indistinguishable from a
   survival.** Every mutation must assert two things: the anchor appears exactly
-  once, and it was actually applied. Restoring is the bullet below. Two
+  once, and it was actually applied. Restoring is the restore bullet below. Two
   mutations "passed" this way before that check existed — an em dash silently
   became a double hyphen, and a 12-space anchor matched the tail of a 16-space
   line.
@@ -440,22 +440,16 @@ first and leaves `SINCE`.
   deleted them, noticed only because a test count moved 148 to 147. Copy the
   file first, restore with `cp`, and verify with `cmp` — not by eye and not by
   `git status`, which says nothing about a file you have deliberately changed.
-- **`search_issues` silently under-reports; it is semantic matching, not literal
-  search.** Its own description says so, and the failure looks like a fact. A
-  title query for existing run reports returned `total_count: 0` while
-  `list_issues` on the same label immediately returned three; re-run later the
-  same query returned 1 of the 5 that exist. Trusting it would have put "no
-  previous run ever filed a report" into a report. Cross-check any negative or
-  small result against `list_issues` before stating an absence — "I found none"
-  and "there are none" are different claims.
+- **`search_issues` silently under-reports** — it is semantic matching, by its
+  own description, not literal search, and the failure looks like a fact. A
+  title query for existing run reports returned `0` and later `1`, against 5
+  that exist. Cross-check any negative or small result against `list_issues`
+  before stating an absence; "I found none" and "there are none" are different
+  claims.
 - **Tag-shaped text is deleted from anything you post, backticks or not.** Not
-  angle brackets in general — a placeholder that looks like an HTML tag. A run
-  report's command lost its placeholder and posted as `git checkout -- `, so
-  the reader saw a truncated command with nothing to say it had been cut.
-
-  Measured by posting eight cases and reading them back: both tag-shaped
-  placeholders were removed, inside backticks and outside, while
-  `ComponentProps<"a">`, `a <= b` and `x < y > z` survived escaped — so
-  backticked angle brackets that survive elsewhere are not counter-evidence,
-  none of them being tag-shaped. Use a plain word for placeholders in issues,
-  comments and PR bodies; files in the repo go through a different path.
+  angle brackets in general: measured, `ComponentProps<"a">`, `a <= b` and
+  `x < y > z` all survive escaped, while a placeholder shaped like an HTML tag
+  is removed — inside backticks and outside. A run report's command posted as
+  `git checkout -- `, truncated with nothing to say it had been cut. Use a plain
+  word for placeholders in issues, comments and PR bodies; files in the repo go
+  through a different path.

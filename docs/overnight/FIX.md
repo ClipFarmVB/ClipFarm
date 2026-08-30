@@ -18,15 +18,6 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 
 #### Step 2 — fix what the round found
 
-**When the thing you are fixing is a wrong claim, grep for every copy of it
-before calling it fixed.** A "one-line" documentation fix turned out to be three
-lines in three files, and the copy that mattered most — the onboarding path a
-fresh clone runs first — was the one left untouched, so the repo then stated two
-different things about one problem in two places. Correcting one instance of a
-claim is not a smaller version of correcting it; it can be worse than leaving all
-of them, because the surviving copies now have a contradicting neighbour to be
-read against.
-
 **2 — Address the review findings on the PR you are carrying**, if this account
 opened it. That is the same test the `review scope` filter runs —
 `gh api user --jq ".login"` against the PR's `.user.login` — so at
@@ -60,6 +51,15 @@ For a PR you may not push to, describe the fix in a comment and apply
   reasons](REVIEW.md#the-terminal-labels-and-their-reasons). The two want different
   things from different people: a judgement call needs the reviewer's question
   answered, a latch needs someone to unblock the push machinery.
+
+**When the thing you are fixing is a wrong claim, grep for every copy of it
+before calling it fixed.** A "one-line" documentation fix turned out to be three
+lines in three files, and the copy that mattered most — the onboarding path a
+fresh clone runs first — was the one left untouched, so the repo then stated two
+different things about one problem in two places. Correcting one instance of a
+claim is not a smaller version of correcting it; it can be worse than leaving all
+of them, because the surviving copies now have a contradicting neighbour to be
+read against.
 
 **Read the findings out of the round's review.** The marker comment carries the
 prefix, the SHA and at most a count; the findings are in the review that round
