@@ -79,7 +79,10 @@ importlib.import_module(module_name)
 # Raising is not enough on its own. `try: import numpy / except ImportError:`
 # swallows exactly the signal the blocker sends, and a guarded optional import
 # is house idiom in this tree — ml/pipeline/ocr.py, ball.py, clip.py and
-# detect.py all use it, so it is a likely way a heavy dependency arrives.
+# detect.py all use it. Those four are function-local lazy imports and so would
+# never reach the blocker, which fires at import time; the idiom is the
+# precedent, not the failure. What this guards is the same shape at module
+# level, which is one refactor away from any of them.
 #
 # Inspecting sys.modules afterwards does NOT catch it: the blocker refuses
 # before any module object exists, so a swallowed refusal leaves the cache as
@@ -120,6 +123,33 @@ class TestTheImportStaysLight:
     #: the detection side pulls in and would be worse.
     BLOCKED = frozenset({"numpy", "cv2", "torch", "ultralytics"})
 
+    @staticmethod
+    def _child_argv(*args):
+        """The one place the child's launch flags are decided.
+
+        Both call sites go through this, and that is the point rather than
+        tidiness. They were two separate argv literals, and a settling round
+        showed the cost: adding `-S` to the blocker child alone left the whole
+        file green, because the test asserting numpy is importable launched a
+        *different* child that never saw the flag. The premise test was covering
+        a child that did not exist, and the guard against `-S` was still the
+        comment it claimed to have replaced.
+
+        `-E` so an inherited PYTHONPATH cannot change what the child resolves;
+        `cwd=REPO_ROOT` at the call sites is what puts the repo root on its path.
+
+        Deliberately no `-S`. Without site-packages the blocked roots are not
+        installed in the child at all, so the blocker would stop being the thing
+        under test: every import it is asked about would fail anyway, and these
+        tests would measure absence rather than blocking. They would not go
+        *vacuous* — the control matches on the string `BLOCKED: numpy`, which
+        `ModuleNotFoundError` does not produce — and an earlier version of this
+        comment claimed they would, which was wrong. What keeps `-S` out is now
+        test_the_child_can_import_numpy_without_the_blocker, which runs under
+        these exact flags.
+        """
+        return [sys.executable, "-E", *args]
+
     def _import_under_blocker(self, module_name):
         """Import `module_name` in a fresh interpreter with BLOCKED roots made
         unimportable. Raises ImportError carrying the child's stderr if it fails.
@@ -150,31 +180,12 @@ class TestTheImportStaysLight:
         test that ran after it.
         """
         proc = subprocess.run(
-            # `-E` so an inherited PYTHONPATH cannot change what the child
-            # resolves; `cwd` is what puts the repo root on its path.
-            #
-            # Deliberately NOT `-S`. Without site-packages the blocked roots are
-            # not installed in the child at all, so the blocker would stop being
-            # the thing under test: every import it is asked about would fail
-            # anyway, and these tests would measure absence rather than
-            # blocking. They would not go *vacuous* — the control matches on the
-            # string `BLOCKED: numpy`, which `ModuleNotFoundError` does not
-            # produce — and an earlier version of this comment claimed they
-            # would, which was wrong. The premise is asserted directly by
-            # test_the_child_can_import_numpy_without_the_blocker instead of
-            # being inferred from how the child is launched.
-            #
             # BLOCKED and the module name go through argv rather than into the
             # source text, so the snippet contains no substitution at all and a
             # future dict or set literal in it cannot become a KeyError.
-            [
-                sys.executable,
-                "-E",
-                "-c",
-                _CHILD_SOURCE,
-                json.dumps(sorted(self.BLOCKED)),
-                module_name,
-            ],
+            self._child_argv(
+                "-c", _CHILD_SOURCE, json.dumps(sorted(self.BLOCKED)), module_name
+            ),
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -194,10 +205,14 @@ class TestTheImportStaysLight:
         The blocker only means something if the thing it blocks would otherwise
         import. Under `-S` it would not — site-packages is gone — and these
         tests would be measuring absence rather than blocking, with nothing
-        going red to say so. This asserts the premise rather than inferring it
-        from the launch flags."""
+        going red to say so.
+
+        Launched through `_child_argv`, the same helper the blocked import uses,
+        so this runs under the blocker child's exact flags. Built as its own argv
+        literal first, which made it useless for the one job it has: `-S` on the
+        blocker child alone left this test green."""
         proc = subprocess.run(
-            [sys.executable, "-E", "-c", "import numpy"],
+            self._child_argv("-c", "import numpy"),
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
