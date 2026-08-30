@@ -6,12 +6,14 @@ dropped seconds from the totals, or a comparison column that misaligns signs,
 would misreport results while every metric underneath stays correct.
 """
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from ml.eval import harness, metrics
 from ml.eval.harness import (
     _seconds_to_ts,
     format_deadtime_audit,
@@ -90,3 +92,184 @@ class TestLoadWindowsJson:
         p.write_text('{"windows": []}', encoding="utf-8")
         with pytest.raises(SystemExit, match="keep"):
             load_windows_json(p)
+
+
+def _floats(obj, path=""):
+    """Every float in a nested result row, with its path."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _floats(v, f"{path}.{k}")
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            yield from _floats(v, f"{path}[{i}]")
+    elif isinstance(obj, float):
+        yield path, obj
+
+
+def _noisy_signals(empty: bool = False):
+    """EvalSignals carrying a float tail on **every** field, so the rounding
+    test can fail for any of them.
+
+    This is a **worst case, not a replica of the baseline**, and the two ideas
+    pull against each other. A field whose fixture value is already exact at the
+    rounding threshold makes `test_every_float_in_a_result_row_is_rounded`
+    vacuous for that field, silently — dropping `_round` from it survives the
+    suite. `bridge` is `0.0` in the committed baseline and `duration` is
+    `3660.0`, so faithful values there would do exactly that; `human_seconds` is
+    `480.0` and would too.
+
+    Restoring any of these to the baseline is the tidy-looking change that
+    reopens the hole, so it is no longer left to this docstring to prevent:
+    `test_the_fixtures_can_actually_fail_the_rounding_assertion` asserts the
+    precondition for every *field* here, named or not. It walks the dataclass,
+    so the one written float it does not reach is `incorrect.total`, which is a
+    property rather than a field — covered instead by
+    `test_the_written_parts_sum_to_the_written_total`.
+    """
+    return metrics.EvalSignals(
+        captured_pct=None if empty else 0.18506944444444462,
+        buckets=metrics.CaptureBuckets(well_captured=3, butchered=1, missed=2, total=6),
+        # `total` is a property, not a field — it sums the four below, which is
+        # exactly how the noisy tail in the committed baseline arises.
+        incorrect=metrics.IncorrectTime(
+            junk=59.99999999999943,
+            lead_slop=5.000000000000014,
+            tail_slop=11.833333333333414,
+            # Interval-difference arithmetic, like junk and the two slops above.
+            bridge=2.8333333333333712,
+        ),
+        auc=None if empty else 0.8312500000000003,
+        human_seconds=415.16666666666663,
+        model_seconds=302.3333333333335,
+        per_clip=[],
+        per_window=[],
+    )
+
+
+def _noisy_deadtime(empty: bool = False):
+    return metrics.DeadTimeSignals(
+        dead_removed_pct=None if empty else 0.6843121036669423,
+        live_removed_sec=516.6666666666663,
+        live_removed_pct=None if empty else 0.415995705850778,
+        kept_play_pct=None if empty else 0.5840042941492221,
+        condense_ratio=None if empty else 0.4067395264116576,
+        human_keep_sec=1241.6666666666665,
+        human_dead_sec=2418.333333333333,
+        model_keep_sec=1488.666666666667,
+        # `n_frames / fps` in a real run — 109710 frames at 29.97 fps gives
+        # 3660.6606606606606. (An exact hour does not: 107892 / 29.97 is 3600.0
+        # on the nose, which is the sort of value this fixture must not carry.)
+        # (`duration` is a passthrough on DeadTimeSignals;
+        # its sources are `video_duration_sec`, a `max(rally ends)` fallback, or
+        # that division — the division is where the tail comes from.)
+        duration=3660.000000000001,
+        over_cut_live=[(1.23456789, 2.3456789)],
+        missed_dead=[(10.111111111, 20.222222222)],
+    )
+
+# ── CF-94: result rows are rounded on write ─────────────────────────────────
+#
+# results/*.jsonl is committed so runs can be diffed across versions. Raw float
+# tails defeat that — `59.99999999999943` against `60.00000000000012` is the
+# same number twice and reads as a change.
+
+
+# 4, spelled out rather than imported. A guard that reads RESULT_FLOAT_PLACES
+# to decide what counts as noisy agrees with whatever value the constant takes,
+# including one loosened far enough to put the float tails back into the
+# committed results — which is the condition CF-94 exists to prevent. The guard
+# has to be pinned to something the change under guard cannot move.
+EXPECTED_RESULT_FLOAT_PLACES = 4
+
+
+class TestResultRounding:
+    def test_the_rounding_threshold_has_not_moved(self):
+        """Nothing else fails if RESULT_FLOAT_PLACES is loosened. Control
+        mutation: setting it to 12 leaves the whole suite green while the
+        committed results go straight back to 12-place noise.
+        `test_rounding_does_not_move_a_value_meaningfully` bounds the other
+        direction, and only past 1e-3 — a drop to 3dp survives it too."""
+        assert harness.RESULT_FLOAT_PLACES == EXPECTED_RESULT_FLOAT_PLACES
+
+    def test_the_fixtures_can_actually_fail_the_rounding_assertion(self):
+        """Guards the guard. A fixture float already exact at the threshold
+        makes test_every_float_in_a_result_row_is_rounded vacuous for that
+        field — which is the CF-94 review finding for `bridge` and `duration`,
+        and what would happen to `human_seconds` if anyone restored it to the
+        baseline's 480.0.
+
+        Walks the dataclasses rather than the serialised rows: after
+        serialisation every float is rounded by construction, so the question
+        can only be asked of the pre-serialisation values."""
+        for name, raw in (("signals", _noisy_signals()), ("deadtime", _noisy_deadtime())):
+            for path, value in _floats(asdict(raw)):
+                # Not a digit count off `repr`: a float whose repr is
+                # exponential has no ".", so `repr(1e+16).split(".")[-1]` is the
+                # whole repr and scores 5 — an exactly integral value passing a
+                # test whose entire job is to reject exactly integral values.
+                # Comparing against the rounded value asks the real question.
+                assert value != round(value, EXPECTED_RESULT_FLOAT_PLACES), (
+                    f"{name}{path} = {value!r} is already exact at "
+                    f"{EXPECTED_RESULT_FLOAT_PLACES}dp — the rounding test "
+                    f"cannot fail for this field"
+                )
+
+    def test_the_written_parts_sum_to_the_written_total(self):
+        """CF-352. `IncorrectTime.total` sums the raw parts, so rounding it
+        directly produced a row that did not add up — 79.6666 against a written
+        79.6667. Nothing reads these files back, but they exist to be diffed by
+        humans, and `_decompose_window` documents the decomposition as exact."""
+        row = harness._signals_to_dict(_noisy_signals())["incorrect_seconds"]
+        parts = [row["junk"], row["lead_slop"], row["tail_slop"], row["bridge"]]
+
+        assert row["total"] == round(sum(parts), EXPECTED_RESULT_FLOAT_PLACES)
+        # And the fixture actually exercises the disagreement: rounding the raw
+        # total gives a different answer, so the assertion above would fail
+        # against the old serialiser rather than passing for free. This half is
+        # a fixture precondition like
+        # test_the_fixtures_can_actually_fail_the_rounding_assertion, and fails
+        # for the same reason — if bridge goes back to 0.0 the parts sum
+        # cleanly, and if the threshold is loosened both sides agree again.
+        assert row["total"] != harness._round(_noisy_signals().incorrect.total)
+
+    def test_every_float_in_a_result_row_is_rounded(self):
+        """Both serialisers, because there are two result files and the card
+        named one. `test1_deadtime.jsonl` was as noisy as `test1.jsonl`."""
+        signals = harness._signals_to_dict(_noisy_signals())
+        dead = harness._deadtime_to_dict(_noisy_deadtime())
+
+        for name, row in (("pre_gate", signals), ("deadtime", dead)):
+            for path, value in _floats(row):
+                # Same repr caveat as the precondition test above — an
+                # exponential repr has no decimal point to count digits after.
+                assert value == round(value, harness.RESULT_FLOAT_PLACES), (
+                    f"{name}{path} = {value!r} is not rounded to "
+                    f"{harness.RESULT_FLOAT_PLACES} decimal places"
+                )
+
+    def test_none_survives_rounding(self):
+        """captured_pct and auc are None when undefined — no human clips, or no
+        positive/negative windows to separate. `round(None, 4)` is a TypeError,
+        so a rounder that forgets this crashes the run that records the result
+        rather than the one that computes it."""
+        assert harness._round(None) is None
+        assert harness._signals_to_dict(_noisy_signals(empty=True))["captured_pct"] is None
+        assert harness._signals_to_dict(_noisy_signals(empty=True))["auc"] is None
+        assert harness._deadtime_to_dict(_noisy_deadtime(empty=True))["dead_removed_pct"] is None
+
+    def test_counts_are_left_as_integers(self):
+        """The buckets are counts, not measurements. A round() there would be a
+        no-op that reads as a guard against something."""
+        buckets = harness._signals_to_dict(_noisy_signals())["buckets"]
+
+        assert all(isinstance(v, int) for v in buckets.values()), buckets
+
+    def test_rounding_does_not_move_a_value_meaningfully(self):
+        """The point is readability, not precision loss. 4dp is 0.01% on a
+        ratio and 0.1 ms on a second — if this ever fails, the places constant
+        has been dropped far enough to change what the metric says."""
+        raw = _noisy_signals()
+        row = harness._signals_to_dict(raw)
+
+        assert abs(row["incorrect_seconds"]["total"] - raw.incorrect.total) < 1e-3
+        assert abs(row["captured_pct"] - raw.captured_pct) < 1e-3

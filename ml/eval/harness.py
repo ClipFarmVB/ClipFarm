@@ -35,6 +35,7 @@ from pathlib import Path
 from ml.eval.metrics import (
     DeadTimeSignals,
     EvalSignals,
+    IncorrectTime,
     ModelWindow,
     evaluate,
     evaluate_deadtime,
@@ -208,25 +209,71 @@ def config_snapshot() -> dict:
     return snap
 
 
+# results/*.jsonl is committed so runs can be diffed across versions, and raw
+# float tails defeat that: `59.99999999999943` vs `60.00000000000012` is the
+# same number twice and reads as a change (CF-94). 4dp is 0.01% on the ratios
+# and 0.1 ms on the seconds — finer than anything either measures.
+#
+# The interval lists below stay at 3dp. Different unit, different natural
+# floor: 1 ms is already well under a frame at any frame rate this pipeline
+# sees, so more digits there would be recording jitter, not signal.
+RESULT_FLOAT_PLACES = 4
+
+
+def _round(value: float | None, places: int = RESULT_FLOAT_PLACES) -> float | None:
+    """`round`, but None survives.
+
+    captured_pct, auc, dead_removed_pct and the rest are legitimately None —
+    no human clips, or no positive/negative windows to separate — and round()
+    raises TypeError on None rather than passing it through.
+    """
+    return None if value is None else round(value, places)
+
+
+def _incorrect_seconds_to_dict(t: IncorrectTime) -> dict:
+    """The four parts, rounded, plus a `total` that is their sum.
+
+    `IncorrectTime.total` is a property over the *raw* parts, so rounding it
+    directly lets a written row disagree with itself: 60.0 + 5.0 + 11.8333 +
+    2.8333 is 79.6666 beside a written total of 79.6667. Nothing reads these
+    files back programmatically — humans diff them across runs, and a row whose
+    parts do not add up is exactly what misleads that reader. `_decompose_window`
+    documents the decomposition as exact, so the file should show it that way.
+
+    Summing the rounded parts moves `total` by at most four half-ulps at 4dp —
+    4 x 5e-5, so **2e-4 s**, not 5e-5; the first version of this comment said
+    the latter. Still three orders of magnitude below anything this metric
+    means, and well inside the 1e-3 that
+    `test_rounding_does_not_move_a_value_meaningfully` allows. The outer round
+    is there because adding floats reintroduces a tail of its own: without it
+    the fixture writes 79.66659999999999.
+    """
+    # `round`, not `_round`: these four are `float` on IncorrectTime and never
+    # None, and the type has to say so for `sum` below to typecheck.
+    parts: dict[str, float] = {
+        "junk": round(t.junk, RESULT_FLOAT_PLACES),
+        "lead_slop": round(t.lead_slop, RESULT_FLOAT_PLACES),
+        "tail_slop": round(t.tail_slop, RESULT_FLOAT_PLACES),
+        "bridge": round(t.bridge, RESULT_FLOAT_PLACES),
+    }
+    return {**parts, "total": round(sum(parts.values()), RESULT_FLOAT_PLACES)}
+
+
 def _signals_to_dict(s: EvalSignals) -> dict:
     return {
-        "captured_pct": s.captured_pct,
+        "captured_pct": _round(s.captured_pct),
+        # Counts, not measurements — left alone. Rounding an int is a no-op
+        # that invites the next reader to wonder what it is guarding against.
         "buckets": {
             "well_captured": s.buckets.well_captured,
             "butchered": s.buckets.butchered,
             "missed": s.buckets.missed,
             "total": s.buckets.total,
         },
-        "incorrect_seconds": {
-            "junk": s.incorrect.junk,
-            "lead_slop": s.incorrect.lead_slop,
-            "tail_slop": s.incorrect.tail_slop,
-            "bridge": s.incorrect.bridge,
-            "total": s.incorrect.total,
-        },
-        "auc": s.auc,
-        "human_seconds": s.human_seconds,
-        "model_seconds": s.model_seconds,
+        "incorrect_seconds": _incorrect_seconds_to_dict(s.incorrect),
+        "auc": _round(s.auc),
+        "human_seconds": _round(s.human_seconds),
+        "model_seconds": _round(s.model_seconds),
     }
 
 
@@ -652,15 +699,27 @@ def format_deadtime_comparison(
 
 def _deadtime_to_dict(s: DeadTimeSignals) -> dict:
     return {
-        "dead_removed_pct": s.dead_removed_pct,
-        "live_removed_sec": s.live_removed_sec,
-        "live_removed_pct": s.live_removed_pct,
-        "kept_play_pct": s.kept_play_pct,
-        "condense_ratio": s.condense_ratio,
-        "human_keep_sec": s.human_keep_sec,
-        "human_dead_sec": s.human_dead_sec,
-        "model_keep_sec": s.model_keep_sec,
-        "duration": s.duration,
+        "dead_removed_pct": _round(s.dead_removed_pct),
+        "live_removed_sec": _round(s.live_removed_sec),
+        "live_removed_pct": _round(s.live_removed_pct),
+        "kept_play_pct": _round(s.kept_play_pct),
+        "condense_ratio": _round(s.condense_ratio),
+        # These two partition [0, duration] by construction in
+        # evaluate_deadtime, so they sum to `duration` exactly before rounding
+        # and can fail to afterwards — the same shape CF-352 fixed for
+        # incorrect_seconds. Measured: human=(0, 100.00005) over a 200.0001s
+        # duration writes 100.0001 + 100.0001 = 200.0002 beside a duration of
+        # 200.0001. Deliberately not changed here: unlike incorrect_seconds,
+        # where `total` is derived from the parts, all three of these are
+        # independent fields and deciding which one gives way is a call about
+        # what the file means, not a rounding detail. Measured and argued in
+        # #401; `kept_play_pct` / `live_removed_pct` were checked and are *not*
+        # exposed — 800k samples plus every half-ulp tie point at the 5th
+        # decimal produced no case where the rounded pair fails to sum to 1.0.
+        "human_keep_sec": _round(s.human_keep_sec),
+        "human_dead_sec": _round(s.human_dead_sec),
+        "model_keep_sec": _round(s.model_keep_sec),
+        "duration": _round(s.duration),
         "over_cut_live": [[round(a, 3), round(b, 3)] for a, b in s.over_cut_live],
         "missed_dead": [[round(a, 3), round(b, 3)] for a, b in s.missed_dead],
     }
