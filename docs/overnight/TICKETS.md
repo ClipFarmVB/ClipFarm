@@ -47,20 +47,29 @@ applies in both modes.
    pip install "numpy==1.26.4"          # AFTER the lint/type steps — see below
    python -m pytest ml/tests/
    pip install -r api/requirements-dev.txt
-   cd api && LOCK_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres \
-       python -m pytest tests/
+   cd api && python -m pytest tests/          # see LOCK_TEST_DATABASE_URL below
    ```
 
-   **`LOCK_TEST_DATABASE_URL` is part of the command, not optional.** Without it
-   `api/tests/_pg.py` probes two hardcoded `localhost:5432` candidates and, on a
-   machine whose Postgres is anywhere else, **skips** the CF-184 advisory-lock
-   suite and the post-visibility pg tests. Measured: 824 passed / 0 skipped with
-   it, **816 passed / 8 skipped — and green — without**. Point it at whatever
-   local cluster you have; the value above is CI's.
+   **Set `LOCK_TEST_DATABASE_URL` only if your Postgres is not on
+   `localhost:5432`** — and check the skip count either way. `api/tests/_pg.py`
+   probes two hardcoded `localhost:5432` candidates *and takes a set value
+   verbatim, unprobed*, so the variable has two opposite failure modes:
 
-   That is the silent-skip failure the paragraph below warns about, reached
-   through the environment rather than through a missing package, and it is why
-   the env var belongs in the list rather than in a reader's memory.
+   - **Unset, no local cluster** — the CF-184 advisory-lock suite and the
+     post-visibility pg tests **skip**. Measured: **816 passed / 8 skipped,
+     exit 0** — green, eight tests short. This is the silent-skip failure the
+     paragraph below warns about, reached through the environment rather than
+     through a missing package.
+   - **Set but unreachable** — a hard `psycopg2.OperationalError` and a non-zero
+     exit. Measured against a dead port on this head: **816 passed / 4 skipped /
+     4 errors**. Since "do not open a PR if any gate fails" is two lines down,
+     pasting a URL your machine cannot reach costs you the PR on a gate that
+     would otherwise have been green.
+
+   With a reachable cluster the suite is **824 passed / 0 skipped**. CI's value
+   is `postgresql://postgres:postgres@localhost:5432/postgres`; point the
+   variable at whatever local cluster you actually have, or leave it unset and
+   let the probe find one.
 
    **The three installs are part of the list and their order is load-bearing.**
    `numpy` goes in after ruff and mypy on purpose: both are tuned against a

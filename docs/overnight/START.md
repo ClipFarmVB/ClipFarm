@@ -381,14 +381,18 @@ one block. The first run discovered three gaps separately, mid-work.
   what is installed here. `requirements-tooling.txt` is pinned, so there is a
   version to match; install that file rather than `pip install ruff mypy pytest`,
   and report the versions you actually ran either way.
-- **A Postgres for the api suite** — `pg_isready`, or try the
-  `LOCK_TEST_DATABASE_URL` in the gate step. Without one the api suite still
-  passes: **816 passed / 8 skipped, exit 0**, the CF-184 advisory-lock and
+- **A Postgres for the api suite** — `pg_isready -h localhost -p 5432`, which is
+  where `api/tests/_pg.py` probes. Without one the api suite still passes:
+  **816 passed / 8 skipped, exit 0**, the CF-184 advisory-lock and
   post-visibility tests silently absent. That is the one capability gap on this
   list which does not announce itself — everything else here fails loudly when
   missing, so a run that skips this probe reports a green gate it did not run.
   If there is no cluster, say so in the report and treat every api-suite result
-  as eight tests short.
+  as eight tests short. If yours is elsewhere, set `LOCK_TEST_DATABASE_URL` to
+  it; `_pg.py` takes a set value **unprobed**, so an unreachable one turns those
+  eight skips into four hard errors and a non-zero exit. `build` runs meet this
+  again in the gate list — see [Working a ticket](TICKETS.md#working-a-ticket) —
+  but this list runs in `review-only` too, where that file is never read.
 
 State every gap in the report. A capability you assumed and did not have is the
 most expensive kind of surprise in an unattended run.
