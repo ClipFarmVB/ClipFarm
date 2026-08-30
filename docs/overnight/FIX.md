@@ -200,8 +200,12 @@ attractive on every lap.
 
 **Never settle over a check that has not passed.** The settle bar is about what a
 reviewer found; this is about whether the code runs, and a green review over a
-red suite is the failure CF-275 was filed for: six rounds on #307 while every CI
-run failed, fixed only when a human noticed. Do not apply `review-settled` while
+red suite is the failure CF-275 was filed to prevent. #307 is the evidence, and
+it is worth stating precisely: it took eight rounds with its CI red throughout
+and not one of them read a check. It was never actually settled over red — it
+ran out of rounds and ended `unsettled: needs a decision` — which is the point,
+because nothing in the brief would have stopped a settle had a round cleared the
+bar. Do not apply `review-settled` while
 any check run on the head SHA is in **any** of these states:
 
 - concluded `failure`, `timed_out`, `cancelled` or `action_required`;
@@ -220,8 +224,11 @@ downstream.
 How to read them, and the two endpoints that look right and are not, is
 [in step 1](REVIEW.md#reading-the-checks-before-a-round-and-again-before-settling).
 
-**Pending is the ordinary case, not an edge case.** A carry pushes a fix and
-reaches the settle bar within a minute or two, while CI takes longer than that.
+**Pending is a live race, not an edge case — and not a foregone one.** A carry
+pushes a fix and reaches the settle bar within a minute or two; CI here lands in
+about the same time (median 65s across the last 20 runs, 67s on this PR's own
+head), so which arrives first is not predictable and neither outcome is the
+"ordinary" one to plan around.
 Re-read once after a short wait; if it is still running, the PR is simply not
 settleable yet this lap. That is not a finding, not a label, and not a reason to
 spend a round.

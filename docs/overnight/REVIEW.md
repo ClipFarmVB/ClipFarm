@@ -23,6 +23,19 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 > **A PR needs a round unless it carries `review-settled` or `unsettled` and
 > that label's carve-out has not fired.**
 
+**One case is unlabelled and still does not need a round:** a PR whose latest
+cold round found nothing outstanding and which is unlabelled only because [its
+checks have not passed](FIX.md#the-cycle-and-the-settle-bar). What it needs is a
+check read, which spends no round — if the checks have since passed, settle it
+on the spot; if they have not, it is done for this lap and goes in the report.
+This has to be said here rather than left to the reader, because the test is
+keyed on labels and that PR deliberately carries none: read literally, it needs
+a round forever, and no round can change the thing holding it. Everything that
+consumes this test inherits the clause — the [`review-only` stop
+condition](START.md#when-a-review-only-run-is-done) and [step 3's "when 1 and 2
+are clear"](TICKETS.md#step-3--ticket-work) — which is what keeps a night whose
+remaining queue is one red PR from having no way to end.
+
 **And one filter in front of that test: the run's `review scope`.** With scope
 `own`, a PR whose author is not this account is out of scope and gets no round —
 it is not skipped-because-settled, it is not in the queue at all. With scope
@@ -204,8 +217,10 @@ tool in the report. A run that cannot establish point 1 should say so and treat
 every marker read as unverified rather than assuming it saw the newest.
 
 **Where the GitHub MCP tools fail these, specifically.** They are the expected
-non-`gh` tool in the web sandbox, and they satisfy the list — but three of the
-failures are silent, and all three were hit in the run of 2026-08-27:
+non-`gh` tool in the web sandbox, and they satisfy the list — but each failure
+below is silent: the call succeeds and returns a wrong or partial answer. The
+label, replace-the-set and page-size rows were all hit in the run of
+2026-08-27; the check-runs row comes from CF-275, which is what added point 7.
 
 - **Labels cannot be read off a PR the obvious way.** `issue_read` with
   `get_labels` returns `Could not resolve to an Issue` for a pull request
@@ -220,7 +235,6 @@ failures are silent, and all three were hit in the run of 2026-08-27:
   `minimal_output: true`, and on this repository a default page is refused for
   size — which costs a call and returns nothing. Pass a small `perPage` (1–5)
   and page. This is why point 1's pagination requirement is not academic here.
-
 - **For point 7, `pull_request_read` with `get_check_runs` is the one that
   works.** `get_status` on the same PR returns `state: pending, total_count: 0`
   — not because anything is pending, but because this repository posts no commit
