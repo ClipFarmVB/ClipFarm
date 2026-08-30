@@ -12,10 +12,15 @@ const workspaceRoot = path.resolve(projectRoot, "..");
 const config = getDefaultConfig(projectRoot);
 
 config.watchFolders = [workspaceRoot];
-// Order matters: a nested copy must win over the hoisted one, so a package npm
-// could not dedupe still resolves to the version mobile asked for. React is the
-// live case — web pins 19.2.4 and Expo SDK 57 pins 19.2.3, so npm hoists web's
-// and nests ours, and two React copies in one bundle is not a subtle failure.
+// These are a FALLBACK, not a precedence order. Metro walks `node_modules`
+// upward from the importing file first and only consults this list for what
+// that walk missed — so it cannot make a nested copy win, and cannot dedupe a
+// package npm installed twice. React is the case that matters: react-native
+// imports it from the repo root while a screen imports it from `mobile/`, two
+// Reacts end up in the bundle, and the first hook call throws "Invalid hook
+// call" at launch while lint, tsc and vitest all stay green. The fix is to keep
+// one copy in the tree — mobile and web pin the same react, and
+// `reactDedupe.test.ts` fails if they ever drift apart again.
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, "node_modules"),
   path.resolve(workspaceRoot, "node_modules"),

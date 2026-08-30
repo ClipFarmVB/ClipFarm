@@ -8,11 +8,14 @@ import type { SecureStoreLike } from "./secureStore";
 function fakeStore() {
   const values = new Map<string, string>();
   const writes: string[] = [];
+  /** Writes to allow before failing, as a locked keychain or an OS kill would. */
+  let failAfter = Infinity;
   const store: SecureStoreLike = {
     async getItemAsync(key) {
       return values.get(key) ?? null;
     },
     async setItemAsync(key, value) {
+      if (writes.length >= failAfter) throw new Error("keychain unavailable");
       writes.push(key);
       values.set(key, value);
     },
@@ -20,7 +23,14 @@ function fakeStore() {
       values.delete(key);
     },
   };
-  return { store, values, writes };
+  return {
+    store,
+    values,
+    writes,
+    failAfterWrites(n: number) {
+      failAfter = writes.length + n;
+    },
+  };
 }
 
 const LIMIT_BYTES = 2048;
@@ -77,7 +87,54 @@ describe("createChunkedSecureStorage", () => {
     await storage.setItem("k", "short");
 
     expect(await storage.getItem("k")).toBe("short");
-    expect([...values.keys()].sort()).toEqual(["k", "k.0"]);
+    // The pointer plus exactly one chunk: no orphaned fragment of the old
+    // session token is left behind in the keychain.
+    expect(values.size).toBe(2);
+  });
+
+  it("keeps the previous value when a write is interrupted", async () => {
+    const { store, failAfterWrites } = fakeStore();
+    const storage = createChunkedSecureStorage(store);
+    const before = JSON.stringify({ access_token: "a".repeat(2000), v: 1 });
+    const after = JSON.stringify({ access_token: "b".repeat(2000), v: 2 });
+
+    await storage.setItem("k", before);
+    // Two chunks in, phone locked. The old value must survive whole — a
+    // half-overwritten one reads back as a splice of both and no longer parses.
+    failAfterWrites(2);
+    await expect(storage.setItem("k", after)).rejects.toThrow();
+
+    expect(await storage.getItem("k")).toBe(before);
+  });
+
+  it("keeps the previous value when the commit itself fails", async () => {
+    const { store, failAfterWrites } = fakeStore();
+    const storage = createChunkedSecureStorage(store);
+    const before = "old".repeat(CHUNK_SIZE);
+    const after = "new".repeat(CHUNK_SIZE);
+
+    await storage.setItem("k", before);
+    // Every chunk of the new value lands and the pointer write is what dies:
+    // the last moment at which the two values could still be confused.
+    const chunkCount = splitIntoChunks(after).length;
+    failAfterWrites(chunkCount);
+    await expect(storage.setItem("k", after)).rejects.toThrow();
+
+    expect(await storage.getItem("k")).toBe(before);
+  });
+
+  it("alternates generations so a write never lands on live chunks", async () => {
+    const { store, writes } = fakeStore();
+    const storage = createChunkedSecureStorage(store);
+
+    await storage.setItem("k", "one");
+    const first = writes.filter((key) => key !== "k");
+    writes.length = 0;
+    await storage.setItem("k", "two");
+    const second = writes.filter((key) => key !== "k");
+
+    expect(second).not.toEqual(first);
+    expect(first.some((key) => second.includes(key))).toBe(false);
   });
 
   it("removes the count and every chunk", async () => {
@@ -96,14 +153,25 @@ describe("createChunkedSecureStorage", () => {
     expect(await createChunkedSecureStorage(store).getItem("absent")).toBeNull();
   });
 
-  it("reads a half-written value as no session", async () => {
+  it("reads a half-wiped value as no session", async () => {
     const { store, values } = fakeStore();
     const storage = createChunkedSecureStorage(store);
 
     await storage.setItem("k", "z".repeat(CHUNK_SIZE * 3));
-    values.delete("k.1");
+    const chunk = [...values.keys()].find((key) => key.endsWith(".1"));
+    values.delete(chunk!);
 
     // Signed out is recoverable; a rejected promise during restore is not.
+    expect(await storage.getItem("k")).toBeNull();
+  });
+
+  it("reads an unparseable pointer as no session", async () => {
+    const { store, values } = fakeStore();
+    const storage = createChunkedSecureStorage(store);
+
+    await storage.setItem("k", "value");
+    values.set("k", "not-a-pointer");
+
     expect(await storage.getItem("k")).toBeNull();
   });
 

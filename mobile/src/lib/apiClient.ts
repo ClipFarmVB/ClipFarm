@@ -28,16 +28,28 @@ export interface ApiClient {
  *
  * The upload limits (CF-91) write real, actionable sentences into `detail` —
  * "you have 60 min of your 360 min per 24 hours left" — which the raw body
- * buries inside JSON. `web/src/lib/apiError.ts` is the full version and moves
- * into the package in CF-314; this is the same rule, short enough not to be
- * worth reconciling later.
+ * buries inside JSON. This mirrors `web/src/lib/apiError.ts`, which CF-314
+ * moves into the package; both shapes `detail` takes are handled, because
+ * web's comment records the array branch being missing once already and a
+ * validation error showing raw JSON is the regression that caused.
  */
-function errorMessage(body: string, fallback: string): string {
+export function errorMessage(body: string, fallback: string): string {
   try {
     const detail = (JSON.parse(body) as { detail?: unknown }).detail;
     if (typeof detail === "string" && detail.trim()) return detail;
+    // A 422 puts an array of {loc, msg, type} here. `msg` is the part a user
+    // can act on ("String should have at most 500 characters"); `loc` and
+    // `type` are for us and stay out.
+    if (Array.isArray(detail)) {
+      const messages = detail
+        .map((entry) =>
+          entry && typeof entry === "object" ? (entry as { msg?: unknown }).msg : null
+        )
+        .filter((msg): msg is string => typeof msg === "string" && msg.trim().length > 0);
+      if (messages.length) return messages.join("; ");
+    }
   } catch {
-    // Not JSON — fall through to the status line.
+    // Not JSON (a proxy's HTML error page, an empty body) — use the fallback.
   }
   return fallback;
 }

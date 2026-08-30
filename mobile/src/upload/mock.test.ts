@@ -54,6 +54,39 @@ describe("createMockBackgroundUpload", () => {
     expect(started.totalBytes).toBe(PART_SIZE * 3);
   });
 
+  it("keeps the ETags a resumed part came in with", async () => {
+    const upload = createMockBackgroundUpload({ fractionPerTick: 0.5 });
+
+    await upload.startUpload(
+      request({ completedParts: [{ partNumber: 1, etag: "R2-ISSUED-1" }] })
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // The completion call sends these to R2, which checks them. A re-derived
+    // ETag is one R2 never issued, so the upload fails at the last step.
+    const final = await upload.getUpload("game-1");
+    expect(final?.completedParts).toEqual([
+      { partNumber: 1, etag: "R2-ISSUED-1" },
+      { partNumber: 2, etag: "mock-etag-2" },
+      { partNumber: 3, etag: "mock-etag-3" },
+    ]);
+  });
+
+  it("attributes progress to the parts it is actually sending", async () => {
+    const upload = createMockBackgroundUpload({ fractionPerTick: 0.34 });
+
+    // A resumed set that is not a leading prefix — the last part landed, the
+    // first two did not. Measuring against the full part list would report
+    // 1 and 2 done and 3 outstanding: the exact inverse.
+    await upload.startUpload(
+      request({ completedParts: [{ partNumber: 3, etag: "R2-ISSUED-3" }] })
+    );
+    await vi.advanceTimersByTimeAsync(250);
+
+    const task = await upload.getUpload("game-1");
+    expect(task?.completedParts.map((p) => p.partNumber)).toEqual([1, 3]);
+  });
+
   it("fails at the configured point instead of completing", async () => {
     const upload = createMockBackgroundUpload({
       fractionPerTick: 0.25,
@@ -66,6 +99,26 @@ describe("createMockBackgroundUpload", () => {
     const task = await upload.getUpload("game-1");
     expect(task?.state).toBe("failed");
     expect(task?.failure?.reason).toBe("expired-url");
+    // The parts that did land are reported, not the previous tick's set: this
+    // is what the retry resumes from, and dropping one re-sends it.
+    expect(task?.completedParts.map((p) => p.partNumber)).toEqual([1]);
+  });
+
+  it("leaves a failed upload failed when it is cancelled", async () => {
+    const upload = createMockBackgroundUpload({
+      fractionPerTick: 1,
+      failAt: { fraction: 0.5, failure: { reason: "network", message: "offline" } },
+    });
+
+    await upload.startUpload(request());
+    await vi.advanceTimersByTimeAsync(500);
+    await upload.cancelUpload("game-1");
+
+    // `failure` is only ever set on a `failed` task (./types), so flipping the
+    // state without clearing it would produce a task no consumer can read.
+    const task = await upload.getUpload("game-1");
+    expect(task?.state).toBe("failed");
+    expect(task?.failure?.reason).toBe("network");
   });
 
   it("stops a cancelled upload and stays cancelled", async () => {

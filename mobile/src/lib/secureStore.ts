@@ -9,9 +9,18 @@
  * unreliable, so the session comes back empty on the next launch and the user
  * is silently signed out. Hence chunking.
  *
- * Layout: the key itself holds the chunk count as a decimal string, and the
- * chunks live at `${key}.0`, `${key}.1`, … Uniform for every value, so there is
- * no "small values are stored differently" branch to get wrong.
+ * Layout: the key itself holds a pointer — `generation:count:highWater` — and
+ * the chunks live at `${key}.${generation}.${i}`. Uniform for every value, so
+ * there is no "small values are stored differently" branch to get wrong.
+ *
+ * The generation is what makes a write survive being interrupted. It alternates
+ * 0, 1, 0, … so a new value is written into the generation that is *not* live,
+ * never over the chunks the current pointer refers to, and the single pointer
+ * write is the commit. Killed anywhere before it — the keychain is locked, the
+ * OS reclaims the app — the old value is still whole; killed after, the new one
+ * is. Overwriting in place instead would leave the live count pointing at a
+ * mix of both, which reads back as a spliced string that no longer parses and
+ * that `getItem` has no way to recognise as damage.
  *
  * Written against an injected store rather than importing `expo-secure-store`
  * directly so the chunking is testable off-device — the native module is the
@@ -72,34 +81,61 @@ export function splitIntoChunks(value: string): string[] {
 }
 
 export function createChunkedSecureStorage(store: SecureStoreLike): SupabaseStorage {
-  const chunkKey = (key: string, index: number) => `${key}.${index}`;
+  const chunkKey = (key: string, generation: number, index: number) =>
+    `${key}.${generation}.${index}`;
 
-  async function readCount(key: string): Promise<number | null> {
-    const raw = await store.getItemAsync(key);
-    if (raw === null) return null;
-    const count = Number.parseInt(raw, 10);
-    return Number.isInteger(count) && count >= 0 ? count : null;
+  interface Pointer {
+    generation: number;
+    count: number;
+    /** Highest chunk index ever written under this key, plus one. */
+    highWater: number;
   }
 
-  async function deleteChunks(key: string, from: number, to: number): Promise<void> {
+  /**
+   * The pointer, or null for "no value" — which is also what an unparseable
+   * pointer means. Anything this cannot read is a value that cannot be
+   * returned, and saying so is how the caller stays on a path it can recover
+   * from.
+   */
+  async function readPointer(key: string): Promise<Pointer | null> {
+    const raw = await store.getItemAsync(key);
+    if (raw === null) return null;
+    const parts = raw.split(":");
+    if (parts.length !== 3) return null;
+    const [generation, count, highWater] = parts.map((part) => Number.parseInt(part, 10));
+    const valid =
+      (generation === 0 || generation === 1) &&
+      Number.isInteger(count) &&
+      count >= 0 &&
+      Number.isInteger(highWater) &&
+      highWater >= count;
+    return valid ? { generation, count, highWater } : null;
+  }
+
+  async function deleteChunks(
+    key: string,
+    generation: number,
+    from: number,
+    to: number
+  ): Promise<void> {
     for (let i = from; i < to; i++) {
-      await store.deleteItemAsync(chunkKey(key, i));
+      await store.deleteItemAsync(chunkKey(key, generation, i));
     }
   }
 
   return {
     async getItem(key) {
-      const count = await readCount(key);
-      if (count === null) return null;
+      const pointer = await readPointer(key);
+      if (pointer === null) return null;
 
       const parts: string[] = [];
-      for (let i = 0; i < count; i++) {
-        const part = await store.getItemAsync(chunkKey(key, i));
-        // A missing chunk means a half-written or half-wiped value. Return null
-        // — Supabase reads that as "no session" and sends the user to sign in,
-        // which is recoverable. Throwing here would instead surface as an
-        // unhandled rejection during session restore, on launch, with no way
-        // out but reinstalling.
+      for (let i = 0; i < pointer.count; i++) {
+        const part = await store.getItemAsync(chunkKey(key, pointer.generation, i));
+        // A missing chunk means a half-wiped value. Return null — Supabase
+        // reads that as "no session" and sends the user to sign in, which is
+        // recoverable. Throwing here would instead surface as an unhandled
+        // rejection during session restore, on launch, with no way out but
+        // reinstalling.
         if (part === null) return null;
         parts.push(part);
       }
@@ -107,24 +143,35 @@ export function createChunkedSecureStorage(store: SecureStoreLike): SupabaseStor
     },
 
     async setItem(key, value) {
-      const previous = (await readCount(key)) ?? 0;
+      const live = await readPointer(key);
+      // The generation that is not live. With no live pointer either is free.
+      const generation = live?.generation === 0 ? 1 : 0;
       const chunks = splitIntoChunks(value);
+      const highWater = Math.max(live?.highWater ?? 0, chunks.length);
 
       for (let i = 0; i < chunks.length; i++) {
-        await store.setItemAsync(chunkKey(key, i), chunks[i]);
+        await store.setItemAsync(chunkKey(key, generation, i), chunks[i]);
       }
-      // The count is written after the chunks it counts and before the stale
-      // ones are swept: interrupted anywhere, the key either still names the
-      // old complete value or already names the new one. Never a count
-      // pointing at chunks that were never written.
-      await store.setItemAsync(key, String(chunks.length));
-      await deleteChunks(key, chunks.length, previous);
+      // The commit. Every chunk it names is already stored, and none of them
+      // was written over anything the previous pointer named.
+      await store.setItemAsync(key, `${generation}:${chunks.length}:${highWater}`);
+
+      // Housekeeping, past the point where an interruption can cost anything:
+      // the generation just retired, and any chunk of this one left over from a
+      // longer value. `highWater` bounds both — a deleted key that was never
+      // there is free, an orphaned chunk of a session token is not.
+      if (live) await deleteChunks(key, live.generation, 0, live.highWater);
+      await deleteChunks(key, generation, chunks.length, highWater);
     },
 
     async removeItem(key) {
-      const count = (await readCount(key)) ?? 0;
+      const pointer = await readPointer(key);
+      // Pointer first: from here on the value is gone as far as any reader is
+      // concerned, whether or not the sweep below finishes.
       await store.deleteItemAsync(key);
-      await deleteChunks(key, 0, count);
+      if (pointer === null) return;
+      await deleteChunks(key, 0, 0, pointer.highWater);
+      await deleteChunks(key, 1, 0, pointer.highWater);
     },
   };
 }

@@ -14,8 +14,8 @@
 import type {
   BackgroundUploadModule,
   CompletedPart,
-  StartUploadRequest,
   UploadFailure,
+  UploadPartTarget,
   UploadSubscription,
   UploadTask,
 } from "./types";
@@ -39,7 +39,11 @@ export interface MockUploadOptions {
 }
 
 interface MockTask extends UploadTask {
-  request: StartUploadRequest;
+  /** Parts the caller said were already stored, with the ETags R2 gave them. */
+  resumed: CompletedPart[];
+  /** Everything else, in order — the only bytes this task actually "sends". */
+  pending: UploadPartTarget[];
+  resumedBytes: number;
   timer: ReturnType<typeof setInterval> | null;
 }
 
@@ -88,21 +92,35 @@ export function createMockBackgroundUpload(
     }
   }
 
-  /** Which parts the byte count sent so far has fully covered. */
-  function partsUpTo(request: StartUploadRequest, bytes: number): CompletedPart[] {
-    const done: CompletedPart[] = [];
-    let offset = 0;
-    for (const part of request.parts) {
+  /**
+   * The parts stored so far: the resumed ones, plus whichever pending parts the
+   * byte count has now covered.
+   *
+   * Resumed parts are carried through with the ETags they came in with, never
+   * re-derived. They are also skipped rather than re-sent, so progress has to
+   * be measured against `pending` — attributing bytes to `request.parts` in
+   * order would credit part 1 for work done on part 3 whenever the resumed set
+   * is not a leading prefix, and hand back an ETag R2 never issued.
+   */
+  function storedParts(task: MockTask): CompletedPart[] {
+    const done = [...task.resumed];
+    let offset = task.resumedBytes;
+    for (const part of task.pending) {
       offset += part.end - part.start;
-      if (offset > bytes) break;
+      if (offset > task.bytesTransferred) break;
       done.push({ partNumber: part.partNumber, etag: `mock-etag-${part.partNumber}` });
     }
-    return done;
+    return done.sort((a, b) => a.partNumber - b.partNumber);
   }
 
   function tick(task: MockTask): void {
     const step = Math.max(1, Math.ceil(task.totalBytes * fractionPerTick));
     task.bytesTransferred = Math.min(task.totalBytes, task.bytesTransferred + step);
+    // Before the failure check, not after: a failed task still has to report
+    // the parts that did land, because that set is what the retry resumes from
+    // (rule 4 in ./types). Recomputing only on the success path is how a retry
+    // ends up re-sending a part R2 already has.
+    task.completedParts = storedParts(task);
 
     const failAt = options.failAt;
     if (failAt && task.bytesTransferred >= task.totalBytes * failAt.fraction) {
@@ -113,17 +131,11 @@ export function createMockBackgroundUpload(
       return;
     }
 
-    task.completedParts = partsUpTo(task.request, task.bytesTransferred);
+    // At the total, `storedParts` has covered every pending part by
+    // construction — the offsets it walks sum to exactly `totalBytes`.
     if (task.bytesTransferred >= task.totalBytes) {
       stop(task);
       task.state = "completed";
-      // Every part lands by definition when the byte count reaches the total;
-      // spell it out rather than trusting the arithmetic above to have covered
-      // the last, short, part.
-      task.completedParts = task.request.parts.map((part) => ({
-        partNumber: part.partNumber,
-        etag: `mock-etag-${part.partNumber}`,
-      }));
     }
     emit(task);
   }
@@ -142,8 +154,11 @@ export function createMockBackgroundUpload(
       if (existing) stop(existing);
 
       const resumed = request.completedParts ?? [];
+      const isResumed = (part: UploadPartTarget) =>
+        resumed.some((done) => done.partNumber === part.partNumber);
+      const pending = request.parts.filter((part) => !isResumed(part));
       const resumedBytes = request.parts
-        .filter((part) => resumed.some((done) => done.partNumber === part.partNumber))
+        .filter(isResumed)
         .reduce((sum, part) => sum + (part.end - part.start), 0);
 
       const task: MockTask = {
@@ -152,7 +167,9 @@ export function createMockBackgroundUpload(
         bytesTransferred: resumedBytes,
         totalBytes: totalBytesFor(request),
         completedParts: [...resumed],
-        request,
+        resumed,
+        pending,
+        resumedBytes,
         timer: null,
       };
       tasks.set(request.uploadId, task);
@@ -168,7 +185,10 @@ export function createMockBackgroundUpload(
     async cancelUpload(uploadId) {
       const task = tasks.get(uploadId);
       // Idempotent: an unknown or already-finished upload is not an error.
-      if (!task || task.state === "completed" || task.state === "cancelled") return;
+      // `failed` counts as finished — cancelling one would otherwise leave a
+      // task reporting `cancelled` while still carrying a `failure`, which
+      // ./types says can only accompany `failed`.
+      if (!task || (task.state !== "waiting" && task.state !== "running")) return;
       stop(task);
       task.state = "cancelled";
       emit(task);
