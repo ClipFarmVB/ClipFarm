@@ -712,7 +712,10 @@ def _deadtime_to_dict(s: DeadTimeSignals) -> dict:
         # 200.0001. Deliberately not changed here: unlike incorrect_seconds,
         # where `total` is derived from the parts, all three of these are
         # independent fields and deciding which one gives way is a call about
-        # what the file means, not a rounding detail. See the PR discussion.
+        # what the file means, not a rounding detail. Measured and argued in
+        # #401; `kept_play_pct` / `live_removed_pct` were checked and are *not*
+        # exposed — 800k samples plus every half-ulp tie point at the 5th
+        # decimal produced no case where the rounded pair fails to sum to 1.0.
         "human_keep_sec": _round(s.human_keep_sec),
         "human_dead_sec": _round(s.human_dead_sec),
         "model_keep_sec": _round(s.model_keep_sec),
