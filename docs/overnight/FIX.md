@@ -201,11 +201,15 @@ attractive on every lap.
 **Never settle over a check that has not passed.** The settle bar is about what a
 reviewer found; this is about whether the code runs, and a green review over a
 red suite is the failure CF-275 was filed to prevent. #307 is the evidence, and
-it is worth stating precisely: it took eight rounds with its CI red throughout
-and not one of them read a check. It was never actually settled over red — it
-ran out of rounds and ended `unsettled: needs a decision` — which is the point,
-because nothing in the brief would have stopped a settle had a round cleared the
-bar. Do not apply `review-settled` while
+the number that matters is **six**: it ran eight rounds in all, the first six of
+them over red CI, and not one of those six read a check. (Rounds seven and eight
+ran green; the seventh says so in its first clause. #307 merged.) Two things it
+does *not* evidence, because the brief has now got both wrong once: it was never
+settled over red — it was labelled `unsettled: needs a decision`, and its own
+marker says the round ceiling was context rather than the reason — and no human
+is identifiable in the record as having caught it. The rule does not need either.
+It needs the six: nothing in the brief would have *stopped* a settle over any of
+them, because nothing told a round to look. Do not apply `review-settled` while
 any check run on the head SHA is in **any** of these states:
 
 - concluded `failure`, `timed_out`, `cancelled` or `action_required`;
@@ -226,9 +230,9 @@ How to read them, and the two endpoints that look right and are not, is
 
 **Pending is a live race, not an edge case — and not a foregone one.** A carry
 pushes a fix and reaches the settle bar within a minute or two; CI here lands in
-about the same time (median 65s across the last 20 runs, 67s on this PR's own
-head), so which arrives first is not predictable and neither outcome is the
-"ordinary" one to plan around.
+about the same time (median 65s across the last 20 runs; every run on this PR's
+own branch landed between 64s and 71s), so which arrives first is not
+predictable and neither outcome is the "ordinary" one to plan around.
 Re-read once after a short wait; if it is still running, the PR is simply not
 settleable yet this lap. That is not a finding, not a label, and not a reason to
 spend a round.

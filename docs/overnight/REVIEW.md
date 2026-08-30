@@ -23,11 +23,22 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 > **A PR needs a round unless it carries `review-settled` or `unsettled` and
 > that label's carve-out has not fired.**
 
-**One case is unlabelled and still does not need a round:** a PR whose latest
-cold round found nothing outstanding and which is unlabelled only because [its
-checks have not passed](FIX.md#the-cycle-and-the-settle-bar). What it needs is a
-check read, which spends no round — if the checks have since passed, settle it
-on the spot; if they have not, it is done for this lap and goes in the report.
+**One case is unlabelled and still does not need a round:** a PR that **clears
+the settle bar** and is unlabelled only because [its checks have not
+passed](FIX.md#the-cycle-and-the-settle-bar). What it needs is a check read,
+which spends no round — if the checks have since passed, settle it on the spot;
+if they have not, it is done for this lap and goes in the report.
+
+**"Clears the settle bar" is [that bar](FIX.md#the-cycle-and-the-settle-bar),
+not a summary of it**, and the distinction is the whole safety of this clause.
+It is *not* "the latest round found nothing": a PR that has never had a finding
+needs **two** head-matching `cold: clean` markers, which is why [the routing
+table](#routing-what-the-marker-tells-the-run-to-do-next) sends a PR sitting on one of them
+to another cold round. Read loosely, the clause would swallow that PR — the
+selection test runs before the table, so the table's row never gets consulted —
+and then settle it off a single reviewer's silence on the next visit. If you
+cannot tell whether the bar is cleared, it is not cleared, and the PR takes its
+round.
 This has to be said here rather than left to the reader, because the test is
 keyed on labels and that PR deliberately carries none: read literally, it needs
 a round forever, and no round can change the thing holding it. Everything that
@@ -79,8 +90,10 @@ The obvious phrasing — "no marker at all, or commits since the last marker" �
 leaves a hole. A PR sitting on its first `cold: clean` with no new commits has a
 marker *and* no new commits, so neither clause selects it; yet that is precisely
 the PR owing a second clean round before it may be labelled, and it would sit
-there forever. **Unlabelled means unfinished.** What it needs next comes from
-the routing table below.
+there forever. **Unlabelled means unfinished** — with the one exception named
+[on the selection test](#step-1--which-prs-need-a-round), a PR that cleared the
+bar and is waiting on a check, which is unfinished but owes no round. What it
+needs next comes from the routing table below.
 
 Note also that "needs a round" is never decided from GitHub review objects. A
 round does submit one — the two artifacts are described below — but the review
@@ -182,7 +195,8 @@ sentence. The failure if any item is missing is silent rather than loud:
    deliberate scoping decision having reviewed nothing.
 7. **The check runs on the PR's head commit** — each with its `name`, `status`
    and `conclusion` — for [the check-status read](#reading-the-checks-before-a-round-and-again-before-settling).
-   Three surfaces look like this one and two of them are wrong here:
+   Other surfaces look like this one and are wrong here; the ones tried so far
+   are named below, with why each fails:
 
    ```
    SHA=$(gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha")
@@ -217,10 +231,14 @@ tool in the report. A run that cannot establish point 1 should say so and treat
 every marker read as unverified rather than assuming it saw the newest.
 
 **Where the GitHub MCP tools fail these, specifically.** They are the expected
-non-`gh` tool in the web sandbox, and they satisfy the list — but each failure
-below is silent: the call succeeds and returns a wrong or partial answer. The
-label, replace-the-set and page-size rows were all hit in the run of
-2026-08-27; the check-runs row comes from CF-275, which is what added point 7.
+non-`gh` tool in the web sandbox, and they satisfy the list — but each row below
+is a trap, in one of two ways. The label *write* and the `get_status` row are
+**silent**: the call succeeds and returns a wrong answer. The label *read* and
+the page-size row fail **loudly** — `Could not resolve to an Issue`, and a
+refusal for size — and are traps only because the error reads like a missing
+label or an empty page rather than like the wrong call. Which kind a row is,
+each row says. The first three were hit in the run of 2026-08-27; the
+check-runs row comes from CF-275, which is what added point 7.
 
 - **Labels cannot be read off a PR the obvious way.** `issue_read` with
   `get_labels` returns `Could not resolve to an Issue` for a pull request

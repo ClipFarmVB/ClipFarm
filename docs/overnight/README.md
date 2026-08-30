@@ -16,13 +16,13 @@ not the ones it is not. Every rule lives in exactly one file.
 
 | file | when to read it | ~tokens |
 |---|---|---|
-| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 4.8k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, the push test, logging, priority order, the ceiling and the budget, repo traps | 5.6k |
-| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels, the reviewer briefs | 15k |
-| [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 4.2k |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 1.3k |
-| [`REPORTING.md`](./REPORTING.md) | the end of the run | 1.2k |
-| [`RATIONALE.md`](./RATIONALE.md) | optional background — what a night costs, why the machinery is shaped this way | 1.8k |
+| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.4k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, the push test, logging, priority order, the ceiling and the budget, repo traps | 6.7k |
+| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels, the reviewer briefs | 17.7k |
+| [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 2.3k |
+| [`REPORTING.md`](./REPORTING.md) | the end of the run | 2.1k |
+| [`RATIONALE.md`](./RATIONALE.md) | optional background — what a night costs, why the machinery is shaped this way | 2.0k |
 
 `.claude/overnight-log.md` is scratch memory for one run, gitignored on purpose.
 **Read it at the start of every iteration**, and **truncate it as the last act
@@ -50,8 +50,13 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap costs about 21k tokens of brief instead of 34k; a step-2 lap about
-11k; a step-3 lap about 8k. That is the whole point of the split.
+A step-1 lap costs about 25k tokens of brief instead of 43k; a step-2 lap about
+13k; a step-3 lap about 10k. That is the whole point of the split.
+
+Those are bytes/4 on the files as they stand, and a lap is this file plus
+`RULES.md` plus the phase file. **Re-measure them when you add a section** — they
+had drifted by a third before CF-275 re-took them, and this is the table a run
+reads to plan what it can afford.
 
 **The rules are not also summarised into a shorter file.** Splitting by phase
 keeps exactly one copy of each rule, with the reasoning that produced it still
