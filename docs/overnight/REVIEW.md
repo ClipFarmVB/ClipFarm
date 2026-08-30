@@ -180,8 +180,12 @@ sentence. The failure if any item is missing is silent rather than loud:
    **Not the combined commit status.** `/commits/<sha>/status` — and anything
    built on it — returns `state: pending, total_count: 0` on this repository,
    because nothing here posts a commit status; every check is a check *run*.
-   Measured on #422 and #307. A rule written against that endpoint reads pending
-   forever and is wrong in the direction that never fires.
+   Measured on #422 and #307 — the latter a merged PR, green on both jobs, still
+   reporting `pending`. A rule written against that endpoint reads `pending`
+   forever, and since both `pending` and `total_count: 0` **block** settling, it
+   is wrong in the direction that fires on every PR: nothing would ever settle
+   again. That is the loud failure rather than the silent one, which is the only
+   good thing about it.
 
    **Not the required-checks set either.** Which contexts `main` requires lives
    in the branch-protection ruleset, is admin-scoped, and a run may well get 403
@@ -531,10 +535,14 @@ once between its two clean rounds, once after the second.
 
 A `cold: clean` marker on an unlabelled PR therefore means: apply the label now
 — settle bar permitting — unless one of the routing table's exceptions applies.
-Two do: a PR with a finding still open takes a semi-cold round, or step 2 where
-nothing has landed since the finding's marker, rather than settling; and a PR
-with no finding raised in the counting window that carries only one such marker
-wants its second clean cold round first.
+A PR with a finding still open takes a semi-cold round, or step 2 where nothing
+has landed since the finding's marker, rather than settling; and a PR with no
+finding raised in the counting window that carries only one such marker wants its
+second clean cold round first. The rows themselves are the list — deliberately
+not counted here, because this sentence has already been one short once: it said
+"two" while the rows carried a third qualifier, added when checks began blocking
+settling. "Settle bar permitting" is doing real work in that sentence and is not
+a hedge.
 
 **Count only `cold: clean` markers whose SHA is the current head.** The rule is
 about *this code* having been read clean twice, not about the PR's history: a
