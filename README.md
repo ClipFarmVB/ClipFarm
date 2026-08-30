@@ -197,7 +197,7 @@ Tests:
 # 3.12+, so on a newer interpreter pip tries to build it and the whole install
 # fails in compiler output. See the note at the top of requirements-dev.txt.
 npm ci                                   # at the repo root
-pip install -r api/requirements-dev.txt  # runtime deps + test-only deps
+python -m pip install -r api/requirements-dev.txt   # runtime + test-only deps
 
 npm run test --workspace=web             # vitest, ~1s
 npm run test:watch --workspace=web       # same suite, watch mode
@@ -207,6 +207,20 @@ cd api && python -m pytest tests/        # api (CI and the hook run this too,
                                          # ~12s, the hook's slowest step —
                                          # CLIPFARM_SKIP_API_TESTS=1 opts out)
 ```
+
+If a bare `python` is not the right interpreter on your machine, substitute the
+one that is throughout that block. On Windows that is `py`: the Microsoft Store
+ships `python`/`python3` stubs that resolve on PATH and then refuse to run. On
+Debian, Ubuntu and macOS 12.3+ it is `python3` — none of them ships a
+`/usr/bin/python` (Debian and Ubuntu unless `python-is-python3` is installed,
+macOS not at all since it dropped the system Python 2). That is the more likely
+case here, since this block is the first thing a fresh clone runs. Both
+substitutes are what the pre-commit hook's interpreter probe walks (CF-259, and
+the `python` bullet in `CLAUDE.md`).
+
+It applies to the install line as much as the test lines — pytest has to land in
+the interpreter that runs it, which is why that line goes through
+`python -m pip` rather than a bare `pip`.
 
 The api suite needs `requirements-dev.txt`, not just `requirements.txt`. Almost
 every test guards its imports with `pytest.importorskip` (`sqlalchemy`,

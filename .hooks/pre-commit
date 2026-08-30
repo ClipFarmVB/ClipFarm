@@ -9,7 +9,8 @@
 #   git config core.hooksPath .hooks
 #
 # Requirements: a working Python (see "Locate a working Python" below), with
-# ruff, mypy and pytest installed *into it*, plus npm on PATH. The steps invoke
+# ruff, mypy and pytest installed *into it*, plus npm on PATH. Set
+# CLIPFARM_PYTHON to skip the search and use a specific one. The steps invoke
 # the tools as modules (`-m ruff`) rather than as bare `ruff`/`mypy` commands:
 # on Windows the Scripts/ directory holding those shims is routinely absent from
 # PATH even when the interpreter itself is fine.
@@ -47,20 +48,65 @@ echo "pre-commit: running CI checks..."
 # present and executable, it just refuses to be an interpreter. `py` (the Windows
 # launcher) comes second because it exists nowhere else; `python3` last, for the
 # Linux/macOS installs that ship no bare `python`.
+#
+# The probe is `-m ruff`, not `-c ""`, because "is an interpreter" is not the
+# question the steps below ask. The loop stops at the first candidate that
+# passes, so probing only for an interpreter lets a bare, toolless `python`
+# early on PATH beat a fully equipped `py` two places later — and every commit
+# then dies on step one with `No module named ruff`, naming the module but not
+# which of the three interpreters is missing it. Not a corner case: the remedy
+# for the stub problem this hook exists to fix is "install a real Python", which
+# puts exactly such a `python` at the front of PATH.
+#
+# ruff alone stands in for all three tools, since requirements-tooling.txt
+# installs ruff, mypy and pytest together. A hand-installed partial set still
+# slips through, which is what the "using ..." line below is for: it makes a
+# later `No module named mypy` say which interpreter to install into.
 PY=
-for _candidate in python py python3; do
-  if "$_candidate" -c "" >/dev/null 2>&1; then
-    PY=$_candidate
-    break
+_toolless=
+if [ -n "$CLIPFARM_PYTHON" ]; then
+  # An override is honoured on the interpreter check alone. If you named one,
+  # the hook should use it and let the steps report their own missing modules,
+  # rather than quietly falling back to something you did not choose.
+  if ! "$CLIPFARM_PYTHON" -c "" >/dev/null 2>&1; then
+    echo "pre-commit: CLIPFARM_PYTHON is set to '$CLIPFARM_PYTHON', which did not run." >&2
+    echo "  Point it at a Python that works, or unset it to probe python, py," >&2
+    echo "  python3 in that order." >&2
+    exit 1
   fi
-done
+  PY=$CLIPFARM_PYTHON
+else
+  for _candidate in python py python3; do
+    "$_candidate" -c "" >/dev/null 2>&1 || continue
+    if "$_candidate" -m ruff --version >/dev/null 2>&1; then
+      PY=$_candidate
+      break
+    fi
+    _toolless="$_toolless $_candidate"
+  done
+fi
+if [ -z "$PY" ] && [ -n "$_toolless" ]; then
+  # Its own message rather than "no working Python": these ran fine, so sending
+  # someone to install Python points them at the one thing that is not broken.
+  echo "pre-commit: found Python, but no tooling in it — tried$_toolless." >&2
+  echo "  They run; none has ruff, so the checks below cannot start." >&2
+  echo "  Install into the one you want, then commit again:" >&2
+  echo "    <python> -m pip install -r requirements-tooling.txt" >&2
+  echo "    <python> -m pip install -r api/requirements-dev.txt" >&2
+  echo "  Or point the hook at one already equipped: CLIPFARM_PYTHON=py" >&2
+  exit 1
+fi
 if [ -z "$PY" ]; then
   echo "pre-commit: no working Python found — tried python, py, python3." >&2
   echo "  Each was either missing or refused to run (on Windows, the Microsoft" >&2
-  echo "  Store 'python' stub does the latter). Install Python, or put a real" >&2
-  echo "  interpreter ahead of the stub on PATH, and commit again." >&2
+  echo "  Store 'python' stub does the latter). Install Python, put a real" >&2
+  echo "  interpreter ahead of the stub on PATH, or set CLIPFARM_PYTHON to one," >&2
+  echo "  and commit again." >&2
   exit 1
 fi
+# Named, not merely chosen: with three candidates in play, a `No module named
+# ...` from any step below is unactionable until you know which one raised it.
+echo "pre-commit: using $PY"
 
 # ── API: ruff lint ────────────────────────────────────────────────────────────
 printf "  ruff check api/ ... "
@@ -145,9 +191,10 @@ echo "ok"
 # the one that costs the time. Loud on purpose, and never the default.
 #
 # Locating the probe is its own problem, and getting it wrong is invisible.
-# A bare `python api/scripts/check_dev_set.py` resolves against the CWD, which
-# is the tree being committed in. That is right, and it is what this does — but
-# only if it is allowed to fail honestly when the file is not there.
+# `$_dev_set_probe` is relative, so the `"$PY" "$_dev_set_probe"` below resolves
+# it against the CWD, which is the tree being committed in. That is right, and
+# it is what this does — but only if it is allowed to fail honestly when the
+# file is not there.
 #
 # Why a tree can lack it: this file can be SHARED across checkouts, and then it
 # runs against a tree it did not come from. Two ways in, not one:
@@ -176,6 +223,13 @@ echo "ok"
 # never asked to install.
 #
 # So: this tree's probe, or an honest skip.
+#
+# And this tree's *interpreter*, which is the other half of the same point:
+# `$PY` rather than a bare `python`, because the probe has to answer for the one
+# the pytest step below will actually use. A probe run under a different
+# interpreter reports on a different environment than the one under test — the
+# same class of mismatch as the foreign-checkout case above, reached through
+# PATH instead of through a shared hook.
 _dev_set_probe=api/scripts/check_dev_set.py
 
 printf "  pytest api/tests ... "

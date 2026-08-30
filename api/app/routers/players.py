@@ -17,7 +17,17 @@ DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
 
 
-async def _get_owned_player(player_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> Player:
+async def get_owned_player(player_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> Player:
+    """Fetch a player and verify the caller owns its team. Write paths only.
+
+    Public, not `_`-prefixed, because clips.py calls it too (CF-234): tagging
+    takes a player_id from the request body, and a second copy of this
+    Player -> Team -> owner_id walk is how the two rules drift apart. Raises
+    404 rather than 403 throughout — a 403 would confirm the id exists.
+
+    If a third write path needs this walk, move it to a services/ module
+    rather than growing more router-to-router imports.
+    """
     player = await db.get(Player, player_id)
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
@@ -68,7 +78,7 @@ async def create_player(body: PlayerCreate, db: DB, user_id: UserId):
 
 @router.patch("/{player_id}", response_model=PlayerOut)
 async def update_player(player_id: uuid.UUID, body: PlayerCreate, db: DB, user_id: UserId):
-    player = await _get_owned_player(player_id, user_id, db)
+    player = await get_owned_player(player_id, user_id, db)
 
     # If reassigning team, verify new team is also owned by user
     updates = body.model_dump(exclude_unset=True)
