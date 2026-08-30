@@ -95,6 +95,26 @@ class _Result:
         return iter(self._rows)
 
 
+def _in_scope_ids(stmt):
+    """The ids an `IN` clause on this statement names, or None if it has none.
+
+    The fakes use this to answer the query that was actually issued instead of
+    handing back whatever was queued. Without it a route can narrow the id set
+    in Python *before* building the statement — `player_ids = {…}` minus the
+    ones it would rather not disclose — and nothing notices: the WHERE is not
+    what the table and column checks look at, and the fake returns the queued
+    player regardless of who was asked for. That reversal survived six review
+    rounds for exactly this reason, and it is the same shape as the original
+    defect here: a fixture that cannot represent the difference cannot fail on
+    it.
+    """
+    scoped = None
+    for value in stmt.compile().params.values():
+        if isinstance(value, (list, tuple, set, frozenset)):
+            scoped = set(value)
+    return scoped
+
+
 class _FakeSession:
     """`list_clips` issues exactly two execute() calls, in a fixed order: the
     clip page, then the player lookup. Queue the results in that order."""
@@ -126,7 +146,20 @@ class _FakeSession:
                 f"{self.executed - 1} result set(s) were queued — the route "
                 f"issued a query this test did not expect"
             )
-        return _Result(self._queued.pop(0))
+        return _Result(_only_asked_for(self._queued.pop(0), stmt))
+
+
+def _only_asked_for(rows, stmt):
+    """Queued rows restricted to what the statement's `IN` clause asked for.
+
+    A real session cannot return a row the query excluded; a fake that does
+    hides every reversal that narrows the id set rather than the SQL. See
+    `_in_scope_ids`.
+    """
+    scope = _in_scope_ids(stmt)
+    if scope is None:
+        return rows
+    return [r for r in rows if getattr(r, "id", None) in scope]
 
 
 def _tables_touched(stmt):
@@ -338,7 +371,7 @@ class _FakeCollectionSession:
                 f"execute() called {self.executed} times, but only "
                 f"{self.executed - 1} result set(s) were queued"
             )
-        return _Result(self._queued.pop(0))
+        return _Result(_only_asked_for(self._queued.pop(0), stmt))
 
 
 def _list_collection(session, collection, user_id):
@@ -640,6 +673,26 @@ def test_the_name_survives_serialisation():
         "`exclude` reverses CF-263 without touching either router"
     )
     assert jsonable_encoder(out[0]).get("player_name") == "Jordan Vance"
+
+
+def test_clipout_declares_the_field_at_all():
+    """Removing `player_name` from `ClipOut` reverses CF-263 everywhere at once.
+
+    It does fail the suite today — but by collateral: both routers assign the
+    attribute, pydantic refuses an undeclared one, and eighteen tests explode on
+    the raised error. A mutation that fails for the wrong reason is as
+    misleading as one that passes for the wrong reason (the same trap this PR
+    hit with the `NameError` tier mutations), and here it would send whoever
+    deleted the field looking at the routers rather than at the schema.
+
+    This is the one assertion that names the actual cause.
+    """
+    from app.schemas.clip import ClipOut
+
+    assert "player_name" in ClipOut.model_fields, (
+        "ClipOut no longer declares player_name, so no response on any route "
+        "can carry it — CF-263 (#293) is reversed for the whole API"
+    )
 
 
 def test_no_route_excludes_the_name_from_its_response():
