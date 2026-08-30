@@ -81,17 +81,18 @@ budget and the ceiling.
 
 **Read the check runs on the PR's head commit.** Selection does not depend on
 them — a red PR still gets reviewed, for the reason below — but settling does,
-and the report does.
+and the report does. **Which conclusions block settling is stated once, in [the
+settle bar](FIX.md#the-cycle-and-the-settle-bar)**; this section is how and when
+to read them.
 
 The command and the two endpoints that look like it and are wrong here are
 [point 7](#what-a-non-gh-tool-must-provide).
 
-**Red does not block reviewing.** The run of 2026-08-25 spent six rounds on #307
-while every one of its CI runs failed, and those rounds produced real findings —
-the waste was not the reviewing, it was that nobody was told about the red. And
-the failure was a `jsdom`/`undici` incompatibility with the runner's Node, not
-anything in the diff, so refusing to review would have stranded a PR that
-reviewing could still improve. Review it; just do not settle it, and say so.
+**Red does not block reviewing.** The rounds CF-275 was filed over produced real
+findings, and that PR's failure was an upstream incompatibility rather than
+anything in its diff — so refusing to review would have stranded a PR that
+reviewing could still improve. The waste was never the reviewing; it was that
+nobody was told about the red. Review it, do not settle it, and report it.
 
 **Read them again at settle time, not only at selection.** A carry runs several
 rounds and a push of its own; a check read at the start of it is stale by the
@@ -99,28 +100,28 @@ end, which is exactly #307's shape. This is the same rule as [checking claims
 outside the diff at settle time](#the-cold-reviewers-brief) — the check is such a
 claim.
 
-**A check's name does not tell you what it ran**, so do not reason from it. On
-this repository `Web (lint + typecheck)` also runs `vitest`, and
-`API (ruff + mypy)` runs `ruff check ml/`, `pytest ml/tests` **and**
-`pytest api/tests`. Both names are load-bearing strings in the branch-protection
-ruleset — `ci.yml` carries a comment at each job saying not to rename them, the
-api one down at the `pytest tests/` step rather than beside the job name — so
-they will keep understating what they cover. If you need to know what a check
-covered, read `ci.yml`.
+**Read the conclusion, not the log's summary.** #307's failing run ends with
 
-**And a green check is not proof the suite ran.** #307 exited 1 with a
-human-readable tail reading `Test Files 7 passed (7)` — the failure was an
-unhandled error that killed the worker before the file loaded, and the file that
-never ran was the test file for the card under review. `claude-review.yml` has
-the same hazard documented for skipped runs, which report `success`.
+```
+ Test Files   7 passed (7)
+      Tests   103 passed (103)
+     Errors   1 error
+```
 
-This is a different rule from the three already in the brief that say a green
-*local gate* proves nothing — the [Postgres probe](START.md#first-establish-what-you-can-actually-do),
-[the api-suite skip counts](TICKETS.md#working-a-ticket), and [the control
-mutation](#the-cold-reviewers-brief). Those are about the run's own commands;
-this is about a check GitHub ran. Same lesson, different subject, and it is
-written here rather than folded into one of those because none of them is read
-on a step-1 lap.
+and a `failure` conclusion. An unhandled error killed the worker before the test
+file loaded, so the tally counts what did run and says nothing about what did
+not — and the file that never ran was the test file for the card under review.
+The check was right and the summary was misleading, which is the case *for*
+reading the conclusion rather than a caution against trusting it.
+
+**A green conclusion can still mean nothing ran**, though, and that is a
+different case: a workflow that skips reports `success`. `CLAUDE.md` documents
+this for `claude-review.yml` — a skipped run is green and has reviewed nothing.
+
+**A check's name does not tell you what it ran.** `Web (lint + typecheck)` also
+runs vitest; `API (ruff + mypy)` runs `ruff check ml/` and both test suites.
+Read `ci.yml` if you need to know what a check covered — and do not narrow by
+name, per [point 7](#what-a-non-gh-tool-must-provide).
 
 ##### What a non-`gh` tool must provide
 
@@ -274,9 +275,9 @@ above](#what-a-non-gh-tool-must-provide) gives:
 | `cold: findings` | differs | — | **semi-cold** — a fix has already been pushed; check those findings against the new head |
 | `cold: clean` | matches | a finding is still open, **and** commits have landed since the marker that raised it | **semi-cold** — that fix is what needs checking; only a semi-cold can close a finding |
 | `cold: clean` | matches | a finding is still open, **and** nothing has landed since the marker that raised it | **step 2** — nothing to check, so spend no round; fix it |
-| `cold: clean` | matches | nothing open, and a finding was raised **in the counting window** | **settle it** — apply `review-settled`, unless [a check blocks it](#reading-the-checks-before-a-round-and-again-before-settling) |
+| `cold: clean` | matches | nothing open, and a finding was raised **in the counting window** | **settle it** — apply `review-settled`, unless [a check blocks it](FIX.md#the-cycle-and-the-settle-bar) |
 | `cold: clean` | matches | nothing open, none raised in the window, and this is its **only** head-matching `cold: clean` | **cold round** — the second of the two that case requires |
-| `cold: clean` | matches | nothing open, none raised in the window, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled`, unless [a check blocks it](#reading-the-checks-before-a-round-and-again-before-settling) |
+| `cold: clean` | matches | nothing open, none raised in the window, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled`, unless [a check blocks it](FIX.md#the-cycle-and-the-settle-bar) |
 | `cold: clean` | differs | — | **cold round** — new code nothing has looked at; see the re-open rule below |
 | `semi-cold: closes` | — | — | **cold round** |
 | `semi-cold: does not close` | matches | — | **step 2** — fix it again |

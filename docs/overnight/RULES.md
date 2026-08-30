@@ -276,8 +276,10 @@ open PR and come back for a second lap.
 The reason is that this loop gets interrupted: context is compacted between
 iterations, and a usage limit stops the run outright, at no point of your
 choosing. Finishing PRs one at a time means whenever that happens, everything
-touched so far is in a terminal state — `review-settled`, `unsettled`, or
-untouched — and the next run can tell those apart. A breadth-first pass that is
+touched so far is in a terminal state — `review-settled`, `unsettled`,
+untouched, or reviewed-clean-but-held-back-by-a-check, which [carries no label
+deliberately](FIX.md#the-cycle-and-the-settle-bar) — and the next run can tell
+those apart. A breadth-first pass that is
 cut off leaves every PR half-cycled, which is precisely the "abandoned
 mid-cycle looks identical to reviewed clean" condition these labels exist to
 prevent. It also keeps the state you carry small: one PR's findings, not twenty.

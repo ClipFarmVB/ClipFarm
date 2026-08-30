@@ -138,7 +138,7 @@ without the last one's conclusions, so it is a genuinely different pass, and
 stopping at two stops while that is still paying. Nits may remain — requiring
 zero findings would review forever.
 
-**When a cold round clears that bar, label the PR `review-settled` and post a
+**When a cold round clears that bar — and the checks have passed, below — label the PR `review-settled` and post a
 `settled: @ <sha>` comment with it.** That is the terminal state, and it is what
 stops future runs re-reviewing finished work. The comment carries the SHA the
 carve-out compares against, and it is the only trace left if a human later
@@ -198,19 +198,29 @@ outstanding, only a Critical or Medium may change that head.** Nits found from
 then on go to a card, however cheap they look. "Cheap" is what makes this loop
 attractive on every lap.
 
-**Never settle over a check that failed, or over a head with no checks at all.**
-The settle bar is about what a reviewer found; this is about whether the code
-runs, and a green review over a red suite is the failure CF-275 was filed for —
-six rounds on #307 while every CI run failed, fixed only when a human noticed.
-So: do not apply `review-settled` while any check run on the head SHA concluded
-`failure`, `timed_out` or `cancelled`, or while `ci.yml` produced no check run
-for that SHA at all. `ci.yml` is `on: pull_request` with no path filter, so every
-PR gets every job — zero check runs means the workflow never fired, which is the
-non-running case rather than a quiet pass. How to read them, and the two
-endpoints that look right and are not, is
+**Never settle over a check that has not passed.** The settle bar is about what a
+reviewer found; this is about whether the code runs, and a green review over a
+red suite is the failure CF-275 was filed for: six rounds on #307 while every CI
+run failed, fixed only when a human noticed. Do not apply `review-settled` while
+any check run on the head SHA is in **any** of these states:
+
+- concluded `failure`, `timed_out`, `cancelled` or `action_required`;
+- **not completed** — `queued` or `in_progress`, where `conclusion` is still
+  `null`. This is a state, not an absence, and it must be named: a rule that
+  lists only failing conclusions permits settling over a suite that has not
+  spoken yet, which is CF-275's shape exactly rather than a milder version of it;
+- or the head has **no check runs at all** — `total_count: 0`. `ci.yml` is
+  `on: pull_request` with no path filter, so every PR gets every job; nothing
+  means the workflow never fired, not that it passed quietly.
+
+`neutral`, `skipped` and `stale` do not block. Say in the report if one appears,
+because a skipped required job and a passing one are the same green to everything
+downstream.
+
+How to read them, and the two endpoints that look right and are not, is
 [in step 1](REVIEW.md#reading-the-checks-before-a-round-and-again-before-settling).
 
-**Pending is not failed, and it is the ordinary case.** A carry pushes a fix and
+**Pending is the ordinary case, not an edge case.** A carry pushes a fix and
 reaches the settle bar within a minute or two, while CI takes longer than that.
 Re-read once after a short wait; if it is still running, the PR is simply not
 settleable yet this lap. That is not a finding, not a label, and not a reason to
@@ -227,9 +237,15 @@ stand and the next run settles it **spending no round at all**.
 
 **The cost, so it is not discovered instead of decided:** such a PR re-enters the
 queue every night until its CI goes green, and each visit costs the read above.
-That is bounded by the per-PR ceiling and it is the price of not inventing a
-label with no way out — which is what [CF-274](RULES.md#hard-rules) cost the last
-time this brief tried it.
+**Nothing bounds that.** The per-PR ceiling counts rounds within one run and this
+visit spends none, so it charges nothing; the recurrence is across runs, which no
+counter here windows. It ends when CI goes green, a human acts, or the PR is
+closed — and until then the report bullet is what makes it visible each night.
+
+That is the price of not inventing a label with no way out. The brief has been
+here before from the other side: [CF-274](RULES.md#hard-rules) removed the grant
+mechanism that had been added to give such a label an exit, which is why the
+answer this time is not to create the label.
 
 **This is the one thing that may move a frozen head.** The rule above says only a
 Critical or Medium may change the head once nothing is open. A red check is

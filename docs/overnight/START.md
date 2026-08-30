@@ -146,7 +146,7 @@ not a terminus** — the author's next push re-opens the PR, and the next run's
 semi-cold round is what closes the finding.
 
 What a single night in this mode delivers is **findings written where the author
-will act on them**, plus `review-settled` on PRs clean across two cold rounds.
+will act on them**, plus `review-settled` on PRs clean across two cold rounds whose checks passed.
 What the mode delivers *over several nights* is the full cycle: review, fix,
 re-review, settle.
 
