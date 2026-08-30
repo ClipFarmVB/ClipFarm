@@ -1015,18 +1015,22 @@ Two shapes worth knowing by name:
   elements *by a string another test pins*; changing that string emptied the
   list and both cases went green while both couplings were broken. Assert the
   count before iterating.
-- **When you isolate an environment, check the isolation did not also remove
-  the thing under test.** An import guard run with `-S` passed — because with no
-  site-packages the blocked module is not installed at all, so the blocker stops
-  being what fails the import. The tests measured absence and nothing went red
-  to say so.
+- **A premise test must run under the same launch path as the thing it is a
+  premise about.** A guard's helper built one argv for the child under test and
+  a *separate* argv for the test asserting that child's premise, so adding `-S`
+  to the first left all ten cases green — the premise test was vouching for a
+  child that did not exist. One shared helper made the same mutation red.
 
-**When a claim in a comment or doc turns out to be wrong, grep for every copy of
-it before calling it fixed.** A "one-line" documentation fix was three lines in
-three files, and the copy that mattered most — the onboarding path a fresh clone
-runs first — was the one not touched. Correcting one instance leaves the repo
-saying two different things about one problem, which is worse than the original
-error.
+  Worth stating precisely, because the first version of this lesson was wrong
+  in an instructive way. It claimed `-S` made the tests *vacuous* — that with no
+  site-packages the blocked module is absent, so the blocker stops being what
+  fails the import. Measured, that is false: the blocker sits ahead of the path
+  finder and still raises, and the control matches on its message rather than on
+  the exception type, so `-S` plus a broken blocker is still red. What `-S`
+  actually costs is that the blocker becomes *redundant* — the tests would
+  measure absence rather than blocking, and nothing would go red to say so.
+  Redundant and vacuous are not the same failure, and only the narrower claim
+  survives measurement.
 
 **Ask what the repository already asserts before deriving anything.** Six times
 in one run the answer was already written down — in another line of the same
