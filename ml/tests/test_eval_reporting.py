@@ -121,7 +121,10 @@ def _noisy_signals(empty: bool = False):
     Restoring any of these to the baseline is the tidy-looking change that
     reopens the hole, so it is no longer left to this docstring to prevent:
     `test_the_fixtures_can_actually_fail_the_rounding_assertion` asserts the
-    precondition for every float here, named or not.
+    precondition for every *field* here, named or not. It walks the dataclass,
+    so the one written float it does not reach is `incorrect.total`, which is a
+    property rather than a field — covered instead by
+    `test_the_written_parts_sum_to_the_written_total`.
     """
     return metrics.EvalSignals(
         captured_pct=None if empty else 0.18506944444444462,
@@ -153,8 +156,10 @@ def _noisy_deadtime(empty: bool = False):
         human_keep_sec=1241.6666666666665,
         human_dead_sec=2418.333333333333,
         model_keep_sec=1488.666666666667,
-        # `n_frames / fps` in a real run — at 29.97 fps an hour of video gives
-        # 3660.6606606606606. (`duration` is a passthrough on DeadTimeSignals;
+        # `n_frames / fps` in a real run — 109710 frames at 29.97 fps gives
+        # 3660.6606606606606. (An exact hour does not: 107892 / 29.97 is 3600.0
+        # on the nose, which is the sort of value this fixture must not carry.)
+        # (`duration` is a passthrough on DeadTimeSignals;
         # its sources are `video_duration_sec`, a `max(rally ends)` fallback, or
         # that division — the division is where the tail comes from.)
         duration=3660.000000000001,
@@ -198,8 +203,12 @@ class TestResultRounding:
         can only be asked of the pre-serialisation values."""
         for name, raw in (("signals", _noisy_signals()), ("deadtime", _noisy_deadtime())):
             for path, value in _floats(asdict(raw)):
-                places = len(repr(value).split(".")[-1])
-                assert places > EXPECTED_RESULT_FLOAT_PLACES, (
+                # Not a digit count off `repr`: a float whose repr is
+                # exponential has no ".", so `repr(1e+16).split(".")[-1]` is the
+                # whole repr and scores 5 — an exactly integral value passing a
+                # test whose entire job is to reject exactly integral values.
+                # Comparing against the rounded value asks the real question.
+                assert value != round(value, EXPECTED_RESULT_FLOAT_PLACES), (
                     f"{name}{path} = {value!r} is already exact at "
                     f"{EXPECTED_RESULT_FLOAT_PLACES}dp — the rounding test "
                     f"cannot fail for this field"
@@ -231,9 +240,11 @@ class TestResultRounding:
 
         for name, row in (("pre_gate", signals), ("deadtime", dead)):
             for path, value in _floats(row):
-                places = len(repr(value).split(".")[-1])
-                assert places <= harness.RESULT_FLOAT_PLACES, (
-                    f"{name}{path} = {value!r} kept {places} decimal places"
+                # Same repr caveat as the precondition test above — an
+                # exponential repr has no decimal point to count digits after.
+                assert value == round(value, harness.RESULT_FLOAT_PLACES), (
+                    f"{name}{path} = {value!r} is not rounded to "
+                    f"{harness.RESULT_FLOAT_PLACES} decimal places"
                 )
 
     def test_none_survives_rounding(self):

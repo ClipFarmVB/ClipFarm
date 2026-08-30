@@ -240,10 +240,13 @@ def _incorrect_seconds_to_dict(t: IncorrectTime) -> dict:
     parts do not add up is exactly what misleads that reader. `_decompose_window`
     documents the decomposition as exact, so the file should show it that way.
 
-    Summing the rounded parts moves `total` by at most four half-ulps at 4dp,
-    5e-5 s, which is three orders of magnitude below anything this metric means.
-    The outer `_round` is there because adding floats reintroduces a tail of its
-    own.
+    Summing the rounded parts moves `total` by at most four half-ulps at 4dp —
+    4 x 5e-5, so **2e-4 s**, not 5e-5; the first version of this comment said
+    the latter. Still three orders of magnitude below anything this metric
+    means, and well inside the 1e-3 that
+    `test_rounding_does_not_move_a_value_meaningfully` allows. The outer round
+    is there because adding floats reintroduces a tail of its own: without it
+    the fixture writes 79.66659999999999.
     """
     # `round`, not `_round`: these four are `float` on IncorrectTime and never
     # None, and the type has to say so for `sum` below to typecheck.
@@ -701,6 +704,15 @@ def _deadtime_to_dict(s: DeadTimeSignals) -> dict:
         "live_removed_pct": _round(s.live_removed_pct),
         "kept_play_pct": _round(s.kept_play_pct),
         "condense_ratio": _round(s.condense_ratio),
+        # These two partition [0, duration] by construction in
+        # evaluate_deadtime, so they sum to `duration` exactly before rounding
+        # and can fail to afterwards — the same shape CF-352 fixed for
+        # incorrect_seconds. Measured: human=(0, 100.00005) over a 200.0001s
+        # duration writes 100.0001 + 100.0001 = 200.0002 beside a duration of
+        # 200.0001. Deliberately not changed here: unlike incorrect_seconds,
+        # where `total` is derived from the parts, all three of these are
+        # independent fields and deciding which one gives way is a call about
+        # what the file means, not a rounding detail. See the PR discussion.
         "human_keep_sec": _round(s.human_keep_sec),
         "human_dead_sec": _round(s.human_dead_sec),
         "model_keep_sec": _round(s.model_keep_sec),
