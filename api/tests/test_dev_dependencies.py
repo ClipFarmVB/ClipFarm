@@ -50,8 +50,12 @@ def importorskip_targets(path):
     both. A loose pattern matched a call quoted as prose in a docstring — this
     module's own — and invented a dependency out of the file's explanation of
     itself. The anchored pattern that fixed that then stopped seeing four real
-    forms: a call split across lines, a call not at the start of a line, an
-    assignment to a subscript, and the `from pytest import importorskip` alias.
+    forms: a call not at the start of a line, an assignment to a subscript, the
+    `from pytest import importorskip` alias, and the module name passed as
+    `modname=`. (A call split across lines it *did* see: it allowed whitespace
+    after the opening paren for exactly that reason, so that form is a control
+    in the tests below, not a subject. The card, #324, names it as a miss; the measurement in the comment
+    block below is what to trust.)
 
     In the AST both modes go at once rather than being traded: prose is a
     `Constant` and can never be a `Call`, and position stops mattering because
@@ -96,7 +100,7 @@ def importorskip_targets(path):
             # it would leave the suite exactly as unguarded as the call forms
             # this rewrite exists to stop missing — silently. Collected rather
             # than dropped, and asserted against below.
-            dynamic.append(f"{path.name}:{node.lineno}")
+            dynamic.append(f"{path}:{node.lineno}")
     return Scan(targets, dynamic)
 
 
@@ -134,7 +138,7 @@ def test_every_importorskip_target_is_installed():
         "Pass the module name as a literal."
     )
 
-    # This module must stay guard-free: a `importorskip` here could skip the
+    # This module must stay guard-free: an `importorskip` here could skip the
     # test that catches silent skips, which is the failure that put this test
     # in its own file. Asserting it against the scan rather than against
     # punctuation is what the AST rewrite bought — the previous version of this
@@ -155,8 +159,12 @@ def test_every_importorskip_target_is_installed():
     # A floor, not merely non-empty. The risk this rewrite carries is a
     # *partial* shrink — a scan that still finds something, so a non-empty
     # check stays green, while quietly dropping most of the suite's guards.
-    # 13 today; the same shape as `len(pins) >= 15` in the gate test below.
-    assert len(third_party) >= 10, (
+    # 11 today — that is `third_party`, which is what this line measures; the
+    # scan finds 13 in total, the other two being the excluded `app.*` pair.
+    # 8 leaves the same ~75% slack as `len(pins) >= 15` against 20 in the gate
+    # test below, so retiring a couple of obsolete guards is a normal edit
+    # rather than a failure pointing at the scan.
+    assert len(third_party) >= 8, (
         f"only {len(third_party)} third-party importorskip targets found "
         f"({third_party}) — did this suite's layout or the scan change?"
     )
@@ -188,6 +196,12 @@ def test_every_importorskip_target_is_installed():
 #
 # So `plain` and `wrapped` are the controls rather than the subjects: they are
 # the two forms the anchored pattern did see.
+#
+# `FORMS` must stay a string written to `tmp_path`, and must never become a
+# module under api/tests/. As a file there it would be scanned by the real
+# check above and inject six phantom targets, failing it with a missing
+# package for `plain`. A string is inert, and dedenting it into real code in
+# this module is caught by the self-scan assertion above.
 
 FORMS = '''
 """A docstring that quotes pytest.importorskip("phantom") as prose."""
@@ -242,7 +256,10 @@ def test_the_scan_reports_a_target_it_cannot_read(tmp_path):
     )
     scan = importorskip_targets(f)
     assert scan.targets == set()
-    assert scan.dynamic == ["dynamic.py:3"]
+    # The full path, not the file name: the scan rglobs, so two same-named
+    # modules in different subdirectories would otherwise be indistinguishable
+    # in the failure message.
+    assert scan.dynamic == [f"{f}:3"]
 
 
 def test_the_scan_names_a_file_it_cannot_parse(tmp_path):
