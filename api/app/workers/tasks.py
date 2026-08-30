@@ -1573,8 +1573,21 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 #
                 # `self.retry` re-raises rather than scheduling once
                 # `request.retries` reaches `max_retries`, so that comparison is
-                # the same condition Celery is about to apply.
-                last_attempt = self.request.retries >= self.max_retries
+                # the same condition Celery is about to apply — its own test is
+                # `retries > max_retries` on `request.retries + 1`, which is the
+                # same boundary.
+                #
+                # `max_retries` may be None, which Celery reads as retry forever.
+                # Nothing in this repo sets it — both tasks declare 2 and the
+                # only override is a test forcing 0 — but the comparison would
+                # raise TypeError if it ever were, inside this except and before
+                # `self.retry`, so the original failure would be masked and the
+                # row stranded: this handler doing the exact harm CF-277 exists
+                # to prevent. The guard is cheaper than the reasoning about why
+                # it cannot happen, and the same is true of the `+ 1` below,
+                # which has the same hole.
+                forever = self.max_retries is None
+                last_attempt = not forever and self.request.retries >= self.max_retries
                 if last_attempt:
                     next_step = (
                         "no retry follows — this was the last attempt, and the "
@@ -1599,7 +1612,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     "`processing` (attempt %s of %s). %s",
                     game_id,
                     self.request.retries + 1,
-                    self.max_retries + 1,
+                    "unlimited" if forever else self.max_retries + 1,
                     next_step,
                 )
         # `reported` gates this, not just the exception type. A permanent failure
