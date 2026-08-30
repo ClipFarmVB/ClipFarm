@@ -378,7 +378,17 @@ one block. The first run discovered three gaps separately, mid-work.
   provide](REVIEW.md#what-a-non-gh-tool-must-provide), under
   "these commands are specifications", not in the bullet below this one.
 - **Gate tool versions** — read the versions `ci.yml` installs and compare with
-  what is installed here. See the gate step below.
+  what is installed here. `requirements-tooling.txt` is pinned, so there is a
+  version to match; install that file rather than `pip install ruff mypy pytest`,
+  and report the versions you actually ran either way.
+- **A Postgres for the api suite** — `pg_isready`, or try the
+  `LOCK_TEST_DATABASE_URL` in the gate step. Without one the api suite still
+  passes: **816 passed / 8 skipped, exit 0**, the CF-184 advisory-lock and
+  post-visibility tests silently absent. That is the one capability gap on this
+  list which does not announce itself — everything else here fails loudly when
+  missing, so a run that skips this probe reports a green gate it did not run.
+  If there is no cluster, say so in the report and treat every api-suite result
+  as eight tests short.
 
 State every gap in the report. A capability you assumed and did not have is the
 most expensive kind of surprise in an unattended run.
