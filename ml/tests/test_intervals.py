@@ -5,7 +5,9 @@ directly rather than through dead_time, which still re-exports the names for its
 own use — a test that reached through the re-export would pass even if the move
 had not happened.
 """
+import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ml.pipeline.intervals import merge_intervals
+
+# Below the import deliberately: ruff exempts an import that follows `sys.path`
+# manipulation from E402, and a plain assignment in between forfeits that.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestMergeIntervals:
@@ -65,45 +71,78 @@ class TestTheImportStaysLight:
     BLOCKED = frozenset({"numpy", "cv2", "torch", "ultralytics"})
 
     def _import_under_blocker(self, module_name):
-        """Import `module_name` fresh with BLOCKED roots made unimportable."""
-        import importlib
+        """Import `module_name` in a fresh interpreter with BLOCKED roots made
+        unimportable. Raises ImportError carrying the child's stderr if it fails.
 
-        class _Blocker:
-            def find_spec(self, name, path=None, target=None):
-                if name.split(".")[0] in TestTheImportStaysLight.BLOCKED:
-                    raise ImportError(f"BLOCKED: {name}")
-                return None
+        A subprocess rather than a blocker installed in this one. The earlier
+        version purged `sys.modules` by name before importing, because a fresh
+        import that hits the cache never reaches the blocker and the check
+        passes without checking. That worked, and it was only ever as good as
+        the purge predicate:
 
-        # Drop anything already imported, or the fresh import is a cache hit and
-        # the blocker never runs — the check would pass without checking.
-        #
-        # The whole `ml` tree, not just ml.eval and ml.pipeline. An earlier
-        # version purged only those two prefixes, so a heavy import reached
-        # through any other ml module — `ml` itself is a namespace package with
-        # real root modules — survived in sys.modules and satisfied the import
-        # from cache. Demonstrated: a violation added that way passed the full
-        # suite while failing when the file was run alone, which is the worst
-        # shape a guard can have. Purging `ml` also restores the parent
-        # packages' attributes, which the narrower predicate left pointing at
-        # stale module objects.
-        saved = {
-            k: v
-            for k, v in sys.modules.items()
-            if k.split(".")[0] in self.BLOCKED or k.split(".")[0] == "ml"
-        }
-        for k in saved:
-            del sys.modules[k]
+          - It began by purging `ml.eval` and `ml.pipeline`, so a heavy import
+            reached through any other `ml` module survived in cache. A violation
+            added that way passed the full suite while failing when this file
+            was run alone — the worst shape a guard can have, since the run that
+            would catch it is the one nobody does.
+          - Widening it to the whole `ml` tree closed that, and left the same
+            hole one package boundary out: a repo-root module outside `ml` that
+            imports numpy, imported earlier by some other test, still satisfies
+            the import from cache. Nothing in the tree does that today — every
+            numpy/cv2/torch/ultralytics import lives under `ml/` — so this was
+            a latent hole rather than a live one, but it is the same hole, and
+            the next widening would just move it again.
 
-        blocker = _Blocker()
-        sys.meta_path.insert(0, blocker)
-        try:
-            importlib.import_module(module_name)
-        finally:
-            sys.meta_path.remove(blocker)
-            for k in list(sys.modules):
-                if k.split(".")[0] == "ml":
-                    del sys.modules[k]
-            sys.modules.update(saved)
+        A child process has no cache to purge and no `sys.modules` to restore,
+        so the predicate disappears rather than getting another clause. It also
+        removes the cleanup entirely: the old version had to put back everything
+        it deleted, in the right order, or leak stale module objects into every
+        test that ran after it.
+        """
+        source = textwrap.dedent(
+            """
+            import importlib
+            import sys
+
+            BLOCKED = frozenset({blocked!r})
+
+            # Nothing blocked may already be in the child's cache: an import
+            # satisfied from cache never reaches the blocker, and the check
+            # would pass without checking. That is the failure the purging
+            # version of this guard existed to prevent, and a fresh interpreter
+            # only avoids it as long as nothing imports a blocked root during
+            # startup — a site-packages .pth hook can. Asserted rather than
+            # assumed, and loudly, because the symptom is a green test.
+            _already = sorted(m for m in sys.modules if m.split(".")[0] in BLOCKED)
+            if _already:
+                raise SystemExit("blocked roots imported at startup: " + repr(_already))
+
+            class _Blocker:
+                def find_spec(self, name, path=None, target=None):
+                    if name.split(".")[0] in BLOCKED:
+                        raise ImportError("BLOCKED: " + name)
+                    return None
+
+            sys.meta_path.insert(0, _Blocker())
+            importlib.import_module({module!r})
+            """
+        ).format(blocked=sorted(self.BLOCKED), module=module_name)
+
+        # `-E` so an inherited PYTHONPATH cannot change what the child resolves;
+        # `cwd` is what puts the repo root on its path. Deliberately NOT `-S`:
+        # without site-packages the blocked roots are not installed in the child
+        # at all, so every one of these tests would pass whether or not the
+        # blocker worked — the control included, since an absent numpy and a
+        # blocked numpy both end in ImportError. The child asserts its own cache
+        # is clean instead, which is the actual thing `-S` was reaching for.
+        proc = subprocess.run(
+            [sys.executable, "-E", "-c", source],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            raise ImportError(proc.stderr.strip())
 
     def test_the_blocker_can_actually_block(self):
         """The control. Without it the two tests below pass whether or not the
