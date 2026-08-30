@@ -1016,10 +1016,9 @@ Two shapes worth knowing by name:
   list and both cases went green while both couplings were broken. Assert the
   count before iterating.
 - **A premise test must run under the same launch path as the thing it is a
-  premise about.** A guard's helper built one argv for the child under test and
-  a *separate* argv for the test asserting that child's premise, so adding `-S`
-  to the first left all ten cases green — the premise test was vouching for a
-  child that did not exist. One shared helper made the same mutation red.
+  premise about.** The third instance above is this shape: two argv literals, so
+  the test vouching for the child was vouching for a child that did not exist.
+  One shared helper made the same mutation red.
 
   Worth stating precisely, because the first version of this lesson was wrong
   in an instructive way. It claimed `-S` made the tests *vacuous* — that with no

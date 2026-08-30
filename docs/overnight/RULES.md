@@ -421,12 +421,11 @@ first and leaves `SINCE`.
   never false kills, so an unexpected "the test still passed" is the case to
   distrust.
 - **A mis-anchored substitution prints a clean pass indistinguishable from a
-  survival.** Every mutation must assert three things: the anchor appears
-  exactly once, and it was actually applied. Two mutations "passed" this way
-  before that check existed — an em dash silently became a double hyphen, and a
-  12-space anchor matched the tail of a 16-space line. (Restoring is checked by
-  the bullet below, which supersedes the weaker "it is gone afterwards" test
-  this one used to carry.)
+  survival.** Every mutation must assert two things: the anchor appears exactly
+  once, and it was actually applied. Restoring is the bullet below. Two
+  mutations "passed" this way before that check existed — an em dash silently
+  became a double hyphen, and a 12-space anchor matched the tail of a 16-space
+  line.
 - **Apply edits one at a time, never as a batch script.** A five-edit script
   that asserts partway through writes nothing, while the verification run after
   it looks entirely normal.
@@ -454,11 +453,9 @@ first and leaves `SINCE`.
   report's command lost its placeholder and posted as `git checkout -- `, so
   the reader saw a truncated command with nothing to say it had been cut.
 
-  Measured by posting all eight cases and reading them back: a lowercase and an
-  uppercase tag-shaped placeholder were **removed**, inside backticks *and*
-  outside; `ComponentProps<"a">`, `a <= b` and `x < y > z` all survived,
-  escaped. So the surviving counter-examples elsewhere in this repo are not
-  counter-examples — none of them is tag-shaped.
-
-  Use a plain word for placeholders in issues, comments and PR bodies. Files in
-  the repo go through a different path and are unaffected.
+  Measured by posting eight cases and reading them back: both tag-shaped
+  placeholders were removed, inside backticks and outside, while
+  `ComponentProps<"a">`, `a <= b` and `x < y > z` survived escaped — so
+  backticked angle brackets that survive elsewhere are not counter-evidence,
+  none of them being tag-shaped. Use a plain word for placeholders in issues,
+  comments and PR bodies; files in the repo go through a different path.
