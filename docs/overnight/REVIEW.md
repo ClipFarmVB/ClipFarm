@@ -998,6 +998,35 @@ check: ask which input would make the claim false, and confirm your set contains
 it. A green suite proves nothing until a control mutation shows the harness can
 go red at all.
 
+**Write the prose claiming a gap is closed *after* running the mutation, never
+before.** In one run the fix for "this guard can pass without checking"
+contained a smaller instance of itself three times on a single PR: a false
+reason recorded for a launch flag, a guarded import that swallowed the
+blocker's signal, and a premise test that launched a *different child* than the
+one it was a premise about — so the flag it existed to forbid left every test
+green. Each was caught by running the mutation; each had its explanatory comment
+written first. The comment is not evidence, and writing it first is what makes
+it feel like evidence.
+
+Two shapes worth knowing by name:
+
+- **A loop assertion with no length guard passes on an empty iterable.** Two
+  cases written to catch a missing CSS class iterated a helper that located
+  elements *by a string another test pins*; changing that string emptied the
+  list and both cases went green while both couplings were broken. Assert the
+  count before iterating.
+- **A premise test must run under the same launch path as the thing it is a
+  premise about.** The third instance above is this shape: two argv literals, so
+  the test vouching for the child was vouching for a child that did not exist.
+  Adding an isolation flag to the child under test left every case green; one
+  shared helper made that same mutation red.
+
+  Stated narrowly on purpose. The first version of this lesson said the flag
+  made the tests *vacuous*, and measurement said otherwise — the blocker still
+  fires, and a control matching on its message still discriminates. What the
+  flag costs is that the blocker becomes *redundant*, which is a different
+  failure and the only one the evidence supports.
+
 **Ask what the repository already asserts before deriving anything.** Six times
 in one run the answer was already written down — in another line of the same
 file, in an existing test, or in the installed package's own source. Reading it

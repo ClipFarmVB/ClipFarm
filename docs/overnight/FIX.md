@@ -52,6 +52,15 @@ For a PR you may not push to, describe the fix in a comment and apply
   things from different people: a judgement call needs the reviewer's question
   answered, a latch needs someone to unblock the push machinery.
 
+**When the thing you are fixing is a wrong claim, grep for every copy of it
+before calling it fixed.** A "one-line" documentation fix turned out to be three
+lines in three files, and the copy that mattered most — the onboarding path a
+fresh clone runs first — was the one left untouched, so the repo then stated two
+different things about one problem in two places. Correcting one instance of a
+claim is not a smaller version of correcting it; it can be worse than leaving all
+of them, because the surviving copies now have a contradicting neighbour to be
+read against.
+
 **Read the findings out of the round's review.** The marker comment carries the
 prefix, the SHA and at most a count; the findings are in the review that round
 submitted.
