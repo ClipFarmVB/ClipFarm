@@ -78,10 +78,15 @@ tsc and vitest for `web/`.
   cd api && python -m pytest tests/
   ```
 
-  **On Windows, substitute `py` for `python` on both lines.** Same Store-stub
-  problem the hook's probe works around, and it applies to the install as much
-  as the run — pytest has to land in the interpreter that runs it, which is also
-  why the install goes through `python -m pip` rather than a bare `pip`.
+  **If a bare `python` is not the right interpreter, substitute the one that
+  is** — `py` on Windows, `python3` on Debian/Ubuntu and most Linux distros,
+  where `python` frequently does not exist at all. Those are exactly the two
+  fallbacks the hook's own probe tries after `python` (`for _candidate in python
+  py python3`), and the reason it prints which one it chose.
+
+  It applies to the install as much as to the run: pytest has to land in the
+  interpreter that runs it, which is also why the install goes through
+  `python -m pip` rather than a bare `pip`.
 
   **Install `requirements-dev.txt`, not `requirements.txt`.** Several tests guard
   their imports with `pytest.importorskip`, so without the test-only deps they

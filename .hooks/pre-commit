@@ -189,9 +189,13 @@ echo "ok"
 # the one that costs the time. Loud on purpose, and never the default.
 #
 # Locating the probe is its own problem, and getting it wrong is invisible.
-# A bare `python api/scripts/check_dev_set.py` resolves against the CWD, which
+# The relative `"$PY" "$_dev_set_probe"` below resolves against the CWD, which
 # is the tree being committed in. That is right, and it is what this does — but
 # only if it is allowed to fail honestly when the file is not there.
+#
+# `$PY` rather than a bare `python`, for the reason this whole file exists: the
+# probe has to run in the same interpreter the pytest step will use, or it
+# answers a question about a different environment than the one under test.
 #
 # Why a tree can lack it: this file can be SHARED across checkouts, and then it
 # runs against a tree it did not come from. Two ways in, not one:
