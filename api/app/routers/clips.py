@@ -162,7 +162,10 @@ async def list_clips(
     result = await db.execute(q)
     clips = result.scalars().all()
 
-    # Attach player names
+    # No ownership filter here on purpose (CF-263): a viewer entitled to the
+    # clip is entitled to the name tagged on it, anonymous viewers of public
+    # clips included — publishing a clip publishes its attribution. The
+    # reasoning is in services/access.py; test_public_player_name.py pins it.
     player_ids = {c.player_id for c in clips if c.player_id}
     player_map: dict[uuid.UUID, str] = {}
     if player_ids:

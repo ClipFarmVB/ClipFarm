@@ -105,6 +105,19 @@ async def list_collection_clips(collection_id: uuid.UUID, user_id: UserId, db: D
     )
     clips = result.scalars().all()
 
+    # No ownership filter here on purpose (CF-263): a viewer entitled to the
+    # clip is entitled to the name tagged on it — publishing a clip publishes
+    # its attribution. What that buys *here* is cross-owner collections: this
+    # route requires auth, so unlike the clip listing it has no anonymous
+    # caller, but a collection spans owners the moment a public clip can be
+    # saved into it, and the player on such a clip belongs to someone the
+    # viewer has no relationship with. An ownership filter would blank exactly
+    # those names.
+    #
+    # The reasoning is in services/access.py. `test_public_player_name.py` pins
+    # this route as well as the clip listing — it reads the emitted statement,
+    # because a fake session returns the queued player either way and every
+    # result-level assertion stays green with a filter in place.
     player_ids = {c.player_id for c in clips if c.player_id}
     player_map: dict[uuid.UUID, str] = {}
     if player_ids:
