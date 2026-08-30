@@ -8,10 +8,12 @@ export default defineConfig({
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
   test: {
-    // Everything here is pure logic except the focus-trap suite (CF-227), which
-    // opts into jsdom with a `// @vitest-environment jsdom` docblock of its own.
-    // Left as `node` deliberately: a per-file opt-in keeps the other seven
-    // suites off a document they have no use for.
+    // Most suites here are pure logic. The ones that need a DOM opt in with a
+    // `// @vitest-environment jsdom` docblock of their own — there are now
+    // four of them, counted rather than remembered: the focus-trap suite
+    // (CF-227), PostComposerModal, PostGrid and BrandMark.
+    // Left as `node` deliberately: a per-file opt-in keeps the rest off a
+    // document they have no use for.
     environment: "node",
     // `.tsx` is included so the first component test runs instead of being
     // silently skipped — the existing suites would still match, so vitest would

@@ -17,7 +17,10 @@
 // each call site, where the component cannot enforce them. A call site that
 // omits `group` gets a silently dead hover: no type error, no lint warning, no
 // test failure, because `group-hover:` is inert without an ancestor `group` and
-// says nothing about it. These cases make that omission fail here instead.
+// says nothing about it. These cases make that omission fail here instead, for call sites in
+// Sidebar — every one that exists today, and not the CF-248 case of a third
+// one in another file. A third link inside Sidebar fails `has both of them`,
+// so it cannot be added without a deliberate update to this file.
 //
 // They assert the coupling from both ends deliberately. Asserting only that
 // BrandMark emits `group-hover:` would pass while every call site had dropped
@@ -56,7 +59,8 @@ import { Sidebar } from "@/components/Sidebar";
 // environment is not configured to support act(...)" at every call without it.
 // The warning is harmless and reads exactly like a fault in the component under
 // test, which is the sort of noise that gets a real message skimmed past.
-// PostComposerModal.dom.test.tsx predates this and is left alone here.
+// PostComposerModal.dom.test.tsx and PostGrid.dom.test.tsx both predate
+// this and are left alone here — run together they emit 29 of these.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let host: HTMLDivElement;
@@ -138,14 +142,37 @@ describe("Sidebar's BrandMark call sites", () => {
   it("supplies `group`, so the hover is not dead", () => {
     // The CF-353 failure shape: omitting `group` breaks nothing visible to the
     // compiler, the linter or the renderer — the hover simply never fires.
-    for (const link of brandLinks()) {
+    const links = brandLinks();
+
+    // Not decoration. `brandLinks` finds links by the wordmark's own text, so
+    // changing that text empties the list — and a bare `for` over an empty list
+    // passes. Measured before this line existed: with the wordmark mutated AND
+    // `group` and `gap-2.5` stripped from both call sites, these two cases went
+    // green while both couplings were fully broken. Neither failure message
+    // would have said `group`, so a maintainer fixing the wordmark string would
+    // have arrived at an all-green suite over a dead hover — the exact CF-353
+    // shape, one level up. `has both of them` cannot cover this: it is a
+    // separate `it`, and a vacuous pass here is still a pass.
+    expect(links).toHaveLength(2);
+    for (const link of links) {
       expect(link.className.split(/\s+/)).toContain("group");
     }
   });
 
-  it("supplies the gap that lays the two children out", () => {
-    for (const link of brandLinks()) {
-      expect(link.className.split(/\s+/)).toContain("gap-2.5");
+  it("supplies the flex row and the gap that lay the two children out", () => {
+    // `flex` as well as `gap-2.5`: `gap` is inert on a box that is not flex or
+    // grid, so asserting the gap alone pins one third of the coupling the
+    // component's own docblock documents. Dropping `flex` from a call site left
+    // all seven cases passing before this. "It breaks visibly" is the argument
+    // that was already wrong about `group`.
+    const links = brandLinks();
+
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      const classes = link.className.split(/\s+/);
+
+      expect(classes).toContain("flex");
+      expect(classes).toContain("gap-2.5");
     }
   });
 });
