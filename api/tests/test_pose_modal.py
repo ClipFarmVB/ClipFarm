@@ -525,6 +525,34 @@ def _code_lines(path: Path) -> str:
     )
 
 
+def _satisfies(probe: tuple, operator: str, version: str) -> bool:
+    """Whether `probe` (a version tuple) satisfies one requirement specifier.
+
+    Deliberately small and approximate rather than pulling in `packaging`: the
+    only question asked of it is "does this constraint admit some numpy 2", and
+    the probes are chosen inside inference's own window. It is not a general
+    PEP 440 implementation and should not grow into one — if a case ever needs
+    more than this, take the dependency instead of extending the arithmetic.
+    """
+    wanted = tuple(int(n) for n in re.findall(r"[0-9]+", version)[:3])
+    wanted += (0,) * (3 - len(wanted))
+    if operator in ("==", "==="):
+        # A wildcard pin (`1.*`) compares only the components it names.
+        depth = len(re.findall(r"[0-9]+", version)[:3]) if "*" in version else 3
+        return probe[:depth] == wanted[:depth]
+    if operator == "~=":
+        return probe >= wanted and probe[0] == wanted[0]
+    if operator == "!=":
+        return probe != wanted
+    if operator == "<=":
+        return probe <= wanted
+    if operator == ">=":
+        return probe >= wanted
+    if operator == "<":
+        return probe < wanted
+    return probe > wanted
+
+
 ML_RUNTIME_PACKAGES = ("torch", "torchvision", "ultralytics", "transformers", "inference")
 ML_RUNTIME_PACKAGES_SET = set(ML_RUNTIME_PACKAGES)
 
@@ -687,28 +715,41 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
     to learn it.
 
     So this asserts the constraint directly: constrain numpy there or do not,
-    but any constraint has to admit a 2.x. Every capping form is checked, not
-    just `==` — `numpy<2` is what CF-278 itself proposes as option 2, and
-    `~=1.26.0` is the other natural spelling, so a guard that read only `==`
-    would wave through the exact edit the card recommends. A future numpy-2
+    but any constraint has to admit a 2.x. The whole specifier set is read, not
+    one operator: `numpy<2` is what CF-278 proposes as its option 2, `~=1.26.0`
+    is another spelling of it, and `numpy>=1.26,<2` is the ecosystem-standard
+    one — that last hid behind its own floor from the first two versions of
+    this guard, which is why the question asked here is the resolver's ("is
+    there a numpy 2 this admits?") rather than a rule per operator. A future numpy-2
     migration of the whole repo (the open decision on #323) makes this test
     agree with the one above rather than needing to be deleted.
     """
-    specifiers = re.findall(
-        r"numpy[^\S\n]*(==|~=|<=|<)[^\S\n]*([0-9][0-9A-Za-z.\-]*)",
+    # Whole requirement strings, not lone operators: a specifier set is read as
+    # a set. `numpy>=1.26,<2` is the ecosystem-standard spelling of "numpy 1
+    # only", and a pattern anchored on the first operator it meets never sees
+    # the cap behind the floor — which is how the previous version of this
+    # guard waved through the very edit it exists to reject.
+    requirements = re.findall(
+        r'"[^\S\n]*(numpy(?![A-Za-z0-9_.\-])[^"]*)"',
         _code_lines(REPO_ROOT / "ml" / "modal_app.py"),
+        re.IGNORECASE,
     )
-    for operator, version in specifiers:
-        parts = [int(n) for n in re.findall(r"[0-9]+", version)] or [0]
-        # `<` is the only one where naming 2 is still a rejection: `numpy<2`
-        # admits nothing at or above 2. For the rest, a 2 in the major position
-        # is what makes them legal.
-        permits_2 = parts[0] > 2 if operator == "<" else parts[0] >= 2
-        assert permits_2, (
-            f"ml/modal_app.py constrains numpy{operator}{version}, which admits "
+    for requirement in requirements:
+        specifiers = re.findall(
+            r"(===|==|~=|!=|<=|>=|<|>)[^\S\n]*([^,\s\]]+)", requirement
+        )
+        # Ask the question the resolver asks — "is there a numpy 2 this admits?"
+        # — rather than reasoning per operator, which is what got the boundary
+        # cases wrong: `numpy<2.4` is legal (it is inference's own ceiling) and
+        # a major-only rule rejected it. Two probes span inference's window.
+        assert any(
+            all(_satisfies(probe, op, ver) for op, ver in specifiers)
+            for probe in ((2, 0, 0), (2, 3, 5))
+        ), (
+            f'ml/modal_app.py constrains numpy as "{requirement}", which admits '
             "no numpy 2 — but inference==1.3.3 requires numpy>=2.0.0,<2.4.0, so "
             "this cannot resolve and the image build fails with "
-            "ResolutionImpossible. See CF-278 (#323)."
+            "ResolutionImpossible. See CF-359 (#440) and the decision on #323."
         )
 
 
