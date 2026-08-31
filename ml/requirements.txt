@@ -13,9 +13,14 @@ Pillow>=10.0.0
 # Video / media
 ffmpeg-python==0.2.0
 
-# OCR (jersey numbers)
-paddlepaddle==2.6.2
-paddleocr==2.9.1
+# OCR (jersey numbers) — deliberately NOT installed. `ml/pipeline/ocr.py` has
+# no call sites; CF-7 (#31) is its intended consumer and is unscheduled. Two
+# reasons this file does not carry the pins in the meantime: they are several
+# hundred MB in every dev install, and `paddleocr==2.9.1` requires `numpy<2.0`,
+# which is the sole constraint keeping this repo off numpy 2 (CF-361).
+# `read_jersey_numbers` imports PaddleOCR lazily and returns all-`None` with a
+# warning when it is absent, so the module stays importable without them.
+# Re-add here (paddleocr>=3, which drops the numpy ceiling) when CF-7 is picked up.
 
 # Roboflow inference (ball detection)
 inference-sdk>=0.9.0
