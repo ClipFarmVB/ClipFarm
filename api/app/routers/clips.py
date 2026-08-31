@@ -50,7 +50,7 @@ async def _get_viewable_clip(
         db,
         viewer_id,
         game.owner_id if game else None,
-        (clip.visibility or game.visibility) if (clip and game) else None,
+        access.effective(clip, game),
     )
     if not access.can_view_clip(viewer_id, clip, game, viewer_follows_owner=follows):
         # 404 not 403 — a 403 would confirm the clip exists to anyone probing.

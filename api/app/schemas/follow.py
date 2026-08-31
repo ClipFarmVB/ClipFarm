@@ -41,3 +41,16 @@ class FollowRequestOut(BaseModel):
     id: uuid.UUID
     created_at: datetime
     requester: ProfileOut
+
+
+class FollowRequestPage(BaseModel):
+    """One page of pending requests.
+
+    The same shape as `FollowPage` rather than the bare list this started as.
+    The requests list is the one whose length nobody controls — `follows` has no
+    rate limiting yet (CF-116), and follow-spam is the named vector — so it is
+    the last endpoint that should hand back every row it finds.
+    """
+
+    items: list[FollowRequestOut]
+    next_cursor: str | None = None

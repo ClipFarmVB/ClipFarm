@@ -83,6 +83,13 @@ def upgrade() -> None:
     # and committed. A CHECK makes the next variant an error at the write that
     # causes it rather than a number nobody audits. Cheap: two constraints on a
     # table written once per follow.
+    #
+    # It is a backstop, not the mechanism. Left as the only guard, this CHECK
+    # converts a wrong number into a stuck authorization edge — a decrement from
+    # 0 aborts the whole unfollow transaction *including its DELETE*, forever,
+    # leaving a follower who cannot be revoked. `_adjust_counts` therefore
+    # floors its decrements in SQL, so the routine path can't reach the CHECK
+    # and the CHECK still catches everything else.
     op.create_check_constraint(
         "ck_users_follower_count_non_negative", "users", "follower_count >= 0"
     )
@@ -92,9 +99,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint("ck_users_following_count_non_negative", "users", type_="check")
-    op.drop_constraint("ck_users_follower_count_non_negative", "users", type_="check")
-    # IF EXISTS throughout — dev databases drift (the 008 lesson).
+    # IF EXISTS throughout — dev databases drift (the 008 lesson). The two
+    # constraint drops went through `op.drop_constraint`, which emits no
+    # IF EXISTS and so was the one pair of statements this comment did not
+    # actually cover: a database that never got them (or lost them to a partial
+    # run) failed the downgrade on its first statement, which is exactly the
+    # 008 failure being guarded against.
+    op.execute(
+        "ALTER TABLE users DROP CONSTRAINT IF EXISTS ck_users_following_count_non_negative"
+    )
+    op.execute(
+        "ALTER TABLE users DROP CONSTRAINT IF EXISTS ck_users_follower_count_non_negative"
+    )
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS following_count")
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS follower_count")
     op.execute("DROP TABLE IF EXISTS follows")

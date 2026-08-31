@@ -21,6 +21,27 @@ present: `games.id` covers the "is this public game visible" lookup, and
 `GET /games/{id}/clips` for an anonymous viewer can walk the small public-only
 index instead of taking the row set and re-joining.
 
+**The clips predicate has to cover the inherit case, or it matches nothing.**
+`clips.visibility` is NULL for every clip the pipeline produces — NULL means
+"inherit from the game", which `models/clip.py` documents as the deliberate
+default and `test_access.py` names as the path that actually runs in production.
+A partial index `WHERE visibility = 'public'` is therefore true for
+approximately zero production rows, and the anonymous listing it was meant to
+serve resolves through `_clips_predicate`'s
+`clips.visibility IS NULL AND games.visibility = 'public'` branch, which such an
+index cannot answer. `IS NULL OR = 'public'` is the set that branch actually
+reads. Same mistake as `011`'s, reached from the opposite direction: a predicate
+chosen for what the column *could* say rather than what it does say.
+
+**Not `CONCURRENTLY`, decided rather than defaulted into.** Alembic runs a
+revision in a transaction and `CREATE INDEX CONCURRENTLY` cannot execute inside
+one, so using it here means an autocommit block and giving up the atomicity of
+the rest of the revision. These statements do take a write-blocking lock on
+`clips` for their duration; that is affordable at this table's size and is the
+reason it is acceptable, not an oversight. If `clips` grows to where the lock is
+a real outage, the answer is to split these two statements into their own
+autocommit revision — not to bolt `CONCURRENTLY` onto a transactional one.
+
 **Why a new revision rather than editing `011`.** `011` merged in #188 and has
 already run wherever the app is deployed, so its row sits in `alembic_version`
 and the file will never execute again. Editing it would leave the repository
@@ -51,7 +72,7 @@ def upgrade() -> None:
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_clips_visibility_public ON clips (game_id) "
-        "WHERE visibility = 'public'"
+        "WHERE visibility IS NULL OR visibility = 'public'"
     )
 
 

@@ -112,13 +112,24 @@ async def _load_for_read(
     #
     # resolve_follow skips the query entirely unless a tier is `followers`, so
     # the common path still costs nothing.
+    #
+    # The levels handed to the author lookup depend on whether the principals
+    # coincide, which is what keeps the merged path free of a wasted query. When
+    # they do, one lookup answers both tiers, so both are passed. When they
+    # don't, the author's edge governs the post's tier alone — passing the
+    # clip's as well would fire a `follows` lookup against the *author* whose
+    # result `may_read` then discards, and a second one for the owner anyway.
     clip_level = access.effective(clip, game)
+    same_principal = post.author_id == game.owner_id
+    author_levels = (
+        (post.visibility, clip_level) if same_principal else (post.visibility,)
+    )
     follows_author = await follow_graph.resolve_follow(
-        db, viewer_id, post.author_id, post.visibility, clip_level
+        db, viewer_id, post.author_id, *author_levels
     )
     follows_owner = (
         follows_author
-        if post.author_id == game.owner_id
+        if same_principal
         else await follow_graph.resolve_follow(db, viewer_id, game.owner_id, clip_level)
     )
     if not access.can_view_post(

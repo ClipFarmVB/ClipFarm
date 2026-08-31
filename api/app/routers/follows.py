@@ -6,15 +6,21 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import delete, select, tuple_, update
+from sqlalchemy import ColumnElement, delete, func, select, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user_id
+from app.auth import get_current_user_id, get_optional_user_id
 from app.database import get_db
 from app.models.follow import Follow, FollowStatus
 from app.models.user import User
-from app.schemas.follow import FollowOut, FollowPage, FollowRequestOut, FollowStateOut
+from app.schemas.follow import (
+    FollowOut,
+    FollowPage,
+    FollowRequestOut,
+    FollowRequestPage,
+    FollowStateOut,
+)
 from app.schemas.profile import ProfileOut
 from app.services import profiles
 
@@ -24,6 +30,9 @@ router = APIRouter(tags=["follows"])
 
 DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
+ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
+
+DEFAULT_PAGE = 50
 
 
 async def _adjust_counts(db: AsyncSession, follower_id: uuid.UUID, followee_id: uuid.UUID, delta: int) -> None:
@@ -34,17 +43,60 @@ async def _adjust_counts(db: AsyncSession, follower_id: uuid.UUID, followee_id: 
 
     Written as UPDATE ... SET x = x + n rather than read-modify-write so two
     concurrent follows can't both read the same value and lose one increment.
+
+    **Decrements are floored at zero in SQL** rather than allowed to go negative
+    and be caught by `ck_users_*_count_non_negative`. The CHECK is still worth
+    having — it turns a *new* counter bug into an error at the write that causes
+    it — but as the only guard it converts a wrong number into a stuck
+    authorization edge: `unfollow` does not wrap its commit, so a decrement from
+    0 aborts the whole transaction *including the DELETE*, every retry does the
+    same, and the follower keeps `followers`-tier access with no way to revoke
+    it. The counters are already known not to be authoritative — deleting a user
+    cascades their edges away without adjusting the other side, which CF-116
+    reconciles — so revocation must not depend on them being right. GREATEST
+    keeps the ladder monotonic and leaves the CHECK guarding every other writer.
     """
+    follower_expr: ColumnElement[int]
+    following_expr: ColumnElement[int]
+    if delta < 0:
+        follower_expr = func.greatest(User.follower_count + delta, 0)
+        following_expr = func.greatest(User.following_count + delta, 0)
+    else:
+        follower_expr = User.follower_count + delta
+        following_expr = User.following_count + delta
+
     await db.execute(
-        update(User)
-        .where(User.id == followee_id)
-        .values(follower_count=User.follower_count + delta)
+        update(User).where(User.id == followee_id).values(follower_count=follower_expr)
     )
     await db.execute(
-        update(User)
-        .where(User.id == follower_id)
-        .values(following_count=User.following_count + delta)
+        update(User).where(User.id == follower_id).values(following_count=following_expr)
     )
+
+
+def _state(existing: Follow | None) -> FollowStateOut:
+    """The one place an edge becomes a button state.
+
+    `pending` is *not* following — conflating the two is how a requester would
+    appear to have access they don't have.
+    """
+    if existing is None:
+        return FollowStateOut(status=None, following=False)
+    return FollowStateOut(
+        status=existing.status, following=existing.status is FollowStatus.accepted
+    )
+
+
+async def _edge(db: AsyncSession, follower_id: uuid.UUID, followee_id: uuid.UUID) -> Follow | None:
+    """The edge between two users, or None. Re-read after a lost race so the
+    response describes the row that actually survived rather than the one this
+    request meant to write."""
+    return (
+        await db.execute(
+            select(Follow).where(
+                Follow.follower_id == follower_id, Follow.followee_id == followee_id
+            )
+        )
+    ).scalar_one_or_none()
 
 
 @router.post("/users/{handle}/follow", response_model=FollowStateOut)
@@ -68,25 +120,47 @@ async def follow_user(handle: str, user_id: UserId, db: DB):
     access. CF-116.
     """
     target = await profiles.by_handle(handle, db)
-    if target.id == user_id:
+    # Read the two fields off the ORM object *before* anything can roll back.
+    # `db.rollback()` expires every instance in the identity map
+    # (`_restore_snapshot` runs with `dirty_only=False` on a top-level
+    # transaction), so a `target.id` afterwards is a lazy refresh — which under
+    # AsyncSession raises MissingGreenlet and 500s the very recovery path below,
+    # exactly where the duplicate-pair loser was supposed to be handled. Plain
+    # locals cannot expire.
+    target_id = target.id
+    target_is_private = target.is_private
+
+    if target_id == user_id:
         # Also a CHECK in the database — this is the friendly message.
         raise HTTPException(status_code=400, detail="You cannot follow yourself")
 
-    existing = (
-        await db.execute(
-            select(Follow).where(
-                Follow.follower_id == user_id, Follow.followee_id == target.id
-            )
-        )
-    ).scalar_one_or_none()
+    existing = await _edge(db, user_id, target_id)
     if existing is not None:
-        return FollowStateOut(status=existing.status, following=existing.status is FollowStatus.accepted)
+        # A pending request against an account that has since gone public would
+        # otherwise be stranded forever: this endpoint short-circuits on any
+        # existing edge, so the requester waits on an approval queue the target
+        # no longer has, while everyone arriving after the flip is accepted
+        # outright. Promote it — the same person pressing Follow today would be
+        # accepted, and holding them back for having asked earlier is the wrong
+        # way round. Guarded like every other status write here, so a concurrent
+        # accept can't double-count.
+        if existing.status is FollowStatus.pending and not target_is_private:
+            promoted = await db.execute(
+                update(Follow)
+                .where(Follow.id == existing.id, Follow.status == FollowStatus.pending)
+                .values(status=FollowStatus.accepted)
+            )
+            if promoted.rowcount == 1:
+                await _adjust_counts(db, user_id, target_id, +1)
+            await db.commit()
+            return FollowStateOut(status=FollowStatus.accepted, following=True)
+        return _state(existing)
 
     # Public accounts accept immediately; private ones hold the edge as a
     # request until the target approves. This is what makes "private by
     # default" more than a label.
-    new_status = FollowStatus.pending if target.is_private else FollowStatus.accepted
-    db.add(Follow(follower_id=user_id, followee_id=target.id, status=new_status))
+    new_status = FollowStatus.pending if target_is_private else FollowStatus.accepted
+    db.add(Follow(follower_id=user_id, followee_id=target_id, status=new_status))
 
     try:
         # _adjust_counts is INSIDE the try on purpose. Its db.execute() autoflushes
@@ -97,23 +171,16 @@ async def follow_user(handle: str, user_id: UserId, db: DB):
         # it, since a pending edge skips the counters entirely, which is why the
         # recovery looked like it worked.
         if new_status is FollowStatus.accepted:
-            await _adjust_counts(db, user_id, target.id, +1)
+            await _adjust_counts(db, user_id, target_id, +1)
         await db.commit()
     except IntegrityError:
         # Lost a race with a concurrent follow — the unique pair is the arbiter.
         await db.rollback()
-        existing = (
-            await db.execute(
-                select(Follow).where(
-                    Follow.follower_id == user_id, Follow.followee_id == target.id
-                )
-            )
-        ).scalar_one_or_none()
+        existing = await _edge(db, user_id, target_id)
         if existing is None:
             raise HTTPException(status_code=409, detail="Could not follow")
-        return FollowStateOut(
-            status=existing.status, following=existing.status is FollowStatus.accepted
-        )
+        logger.info("follow: lost the insert race for %s -> %s", user_id, target_id)
+        return _state(existing)
 
     return FollowStateOut(status=new_status, following=new_status is FollowStatus.accepted)
 
@@ -124,13 +191,8 @@ async def unfollow_user(handle: str, user_id: UserId, db: DB):
     someone you don't follow succeeds rather than 404ing, so a double-tap or a
     retry can't fail."""
     target = await profiles.by_handle(handle, db)
-    existing = (
-        await db.execute(
-            select(Follow).where(
-                Follow.follower_id == user_id, Follow.followee_id == target.id
-            )
-        )
-    ).scalar_one_or_none()
+    target_id = target.id
+    existing = await _edge(db, user_id, target_id)
 
     if existing is not None:
         # Conditional DELETE, counters behind its rowcount — the same guard
@@ -145,8 +207,25 @@ async def unfollow_user(handle: str, user_id: UserId, db: DB):
                 Follow.id == existing.id, Follow.status == existing.status
             )
         )
-        if removed.rowcount == 1 and existing.status is FollowStatus.accepted:
-            await _adjust_counts(db, user_id, target.id, -1)
+        if removed.rowcount != 1:
+            # Matched nothing, so the row changed underneath the guard — in
+            # practice, the target accepting a pending request in the same
+            # instant. Returning `following: false` here is the dangerous
+            # reading of "idempotent": the user is told they revoked access
+            # while remaining an accepted follower, and since the counters agree
+            # with the surviving edge, CF-116's drift job would never surface it
+            # either. Answer for the row that exists instead, so the button
+            # renders Unfollow and a second tap actually revokes.
+            await db.rollback()
+            survivor = await _edge(db, user_id, target_id)
+            logger.info(
+                "unfollow: edge changed under the guard for %s -> %s (now %s)",
+                user_id, target_id, survivor.status if survivor else None,
+            )
+            return _state(survivor)
+
+        if existing.status is FollowStatus.accepted:
+            await _adjust_counts(db, user_id, target_id, -1)
         await db.commit()
 
     # Either way the edge is gone, so the answer is the same — the loser of a
@@ -158,18 +237,7 @@ async def unfollow_user(handle: str, user_id: UserId, db: DB):
 async def get_follow_state(handle: str, user_id: UserId, db: DB):
     """What the follow button should render for this viewer."""
     target = await profiles.by_handle(handle, db)
-    existing = (
-        await db.execute(
-            select(Follow).where(
-                Follow.follower_id == user_id, Follow.followee_id == target.id
-            )
-        )
-    ).scalar_one_or_none()
-    if existing is None:
-        return FollowStateOut(status=None, following=False)
-    return FollowStateOut(
-        status=existing.status, following=existing.status is FollowStatus.accepted
-    )
+    return _state(await _edge(db, user_id, target.id))
 
 
 def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
@@ -201,6 +269,44 @@ def _encode_cursor(follow: Follow) -> str:
     return base64.urlsafe_b64encode(raw.encode()).decode()
 
 
+def _findable(stmt):
+    """Drop rows whose handle was never chosen.
+
+    `profiles.by_handle` refuses to *resolve* a generated handle, which guards
+    the lookup direction only. A CF-107 backfill account — username derived from
+    `john.smith@…` as `johnsmith`, and 404 at `GET /users/johnsmith` by design —
+    can still follow a public account, and without this filter any viewer reads
+    its full `ProfileOut`, username included, straight off that account's
+    follower list. `services/profiles.py` was lifted out of the router because a
+    rule enforced in one place and not its neighbour is a rule that only looks
+    enforced; the edge lists are that neighbour.
+
+    Applied to the requests list too, so a generated-handle requester can't
+    surface the same way through `/users/me/follow-requests`.
+    """
+    return stmt.where(User.username_is_generated.is_(False))
+
+
+def _page_query(stmt, cursor: str | None, limit: int):
+    """Newest-first keyset window, one row over the limit.
+
+    Keyset on the **full** sort key, never OFFSET (epic decision 5), which
+    duplicates and skips rows as new edges land mid-scroll. The cursor carries
+    `id` as well as `created_at`: naming `id` as the tiebreaker in the ORDER BY
+    is an admission that ties happen, and a cursor filtering on the timestamp
+    alone drops the rest of a tied group whenever a page boundary lands inside
+    one. Bulk-accepting a backlog of requests produces exactly that — many edges
+    sharing a timestamp.
+
+    The extra row is how the last page is known without a second COUNT over the
+    same filtered set.
+    """
+    stmt = stmt.order_by(Follow.created_at.desc(), Follow.id.desc()).limit(limit + 1)
+    if cursor:
+        stmt = stmt.where(tuple_(Follow.created_at, Follow.id) < _decode_cursor(cursor))
+    return stmt
+
+
 async def _edge_page(
     db: AsyncSession,
     *,
@@ -210,28 +316,16 @@ async def _edge_page(
     cursor: str | None,
     limit: int,
 ) -> FollowPage:
-    """One page of accepted edges, newest first.
-
-    Keyset on the **full** sort key, never OFFSET (epic decision 5), which
-    duplicates and skips rows as new follows land mid-scroll.
-
-    The cursor carries `id` as well as `created_at`. Naming `id` as the
-    tiebreaker in the ORDER BY is an admission that ties happen — and a cursor
-    that filters on the timestamp alone drops the rest of a tied group whenever
-    a page boundary lands inside one. Bulk-accepting a backlog of requests
-    produces exactly that: many edges sharing a timestamp.
-    """
-    q = (
-        select(Follow, User)
-        .join(User, other_col == User.id)
-        .where(match_col == subject_id, Follow.status == FollowStatus.accepted)
-        .order_by(Follow.created_at.desc(), Follow.id.desc())
-        # One extra row, discarded — that's how the last page is known without a
-        # second COUNT over the same filtered set.
-        .limit(limit + 1)
+    """One page of accepted edges, newest first."""
+    q = _page_query(
+        _findable(
+            select(Follow, User)
+            .join(User, other_col == User.id)
+            .where(match_col == subject_id, Follow.status == FollowStatus.accepted)
+        ),
+        cursor,
+        limit,
     )
-    if cursor:
-        q = q.where(tuple_(Follow.created_at, Follow.id) < _decode_cursor(cursor))
 
     rows = (await db.execute(q)).all()
     has_more = len(rows) > limit
@@ -247,23 +341,33 @@ async def _edge_page(
     )
 
 
+def _assert_lists_visible(target: User, viewer_id: uuid.UUID | None) -> None:
+    """Private accounts show their lists only to the owner: who follows you is
+    itself information about you, and a private account shouldn't leak its
+    audience to a stranger.
+
+    A public account's lists resolve for anyone, signed-out included. The counts
+    are already anonymous — `ProfileOut` carries `follower_count` on the public
+    profile route, deliberately, so someone can find an account and decide to
+    follow it — and putting a bearer token in front of the list behind a number
+    everyone can read is a lock on an open door. If raising the cost of scraping
+    the graph is ever the goal, rate limiting is the tool for it (CF-116).
+    """
+    if target.is_private and target.id != viewer_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+
 @router.get("/users/{handle}/followers", response_model=FollowPage)
 async def list_followers(
     handle: str,
     db: DB,
-    user_id: UserId,
+    viewer_id: ViewerId = None,
     cursor: Annotated[str | None, Query()] = None,
-    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    limit: Annotated[int, Query(ge=1, le=100)] = DEFAULT_PAGE,
 ):
-    """Who follows this account.
-
-    Private accounts show their lists only to the owner: who follows you is
-    itself information about you, and a private account shouldn't leak its
-    audience to a stranger.
-    """
+    """Who follows this account."""
     target = await profiles.by_handle(handle, db)
-    if target.is_private and target.id != user_id:
-        raise HTTPException(status_code=404, detail="Profile not found")
+    _assert_lists_visible(target, viewer_id)
     return await _edge_page(
         db,
         match_col=Follow.followee_id,
@@ -278,14 +382,13 @@ async def list_followers(
 async def list_following(
     handle: str,
     db: DB,
-    user_id: UserId,
+    viewer_id: ViewerId = None,
     cursor: Annotated[str | None, Query()] = None,
-    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    limit: Annotated[int, Query(ge=1, le=100)] = DEFAULT_PAGE,
 ):
     """Who this account follows — same privacy rule as followers."""
     target = await profiles.by_handle(handle, db)
-    if target.is_private and target.id != user_id:
-        raise HTTPException(status_code=404, detail="Profile not found")
+    _assert_lists_visible(target, viewer_id)
     return await _edge_page(
         db,
         match_col=Follow.follower_id,
@@ -296,25 +399,46 @@ async def list_following(
     )
 
 
-@router.get("/users/me/follow-requests", response_model=list[FollowRequestOut])
-async def list_follow_requests(user_id: UserId, db: DB):
-    """Pending requests awaiting the caller's approval."""
-    rows = (
-        await db.execute(
+@router.get("/users/me/follow-requests", response_model=FollowRequestPage)
+async def list_follow_requests(
+    user_id: UserId,
+    db: DB,
+    cursor: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = DEFAULT_PAGE,
+):
+    """Pending requests awaiting the caller's approval.
+
+    Paginated like the two lists beside it, and for a sharper reason: this is
+    the one endpoint whose backlog size nobody controls. `follows` has no rate
+    limiting yet (CF-116), and follow-spam is the named vector — so an unbounded
+    version loads every pending row plus its joined `User` and runs
+    `presign_from_stored_url` once per row, a synchronous network round trip per
+    avatar on the event loop thread, sized by whoever is doing the spamming.
+    """
+    q = _page_query(
+        _findable(
             select(Follow, User)
             .join(User, Follow.follower_id == User.id)
             .where(Follow.followee_id == user_id, Follow.status == FollowStatus.pending)
-            .order_by(Follow.created_at.desc())
-        )
-    ).all()
-    return [
-        FollowRequestOut(
-            id=follow.id,
-            created_at=follow.created_at,
-            requester=profiles.serialize(user, ProfileOut),
-        )
-        for follow, user in rows
-    ]
+        ),
+        cursor,
+        limit,
+    )
+
+    rows = (await db.execute(q)).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    return FollowRequestPage(
+        items=[
+            FollowRequestOut(
+                id=follow.id,
+                created_at=follow.created_at,
+                requester=profiles.serialize(user, ProfileOut),
+            )
+            for follow, user in rows
+        ],
+        next_cursor=_encode_cursor(rows[-1][0]) if (has_more and rows) else None,
+    )
 
 
 async def _own_pending_request(request_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> Follow:
@@ -336,6 +460,7 @@ async def accept_follow_request(request_id: uuid.UUID, user_id: UserId, db: DB):
     increments, not *duplicate* ones; only the guarded UPDATE does that.
     """
     follow = await _own_pending_request(request_id, user_id, db)
+    follower_id, followee_id = follow.follower_id, follow.followee_id
 
     result = await db.execute(
         update(Follow)
@@ -343,29 +468,60 @@ async def accept_follow_request(request_id: uuid.UUID, user_id: UserId, db: DB):
         .values(status=FollowStatus.accepted)
     )
     if result.rowcount == 1:
-        await _adjust_counts(db, follow.follower_id, follow.followee_id, +1)
-    await db.commit()
+        await _adjust_counts(db, follower_id, followee_id, +1)
+        await db.commit()
+        return FollowStateOut(status=FollowStatus.accepted, following=True)
 
-    # Either way the edge is accepted now, so the response is the same — a
-    # retry that lost the race still describes the world correctly.
-    return FollowStateOut(status=FollowStatus.accepted, following=True)
+    # Matched nothing. A duplicate accept is one way to get here and the
+    # requester withdrawing in the same instant is the other, and the two need
+    # different answers: reporting `accepted` for a withdrawn request tells the
+    # owner they granted access to someone who is no longer following them,
+    # which is the same class of lie as the unfollow case above. Re-read and
+    # answer for whatever row survived.
+    await db.rollback()
+    survivor = await db.get(Follow, request_id)
+    logger.info(
+        "accept: request %s changed under the guard (now %s)",
+        request_id, survivor.status if survivor else None,
+    )
+    if survivor is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return _state(survivor)
 
 
 @router.post("/follow-requests/{request_id}/reject", status_code=status.HTTP_204_NO_CONTENT)
 async def reject_follow_request(request_id: uuid.UUID, user_id: UserId, db: DB):
     """Decline. The row is deleted rather than kept as `rejected`, so the
     requester can ask again later — and so a rejection isn't a permanent record
-    of who was turned down."""
+    of who was turned down.
+
+    **This delete is deliberately not guarded on `pending`, unlike its two
+    siblings.** Both this and `accept` pass `_own_pending_request` while the row
+    still reads `pending`, so an accept-then-reject interleaving is reachable
+    from one owner on two devices, or from a client retrying a slow accept. A
+    `WHERE status = 'pending'` delete then matches nothing and 204s anyway: the
+    owner is told the request was declined while the requester is an accepted
+    follower with live access to their footage. Between a guard that leaves
+    access alive and one that revokes it, the decline has to win — the owner
+    said no, and no interleaving turns that into yes. RETURNING makes the
+    counters follow whichever status was actually removed, so winning the race
+    can't leave `follower_count` claiming a follower who is gone.
+    """
     follow = await _own_pending_request(request_id, user_id, db)
-    # Conditional, like unfollow. There is no counter to corrupt here, so this
-    # is the mild version — but the shape is identical and the previous comment
-    # claimed a safety it did not have: under real concurrency both callers pass
-    # _own_pending_request while the row still reads `pending`, and the second
-    # deleted nothing while returning 204 as though it had. Symmetric guards so
-    # the next person doesn't have to work out which of the three is different.
-    await db.execute(
-        delete(Follow).where(
-            Follow.id == follow.id, Follow.status == FollowStatus.pending
+    follower_id, followee_id = follow.follower_id, follow.followee_id
+
+    removed = (
+        await db.execute(
+            delete(Follow).where(Follow.id == follow.id).returning(Follow.status)
         )
-    )
+    ).scalar_one_or_none()
+    # `==` rather than `is`: this value comes back through RETURNING rather than
+    # from the identity map, and `FollowStatus` is a `str` enum, so equality is
+    # right whether the driver hands back the member or the raw label.
+    if removed == FollowStatus.accepted:
+        logger.info(
+            "reject: request %s had been accepted concurrently; access revoked",
+            request_id,
+        )
+        await _adjust_counts(db, follower_id, followee_id, -1)
     await db.commit()

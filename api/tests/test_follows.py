@@ -139,9 +139,15 @@ def test_a_post_read_resolves_one_edge_when_the_principals_coincide():
     from app.routers import posts as posts_router
 
     src = inspect.getsource(posts_router._load_for_read)
-    assert "if post.author_id == game.owner_id" in src, "reuse must stay conditional"
+    assert "post.author_id == game.owner_id" in src, "reuse must stay conditional"
+    assert "if same_principal" in src, "and the condition must actually gate the reuse"
     assert src.count("follow_graph.resolve_follow(") == 2, "a fallback for the split case"
     assert "is_accepted_follower" not in src, "go through resolve_follow's short-circuit"
+    # The clip's tier is handed to the *author* lookup only when the principals
+    # coincide, which is what keeps the merged path to a single query. In the
+    # split case it would fire a `follows` lookup against the author whose
+    # result `may_read` discards, and a second one for the owner regardless.
+    assert "(post.visibility, clip_level) if same_principal else (post.visibility,)" in src
 
 
 def test_the_counter_update_is_inside_the_integrity_guard():
@@ -153,9 +159,43 @@ def test_the_counter_update_is_inside_the_integrity_guard():
     from app.routers import follows as follows_router
 
     src = inspect.getsource(follows_router.follow_user)
-    try_at = src.index("try:")
-    assert src.index("_adjust_counts") > try_at, "must be inside the try"
+    # Sliced from the INSERT: `follow_user` also adjusts counts on the
+    # promote-a-stranded-request branch, which runs before this try and is not
+    # what this test is about. Anchoring on `db.add(Follow(` keeps the assertion
+    # pointed at the insert path whose violation the try exists to catch.
+    insert_onward = src[src.index("db.add(Follow("):]
+    try_at = insert_onward.index("try:")
+    assert insert_onward.index("_adjust_counts") > try_at, "must be inside the try"
     assert "except IntegrityError" in src
+
+
+def test_the_integrity_recovery_reads_no_expired_orm_attribute():
+    """`db.rollback()` expires the identity map.
+
+    `_restore_snapshot` runs with `dirty_only=False` on a top-level transaction,
+    so every instance loaded before the rollback — `target`, from
+    `profiles.by_handle` — is expired afterwards. Touching one is a lazy refresh,
+    which under `AsyncSession` raises `MissingGreenlet` and 500s the *recovery
+    path itself*: the duplicate-pair loser this handler exists to answer got a
+    500 anyway, and the earlier fix (moving `_adjust_counts` inside the try)
+    made the violation surface in the right place without making the handler
+    able to finish.
+
+    Pinned as source rather than behaviour because reproducing it needs two
+    concurrent requests against a live database. The rule is narrow and
+    mechanical: after `rollback()`, use plain locals.
+    """
+    import inspect
+
+    from app.routers import follows as follows_router
+
+    src = inspect.getsource(follows_router.follow_user)
+    after_rollback = src[src.index("await db.rollback()"):]
+    assert "target." not in after_rollback, (
+        "no ORM attribute access after rollback — it is expired, and refreshing "
+        "it inside AsyncSession raises MissingGreenlet"
+    )
+    assert "target_id = target.id" in src, "capture the id before anything rolls back"
 
 
 def test_accepting_a_request_is_a_conditional_update():
@@ -178,9 +218,77 @@ def test_the_edge_cursor_carries_the_tiebreaker():
 
     from app.routers import follows as follows_router
 
-    src = inspect.getsource(follows_router._edge_page)
+    src = inspect.getsource(follows_router._page_query)
     assert "tuple_(Follow.created_at, Follow.id)" in src
     assert ".offset(" not in src
+
+
+def test_every_edge_list_is_paginated_through_the_same_window():
+    """`list_follow_requests` was the one list here with no cursor and no limit.
+
+    It is also the one whose length nobody controls: `follows` has no rate
+    limiting yet (CF-116) and follow-spam is the named vector, so an unbounded
+    version loads every pending row plus its joined `User` and runs
+    `presign_from_stored_url` once per row — a synchronous network round trip
+    per avatar, on the event loop thread, sized by whoever is spamming.
+    """
+    import inspect
+
+    from app.routers import follows as follows_router
+
+    for fn in (follows_router._edge_page, follows_router.list_follow_requests):
+        assert "_page_query(" in inspect.getsource(fn), (
+            f"{fn.__name__} must page through the shared keyset window"
+        )
+    for fn in (
+        follows_router.list_followers,
+        follows_router.list_following,
+        follows_router.list_follow_requests,
+    ):
+        params = inspect.signature(fn).parameters
+        assert "cursor" in params and "limit" in params, f"{fn.__name__} is unbounded"
+
+
+def test_the_edge_lists_do_not_publish_a_generated_handle():
+    """`by_handle` guards the *lookup* direction only.
+
+    A CF-107 backfill account — username derived from `john.smith@…`, and 404 at
+    `GET /users/johnsmith` by design — can still follow a public account. Without
+    a filter on the render side, any viewer reads its full `ProfileOut`,
+    username included, straight off that account's follower list, and the same
+    for a requester surfacing in `/users/me/follow-requests`. The rule was
+    centralised on the input side only; these are the neighbours.
+    """
+    import inspect
+
+    from app.routers import follows as follows_router
+
+    for fn in (follows_router._edge_page, follows_router.list_follow_requests):
+        assert "_findable(" in inspect.getsource(fn), (
+            f"{fn.__name__} renders users it never filtered for a chosen handle"
+        )
+    assert "username_is_generated" in inspect.getsource(follows_router._findable)
+
+
+def test_public_edge_lists_resolve_without_a_token():
+    """The counts are anonymous, so the lists behind them should be.
+
+    `ProfileOut` carries `follower_count` on the public profile route
+    deliberately — so someone can find an account and decide to follow it. A
+    signed-out visitor reading that number and then getting 401 on the list it
+    describes is a lock on an open door; the private-account rule is the real
+    boundary, and it needs an optional viewer, not a required one.
+    """
+    import inspect
+
+    from app.routers import follows as follows_router
+
+    for fn in (follows_router.list_followers, follows_router.list_following):
+        annotation = inspect.signature(fn).parameters["viewer_id"].annotation
+        assert annotation == follows_router.ViewerId, (
+            f"{fn.__name__} requires a token to read a public account's list"
+        )
+    assert "target.is_private" in inspect.getsource(follows_router._assert_lists_visible)
 
 
 def test_a_naive_cursor_timestamp_is_a_400_not_a_500():
@@ -229,18 +337,11 @@ def test_follow_endpoints_cannot_resolve_a_generated_handle():
     assert "func.lower(User.username)" not in src, "no second, unguarded lookup"
 
 
-def test_all_three_mutations_guard_their_write_symmetrically():
-    """The review finding, generalised.
-
-    `accept` was hardened with a conditional UPDATE in an earlier round and its
-    two siblings were left as read-check-then-write. That asymmetry is what let
-    a concurrent unfollow decrement `follower_count` twice — silently, because
-    SQLAlchemy's ORM delete only *warns* when it matches no rows and commits the
-    decrement anyway.
-
-    Asserted as a set rather than one test per endpoint so a fourth mutation
-    can't be added without the guard, which is exactly how the third one slipped.
-    """
+def test_no_mutation_uses_an_unconditional_orm_delete():
+    """SQLAlchemy's ORM delete only *warns* when it matches no rows, and commits
+    whatever else is in the transaction anyway — which is how a concurrent
+    unfollow decremented `follower_count` for an edge that had already gone,
+    with 200s on both requests and a corrupt count behind them."""
     import inspect
 
     from app.routers import follows as follows_router
@@ -250,27 +351,68 @@ def test_all_three_mutations_guard_their_write_symmetrically():
         follows_router.reject_follow_request,
         follows_router.accept_follow_request,
     ):
-        src = inspect.getsource(fn)
-        assert "Follow.status ==" in src, (
-            f"{fn.__name__} must scope its write to the status it read — "
-            "otherwise two concurrent callers both act on the same row"
-        )
-        assert "await db.delete(" not in src, (
+        assert "await db.delete(" not in inspect.getsource(fn), (
             f"{fn.__name__} uses an unconditional ORM delete, which matches "
             "zero rows and warns rather than failing"
         )
 
 
-def test_only_a_write_that_matched_moves_the_counters():
-    """`x = x + n` prevents lost updates, not duplicate ones. The counters have
-    to sit behind the rowcount of the write that earned them."""
+def test_the_two_status_guards_branch_on_their_rowcount():
+    """A guard that no-ops silently is worse than no guard.
+
+    `unfollow` and `accept` scope their write to the status they read, which is
+    what stops two concurrent callers both acting on one row. The half that was
+    missing is what happens when the guard *doesn't* match: both used to answer
+    as though it had. `unfollow` told a user they had revoked access while a
+    concurrent accept left them an accepted follower — and since the counters
+    agreed with the surviving edge, CF-116's drift job would never have surfaced
+    it either.
+
+    `reject` is deliberately not in this list; see the test below.
+    """
     import inspect
 
     from app.routers import follows as follows_router
 
     for fn in (follows_router.unfollow_user, follows_router.accept_follow_request):
         src = inspect.getsource(fn)
-        assert "rowcount == 1" in src, f"{fn.__name__} adjusts counts unconditionally"
+        assert "Follow.status ==" in src, (
+            f"{fn.__name__} must scope its write to the status it read"
+        )
+        assert "rowcount == 1" in src or "rowcount != 1" in src, (
+            f"{fn.__name__} adjusts counts unconditionally"
+        )
+        assert "logger." in src, (
+            f"{fn.__name__} must say when it lost the race — the three paths "
+            "that silently no-op are exactly where a log line earns its keep"
+        )
+
+
+def test_reject_wins_the_race_against_accept():
+    """The one asymmetry, asserted so it stays a decision.
+
+    `_own_pending_request` 404s anything not pending, so both accept and reject
+    can pass it while the row still reads `pending` — one owner on two devices,
+    or a client retrying a slow accept. A `WHERE status = 'pending'` delete then
+    matches nothing and 204s regardless: the owner is told the request was
+    declined while the requester holds `followers`-tier access to their footage.
+
+    Between a guard that leaves access alive and one that revokes it, the
+    decline wins. RETURNING is what keeps the counters honest about which status
+    was actually removed. Behaviour is covered end to end in
+    `test_follows_pg.py`; this pins the shape so the "symmetric guards" tidy-up
+    can't be reapplied without reading why.
+    """
+    import inspect
+
+    from app.routers import follows as follows_router
+
+    src = inspect.getsource(follows_router.reject_follow_request)
+    assert ".returning(Follow.status)" in src, "counters follow the removed status"
+    assert "Follow.status == FollowStatus.pending" not in src, (
+        "reject must not scope its delete to `pending` — an accept that won the "
+        "race would then survive a decline"
+    )
 
 
 def test_the_database_refuses_a_negative_counter():

@@ -16,7 +16,6 @@ accounts that never chose to be findable. A rule enforced in one router and not
 its neighbour is a rule that only looks enforced.
 """
 import logging
-import uuid
 from typing import TypeVar
 
 from fastapi import HTTPException
@@ -67,11 +66,6 @@ def serialize(user: User, schema: type[_Schema]) -> _Schema:
         return out
 
 
-def serialize_many(users: list[User], schema: type[_Schema]) -> list[_Schema]:
-    """List form, so a caller can't render a page of profiles the raw way."""
-    return [serialize(u, schema) for u in users]
-
-
 async def by_handle(handle: str, db: AsyncSession) -> User:
     """Resolve a **publicly findable** handle, or 404.
 
@@ -93,7 +87,3 @@ async def by_handle(handle: str, db: AsyncSession) -> User:
     if user is None or user.username_is_generated:
         raise HTTPException(status_code=404, detail="Profile not found")
     return user
-
-
-async def by_id(user_id: uuid.UUID, db: AsyncSession) -> User | None:
-    return await db.get(User, user_id)
