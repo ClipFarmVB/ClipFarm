@@ -39,6 +39,41 @@ applies in both modes.
    anything the plan asserts without verifying. Record what it said — including
    when it disagreed and you proceeded anyway, with your reasoning.
 3. **Implement** on a branch named for the card.
+
+   **If the thing you are writing parses a standard format, use the parser for
+   that format.** A version specifier, a requirements line, a semver range, a
+   URL, a date — each has a library that already knows every spelling, and the
+   repository may have it already: `packaging` is an unconditional requirement
+   of pytest, so it is free **in anything the test suite runs**.
+
+   **That scoping is the whole of it — do not carry it into `api/app/` or
+   `ml/`.** pytest is not in the production image and no dependency in
+   `api/requirements.txt` declares `packaging`, so a production import of it
+   passes every local gate and fails in the image `Dockerfile.api` builds. A
+   production import needs the line in `requirements.txt`, which is the trap two
+   bullets up in the standing rules.
+
+   This is a rule because hand-written patterns lose slowly and expensively. A
+   guard added in the run of 2026-08-30 was defeated three times by review, one
+   spelling further out each time — `numpy<2` past an `==`-only check, then
+   `numpy>=1.26,<2` hiding its cap behind a floor, then `'numpy<2'` in single
+   quotes past a double-quote anchor. Each fix looked complete and each was a
+   pattern.
+
+   **What the parser bought, precisely.** The fourth version handed the
+   *evaluation* to `packaging`, and ~50 further spellings could not defeat that
+   half. They did still find four holes — all in the hand-written code
+   **around** the parser, one of them a false accept where an extras spec
+   (`numpy[extra]==1.26.4`) slipped the name anchor and left an empty specifier
+   that admits everything (CF-360). So the rule closes the class it names and
+   moves the risk to the glue: mutation-check what feeds the parser, not only
+   what it decides.
+
+   **The tell is writing a second or third pattern.** Reaching for another
+   regex where one has already failed is the signal to change approach rather
+   than refine the expression — and in this case the losing version's own
+   docstring already advised taking the dependency, which its author had not
+   done.
 4. **Run the full gate.** Every step `ci.yml` runs:
 
    ```
