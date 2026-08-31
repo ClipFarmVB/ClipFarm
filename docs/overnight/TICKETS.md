@@ -39,6 +39,26 @@ applies in both modes.
    anything the plan asserts without verifying. Record what it said — including
    when it disagreed and you proceeded anyway, with your reasoning.
 3. **Implement** on a branch named for the card.
+
+   **If the thing you are writing parses a standard format, use the parser for
+   that format.** A version specifier, a requirements line, a semver range, a
+   URL, a date — each has a library that already knows every spelling, and the
+   repository probably has it already: `packaging` arrives as one of pytest's
+   own unconditional requirements, so it needs no entry in any requirements
+   file.
+
+   This is a rule because hand-written patterns lose slowly and expensively. A
+   guard added in the run of 2026-08-30 was defeated three times by review, one
+   spelling further out each time — `numpy<2` past an `==`-only check, then
+   `numpy>=1.26,<2` hiding its cap behind a floor, then `'numpy<2'` in single
+   quotes past a double-quote anchor. Each fix looked complete and each was a
+   pattern. The fourth version handed the question to `packaging` and no
+   further spelling was found in ~50 attempts.
+
+   **The tell is writing a second or third pattern.** Reaching for another
+   regex where one has already failed is the signal to change approach, not to
+   refine the expression — and the losing version's own docstring had advised
+   taking the dependency, which nobody had done.
 4. **Run the full gate.** Every step `ci.yml` runs:
 
    ```

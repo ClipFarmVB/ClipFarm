@@ -181,6 +181,18 @@ decided and why, and anything needing a human call. **Read it at the start of
 every iteration.** Context may be compacted between iterations; the log is the
 only thing that survives.
 
+**An iteration is not finished until the next one is scheduled *and the
+schedule is verified*.** Whatever this environment offers for waking the loop,
+read the schedule back — list the pending triggers and confirm one exists — and
+treat the scheduling call's own success as no evidence at all. The run of
+2026-08-30 stalled three times: twice because a scheduler accepted a wake-up and
+never fired it, and once because the lap simply ended without the call being
+made, while the instruction to make it sat in the prompt being executed.
+
+**Do the schedule-and-verify before writing the iteration's closing summary**,
+not after. A long summary is exactly what pushes the last call out of a turn,
+and a lap that ends unscheduled looks identical to one that ended deliberately.
+
 **One thing goes in at the start of the run, not the end of an iteration:** the
 run's own start time, in this shape, on a line of its own:
 
@@ -407,6 +419,23 @@ first and leaves `SINCE`.
   production image.
 - CF numbers have drifted from issue numbers. Check the highest existing `CF-`
   number; do not infer it from the issue count.
+- **A squash merge carries every commit message onto `main`, so a `Closes #N`
+  in a commit body closes that issue even if the PR body says otherwise.**
+  Measured: `0acc05a` on `main` carries `Closes #293` at line 47 of its squashed
+  body, and #293 is closed by the PR that produced it. Two consequences:
+  **get the closing reference right in the first commit**, because retargeting
+  it later means rewriting a pushed message; and when you do retarget one,
+  `grep` the *commit messages* as well as the PR body — the run of 2026-08-30
+  fixed the body and left the commit, which would have closed a card whose
+  remaining content was a decision nobody had made. It is easy to miss in review
+  too: GitHub's Commits tab renders subject lines only, so a closing keyword in
+  a body is invisible until the commit is expanded.
+
+  **The clean fix is an amend and a force-push, which the hard rules forbid — so
+  ask rather than settling for a warning.** That prohibition is a constraint on
+  the run, not a property of the repository, and the operator lifted it on
+  request. A warning in a PR body depends on the person merging reading it; a
+  rewritten message does not.
 - A closed issue may be `COMPLETED` or `NOT_PLANNED` — opposite facts behind the
   same `state`. Always read `stateReason`.
 - **The clone may be shallow, and a shallow clone fakes a clean merge check.**
