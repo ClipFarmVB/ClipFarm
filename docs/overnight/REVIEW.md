@@ -953,38 +953,43 @@ A summary may follow on the same line (`cold: findings @ 2c1a865 — 2 Critical,
 marker, and the SHA is not optional — the routing table is keyed on it, and a
 marker without one can never match a head.
 
-**Point the round at the diff's own prose, explicitly.** The commonest defect
-this loop produces is not broken code — it is a sentence in the diff that the
-diff makes false. In the run of 2026-08-30 **every** Critical and Medium raised
-after each PR's first round was of that class, across three PRs: a docstring
-naming the one call form the pattern it describes could already see; a comment
-citing 13 beside an assertion measuring 11, which had set a constant from the
-wrong number; two Criticals that inverted the evidence they cited.
-
-It is a distinct instruction because reading the code alone does not catch it.
-A reviewer checking whether the code is correct will pass over a comment that
-describes it wrongly; the round has to be told to check each claim in a comment,
-docstring, commit message and PR body **against what the code does**.
-
-Three sub-cases, each of which cost a round:
-
-- **A correction deserves the same scrutiny as the claim it replaces.** One
-  "fix" that run replaced an accurate sentence with a false one, and it took a
-  round reading the primary source to establish that the original number was
-  right all along.
-- **A tally goes stale the moment a row is added**, and the reader checks the
-  tally rather than the rows — so prefer naming the rows. But de-counting is not
-  free either: replacing "three of the failures are silent" with "each failure
-  below is silent" traded a stale number for a false universal.
-- **An enumeration in one file goes stale when another file grows.** Grep for
-  every copy of a claim before calling it fixed.
-
 **That line is the whole comment.** The findings do not go in it — they go in
 the review, tiered:
 
 - **Critical** — correctness, security, data loss
 - **Medium** — should fix before merge
 - **Nit** — style, naming, comments
+
+**Point the round at the diff's own prose, explicitly.** A frequent defect this
+loop produces is not broken code — it is a sentence in the diff that the diff
+makes false. In the run of 2026-08-30 it accounted for **both** Criticals and
+for most Mediums: on #438, four of the five. Two representative instances, both
+raised by first rounds: a docstring listing the one call form the pattern it
+described could already see, and a comment citing 13 beside an assertion that
+measures 11 — which had set a constant from the wrong number.
+
+**It is not the whole risk surface, and the round should not be told it is.**
+The decisive finding on #438 was a code regression a mutation caught — a
+quote-anchored pattern that made `'numpy==1.26.4'` invisible — with no prose
+involved. Prose-checking is an *addition* to executing the code, never a
+substitute.
+
+It needs saying separately because reading the code does not catch it: a
+reviewer checking whether the code is correct passes over a comment that
+describes it wrongly. The round has to be told to check each claim in a
+comment, docstring, commit message and PR body **against what the code does**.
+
+Three sub-cases, each of which cost a round:
+
+- **A correction deserves the same scrutiny as the claim it replaces.** One
+  "fix" that run replaced an accurate sentence with a false one, and it took a
+  round reading the primary source to establish the original was right.
+- **A tally goes stale the moment a row is added**, and the reader checks the
+  tally rather than the rows — so prefer naming the rows. But de-counting is not
+  free either: replacing "three of the failures are silent" with "each failure
+  below is silent" traded a stale number for a false universal.
+- **An enumeration in one file goes stale when another file grows.** Grep for
+  every copy of a claim before calling it fixed.
 
 **Post the marker with `gh pr comment`. Not `gh pr review`, and not
 `/code-review --comment`.** This belongs in the brief you hand over, not only in
