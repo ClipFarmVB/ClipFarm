@@ -619,6 +619,19 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
         ("api/requirements-dev.txt", REPO_ROOT / "api" / "requirements-dev.txt",
          package == "numpy"),
     ]
+    if package != "numpy":
+        # ml/modal_app.py joins for opencv and is deliberately absent for
+        # numpy. Not an oversight, and not laziness: `inference==1.3.3`
+        # requires numpy>=2.0.0,<2.4.0, so that image *cannot* carry the
+        # 1.26.4 the others do — `pip install inference==1.3.3 numpy==1.26.4`
+        # is ResolutionImpossible. Listing it here for numpy would assert
+        # something the resolver forbids, so the split is recorded on CF-278
+        # (#323) as a decision to make rather than hidden as a passing test.
+        # opencv has no such constraint on the headless distribution, so the
+        # pin there is both possible and load-bearing — see its comment.
+        sources.append(
+            ("ml/modal_app.py", REPO_ROOT / "ml" / "modal_app.py", True)
+        )
     # Whitespace around the operator because pip accepts it, and a reformatted
     # pin must fail as a split or a removal rather than vanish. `[^\S\n]` and
     # not `\s`: the text below is comment-stripped lines rejoined with "\n", so
@@ -644,6 +657,36 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
         found[label] = matches.pop()
 
     assert len(set(found.values())) == 1, f"{package} version split across runtimes: {found}"
+
+
+def test_the_ball_image_may_not_pin_numpy_below_2():
+    """The other half of the CF-278 island, asserted rather than commented.
+
+    `ml/modal_app.py` is excluded from the numpy leg of the pin-consistency
+    test above because `inference==1.3.3` requires `numpy>=2.0.0,<2.4.0`, so it
+    cannot carry the 1.26.4 the other runtimes pin. That exclusion means the
+    test above would happily accept `numpy==1.26.4` there — the natural edit for
+    anyone reading CF-278's title, and one that makes `modal deploy` fail at
+    image build with a ResolutionImpossible, which is a slow and confusing way
+    to learn it.
+
+    So this asserts the constraint directly: pin numpy there or do not, but if
+    you do, it has to be a 2.x. A future numpy-2 migration of the whole repo
+    (the open decision on #323) makes this test agree with the one above rather
+    than needing to be deleted.
+    """
+    text = "\n".join(
+        line for line in
+        (REPO_ROOT / "ml" / "modal_app.py").read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    pinned = re.findall(r"numpy[^\S\n]*==[^\S\n]*([0-9][0-9A-Za-z.\-]*)", text)
+    for version in pinned:
+        assert int(version.split(".")[0]) >= 2, (
+            f"ml/modal_app.py pins numpy=={version}, but inference==1.3.3 "
+            "requires numpy>=2.0.0,<2.4.0 — this cannot resolve and the image "
+            "build fails. See CF-278 (#323)."
+        )
 
 
 def _load_compose(path: Path):

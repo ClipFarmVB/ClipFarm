@@ -35,7 +35,17 @@ image = (
     .pip_install(
         "torch",
         "torchvision",
-        "opencv-python-headless",
+        # Pinned to match ml/modal_pose.py and ml/requirements.txt. Unpinned,
+        # pip resolves headless to 5.x while inference==1.3.3 drags in
+        # opencv-python and opencv-contrib-python at <=4.10.0.84 — three
+        # distributions writing the same `cv2` package, across a major
+        # version, and whichever installs last wins (CF-278).
+        "opencv-python-headless==4.10.0.84",
+        # numpy is deliberately NOT pinned to the 1.26.4 the other runtimes
+        # use: inference==1.3.3 requires numpy>=2.0.0,<2.4.0, so that pin
+        # cannot resolve and the image build would fail. This image is a
+        # numpy-2 island; closing the split means migrating the rest, which
+        # is the open decision on CF-278 (#323).
         "numpy",
         "requests",
         # Pinned per CF-33: unpinned, pip resolves to a version predating

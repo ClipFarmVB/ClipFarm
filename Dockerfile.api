@@ -28,6 +28,12 @@ COPY api/requirements.txt /tmp/api-requirements.txt
 # optional only for packages it has no business pinning, like opencv), so a
 # split and a removal both fail it; the gate script's own test asserts the dev
 # pin stays a plain `==` line besides.
+#
+# For opencv there is a fifth: ml/modal_app.py (CF-278). numpy is the exception
+# there and only there — that image's inference==1.3.3 requires numpy>=2.0,<2.4,
+# so it cannot carry 1.26.4 and is a deliberate numpy-2 island. Closing that
+# split is an open decision on #323; a separate test asserts the island stays
+# on 2.x rather than acquiring an unresolvable 1.x pin.
 RUN pip install --upgrade pip \
     && pip install -r /tmp/api-requirements.txt \
     && pip install ffmpeg-python opencv-python-headless==4.10.0.84 numpy==1.26.4 greenlet
