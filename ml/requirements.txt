@@ -23,8 +23,8 @@ ffmpeg-python==0.2.0
 # gone rather than narrowed a fourth time. It cannot be maintained: this file
 # pins `numpy==1.26.4` itself, in lockstep with Dockerfile.api,
 # ml/modal_pose.py, api/requirements-dev.txt and .github/workflows/ci.yml, and
-# four of the entries below are version ranges whose constraints move under you
-# without this file changing. CF-363 needs a survey at the time it runs, not a
+# six of the twelve entries here are version ranges whose constraints move
+# under you without this file changing. CF-363 needs a survey at the time it runs, not a
 # superlative recorded here. Two inputs for it, read from wheel metadata:
 #
 #   ultralytics caps numpy below 2 on darwin only (`numpy<2.0.0; sys_platform
@@ -32,12 +32,17 @@ ffmpeg-python==0.2.0
 #     which replaces it with an unconditional `numpy<=2.1.1`. 8.3.253 has no
 #     unconditional cap. So the bump has a target, and picking it matters.
 #
-#   `inference-sdk>=0.9.0` below is a closed loop with the numpy pin above.
-#     Releases up to 0.45.1 declare `numpy<=1.26.4`; 0.45.2 onward require
-#     `numpy>=2.0.0`. So `numpy==1.26.4` silently selects 0.45.1 — a year old,
-#     and one whose own metadata re-asserts the ceiling that chose it — while
-#     the SDK on its own resolves to 1.5.1. Dropping the numpy pin is what
-#     frees it, which is the shape of the whole numpy-2 question here.
+#   `inference-sdk>=0.9.0` is a closed loop with the numpy pin above. Its
+#     numpy constraint has moved twice inside the range this file allows:
+#     0.9.0 and 0.10.0 declare only `numpy>=1.20.0`; by 0.13.0, and still at
+#     0.45.1, it is `numpy<=1.26.4`; from 0.45.2 through 1.5.1 — the latest
+#     when this was measured — it is `numpy>=2.0.0`. So `numpy==1.26.4`
+#     silently selects 0.45.1, whose own metadata re-asserts the ceiling that
+#     chose it, while the SDK on its own resolves to 1.5.1. Dropping the numpy
+#     pin is what frees it, which is the shape of the whole numpy-2 question
+#     here. All of that is wheel METADATA and two `pip install --dry-run`
+#     resolves, not inference from release notes — and it is a snapshot, which
+#     is why the paragraph above says to survey rather than to trust this.
 #
 # It is NOT the only thing holding the repo on numpy 1, and CF-363 should not
 # read it that way: this file's own `numpy==1.26.4` is a harder ceiling still,
