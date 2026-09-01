@@ -87,13 +87,23 @@ nearby context, or carried over from an earlier lap is not evidence, and
 presenting it as one is how a correct finding gets discarded.
 
 The run of 2026-09-01 rejected a true finding on #451 this way. A semi-cold
-round said the PR body still carried two overclaims; the reply answered that the
-body edit at `06:28:01Z` preceded "your marker comment at `06:31:36Z`", so the
-round had read a stale copy. The marker is at **`06:27:06Z`**, and `06:31:36Z`
-exists nowhere on the PR — the nearest value is `06:31:20Z`, the reply's own
-timestamp. The comments endpoint had never been called. Read correctly, the real
-figures say the edit landed 55 seconds *after* the marker, so the evidence
-refuted the conclusion it was offered for.
+round said the PR body still carried two overclaims; the reply answered that a
+body edit had preceded "your marker comment at `06:31:36Z`", so the round had
+read a stale copy. The marker is at **`06:27:06Z`**, and `06:31:36Z` exists
+nowhere on that PR — the nearest value is `06:31:20Z`, the reply's own
+timestamp. The comments endpoint had never been called.
+
+**The retraction then did it again, which is the part to learn from.** Having
+been caught, the reply reached for the PR's `updated_at` of `06:28:01Z`, called
+it "the body edit", and derived that the edit landed 55 seconds after the
+marker. That figure was fetched — but it is not what it was labelled: `06:28:01Z`
+is the `submitted_at` of the round's own **review**, which is what bumped
+`updated_at`. A body edit's time is not recoverable through REST at all, so the
+derivation had no source and the ordering it asserted remains unknown. Fetching
+a number is necessary and not sufficient; it also has to be the number the
+sentence says it is. A correction written under scrutiny, about this exact
+failure, reproduced it in one step — so treat the first retraction of a claim
+like this as the likeliest place for the second instance, not the safest.
 
 **The failure is one step earlier than "verify claims against the repository",
 which is why that rule did not catch it.** The run believed it was citing a
@@ -105,9 +115,12 @@ Formatting is not fetching.
 the asymmetry to hold on to.** Accepting a wrong finding costs a needless fix,
 and the next round sees the change and can say so. Rejecting a right one costs
 the finding outright: the round that raised it does not get another pass at the
-same head, and nothing downstream re-derives it. So a dispute needs its sources
-fetched in the same breath it is written, where an agreement can lean on a
-reading taken earlier.
+same head, and no later round is pointed at it. The net is not zero — on #451 the
+next round did catch this one, and the settling round re-verified it — but it
+closes the moment the head freezes and the PR is labelled, and a rejected
+finding is the one kind that leaves no artifact behind to notice. So a dispute
+needs its sources fetched in the same breath it is written, where an agreement
+can lean on a reading taken earlier.
 
 **It propagates further than the thread.** A run writes its own next-lap prompt,
 and the false account went into that prompt as established fact. With the log
@@ -548,17 +561,6 @@ first and leaves `SINCE`.
   that exist. Cross-check any negative or small result against `list_issues`
   before stating an absence; "I found none" and "there are none" are different
   claims.
-- **Reading a label back needs the right call, and the obvious two both fail.**
-  `issue_read` with `method: get_labels` **cannot resolve a PR number** —
-  `Could not resolve to an Issue with the number of 451` — even though
-  `issue_write` sets labels on that same number without complaint. And
-  `search_pull_requests` with `label:review-settled` returned two other PRs and
-  **not** the one labelled seconds earlier; a second query by a different term
-  returned it *with* the label. That index lags, so an empty `label:` result is
-  inconclusive, not a failed write. Apply the label, then read the PR back with
-  a query that returns its `labels` field — and note the direction of each
-  failure, since one of them would have you re-apply a label that is already
-  there while the other would have you trust a write you never confirmed.
 - **Tag-shaped text is deleted from anything you post, backticks or not.** Not
   angle brackets in general: measured, `ComponentProps<"a">`, `a <= b` and
   `x < y > z` all survive escaped, while a placeholder shaped like an HTML tag

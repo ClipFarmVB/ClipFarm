@@ -246,6 +246,15 @@ check-runs row comes from CF-275, which is what added point 7.
   number. Read them from `list_pull_requests` instead. Use that to *verify a
   label landed*, too: the write returns success whether or not it did, so a
   settle that never took looks identical to one that did.
+
+  **Do not verify it with a `label:` search.** On 2026-09-01 a
+  `search_pull_requests` query for `label:review-settled` returned two other
+  PRs and omitted the one labelled seconds earlier; a query by another term
+  returned that PR *with* the label. The search index lags behind the write,
+  and it fails in the opposite direction to the `get_labels` error above: that
+  one is loud and cannot be mistaken for an answer, this one is a populated,
+  plausible result that is simply missing a row. An empty or short `label:`
+  result is inconclusive, never evidence the write was lost.
 - **Writing labels replaces the whole set.** Read the current labels first or
   you will silently drop one. On a PR carrying only your own label this is
   invisible.

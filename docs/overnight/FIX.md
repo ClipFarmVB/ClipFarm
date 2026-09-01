@@ -284,7 +284,7 @@ way a label is verified: an update call reports success whether or not the new
 text took, so an unverified body edit and a lost one are indistinguishable.
 (Which call to read a label back with is not obvious — the two that suggest
 themselves both fail, in opposite directions. See
-[the repo traps](RULES.md#repo-traps-that-have-already-cost-time).)
+[what a non-`gh` tool must provide](REVIEW.md#what-a-non-gh-tool-must-provide).)
 Quote the corrected line in the settle comment so the record shows what was
 checked.
 
