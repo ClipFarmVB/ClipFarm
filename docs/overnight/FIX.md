@@ -9,6 +9,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`START.md`](./START.md) | once, at the start of a run |
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round, cold or semi-cold |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
 | [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
@@ -138,7 +139,7 @@ without the last one's conclusions, so it is a genuinely different pass, and
 stopping at two stops while that is still paying. Nits may remain — requiring
 zero findings would review forever.
 
-**When a cold round clears that bar, label the PR `review-settled` and post a
+**When a cold round clears that bar — and the checks have passed, below — label the PR `review-settled` and post a
 `settled: @ <sha>` comment with it.** That is the terminal state, and it is what
 stops future runs re-reviewing finished work. The comment carries the SHA the
 carve-out compares against, and it is the only trace left if a human later
@@ -197,6 +198,73 @@ any single step. So: **from the moment a round reports no Critical and no Medium
 outstanding, only a Critical or Medium may change that head.** Nits found from
 then on go to a card, however cheap they look. "Cheap" is what makes this loop
 attractive on every lap.
+
+**Never settle over a check that has not passed.** The settle bar is about what a
+reviewer found; this is about whether the code runs, and a green review over a
+red suite is the failure CF-275 was filed to prevent. #307 is the evidence, and
+the number that matters is **six**: it ran eight rounds in all, the first six of
+them over red CI, and not one of those six read a check. (Rounds seven and eight
+ran green; the seventh says so in its first clause. #307 merged.) Two things it
+does *not* evidence, because the brief has now got both wrong once: it was never
+settled over red — it was labelled `unsettled: needs a decision`, and its own
+marker says the round ceiling was context rather than the reason — and no human
+is identifiable in the record as having caught it. The rule does not need either.
+It needs the six: nothing in the brief would have *stopped* a settle over any of
+them, because nothing told a round to look. Do not apply `review-settled` while
+any check run on the head SHA is in **any** of these states:
+
+- concluded `failure`, `timed_out`, `cancelled` or `action_required`;
+- **not completed** — `queued` or `in_progress`, where `conclusion` is still
+  `null`. This is a state, not an absence, and it must be named: a rule that
+  lists only failing conclusions permits settling over a suite that has not
+  spoken yet, which is CF-275's shape exactly rather than a milder version of it;
+- or the head has **no check runs at all** — `total_count: 0`. `ci.yml` is
+  `on: pull_request` with no path filter, so every PR gets every job; nothing
+  means the workflow never fired, not that it passed quietly.
+
+`neutral`, `skipped` and `stale` do not block. Say in the report if one appears,
+because a skipped required job and a passing one are the same green to everything
+downstream.
+
+How to read them, and the two endpoints that look right and are not, is
+[in step 1](REVIEW.md#reading-the-checks-before-a-round-and-again-before-settling).
+
+**Pending is a live race, not an edge case — and not a foregone one.** A carry
+pushes a fix and reaches the settle bar within a minute or two; CI here lands in
+about the same time (median 65s across the last 20 runs; every run on this PR's
+own branch landed between 64s and 71s), so which arrives first is not
+predictable and neither outcome is the "ordinary" one to plan around.
+Re-read once after a short wait; if it is still running, the PR is simply not
+settleable yet this lap. That is not a finding, not a label, and not a reason to
+spend a round.
+
+**Leave such a PR unlabelled, and name it in the report.** It needs no new
+`unsettled` reason and must not be given one: `unsettled` records open Critical
+or Medium findings that a round put there, and a PR that reviewed clean has none
+— the label would assert something false, and no carve-out could clear it, since
+a re-run going green moves no SHA for the [carve-out test](REVIEW.md#record-comments-human-removal-and-re-opening)
+to see. Unlabelled already means unfinished. The exit is clean: when CI goes
+green the head has not moved, so the head-matching `cold: clean` markers still
+stand and the next run settles it **spending no round at all**.
+
+**The cost, so it is not discovered instead of decided:** such a PR re-enters the
+queue every night until its CI goes green, and each visit costs the read above.
+**Nothing bounds that.** The per-PR ceiling counts rounds within one run and this
+visit spends none, so it charges nothing; the recurrence is across runs, which no
+counter here windows. It ends when CI goes green, a human acts, or the PR is
+closed — and until then the report bullet is what makes it visible each night.
+
+That is the price of not inventing a label with no way out. The brief has been
+here before from the other side: [CF-274](RULES.md#hard-rules) removed the grant
+mechanism that had been added to give such a label an exit, which is why the
+answer this time is not to create the label.
+
+**This is the one thing that may move a frozen head.** The rule above says only a
+Critical or Medium may change the head once nothing is open. A red check is
+neither, so taken literally a converged-but-red PR could neither take the commit
+that would turn it green nor ever settle — no exit at all. It may take that
+commit. Nothing else about the freeze relaxes: the fix goes in, the head moves,
+and the PR takes the fresh cold round the routing table calls for.
 
 **A finding against the PR body is not a finding against the head.** It still
 has to be fixed — a body is editable and a body edit is not a commit, so it

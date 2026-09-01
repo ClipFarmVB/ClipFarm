@@ -16,13 +16,14 @@ not the ones it is not. Every rule lives in exactly one file.
 
 | file | when to read it | ~tokens |
 |---|---|---|
-| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 4.8k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, the push test, logging, priority order, the ceiling and the budget, repo traps | 5.6k |
-| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels, the reviewer briefs | 15k |
-| [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 4.2k |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 1.3k |
-| [`REPORTING.md`](./REPORTING.md) | the end of the run | 1.2k |
-| [`RATIONALE.md`](./RATIONALE.md) | optional background — what a night costs, why the machinery is shaped this way | 1.8k |
+| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.4k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, the push test, logging, priority order, the ceiling and the budget, repo traps | 7.7k |
+| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.5k |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 4.4k |
+| [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 2.9k |
+| [`REPORTING.md`](./REPORTING.md) | the end of the run | 2.1k |
+| [`RATIONALE.md`](./RATIONALE.md) | optional background — what a night costs, why the machinery is shaped this way | 2.7k |
 
 `.claude/overnight-log.md` is scratch memory for one run, gitignored on purpose.
 **Read it at the start of every iteration**, and **truncate it as the last act
@@ -38,6 +39,9 @@ run that learned it.
 - **Every iteration after: `RULES.md`, plus the one phase file the lap needs.**
   Reviewing a PR → `REVIEW.md`. Fixing findings → `FIX.md`. Implementing a
   ticket → `TICKETS.md`. Writing the report → `REPORTING.md`.
+  **Spawning a round → `BRIEFS.md`**, on top of whichever of those you are on —
+  it is the one file reached from two phases, because step 2 spawns semi-cold
+  rounds as readily as step 1 spawns cold ones.
   **Filing a card → `TICKETS.md`**, whichever lap you are on. That is the one
   entry here that is not a phase: `FIX.md` sends you to a card for a nit you
   chose not to fix, and `review-only` runs never otherwise open `TICKETS.md`,
@@ -50,8 +54,20 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap costs about 21k tokens of brief instead of 34k; a step-2 lap about
-11k; a step-3 lap about 8k. That is the whole point of the split.
+A step-1 lap that only selects costs about 24k tokens of brief instead of 47k;
+one that also spawns a round, about 28k. A step-2 lap is about 19k, a step-3 lap
+about 12k. That is the whole point of the split.
+
+**`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
+findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
+**18k** tokens, the size that file was *before* the split. Splitting it out took
+that lap from ~32k to ~19k; step 1 is unchanged when it spawns, and ~4k cheaper
+when it does not.
+
+Those are bytes/4 on the files as they stand, and a lap is this file plus
+`RULES.md` plus the phase file. **Re-measure them when you add a section** — they
+had drifted by a third before CF-275 re-took them, and this is the table a run
+reads to plan what it can afford.
 
 **The rules are not also summarised into a shorter file.** Splitting by phase
 keeps exactly one copy of each rule, with the reasoning that produced it still
