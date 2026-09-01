@@ -59,6 +59,16 @@ function Feed() {
   }, []);
 
   useEffect(() => {
+    // Guarded on the flag. The `!SOCIAL_ENABLED` screen is rendered further
+    // down, but this effect runs before any of that — so with social off every
+    // visit fired a `/feed` request the API 404s by construction (its own
+    // `social_enabled` gate never registers the router), set `error` from the
+    // failure, then discarded it to render "the feed isn't switched on". A
+    // request whose answer is known before it is sent.
+    if (!SOCIAL_ENABLED) {
+      setLoading(false);
+      return;
+    }
     void loadMore(true);
   }, [loadMore]);
 
@@ -168,8 +178,24 @@ function Feed() {
         </div>
       )}
       {error && posts.length > 0 && (
-        <div className="flex h-32 snap-start items-center justify-center px-8 text-center text-[12px] text-white/50">
-          {error}
+        <div className="flex h-32 snap-start flex-col items-center justify-center gap-3 px-8 text-center text-[12px] text-white/50">
+          <span>{error}</span>
+          {/* A retry, because reaching this state otherwise strands the reader.
+              The prefetch effect keys on `[activeIndex, posts.length]`, and a
+              failed page-2 fetch changes neither — so nothing re-fires on its
+              own, and the only way back is to scroll up far enough to change
+              `activeIndex` and then come back down. That is not a recovery a
+              user can be expected to discover from a line of grey text. */}
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setError(null);
+              void loadMore();
+            }}
+            disabled={loading}
+          >
+            {loading ? "Retrying…" : "Try again"}
+          </Button>
         </div>
       )}
     </div>

@@ -11,7 +11,8 @@ import {
   VolumeX,
 } from "lucide-react";
 import type { Post } from "@/lib/api";
-import { getClipShareUrl } from "@/lib/api";
+import { getClipDownloadUrl, getClipShareUrl } from "@/lib/api";
+import { startCrossOriginDownload } from "@/lib/download";
 import { cn } from "@/lib/utils";
 
 /** Dot colours match the landing page's action ticker. */
@@ -50,6 +51,10 @@ export interface FeedPostProps {
  */
 export function FeedPost({ post, active, loaded, muted, onToggleSound }: FeedPostProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // A ref rather than state: this only serialises two rapid taps on one card,
+  // and re-rendering the post to disable a button would restart nothing but
+  // would put a render in the middle of a video that is playing.
+  const downloading = useRef(false);
   const { playback: pb } = post;
 
   // Prefer the per-game proxy and seek within it; fall back to the per-clip
@@ -129,22 +134,64 @@ export function FeedPost({ post, active, loaded, muted, onToggleSound }: FeedPos
     }
   }
 
+  /**
+   * Save the clip without leaving the feed.
+   *
+   * Not `<a href={clip_url} download>`, which is what this was. The `download`
+   * attribute is **ignored for cross-origin URLs** and R2 is a different
+   * origin, so the browser simply navigates to the presigned URL — and a plain
+   * presigned GET carries no `Content-Disposition`, so an mp4 renders in place
+   * and the feed is gone. The user's scroll position, the page they were on,
+   * all of it, for a button labelled "download" that never downloaded.
+   *
+   * `lib/download.ts` exists for precisely this (CF-100) and `ClipCard` already
+   * uses it: `/clips/{id}/download` mints a URL that asks R2 for `attachment`
+   * plus a meaningful filename, and the hidden sandboxed frame keeps the
+   * navigation off the top-level context so a rejected signature cannot replace
+   * the app with R2's XML error document.
+   */
+  async function download() {
+    if (downloading.current) return;
+    downloading.current = true;
+    try {
+      const { url } = await getClipDownloadUrl(post.clip_id);
+      startCrossOriginDownload(url);
+    } catch {
+      // Same judgement as `share`: a failed presign over a video is not worth
+      // an alert here. `ClipCard` alerts because it sits in a working grid
+      // where a batch save is the task; the feed is a viewing surface.
+    } finally {
+      downloading.current = false;
+    }
+  }
+
   return (
     <article
       data-post-id={post.id}
       className="relative h-full w-full snap-start snap-always overflow-hidden bg-black"
     >
-      {/* Tap target: the whole frame toggles sound. A button rather than a div
-          so it is reachable by keyboard and announced, which a bare onClick
-          handler on the video would not be. */}
+      {/* Tap target: the whole frame toggles sound.
+
+          Deliberately *not* in the tab order, and not announced. It was both,
+          on the reasoning that a bare onClick div is unreachable by keyboard —
+          which is right in general and wrong here, because the rail below
+          already carries a real, labelled Mute button for this exact action.
+          As a second focusable control with the same accessible name it bought
+          nothing and cost one full-screen tab stop *per post*: a 50-post scroll
+          put 50 invisible buttons called "Unmute" in the tab order, ahead of
+          the rail controls a keyboard user actually wants, and a screen reader
+          announced each one on entering the card.
+
+          So the pointer affordance stays and the keyboard path goes through the
+          rail. `aria-hidden` with `tabIndex={-1}` is the pairing that keeps it
+          out of both trees at once — either alone leaves it in the other. */}
       <button
         type="button"
         onClick={onToggleSound}
-        aria-label={muted ? "Unmute" : "Mute"}
+        tabIndex={-1}
+        aria-hidden="true"
         className="absolute inset-0 z-10 h-full w-full cursor-default"
-      >
-        <span className="sr-only">{muted ? "Unmute" : "Mute"}</span>
-      </button>
+      />
 
       <video
         ref={videoRef}
@@ -227,15 +274,11 @@ export function FeedPost({ post, active, loaded, muted, onToggleSound }: FeedPos
         />
         <RailButton icon={<Share2 size={22} />} label="Copy share link" onClick={share} />
         {pb.clip_url && (
-          <a
-            href={pb.clip_url}
-            download
-            onClick={(e) => e.stopPropagation()}
-            className="flex flex-col items-center gap-1 text-white/90 transition-opacity hover:opacity-70"
-            aria-label="Download clip"
-          >
-            <Download size={22} />
-          </a>
+          <RailButton
+            icon={<Download size={22} />}
+            label="Download clip"
+            onClick={download}
+          />
         )}
         <button
           type="button"
