@@ -322,9 +322,10 @@ the next round knows the verdict is the round's own work.
 **This is the one place that keeps the record**, so that a count in one file
 cannot go stale against a count in another, which is the third sub-case under
 **It is not the whole risk surface** above. What is on record: **three rounds
-reviewed `main`'s tip commit rather than the PR**, returning findings that were internally consistent and about the
-wrong change, and on two of those three the wrong commit touched the same files
-as the PR, which is what makes this worth a check rather than a glance. All
+reviewed `main`'s tip commit rather than the PR**, returning findings that were
+internally consistent and about the wrong change, and on two of those three
+the wrong commit touched the same files as the PR, which is what makes this
+worth a check rather than a glance. All
 three predate passing the number; every round that has passed it has targeted
 correctly. No denominator is given on purpose: rounds accumulate every night,
 so a fraction is wrong by the next one, while the three mis-targets are a

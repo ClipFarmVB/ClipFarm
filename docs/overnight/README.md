@@ -18,7 +18,7 @@ not the ones it is not. Every rule lives in exactly one file.
 |---|---|---|
 | [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 1.9k |
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.4k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, repo traps | 8.3k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, repo traps | 8.4k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.9k |
 | [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.2k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
@@ -79,27 +79,28 @@ on this page that exists to be re-run.
 
 **Do not try to recompute the before-figure from the table above.** Two things
 stop it, and only fixing one still gives a wrong answer: that lap needs
-`REVIEW.md` with the briefs still in it, which is not a file *this* revision
-has — it is `596755d^`'s, 18.13k — *and* none of the four was the size the
-table records today — `README.md`,
-`RULES.md` and `FIX.md` were smaller in August, and `REVIEW.md` was **larger**,
-18.13k, because it still held the briefs. So no substitution into today's row
-values lands on the right answer, in either direction.
+`REVIEW.md` with the briefs still in it, which is `596755d^`'s file and not
+this revision's — 18.13k, because it still held them — *and* none of the four
+was the size the table records today, `README.md`, `RULES.md` and `FIX.md` all
+having been smaller in August. So no substitution into today's row values lands
+on the right answer, in either direction.
 
-A step-1 lap that only selects is ~5k cheaper than one that also spawns —
-exactly `BRIEFS.md`, which only the spawning lap reads. Both figures are
-bytes/4 on today's files, like the rest of this section; the pair in the
-paragraph above is the only across-the-split comparison on this page. A
-*spawning* step-1 lap is not comparable across it, having gained a file
-(26.70k → 28.05k); the select-only lap reads the same three files on both
-sides and went 26.70k → 23.60k.
+Two comparisons follow, answering different questions, so each says what it is
+measured on — which is the thing this page gets wrong when it gets anything
+wrong:
 
-**Everything here is bytes/4**, the pair above included — 129000 bytes is the
-32.25k, and the `ls-tree` block prints the bytes to check it. What the pair
-alone does differently is the *revision*: it is measured at `596755d^` and
-`596755d` rather than on the files as they stand, because the lap it compares
-no longer exists here. The table and the lap figures are on the files as they
-stand, a lap is this file plus `RULES.md` plus the phase file — **this file's
+- **On today's files.** A step-1 lap that only selects is ~5k cheaper than one
+  that also spawns: exactly `BRIEFS.md`, which only the spawning lap reads.
+- **Across the CF-365 split**, at `596755d^` and `596755d`. A *spawning*
+  step-1 lap went 26.70k to 28.05k, having gained a file. A select-only lap
+  reads the same three files on both sides and went 26.70k to 23.60k.
+
+**Everything on this page is bytes/4**, those included — 129000 bytes is the
+32.25k, and the `ls-tree` block prints the bytes to check it. What varies is
+the *revision*, and only ever between two values: the table and the lap figures
+are the files as they stand; anything marked across-the-split is `596755d^`
+against `596755d`, because the lap it compares no longer exists here. A lap is
+this file plus `RULES.md` plus the phase file — **this file's
 own row included**, which is why there is one — and each row is rounded to the
 nearest tenth. A lap is summed from bytes rather than from the rounded rows, so
 adding its rows up lands within a tenth or so rather than exactly.
