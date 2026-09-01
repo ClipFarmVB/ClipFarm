@@ -16,7 +16,7 @@ not the ones it is not. Every rule lives in exactly one file.
 
 | file | when to read it | ~tokens |
 |---|---|---|
-| [`README.md`](./README.md) | this file — the index, the pipeline in one page, and these figures. Every lap reads it | 1.9k |
+| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 1.9k |
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.4k |
 | [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, repo traps | 8.3k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.9k |
@@ -79,8 +79,9 @@ on this page that exists to be re-run.
 
 **Do not try to recompute the before-figure from the table above.** Two things
 stop it, and only fixing one still gives a wrong answer: that lap needs
-`REVIEW.md` with the briefs folded back in, which is a counterfactual and not a
-file, *and* none of the four was the size the table records today — `README.md`,
+`REVIEW.md` with the briefs still in it, which is not a file *this* revision
+has — it is `596755d^`'s, 18.13k — *and* none of the four was the size the
+table records today — `README.md`,
 `RULES.md` and `FIX.md` were smaller in August, and `REVIEW.md` was **larger**,
 18.13k, because it still held the briefs. So no substitution into today's row
 values lands on the right answer, in either direction.
@@ -88,8 +89,10 @@ values lands on the right answer, in either direction.
 A step-1 lap that only selects is ~5k cheaper than one that also spawns —
 exactly `BRIEFS.md`, which only the spawning lap reads. Both figures are
 bytes/4 on today's files, like the rest of this section; the pair in the
-paragraph above is the only across-the-split comparison on this page, and a
-step-1 lap is not comparable across it at all, having gained a file.
+paragraph above is the only across-the-split comparison on this page. A
+*spawning* step-1 lap is not comparable across it, having gained a file
+(26.70k → 28.05k); the select-only lap reads the same three files on both
+sides and went 26.70k → 23.60k.
 
 **Everything here is bytes/4**, the pair above included — 129000 bytes is the
 32.25k, and the `ls-tree` block prints the bytes to check it. What the pair

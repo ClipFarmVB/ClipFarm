@@ -320,9 +320,9 @@ mismatch, discard the output and review by hand — and say so in the review, so
 the next round knows the verdict is the round's own work.
 
 **This is the one place that keeps the record**, so that a count in one file
-cannot go stale against a count in another — the failure this file warns about
-under **Findings**, ~120 lines above. What is on record: **three rounds reviewed `main`'s tip commit rather
-than the PR**, returning findings that were internally consistent and about the
+cannot go stale against a count in another, which is the third sub-case under
+**It is not the whole risk surface** above. What is on record: **three rounds
+reviewed `main`'s tip commit rather than the PR**, returning findings that were internally consistent and about the
 wrong change, and on two of those three the wrong commit touched the same files
 as the PR, which is what makes this worth a check rather than a glance. All
 three predate passing the number; every round that has passed it has targeted
@@ -331,10 +331,10 @@ so a fraction is wrong by the next one, while the three mis-targets are a
 closed set that does not move unless a fourth is seen — and a round that sees
 one should add it here.
 
-**Open a cited location before repeating it.** Twice the skill has pointed
-somewhere real but wrong: once anchoring a finding about the PR *description* at
-the nearest thematically-related file text, and once rooting every path at the
-main checkout while the line numbers were the head's. That second one is the
+**Open a cited location before repeating it.** The skill has pointed somewhere
+real but wrong in two shapes, both on record: anchoring a finding about the PR
+*description* at the nearest thematically-related file text, and rooting every
+path at the main checkout while the line numbers were the head's. That second one is the
 dangerous shape, because **the path usually resolves**: you land in a real file
 that simply does not contain what the finding describes, or past its end. It
 reads like a stale finding rather than a broken reference, and confirming that

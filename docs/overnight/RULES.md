@@ -93,8 +93,8 @@ read a stale copy. The marker is at **`06:27:06Z`**, and `06:31:36Z` exists
 nowhere on that PR — the nearest value is `06:31:20Z`, the reply's own
 timestamp. The comments endpoint had never been called.
 
-**The retraction then did it again, which is the part to learn from.** Having
-been caught, the reply reached for the PR's `updated_at` of `06:28:01Z`, called
+**The retraction then did it again, which is the part to learn from.** It
+carried the PR's `updated_at` of `06:28:01Z` forward from the dispute, called
 it "the body edit", and derived that the edit landed 55 seconds after the
 marker. That figure was fetched — but it is not what it was labelled: `06:28:01Z`
 is the `submitted_at` of the round's own **review**, which is what bumped

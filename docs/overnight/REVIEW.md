@@ -264,9 +264,9 @@ all of them, 2026-09-01, and the row it sits under says so.
   same observation is reassuring about the `labels` *field*: the query by
   another term returned the PR with its label present, so a row that comes
   back carries a current label. It is the `label:` **filter** that dropped the
-  row. So a sweep must not filter on `label:` — select by state and author and
-  read `labels` off the rows — or a PR settled seconds earlier looks unlabelled
-  and gets re-spawned. The log is the backstop either way: it records the
+  row. So a sweep must not filter on `label:` — the `is:pr is:open` query
+  below is fine, and `labels` read off its rows is current — or a PR settled
+  seconds earlier looks unlabelled and gets re-spawned. The log is the backstop either way: it records the
   settle immediately, so check it before spawning on a PR you settled this run.
 - **Writing labels replaces the whole set.** Read the current labels first or
   you will silently drop one. On a PR carrying only your own label this is
