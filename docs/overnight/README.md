@@ -19,7 +19,7 @@ not the ones it is not. Every rule lives in exactly one file.
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.4k |
 | [`RULES.md`](./RULES.md) | **every iteration** — hard rules, the push test, logging, priority order, the ceiling and the budget, repo traps | 7.7k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.5k |
-| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 4.9k |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.1k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
 | [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 2.9k |
 | [`REPORTING.md`](./REPORTING.md) | the end of the run | 2.1k |
@@ -61,10 +61,12 @@ about 12k. That is the whole point of the split.
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
 **18k** tokens, the size that file was *before* the split. Splitting it out took
-that lap from ~32k to ~19k; step 1 is unchanged when it spawns, and ~5k cheaper
-when it does not.
+that lap from ~32k to ~19k — **measured at the split, not on today's files**,
+which is why it reads ~19k where the step-2 figure above now reads 20k. Step 1
+is unchanged when it spawns, and ~5k cheaper when it does not.
 
-Those are bytes/4 on the files as they stand, and a lap is this file plus
+Those are bytes/4 on the files as they stand — the across-the-split pair above
+excepted, and it says so — and a lap is this file plus
 `RULES.md` plus the phase file. **Re-measure them when you add a section** — they
 had drifted by a third before CF-275 re-took them, and this is the table a run
 reads to plan what it can afford.

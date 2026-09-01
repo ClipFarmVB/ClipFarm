@@ -139,10 +139,14 @@ head.
 Its brief: run `/code-review high <PR number>` — **naming the number, not
 describing the PR** — then post one marker comment and submit its findings as a
 review. The bare form has been observed reviewing `main`'s tip commit instead of
-the PR: with nothing staged and the branch already pushed, the skill finds every
-local diff empty and falls back to `HEAD~1..HEAD`. Both rounds that recorded
-passing the number targeted correctly; the two that recorded the skill
-discovering a diff for itself did not. Give it the head SHA you captured, and require
+the PR — three sightings of seven — apparently by discovering a diff for itself
+and, finding every local one empty, falling back to `HEAD~1..HEAD`. **That
+mechanism is a suspect, not a cause**: the obvious version of it, "the branch is
+already pushed so the diff is empty", was tested and refuted — sightings that
+shared exactly that state targeted correctly. What the record does support is
+narrower: every round that recorded passing the number targeted correctly, and
+every round that recorded the skill finding its own diff did not. Naming the
+number is cheap and consistent with that; it is not yet known to be the fix. Give it the head SHA you captured, and require
 the comment's body to **start** with the literal `cold: findings @ <sha>` or
 `cold: clean @ <sha>`, before any heading or
 formatting, since that whole line is what selection matches and routes on.
@@ -185,9 +189,11 @@ It needs saying separately because reading the code does not catch it: a
 reviewer checking whether the code is correct passes over a comment that
 describes it wrongly. The round has to be told to check each claim in a
 comment, docstring, commit message and PR body **against what the code does**.
-The round does that itself: in seven sightings the skill has never read a PR
-body, and the one body-shaped finding it produced was anchored in a file. So
-running it does not discharge this paragraph.
+**Do that part yourself.** No sighting so far records the skill reading a PR
+body, and the one body-shaped finding it produced was anchored in a file
+instead — so running it does not discharge this paragraph. Stated as what the
+record shows rather than as never: the rounds logged findings, not the absence
+of them, so "it has never read one" is more than the evidence carries.
 
 Three sub-cases, each of which cost a round:
 
@@ -311,16 +317,20 @@ and the commit its own scope paragraph cites, against the PR's diff. On a
 mismatch, discard the output and review by hand — and say so in the review, so
 the next round knows the verdict is the round's own work. Three of seven
 sightings reviewed `main`'s tip commit rather than the PR, returning findings
-that were internally consistent and about the wrong change; on one of them the
-wrong commit touched the same file as the PR, which is what makes this worth a
-check rather than a glance.
+that were internally consistent and about the wrong change; on two of the three
+the wrong commit touched the same files as the PR, which is what makes this
+worth a check rather than a glance.
 
 **Open a cited location before repeating it.** Twice the skill has pointed
 somewhere real but wrong: once anchoring a finding about the PR *description* at
 the nearest thematically-related file text, and once rooting every path at the
-main checkout while the line numbers were the head's — so a path that does not
-exist and a line number that does. A finding you repeat in a marker, a review or
-a card carries its location as your claim, not the skill's.
+main checkout while the line numbers were the head's. That second one is the
+dangerous shape, because **the path usually resolves**: you land in a real file
+that simply does not contain what the finding describes, or past its end. It
+reads like a stale finding rather than a broken reference, and confirming that
+the file exists is not the check. Open the location in the worktree you are
+reviewing and read what is actually there. A finding you repeat in a marker, a
+review or a card carries its location as your claim, not the skill's.
 
 And "the skill agreed" is not verification of a number. It once confirmed a
 figure by recomputing it the way the diff's author had, rather than from the
