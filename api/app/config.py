@@ -208,8 +208,9 @@ def _origin_problems(origin: str) -> list[str]:
             "this as an Origin; retype the value rather than editing it"
         )
 
-    # Everything below parses the entry with backslashes REMOVED, and the
-    # backslash itself is reported from the raw entry by the check further down.
+    # The backslash is reported from the RAW entry, by the check directly below
+    # this paragraph. Everything after that check reads a value with backslashes
+    # removed — cleaned once, at `cleaned = ...`, rather than per-check.
     #
     # A previous version cleaned the value for the PORT checks only, via a
     # second `urlsplit`, and left every other check reading the raw parse. Three
@@ -225,9 +226,10 @@ def _origin_problems(origin: str) -> list[str]:
         # origin", with nothing telling the operator what to delete.
         #
         # Browsers treat `\\` as `/` (WHATWG URL), so `https://x.ca\\evil.com`
-        # is sent as Origin `https://x.ca` and the entry matches nothing.
-        # urlsplit does not agree — it leaves the backslash in the netloc, which
-        # is why nothing caught it before CF-235. No legitimate origin has one.
+        # is sent as Origin `https://x.ca` and the entry matches nothing — the
+        # same silent outage as the tab this function already catches. urlsplit
+        # does not agree — it leaves the backslash in the netloc, which is why
+        # nothing caught it before CF-235. No legitimate origin has one.
         invisible_problem.append(
             "contains a backslash — browsers read it as `/`, so this is sent as "
             "the part before it and matches no Origin header"
@@ -289,12 +291,6 @@ def _origin_problems(origin: str) -> list[str]:
     # — and the second was accepted, then handed to Starlette's exact-string
     # compare, where it matches nothing. Neither character can appear in an
     # Origin header at all, so testing the raw entry costs no precision.
-    # A backslash is included because browsers treat it as `/` (WHATWG URL), so
-    # `https://x.ca\\evil.com` is sent as Origin `https://x.ca` and the entry
-    # matches nothing — the same silent outage as the tab this function already
-    # catches. urlsplit does NOT agree with browsers here: it leaves the
-    # backslash in the netloc, so the entry was accepted. No legitimate origin
-    # contains one.
     if parts.path or "?" in origin or "#" in origin:
         problems.append(
             "an Origin is scheme://host[:port] with nothing after it; a trailing "
@@ -1102,7 +1098,26 @@ def _boot_error(exc: ValidationError) -> str:
     the module already had a helper for.
 
     Model-validator errors have an empty `loc` and already name their variable
-    in the message, so they are left alone.
+    in the message, so they get no name prefix from us.
+
+    What they do get is pydantic's own `Value error, `, which it puts in front
+    of the message of anything a validator raised as a `ValueError`. That lands
+    in the middle of a line whose whole job is to be read by whoever is staring
+    at a failed deploy, and it says nothing the operator can act on. Strip it.
+
+    Keyed on `type == "value_error"` rather than on the text, and applied with
+    `removeprefix`, so an error carrying no such prefix is untouched either way.
+    Every other pydantic error type keeps its message verbatim: a
+    `literal_error` reads `CONDENSE_MODE: Input should be 'rules' or 'guarded'`
+    and has no prefix to remove. An `assert` in a validator produces
+    `assertion_error` with `Assertion failed, ` instead, and is deliberately not
+    stripped — `config.py` has no such validator, and inventing a second case
+    for code that does not exist is how the pattern below would start to drift.
+
+    The empty remainder is guarded because it is reachable rather than
+    theoretical: `raise ValueError("")` renders as exactly `Value error, `, and
+    stripping that would compose `Configuration is not usable: ` with nothing
+    after it — a boot failure that names no problem at all.
     """
     problems = []
     for error in exc.errors():
@@ -1115,6 +1130,10 @@ def _boot_error(exc: ValidationError) -> str:
             # Better the raw path than nothing.
             name = ".".join(str(part) for part in location)
         message = str(error["msg"])
+        if error["type"] == "value_error":
+            stripped = message.removeprefix("Value error, ")
+            if stripped:
+                message = stripped
         problems.append(f"{name}: {message}" if name else message)
     return "Configuration is not usable: " + "; ".join(problems)
 
