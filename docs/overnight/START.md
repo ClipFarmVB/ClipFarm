@@ -9,6 +9,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`START.md`](./START.md) | once, at the start of a run |
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round, cold or semi-cold |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
 | [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
@@ -140,7 +141,7 @@ another account's PR without ever pushing a fix itself.** (At `own` it simply
 pushes the fix, like any other run.) The settle bar wants a semi-cold check,
 and a semi-cold round checks a fix *whoever pushed it*: on another account's
 branch, that is the author responding to the review, and [the brief requires
-that case to work](REVIEW.md#cold-and-semi-cold-rounds) precisely so an `unsettled: not
+that case to work](BRIEFS.md#cold-and-semi-cold-rounds) precisely so an `unsettled: not
 our branch` PR is not stranded. So `unsettled: not our branch` is a **waypoint,
 not a terminus** — the author's next push re-opens the PR, and the next run's
 semi-cold round is what closes the finding.

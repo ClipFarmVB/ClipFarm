@@ -9,6 +9,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`START.md`](./START.md) | once, at the start of a run |
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round, cold or semi-cold |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
 | [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
