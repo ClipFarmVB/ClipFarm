@@ -23,6 +23,30 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 > **A PR needs a round unless it carries `review-settled` or `unsettled` and
 > that label's carve-out has not fired.**
 
+**One case is unlabelled and still does not need a round:** a PR that **clears
+the settle bar** and is unlabelled only because [its checks have not
+passed](FIX.md#the-cycle-and-the-settle-bar). What it needs is a check read,
+which spends no round — if the checks have since passed, settle it on the spot;
+if they have not, it is done for this lap and goes in the report.
+
+**"Clears the settle bar" is [that bar](FIX.md#the-cycle-and-the-settle-bar),
+not a summary of it**, and the distinction is the whole safety of this clause.
+It is *not* "the latest round found nothing": a PR that has never had a finding
+needs **two** head-matching `cold: clean` markers, which is why [the routing
+table](#routing-what-the-marker-tells-the-run-to-do-next) sends a PR sitting on one of them
+to another cold round. Read loosely, the clause would swallow that PR — the
+selection test runs before the table, so the table's row never gets consulted —
+and then settle it off a single reviewer's silence on the next visit. If you
+cannot tell whether the bar is cleared, it is not cleared, and the PR takes its
+round.
+This has to be said here rather than left to the reader, because the test is
+keyed on labels and that PR deliberately carries none: read literally, it needs
+a round forever, and no round can change the thing holding it. Everything that
+consumes this test inherits the clause — the [`review-only` stop
+condition](START.md#when-a-review-only-run-is-done) and [step 3's "when 1 and 2
+are clear"](TICKETS.md#step-3--ticket-work) — which is what keeps a night whose
+remaining queue is one red PR from having no way to end.
+
 **And one filter in front of that test: the run's `review scope`.** With scope
 `own`, a PR whose author is not this account is out of scope and gets no round —
 it is not skipped-because-settled, it is not in the queue at all. With scope
@@ -66,8 +90,10 @@ The obvious phrasing — "no marker at all, or commits since the last marker" �
 leaves a hole. A PR sitting on its first `cold: clean` with no new commits has a
 marker *and* no new commits, so neither clause selects it; yet that is precisely
 the PR owing a second clean round before it may be labelled, and it would sit
-there forever. **Unlabelled means unfinished.** What it needs next comes from
-the routing table below.
+there forever. **Unlabelled means unfinished** — with the one exception named
+[on the selection test](#step-1--which-prs-need-a-round), a PR that cleared the
+bar and is waiting on a check, which is unfinished but owes no round. What it
+needs next comes from the routing table below.
 
 Note also that "needs a round" is never decided from GitHub review objects. A
 round does submit one — the two artifacts are described below — but the review
@@ -76,6 +102,52 @@ that is what tells a round's review from a human's — but every selection and
 counting rule here is phrased against marker **comments**, and a rule phrased
 against reviews would be counting an artifact that is deliberately outside the
 budget and the ceiling.
+
+##### Reading the checks: before a round, and again before settling
+
+**Read the check runs on the PR's head commit.** Selection does not depend on
+them — a red PR still gets reviewed, for the reason below — but settling does,
+and the report does. **Which conclusions block settling is stated once, in [the
+settle bar](FIX.md#the-cycle-and-the-settle-bar)**; this section is how and when
+to read them.
+
+The command and the two endpoints that look like it and are wrong here are
+[point 7](#what-a-non-gh-tool-must-provide).
+
+**Red does not block reviewing.** The rounds CF-275 was filed over produced real
+findings, and that PR's failure was an upstream incompatibility rather than
+anything in its diff — so refusing to review would have stranded a PR that
+reviewing could still improve. The waste was never the reviewing; it was that
+nobody was told about the red. Review it, do not settle it, and report it.
+
+**Read them again at settle time, not only at selection.** A carry runs several
+rounds and a push of its own; a check read at the start of it is stale by the
+end, which is exactly #307's shape. This is the same rule as [checking claims
+outside the diff at settle time](#the-cold-reviewers-brief) — the check is such a
+claim.
+
+**Read the conclusion, not the log's summary.** #307's failing run ends with
+
+```
+ Test Files   7 passed (7)
+      Tests   103 passed (103)
+     Errors   1 error
+```
+
+and a `failure` conclusion. An unhandled error killed the worker before the test
+file loaded, so the tally counts what did run and says nothing about what did
+not — and the file that never ran was the test file for the card under review.
+The check was right and the summary was misleading, which is the case *for*
+reading the conclusion rather than a caution against trusting it.
+
+**A green conclusion can still mean nothing ran**, though, and that is a
+different case: a workflow that skips reports `success`. `CLAUDE.md` documents
+this for `claude-review.yml` — a skipped run is green and has reviewed nothing.
+
+**A check's name does not tell you what it ran.** `Web (lint + typecheck)` also
+runs vitest; `API (ruff + mypy)` runs `ruff check ml/` and both test suites.
+Read `ci.yml` if you need to know what a check covered — and do not narrow by
+name, per [point 7](#what-a-non-gh-tool-must-provide).
 
 ##### What a non-`gh` tool must provide
 
@@ -121,14 +193,52 @@ sentence. The failure if any item is missing is silent rather than loud:
    Confirm you get a login and not a null before trusting the filter. A `null`
    under `own` excludes every PR silently, and the run reports a full queue as a
    deliberate scoping decision having reviewed nothing.
+7. **The check runs on the PR's head commit** — each with its `name`, `status`
+   and `conclusion` — for [the check-status read](#reading-the-checks-before-a-round-and-again-before-settling).
+   Other surfaces look like this one and are wrong here; the ones tried so far
+   are named below, with why each fails:
+
+   ```
+   SHA=$(gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha")
+   gh api repos/ClipFarmVB/ClipFarm/commits/$SHA/check-runs \
+     --jq '.check_runs[] | "\(.name) \(.status) \(.conclusion)"'
+   ```
+
+   **Not the combined commit status.** `/commits/<sha>/status` — and anything
+   built on it — returns `state: pending, total_count: 0` on this repository,
+   because nothing here posts a commit status; every check is a check *run*.
+   Measured on #422 and #307 — the latter a merged PR, green on both jobs, still
+   reporting `pending`. A rule written against that endpoint reads `pending`
+   forever, and since both `pending` and `total_count: 0` **block** settling, it
+   is wrong in the direction that fires on every PR: nothing would ever settle
+   again. That is the loud failure rather than the silent one, which is the only
+   good thing about it.
+
+   **Not the required-checks set either.** Which contexts `main` requires lives
+   in the branch-protection ruleset, is admin-scoped, and a run may well get 403
+   reading it — so **the loop cannot compute "required"** and no rule here may
+   depend on it. It would also be wrong if it could: #428 carries a third check
+   run, `Mobile (lint + typecheck + test)`, from a job on an unmerged branch that
+   cannot be in the ruleset. Read every check run on the head and treat them all
+   as load-bearing.
+
+   REST rather than `gh pr view --json statusCheckRollup` deliberately: the
+   rollup is GraphQL, and the first unattended run had GraphQL disabled — see
+   [the capability checks](START.md#first-establish-what-you-can-actually-do).
 
 **Confirm your tool paginates before you trust a marker read**, and name the
 tool in the report. A run that cannot establish point 1 should say so and treat
 every marker read as unverified rather than assuming it saw the newest.
 
 **Where the GitHub MCP tools fail these, specifically.** They are the expected
-non-`gh` tool in the web sandbox, and they satisfy the list — but three of the
-failures are silent, and all three were hit in the run of 2026-08-27:
+non-`gh` tool in the web sandbox, and they satisfy the list — but each row below
+is a trap, in one of two ways. The label *write* and the `get_status` row are
+**silent**: the call succeeds and returns a wrong answer. The label *read* and
+the page-size row fail **loudly** — `Could not resolve to an Issue`, and a
+refusal for size — and are traps only because the error reads like a missing
+label or an empty page rather than like the wrong call. Which kind a row is,
+each row says. The first three were hit in the run of 2026-08-27; the
+check-runs row comes from CF-275, which is what added point 7.
 
 - **Labels cannot be read off a PR the obvious way.** `issue_read` with
   `get_labels` returns `Could not resolve to an Issue` for a pull request
@@ -143,6 +253,11 @@ failures are silent, and all three were hit in the run of 2026-08-27:
   `minimal_output: true`, and on this repository a default page is refused for
   size — which costs a call and returns nothing. Pass a small `perPage` (1–5)
   and page. This is why point 1's pagination requirement is not academic here.
+- **For point 7, `pull_request_read` with `get_check_runs` is the one that
+  works.** `get_status` on the same PR returns `state: pending, total_count: 0`
+  — not because anything is pending, but because this repository posts no commit
+  statuses at all. It is the silent-wrong-answer case, and the two calls are one
+  argument apart.
 
 None of these changes a rule. They change what "I checked" is worth, which is
 the same class of problem as everything else in this section.
@@ -196,9 +311,9 @@ above](#what-a-non-gh-tool-must-provide) gives:
 | `cold: findings` | differs | — | **semi-cold** — a fix has already been pushed; check those findings against the new head |
 | `cold: clean` | matches | a finding is still open, **and** commits have landed since the marker that raised it | **semi-cold** — that fix is what needs checking; only a semi-cold can close a finding |
 | `cold: clean` | matches | a finding is still open, **and** nothing has landed since the marker that raised it | **step 2** — nothing to check, so spend no round; fix it |
-| `cold: clean` | matches | nothing open, and a finding was raised **in the counting window** | **settle it** — apply `review-settled` |
+| `cold: clean` | matches | nothing open, and a finding was raised **in the counting window** | **settle it** — apply `review-settled`, unless [a check blocks it](FIX.md#the-cycle-and-the-settle-bar) |
 | `cold: clean` | matches | nothing open, none raised in the window, and this is its **only** head-matching `cold: clean` | **cold round** — the second of the two that case requires |
-| `cold: clean` | matches | nothing open, none raised in the window, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled` |
+| `cold: clean` | matches | nothing open, none raised in the window, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled`, unless [a check blocks it](FIX.md#the-cycle-and-the-settle-bar) |
 | `cold: clean` | differs | — | **cold round** — new code nothing has looked at; see the re-open rule below |
 | `semi-cold: closes` | — | — | **cold round** |
 | `semi-cold: does not close` | matches | — | **step 2** — fix it again |
@@ -452,10 +567,14 @@ once between its two clean rounds, once after the second.
 
 A `cold: clean` marker on an unlabelled PR therefore means: apply the label now
 — settle bar permitting — unless one of the routing table's exceptions applies.
-Two do: a PR with a finding still open takes a semi-cold round, or step 2 where
-nothing has landed since the finding's marker, rather than settling; and a PR
-with no finding raised in the counting window that carries only one such marker
-wants its second clean cold round first.
+A PR with a finding still open takes a semi-cold round, or step 2 where nothing
+has landed since the finding's marker, rather than settling; and a PR with no
+finding raised in the counting window that carries only one such marker wants its
+second clean cold round first. The rows themselves are the list — deliberately
+not counted here, because this sentence has already been one short once: it said
+"two" while the rows carried a third qualifier, added when checks began blocking
+settling. "Settle bar permitting" is doing real work in that sentence and is not
+a hedge.
 
 **Count only `cold: clean` markers whose SHA is the current head.** The rule is
 about *this code* having been read clean twice, not about the PR's history: a

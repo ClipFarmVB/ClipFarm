@@ -21,7 +21,10 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 
 #### Step 3 — ticket work
 
-**3 — Only when 1 and 2 are clear**, take one ticket from "This run".
+**3 — Only when 1 and 2 are clear**, take one ticket from "This run". *Clear*
+is [step 1's test](REVIEW.md#step-1--which-prs-need-a-round) and its check-held
+clause: a PR reviewed clean and waiting on CI is not a round owed, so it does
+not hold step 3 back for the rest of the night.
 
 **This step does not run in `review-only` mode**, and neither does anything under
 [Working a ticket](#working-a-ticket). Everything else below still does — in
