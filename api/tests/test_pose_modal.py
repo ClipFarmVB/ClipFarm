@@ -534,63 +534,103 @@ def _code_lines(path: Path) -> str:
     )
 
 
-# The calls that decide what a Modal image installs. Anything passed to one of
-# these reaches pip; anything else in the file does not.
-_INSTALL_CALLS = frozenset({"pip_install", "apt_install", "run_commands"})
+def _literal(node: ast.AST):
+    """The value of a literal expression, or `_NOT_LITERAL` if it needs runtime.
+
+    `ast.literal_eval` and nothing more: a Constant, or a list/tuple/dict/set
+    of them. A Name, an f-string, a `+`, a call — anything whose value is not
+    written in the file — comes back `_NOT_LITERAL`.
+    """
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, SyntaxError, TypeError, MemoryError):
+        return _NOT_LITERAL
+
+
+_NOT_LITERAL = object()
+
+
+def _strings_in(value) -> list[str]:
+    """Every string inside a literal, however it is nested."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [s for item in value for s in _strings_in(item)]
+    if isinstance(value, dict):
+        return [
+            s
+            for pair in value.items()
+            for item in pair
+            for s in _strings_in(item)
+        ]
+    return []
 
 
 def _image_spec_arguments(path: Path) -> list[str]:
-    """What a Modal image spec actually installs, and an assertion that it can be read.
+    """Every string the image spec is built from, and an assertion it can be read.
 
-    **Nine spellings defeated the guards below, each one further out than the
-    last**, and every fix was a better answer to "how might a pin be written?"
-    — quote styles, implicit concatenation, extras, direct references,
-    f-strings, `+` of literals, a fragment ending in a bare operator. The
-    ninth put the operator on the *other* side of the seam
-    (`_PIN = "==1.26.4"`, then `"numpy" + _PIN`), which leaves a literal
-    `numpy` that is indistinguishable from the legitimate bare pin. There is
-    no tenth answer to that question worth writing: a value assembled from a
-    name is not in the file, and no amount of parsing will find it there.
+    **Nine spellings defeated the guards below, each further out than the
+    last** — quote styles, implicit concatenation, extras, direct references,
+    f-strings, `+` of literals, a fragment ending in a bare operator. The ninth
+    put the operator on the far side of the seam (`_PIN = "==1.26.4"`, then
+    `"numpy" + _PIN`), leaving a literal `numpy` no reader can tell from the
+    legitimate bare pin, because the version is not in the file at all. Every
+    fix had been a better answer to "how might a pin be written?", and that
+    question has no last answer.
 
-    So this stops asking. It asserts the image spec is **written in literals**
-    — every argument to `.pip_install()`, `.apt_install()` and
-    `.run_commands()` a plain string — and then reads those literals. A
-    spelling that hides a version now fails on the shape of the file rather
-    than slipping past a pattern, and a spelling nobody has thought of fails
-    the same way. That is a real constraint on how these ~20 lines may be
-    written, and it is the price of the guards below meaning anything.
+    So this asserts instead of inferring: **the image spec is written in
+    literals.** Every argument to every call in the `image = (...)` expression,
+    positional and keyword, must be a literal — and `image` must be assigned
+    exactly once, so the expression is the whole spec.
 
-    Implicit concatenation is fine and invisible here: `ast` has already
-    joined `"numpy" "<2"` into one Constant before this sees it.
+    Keyed on the assignment rather than on a list of method names, because a
+    first version keyed on `pip_install`/`apt_install`/`run_commands` was
+    defeated without writing anything non-literal at all: `.uv_pip_install(...)`
+    and `.dockerfile_commands("RUN pip install ...")` install just as well, and
+    `extra_options=` is appended raw to pip's command line. Names are a list
+    that has to be kept complete against a library that adds to it; the
+    assignment is not.
+
+    A literal dict or list is read through, so `.env({...})` and Modal's
+    `pip_install(["a", "b"])` form both work. What cannot be read is a value
+    the file does not contain, and that now fails on the shape of the file —
+    including a spelling nobody has thought of, which is the property the nine
+    fixes before it could not have.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    arguments = []
-    for node in ast.walk(tree):
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in _INSTALL_CALLS
-        ):
+    specs = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "image" for t in node.targets)
+    ]
+    assert len(specs) == 1, (
+        f"{path.name} assigns `image` {len(specs)} times; this guard reads the"
+        " one expression that builds it. Keep the spec a single assignment, or"
+        " teach this test to follow the rest (CF-359, #440)."
+    )
+
+    arguments: list[str] = []
+    for node in ast.walk(specs[0].value):
+        if not isinstance(node, ast.Call):
             continue
-        call = f"{path.name}:{node.lineno} .{node.func.attr}()"
-        for argument in node.args:
-            assert not isinstance(argument, ast.Starred), (
-                f"{call} unpacks a list into its arguments. Write the"
-                " requirements out as literals: a pin this test cannot read is"
-                " a pin it cannot check, and this image has a numpy constraint"
-                " that must hold (CF-359, #440)."
+        called = getattr(node.func, "attr", None) or getattr(node.func, "id", "?")
+        for argument in node.args + [k.value for k in node.keywords]:
+            value = _literal(argument)
+            assert value is not _NOT_LITERAL, (
+                f"{path.name}:{argument.lineno} passes .{called}() a"
+                f" {type(argument).__name__} rather than a literal. Write it"
+                " out: a value built from a name, an f-string or a `+` is not"
+                " in the file for this test to read, and nine spellings have"
+                " been caught hiding a numpy pin that makes the image build"
+                " fail with ResolutionImpossible (CF-359, #440)."
             )
-            assert isinstance(argument, ast.Constant) and isinstance(
-                argument.value, str
-            ), (
-                f"{call} is passed a {type(argument).__name__} rather than a"
-                " plain string literal. Write it as one: a requirement built"
-                " from a name, an f-string or a `+` is not in the file for"
-                " this test to read, and nine spellings have already been"
-                " caught hiding a numpy pin that makes the image build fail"
-                " with ResolutionImpossible (CF-359, #440)."
+            arguments.extend(_strings_in(value))
+        for keyword in node.keywords:
+            assert keyword.arg is not None, (
+                f"{path.name}:{node.lineno} unpacks a mapping into"
+                f" .{called}(). Write the keywords out, for the same reason."
             )
-            arguments.append(argument.value)
     return arguments
 
 
@@ -601,6 +641,15 @@ def _dependency_text(path: Path) -> str:
     and a round found that when they disagreed about `ml/modal_app.py` the
     consistency test reported "does not pin opencv-python-headless" for a file
     that pins it — red in the right direction, with a false reason.
+
+    **What a `.py` source means here has narrowed twice, and this is what it
+    means now: the strings the image spec is built from.** Not the file's
+    lines, so an inline `# not 1.26.4` beside a pin is no longer seen — nothing
+    is lost, since a comment is not a pin and a wrong pin still fails as a
+    version split. And not every string literal either, so a pin in a helper or
+    a docstring is out of scope; only what reaches the image counts. Both
+    narrowings bind `ml/modal_pose.py` as well as `ml/modal_app.py`, which is
+    the point of there being one function.
     """
     if path.suffix == ".py":
         return "\n".join(_image_spec_arguments(path))
@@ -896,13 +945,12 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
                 "for the repo-wide numpy-2 migration."
             )
             continue
-        # A fragment ending in a bare operator — `numpy==` — is what every
-        # unresolvable construction leaves behind: `"".join(["numpy==", V])`,
-        # a `%` or `.format` whose parts were split, anything a future spelling
-        # produces. It is never a legal requirement, and read as a constraint
-        # it is the empty capture again, so it is rejected on sight rather than
-        # evaluated. A legal pin assembled this way is a false rejection, which
-        # is the direction this guard is allowed to be wrong in.
+        # A fragment ending in a bare operator — `numpy==` — is never a legal
+        # requirement, and read as a constraint it is the empty specifier set,
+        # which admits everything. The constructions that used to leave one
+        # behind cannot reach here any more, since the spec must be literal;
+        # this stays because `"numpy=="` can still be *written* as a literal,
+        # and a typo should be loud rather than permissive.
         assert not re.search(
             r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
             r"[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*,?$",
