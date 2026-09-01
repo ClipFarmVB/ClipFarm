@@ -17,8 +17,8 @@ not the ones it is not. Every rule lives in exactly one file.
 | file | when to read it | ~tokens |
 |---|---|---|
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.4k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, the push test, logging, priority order, the ceiling and the budget, repo traps | 7.7k |
-| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.5k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, repo traps | 8.3k |
+| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.8k |
 | [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.1k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
 | [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 2.9k |
@@ -54,22 +54,44 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap that only selects costs about 24k tokens of brief instead of 47k;
-one that also spawns a round, about 29k. A step-2 lap is about 20k, a step-3 lap
-about 12k. That is the whole point of the split.
+A step-1 lap that only selects costs about 25k tokens of brief instead of 49k;
+one that also spawns a round, about 30k. A step-2 lap is about 21k, a step-3 lap
+about 13k. That is the whole point of the split.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
 **18k** tokens, the size that file was *before* the split. Splitting it out took
-that lap from ~32k to ~19k — **measured at the split, not on today's files**,
-which is why it reads ~19k where the step-2 figure above now reads 20k. Step 1
-is unchanged when it spawns, and ~5k cheaper when it does not.
+that lap from **~32k to ~19k**. Those two are measured across the split, not on
+today's files, because the lap they compare no longer exists here — so they are
+the one pair on this page that the table below cannot reproduce:
 
-Those are bytes/4 on the files as they stand — the across-the-split pair above
-excepted, and it says so — and a lap is this file plus `RULES.md` plus the
-phase file. **Re-measure them when you add a section** — they
-had drifted by a third before CF-275 re-took them, and this is the table a run
-reads to plan what it can afford.
+```
+git ls-tree -r --long '596755d^' -- docs/overnight/README.md \
+    docs/overnight/RULES.md docs/overnight/FIX.md docs/overnight/REVIEW.md
+```
+
+sums to 32.25k, and the same four with `BRIEFS.md` in place of `REVIEW.md` at
+`596755d` to 19.09k. Paths are spelled out because a brace expansion is a bash
+feature: under `dash`, which is `/bin/sh` on Debian and Ubuntu, it matches
+nothing, prints nothing and exits 0 — a silent empty answer in the one command
+on this page that exists to be re-run.
+
+**Do not try to recompute the before-figure from the table above.** Two things
+stop it, and only fixing one still gives a wrong answer: that lap needs
+`REVIEW.md` with the briefs folded back in, which is a counterfactual and not a
+file, *and* none of the four was the size the table records today — `README.md`,
+`RULES.md` and `FIX.md` were smaller in August, and `REVIEW.md` was **larger**,
+18.13k, because it still held the briefs. So no substitution into today's row
+values lands on the right answer, in either direction.
+
+Step 1 is unchanged when it spawns, and ~5k cheaper when it does not.
+
+**The table and the lap figures** — not the across-the-split pair above, which
+is the one exception and says so — are bytes/4 on the files as they stand, and
+a lap is this file plus `RULES.md` plus the phase file. Each row is rounded to
+the nearest tenth. **Re-measure them when you add a section** — they had drifted
+by a third before CF-275 re-took them, and this is the table a run reads to plan
+what it can afford.
 
 **The rules are not also summarised into a shorter file.** Splitting by phase
 keeps exactly one copy of each rule, with the reasoning that produced it still

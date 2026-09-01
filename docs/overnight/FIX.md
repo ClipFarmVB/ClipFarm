@@ -282,6 +282,9 @@ check a description would spend the budget the carve-out exists to save.
 And **confirm the body fix actually landed by reading the body back**, the same
 way a label is verified: an update call reports success whether or not the new
 text took, so an unverified body edit and a lost one are indistinguishable.
+(Which call to read a label back with is not obvious — the two that suggest
+themselves both fail, in opposite directions. See
+[what a non-`gh` tool must provide](REVIEW.md#what-a-non-gh-tool-must-provide).)
 Quote the corrected line in the settle comment so the record shows what was
 checked.
 

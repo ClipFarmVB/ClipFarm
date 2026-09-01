@@ -237,15 +237,28 @@ is a trap, in one of two ways. The label *write* and the `get_status` row are
 **silent**: the call succeeds and returns a wrong answer. The label *read* and
 the page-size row fail **loudly** — `Could not resolve to an Issue`, and a
 refusal for size — and are traps only because the error reads like a missing
-label or an empty page rather than like the wrong call. Which kind a row is,
-each row says. The first three were hit in the run of 2026-08-27; the
-check-runs row comes from CF-275, which is what added point 7.
+label or an empty page rather than like the wrong call. **The label *read* row
+is the one that carries both**: under its loud failure sits a silent one, a
+`label:` search that lags behind the write and answers with a plausible list
+missing the row you just wrote. Which kind a row is, each row says. The first
+three were hit in the run of 2026-08-27 and the check-runs row comes from
+CF-275, which is what added point 7; the nested `label:` trap is later than
+all of them, 2026-09-01, and the row it sits under says so.
 
 - **Labels cannot be read off a PR the obvious way.** `issue_read` with
   `get_labels` returns `Could not resolve to an Issue` for a pull request
   number. Read them from `list_pull_requests` instead. Use that to *verify a
   label landed*, too: the write returns success whether or not it did, so a
   settle that never took looks identical to one that did.
+
+  **Do not verify it with a `label:` search.** On 2026-09-01 a
+  `search_pull_requests` query for `label:review-settled` returned two other
+  PRs and omitted the one labelled seconds earlier; a query by another term
+  returned that PR *with* the label. The search index lags behind the write,
+  and it fails in the opposite direction to the `get_labels` error above: that
+  one is loud and cannot be mistaken for an answer, this one is a populated,
+  plausible result that is simply missing a row. An empty or short `label:`
+  result is inconclusive, never evidence the write was lost.
 - **Writing labels replaces the whole set.** Read the current labels first or
   you will silently drop one. On a PR carrying only your own label this is
   invisible.
