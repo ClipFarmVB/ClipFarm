@@ -16,11 +16,28 @@ ffmpeg-python==0.2.0
 # OCR (jersey numbers) — deliberately NOT installed. `ml/pipeline/ocr.py` has
 # no call sites; CF-7 (#31) is its intended consumer and is unscheduled. Two
 # reasons this file does not carry the pins in the meantime: they are several
-# hundred MB in every dev install, and `paddleocr==2.9.1` requires `numpy<2.0`,
-# which is the sole constraint keeping this repo off numpy 2 (CF-363).
-# `read_jersey_numbers` imports PaddleOCR lazily and returns all-`None` with a
-# warning when it is absent, so the module stays importable without them.
-# Re-add here (paddleocr>=3, which drops the numpy ceiling) when CF-7 is picked up.
+# hundred MB in every dev install, and `paddleocr==2.9.1` requires `numpy<2.0`.
+# That is the only UNCONDITIONAL numpy ceiling in this file, and so the one
+# blocking numpy 2 here (CF-363) — `ultralytics==8.3.55` also caps numpy, but
+# only on darwin (`numpy<2.0.0; sys_platform == "darwin"`), so a macOS install
+# stays capped until ultralytics is bumped too. `read_jersey_numbers` imports
+# PaddleOCR lazily and returns all-`None` with a warning when it is absent, so
+# the module stays importable without them.
+#
+# CF-7 inherits a PORT, not a working module. `ocr.py` targets paddleocr 2.x
+# and does not run on 3.x, which is the release that drops the numpy ceiling.
+# Three breakages, in call order:
+#   ocr.py:27  PaddleOCR(show_log=False) — 3.x has no `show_log` and does not
+#              map it, so `parse_common_args` raises ValueError. The lazy
+#              import guard only catches ImportError, so this is a hard failure,
+#              not the graceful all-`None` path.
+#   ocr.py:43  ocr.ocr(torso, cls=False) — 3.x forwards `ocr()` to `predict()`,
+#              which takes no `cls`. TypeError.
+#   ocr.py:47  text, conf = item[1] — 3.x returns PaddleX `OCRResult` objects,
+#              not the 2.x nested-list shape this unpacks.
+# So do not re-add a pin here expecting the module to work. Port `ocr.py` to
+# 3.x as part of CF-7, then add `paddleocr>=3`. Pinning `paddleocr==2.x`
+# instead would work today and put the numpy ceiling straight back.
 
 # Roboflow inference (ball detection)
 inference-sdk>=0.9.0
