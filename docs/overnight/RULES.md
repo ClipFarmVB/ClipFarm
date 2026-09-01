@@ -111,25 +111,10 @@ measurement. What made the paragraph persuasive — to the round it answered, an
 to the run itself — was its *shape*: a table-ready figure, quoted to the second.
 Formatting is not fetching.
 
-**The bar is higher for rejecting a finding than for accepting one, and this is
-the asymmetry to hold on to.** Accepting a wrong finding costs a needless fix,
-and the next round sees the change and can say so. Rejecting a right one costs
-the finding outright: the round that raised it does not get another pass at the
-same head, and no later round is pointed at it. The net is not zero — on #451 the
-next round did catch this one, and the settling round re-verified it — but it
-closes the moment the head freezes and the PR is labelled, and a rejected
-finding is the one kind that leaves no artifact behind to notice. So a dispute
-needs its sources fetched in the same breath it is written, where an agreement
-can lean on a reading taken earlier.
-
-**It propagates further than the thread.** A run writes its own next-lap prompt,
-and the false account went into that prompt as established fact. With the log
-truncated at the end of the night, a post-compaction lap would have inherited it
-with only the PR thread to contradict it. So a correction has to reach the
-scheduled prompt as well as the comment. Nothing else says this: [the logging
-rule](#log-before-you-finish-each-iteration) governs the log and the schedule
-but says nothing about what a prompt asserts, and the prompt is the one artifact
-here that carries claims forward without ever being reviewed.
+**So fetch a dispute's sources in the same breath you write it**, where an
+agreement can lean on a reading taken earlier. The asymmetry is the reason: a
+wrong finding you accept costs a needless fix, and the change is there for the
+next round to see. A right one you reject costs the finding.
 
 ### The push test
 
