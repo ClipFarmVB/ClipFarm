@@ -511,26 +511,22 @@ def test_streamable_demands_a_real_read_not_just_an_open(
 # ── Deploy invariant ─────────────────────────────────────────────────────────
 
 def _code_lines(path: Path) -> str:
-    """A file's non-comment lines, rejoined — shared by both pin checks.
+    """A non-Python file's non-comment lines, rejoined.
 
     Full-line comments only, deliberately: an inline trailing comment naming a
-    second version (`"numpy==2.3.5",  # not 1.26.4`) must still be seen, or a
-    pin could be hidden from these checks by writing one. Rejoined with a
-    newline so the horizontal-whitespace class the patterns below use cannot
-    pair a package name on one line with a version on the next.
+    second version (`opencv-python-headless==4.10.0.84  # not 5.x`) must still
+    be seen, or a pin could be hidden from these checks by writing one.
+    Rejoined with a newline so the horizontal-whitespace class the patterns
+    below use cannot pair a package name on one line with a version on the
+    next.
 
-    One definition rather than two: the version guard below and the consistency
-    guard read the same files, and a review round pointed out that the drift
-    between their preprocessing is exactly what the version guard exists to
-    catch (CF-278).
-
-    This is text, not Python: `Dockerfile.api` and `ml/requirements.txt` go
-    through it too, so nothing here may assume Python's rules. An attempt to
-    splice adjacent string literals *here* — right for `.py`, and how
-    `"numpy" "<2"` hid — made `pip install "opencv-python-headless==4.10.0.84"
+    This is text, not Python. `Dockerfile.api` and `ml/requirements.txt` go
+    through it, so nothing here may assume Python's rules. An attempt to splice
+    adjacent string literals *here* — right for `.py`, and how `"numpy" "<2"`
+    hid — made `pip install "opencv-python-headless==4.10.0.84"
     "numpy==1.26.4"` in the Dockerfile read as a pin on `4.10.0.84numpy`,
-    failing the consistency test on correct shell quoting. Python's rules live
-    in `_python_strings` instead.
+    failing the consistency test on correct shell quoting. Python files go
+    through `_python_strings` instead, and `_dependency_text` picks.
     """
     return "\n".join(
         line for line in path.read_text(encoding="utf-8").splitlines()
@@ -541,22 +537,68 @@ def _code_lines(path: Path) -> str:
 def _python_strings(path: Path) -> list[str]:
     """Every string literal in a Python file, as Python itself sees them.
 
-    Four spellings defeated a regex reading `ml/modal_app.py` as text, all of
+    Five spellings defeated a regex reading `ml/modal_app.py` as text, all of
     them the same mistake: the file is Python, and only Python knows where one
     requirement ends. `ast` resolves implicit concatenation — `"numpy" "<2"`,
     `"numpy" '<2'` across quote kinds, and the two-line form inside brackets —
     into one constant before anything here looks at it, which is not a rule
     this module has to keep re-deriving one spelling at a time.
 
-    Comments are gone by construction, which is what we want for a `.py`
-    source: a pin lives in a string or it is not a pin.
+    An f-string is the one place that opening `ast` costs something. Its
+    literal runs are separate constants, so `f"numpy=={VERSION}"` would arrive
+    as the fragment `numpy==`, which no parser and no pattern can evaluate and
+    which an earlier revision silently *allowed*. So an f-string is rendered
+    with `{...}` standing in for each interpolation: the result reaches the
+    guards as an unparseable constraint and fails loudly, which is the only
+    honest answer — the version is not in the file to be checked.
+
+    Comments are gone by construction, which is right for a `.py` source and
+    the opposite of what `_code_lines` needs: there, a pin is a line of text
+    and a comment could hide one; here, a pin is a string literal or it is not
+    a pin at all.
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    return [
-        node.value
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    def render(joined: ast.JoinedStr) -> str:
+        return "".join(
+            part.value
+            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            else "{...}"
+            for part in joined.values
+        )
+
+    # The literal runs of an f-string are Constants in their own right, so they
+    # have to be excluded or each fragment is also read as a whole string.
+    fragments = {
+        id(part)
         for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    ]
+        if isinstance(node, ast.JoinedStr)
+        for part in node.values
+    }
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            found.append(render(node))
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in fragments
+        ):
+            found.append(node.value)
+    return found
+
+
+def _dependency_text(path: Path) -> str:
+    """The text of a dependency source, read the way that file should be read.
+
+    One entry point, so the two guards cannot drift: they read the same files,
+    and a round found that when they disagreed about `ml/modal_app.py` the
+    consistency test reported "does not pin opencv-python-headless" for a file
+    that pins it — red in the right direction, with a false reason.
+    """
+    if path.suffix == ".py":
+        return "\n".join(_python_strings(path))
+    return _code_lines(path)
 
 
 # What `inference==1.3.3` will accept. The ball image's numpy has to land in
@@ -757,7 +799,7 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
 
     found = {}
     for label, path, required in sources:
-        matches = set(pattern.findall(_code_lines(path)))
+        matches = set(pattern.findall(_dependency_text(path)))
         if not matches:
             assert not required, (
                 f"{label} does not pin {package} — it must, see this test's docstring"
@@ -884,7 +926,7 @@ def test_the_ball_image_pins_opencv_where_inference_can_follow():
         r"[^\S\n]*==[^\S\n]*([0-9][0-9A-Za-z.\-]*)",
         # As Python sees them, so a pin split across adjacent literals is one
         # string here too — the same reason the numpy guard above does it.
-        "\n".join(_python_strings(REPO_ROOT / "ml" / "modal_app.py")),
+        _dependency_text(REPO_ROOT / "ml" / "modal_app.py"),
         re.IGNORECASE,
     )
     assert pins, (
@@ -894,7 +936,16 @@ def test_the_ball_image_pins_opencv_where_inference_can_follow():
         "image — see CF-359 (#440)."
     )
     for pin in pins:
-        assert Version(pin) in window, (
+        # A typo should be an assertion, not an InvalidVersion traceback out of
+        # the middle of a test — the same reasoning `_admits_a_numpy_2` uses.
+        try:
+            version = Version(pin)
+        except InvalidVersion as exc:
+            raise AssertionError(
+                f"ml/modal_app.py pins opencv-python-headless=={pin}, which is "
+                f"not a PEP 440 version: {exc}"
+            ) from exc
+        assert version in window, (
             f"ml/modal_app.py pins opencv-python-headless=={pin}, which is "
             "outside the >=4.8.1.78,<=4.10.0.84 that inference==1.3.3 forces "
             "on opencv-python and opencv-contrib-python in the same image. "
