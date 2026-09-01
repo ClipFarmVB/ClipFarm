@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Enum as SAEnum, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Enum as SAEnum, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -62,9 +62,11 @@ class Post(Base):
     comment_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
     )
-    # No index=True: every read of this table enters through author_id (a
-    # profile grid, or CF-111's follow set) and takes the composite below. See
-    # the posts migration for why a bare created_at index has no reader.
+    # No index=True: a bare `created_at` index still has no reader of its own.
+    # The profile grid enters through author_id and takes the first composite
+    # below; the feed (CF-111) sorts and pages on `(created_at, id)` and takes
+    # the second. A single-column index would be a prefix of that one, serving
+    # nothing either composite does not already serve.
     # server_default mirrors the migration's `sa.func.now()`. Without it the
     # column is only ever filled by the Python default, so a row written by
     # anything that isn't this ORM — a backfill, a psql insert, a future COPY —
@@ -84,4 +86,8 @@ class Post(Base):
     # one level down. upload_event.py sets the precedent for declaring it.
     __table_args__ = (
         Index("ix_posts_author_created", "author_id", "created_at"),
+        # The feed's sort key (migration 019). Declared DESC to match both the
+        # ORDER BY and the row-value cursor, so the keyset comparison is a plain
+        # range scan from the cursor position rather than an Incremental Sort.
+        Index("ix_posts_created_at_id", text("created_at DESC"), text("id DESC")),
     )

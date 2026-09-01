@@ -221,6 +221,14 @@ def test_the_edge_cursor_carries_the_tiebreaker():
     src = inspect.getsource(follows_router._page_query)
     assert "tuple_(Follow.created_at, Follow.id)" in src
     assert ".offset(" not in src
+    # The encode half lives in services/cursors now (CF-111 review); this is
+    # the assertion that the tiebreaker survives the round trip.
+    from datetime import datetime, timezone
+
+    from app.services import cursors
+
+    ts, row_id = cursors.decode(cursors.encode(datetime.now(timezone.utc), uuid.uuid4()))
+    assert ts.tzinfo is not None and isinstance(row_id, uuid.UUID)
 
 
 def test_every_edge_list_is_paginated_through_the_same_window():
@@ -299,13 +307,13 @@ def test_a_naive_cursor_timestamp_is_a_400_not_a_500():
 
     from fastapi import HTTPException
 
-    from app.routers import follows as follows_router
+    from app.services import cursors
 
     naive = base64.urlsafe_b64encode(
         f"2026-01-01T00:00:00|{uuid.uuid4()}".encode()
     ).decode()
     with pytest.raises(HTTPException) as exc:
-        follows_router._decode_cursor(naive)
+        cursors.decode(naive)
     assert exc.value.status_code == 400
 
 

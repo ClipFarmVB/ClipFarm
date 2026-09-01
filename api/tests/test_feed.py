@@ -8,8 +8,9 @@ comparison to the ORDER BY. Paging behaviour under concurrent inserts is
 exercised live against Postgres (see the PR body).
 """
 import base64
+import inspect
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -21,6 +22,7 @@ from fastapi import HTTPException  # noqa: E402
 
 
 from app.routers import feed as feed_router  # noqa: E402
+from app.services import cursors  # noqa: E402
 
 
 def _visible(viewer):
@@ -36,7 +38,6 @@ def _visible(viewer):
     return feed_router.feed_query(viewer)
 
 VIEWER = uuid.uuid4()
-ANONYMOUS = None
 
 
 class _Post:
@@ -86,10 +87,22 @@ def test_only_accepted_follows_widen_the_feed():
 
 
 def test_anonymous_gets_no_follow_subquery():
-    """A signed-out visitor can't follow anyone. The feed itself is
-    authenticated, but the shared predicate serves anonymous profile reads too,
-    and an always-false EXISTS on every one of those is pure cost."""
-    sql = _sql(_visible(ANONYMOUS)).lower()
+    """A signed-out visitor can't follow anyone, so the shared predicate must
+    not emit an always-false EXISTS on every anonymous read.
+
+    Asserted against `access.apply_post_visibility` rather than `feed_query`.
+    The feed is authenticated and `feed_query(None)` is not an anonymous
+    read — it is a dead statement (`author_id IS NULL OR author_id IN (SELECT
+    ... WHERE follower_id IS NULL)`) that no row can satisfy, so asserting
+    "no EXISTS appears" against it passed for a query that returned nothing at
+    all. The predicate is the thing anonymous profile reads actually use.
+    """
+    from sqlalchemy import select
+
+    from app.models.post import Post
+    from app.services import access
+
+    sql = _sql(access.apply_post_visibility(select(Post), None)).lower()
     assert "exists" not in sql
     assert "'followers'" not in sql
 
@@ -102,10 +115,28 @@ def test_a_private_post_is_visible_only_to_its_author():
 
 
 def test_visibility_is_not_optional_for_signed_in_viewers():
-    """Guards against a future refactor that gates the filter behind a flag:
-    every viewer kind must get a WHERE clause naming public."""
-    for viewer in (VIEWER, ANONYMOUS):
-        assert "'public'" in _sql(_visible(viewer))
+    """Guards against a future refactor that gates the filter behind a flag."""
+    assert "'public'" in _sql(_visible(VIEWER))
+
+
+def test_the_feed_query_is_not_reusable_for_anonymous_reads():
+    """`feed_query(None)` is a bug, not an anonymous feed.
+
+    It compiles to `author_id IS NULL OR author_id IN (SELECT ... WHERE
+    follower_id IS NULL)` — unsatisfiable, so the query returns nothing forever
+    with no error. Three tests here used to assert against exactly that dead
+    statement and were really testing nothing. The route is authenticated so it
+    cannot happen through the API; CF-114's explore feed is the anonymous
+    consumer and needs its own query. Pinned so it is not quietly reused.
+    """
+    assert "uuid.UUID" in str(
+        inspect.signature(feed_router.feed_query).parameters["user_id"].annotation
+    ) or inspect.signature(feed_router.feed_query).parameters["user_id"].annotation is uuid.UUID
+    sql = _sql(feed_router.feed_query(None)).lower()  # type: ignore[arg-type]
+    assert "is null" in sql, (
+        "if this ever stops producing a NULL predicate the dead-query trap is "
+        "gone and this test should be deleted rather than adjusted"
+    )
 
 
 # ── cursor ──────────────────────────────────────────────────────────────────
@@ -116,7 +147,7 @@ def test_cursor_round_trips_the_full_sort_key():
     created in the same millisecond hide behind each other permanently."""
     now = datetime.now(timezone.utc)
     post = _Post(now)
-    ts, post_id = feed_router._decode_cursor(feed_router._encode_cursor(post))
+    ts, post_id = cursors.decode(cursors.encode(post.created_at, post.id))
     assert ts == now
     assert post_id == post.id
 
@@ -124,7 +155,8 @@ def test_cursor_round_trips_the_full_sort_key():
 def test_cursor_is_opaque():
     """Not a security boundary — the query is visibility-filtered regardless —
     but it should not read as an invitation to hand-craft one."""
-    cursor = feed_router._encode_cursor(_Post(datetime.now(timezone.utc)))
+    _p = _Post(datetime.now(timezone.utc))
+    cursor = cursors.encode(_p.created_at, _p.id)
     assert "|" not in cursor
     assert base64.urlsafe_b64decode(cursor.encode()).decode().count("|") == 1
 
@@ -136,7 +168,7 @@ def test_cursor_is_opaque():
 )
 def test_a_malformed_cursor_is_a_400_not_a_500(bad):
     with pytest.raises(HTTPException) as exc:
-        feed_router._decode_cursor(bad)
+        cursors.decode(bad)
     assert exc.value.status_code == 400
 
 
@@ -170,7 +202,7 @@ def test_one_page_is_one_query():
     import inspect
 
     handler = inspect.getsource(feed_router.get_feed)
-    body = handler.split("items: list[PostOut] = []")[1]
+    body = handler.split("cursors.split_page")[1]
     assert "await db.execute" not in body, "no queries inside the serialize loop"
     assert "db.get(" not in body
     assert "select(Post, Clip, User)" in inspect.getsource(feed_router.feed_query), (
@@ -187,14 +219,22 @@ def test_has_more_costs_no_extra_query():
     assert "func.count" not in src
 
 
-def test_last_page_has_no_next_cursor():
-    """The client's stop signal. Derived from the extra row, not from
-    `len(items) < limit`, which stops a page early on an exact boundary."""
-    import inspect
+def test_has_more_is_read_before_the_page_is_truncated():
+    """The ordering that made this worth a shared function.
 
-    src = inspect.getsource(feed_router.get_feed)
-    assert "has_more = len(rows) > limit" in src
-    assert "if (has_more and rows) else None" in src
+    Computing `has_more` from the already-sliced list makes it permanently
+    False, so `next_cursor` is always null and nothing past the first page is
+    ever reachable — a silent, total pagination failure. Asserted on
+    `cursors.split_page` directly, over real values, rather than on the router's
+    source: the source assertion this replaces was satisfied by the broken
+    ordering too.
+    """
+    page, has_more = cursors.split_page(list(range(21)), 20)
+    assert len(page) == 20 and has_more is True
+    page, has_more = cursors.split_page(list(range(20)), 20)
+    assert len(page) == 20 and has_more is False, "exact boundary is the last page"
+    page, has_more = cursors.split_page([], 20)
+    assert page == [] and has_more is False
 
 
 # ── page size ───────────────────────────────────────────────────────────────
@@ -207,18 +247,32 @@ def test_page_size_is_bounded():
 
     sig = inspect.signature(feed_router.get_feed)
     constraints = sig.parameters["limit"].annotation.__metadata__[0].metadata
-    assert {repr(c) for c in constraints} == {"Ge(ge=1)", "Le(le=50)"}
+    # Read the constraint *values*, not `repr()` of the objects holding them.
+    # The old form compared against the literals {"Ge(ge=1)", "Le(le=50)"}, so
+    # an annotated-types release that changed its own repr broke this with no
+    # behaviour change whatsoever.
+    bounds = {
+        name: getattr(c, name)
+        for c in constraints
+        for name in ("ge", "gt", "le", "lt")
+        if hasattr(c, name)
+    }
+    assert bounds == {"ge": 1, "le": 50}
     assert feed_router.DEFAULT_PAGE == 20
 
 
 def test_ordering_is_newest_first():
-    now = datetime.now(timezone.utc)
-    older = _Post(now - timedelta(hours=1))
-    newer = _Post(now)
-    # The cursor from a newer post must exclude it and admit the older one,
-    # which is what "newest first, page forward into the past" means.
-    ts, _ = feed_router._decode_cursor(feed_router._encode_cursor(newer))
-    assert older.created_at < ts
+    """Asserted on the statement, not on two datetimes.
+
+    The previous version built two `_Post` stand-ins and asserted
+    `now - 1h < now` — true for a query that sorts ascending, and true for one
+    with no ORDER BY at all. `test_feed_pg.py` walks real rows; this pins the
+    direction in the SQL so a silent flip is caught without a database.
+    """
+    sql = _sql(_visible(VIEWER)).lower()
+    order_by = sql.split("order by")[1]
+    assert "posts.created_at desc" in order_by
+    assert "posts.id desc" in order_by
 
 
 # ── the CF-110 interaction ──────────────────────────────────────────────────
@@ -275,23 +329,32 @@ def test_a_naive_cursor_timestamp_is_rejected():
         f"2026-01-01T00:00:00|{uuid.uuid4()}".encode()
     ).decode()
     with pytest.raises(HTTPException) as exc:
-        feed_router._decode_cursor(naive)
+        cursors.decode(naive)
     assert exc.value.status_code == 400
 
 
 def test_both_cursor_decoders_agree_on_what_is_malformed():
-    """Two sibling paginators disagreeing about validity is how one of them ends
-    up being the lenient door."""
+    """There is one decoder now, which is the real fix.
+
+    This test previously compared two character-identical functions for drift —
+    which is the point at which they should be one function. `services/cursors`
+    is that function; what is left to assert is that both routers reach for it
+    rather than growing a third copy, and that the survivor is the strict one.
+    """
     import inspect
 
     from app.routers import follows as follows_router
 
-    for decode in (feed_router._decode_cursor, follows_router._decode_cursor):
-        assert "tzinfo is None" in inspect.getsource(decode)
-        for bad in ("not-base64!!", base64.urlsafe_b64encode(b"garbage").decode()):
-            with pytest.raises(HTTPException) as exc:
-                decode(bad)
-            assert exc.value.status_code == 400
+    for module in (feed_router, follows_router):
+        src = inspect.getsource(module)
+        assert "cursors.decode(" in src, f"{module.__name__} must use the shared decoder"
+        assert "def _decode_cursor" not in src, f"{module.__name__} grew a local copy"
+
+    assert "tzinfo is None" in inspect.getsource(cursors.decode)
+    for bad in ("", "not-base64!!", base64.urlsafe_b64encode(b"garbage").decode()):
+        with pytest.raises(HTTPException) as exc:
+            cursors.decode(bad)
+        assert exc.value.status_code == 400
 
 
 # ── the author filter itself (review finding 1) ─────────────────────────────

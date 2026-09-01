@@ -1,13 +1,12 @@
-import base64
-import binascii
 import logging
 import uuid
-from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import Select, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.auth import get_current_user_id
 from app.database import get_db
@@ -15,8 +14,8 @@ from app.models.clip import Clip
 from app.models.post import Post
 from app.models.user import User
 from app.schemas.feed import FeedPage
-from app.schemas.post import PostAuthor, PostOut, PostPlayback
-from app.services import access, follow_graph, storage
+from app.schemas.post import PostOut
+from app.services import access, cursors, follow_graph, post_view, storage
 
 logger = logging.getLogger(__name__)
 
@@ -26,48 +25,6 @@ DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
 
 DEFAULT_PAGE = 20
-
-
-def _encode_cursor(post: Post) -> str:
-    """Opaque cursor over the sort key.
-
-    Keyset, not OFFSET (epic decision 5): OFFSET re-counts from the top on every
-    page, so a post inserted while someone is scrolling shifts every subsequent
-    page by one — duplicating a row at the boundary and skipping another. The
-    key is the full `(created_at, id)` pair because `created_at` alone is not
-    unique: two posts in the same millisecond would let one hide behind the
-    other forever.
-
-    Base64 so it reads as an opaque token rather than an invitation to
-    hand-craft one; it is not a security boundary, and the query is
-    visibility-filtered regardless of what a caller puts here.
-    """
-    raw = f"{post.created_at.isoformat()}|{post.id}"
-    return base64.urlsafe_b64encode(raw.encode()).decode()
-
-
-def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
-    """Opaque token back to the sort key, or 400.
-
-    The timestamp must carry an offset. asyncpg does **not** raise when a naive
-    datetime meets a `timestamptz` column — measured, it returns the same rows
-    as the aware equivalent, because it reinterprets naive input as UTC. So an
-    unchecked naive cursor doesn't fail, it silently pages from the wrong
-    instant whenever the client meant a local time.
-
-    Matches `follows._decode_cursor`, which had the check while this didn't —
-    two sibling cursors disagreeing about what counts as malformed is its own
-    small bug.
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
-        ts, _, post_id = raw.partition("|")
-        parsed = datetime.fromisoformat(ts)
-        if parsed.tzinfo is None:
-            raise ValueError("cursor timestamp must be timezone-aware")
-        return parsed, uuid.UUID(post_id)
-    except (ValueError, binascii.Error, UnicodeDecodeError):
-        raise HTTPException(status_code=400, detail="Invalid cursor")
 
 
 def feed_query(
@@ -92,10 +49,35 @@ def feed_query(
     `followers` with an EXISTS against `follows`, so a followers-tier post from
     someone you follow appears without a second query and without any
     Python-side filtering after the LIMIT.
+
+    **`user_id` is not optional, and passing `None` is a bug rather than an
+    anonymous read.** It compiles to `posts.author_id IS NULL OR posts.author_id
+    IN (SELECT ... WHERE follows.follower_id IS NULL)` — a predicate no row can
+    satisfy, so the query returns nothing, forever, with no error. Three tests
+    used to assert against exactly that dead statement. The route is
+    authenticated so the case cannot arise through the API; CF-114's explore
+    feed is the anonymous-capable consumer and needs its own query rather than
+    this one handed a `None`.
     """
     q = (
         access.apply_post_visibility(select(Post, Clip, User), user_id)
         .join(User, Post.author_id == User.id)
+        # Only the columns `PostAuthor` renders. Without this the whole `User`
+        # row is materialized per card — `hashed_password` and `email` included,
+        # 20 times a page, on the hottest read path in the app, where any
+        # `repr()` in an error path or a Sentry breadcrumb can pick them up
+        # (`init_sentry` is active in production). `ProfileOut`'s own docstring
+        # treats email as a credential that must not leak; the cheapest way to
+        # honour that is not to load it.
+        .options(
+            load_only(
+                User.id,
+                User.username,
+                User.display_name,
+                User.avatar_url,
+                User.username_is_generated,
+            )
+        )
         # Authors whose posts may appear: accepted edges, plus self. The rule
         # comes from follow_graph rather than being restated here — see
         # followed_author_ids for why that matters.
@@ -106,15 +88,20 @@ def feed_query(
             )
         )
         .order_by(Post.created_at.desc(), Post.id.desc())
-        # One extra row, discarded before serializing — that's how has_more is
-        # known without a second COUNT query over the same filtered set.
+        # One extra row, discarded by `cursors.split_page`, which is where the
+        # +1 and the `has_more` that reads it are explained together.
         .limit(limit + 1)
     )
-    if cursor:
-        created_at, post_id = _decode_cursor(cursor)
+    if cursor is not None:
+        # `is not None`, not truthiness: `?cursor=` used to skip the decoder and
+        # silently restart from page 1, so a client emitting an empty template
+        # value scrolled forever without advancing. The decoder already rejects
+        # "" as malformed and a test pinned that — the router just never asked.
+        created_at, post_id = cursors.decode(cursor)
         # Row-value comparison, matching the ORDER BY exactly. Written as a
         # tuple rather than `created_at < x OR (created_at = x AND id < y)` so
-        # Postgres can use the composite index rather than an OR of two ranges.
+        # Postgres can use the composite index (migration 019) rather than an OR
+        # of two ranges.
         q = q.where(tuple_(Post.created_at, Post.id) < (created_at, post_id))
     return q
 
@@ -139,47 +126,28 @@ async def get_feed(
     client falls back to explore (CF-114) when this comes back empty.
     """
     rows = (await db.execute(feed_query(user_id, cursor=cursor, limit=limit))).all()
-    has_more = len(rows) > limit
-    rows = rows[:limit]
+    page, has_more = cursors.split_page(rows, limit)
 
-    items: list[PostOut] = []
-    for post, clip, author in rows:
-        if storage.r2_configured():
-            clip_url = storage.presign_from_stored_url(clip.clip_url, expires_in=3600)
-            thumb = (
-                storage.presign_from_stored_url(clip.thumbnail_url, expires_in=3600)
-                if clip.thumbnail_url
-                else None
-            )
-        else:
-            clip_url, thumb = clip.clip_url, clip.thumbnail_url
+    # Signing is pure CPU and this is an `async def`, so doing it inline blocks
+    # the event loop for every concurrent request. Measured with the repo's own
+    # `_BOTO_CONFIG`: a full page is ~16 ms — two clip URLs plus an avatar per
+    # card, 60 signings. It is that cheap only because `storage._client()` is
+    # `lru_cache`d; the same page against an uncached client measures ~364 ms,
+    # which is what this would cost if that decorator were ever dropped. Off the
+    # loop either way, since the handler has nothing else to await meanwhile.
+    r2_ready = storage.r2_configured()
 
-        items.append(
-            PostOut(
-                id=post.id,
-                clip_id=post.clip_id,
-                caption=post.caption,
-                visibility=post.visibility,
-                like_count=post.like_count,
-                comment_count=post.comment_count,
-                created_at=post.created_at,
-                author=PostAuthor.model_validate(author),
-                playback=PostPlayback(
-                    clip_url=clip_url,
-                    thumbnail_url=thumb,
-                    proxy_url=None,  # CF-48 populates this
-                    start_time=clip.start_time,
-                    end_time=clip.end_time,
-                ),
-                # False until CF-113 adds likes. The field ships now so the
-                # response shape doesn't change under the client later, and so
-                # the feed never becomes a per-post like lookup — CF-113 fills
-                # it with one extra query for the whole page, not one per card.
-                viewer_has_liked=False,
-            )
-        )
+    def render() -> list[PostOut]:
+        return [
+            post_view.serialize(post, clip, author, r2_ready=r2_ready)
+            for post, clip, author in page
+        ]
+
+    items = await run_in_threadpool(render)
 
     return FeedPage(
         items=items,
-        next_cursor=_encode_cursor(rows[-1][0]) if (has_more and rows) else None,
+        next_cursor=cursors.encode(page[-1][0].created_at, page[-1][0].id)
+        if (has_more and page)
+        else None,
     )

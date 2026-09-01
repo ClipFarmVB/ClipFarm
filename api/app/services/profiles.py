@@ -53,17 +53,28 @@ def serialize(user: User, schema: type[_Schema]) -> _Schema:
     tracked as follow-up, and now with a second caller pushing on it.
     """
     out = schema.model_validate(user)
-    if not user.avatar_url or not storage.r2_configured():
-        return out
+    return out.model_copy(update={"avatar_url": presign_avatar(user.avatar_url)})
+
+
+def presign_avatar(avatar_url: str | None) -> str | None:
+    """The avatar half of `serialize`, callable on its own.
+
+    Split out for CF-111: the feed renders a `PostAuthor`, not a `ProfileOut`,
+    so it cannot go through `serialize` — and the copy it wrote instead simply
+    omitted the presign, handing the client 20 URLs it cannot load behind a 200.
+    A rule that only one of two renderers applies is not a rule.
+
+    Returns the stored value unchanged when there is nothing to sign or signing
+    fails: a signing failure shouldn't take a whole profile — or a whole feed
+    page — down, and the avatar degrading to broken is the smaller loss.
+    """
+    if not avatar_url or not storage.r2_configured():
+        return avatar_url
     try:
-        return out.model_copy(
-            update={"avatar_url": storage.presign_from_stored_url(user.avatar_url)}
-        )
+        return storage.presign_from_stored_url(avatar_url)
     except Exception:
-        # A signing failure shouldn't take the whole profile down — the rest of
-        # the response is still useful, and the avatar degrades to broken.
-        logger.warning("Could not presign avatar for user %s", user.id, exc_info=True)
-        return out
+        logger.warning("Could not presign avatar %s", avatar_url, exc_info=True)
+        return avatar_url
 
 
 async def by_handle(handle: str, db: AsyncSession) -> User:
