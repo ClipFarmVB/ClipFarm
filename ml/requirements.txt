@@ -17,10 +17,19 @@ ffmpeg-python==0.2.0
 # no call sites; CF-7 (#31) is its intended consumer and is unscheduled. Two
 # reasons this file does not carry the pins in the meantime: they are several
 # hundred MB in every dev install, and `paddleocr==2.9.1` requires `numpy<2.0`.
-# Of the ceilings this file's dependencies impose through their own metadata,
-# that is the only unconditional one — `ultralytics==8.3.55` also caps numpy,
-# but only on darwin (`numpy<2.0.0; sys_platform == "darwin"`, dropped in
-# 8.3.253), so a macOS install stays capped until ultralytics is bumped too.
+# Among the constraints this file's dependencies declare in their own metadata,
+# that is the only one holding numpy below 2 unconditionally. `ultralytics`
+# also caps numpy below 2, but only on darwin (`numpy<2.0.0; sys_platform ==
+# "darwin"`), so a macOS install stays capped until ultralytics is bumped too —
+# and the bump is not free: the marker survives through 8.3.69 and is gone in
+# 8.3.70, which replaces it with an unconditional `numpy<=2.1.1`. 8.3.253
+# carries no unconditional cap at all, so the version chosen matters.
+#
+# `inference-sdk>=0.9.0` below is worth CF-363's attention for the opposite
+# reason. It is unpinned, and its releases from 0.50 on require `numpy>=2.0.0`,
+# so today it resolves to 1.5.1 alone but is silently walked back to 0.45.1
+# whenever `numpy==1.26.4` is in the same install. The numpy-2 move frees it;
+# until then this file quietly installs a much older SDK than it looks like.
 #
 # It is NOT the only thing holding the repo on numpy 1, and CF-363 should not
 # read it that way: this file's own `numpy==1.26.4` is a harder ceiling still,
