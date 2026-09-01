@@ -61,9 +61,14 @@ about 13k. That is the whole point of the split.
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
 **18k** tokens, the size that file was *before* the split. Splitting it out took
-that lap from ~35k to ~20k on the files as they stand; it was ~32k to ~19k
-when measured at the split. Step 1 is unchanged when it spawns, and ~4k cheaper
-when it does not.
+that lap from **~32k to ~19k**. Those two are measured across the split rather
+than on today's files, because the lap they compare no longer exists here:
+`git ls-tree -r --long 596755d^ -- docs/overnight/{README,RULES,FIX,REVIEW}.md`
+sums to 32.25k, and the same four with `BRIEFS.md` for `REVIEW.md` at `596755d`
+to 19.09k. Do not try to recompute the before-figure from the table above — it
+needs `REVIEW.md` with the briefs still folded in, which is a counterfactual and
+not a file. Step 1 is unchanged when it spawns, and ~4k cheaper when it does
+not.
 
 Those are bytes/4 on the files as they stand, and a lap is this file plus
 `RULES.md` plus the phase file. **Re-measure them when you add a section** — they

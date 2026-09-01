@@ -237,11 +237,13 @@ is a trap, in one of two ways. The label *write* and the `get_status` row are
 **silent**: the call succeeds and returns a wrong answer. The label *read* and
 the page-size row fail **loudly** — `Could not resolve to an Issue`, and a
 refusal for size — and are traps only because the error reads like a missing
-label or an empty page rather than like the wrong call. **The label row is the
-one that carries both**: under the loud read failure sits a silent one, a
+label or an empty page rather than like the wrong call. **The label *read* row
+is the one that carries both**: under its loud failure sits a silent one, a
 `label:` search that lags behind the write and answers with a plausible list
-missing the row you just wrote. Which kind a row is, each row says. The first three were hit in the run of 2026-08-27; the
-check-runs row comes from CF-275, which is what added point 7.
+missing the row you just wrote. Which kind a row is, each row says. The first
+three were hit in the run of 2026-08-27 and the check-runs row comes from
+CF-275, which is what added point 7; the nested `label:` trap is later than
+all of them, 2026-09-01, and the row it sits under says so.
 
 - **Labels cannot be read off a PR the obvious way.** `issue_read` with
   `get_labels` returns `Could not resolve to an Issue` for a pull request

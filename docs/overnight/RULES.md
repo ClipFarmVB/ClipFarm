@@ -1,6 +1,6 @@
 # Standing rules
 
-Read on **every iteration**. The rules that apply no matter which step the lap is doing — what is forbidden, what may be pushed to, what must be logged, and the counters that decide whether the run continues.
+Read on **every iteration**. The rules that apply no matter which step the lap is doing — what is forbidden, what counts as evidence, what may be pushed to, what must be logged, and the counters that decide whether the run continues.
 
 Part of the unattended-run brief — see [`README.md`](./README.md).
 
@@ -125,9 +125,11 @@ can lean on a reading taken earlier.
 **It propagates further than the thread.** A run writes its own next-lap prompt,
 and the false account went into that prompt as established fact. With the log
 truncated at the end of the night, a post-compaction lap would have inherited it
-with only the PR thread to contradict it. A correction has to reach the
-scheduled prompt as well as the comment — see [the logging
-rule](#log-before-you-finish-each-iteration).
+with only the PR thread to contradict it. So a correction has to reach the
+scheduled prompt as well as the comment. Nothing else says this: [the logging
+rule](#log-before-you-finish-each-iteration) governs the log and the schedule
+but says nothing about what a prompt asserts, and the prompt is the one artifact
+here that carries claims forward without ever being reviewed.
 
 ### The push test
 
