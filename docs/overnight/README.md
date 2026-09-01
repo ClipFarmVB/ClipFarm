@@ -16,7 +16,7 @@ not the ones it is not. Every rule lives in exactly one file.
 
 | file | when to read it | ~tokens |
 |---|---|---|
-| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 1.9k |
+| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.0k |
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.4k |
 | [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, repo traps | 8.4k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.9k |
@@ -56,15 +56,15 @@ run that learned it.
   that had since been amended.
 
 A step-1 lap that only selects costs about 25k tokens of brief instead of 49k;
-one that also spawns a round, about 30k. A step-2 lap is about 21k, a step-3 lap
+one that also spawns a round, about 31k. A step-2 lap is about 21k, a step-3 lap
 about 13k. That is the whole point of the split.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
 **18k** tokens, the size that file was *before* the split. Splitting it out took
 that lap from **~32k to ~19k**. Those two are measured across the split, not on
-today's files, because the lap they compare no longer exists here — so they are
-the one pair on this page that the table below cannot reproduce:
+today's files, because the lap they compare no longer exists here. The table
+below cannot reproduce them; the command that can is right here:
 
 ```
 git ls-tree -r --long '596755d^' -- docs/overnight/README.md \
@@ -100,10 +100,12 @@ wrong:
 the *revision*, and only ever between two values: the table and the lap figures
 are the files as they stand; anything marked across-the-split is `596755d^`
 against `596755d`, because the lap it compares no longer exists here. A lap is
-this file plus `RULES.md` plus the phase file — **this file's
-own row included**, which is why there is one — and each row is rounded to the
-nearest tenth. A lap is summed from bytes rather than from the rounded rows, so
-adding its rows up lands within a tenth or so rather than exactly.
+this file plus `RULES.md` plus the phase files it reads — **this file's own row
+included**, which is why there is one, and *files* plural because two laps read
+two: a step-1 lap that spawns adds `BRIEFS.md` to `REVIEW.md`, and a step-2 lap
+adds it to `FIX.md`. Each row is rounded to the nearest tenth, and a lap is
+summed from bytes rather than from those rounded rows, so adding the rows up
+lands within a tenth or so rather than exactly.
 **Re-measure them when you add a section** — they had drifted by a third before
 CF-275 re-took them, and this is the table a run reads to plan what it can
 afford.

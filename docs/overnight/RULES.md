@@ -100,8 +100,9 @@ marker. That figure had been fetched at some point — but not for that sentence
 and it is not what the sentence called it: `06:28:01Z` is the `submitted_at` of
 the round's own **review**, which is what bumped `updated_at`. Reaching back
 for a number already in the thread is how the second instance happened; a
-figure that answers a new question needs a call made to answer it. A body edit's time is not recoverable through REST at all, so the
-derivation had no source and the ordering it asserted remains unknown. Fetching
+figure that answers a new question needs a call made to answer it. A body
+edit's time is not recoverable through REST at all, so the derivation had no
+source and the ordering it asserted remains unknown. Fetching
 a number is necessary and not sufficient; it also has to be the number the
 sentence says it is. A correction written under scrutiny, about this exact
 failure, reproduced it in one step — so treat the first retraction of a claim
