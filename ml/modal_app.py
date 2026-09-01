@@ -35,11 +35,14 @@ image = (
     .pip_install(
         "torch",
         "torchvision",
-        # Pinned to match ml/modal_pose.py and ml/requirements.txt. Unpinned,
-        # pip resolves headless to 5.x while inference==1.3.3 drags in
-        # opencv-python and opencv-contrib-python at <=4.10.0.84 — three
-        # distributions writing the same `cv2` package, across a major
-        # version, and whichever installs last wins (CF-278).
+        # Pinned because inference==1.3.3 holds opencv-python and
+        # opencv-contrib-python at <=4.10.0.84 and both land in this image:
+        # unpinned, pip resolves headless to 5.x, and three distributions
+        # write the same `cv2` package across a major version with whichever
+        # installs last winning (CF-278). Matching ml/modal_pose.py and
+        # ml/requirements.txt is a consequence, not the reason — bumping all
+        # of them together would still break this image, which is what
+        # test_the_ball_image_pins_opencv_where_inference_can_follow asserts.
         "opencv-python-headless==4.10.0.84",
         # numpy is deliberately NOT pinned to the 1.26.4 the other runtimes
         # use: inference==1.3.3 requires numpy>=2.0.0,<2.4.0, so that pin

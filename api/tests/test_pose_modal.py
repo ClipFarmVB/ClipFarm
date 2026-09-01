@@ -7,13 +7,16 @@ ml/tests and the eval harness.
 
 Run from the api/ dir: `cd api && pytest tests/test_pose_modal.py`.
 """
+import ast
 import re
 import sys
 import types
 from pathlib import Path
 
 import pytest
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 # One definition of how an `-r` include is spelled, shared with the pre-commit
@@ -521,20 +524,39 @@ def _code_lines(path: Path) -> str:
     between their preprocessing is exactly what the version guard exists to
     catch (CF-278).
 
-    Adjacent string literals are spliced, because Python splices them: pip sees
-    one requirement from `"numpy" "<2"`, and a reader of the file sees two
-    tokens. Without this, every pattern below stops at the closing quote and
-    reads that as an unconstrained `numpy` — a *false allow*, which is the one
-    class of error these guards cannot afford. The seam is only removed
-    between two quotes of the same kind with nothing but horizontal whitespace
-    between them, so `"numpy", "requests"` (a comma intervenes) still reads as
-    two requirements.
+    This is text, not Python: `Dockerfile.api` and `ml/requirements.txt` go
+    through it too, so nothing here may assume Python's rules. An attempt to
+    splice adjacent string literals *here* — right for `.py`, and how
+    `"numpy" "<2"` hid — made `pip install "opencv-python-headless==4.10.0.84"
+    "numpy==1.26.4"` in the Dockerfile read as a pin on `4.10.0.84numpy`,
+    failing the consistency test on correct shell quoting. Python's rules live
+    in `_python_strings` instead.
     """
-    text = "\n".join(
+    return "\n".join(
         line for line in path.read_text(encoding="utf-8").splitlines()
         if not line.lstrip().startswith("#")
     )
-    return re.sub(r"([\"'])[^\S\n]*\1", "", text)
+
+
+def _python_strings(path: Path) -> list[str]:
+    """Every string literal in a Python file, as Python itself sees them.
+
+    Four spellings defeated a regex reading `ml/modal_app.py` as text, all of
+    them the same mistake: the file is Python, and only Python knows where one
+    requirement ends. `ast` resolves implicit concatenation — `"numpy" "<2"`,
+    `"numpy" '<2'` across quote kinds, and the two-line form inside brackets —
+    into one constant before anything here looks at it, which is not a rule
+    this module has to keep re-deriving one spelling at a time.
+
+    Comments are gone by construction, which is what we want for a `.py`
+    source: a pin lives in a string or it is not a pin.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
 
 
 # What `inference==1.3.3` will accept. The ball image's numpy has to land in
@@ -573,6 +595,25 @@ def _admits_a_numpy_2(constraint: str) -> bool:
         v in INFERENCE_NUMPY_WINDOW and specifier.contains(v, prereleases=True)
         for v in candidates
     )
+
+
+def _as_numpy_requirement(text: str) -> Requirement | None:
+    """`text` parsed as a PEP 508 requirement for numpy, or None.
+
+    `packaging.Requirement` is the same parser pip uses, so extras, spacing and
+    direct references stop being spellings to anticipate: `numpy[cffi]==1.26.4`
+    and `numpy [cffi] == 1.26.4` are one requirement with one specifier, and
+    `msgpack-numpy==0.4.8` is a requirement for something that is not numpy.
+
+    None means "not a requirement at all" — a `pip install ...` command line
+    inside `run_commands`, or any other string. Those still get read as text by
+    the caller, which is how a pin hidden in a shell command stays in scope.
+    """
+    try:
+        requirement = Requirement(text.strip())
+    except InvalidRequirement:
+        return None
+    return requirement if canonicalize_name(requirement.name) == "numpy" else None
 
 
 ML_RUNTIME_PACKAGES = ("torch", "torchvision", "ultralytics", "transformers", "inference")
@@ -740,66 +781,83 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
     to learn it.
 
     So this asserts the constraint directly: constrain numpy there or do not,
-    but any constraint has to admit a version `inference==1.3.3` accepts. Three
-    versions of this guard were each defeated by one spelling further out —
-    `numpy<2` past an `==`-only check, `numpy>=1.26,<2` hiding its cap behind a
-    floor, `'numpy<2'` in single quotes past a double-quote anchor — so it
-    anchors on the package name alone and evaluates the whole specifier set
-    with `packaging`, rather than pattern-matching operators. A fourth defeat
-    came from the other side: `numpy[cffi]==1.26.4`, `numpy @ <a 1.26.4 wheel
-    url>` and `"numpy" "<2"` each ended the match at an empty capture, which is
-    `SpecifierSet("")` and admits everything, so all three passed. Extras and
-    direct references are now matched, and `_code_lines` splices adjacent
-    string literals.
+    but any constraint has to admit a version `inference==1.3.3` accepts.
+
+    **Six versions of this guard were each defeated by one spelling further
+    out**, and the lesson is in the shape of that list rather than in any entry
+    on it: `numpy<2` past an `==`-only check; `numpy>=1.26,<2` hiding its cap
+    behind a floor; `'numpy<2'` past a double-quote anchor; then, from the
+    other side, `numpy[cffi]==1.26.4` and a direct reference to a 1.26.4 wheel,
+    which ended the match at an *empty* capture — `SpecifierSet("")` admits
+    everything, so both passed; then `"numpy" "<2"`, and when that was closed
+    by splicing same-quote seams, `"numpy" '<2'` and the two-line form went
+    straight through the same hole.
+
+    Each fix anticipated one more spelling, which is why there were six. This
+    one does not: the file is Python, so `ast` decides where a string literal
+    ends (retiring every concatenation and quoting variant at once) and
+    `packaging.Requirement` — the parser pip itself uses — decides where the
+    package name ends and what the specifier is (retiring extras, their
+    spacing, and direct references). What is left is a real specifier set,
+    evaluated by `packaging`, with a text pass kept only for strings that are
+    not requirements at all, such as a pin inside `run_commands("pip install
+    ...")`.
 
     The repo-wide numpy-2 migration — decided on CF-278 (#323) and carried by
     CF-363 (#443) — makes this test agree with the one above rather than
     needing to be deleted.
     """
-    # Anchored on the package name, and on nothing else. Anchoring on a double
-    # quote — which an earlier version of this did — made `'numpy<2'` in single
-    # quotes invisible, and nothing in this repo enforces double quotes: neither
-    # ruff config selects the `Q` rules and no formatter runs. The name anchor
-    # also keeps a pin inside a `run_commands("pip install ...")` in scope,
-    # which the quote anchor had silently dropped.
+    # Nothing here anchors on a quote. An earlier version did, which made
+    # `'numpy<2'` invisible, and nothing in this repo enforces double quotes:
+    # neither ruff config selects the `Q` rules and no formatter runs.
     #
-    # The whole comma-separated specifier set is captured, not the first
-    # operator: `numpy>=1.26,<2` is the ecosystem-standard spelling of "numpy 1
-    # only", and a pattern that stops at the floor never sees the cap behind it.
+    # The fallback pattern captures the whole comma-separated specifier set,
+    # not the first operator: `numpy>=1.26,<2` is the ecosystem-standard
+    # spelling of "numpy 1 only", and a pattern that stops at the floor never
+    # sees the cap behind it.
     #
-    # Extras and direct references are matched rather than ignored, and for the
-    # same reason the seam-splicing in `_code_lines` exists: anything the
-    # pattern does not consume between the name and the version ends the match
-    # at an *empty* capture, and an empty capture is `SpecifierSet("")`, which
-    # admits everything. So `numpy[cffi]==1.26.4` and
-    # `numpy @ https://.../numpy-1.26.4-...whl` both read as an unconstrained
-    # numpy and pass — the failure mode this guard is least allowed to have.
-    for extras, reference, constraint in re.findall(
-        r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
-        r"(\[[^\]\n]*\])?"
-        r"([^\S\n]*@[^\s,'\"]*)?"
-        r"((?:[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*[^\s,'\"]+[^\S\n]*,?)*)",
-        _code_lines(REPO_ROOT / "ml" / "modal_app.py"),
-        re.IGNORECASE,
-    ):
-        # A direct reference names one artefact, so `packaging` has no
-        # specifier to evaluate and the URL's version is a filename
-        # convention rather than metadata. Fail loudly instead of guessing:
-        # a false rejection blocks a legal spelling nobody uses here, where a
-        # false allow ships an image that cannot build.
-        assert not reference.strip(), (
-            f'ml/modal_app.py installs numpy by direct reference ("numpy'
-            f'{extras}{reference}"), whose version this guard cannot check. '
-            "Use a version specifier inference==1.3.3 accepts "
-            "(>=2.0.0,<2.4.0)."
-        )
-        assert _admits_a_numpy_2(constraint), (
-            f'ml/modal_app.py constrains numpy as "numpy{extras}{constraint}", '
-            "which admits no version inference==1.3.3 accepts "
-            "(>=2.0.0,<2.4.0), so this cannot resolve and the image build "
-            "fails with ResolutionImpossible. See CF-359 (#440), and CF-363 "
-            "(#443) for the repo-wide numpy-2 migration."
-        )
+    # Each string literal is offered to the PEP 508 parser first. That is what
+    # retires the whole class: the parser knows where the name ends, so extras
+    # and their spacing, direct references and every quote arrangement stop
+    # being spellings to anticipate. Anything it rejects is not a requirement —
+    # a `pip install ...` line inside `run_commands`, say — and is read as text
+    # by the pattern below, which is how a pin hidden in a shell command stays
+    # in scope.
+    for text in _python_strings(REPO_ROOT / "ml" / "modal_app.py"):
+        requirement = _as_numpy_requirement(text)
+        if requirement is not None:
+            # A direct reference names one artefact, so there is no specifier
+            # to evaluate and the URL's version is a filename convention
+            # rather than metadata. Fail loudly rather than guess: a false
+            # rejection blocks a legal spelling nobody uses here, where a
+            # false allow ships an image that cannot build.
+            assert requirement.url is None, (
+                f'ml/modal_app.py installs numpy by direct reference ("{text}"), '
+                "whose version this guard cannot check. Use a version "
+                "specifier inference==1.3.3 accepts (>=2.0.0,<2.4.0)."
+            )
+            assert _admits_a_numpy_2(str(requirement.specifier)), (
+                f'ml/modal_app.py constrains numpy as "{text}", which admits '
+                "no version inference==1.3.3 accepts (>=2.0.0,<2.4.0), so "
+                "this cannot resolve and the image build fails with "
+                "ResolutionImpossible. See CF-359 (#440), and CF-363 (#443) "
+                "for the repo-wide numpy-2 migration."
+            )
+            continue
+        for constraint in re.findall(
+            r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
+            r"((?:[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*[^\s,'\"]+[^\S\n]*,?)*)",
+            text,
+            re.IGNORECASE,
+        ):
+            assert _admits_a_numpy_2(constraint), (
+                f'ml/modal_app.py constrains numpy as "numpy{constraint}" '
+                f'(inside "{text}"), which admits no version inference==1.3.3 '
+                "accepts (>=2.0.0,<2.4.0), so this cannot resolve and the "
+                "image build fails with ResolutionImpossible. See CF-359 "
+                "(#440), and CF-363 (#443) for the repo-wide numpy-2 "
+                "migration."
+            )
 
 
 def test_the_ball_image_pins_opencv_where_inference_can_follow():
@@ -824,7 +882,9 @@ def test_the_ball_image_pins_opencv_where_inference_can_follow():
     pins = re.findall(
         r"(?<![A-Za-z0-9_.\-])opencv-python-headless(?![A-Za-z0-9_.\-])"
         r"[^\S\n]*==[^\S\n]*([0-9][0-9A-Za-z.\-]*)",
-        _code_lines(REPO_ROOT / "ml" / "modal_app.py"),
+        # As Python sees them, so a pin split across adjacent literals is one
+        # string here too — the same reason the numpy guard above does it.
+        "\n".join(_python_strings(REPO_ROOT / "ml" / "modal_app.py")),
         re.IGNORECASE,
     )
     assert pins, (
