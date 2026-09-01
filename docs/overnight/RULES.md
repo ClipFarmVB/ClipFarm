@@ -9,6 +9,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`START.md`](./START.md) | once, at the start of a run |
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round, cold or semi-cold |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
 | [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
@@ -58,7 +59,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
   other PR. You never merge, never deploy.
 - **You are never the reviewer.** Every PR still gets reviewed — by a subagent
   spawned per step 1, whether or not this session wrote the diff.
-- **Maximum 5 new PRs** and **6 new cards** per run.
+- **Maximum 6 new PRs** and **7 new cards** per run.
 - **No attribution stamps that you write.** Do not add "Generated with Claude
   Code", a `Co-Authored-By` trailer, a session link, or any similar footer to
   commits, PR bodies, reviews, comments, or issues. Local settings suppress
@@ -251,20 +252,23 @@ step 2 is the breadth-first pass ruled out below.
 
 #### The ceiling, and the settling exception
 
-**Ceiling: six rounds per PR per run, cold and semi-cold together**, so a
+**Ceiling: seven rounds per PR per run, cold and semi-cold together**, so a
 pathological PR cannot consume the whole night. Counting only cold rounds would
 leave the semi-cold ones unbounded — every fix buys another check — and half of
-a ceiling is not a ceiling. Six covers a PR with two rounds of findings and the
-cold round that settles it — five by the cost model below, with one spare. The
-spare is now allocated: a PR that lands on the routing table's open-finding row
+a ceiling is not a ceiling. Seven covers a PR with two rounds of findings and
+the cold round that settles it — five by the cost model below, with two spare.
+The first spare is allocated: a PR that lands on the routing table's open-finding row
 spends it on the semi-cold round that recovers from a clean marker posted over
-an unclosed finding. A PR needing that detour twice will hit the ceiling, which
-is the intended outcome — twice is not a convergence.
+an unclosed finding. The second was added after the run of 2026-08-30, where
+#438 took five rounds because each fix drew a finding one spelling further out;
+it converged, and would have been cut off at six. A PR needing the detour twice
+*and* a third fix cycle still hits the ceiling, which is the intended outcome —
+that is no longer converging.
 Hitting it is the same outcome: fix what you can, apply `unsettled` with an
 `unsettled: ran out of rounds @ <sha>` comment, record, move on.
 
 **One exception: a PR with nothing open may run the rounds settling needs, past
-the ceiling.** If the sixth round leaves no Critical and no Medium outstanding,
+the ceiling.** If the last round leaves no Critical and no Medium outstanding,
 settling still needs a fresh cold round, and refusing it labels a converged PR
 `unsettled: ran out of rounds` on arithmetic alone. That happened on #291 in the
 first real run: six rounds ending `semi-cold: closes — 4 of 4 Mediums closed,
@@ -281,7 +285,7 @@ there, and `unsettled: ran out of rounds` is then accurate rather than
 arithmetic. Rounds that stay clean can only run until the bar is met, and then
 the PR settles. There is no path that keeps granting rounds.
 
-**These rounds are charged to the 32-round budget.** They are real reviews and
+**These rounds are charged to the 40-round budget.** They are real reviews and
 the counting query charges them automatically; unlike a `reopened:` marker or a
 re-posted marker, nothing here is free. The exception lifts the *per-PR*
 ceiling, never the run-wide budget.
@@ -313,10 +317,10 @@ is the intent, since the oldest have waited longest. Do not order by the
 
 #### The run budget
 
-**Run budget: 32 rounds per run**, cold and semi-cold together. *Rounds*, not
+**Run budget: 40 rounds per run**, cold and semi-cold together. *Rounds*, not
 reviews: each round now submits a GitHub review as well as posting its marker,
 so counting "reviews" would be ambiguous about which artifact is meant. The
-budget counts rounds, and a round is one marker comment. Six rounds
+budget counts rounds, and a round is one marker comment. Seven rounds
 across a queue this size would permit far more — a whole night of nothing but
 reviewing, which together with "stop on usage limits" means step 3 never
 happens. **When the budget is spent, stop reviewing and go to step 3** — but
@@ -344,9 +348,9 @@ run, which is the whole reason these labels exist.
 #### Logging, and the counting windows
 
 **Log every round as you finish it** — `PR #<n> — <cold|semi-cold>, round
-<k>/6, budget <used>/32` plus the tiers found. A round granted by the settling
-exception is logged as `settling, budget <used>/32` instead of a `<k>/6` — it is
-outside the ceiling, and writing `7/6` reads as a counting bug to the very
+<k>/7, budget <used>/40` plus the tiers found. A round granted by the settling
+exception is logged as `settling, budget <used>/40` instead of a `<k>/7` — it is
+outside the ceiling, and writing `8/7` reads as a counting bug to the very
 cross-check that is meant to catch one. Neither bound is enforceable
 unless the count survives: context may be compacted mid-run, and counts you hold
 in your head reset to zero when it is. Recover both from the log at the start of
@@ -364,7 +368,7 @@ done | wc -l
 The budget needs this as much as the ceiling does. Recovering it from the log
 alone leans on the one source this same paragraph says a compaction can lose
 entries from, and losing entries makes the budget read *low* — so the run keeps
-reviewing past 32 and starves step 3, failing toward more reviewing rather than
+reviewing past 40 and starves step 3, failing toward more reviewing rather than
 less.
 
 When log and markers disagree, **the markers win.** The log records
@@ -376,9 +380,9 @@ log over the thing the rules read. Count markers, not comments: comments also
 carry your step 2 fix replies and anything a human wrote.
 
 **Count only markers from this run.** Markers persist for the life of the PR;
-the ceiling is six rounds *per run*, and an `unsettled: ran out of rounds` PR is
+the ceiling is seven rounds *per run*, and an `unsettled: ran out of rounds` PR is
 promised a reset when new commits land. A raw count undoes both — a PR that
-spent six rounds last night would read as already at the ceiling before this run
+spent seven rounds last night would read as already at the ceiling before this run
 touched it. So count markers newer than the run's start time, which the
 [logging rule](#log-before-you-finish-each-iteration) puts on its own
 `run start: ` line — found by matching that line, never by position.
@@ -401,7 +405,7 @@ promised a reset.
 else — which is what `date -u +%Y-%m-%dT%H:%M:%SZ` produces, and why the run
 start is recorded in that form. An offset form like `2026-08-25T01:08:57+02:00`
 sorts wrong against it and the count comes back low or zero — which reads as "no
-rounds this run" and hands the PR a fresh six-round ceiling:
+rounds this run" and hands the PR a fresh seven-round ceiling:
 
 ```
 ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
@@ -476,6 +480,19 @@ first and leaves `SINCE`.
 - **Apply edits one at a time, never as a batch script.** A five-edit script
   that asserts partway through writes nothing, while the verification run after
   it looks entirely normal.
+- **Changing a number in this brief means hunting it in words, not only in
+  tokens.** These files argue in prose, so a value lives as `32 rounds` *and* as
+  "against 32", "five new PRs", "the 5-PR cap", "writing `7/6`", "past 32". CF-365
+  raised four caps, grepped only the format strings — `32 rounds`, `six rounds
+  per`, `/6, budget` — and left **seven** prose survivors for a reviewer to find.
+  Every one of the greps was a format string; every survivor was a sentence.
+  `grep -rn '\b32\b\|\bsix\b\|\bfive\b' docs/overnight/` and reading the hits
+  costs about a minute and catches all of them. Two cautions with it: most hits
+  are *historical* — "#307's six rounds against red CI" is a record, not the cap,
+  and rewriting it turns history into a lie — and a raise can invalidate an
+  **argument** rather than just a number. CF-365's own budget arithmetic
+  ("forty-odd against 32 does not fit") stopped following at 40, and needed a
+  paragraph rather than a digit.
 - **The restore step is where mutation testing goes wrong, not the mutation.**
   Two restores destroyed work in one run: a checksum caught one, and a moved
   test count caught the other. Neither announced itself — the mutation's own

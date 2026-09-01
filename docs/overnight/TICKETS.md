@@ -12,6 +12,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`START.md`](./START.md) | once, at the start of a run |
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round, cold or semi-cold |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
 | [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
@@ -29,7 +30,7 @@ not hold step 3 back for the rest of the night.
 **This step does not run in `review-only` mode**, and neither does anything under
 [Working a ticket](#working-a-ticket). Everything else below still does — in
 particular [Filing cards](#filing-cards-for-out-of-scope-findings), because
-reviewing is exactly when out-of-scope problems surface, and the 6-card cap
+reviewing is exactly when out-of-scope problems surface, and the 7-card cap
 applies in both modes.
 
 ### Working a ticket
