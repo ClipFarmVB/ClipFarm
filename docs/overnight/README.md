@@ -66,8 +66,8 @@ which is why it reads ~19k where the step-2 figure above now reads 20k. Step 1
 is unchanged when it spawns, and ~5k cheaper when it does not.
 
 Those are bytes/4 on the files as they stand — the across-the-split pair above
-excepted, and it says so — and a lap is this file plus
-`RULES.md` plus the phase file. **Re-measure them when you add a section** — they
+excepted, and it says so — and a lap is this file plus `RULES.md` plus the
+phase file. **Re-measure them when you add a section** — they
 had drifted by a third before CF-275 re-took them, and this is the table a run
 reads to plan what it can afford.
 

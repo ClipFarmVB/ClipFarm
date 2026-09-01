@@ -146,7 +146,9 @@ already pushed so the diff is empty", was tested and refuted — sightings that
 shared exactly that state targeted correctly. What the record does support is
 narrower: every round that recorded passing the number targeted correctly, and
 every round that recorded the skill finding its own diff did not. Naming the
-number is cheap and consistent with that; it is not yet known to be the fix. Give it the head SHA you captured, and require
+number is cheap and consistent with that; it is not yet known to be the fix.
+
+Give it the head SHA you captured, and require
 the comment's body to **start** with the literal `cold: findings @ <sha>` or
 `cold: clean @ <sha>`, before any heading or
 formatting, since that whole line is what selection matches and routes on.
@@ -189,11 +191,9 @@ It needs saying separately because reading the code does not catch it: a
 reviewer checking whether the code is correct passes over a comment that
 describes it wrongly. The round has to be told to check each claim in a
 comment, docstring, commit message and PR body **against what the code does**.
-**Do that part yourself.** No sighting so far records the skill reading a PR
-body, and the one body-shaped finding it produced was anchored in a file
-instead — so running it does not discharge this paragraph. Stated as what the
-record shows rather than as never: the rounds logged findings, not the absence
-of them, so "it has never read one" is more than the evidence carries.
+**Do that part yourself.** No finding the skill has produced was rooted in a PR
+body — the one body-shaped finding on record is anchored in a file instead — so
+running it does not discharge this paragraph.
 
 Three sub-cases, each of which cost a round:
 
