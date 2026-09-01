@@ -208,9 +208,11 @@ def _origin_problems(origin: str) -> list[str]:
             "this as an Origin; retype the value rather than editing it"
         )
 
-    # The backslash is reported from the RAW entry, by the check directly below
-    # this paragraph. Everything after that check reads a value with backslashes
-    # removed — cleaned once, at `cleaned = ...`, rather than per-check.
+    # The backslash is reported from the RAW entry, by the `if "\\" in origin:`
+    # check under the next paragraph. Everything that PARSES the entry after
+    # that parses it with backslashes removed — cleaned once, at `cleaned = ...`,
+    # rather than per-check. Checks that test the raw string instead say so
+    # where they do; `?` and `#` are the ones that still do.
     #
     # A previous version cleaned the value for the PORT checks only, via a
     # second `urlsplit`, and left every other check reading the raw parse. Three
@@ -1114,10 +1116,15 @@ def _boot_error(exc: ValidationError) -> str:
     stripped — `config.py` has no such validator, and inventing a second case
     for code that does not exist is how the pattern below would start to drift.
 
-    The empty remainder is guarded because it is reachable rather than
-    theoretical: `raise ValueError("")` renders as exactly `Value error, `, and
-    stripping that would compose `Configuration is not usable: ` with nothing
-    after it — a boot failure that names no problem at all.
+    The empty remainder is guarded, and the guard is defensive rather than
+    load-bearing today: `raise ValueError("")` renders as exactly
+    `Value error, `, and stripping that would compose
+    `Configuration is not usable: ` with nothing after it — a boot failure that
+    names no problem. Nothing here produces it. The two model validators below
+    raise from three sites, and all three pass non-empty text, so the case is
+    unreachable through any accepted setting. It is guarded anyway because the
+    cost is one condition and the failure is a boot message that says nothing;
+    the test for it constructs the error, since no env var can.
     """
     problems = []
     for error in exc.errors():

@@ -1590,9 +1590,9 @@ def test_the_prefix_strip_is_keyed_on_the_type_and_keeps_a_bare_message():
     Both of these were written first as end-to-end tests through `Settings`,
     and **both could not fail**: measured, deleting the `type` guard and
     deleting the empty-remainder guard each left the whole suite green. No env
-    var this codebase accepts produces either input — `config.py` has three
-    model validators and all three raise a non-empty `ValueError`, so every
-    real error is either a `value_error` with text or a pydantic-generated
+    var this codebase accepts produces either input — `config.py`'s two model
+    validators raise from three sites and every one passes non-empty text, so
+    a real error is either a `value_error` with text or a pydantic-generated
     message that has no such prefix to lose.
 
     That is the failure class CF-308 is about, so the errors are constructed
@@ -1605,6 +1605,13 @@ def test_the_prefix_strip_is_keyed_on_the_type_and_keeps_a_bare_message():
     - A `value_error` carrying nothing but the prefix must keep it too, or the
       composed line becomes `Configuration is not usable: ` and names no
       problem at all.
+    - A `value_error` whose text opens with characters drawn from the prefix
+      must lose the prefix and nothing else. `rev, all of it` is every one of
+      its leading characters, so `lstrip` in place of `removeprefix` eats them
+      and leaves `all of it`. Without this case that substitution survives the
+      whole suite, because every message a real setting produces starts with
+      `E` — which is not in the set, so the two spellings agree by luck rather
+      than by design.
     """
     errors = [
         InitErrorDetails(
@@ -1612,11 +1619,15 @@ def test_the_prefix_strip_is_keyed_on_the_type_and_keeps_a_bare_message():
             loc=(),
         ),
         InitErrorDetails(type="value_error", loc=(), ctx={"error": ValueError("")}),
+        InitErrorDetails(
+            type="value_error", loc=(), ctx={"error": ValueError("rev, all of it")}
+        ),
     ]
     message = _boot_error(ValidationError.from_exception_data("Settings", errors))
 
     assert "Value error, mine" in message
-    assert message.endswith("Value error, ")
+    assert "Value error, ; " in message
+    assert message.endswith("rev, all of it")
 
 
 def test_a_boot_error_names_every_pydantic_error_not_just_the_first(
