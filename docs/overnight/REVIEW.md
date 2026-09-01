@@ -259,6 +259,13 @@ all of them, 2026-09-01, and the row it sits under says so.
   one is loud and cannot be mistaken for an answer, this one is a populated,
   plausible result that is simply missing a row. An empty or short `label:`
   result is inconclusive, never evidence the write was lost.
+
+  **The same lag reaches the sweep, not just the verification.** Selection
+  reads labels off that index too, and a missing `review-settled` means "needs
+  a round" — so a sweep run shortly after a settle write can re-spawn on a PR
+  that is settled. Nothing here can fix the index; what stops the wasted round
+  is the log, which records the settle immediately. Check it before spawning on
+  a PR you settled this run.
 - **Writing labels replaces the whole set.** Read the current labels first or
   you will silently drop one. On a PR carrying only your own label this is
   invisible.

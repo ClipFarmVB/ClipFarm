@@ -16,10 +16,11 @@ not the ones it is not. Every rule lives in exactly one file.
 
 | file | when to read it | ~tokens |
 |---|---|---|
+| [`README.md`](./README.md) | this file — the index, the pipeline in one page, and these figures. Every lap reads it | 1.9k |
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.4k |
 | [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, repo traps | 8.3k |
-| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.8k |
-| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.1k |
+| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.9k |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.2k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
 | [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 2.9k |
 | [`REPORTING.md`](./REPORTING.md) | the end of the run | 2.1k |
@@ -84,12 +85,20 @@ file, *and* none of the four was the size the table records today — `README.md
 18.13k, because it still held the briefs. So no substitution into today's row
 values lands on the right answer, in either direction.
 
-Step 1 is unchanged when it spawns, and ~5k cheaper when it does not.
+A step-1 lap that only selects is ~5k cheaper than one that also spawns —
+exactly `BRIEFS.md`, which only the spawning lap reads. Both figures are
+bytes/4 on today's files, like the rest of this section; the pair in the
+paragraph above is the only across-the-split comparison on this page, and a
+step-1 lap is not comparable across it at all, having gained a file.
 
-**The table and the lap figures** — not the across-the-split pair above, which
-is the one exception and says so — are bytes/4 on the files as they stand, and
-a lap is this file plus `RULES.md` plus the phase file. Each row is rounded to
-the nearest tenth. **Re-measure them when you add a section** — they had drifted
+**Everything here is bytes/4**, the pair above included — 129000 bytes is the
+32.25k, and the `ls-tree` block prints the bytes to check it. What the pair
+alone does differently is the *revision*: it is measured at `596755d^` and
+`596755d` rather than on the files as they stand, because the lap it compares
+no longer exists here. The table and the lap figures are on the files as they
+stand, a lap is this file plus `RULES.md` plus the phase file — **this file's
+own bytes included**, which is why a lap costs more than the rows it names add
+up to — and each row is rounded to the nearest tenth. **Re-measure them when you add a section** — they had drifted
 by a third before CF-275 re-took them, and this is the table a run reads to plan
 what it can afford.
 

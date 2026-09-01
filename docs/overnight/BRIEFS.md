@@ -139,7 +139,8 @@ head.
 Its brief: run `/code-review high <PR number>` — **naming the number, not
 describing the PR** — then post one marker comment and submit its findings as a
 review. The bare form has been observed reviewing `main`'s tip commit instead of
-the PR — three sightings of seven — apparently by discovering a diff for itself
+the PR — see **Check what it reviewed** below, which carries the record —
+apparently by discovering a diff for itself
 and, finding every local one empty, falling back to `HEAD~1..HEAD`. **That
 mechanism is a suspect, not a cause**: the obvious version of it, "the branch is
 already pushed so the diff is empty", was tested and refuted — sightings that
@@ -148,10 +149,10 @@ narrower: every round that recorded passing the number targeted correctly, and
 every round that recorded the skill finding its own diff did not. Naming the
 number is cheap and consistent with that; it is not yet known to be the fix.
 
-Give it the head SHA you captured, and require
-the comment's body to **start** with the literal `cold: findings @ <sha>` or
-`cold: clean @ <sha>`, before any heading or
-formatting, since that whole line is what selection matches and routes on.
+Give it the head SHA you captured, and require the comment's body to **start**
+with the literal `cold: findings @ <sha>` or `cold: clean @ <sha>`, before any
+heading or formatting, since that whole line is what selection matches and
+routes on.
 
 **Which of the two is decided by Critical and Medium alone.** `cold: findings`
 means at least one Critical or Medium. A round that found *only* nits, or
@@ -191,8 +192,8 @@ It needs saying separately because reading the code does not catch it: a
 reviewer checking whether the code is correct passes over a comment that
 describes it wrongly. The round has to be told to check each claim in a
 comment, docstring, commit message and PR body **against what the code does**.
-**Do that part yourself.** No finding the skill has produced was rooted in a PR
-body — the one body-shaped finding on record is anchored in a file instead — so
+**The round must do this itself, rather than leave it to the skill.** No
+finding the skill has produced was rooted in a PR body — the one body-shaped finding on record is anchored in a file instead — so
 running it does not discharge this paragraph.
 
 Three sub-cases, each of which cost a round:
@@ -315,11 +316,19 @@ for.
 **Check what it reviewed before using any of it.** Compare the files it names,
 and the commit its own scope paragraph cites, against the PR's diff. On a
 mismatch, discard the output and review by hand — and say so in the review, so
-the next round knows the verdict is the round's own work. Three of seven
-sightings reviewed `main`'s tip commit rather than the PR, returning findings
-that were internally consistent and about the wrong change; on two of the three
-the wrong commit touched the same files as the PR, which is what makes this
-worth a check rather than a glance.
+the next round knows the verdict is the round's own work.
+
+**This is the one place that keeps the record**, so that a count in one file
+cannot go stale against a count in another — the failure this file warns about
+below. What is on record: **three rounds reviewed `main`'s tip commit rather
+than the PR**, returning findings that were internally consistent and about the
+wrong change, and on two of those three the wrong commit touched the same files
+as the PR, which is what makes this worth a check rather than a glance. All
+three predate passing the number; every round that has passed it has targeted
+correctly. No denominator is given on purpose: rounds accumulate every night,
+so a fraction is wrong by the next one, while the three mis-targets are a
+closed set that does not move unless a fourth is seen — and a round that sees
+one should add it here.
 
 **Open a cited location before repeating it.** Twice the skill has pointed
 somewhere real but wrong: once anchoring a finding about the PR *description* at
