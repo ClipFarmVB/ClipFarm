@@ -535,27 +535,44 @@ def _code_lines(path: Path) -> str:
 
 
 def _python_strings(path: Path) -> list[str]:
-    """Every string literal in a Python file, as Python itself sees them.
+    """The strings a Python file builds, resolved as far as parsing can.
 
     Five spellings defeated a regex reading `ml/modal_app.py` as text, all of
     them the same mistake: the file is Python, and only Python knows where one
     requirement ends. `ast` resolves implicit concatenation — `"numpy" "<2"`,
     `"numpy" '<2'` across quote kinds, and the two-line form inside brackets —
-    into one constant before anything here looks at it, which is not a rule
-    this module has to keep re-deriving one spelling at a time.
+    into one constant before anything here looks at it.
 
-    An f-string is the one place that opening `ast` costs something. Its
-    literal runs are separate constants, so `f"numpy=={VERSION}"` would arrive
-    as the fragment `numpy==`, which no parser and no pattern can evaluate and
-    which an earlier revision silently *allowed*. So an f-string is rendered
-    with `{...}` standing in for each interpolation: the result reaches the
-    guards as an unparseable constraint and fails loudly, which is the only
-    honest answer — the version is not in the file to be checked.
+    Two things it does *not* resolve for free, both of which shipped as silent
+    false allows before a round found them:
+
+    * An f-string's literal runs are separate constants, so `f"numpy=={V}"`
+      arrives as the fragment `numpy==`.
+    * `"numpy==" + "1.26.4"` arrives as two clean strings, neither a pin, while
+      CPython folds it — `co_consts` holds `'numpy==1.26.4'` — and pip installs
+      numpy 1.26.4 into an image that cannot resolve it.
+
+    So `+` of strings is folded here (`ast.literal_eval` will not: it folds `+`
+    for numbers only and raises on `"a" + "b"`), and an f-string is rendered
+    with `{...}` per interpolation, which makes it an unparseable constraint
+    rather than an empty one. Folding also *rescues* the legal spellings —
+    `"numpy" + "==2.1.0"` now passes instead of being rejected on a fragment.
+
+    **This is not "every string as Python sees them", and the difference is
+    where the next hole will be.** Anything needing a runtime value is beyond
+    it: `"".join([...])`, `%`, `.format`, a name. Those are caught downstream
+    instead — by the dangling-operator check in the numpy guard, and by
+    `SpecifierSet` rejecting a leftover `%s` or `{}` — which is a different
+    mechanism, not a stronger version of this one.
 
     Comments are gone by construction, which is right for a `.py` source and
-    the opposite of what `_code_lines` needs: there, a pin is a line of text
-    and a comment could hide one; here, a pin is a string literal or it is not
-    a pin at all.
+    the opposite of what `_code_lines` needs: there a pin is a line of text and
+    a comment could hide one; here a pin is a string literal or it is not a pin
+    at all. That difference is visible in the consistency test, which since
+    this helper existed no longer sees an inline `# not 1.26.4` beside a pin in
+    `ml/modal_pose.py`. Nothing is lost — a comment is not a pin, and a wrong
+    pin still fails as a version split — but it is a change in what that test
+    reads, not an accident.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
@@ -567,23 +584,49 @@ def _python_strings(path: Path) -> list[str]:
             for part in joined.values
         )
 
-    # The literal runs of an f-string are Constants in their own right, so they
-    # have to be excluded or each fragment is also read as a whole string.
-    fragments = {
-        id(part)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.JoinedStr)
-        for part in node.values
-    }
-    found = []
+    # Two kinds of node own their children's text, and emitting those children
+    # separately is how a pin hides. An f-string's literal runs are Constants
+    # in their own right, so `f"numpy=={V}"` would arrive as the fragment
+    # `numpy==`. A `+` of literals is worse: `"numpy==" + "1.26.4"` arrives as
+    # two clean strings, neither of which is a pin, while CPython folds it to
+    # one — `co_consts` holds `'numpy==1.26.4'` — and pip installs numpy 1.26.4
+    # in an image that cannot resolve it.
+    def fold(node: ast.AST) -> str | None:
+        """The string this expression evaluates to, or None if it needs runtime.
+
+        `ast.literal_eval` is not the tool: it folds `+` for numbers only and
+        raises on `"a" + "b"`, which is the case that matters here.
+        """
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr):
+            return render(node)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, right = fold(node.left), fold(node.right)
+            if left is not None and right is not None:
+                return left + right
+        return None
+
+    owned: set[int] = set()
+    folded: dict[int, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.JoinedStr):
+            owned.update(id(part) for part in node.values)
+        elif isinstance(node, ast.BinOp) and id(node) not in owned:
+            value = fold(node)
+            if value is not None:
+                folded[id(node)] = value
+                owned.update(id(child) for child in ast.walk(node) if child is not node)
+
+    found = []
+    for node in ast.walk(tree):
+        if id(node) in owned:
+            continue
+        if id(node) in folded:
+            found.append(folded[id(node)])
+        elif isinstance(node, ast.JoinedStr):
             found.append(render(node))
-        elif (
-            isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and id(node) not in fragments
-        ):
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             found.append(node.value)
     return found
 
@@ -886,6 +929,24 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
                 "for the repo-wide numpy-2 migration."
             )
             continue
+        # A fragment ending in a bare operator — `numpy==` — is what every
+        # unresolvable construction leaves behind: `"".join(["numpy==", V])`,
+        # a `%` or `.format` whose parts were split, anything a future spelling
+        # produces. It is never a legal requirement, and read as a constraint
+        # it is the empty capture again, so it is rejected on sight rather than
+        # evaluated. A legal pin assembled this way is a false rejection, which
+        # is the direction this guard is allowed to be wrong in.
+        assert not re.search(
+            r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
+            r"[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*,?$",
+            text.rstrip(),
+            re.IGNORECASE,
+        ), (
+            f'ml/modal_app.py contains the fragment "{text}", a numpy'
+            " constraint with no version this guard can read. Assemble the"
+            " requirement as one string literal so it can be checked against"
+            " what inference==1.3.3 accepts (>=2.0.0,<2.4.0)."
+        )
         for constraint in re.findall(
             r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
             r"((?:[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*[^\s,'\"]+[^\S\n]*,?)*)",
