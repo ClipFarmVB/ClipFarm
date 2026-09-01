@@ -917,9 +917,11 @@ def _probe_recorder(probe_acquire=True):
 
     Both the job lock and the probe inside `_mark_failed_if_lock_free` come out
     of the same patched `GameLock`, so a recorder that cannot tell them apart
-    reads the job lock's releases as the probe's. Instance 0 is the job lock —
-    `tasks.py` constructs it first and unconditionally — and instance 1 is the
-    probe. That distinction is load-bearing twice over.
+    reads the job lock's releases as the probe's. Instance 0 is the job lock and
+    instance 1 is the probe: `tasks.py` builds exactly two `GameLock`s (`:891`
+    and `:926`) and the job lock is always the earlier of the two, since the
+    probe is reached only from inside the task that lock guards. That
+    distinction is load-bearing twice over.
 
     It is what makes the assertions mean anything: on the LockLost path the job
     lock is released before the probe runs *and* again in the outer `finally`,
@@ -1056,20 +1058,34 @@ def test_a_probe_that_cannot_take_the_lock_writes_nothing(monkeypatch):
         progress=_lose_the_lock, lock_class=lock_class,
     )
 
-    assert (1, "write") not in events, (
+    # The control, before the negative: a bare "it did not write" also passes
+    # when the probe never ran at all. Deleting the `_mark_failed_if_lock_free`
+    # call site (`tasks.py:1442`) — the CF-184 stranding regression — leaves
+    # this test green without it.
+    assert (1, "acquire") in _probe_events(events), (
+        f"the probe's sequence was {_probe_events(events)} — the probe never "
+        "ran, so this test cannot say anything about what it wrote"
+    )
+    assert (1, "write") not in _probe_events(events), (
         "the probe could not take the lock, so another worker owns this game — "
         "writing `failed` stamps over a live run"
     )
 
 
 def test_a_probe_that_cannot_answer_writes_nothing_and_says_so(monkeypatch, caplog):
-    """The "cannot answer, leave it alone" path — not enumerated by CF-280.
+    """The "cannot answer, leave it alone" path — CF-280's third bullet.
 
-    Measured: deleting the probe's `except Exception` (so an unanswerable probe
-    falls through and writes) and deleting its `logger.warning` (keeping the
-    `return`) both leave the whole suite green. A probe that raises is exactly
-    the case where the run knows *least* about who owns the game, so falling
-    through to the write is the worst available answer.
+    Measured, on two separate mutations: neutering the probe's handler to
+    `except Exception: pass` (so an unanswerable probe falls *through* to the
+    write) and deleting its `logger.warning` while keeping the `return` each
+    leave the whole suite green without this test. Note it is the `return`
+    inside the handler that prevents the write, not the `except` itself —
+    removing the handler makes the exception propagate instead, which is a
+    third behaviour and not what "falls through" means.
+
+    A probe that raises is exactly the case where the run knows *least* about
+    who owns the game, so writing anyway is the worst available answer, and a
+    silent `return` is indistinguishable from never having tried.
     """
     lock_class, events = _probe_recorder(probe_acquire=RuntimeError("lock db down"))
 
@@ -1086,7 +1102,11 @@ def test_a_probe_that_cannot_answer_writes_nothing_and_says_so(monkeypatch, capl
             progress=_lose_the_lock, lock_class=lock_class,
         )
 
-    assert (1, "write") not in events, (
+    assert (1, "acquire") in _probe_events(events), (
+        f"the probe's sequence was {_probe_events(events)} — the probe never "
+        "ran, so this test cannot say anything about what it wrote"
+    )
+    assert (1, "write") not in _probe_events(events), (
         "the probe raised, so nothing is known about who holds this game — "
         "writing `failed` guesses, and the docstring says leave the row alone"
     )
