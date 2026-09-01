@@ -97,10 +97,12 @@ alone does differently is the *revision*: it is measured at `596755d^` and
 `596755d` rather than on the files as they stand, because the lap it compares
 no longer exists here. The table and the lap figures are on the files as they
 stand, a lap is this file plus `RULES.md` plus the phase file — **this file's
-own bytes included**, which is why a lap costs more than the rows it names add
-up to — and each row is rounded to the nearest tenth. **Re-measure them when you add a section** — they had drifted
-by a third before CF-275 re-took them, and this is the table a run reads to plan
-what it can afford.
+own row included**, which is why there is one — and each row is rounded to the
+nearest tenth. A lap is summed from bytes rather than from the rounded rows, so
+adding its rows up lands within a tenth or so rather than exactly.
+**Re-measure them when you add a section** — they had drifted by a third before
+CF-275 re-took them, and this is the table a run reads to plan what it can
+afford.
 
 **The rules are not also summarised into a shorter file.** Splitting by phase
 keeps exactly one copy of each rule, with the reasoning that produced it still

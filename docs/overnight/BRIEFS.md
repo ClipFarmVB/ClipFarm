@@ -193,8 +193,9 @@ reviewer checking whether the code is correct passes over a comment that
 describes it wrongly. The round has to be told to check each claim in a
 comment, docstring, commit message and PR body **against what the code does**.
 **The round must do this itself, rather than leave it to the skill.** No
-finding the skill has produced was rooted in a PR body — the one body-shaped finding on record is anchored in a file instead — so
-running it does not discharge this paragraph.
+finding the skill has produced was rooted in a PR body — the one body-shaped
+finding on record is anchored in a file instead — so running it does not
+discharge this paragraph.
 
 Three sub-cases, each of which cost a round:
 
@@ -320,7 +321,7 @@ the next round knows the verdict is the round's own work.
 
 **This is the one place that keeps the record**, so that a count in one file
 cannot go stale against a count in another — the failure this file warns about
-below. What is on record: **three rounds reviewed `main`'s tip commit rather
+under **Findings**, ~120 lines above. What is on record: **three rounds reviewed `main`'s tip commit rather
 than the PR**, returning findings that were internally consistent and about the
 wrong change, and on two of those three the wrong commit touched the same files
 as the PR, which is what makes this worth a check rather than a glance. All

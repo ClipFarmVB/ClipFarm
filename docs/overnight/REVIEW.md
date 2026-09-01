@@ -260,12 +260,14 @@ all of them, 2026-09-01, and the row it sits under says so.
   plausible result that is simply missing a row. An empty or short `label:`
   result is inconclusive, never evidence the write was lost.
 
-  **The same lag reaches the sweep, not just the verification.** Selection
-  reads labels off that index too, and a missing `review-settled` means "needs
-  a round" — so a sweep run shortly after a settle write can re-spawn on a PR
-  that is settled. Nothing here can fix the index; what stops the wasted round
-  is the log, which records the settle immediately. Check it before spawning on
-  a PR you settled this run.
+  **What that costs the step 1 sweep depends on how the sweep asks.** The
+  same observation is reassuring about the `labels` *field*: the query by
+  another term returned the PR with its label present, so a row that comes
+  back carries a current label. It is the `label:` **filter** that dropped the
+  row. So a sweep must not filter on `label:` — select by state and author and
+  read `labels` off the rows — or a PR settled seconds earlier looks unlabelled
+  and gets re-spawned. The log is the backstop either way: it records the
+  settle immediately, so check it before spawning on a PR you settled this run.
 - **Writing labels replaces the whole set.** Read the current labels first or
   you will silently drop one. On a PR carrying only your own label this is
   invisible.
