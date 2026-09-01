@@ -350,7 +350,7 @@ run, which is the whole reason these labels exist.
 **Log every round as you finish it** — `PR #<n> — <cold|semi-cold>, round
 <k>/7, budget <used>/40` plus the tiers found. A round granted by the settling
 exception is logged as `settling, budget <used>/40` instead of a `<k>/7` — it is
-outside the ceiling, and writing `7/6` reads as a counting bug to the very
+outside the ceiling, and writing `8/7` reads as a counting bug to the very
 cross-check that is meant to catch one. Neither bound is enforceable
 unless the count survives: context may be compacted mid-run, and counts you hold
 in your head reset to zero when it is. Recover both from the log at the start of
@@ -368,7 +368,7 @@ done | wc -l
 The budget needs this as much as the ceiling does. Recovering it from the log
 alone leans on the one source this same paragraph says a compaction can lose
 entries from, and losing entries makes the budget read *low* — so the run keeps
-reviewing past 32 and starves step 3, failing toward more reviewing rather than
+reviewing past 40 and starves step 3, failing toward more reviewing rather than
 less.
 
 When log and markers disagree, **the markers win.** The log records
@@ -480,6 +480,19 @@ first and leaves `SINCE`.
 - **Apply edits one at a time, never as a batch script.** A five-edit script
   that asserts partway through writes nothing, while the verification run after
   it looks entirely normal.
+- **Changing a number in this brief means hunting it in words, not only in
+  tokens.** These files argue in prose, so a value lives as `32 rounds` *and* as
+  "against 32", "five new PRs", "the 5-PR cap", "writing `7/6`", "past 32". CF-365
+  raised four caps, grepped only the format strings — `32 rounds`, `six rounds
+  per`, `/6, budget` — and left **seven** prose survivors for a reviewer to find.
+  Every one of the greps was a format string; every survivor was a sentence.
+  `grep -rn '\b32\b\|\bsix\b\|\bfive\b' docs/overnight/` and reading the hits
+  costs about a minute and catches all of them. Two cautions with it: most hits
+  are *historical* — "#307's six rounds against red CI" is a record, not the cap,
+  and rewriting it turns history into a lie — and a raise can invalidate an
+  **argument** rather than just a number. CF-365's own budget arithmetic
+  ("forty-odd against 32 does not fit") stopped following at 40, and needed a
+  paragraph rather than a digit.
 - **The restore step is where mutation testing goes wrong, not the mutation.**
   Two restores destroyed work in one run: a checksum caught one, and a moved
   test count caught the other. Neither announced itself — the mutation's own

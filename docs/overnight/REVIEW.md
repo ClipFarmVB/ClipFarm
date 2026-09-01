@@ -255,11 +255,18 @@ check-runs row comes from CF-275, which is what added point 7.
   size — which costs a call and returns nothing. Pass a small `perPage` (1–5)
   and page. This is why point 1's pagination requirement is not academic here.
 
-  **For the step 1 sweep, do not use `list_pull_requests` at all.** Use
-  `search_pull_requests` with a **`fields`** parameter naming only what selection
-  needs — `number`, `labels`, `user`, `draft` — and the query
+  **For the step 1 sweep, reach for `search_pull_requests` rather than
+  `list_pull_requests`.** Pass a **`fields`** parameter naming only what
+  selection needs — `number`, `labels`, `user`, `draft` — with the query
   `repo:<owner>/<repo> is:pr is:open`. It returns the whole open queue in one
   call, without a single body.
+
+  **This does not retire `list_pull_requests`**, and the first bullet above
+  still stands: reading labels back off one PR — to verify a settle actually
+  landed — is what that call is for, at `perPage: 1`. The sweep is the case
+  where its cost is all waste, because it returns twenty bodies to answer a
+  question about four fields. One PR, one call, small page: fine. Whole queue:
+  use the search.
 
   The saving is not marginal. On the run of 2026-08-30 one `list_pull_requests`
   page returned roughly **15k tokens** of PR bodies — comparable to reading a

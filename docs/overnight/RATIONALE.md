@@ -44,8 +44,19 @@ night.
 PRs are open, none carrying a marker, so a first pass over the queue alone costs
 one to two reviews each — forty-odd at the upper end, since a clean PR takes two
 (it needs two clean cold rounds to settle) — before this run's own PRs are
-reviewed at all. Against 32 that does not fit, and it should not be written as
-though it does.
+reviewed at all.
+
+**That argument was decisive at a budget of 32 and is not at 40.** Forty-odd
+against forty is a coin flip, not a clear miss — the top of the estimate *is*
+the budget. So the conclusion this paragraph originally drew, that the budget
+binds on the first night, no longer follows from the arithmetic it presents. It
+binds only if the queue runs to the upper end of the range.
+
+What has not changed is the shape, and that is the part worth keeping: **a first
+pass over an unmarked queue is the same order of magnitude as the whole
+budget**, so it can still consume the night. Read it as *may bind* and re-derive
+against the queue actually in front of you — which is what the paragraph below
+already tells you to do, and now applies to this one too.
 
 **That arithmetic assumes `review scope: all`.** It was written when there was
 no scope filter, and the filter roughly halves it: with scope `own`, a queue of
@@ -54,8 +65,8 @@ twenty-odd is closer to ten, and most of a first pass fits inside the budget.
 35 in `build`, leaving the five-round reserve for step 3, and at 40 in
 `review-only`, where there is no step 3 to reserve for. The reserve is a
 stop-reviewing threshold, not a smaller budget — the log still counts against
-32.) So the two conclusions below — that step 3 does not happen, and that the
-5-PR cap is unreachable — stop following. **Re-derive both for the scope you
+40.) So the two conclusions below — that step 3 does not happen, and that the
+6-PR cap is unreachable — stop following. **Re-derive both for the scope you
 are actually running**, rather than reading the worst case as a standing fact.
 
 What follows from that: **the first night clears part of the queue and reports
@@ -71,9 +82,12 @@ regardless*) was a consequence of not being able to push to it, and no longer
 holds.
 
 **So on a backlogged night — at `review scope: all`, see above — step 3 does
-not happen, and the 5-PR cap is not reachable.** Twenty-odd PRs at one to two
-rounds is 20–40 reviews, and five new PRs at three each is another 15; there is
-no reading of a 40-round budget on which both fit. Priority order gates ticket
+not happen, and the 6-PR cap is not reachable.** Twenty-odd PRs at one to two
+rounds is 20–40 reviews, and six new PRs at three each is another 18: 38–58
+against a budget of 40. At 32 nothing in that range fitted; at 40 the very
+bottom of it does, and nothing above. So this conclusion has weakened from
+*cannot* to *only if the queue is at its smallest and every PR converges in
+three* — still the way to bet, no longer arithmetic that closes the question. Priority order gates ticket
 work behind a queue this document says the budget cannot finish, so ticket work
 waits for a night that starts with the queue already marked. That is the
 intended trade — the queue is the bottleneck, not ticket supply — but it should
@@ -127,7 +141,30 @@ PR) exists for fairness: it stops one pathological PR eating a night that twenty
 others are queued for. The **budget** (40 rounds per run) sets total depth
 across the queue. If runs are finding real problems and you want more review,
 raise the budget — raising the ceiling only buys more passes over whichever PR
-is already the worst-behaved. Hitting the ceiling is cheap anyway: the findings
+is already the worst-behaved.
+
+**Both were raised at once after the run of 2026-08-30, which is the move this
+paragraph argues against — so here is why the ceiling half was not "more passes
+over the worst-behaved PR".** The ceiling was never a judgement about how much
+review is worth buying; it is a calibration of the cost model directly above:
+*five* rounds for a PR with two rounds of findings and the cold round that
+settles it, plus a spare. #438 spent five and needed the spare, because each fix
+drew a finding one spelling further out — and it **converged**. It was not the
+pathological PR the ceiling exists to contain; it was an ordinary PR that the
+cost model had priced too low, and at six it would have been cut off one cycle
+short of settling and labelled `unsettled: ran out of rounds` on arithmetic
+alone — the exact failure the settling exception was added to prevent.
+
+So the ceiling raise is a **correction to the estimate**, and the budget raise
+is the depth increase this paragraph is about. They are still different knobs;
+they simply both moved.
+
+**The honest weakness is n=1.** One PR is thin evidence for a permanent
+calibration, and the direction of the error — needing more rounds — is the
+direction that costs fairness to the rest of the queue. If a later run finds
+the seventh round is routinely the one that settles, that is confirmation; if
+seven-round PRs are ones that were never converging, the raise was wrong and
+the ceiling should go back rather than up again. Hitting the ceiling is cheap anyway: the findings
 are still written into the log, the report and the PR's marker comments, and
 only the *settling* is deferred to a human or a later run.
 
