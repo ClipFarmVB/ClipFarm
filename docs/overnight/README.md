@@ -61,7 +61,8 @@ about 13k. That is the whole point of the split.
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
 **18k** tokens, the size that file was *before* the split. Splitting it out took
-that lap from ~29k to ~20k; step 1 is unchanged when it spawns, and ~4k cheaper
+that lap from ~35k to ~20k on the files as they stand; it was ~32k to ~19k
+when measured at the split. Step 1 is unchanged when it spawns, and ~4k cheaper
 when it does not.
 
 Those are bytes/4 on the files as they stand, and a lap is this file plus
