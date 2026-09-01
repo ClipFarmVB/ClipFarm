@@ -1120,9 +1120,9 @@ def _boot_error(exc: ValidationError) -> str:
     load-bearing today: `raise ValueError("")` renders as exactly
     `Value error, `, and stripping that would compose
     `Configuration is not usable: ` with nothing after it — a boot failure that
-    names no problem. Nothing here produces it. The two model validators below
-    raise from three sites, and all three pass non-empty text, so the case is
-    unreachable through any accepted setting. It is guarded anyway because the
+    names no problem. Nothing here produces it: this file's two model
+    validators raise from three sites, and all three pass non-empty text, so
+    the case is unreachable through any accepted setting. It is guarded anyway because the
     cost is one condition and the failure is a boot message that says nothing;
     the test for it constructs the error, since no env var can.
     """

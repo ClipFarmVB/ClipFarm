@@ -1606,12 +1606,13 @@ def test_the_prefix_strip_is_keyed_on_the_type_and_keeps_a_bare_message():
       composed line becomes `Configuration is not usable: ` and names no
       problem at all.
     - A `value_error` whose text opens with characters drawn from the prefix
-      must lose the prefix and nothing else. `rev, all of it` is every one of
-      its leading characters, so `lstrip` in place of `removeprefix` eats them
-      and leaves `all of it`. Without this case that substitution survives the
-      whole suite, because every message a real setting produces starts with
-      `E` — which is not in the set, so the two spellings agree by luck rather
-      than by design.
+      must lose the prefix and nothing else. `rule, all of it` opens with a run
+      of eleven characters that all appear in `"Value error, "`, so `lstrip` in
+      its place eats the message down to `f it` — stopping at the first `f`,
+      the earliest character the prefix does not contain. Without this case
+      that substitution survives the whole suite, because every message a real
+      setting produces starts with `E`, which is not in the set either: the two
+      spellings agree by luck rather than by design.
     """
     errors = [
         InitErrorDetails(
@@ -1620,14 +1621,14 @@ def test_the_prefix_strip_is_keyed_on_the_type_and_keeps_a_bare_message():
         ),
         InitErrorDetails(type="value_error", loc=(), ctx={"error": ValueError("")}),
         InitErrorDetails(
-            type="value_error", loc=(), ctx={"error": ValueError("rev, all of it")}
+            type="value_error", loc=(), ctx={"error": ValueError("rule, all of it")}
         ),
     ]
     message = _boot_error(ValidationError.from_exception_data("Settings", errors))
 
     assert "Value error, mine" in message
     assert "Value error, ; " in message
-    assert message.endswith("rev, all of it")
+    assert message.endswith("rule, all of it")
 
 
 def test_a_boot_error_names_every_pydantic_error_not_just_the_first(
