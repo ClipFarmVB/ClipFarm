@@ -78,6 +78,44 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 - If nothing in scope is actionable, **stop the loop**. A run that reviews two
   PRs and opens nothing is a fine outcome.
 
+### Evidence, and the higher bar for rejecting a finding
+
+**Quote only primary source you actually fetched.** Every timestamp, line
+number, SHA and count in a reply that disputes or dismisses a round's finding
+must come from a call made *for that reply*. A number recalled, inferred from
+nearby context, or carried over from an earlier lap is not evidence, and
+presenting it as one is how a correct finding gets discarded.
+
+The run of 2026-09-01 rejected a true finding on #451 this way. A semi-cold
+round said the PR body still carried two overclaims; the reply answered that the
+body edit at `06:28:01Z` preceded "your marker comment at `06:31:36Z`", so the
+round had read a stale copy. The marker is at **`06:27:06Z`**, and `06:31:36Z`
+exists nowhere on the PR — the nearest value is `06:31:20Z`, the reply's own
+timestamp. The comments endpoint had never been called. Read correctly, the real
+figures say the edit landed 55 seconds *after* the marker, so the evidence
+refuted the conclusion it was offered for.
+
+**The failure is one step earlier than "verify claims against the repository",
+which is why that rule did not catch it.** The run believed it was citing a
+measurement. What made the paragraph persuasive — to the round it answered, and
+to the run itself — was its *shape*: a table-ready figure, quoted to the second.
+Formatting is not fetching.
+
+**The bar is higher for rejecting a finding than for accepting one, and this is
+the asymmetry to hold on to.** Accepting a wrong finding costs a needless fix,
+and the next round sees the change and can say so. Rejecting a right one costs
+the finding outright: the round that raised it does not get another pass at the
+same head, and nothing downstream re-derives it. So a dispute needs its sources
+fetched in the same breath it is written, where an agreement can lean on a
+reading taken earlier.
+
+**It propagates further than the thread.** A run writes its own next-lap prompt,
+and the false account went into that prompt as established fact. With the log
+truncated at the end of the night, a post-compaction lap would have inherited it
+with only the PR thread to contradict it. A correction has to reach the
+scheduled prompt as well as the comment — see [the logging
+rule](#log-before-you-finish-each-iteration).
+
 ### The push test
 
 **One condition: this account opened the PR.** Compare `gh api user --jq ".login"`
@@ -510,6 +548,17 @@ first and leaves `SINCE`.
   that exist. Cross-check any negative or small result against `list_issues`
   before stating an absence; "I found none" and "there are none" are different
   claims.
+- **Reading a label back needs the right call, and the obvious two both fail.**
+  `issue_read` with `method: get_labels` **cannot resolve a PR number** —
+  `Could not resolve to an Issue with the number of 451` — even though
+  `issue_write` sets labels on that same number without complaint. And
+  `search_pull_requests` with `label:review-settled` returned two other PRs and
+  **not** the one labelled seconds earlier; a second query by a different term
+  returned it *with* the label. That index lags, so an empty `label:` result is
+  inconclusive, not a failed write. Apply the label, then read the PR back with
+  a query that returns its `labels` field — and note the direction of each
+  failure, since one of them would have you re-apply a label that is already
+  there while the other would have you trust a write you never confirmed.
 - **Tag-shaped text is deleted from anything you post, backticks or not.** Not
   angle brackets in general: measured, `ComponentProps<"a">`, `a <= b` and
   `x < y > z` all survive escaped, while a placeholder shaped like an HTML tag
