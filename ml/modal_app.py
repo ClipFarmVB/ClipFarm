@@ -45,7 +45,8 @@ image = (
         # use: inference==1.3.3 requires numpy>=2.0.0,<2.4.0, so that pin
         # cannot resolve and the image build would fail. This image is a
         # numpy-2 island; closing the split means migrating the rest, which
-        # is the open decision on CF-278 (#323).
+        # CF-278 (#323) decided to do and CF-363 (#443) carries. Leaving it
+        # bare here is CF-364 (#447)'s to fix, with a 2.x pin.
         "numpy",
         "requests",
         # Pinned per CF-33: unpinned, pip resolves to a version predating

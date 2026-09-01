@@ -520,11 +520,21 @@ def _code_lines(path: Path) -> str:
     guard read the same files, and a review round pointed out that the drift
     between their preprocessing is exactly what the version guard exists to
     catch (CF-278).
+
+    Adjacent string literals are spliced, because Python splices them: pip sees
+    one requirement from `"numpy" "<2"`, and a reader of the file sees two
+    tokens. Without this, every pattern below stops at the closing quote and
+    reads that as an unconstrained `numpy` — a *false allow*, which is the one
+    class of error these guards cannot afford. The seam is only removed
+    between two quotes of the same kind with nothing but horizontal whitespace
+    between them, so `"numpy", "requests"` (a comma intervenes) still reads as
+    two requirements.
     """
-    return "\n".join(
+    text = "\n".join(
         line for line in path.read_text(encoding="utf-8").splitlines()
         if not line.lstrip().startswith("#")
     )
+    return re.sub(r"([\"'])[^\S\n]*\1", "", text)
 
 
 # What `inference==1.3.3` will accept. The ball image's numpy has to land in
@@ -685,8 +695,11 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
         # requires numpy>=2.0.0,<2.4.0, so that image *cannot* carry the
         # 1.26.4 the others do — `pip install inference==1.3.3 numpy==1.26.4`
         # is ResolutionImpossible. Listing it here for numpy would assert
-        # something the resolver forbids, so the split is recorded on CF-278
-        # (#323) as a decision to make rather than hidden as a passing test.
+        # something the resolver forbids, so the split is recorded as a
+        # deliberate island rather than hidden as a passing test. CF-278 (#323)
+        # posed the choice; it was decided in favour of migrating the repo to
+        # numpy 2, which is CF-363 (#443). Until that lands this stays an
+        # island, and CF-364 (#447) pins it to a numpy inference accepts.
         # opencv has no such constraint on the headless distribution, so the
         # pin there is both possible and load-bearing — see its comment.
         sources.append(
@@ -730,11 +743,18 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
     but any constraint has to admit a version `inference==1.3.3` accepts. Three
     versions of this guard were each defeated by one spelling further out —
     `numpy<2` past an `==`-only check, `numpy>=1.26,<2` hiding its cap behind a
-    floor, `'numpy<2'` in single quotes past a double-quote anchor — so it now
+    floor, `'numpy<2'` in single quotes past a double-quote anchor — so it
     anchors on the package name alone and evaluates the whole specifier set
-    with `packaging`, rather than pattern-matching operators. A future numpy-2
-    migration of the whole repo (the open decision on #323) makes this test
-    agree with the one above rather than needing to be deleted.
+    with `packaging`, rather than pattern-matching operators. A fourth defeat
+    came from the other side: `numpy[cffi]==1.26.4`, `numpy @ <a 1.26.4 wheel
+    url>` and `"numpy" "<2"` each ended the match at an empty capture, which is
+    `SpecifierSet("")` and admits everything, so all three passed. Extras and
+    direct references are now matched, and `_code_lines` splices adjacent
+    string literals.
+
+    The repo-wide numpy-2 migration — decided on CF-278 (#323) and carried by
+    CF-363 (#443) — makes this test agree with the one above rather than
+    needing to be deleted.
     """
     # Anchored on the package name, and on nothing else. Anchoring on a double
     # quote — which an earlier version of this did — made `'numpy<2'` in single
@@ -746,17 +766,81 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
     # The whole comma-separated specifier set is captured, not the first
     # operator: `numpy>=1.26,<2` is the ecosystem-standard spelling of "numpy 1
     # only", and a pattern that stops at the floor never sees the cap behind it.
-    for constraint in re.findall(
+    #
+    # Extras and direct references are matched rather than ignored, and for the
+    # same reason the seam-splicing in `_code_lines` exists: anything the
+    # pattern does not consume between the name and the version ends the match
+    # at an *empty* capture, and an empty capture is `SpecifierSet("")`, which
+    # admits everything. So `numpy[cffi]==1.26.4` and
+    # `numpy @ https://.../numpy-1.26.4-...whl` both read as an unconstrained
+    # numpy and pass — the failure mode this guard is least allowed to have.
+    for extras, reference, constraint in re.findall(
         r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
+        r"(\[[^\]\n]*\])?"
+        r"([^\S\n]*@[^\s,'\"]*)?"
         r"((?:[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*[^\s,'\"]+[^\S\n]*,?)*)",
         _code_lines(REPO_ROOT / "ml" / "modal_app.py"),
         re.IGNORECASE,
     ):
+        # A direct reference names one artefact, so `packaging` has no
+        # specifier to evaluate and the URL's version is a filename
+        # convention rather than metadata. Fail loudly instead of guessing:
+        # a false rejection blocks a legal spelling nobody uses here, where a
+        # false allow ships an image that cannot build.
+        assert not reference.strip(), (
+            f'ml/modal_app.py installs numpy by direct reference ("numpy'
+            f'{extras}{reference}"), whose version this guard cannot check. '
+            "Use a version specifier inference==1.3.3 accepts "
+            "(>=2.0.0,<2.4.0)."
+        )
         assert _admits_a_numpy_2(constraint), (
-            f'ml/modal_app.py constrains numpy as "numpy{constraint}", which '
-            "admits no version inference==1.3.3 accepts (>=2.0.0,<2.4.0), so "
-            "this cannot resolve and the image build fails with "
-            "ResolutionImpossible. See CF-359 (#440) and the decision on #323."
+            f'ml/modal_app.py constrains numpy as "numpy{extras}{constraint}", '
+            "which admits no version inference==1.3.3 accepts "
+            "(>=2.0.0,<2.4.0), so this cannot resolve and the image build "
+            "fails with ResolutionImpossible. See CF-359 (#440), and CF-363 "
+            "(#443) for the repo-wide numpy-2 migration."
+        )
+
+
+def test_the_ball_image_pins_opencv_where_inference_can_follow():
+    """The ball image's opencv pin has a ceiling the consistency test can't see.
+
+    `test_pipeline_deps_are_pinned_to_one_version_everywhere` asserts the four
+    opencv sources agree with each other. Agreement is necessary and not
+    sufficient here: `inference==1.3.3` requires
+    `opencv-python<=4.10.0.84,>=4.8.1.78` and the same for
+    `opencv-contrib-python`, and both land in this image alongside the headless
+    distribution — three distributions writing one `cv2`, last install wins.
+    Bumping all four sources to a newer headless in one edit keeps them
+    agreeing and quietly restores the major-version split the pin removed,
+    because the two `inference` brings are pinned by `inference`, not by us.
+
+    So this asserts the ball image's headless pin lands inside the window
+    `inference` forces its siblings into. Raising it means moving off
+    `inference==1.3.3` (CF-33 pins that deliberately), which is a decision, not
+    a bump.
+    """
+    window = SpecifierSet(">=4.8.1.78,<=4.10.0.84")
+    pins = re.findall(
+        r"(?<![A-Za-z0-9_.\-])opencv-python-headless(?![A-Za-z0-9_.\-])"
+        r"[^\S\n]*==[^\S\n]*([0-9][0-9A-Za-z.\-]*)",
+        _code_lines(REPO_ROOT / "ml" / "modal_app.py"),
+        re.IGNORECASE,
+    )
+    assert pins, (
+        "ml/modal_app.py no longer pins opencv-python-headless with a plain "
+        "`==`. Unpinned, pip resolves it to a 5.x while inference==1.3.3 holds "
+        "opencv-python and opencv-contrib-python at 4.10.0.84 in the same "
+        "image — see CF-359 (#440)."
+    )
+    for pin in pins:
+        assert Version(pin) in window, (
+            f"ml/modal_app.py pins opencv-python-headless=={pin}, which is "
+            "outside the >=4.8.1.78,<=4.10.0.84 that inference==1.3.3 forces "
+            "on opencv-python and opencv-contrib-python in the same image. "
+            "All three write `cv2` and the last install wins, so a headless "
+            "outside that window is the major-version split again, however "
+            "well the other pin sites agree with it (CF-359, #440)."
         )
 
 
