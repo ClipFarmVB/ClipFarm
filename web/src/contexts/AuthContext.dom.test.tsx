@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   clearGamesCache: vi.fn(),
+  clearMe: vi.fn(),
   prefetchGames: vi.fn(),
   emit: null as null | ((event: string, session: unknown) => void),
   initialSession: null as unknown,
@@ -29,6 +30,8 @@ vi.mock("@/lib/gamesCache", () => ({
   clearGamesCache: mocks.clearGamesCache,
   prefetchGames: mocks.prefetchGames,
 }));
+
+vi.mock("@/lib/useMe", () => ({ clearMe: mocks.clearMe }));
 
 vi.mock("@/lib/supabase", () => ({
   createClient: () => ({
@@ -114,6 +117,49 @@ describe("AuthProvider — clearing the games cache on an identity change (CF-29
 
     expect(mocks.clearGamesCache).not.toHaveBeenCalled();
     expect(mocks.prefetchGames).toHaveBeenCalled();
+  });
+
+  it("clears the profile cache on the same identity change, not just the games one", async () => {
+    // clearMe() is otherwise reachable only from the sign-out button, so the
+    // switch path leaves `fetchMe()` returning the previous user's profile
+    // from its `if (_me) return`. Clearing one cache and not the other here is
+    // the same disclosure with a different noun.
+    await mount(sessionFor("user-a"));
+    mocks.clearMe.mockClear();
+
+    await emit("SIGNED_IN", sessionFor("user-b"));
+
+    expect(mocks.clearMe).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not clear the profile cache on a token refresh", async () => {
+    await mount(sessionFor("user-a"));
+    mocks.clearMe.mockClear();
+
+    await emit("TOKEN_REFRESHED", sessionFor("user-a"));
+
+    expect(mocks.clearMe).not.toHaveBeenCalled();
+  });
+
+  it("survives a session whose user did not deserialise", async () => {
+    // `session?.user.id` would throw here — before setLoading(false) — and
+    // strand the app on the loading screen.
+    await mount(sessionFor("user-a"));
+
+    await expect(emit("SIGNED_IN", { user: undefined })).resolves.not.toThrow();
+    expect(mocks.clearGamesCache).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not prefetch when the session is gone", async () => {
+    // Without the `if (session)` guard the sign-out itself fires a getGames()
+    // as a signed-out user — a guaranteed 401, and one that repopulates
+    // nothing, so it is pure noise on every sign-out.
+    await mount(sessionFor("user-a"));
+    mocks.prefetchGames.mockClear();
+
+    await emit("SIGNED_OUT", null);
+
+    expect(mocks.prefetchGames).not.toHaveBeenCalled();
   });
 
   it("clears before prefetching, or the incoming user gets no fetch at all", async () => {

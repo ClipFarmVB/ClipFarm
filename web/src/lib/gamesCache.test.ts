@@ -275,3 +275,37 @@ describe("clearGamesCache — identity change (CF-299)", () => {
     expect(cache.getCachedGames()).toEqual([game("user-b")]);
   });
 });
+
+describe("clearGamesCache — the orphaned fetch (CF-299)", () => {
+  it("does not leave the dropped promise rejecting unhandled", async () => {
+    // After the clear nothing awaits the old chain — getInflightGames() is null
+    // and prefetchGames()'s `_promise === p` guards no longer match — so its
+    // rethrow would surface as an unhandled rejection on every sign-out that
+    // interrupted a prefetch, which the browser Sentry SDK reports.
+    const { getGames, cache } = await load();
+    const inflight = deferred<Game[]>();
+    let reject!: (e: unknown) => void;
+    getGames.mockReturnValueOnce(
+      new Promise<Game[]>((_, r) => {
+        reject = r;
+      }),
+    );
+    cache.prefetchGames();
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      cache.clearGamesCache();
+      reject(new Error("API error 401"));
+      // Two macrotask turns: rejection settles, then Node decides it is unhandled.
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+
+    expect(unhandled).toEqual([]);
+    void inflight;
+  });
+});

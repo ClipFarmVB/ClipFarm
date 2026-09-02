@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef, ty
 import { type Session, type User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase";
 import { clearGamesCache, prefetchGames } from "@/lib/gamesCache";
+import { clearMe } from "@/lib/useMe";
 
 interface AuthState {
   user: User | null;
@@ -34,12 +35,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Both entry points go through here so the ref's first assignment is
     // correct whichever resolves first.
     const onSession = (session: Session | null) => {
-      const userId = session?.user.id ?? null;
+      // `?.user?.id`, not `?.user.id`: a session whose user failed to
+      // deserialise would throw here, before `setLoading(false)` below, and
+      // strand the whole app on the loading screen.
+      const userId = session?.user?.id ?? null;
       if (userId !== lastUserIdRef.current) {
-        // Identity changed. `null` means we have not held one yet — a fresh
-        // load, where module state is already empty and there is nothing to
-        // drop; clearing there would be harmless but says something untrue.
-        if (lastUserIdRef.current !== null) clearGamesCache();
+        // Identity changed. A null previous id means this provider has not
+        // seen one yet — the first resolution after a mount — so there is
+        // nothing it is responsible for dropping.
+        if (lastUserIdRef.current !== null) {
+          // Both module caches, together. Clearing one and not the other is
+          // the same disclosure with a different noun: `clearMe` is otherwise
+          // reachable only from the sign-out button, so on the account-switch
+          // path below — no sign-out, no null session — `fetchMe()` returns
+          // the previous user's profile from `if (_me) return`, and B gets A's
+          // handle and avatar in the chrome, A's `needsHandle` answer, and A's
+          // id as the viewer.
+          clearGamesCache();
+          clearMe();
+        }
         lastUserIdRef.current = userId;
       }
       setSession(session);
