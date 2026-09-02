@@ -591,11 +591,47 @@ def _image_spec_arguments(path: Path) -> list[str]:
     that has to be kept complete against a library that adds to it; the
     assignment is not.
 
+    Two known false *failures*, both noise rather than holes: `image` is
+    matched by name anywhere in the module, so a local variable called `image`
+    in any function reads as a second assignment, and an annotated
+    `image: modal.Image = (...)` is an `ast.AnnAssign` and reads as none. Both
+    fail loudly and in the safe direction, so they are recorded here rather
+    than fixed under a card about the opencv pin.
+
     A literal dict or list is read through, so `.env({...})` and Modal's
-    `pip_install(["a", "b"])` form both work. What cannot be read is a value
-    the file does not contain, and that now fails on the shape of the file —
-    including a spelling nobody has thought of, which is the property the nine
-    fixes before it could not have.
+    `pip_install(["a", "b"])` form both work.
+
+    **What this claims, and what it does not.** It reads every argument written
+    out in the `image = (...)` expression, so a pin spelled there is caught —
+    the nine spellings above, each with regression coverage. It does **not**
+    reach a pin the expression merely points at. A tenth round defeated it six
+    ways, none of them writing a non-literal:
+
+    - `.pip_install_from_requirements("ml/requirements.txt")` — a documented
+      Modal method, and that file's line 6 is `numpy==1.26.4`. The argument is
+      a literal; what it names is not in this file.
+    - `.dockerfile_commands("RUN pip install -r ...")`, the same indirection
+      through another door.
+    - `@app.function(image=image.pip_install("numpy==1.26.4"))`, which modifies
+      the spec after this expression ends.
+    - binding that modified image to another name and passing it as `image=`.
+    - building a second `modal.Image` entirely.
+    - `b"numpy==1.26.4"`, which `_strings_in` drops. Whether Modal accepts
+      bytes here is unverified.
+
+    An earlier version of this docstring said a spelling nobody had thought of
+    would fail on the shape of the file. **That was false**, and the second
+    time this change asserted a completeness it did not have — the PR body's
+    "a false allow is impossible by construction" was the first, and a round
+    demonstrated three. The root cause is that *literal* is not *in the file*:
+    a literal filename points outside it.
+
+    So the bound is stated rather than widened again. Every previous widening
+    was defeated within one round, and `ml/modal_app.py` is queued for rewrite
+    by CF-364 (#447), which owns the pin this file still lacks, and CF-363
+    (#443). Following the reference is the obvious next move and is cheaper
+    once those have settled what the file looks like; CF-359 (#440) carries
+    the options.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     specs = [
@@ -903,6 +939,13 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
     is left is a real specifier set, evaluated by `packaging`, with a text
     pass kept only for arguments that are not requirements at all, such as a
     pin inside `run_commands("pip install ...")`.
+
+    **That closed the spelling question, not the whole one.** A pin the spec
+    only points at — a requirements file, `dockerfile_commands`, an image
+    modified after this expression — is not reached, and this test passes on
+    it. `_image_spec_arguments` lists all six such defeats. Read a green run
+    here as "no capping pin is written in the image spec", which is true, and
+    not as "the image cannot install a capping pin", which is not.
 
     The repo-wide numpy-2 migration — decided on CF-278 (#323) and carried by
     CF-363 (#443) — makes this test agree with the one above rather than
