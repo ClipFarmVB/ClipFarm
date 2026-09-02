@@ -1026,6 +1026,33 @@ def _numpy_pin_problem(text: str) -> str | None:
     return None
 
 
+def _numpy_pin_problems_in(path: Path) -> list[str]:
+    """Every illegal numpy pin the image spec at `path` would install.
+
+    The **pipeline**, not the pieces: `_image_spec_arguments` — which asserts
+    literalness, resolves what `ast` can and joins shell line-continuations —
+    feeding `_numpy_pin_problem`. The tables below drive this rather than the
+    two helpers directly, because a round found that composing them by hand
+    covered neither the join's call site nor the literalness assertion: with
+    that call site deleted, a real continuation pin written into
+    `ml/modal_app.py` passed the whole suite while every table stayed green.
+    """
+    return [
+        problem
+        for problem in (
+            _numpy_pin_problem(text) for text in _image_spec_arguments(path)
+        )
+        if problem is not None
+    ]
+
+
+def _spec_installing(argument: str, tmp_path: Path) -> Path:
+    """A minimal image spec that installs exactly `argument`."""
+    spec = tmp_path / "spec.py"
+    spec.write_text(f"image = base.pip_install({argument!r})\n", encoding="utf-8")
+    return spec
+
+
 def test_the_ball_image_may_not_pin_numpy_below_2():
     """The other half of the CF-278 island, asserted rather than commented.
 
@@ -1091,9 +1118,8 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
     # a `pip install ...` line inside `run_commands`, say — and is read as text
     # by the pattern below, which is how a pin hidden in a shell command stays
     # in scope.
-    for text in _image_spec_arguments(REPO_ROOT / "ml" / "modal_app.py"):
-        problem = _numpy_pin_problem(text)
-        assert problem is None, f"ml/modal_app.py {problem}"
+    problems = _numpy_pin_problems_in(REPO_ROOT / "ml" / "modal_app.py")
+    assert not problems, f"ml/modal_app.py {problems[0]}"
 
 
 # Spellings of a numpy pin the ball image cannot build with. Each was found by
@@ -1139,8 +1165,8 @@ _KNOWN_OPEN_NUMPY_ROUTES = [
 
 
 @pytest.mark.parametrize("spelling", _CAPPING_NUMPY_SPELLINGS)
-def test_every_capping_numpy_spelling_on_record_is_rejected(spelling):
-    assert _numpy_pin_problem(_join_shell_continuations(spelling)) is not None, (
+def test_every_capping_numpy_spelling_on_record_is_rejected(spelling, tmp_path):
+    assert _numpy_pin_problems_in(_spec_installing(spelling, tmp_path)), (
         f"{spelling!r} pins numpy below what inference==1.3.3 accepts and this "
         "guard let it through. Every entry here is a spelling a review round "
         "used to defeat an earlier version."
@@ -1148,20 +1174,20 @@ def test_every_capping_numpy_spelling_on_record_is_rejected(spelling):
 
 
 @pytest.mark.parametrize("spelling", _LEGAL_NUMPY_SPELLINGS)
-def test_the_legal_numpy_spellings_stay_legal(spelling):
-    problem = _numpy_pin_problem(_join_shell_continuations(spelling))
-    assert problem is None, f"{spelling!r} is legal and was rejected: {problem}"
+def test_the_legal_numpy_spellings_stay_legal(spelling, tmp_path):
+    problems = _numpy_pin_problems_in(_spec_installing(spelling, tmp_path))
+    assert not problems, f"{spelling!r} is legal and was rejected: {problems[0]}"
 
 
 @pytest.mark.parametrize("route", _KNOWN_OPEN_NUMPY_ROUTES)
-def test_the_documented_open_routes_are_still_open(route):
+def test_the_documented_open_routes_are_still_open(route, tmp_path):
     """Pins the bound rather than the behaviour — read the failure carefully.
 
     A failure here is not a regression: it means the guard got *stronger* and
     the docstrings that call these routes open are now false. Fix the prose,
     then move the row into the rejected table above.
     """
-    assert _numpy_pin_problem(_join_shell_continuations(route)) is None, (
+    assert not _numpy_pin_problems_in(_spec_installing(route, tmp_path)), (
         f"{route!r} is documented as a route this guard does not catch, and it "
         "now catches it. The docstrings saying so need updating."
     )
