@@ -671,7 +671,25 @@ def _image_spec_arguments(path: Path) -> list[str]:
                 " been caught hiding a numpy pin that makes the image build"
                 " fail with ResolutionImpossible (CF-359, #440)."
             )
-            arguments.extend(_strings_in(value))
+            # Join shell line-continuations here, where every reader of this
+            # gets it. A shell joins backslash-newline to nothing before it
+            # splits words, so `pip install numpy\<join>==1.26.4` reaches pip
+            # as one argument. Put in the numpy loop instead, it left the
+            # opencv guards blind to the same trick — a continuation pinning
+            # headless 5.x over the image's 4.10.0.84 passed, which is the
+            # `cv2` split this file exists to prevent. That is the second time
+            # two readers of this data have drifted; there is one place now.
+            #
+            # A *bare* newline is not joined: in a shell that is a command
+            # separator, and the string was never one pin. Applied to every
+            # argument, including `pip_install`, where no shell runs — so a
+            # continuation written there is rejected though pip would not join
+            # it. That is a false rejection in the safe direction, and it is
+            # the price of not keeping a list of which methods reach a shell:
+            # a name list is what round 6 falsified.
+            arguments.extend(
+                re.sub(r"\\\n", "", item) for item in _strings_in(value)
+            )
         for keyword in node.keywords:
             assert keyword.arg is not None, (
                 f"{path.name}:{node.lineno} unpacks a mapping into"
@@ -977,16 +995,7 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
     # a `pip install ...` line inside `run_commands`, say — and is read as text
     # by the pattern below, which is how a pin hidden in a shell command stays
     # in scope.
-    for raw in _image_spec_arguments(REPO_ROOT / "ml" / "modal_app.py"):
-        # A shell joins backslash-newline to nothing before it splits words, so
-        # `pip install numpy\<newline>==1.26.4` reaches pip as one argument and
-        # installs 1.26.4. The patterns below use `[^\S\n]`, which stops at the
-        # newline, leaves an empty capture and admits everything — the same hole
-        # as every other empty capture, reached by whitespace rather than by
-        # spelling. Do what the shell does, and only that: a *bare* newline is a
-        # command separator, not a continuation, so joining it too would reject
-        # a string that never was a pin.
-        text = re.sub(r"\\\n", "", raw)
+    for text in _image_spec_arguments(REPO_ROOT / "ml" / "modal_app.py"):
         requirement = _as_numpy_requirement(text)
         if requirement is not None:
             # A direct reference names one artefact, so there is no specifier
