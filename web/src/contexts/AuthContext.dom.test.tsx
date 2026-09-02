@@ -157,6 +157,33 @@ describe("AuthProvider — clearing the games cache on an identity change (CF-29
     expect(mocks.prefetchGames).not.toHaveBeenCalled();
   });
 
+  it("does not refetch the profile on the way out", async () => {
+    // Sign-out clears and stops. Without the guard the clear is followed by a
+    // getMe() as a signed-out user — a guaranteed 401 on every sign-out, which
+    // is the same noise the games cache spends a paragraph avoiding.
+    await mount(sessionFor("user-a"));
+    mocks.fetchMe.mockClear();
+
+    await emit("SIGNED_OUT", null);
+
+    expect(mocks.clearMe).toHaveBeenCalledTimes(1);
+    expect(mocks.fetchMe).not.toHaveBeenCalled();
+  });
+
+  it("refetches the profile only after clearing it, never before", async () => {
+    // Reversed, the fetch resolves into the cache the clear then empties, and
+    // the incoming user is blank again by a different route.
+    await mount(sessionFor("user-a"));
+    mocks.clearMe.mockClear();
+    mocks.fetchMe.mockClear();
+
+    await emit("SIGNED_IN", sessionFor("user-b"));
+
+    expect(mocks.clearMe.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.fetchMe.mock.invocationCallOrder[0],
+    );
+  });
+
   it("does not prefetch when the session is gone", async () => {
     // Without the `if (session)` guard the sign-out itself fires a getGames()
     // as a signed-out user — a guaranteed 401, and one that repopulates

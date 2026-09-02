@@ -14,7 +14,7 @@
 // no request. B is left with blank chrome, and because `needsHandle(null)` is
 // false, a genuinely new B is never prompted to choose a handle. That is the
 // same harm the clear was added to prevent, reached by the other side.
-import { act, useSyncExternalStore } from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -40,7 +40,7 @@ vi.mock("@/lib/supabase", () => ({
 }));
 
 import { AuthProvider } from "@/contexts/AuthContext";
-import { useMe } from "@/lib/useMe";
+import { clearMe, needsHandle, useMe } from "@/lib/useMe";
 
 const sessionFor = (id: string) => ({ user: { id } });
 const profile = (username: string) => ({ id: username, username, username_is_generated: false });
@@ -48,7 +48,14 @@ const profile = (username: string) => ({ id: username, username, username_is_gen
 /** Renders whatever the shared profile cache currently holds. */
 function Chrome() {
   const me = useMe(true);
-  return <span data-testid="handle">{me?.username ?? "(none)"}</span>;
+  // `needsHandle` as well as the name: a blank profile answers `false` there,
+  // so a genuinely new user is silently never prompted. That is the harm this
+  // file exists for, and asserting only the handle string would miss it.
+  return (
+    <span data-testid="handle">
+      {`${me?.username ?? "(none)"}|${needsHandle(me) ? "prompt" : "noprompt"}`}
+    </span>
+  );
 }
 
 let container: HTMLDivElement;
@@ -56,6 +63,10 @@ let root: Root;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // `useMe` is module state and this file does not reload the module between
+  // tests, so without this the second test ever added here starts warm and
+  // reads a profile the previous one fetched.
+  clearMe();
   mocks.emit = null;
   mocks.initialSession = null;
   container = document.createElement("div");
@@ -81,7 +92,7 @@ describe("AuthProvider + useMe — the profile cache across an identity change (
         </AuthProvider>,
       );
     });
-    expect(handle()).toBe("alice");
+    expect(handle()).toBe("alice|noprompt");
 
     mocks.getMe.mockResolvedValueOnce(profile("bob"));
     await act(async () => {
@@ -92,6 +103,6 @@ describe("AuthProvider + useMe — the profile cache across an identity change (
     });
 
     // Not merely "not alice": blank is the failure this test exists for.
-    expect(handle()).toBe("bob");
+    expect(handle()).toBe("bob|noprompt");
   });
 });
