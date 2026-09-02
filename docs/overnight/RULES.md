@@ -1,6 +1,6 @@
 # Standing rules
 
-Read on **every iteration**. The rules that apply no matter which step the lap is doing — what is forbidden, what may be pushed to, what must be logged, and the counters that decide whether the run continues.
+Read on **every iteration**. The rules that apply no matter which step the lap is doing — what is forbidden, what counts as evidence, what may be pushed to, what must be logged, and the counters that decide whether the run continues.
 
 Part of the unattended-run brief — see [`README.md`](./README.md).
 
@@ -77,6 +77,44 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 - If a command fails because of usage limits, **stop the loop** — do not retry.
 - If nothing in scope is actionable, **stop the loop**. A run that reviews two
   PRs and opens nothing is a fine outcome.
+
+### Evidence, and the higher bar for rejecting a finding
+
+**Quote only primary source you actually fetched.** Every timestamp, line
+number, SHA and count in a reply that disputes or dismisses a round's finding
+must come from a call made *for that reply*. A number recalled, inferred from
+nearby context, or carried over from an earlier lap is not evidence, and
+presenting it as one is how a correct finding gets discarded.
+
+The run of 2026-09-01 rejected a true finding on #451 this way. A semi-cold
+round said the PR body still carried two overclaims; the reply answered that a
+body edit had preceded "your marker comment at `06:31:36Z`", so the round had
+read a stale copy. The marker is at **`06:27:06Z`**, and `06:31:36Z` exists
+nowhere on that PR — the nearest value is `06:31:20Z`, the reply's own
+timestamp. The comments endpoint had never been called.
+
+**The retraction then did it again, which is the part to learn from.** Having
+been caught, the reply reached for the PR's `updated_at` of `06:28:01Z`, called
+it "the body edit", and derived that the edit landed 55 seconds after the
+marker. That figure was fetched — but it is not what it was labelled: `06:28:01Z`
+is the `submitted_at` of the round's own **review**, which is what bumped
+`updated_at`. A body edit's time is not recoverable through REST at all, so the
+derivation had no source and the ordering it asserted remains unknown. Fetching
+a number is necessary and not sufficient; it also has to be the number the
+sentence says it is. A correction written under scrutiny, about this exact
+failure, reproduced it in one step — so treat the first retraction of a claim
+like this as the likeliest place for the second instance, not the safest.
+
+**The failure is one step earlier than "verify claims against the repository",
+which is why that rule did not catch it.** The run believed it was citing a
+measurement. What made the paragraph persuasive — to the round it answered, and
+to the run itself — was its *shape*: a table-ready figure, quoted to the second.
+Formatting is not fetching.
+
+**So fetch a dispute's sources in the same breath you write it**, where an
+agreement can lean on a reading taken earlier. The asymmetry is the reason: a
+wrong finding you accept costs a needless fix, and the change is there for the
+next round to see. A right one you reject costs the finding.
 
 ### The push test
 
