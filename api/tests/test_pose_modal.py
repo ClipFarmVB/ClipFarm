@@ -681,12 +681,27 @@ def _image_spec_arguments(path: Path) -> list[str]:
             # two readers of this data have drifted; there is one place now.
             #
             # A *bare* newline is not joined: in a shell that is a command
-            # separator, and the string was never one pin. Applied to every
-            # argument, including `pip_install`, where no shell runs — so a
-            # continuation written there is rejected though pip would not join
-            # it. That is a false rejection in the safe direction, and it is
-            # the price of not keeping a list of which methods reach a shell:
-            # a name list is what round 6 falsified.
+            # separator, and the string was never one pin.
+            #
+            # Applied to every argument, including `pip_install`, where no
+            # shell runs. That costs nothing: `Requirement()` rejects
+            # `numpy\<join>==1.26.4` outright, so a continuation written there
+            # is not a working pin either and rejecting it is right. (An
+            # earlier version of this comment called that a false rejection in
+            # the safe direction. It is not a false rejection at all.) The
+            # alternative was a list of which methods reach a shell, and a name
+            # list is what round 6 falsified.
+            #
+            # **This closes one route, not the class.** A shell removes or
+            # rewrites several things `[^\S\n]*` cannot cross, and only the
+            # line continuation is normalised here. Adjacent-word
+            # concatenation (`'numpy''==1.26.4'`), quoting inside a word
+            # (`numpy'=='1.26.4`, `numpy\=\=1.26.4`) and parameter expansion
+            # (`V='==1.26.4' && pip install numpy$V`) each produce the same one
+            # argv token and each still passes — demonstrated, not supposed.
+            # They stay open deliberately: chasing them is the widening this
+            # guard has lost eleven times, and the docstrings say so rather
+            # than implying a completeness nothing here has.
             arguments.extend(
                 re.sub(r"\\\n", "", item) for item in _strings_in(value)
             )
@@ -1066,6 +1081,15 @@ def test_the_ball_image_pins_opencv_where_inference_can_follow():
     `inference` forces its siblings into. Raising it means moving off
     `inference==1.3.3` (CF-33 pins that deliberately), which is a decision, not
     a bump.
+
+    **The same bound applies here as to the numpy guard, and for the same
+    reason: this reads what `_image_spec_arguments` returns.** A pin the shell
+    reassembles from pieces — quoting, adjacent words, parameter expansion —
+    passes this test as it passes that one; see the note beside the
+    continuation join. A round demonstrated exactly that against this guard,
+    installing a headless 5.x with the suite green. Stated here rather than
+    left to the reader of one docstring to infer, because the last two defects
+    on this branch were the two readers of these strings drifting apart.
     """
     window = SpecifierSet(">=4.8.1.78,<=4.10.0.84")
     pins = re.findall(
