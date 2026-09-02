@@ -1439,3 +1439,62 @@ def test_no_module_outside_sync_db_writes_error_message_directly():
         f"{offenders} writes error_message outside _sync_db.py, bypassing the clamp — "
         "go through sync_set_game_status/sync_note_game_error instead"
     )
+
+
+# CF-366: the overnight brief points at the guard above, and used to do it by
+# line number — which drifted twice before anyone noticed. It now quotes the
+# skip message instead, which only resolves while that message is reachable by
+# a plain grep in both directions. Two things can break that quietly, and both
+# have: rewording the message here, and reflowing the paragraph there so the
+# quote wraps across a line. The first draft of the fix shipped with the quote
+# wrapped, and `grep` in `docs/` found nothing at all.
+_BRIEF = pathlib.Path(__file__).resolve().parents[2] / "docs" / "overnight" / "TICKETS.md"
+
+
+def _pg_locks_skip_message() -> str:
+    """The literal `pg_locks` skips with, read out of this file's own source.
+
+    Read rather than repeated, so rewording the `pytest.skip` above cannot
+    leave this test asserting a string the code no longer uses — which would
+    pass while the brief quoted something that had ceased to exist.
+    """
+    tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+    fixture = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "pg_locks"
+    )
+    for node in ast.walk(fixture):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "skip"
+            and node.args
+            and isinstance(node.args[0], ast.JoinedStr)
+            and isinstance(node.args[0].values[0], ast.Constant)
+        ):
+            # The literal prefix, before `{exc}` — what the brief can quote.
+            return node.args[0].values[0].value.rstrip(": ")
+    raise AssertionError("pg_locks no longer skips with an f-string message")
+
+
+def test_the_brief_can_still_grep_its_way_to_the_skip_guard():
+    """The brief's citation of this guard must survive a grep, both ways.
+
+    `docs/overnight/TICKETS.md` tells a run how to tell an absent Postgres from
+    a real failure, and names this fixture's skip message so the reference does
+    not depend on a line number. Nothing else enforces that the two stay in
+    contact: the doc is prose, and prose reflows.
+    """
+    message = _pg_locks_skip_message()
+    assert message, "the skip message is empty, so the brief cannot quote it"
+
+    lines = _BRIEF.read_text(encoding="utf-8").splitlines()
+    hits = [i + 1 for i, line in enumerate(lines) if message in line]
+    assert hits, (
+        f"docs/overnight/TICKETS.md no longer contains {message!r} on any single "
+        "line. Either the message here was reworded, or the paragraph there was "
+        "reflowed so the quote wraps — a wrapped quote reads fine and is "
+        "invisible to the grep the citation exists to support (CF-366, #450). "
+        "Requote it on one line, or cite the guard some other way that greps."
+    )
