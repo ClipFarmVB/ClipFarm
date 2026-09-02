@@ -750,6 +750,16 @@ def _dependency_text(path: Path) -> str:
 # What `inference==1.3.3` will accept. The ball image's numpy has to land in
 # here or the image does not build (CF-359).
 INFERENCE_NUMPY_WINDOW = SpecifierSet(">=2.0.0,<2.4.0")
+INFERENCE_OPENCV_WINDOW = SpecifierSet(">=4.8.1.78,<=4.10.0.84")
+
+# Versions outside that window, probed to decide whether a headless requirement
+# is bounded. Named rather than derived, for the reason `_admits_a_numpy_2`
+# names its candidates: deciding what an arbitrary specifier set admits is not
+# something this guard can do, and probing a stated list is something it can.
+# 5.0.0.93 is the release the unpinned image actually installed (CF-359, #440);
+# the two either side of the window catch a bound that is off by one release,
+# and 99.0.0 catches an open upper end however far the ecosystem moves.
+HEADLESS_VERSIONS_OUTSIDE_THE_WINDOW = ("4.8.1.77", "4.11.0.86", "5.0.0.93", "99.0.0")
 
 
 def _admits_a_numpy_2(constraint: str) -> bool:
@@ -785,8 +795,8 @@ def _admits_a_numpy_2(constraint: str) -> bool:
     )
 
 
-def _as_numpy_requirement(text: str) -> Requirement | None:
-    """`text` parsed as a PEP 508 requirement for numpy, or None.
+def _as_requirement_for(text: str, package: str) -> Requirement | None:
+    """`text` parsed as a PEP 508 requirement for `package`, or None.
 
     `packaging.Requirement` is the same parser pip uses, so extras, spacing and
     direct references stop being spellings to anticipate: `numpy[cffi]==1.26.4`
@@ -801,7 +811,14 @@ def _as_numpy_requirement(text: str) -> Requirement | None:
         requirement = Requirement(text.strip())
     except InvalidRequirement:
         return None
-    return requirement if canonicalize_name(requirement.name) == "numpy" else None
+    if canonicalize_name(requirement.name) != canonicalize_name(package):
+        return None
+    return requirement
+
+
+def _as_numpy_requirement(text: str) -> Requirement | None:
+    """`text` parsed as a PEP 508 requirement for numpy, or None."""
+    return _as_requirement_for(text, "numpy")
 
 
 ML_RUNTIME_PACKAGES = ("torch", "torchvision", "ultralytics", "transformers", "inference")
@@ -896,15 +913,13 @@ def test_invariant_detects_an_ml_runtime_hidden_behind_a_requirements_file():
     assert not in_api, f"api/requirements.txt now pulls an ML runtime: {in_api}"
 
 
-@pytest.mark.parametrize("package", ["numpy", "opencv-python-headless"])
-def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
-    """Pipeline code runs in the worker AND in the Modal image, and rally dicts
-    cross that boundary as a pickle. A numpy-2 pickle names `numpy._core`, which
-    a numpy-1.x image cannot import — so a version split between these files
-    fails at deserialization on the far side, which the worker can only report as
-    "Modal failed". `_json_safe` keeps the payload plain so this can't bite, but
-    the two runtimes disagreeing is its own bug; catch it here rather than in a
-    silent label regression.
+def _consistency_sources(package: str) -> list[tuple[str, Path, bool]]:
+    """The files the pin-consistency test reads for `package`.
+
+    Lifted out of the test so membership can be asserted. Deleting the
+    `ml/modal_app.py` row left the suite green — the other three still
+    agreed with each other — so the row that carries this PR's pin was
+    itself unprotected.
     """
     # requirements-dev.txt must pin numpy — the dev pin IS the card (CF-276),
     # and requiring it here is what makes deleting it, loosening it to a range
@@ -934,6 +949,20 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
         sources.append(
             ("ml/modal_app.py", REPO_ROOT / "ml" / "modal_app.py", True)
         )
+    return sources
+
+
+@pytest.mark.parametrize("package", ["numpy", "opencv-python-headless"])
+def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
+    """Pipeline code runs in the worker AND in the Modal image, and rally dicts
+    cross that boundary as a pickle. A numpy-2 pickle names `numpy._core`, which
+    a numpy-1.x image cannot import — so a version split between these files
+    fails at deserialization on the far side, which the worker can only report as
+    "Modal failed". `_json_safe` keeps the payload plain so this can't bite, but
+    the two runtimes disagreeing is its own bug; catch it here rather than in a
+    silent label regression.
+    """
+    sources = _consistency_sources(package)
     # Whitespace around the operator because pip accepts it, and a reformatted
     # pin must fail as a split or a removal rather than vanish. `[^\S\n]` and
     # not `\s`: the text below is comment-stripped lines rejoined with "\n", so
@@ -1041,6 +1070,114 @@ def _numpy_pin_problems_in(path: Path) -> list[str]:
         problem
         for problem in (
             _numpy_pin_problem(text) for text in _image_spec_arguments(path)
+        )
+        if problem is not None
+    ]
+
+
+def _admits_an_inference_opencv(constraint: str) -> bool:
+    """Whether a headless requirement admits any version `inference` allows.
+
+    The same shape as `_admits_a_numpy_2`, and for the same reason: candidates
+    are the window's endpoints plus every version the constraint itself names,
+    so an exact pin is decided by the version it told us about rather than by
+    sampling.
+    """
+    try:
+        specifier = SpecifierSet(constraint)
+    except InvalidSpecifier as exc:  # a typo should be loud, not permissive
+        raise AssertionError(
+            f"ml/modal_app.py has an unparseable opencv constraint {constraint!r}: {exc}"
+        ) from exc
+
+    candidates = {Version("4.8.1.78"), Version("4.10.0.84")}
+    for literal in re.findall(r"[0-9][0-9A-Za-z.*+!]*", constraint):
+        try:
+            candidates.add(Version(literal.rstrip(".*")))
+        except InvalidVersion:
+            continue
+    return any(
+        v in INFERENCE_OPENCV_WINDOW and specifier.contains(v, prereleases=True)
+        for v in candidates
+    )
+
+
+def _headless_pin_problem(text: str) -> str | None:
+    """Why this image-spec argument installs a headless opencv it must not.
+
+    The test below asserts a plain `==` pin *exists* and that every `==` pin it
+    finds is in the window. Both are assertions about the pins that are there,
+    and neither says anything about a requirement carrying no pin at all — so a
+    later layer adding `pip_install("opencv-python-headless")`, which is
+    exactly what `main` does and what CF-359 exists to undo, passed the whole
+    suite while an earlier layer's `==` kept the first assertion true. A round
+    reproduced it on this head with one added literal. This closes that: every
+    headless *requirement* must be bounded inside the window, not merely
+    accompanied by one that is.
+
+    Requirements only. A `pip install ...` command line inside `run_commands`
+    parses as no requirement and returns None here; it is still read as text by
+    the `==` scan in the test, and the shell routes the numpy docstring
+    enumerates are open here for the same reasons and are not re-listed.
+    """
+    requirement = _as_requirement_for(text, "opencv-python-headless")
+    if requirement is None:
+        return None
+
+    # As with numpy: a direct reference names one artefact and its version is a
+    # filename convention, not metadata. Refuse rather than guess.
+    if requirement.url is not None:
+        return (
+            f'installs opencv-python-headless by direct reference ("{text}"),'
+            " whose version this guard cannot check. Use a version specifier"
+            " inside >=4.8.1.78,<=4.10.0.84."
+        )
+
+    specifier = str(requirement.specifier)
+    admitted = [
+        version
+        for version in HEADLESS_VERSIONS_OUTSIDE_THE_WINDOW
+        if requirement.specifier.contains(version, prereleases=True)
+    ]
+    if admitted:
+        return (
+            f'constrains opencv-python-headless as "{text}", which admits'
+            f" {admitted[0]} — outside the >=4.8.1.78,<=4.10.0.84 that"
+            " inference==1.3.3 forces on opencv-python and"
+            " opencv-contrib-python in the same image. All three write `cv2`"
+            " and the last install wins, so this is the major-version split"
+            " again however well the other pin sites agree (CF-359, #440)."
+            + (
+                " An unconstrained requirement is this case: it admits"
+                " everything, which is the state on `main`."
+                if not specifier
+                else ""
+            )
+        )
+    if not _admits_an_inference_opencv(specifier):
+        return (
+            f'constrains opencv-python-headless as "{text}", which admits no'
+            " version in >=4.8.1.78,<=4.10.0.84, so nothing can satisfy it"
+            " alongside inference==1.3.3 and the image build fails with"
+            " ResolutionImpossible. See CF-359 (#440)."
+        )
+    return None
+
+
+def _headless_pin_problems_in(path: Path) -> list[str]:
+    """Every unbounded headless opencv the image spec at `path` would install.
+
+    The pipeline, not the pieces — `_image_spec_arguments` feeding
+    `_headless_pin_problem`, exactly as `_numpy_pin_problems_in` does. The
+    tables below drive this rather than the helper, because the numpy half of
+    this file learned the hard way that composing the helpers by hand covers
+    neither the literalness assertion nor the shell-continuation join, and the
+    opencv half had that same untested wiring one round longer.
+    """
+    return [
+        problem
+        for problem in (
+            _headless_pin_problem(text) for text in _image_spec_arguments(path)
         )
         if problem is not None
     ]
@@ -1193,6 +1330,103 @@ def test_the_documented_open_routes_are_still_open(route, tmp_path):
     )
 
 
+# Headless requirements that must be rejected. The first two are the round's
+# reproduction verbatim: both passed the whole suite on the head before this,
+# and the first is `main`'s state — the bug this PR exists to undo — put back
+# in a later layer where the earlier layer's `==` kept the old assertion true.
+_UNBOUNDED_HEADLESS_SPELLINGS = [
+    "opencv-python-headless",
+    "opencv-python-headless>=5.0.0",
+    "opencv-python-headless>=4.8.1.78",
+    "opencv-python-headless<=5.0.0.93",
+    "opencv-python-headless!=4.9.0.80",
+    "opencv-python-headless==5.0.0.93",
+    "opencv-python-headless[extra]",
+    "opencv-python-headless @ https://x/opencv_python_headless-5.0.0.93-any.whl",
+    "opencv-python-headless\
+>=5.0.0",
+]
+
+# Legal, and rejecting any of these would block the file as it stands or a
+# sibling distribution this guard has no business bounding.
+_LEGAL_HEADLESS_SPELLINGS = [
+    "opencv-python-headless==4.10.0.84",
+    "opencv-python-headless == 4.10.0.84",
+    "opencv-python-headless==4.9.0.80",
+    "opencv-python-headless[extra]==4.10.0.84",
+    "opencv-python-headless>=4.8.1.78,<=4.10.0.84",
+    "opencv-python",
+    "opencv-contrib-python",
+    "numpy==2.1.0",
+    "opencv-python-headless\
+==4.10.0.84",
+]
+
+
+@pytest.mark.parametrize("spelling", _UNBOUNDED_HEADLESS_SPELLINGS)
+def test_every_unbounded_headless_spelling_is_rejected(spelling, tmp_path):
+    assert _headless_pin_problems_in(_spec_installing(spelling, tmp_path)), (
+        f"{spelling!r} admits an opencv-python-headless outside the window "
+        "inference==1.3.3 forces on its siblings, and this guard let it "
+        "through. The first row is what `main` installs."
+    )
+
+
+@pytest.mark.parametrize("spelling", _LEGAL_HEADLESS_SPELLINGS)
+def test_the_legal_headless_spellings_stay_legal(spelling, tmp_path):
+    problems = _headless_pin_problems_in(_spec_installing(spelling, tmp_path))
+    assert not problems, f"{spelling!r} is legal and was rejected: {problems[0]}"
+
+
+def test_a_python_dependency_source_is_read_as_its_image_spec(tmp_path):
+    """`_dependency_text` must route `.py` through the spec, not the lines.
+
+    Deleting that branch left the suite green: `ml/modal_app.py` read as raw
+    lines still contains its `==` pin, so every check that reads it agreed by
+    accident. What the branch actually buys only shows on a file where the two
+    readings differ — a version that is written down but never installed. Read
+    as lines it is a pin, and the consistency test would report a version split
+    against a string in a comment.
+    """
+    spec = tmp_path / "spec.py"
+    spec.write_text(
+        'HELPER = "opencv-python-headless==4.7.0.72"  # never installed\n'
+        'image = base.pip_install("opencv-python-headless==4.10.0.84")\n',
+        encoding="utf-8",
+    )
+    text = _dependency_text(spec)
+    assert "opencv-python-headless==4.10.0.84" in text, (
+        "a .py source must be read as the arguments its image spec installs"
+    )
+    assert "4.7.0.72" not in text, (
+        "a .py source read as raw lines picks up versions that never reach the "
+        "image — see this function's docstring"
+    )
+
+
+def test_the_consistency_test_reads_the_ball_image_for_opencv(tmp_path):
+    """`ml/modal_app.py` must stay in the opencv leg and out of the numpy one.
+
+    Deleting the `sources.append` block that adds it left the suite green: the
+    remaining three sources still agreed with each other, so the file simply
+    stopped being checked. The exclusion for numpy is deliberate and load-
+    bearing (the resolver forbids asserting it), which is exactly why its
+    presence for opencv needs an assertion of its own rather than a comment.
+    """
+    labels = {label for label, _path, required in _consistency_sources("opencv-python-headless") if required}
+    assert "ml/modal_app.py" in labels, (
+        "ml/modal_app.py has dropped out of the opencv pin-consistency leg. "
+        "The pin there is load-bearing (CF-359, #440); without this source the "
+        "other three agree with each other and the ball image is unchecked."
+    )
+    numpy_labels = {label for label, _path, _required in _consistency_sources("numpy")}
+    assert "ml/modal_app.py" not in numpy_labels, (
+        "ml/modal_app.py is back in the numpy leg. inference==1.3.3 requires "
+        "numpy>=2.0.0,<2.4.0, so asserting it agrees with the 1.26.4 the other "
+        "runtimes pin asserts what the resolver forbids — see CF-363 (#443)."
+    )
+
+
 def test_the_image_spec_must_be_written_in_literals(tmp_path):
     """The literalness assertion, exercised — nothing else covers it.
 
@@ -1236,6 +1470,11 @@ def test_the_ball_image_pins_opencv_where_inference_can_follow():
     `inference==1.3.3` (CF-33 pins that deliberately), which is a decision, not
     a bump.
 
+    Boundedness is asserted by `_headless_pin_problems_in`, and the two `==`
+    assertions below are kept for what they alone say: that a plain pin is
+    present at all, and that a typo'd version is an assertion rather than an
+    `InvalidVersion` traceback.
+
     **The same bound applies here as to the numpy guard, and for the same
     reason: this reads what `_image_spec_arguments` returns.** A pin the shell
     reassembles from pieces — quoting, adjacent words, parameter expansion —
@@ -1245,7 +1484,13 @@ def test_the_ball_image_pins_opencv_where_inference_can_follow():
     left to the reader of one docstring to infer, because the last two defects
     on this branch were the two readers of these strings drifting apart.
     """
-    window = SpecifierSet(">=4.8.1.78,<=4.10.0.84")
+    # Every headless *requirement* bounded, not merely accompanied by a pin.
+    # Asserted first because it is the assertion that fails on `main`'s state
+    # reintroduced in a later layer, which the two below cannot see.
+    problems = _headless_pin_problems_in(REPO_ROOT / "ml" / "modal_app.py")
+    assert not problems, "ml/modal_app.py " + "; and ".join(problems)
+
+    window = INFERENCE_OPENCV_WINDOW
     pins = re.findall(
         r"(?<![A-Za-z0-9_.\-])opencv-python-headless(?![A-Za-z0-9_.\-])"
         r"[^\S\n]*==[^\S\n]*([0-9][0-9A-Za-z.\-]*)",
