@@ -566,6 +566,16 @@ def _strings_in(value) -> list[str]:
     return []
 
 
+def _join_shell_continuations(text: str) -> str:
+    """What a shell does to backslash-newline before it splits words.
+
+    Its own function so the regression table below can exercise it: deleting
+    this line silently is what a settling round demonstrated, and a guard whose
+    substance can be deleted with the suite green is not guarded.
+    """
+    return re.sub(r"\\\n", "", text)
+
+
 def _image_spec_arguments(path: Path) -> list[str]:
     """Every string the image spec is built from, and an assertion it can be read.
 
@@ -603,7 +613,9 @@ def _image_spec_arguments(path: Path) -> list[str]:
 
     **What this claims, and what it does not.** It reads every argument written
     out in the `image = (...)` expression, and rejects the spellings listed
-    above, each with regression coverage. **It does not claim to catch every
+    above, each with regression coverage in `_CAPPING_NUMPY_SPELLINGS` — which
+    was a false claim until a settling round checked it, and is now a table
+    that fails if any of them is let through. **It does not claim to catch every
     pin written there** — that is the completeness claim this docstring has now
     made and lost twice, and an eleventh round took the replacement too: a
     `run_commands("pip install ...")` string that splits `numpy` from
@@ -703,7 +715,7 @@ def _image_spec_arguments(path: Path) -> list[str]:
             # guard has lost eleven times, and the docstrings say so rather
             # than implying a completeness nothing here has.
             arguments.extend(
-                re.sub(r"\\\n", "", item) for item in _strings_in(value)
+                _join_shell_continuations(item) for item in _strings_in(value)
             )
         for keyword in node.keywords:
             assert keyword.arg is not None, (
@@ -945,6 +957,75 @@ def test_pipeline_deps_are_pinned_to_one_version_everywhere(package):
     assert len(set(found.values())) == 1, f"{package} version split across runtimes: {found}"
 
 
+def _numpy_pin_problem(text: str) -> str | None:
+    """Why this image-spec argument is an illegal numpy pin, or None.
+
+    Extracted from the test below so the spellings can be exercised directly.
+    A settling round found that the docstrings claimed each spelling had
+    "regression coverage" and none did: deleting the line-continuation join —
+    the whole executable substance of three commits — left the suite at 39
+    passed. The bound was honest and the behaviour was unprotected, which is
+    the more dangerous half, because the next person to simplify this has
+    nothing telling them not to.
+    """
+    requirement = _as_numpy_requirement(text)
+    if requirement is not None:
+        # A direct reference names one artefact, so there is no specifier to
+        # evaluate and the URL's version is a filename convention rather than
+        # metadata. Fail loudly rather than guess: a false rejection blocks a
+        # legal spelling nobody uses here, where a false allow ships an image
+        # that cannot build.
+        if requirement.url is not None:
+            return (
+                f'installs numpy by direct reference ("{text}"), whose version'
+                " this guard cannot check. Use a version specifier"
+                " inference==1.3.3 accepts (>=2.0.0,<2.4.0)."
+            )
+        if not _admits_a_numpy_2(str(requirement.specifier)):
+            return (
+                f'constrains numpy as "{text}", which admits no version'
+                " inference==1.3.3 accepts (>=2.0.0,<2.4.0), so this cannot"
+                " resolve and the image build fails with ResolutionImpossible."
+                " See CF-359 (#440), and CF-363 (#443) for the repo-wide"
+                " numpy-2 migration."
+            )
+        return None
+
+    # A fragment ending in a bare operator — `numpy==` — is never a legal
+    # requirement, and read as a constraint it is the empty specifier set,
+    # which admits everything. The constructions that used to leave one behind
+    # cannot reach here any more, since the spec must be literal; this stays
+    # because `"numpy=="` can still be *written* as a literal, and a typo
+    # should be loud rather than permissive.
+    if re.search(
+        r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
+        r"[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*,?$",
+        text.rstrip(),
+        re.IGNORECASE,
+    ):
+        return (
+            f'contains the fragment "{text}", a numpy constraint with no'
+            " version this guard can read. Assemble the requirement as one"
+            " string literal so it can be checked against what"
+            " inference==1.3.3 accepts (>=2.0.0,<2.4.0)."
+        )
+    for constraint in re.findall(
+        r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
+        r"((?:[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*[^\s,'\"]+[^\S\n]*,?)*)",
+        text,
+        re.IGNORECASE,
+    ):
+        if not _admits_a_numpy_2(constraint):
+            return (
+                f'constrains numpy as "numpy{constraint}" (inside "{text}"),'
+                " which admits no version inference==1.3.3 accepts"
+                " (>=2.0.0,<2.4.0), so this cannot resolve and the image build"
+                " fails with ResolutionImpossible. See CF-359 (#440), and"
+                " CF-363 (#443) for the repo-wide numpy-2 migration."
+            )
+    return None
+
+
 def test_the_ball_image_may_not_pin_numpy_below_2():
     """The other half of the CF-278 island, asserted rather than commented.
 
@@ -1011,57 +1092,104 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
     # by the pattern below, which is how a pin hidden in a shell command stays
     # in scope.
     for text in _image_spec_arguments(REPO_ROOT / "ml" / "modal_app.py"):
-        requirement = _as_numpy_requirement(text)
-        if requirement is not None:
-            # A direct reference names one artefact, so there is no specifier
-            # to evaluate and the URL's version is a filename convention
-            # rather than metadata. Fail loudly rather than guess: a false
-            # rejection blocks a legal spelling nobody uses here, where a
-            # false allow ships an image that cannot build.
-            assert requirement.url is None, (
-                f'ml/modal_app.py installs numpy by direct reference ("{text}"), '
-                "whose version this guard cannot check. Use a version "
-                "specifier inference==1.3.3 accepts (>=2.0.0,<2.4.0)."
-            )
-            assert _admits_a_numpy_2(str(requirement.specifier)), (
-                f'ml/modal_app.py constrains numpy as "{text}", which admits '
-                "no version inference==1.3.3 accepts (>=2.0.0,<2.4.0), so "
-                "this cannot resolve and the image build fails with "
-                "ResolutionImpossible. See CF-359 (#440), and CF-363 (#443) "
-                "for the repo-wide numpy-2 migration."
-            )
-            continue
-        # A fragment ending in a bare operator — `numpy==` — is never a legal
-        # requirement, and read as a constraint it is the empty specifier set,
-        # which admits everything. The constructions that used to leave one
-        # behind cannot reach here any more, since the spec must be literal;
-        # this stays because `"numpy=="` can still be *written* as a literal,
-        # and a typo should be loud rather than permissive.
-        assert not re.search(
-            r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
-            r"[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*,?$",
-            text.rstrip(),
-            re.IGNORECASE,
-        ), (
-            f'ml/modal_app.py contains the fragment "{text}", a numpy'
-            " constraint with no version this guard can read. Assemble the"
-            " requirement as one string literal so it can be checked against"
-            " what inference==1.3.3 accepts (>=2.0.0,<2.4.0)."
-        )
-        for constraint in re.findall(
-            r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
-            r"((?:[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*[^\s,'\"]+[^\S\n]*,?)*)",
-            text,
-            re.IGNORECASE,
-        ):
-            assert _admits_a_numpy_2(constraint), (
-                f'ml/modal_app.py constrains numpy as "numpy{constraint}" '
-                f'(inside "{text}"), which admits no version inference==1.3.3 '
-                "accepts (>=2.0.0,<2.4.0), so this cannot resolve and the "
-                "image build fails with ResolutionImpossible. See CF-359 "
-                "(#440), and CF-363 (#443) for the repo-wide numpy-2 "
-                "migration."
-            )
+        problem = _numpy_pin_problem(text)
+        assert problem is None, f"ml/modal_app.py {problem}"
+
+
+# Spellings of a numpy pin the ball image cannot build with. Each was found by
+# a review round defeating an earlier version of the guard, in this order, and
+# each is here because the docstrings claimed regression coverage that did not
+# exist: deleting the continuation join left the suite green.
+_CAPPING_NUMPY_SPELLINGS = [
+    "numpy==1.26.4",
+    "numpy<2",
+    "numpy>=1.26,<2",
+    "numpy[cffi]==1.26.4",
+    "numpy [cffi]==1.26.4",
+    "numpy @ https://x/numpy-1.26.4-cp311-none-any.whl",
+    "numpy==",
+    "pip install numpy<2",
+    "pip install numpy\\\n==1.26.4",
+]
+
+# Legal, and rejecting any of these would block the pin CF-364 (#447) is going
+# to write. A bare `numpy` is included deliberately: an absent pin is not a
+# capping pin, and this guard must keep passing on the file as it stands.
+_LEGAL_NUMPY_SPELLINGS = [
+    "numpy",
+    "numpy==2.1.0",
+    "numpy<2.4",
+    "numpy==2.2.*",
+    "numpy~=2.1.0",
+    "msgpack-numpy==0.4.8",
+    "pip install requests",
+    "pip install numpy\\\n==2.1.0",
+]
+
+# Routes a shell reassembles that this guard does **not** catch, demonstrated
+# rather than supposed. They are asserted *open* so the bound is pinned: a
+# future change that closes one fails here and has to update the docstrings
+# that promise it is open, rather than leaving them false.
+_KNOWN_OPEN_NUMPY_ROUTES = [
+    "pip install 'numpy''==1.26.4'",
+    "pip install numpy'=='1.26.4",
+    "pip install numpy\\=\\=1.26.4",
+    "V='==1.26.4' && pip install numpy$V",
+]
+
+
+@pytest.mark.parametrize("spelling", _CAPPING_NUMPY_SPELLINGS)
+def test_every_capping_numpy_spelling_on_record_is_rejected(spelling):
+    assert _numpy_pin_problem(_join_shell_continuations(spelling)) is not None, (
+        f"{spelling!r} pins numpy below what inference==1.3.3 accepts and this "
+        "guard let it through. Every entry here is a spelling a review round "
+        "used to defeat an earlier version."
+    )
+
+
+@pytest.mark.parametrize("spelling", _LEGAL_NUMPY_SPELLINGS)
+def test_the_legal_numpy_spellings_stay_legal(spelling):
+    problem = _numpy_pin_problem(_join_shell_continuations(spelling))
+    assert problem is None, f"{spelling!r} is legal and was rejected: {problem}"
+
+
+@pytest.mark.parametrize("route", _KNOWN_OPEN_NUMPY_ROUTES)
+def test_the_documented_open_routes_are_still_open(route):
+    """Pins the bound rather than the behaviour — read the failure carefully.
+
+    A failure here is not a regression: it means the guard got *stronger* and
+    the docstrings that call these routes open are now false. Fix the prose,
+    then move the row into the rejected table above.
+    """
+    assert _numpy_pin_problem(_join_shell_continuations(route)) is None, (
+        f"{route!r} is documented as a route this guard does not catch, and it "
+        "now catches it. The docstrings saying so need updating."
+    )
+
+
+def test_the_image_spec_must_be_written_in_literals(tmp_path):
+    """The literalness assertion, exercised — nothing else covers it.
+
+    Each of these hides a version behind something `ast` cannot resolve, which
+    is how the guard was defeated once the spelling rules were exhausted.
+    """
+    legal = tmp_path / "legal.py"
+    legal.write_text('image = base.pip_install("numpy" "==2.1.0", "requests")\n')
+    assert "numpy==2.1.0" in _image_spec_arguments(legal), (
+        "implicit concatenation must be resolved by `ast` before this reads it"
+    )
+
+    for source in (
+        'image = base.pip_install(f"numpy=={V}")',
+        'image = base.pip_install("numpy==" + V)',
+        "image = base.pip_install(*REQUIREMENTS)",
+        'image = base.pip_install("requests", **OPTIONS)',
+        "image = base.pip_install(REQUIREMENT)",
+    ):
+        spec = tmp_path / "spec.py"
+        spec.write_text(source + "\n")
+        with pytest.raises(AssertionError):
+            _image_spec_arguments(spec)
 
 
 def test_the_ball_image_pins_opencv_where_inference_can_follow():
