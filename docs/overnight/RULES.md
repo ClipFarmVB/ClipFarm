@@ -93,13 +93,16 @@ read a stale copy. The marker is at **`06:27:06Z`**, and `06:31:36Z` exists
 nowhere on that PR — the nearest value is `06:31:20Z`, the reply's own
 timestamp. The comments endpoint had never been called.
 
-**The retraction then did it again, which is the part to learn from.** Having
-been caught, the reply reached for the PR's `updated_at` of `06:28:01Z`, called
+**The retraction then did it again, which is the part to learn from.** It
+carried the PR's `updated_at` of `06:28:01Z` forward from the dispute, called
 it "the body edit", and derived that the edit landed 55 seconds after the
-marker. That figure was fetched — but it is not what it was labelled: `06:28:01Z`
-is the `submitted_at` of the round's own **review**, which is what bumped
-`updated_at`. A body edit's time is not recoverable through REST at all, so the
-derivation had no source and the ordering it asserted remains unknown. Fetching
+marker. That figure had been fetched at some point — but not for that sentence,
+and it is not what the sentence called it: `06:28:01Z` is the `submitted_at` of
+the round's own **review**, which is what bumped `updated_at`. Reaching back
+for a number already in the thread is how the second instance happened; a
+figure that answers a new question needs a call made to answer it. A body
+edit's time is not recoverable through REST at all, so the derivation had no
+source and the ordering it asserted remains unknown. Fetching
 a number is necessary and not sufficient; it also has to be the number the
 sentence says it is. A correction written under scrutiny, about this exact
 failure, reproduced it in one step — so treat the first retraction of a claim

@@ -136,11 +136,23 @@ head.
 
 ### The cold reviewer's brief
 
-Its brief: run `/code-review high` on that PR, post one marker comment, and
-submit its findings as a review. Give it the head SHA you captured, and require
-the comment's body to **start** with the literal `cold: findings @ <sha>` or
-`cold: clean @ <sha>`, before any heading or
-formatting, since that whole line is what selection matches and routes on.
+Its brief: run `/code-review high <PR number>` — **naming the number, not
+describing the PR** — then post one marker comment and submit its findings as a
+review. The bare form has been observed reviewing `main`'s tip commit instead of
+the PR — see **Check what it reviewed** below, which carries the record —
+apparently by discovering a diff for itself
+and, finding every local one empty, falling back to `HEAD~1..HEAD`. **That
+mechanism is a suspect, not a cause**: the obvious version of it, "the branch is
+already pushed so the diff is empty", was tested and refuted — sightings that
+shared exactly that state targeted correctly. What the record does support is
+narrower: every round that recorded passing the number targeted correctly, and
+every round that recorded the skill finding its own diff did not. Naming the
+number is cheap and consistent with that; it is not yet known to be the fix.
+
+Give it the head SHA you captured, and require the comment's body to **start**
+with the literal `cold: findings @ <sha>` or `cold: clean @ <sha>`, before any
+heading or formatting, since that whole line is what selection matches and
+routes on.
 
 **Which of the two is decided by Critical and Medium alone.** `cold: findings`
 means at least one Critical or Medium. A round that found *only* nits, or
@@ -180,6 +192,10 @@ It needs saying separately because reading the code does not catch it: a
 reviewer checking whether the code is correct passes over a comment that
 describes it wrongly. The round has to be told to check each claim in a
 comment, docstring, commit message and PR body **against what the code does**.
+**The round must do this itself, rather than leave it to the skill.** No
+finding the skill has produced was rooted in a PR body — the one body-shaped
+finding on record is anchored in a file instead — so running it does not
+discharge this paragraph.
 
 Three sub-cases, each of which cost a round:
 
@@ -297,3 +313,36 @@ Do not use `/code-review ultra`. Whether or not it counts as an effort level
 alongside `low`…`max`, it launches a multi-agent review in the cloud, is billed
 separately and is user-triggered — none of which an unattended run should reach
 for.
+
+**Check what it reviewed before using any of it.** Compare the files it names,
+and the commit its own scope paragraph cites, against the PR's diff. On a
+mismatch, discard the output and review by hand — and say so in the review, so
+the next round knows the verdict is the round's own work.
+
+**This is the one place that keeps the record**, so that a count in one file
+cannot go stale against a count in another, which is the third sub-case under
+**It is not the whole risk surface** above. What is on record: **three rounds
+reviewed `main`'s tip commit rather than the PR**, returning findings that were
+internally consistent and about the wrong change, and on two of those three
+the wrong commit touched the same files as the PR, which is what makes this
+worth a check rather than a glance. All
+three predate passing the number; every round that has passed it has targeted
+correctly. No denominator is given on purpose: rounds accumulate every night,
+so a fraction is wrong by the next one, while the three mis-targets are a
+closed set that does not move unless a fourth is seen — and a round that sees
+one should add it here.
+
+**Open a cited location before repeating it.** The skill has pointed somewhere
+real but wrong in two shapes, both on record: anchoring a finding about the PR
+*description* at the nearest thematically-related file text, and rooting every
+path at the main checkout while the line numbers were the head's. That second one is the
+dangerous shape, because **the path usually resolves**: you land in a real file
+that simply does not contain what the finding describes, or past its end. It
+reads like a stale finding rather than a broken reference, and confirming that
+the file exists is not the check. Open the location in the worktree you are
+reviewing and read what is actually there. A finding you repeat in a marker, a
+review or a card carries its location as your claim, not the skill's.
+
+And "the skill agreed" is not verification of a number. It once confirmed a
+figure by recomputing it the way the diff's author had, rather than from the
+basis the diff stated — which is the one check that would have failed it.
