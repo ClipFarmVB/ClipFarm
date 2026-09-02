@@ -73,10 +73,16 @@ function Chrome() {
   );
 }
 
+declare global {
+  // eslint-disable-next-line no-var
+  var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks();
   // `useMe` is module state and this file does not reload the module between
   // tests, so without this the second test ever added here starts warm and
@@ -97,6 +103,62 @@ afterEach(() => {
 const handle = () => container.querySelector('[data-testid="handle"]')?.textContent;
 
 describe("AuthProvider + useMe — the profile cache across an identity change (CF-299)", () => {
+  it("empties the chrome on sign-out, with nothing left to refetch it", async () => {
+    // Every other case in this file is an A -> B switch, so none of them ever
+    // emits a null session — which left `clearMe`'s `_publish(null)` entirely
+    // unpinned while being the only thing that removes the outgoing user's
+    // handle and avatar from chrome that is already mounted. The refetch does
+    // not cover it: there is no incoming identity to fetch for.
+    mocks.getMe.mockResolvedValueOnce(profile("alice"));
+    mocks.initialSession = sessionFor("user-a");
+    await act(async () => {
+      root.render(
+        <AuthProvider>
+          <Chrome />
+        </AuthProvider>,
+      );
+    });
+    expect(handle()).toBe("alice|noprompt");
+
+    await act(async () => {
+      mocks.emit?.("SIGNED_OUT", null);
+    });
+
+    expect(handle()).toBe("(none)|noprompt");
+  });
+
+  it("fetches for a user signing in from a signed-out tab", async () => {
+    // No previous identity, so nothing is cleared — but the fetch is still
+    // needed. Consumers pass a constant `enabled`, so `useMe`'s own effect ran
+    // at mount and will not run again; without this the incoming user renders
+    // as anonymous until a reload.
+    // The chrome mounts signed-out, and `useMe` fetches regardless of session
+    // because its `enabled` is a constant here — a signed-out getMe() 401s.
+    mocks.getMe.mockRejectedValueOnce(new Error("API error 401"));
+    mocks.initialSession = null;
+    await act(async () => {
+      root.render(
+        <AuthProvider>
+          <Chrome />
+        </AuthProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(handle()).toBe("(none)|noprompt");
+
+    mocks.getMe.mockResolvedValueOnce(profile("bob"));
+    await act(async () => {
+      mocks.emit?.("SIGNED_IN", sessionFor("user-b"));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(handle()).toBe("bob|noprompt");
+  });
+
   it("prompts a genuinely new user to choose a handle", async () => {
     // Without this case the `needsHandle` half of the assertion cannot fail:
     // every profile the file builds answers `false`, and so does `null`, so

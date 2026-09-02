@@ -60,9 +60,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // Worse than cosmetic: `needsHandle(null)` is false, so a genuinely
           // new user is never prompted to choose a handle, which is one of the
           // harms clearing was added to prevent, reached from the other side.
-          if (userId !== null) void fetchMe();
         }
         lastUserIdRef.current = userId;
+        // Outside the branch above on purpose. Signing in from a signed-out
+        // tab has no previous id to clear, but it still needs the fetch:
+        // consumers pass a constant `enabled` (PostGrid and ClipModal pass
+        // SOCIAL_ENABLED), so `useMe`'s effect ran once at mount and will not
+        // run again — the incoming user renders as anonymous until a reload.
+        // `fetchMe` dedupes on `_me` and `_promise`, so the mount path does
+        // not issue a second request.
+        if (userId !== null) void fetchMe();
       }
       setSession(session);
       setLoading(false);
