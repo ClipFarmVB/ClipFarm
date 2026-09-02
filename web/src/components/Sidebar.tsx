@@ -285,6 +285,16 @@ export function Sidebar() {
                 onClick={() => {
                   // Drop the cached profile first so the next user never sees the
                   // previous one's handle/avatar in the chrome.
+                  //
+                  // The games cache is deliberately *not* cleared here as well.
+                  // It is cleared in AuthContext when the signed-in identity
+                  // changes, which is strictly after the token is revoked.
+                  // Clearing it in this handler would run while the old access
+                  // token is still valid, and `fetchGames` re-requests on a lost
+                  // generation race — that retry would return the outgoing
+                  // user's rows and write them into the cache we had just
+                  // emptied, reinstating CF-299 from inside its own fix.
+                  // `clearMe` has no such hazard because `useMe` never retries.
                   clearMe();
                   void signOut();
                 }}
