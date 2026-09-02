@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   clearGamesCache: vi.fn(),
   clearMe: vi.fn(),
+  fetchMe: vi.fn(() => Promise.resolve(null)),
   prefetchGames: vi.fn(),
   emit: null as null | ((event: string, session: unknown) => void),
   initialSession: null as unknown,
@@ -31,7 +32,7 @@ vi.mock("@/lib/gamesCache", () => ({
   prefetchGames: mocks.prefetchGames,
 }));
 
-vi.mock("@/lib/useMe", () => ({ clearMe: mocks.clearMe }));
+vi.mock("@/lib/useMe", () => ({ clearMe: mocks.clearMe, fetchMe: mocks.fetchMe }));
 
 vi.mock("@/lib/supabase", () => ({
   createClient: () => ({
@@ -146,8 +147,14 @@ describe("AuthProvider — clearing the games cache on an identity change (CF-29
     // strand the app on the loading screen.
     await mount(sessionFor("user-a"));
 
+    mocks.prefetchGames.mockClear();
+
     await expect(emit("SIGNED_IN", { user: undefined })).resolves.not.toThrow();
+
     expect(mocks.clearGamesCache).toHaveBeenCalledTimes(1);
+    // The husk is still truthy, so a session-keyed guard would prefetch on
+    // behalf of nobody. Keyed on the id, it does not.
+    expect(mocks.prefetchGames).not.toHaveBeenCalled();
   });
 
   it("does not prefetch when the session is gone", async () => {

@@ -283,10 +283,15 @@ export function Sidebar() {
               {/* Sign out */}
               <button
                 onClick={() => {
-                  // Drop the cached profile first so the next user never sees the
-                  // previous one's handle/avatar in the chrome.
+                  // Drop the cached profile first so the next user never sees
+                  // the previous one's handle/avatar in the chrome. AuthContext
+                  // now clears it too, on any identity change, so this call is
+                  // redundant on the sign-out path — kept because it lands
+                  // before the `signOut()` round trip rather than after it, and
+                  // clearMe is idempotent.
                   //
-                  // The games cache is deliberately *not* cleared here as well.
+                  // The games cache is deliberately *not* cleared here as
+                  // well, and the asymmetry with clearMe above is the point.
                   // It is cleared in AuthContext when the signed-in identity
                   // changes, which is strictly after the token is revoked.
                   // Clearing it in this handler would run while the old access

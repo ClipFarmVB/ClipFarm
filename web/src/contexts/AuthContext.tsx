@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef, ty
 import { type Session, type User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase";
 import { clearGamesCache, prefetchGames } from "@/lib/gamesCache";
-import { clearMe } from "@/lib/useMe";
+import { clearMe, fetchMe } from "@/lib/useMe";
 
 interface AuthState {
   user: User | null;
@@ -53,6 +53,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // id as the viewer.
           clearGamesCache();
           clearMe();
+          // Clearing alone leaves the incoming user blank forever. `useMe`'s
+          // effect is keyed on `enabled`, which does not change on the switch
+          // path — the session goes A -> B with no null between and `loading`
+          // is already false — so nothing re-subscribes and nothing refetches.
+          // Worse than cosmetic: `needsHandle(null)` is false, so a genuinely
+          // new user is never prompted to choose a handle, which is one of the
+          // harms clearing was added to prevent, reached from the other side.
+          if (userId !== null) void fetchMe();
         }
         lastUserIdRef.current = userId;
       }
@@ -61,7 +69,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Order is load-bearing: prefetchGames() returns early while a promise
       // from the previous identity is still in flight, so a clear after it
       // would leave this user with no fetch at all.
-      if (session) prefetchGames();
+      // Keyed on the id rather than the session object: a session whose user
+      // failed to deserialise is still truthy, and prefetching for it issues a
+      // request on behalf of nobody.
+      if (userId !== null) prefetchGames();
     };
 
     // Get initial session — kick off the games prefetch immediately so the
