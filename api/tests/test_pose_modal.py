@@ -602,10 +602,20 @@ def _image_spec_arguments(path: Path) -> list[str]:
     `pip_install(["a", "b"])` form both work.
 
     **What this claims, and what it does not.** It reads every argument written
-    out in the `image = (...)` expression, so a pin spelled there is caught —
-    the nine spellings above, each with regression coverage. It does **not**
-    reach a pin the expression merely points at. A tenth round defeated it six
-    ways, none of them writing a non-literal:
+    out in the `image = (...)` expression, and rejects the spellings listed
+    above, each with regression coverage. **It does not claim to catch every
+    pin written there** — that is the completeness claim this docstring has now
+    made and lost twice, and an eleventh round took the replacement too: a
+    `run_commands("pip install ...")` string that splits `numpy` from
+    `==1.26.4` across a backslash-newline is literal, in the expression, and a
+    real pin, because a shell joins that pair before it splits words. That one
+    is closed below, and it is cited here rather than quietly fixed because the
+    pattern is the point: each of these was a
+    *whitespace* or *indirection* route to the same empty capture, not a new
+    way of spelling a version.
+
+    What it certainly does **not** reach is a pin the expression merely points
+    at. A tenth round defeated it six ways, none of them writing a non-literal:
 
     - `.pip_install_from_requirements("ml/requirements.txt")` — a documented
       Modal method, and that file's line 6 is `numpy==1.26.4`. The argument is
@@ -967,7 +977,16 @@ def test_the_ball_image_may_not_pin_numpy_below_2():
     # a `pip install ...` line inside `run_commands`, say — and is read as text
     # by the pattern below, which is how a pin hidden in a shell command stays
     # in scope.
-    for text in _image_spec_arguments(REPO_ROOT / "ml" / "modal_app.py"):
+    for raw in _image_spec_arguments(REPO_ROOT / "ml" / "modal_app.py"):
+        # A shell joins backslash-newline to nothing before it splits words, so
+        # `pip install numpy\<newline>==1.26.4` reaches pip as one argument and
+        # installs 1.26.4. The patterns below use `[^\S\n]`, which stops at the
+        # newline, leaves an empty capture and admits everything — the same hole
+        # as every other empty capture, reached by whitespace rather than by
+        # spelling. Do what the shell does, and only that: a *bare* newline is a
+        # command separator, not a continuation, so joining it too would reject
+        # a string that never was a pin.
+        text = re.sub(r"\\\n", "", raw)
         requirement = _as_numpy_requirement(text)
         if requirement is not None:
             # A direct reference names one artefact, so there is no specifier
