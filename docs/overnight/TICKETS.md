@@ -105,13 +105,14 @@ applies in both modes.
    - **Set but unreachable** — a hard `psycopg2.OperationalError` and a non-zero
      exit: **4 skipped, 4 errors**. The split is not arbitrary and is worth
      knowing, because only half of this state announces itself: the CF-184 lock
-     tests try the connection themselves and skip on failure
-     (`test_worker_safety.py:538`), so they degrade quietly exactly as if no
-     cluster existed; the post-visibility four build their database in a
-     fixture with no such guard, and those are what turn the run red. Since "do
-     not open a PR if any gate fails" is two lines down, pasting a URL your
-     machine cannot reach costs you the PR on a gate that would otherwise have
-     been green.
+     tests try the connection themselves and skip on failure — the `pg_locks`
+     fixture in `test_worker_safety.py` skips with
+     `the lock test database is not reachable` — so they degrade quietly,
+     exactly as if no cluster existed; the post-visibility four build their
+     database in a fixture with no such guard, and those are what turn the run
+     red. Since "do not open a PR if any gate fails" is two lines down, pasting
+     a URL your machine cannot reach costs you the PR on a gate that would
+     otherwise have been green.
 
    With a reachable cluster: **0 skipped**. CI's value is
    `postgresql://postgres:postgres@localhost:5432/postgres`; point the variable
