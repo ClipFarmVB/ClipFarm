@@ -86,8 +86,9 @@ must come from a call made *for that reply*. A number recalled, inferred from
 nearby context, or carried over from an earlier lap is not evidence, and
 presenting it as one is how a correct finding gets discarded.
 
-That is this rule at its highest stakes. It holds for every number a run
-publishes, not only the ones in a disputing reply — see
+Quoting only what you fetched is not a rule about disputes. It holds for every
+number a run publishes, and a disputing reply is only where it costs most —
+see
 [Measure what you publish](#measure-what-you-publish), which is the general
 form and lists what it has cost.
 
@@ -419,10 +420,9 @@ entries from, and losing entries makes the budget read *low* — so the run keep
 reviewing past 40 and starves step 3, failing toward more reviewing rather than
 less.
 
-When log and markers disagree, **the markers win** —
-[Measure what you publish](#measure-what-you-publish) is the general form of
-that. The log records
-what a round intended; the markers record what the PR actually carries, and
+When log and markers disagree, **the markers win** — [Measure what you
+publish](#measure-what-you-publish) is the general form of that. The log
+records what a round intended; the markers record what the PR carries, and
 every other rule here reads the PR. A log ahead of the markers means a round's
 marker did not land, which the check above is there to catch at the time; a log
 behind them means a compaction lost an entry. Neither is a reason to trust the
@@ -479,8 +479,8 @@ first and leaves `SINCE`.
 it.** Not from memory, not from a subagent's report, not from an earlier run of
 the same command.
 
-This is the general form of a rule the brief already carries three times, in
-three places, for three surfaces: [Evidence](#evidence-and-the-higher-bar-for-rejecting-a-finding)
+This is the general form of a rule the brief already carries four times, for
+four surfaces: [Evidence](#evidence-and-the-higher-bar-for-rejecting-a-finding)
 above, for the numbers in a reply that disputes a finding; the
 [run-start timestamp](#log-before-you-finish-each-iteration), which must be the
 output of `date -u` rather than the command written out; and
@@ -498,22 +498,25 @@ is easier to recognise than the rule is to remember:
   seven. A PR's terminal state was decided by a number held in the head.
 - A **figure from a subagent's report** restated as measurement: "a bare
   `mypy api/app` reports 14 errors" when it is 93.
-- A **grep result asserted for the wrong tree** — "resolves in both directions
-  on `main`", when one direction *was* the PR under review.
+- A **grep result asserted for the wrong tree** — a PR body said the reference
+  it added resolved in both directions on `main`, when one of the two
+  directions *was* that PR's own change and returns nothing there.
 - **Mutation rows printed as re-measured that were carried over.**
 - A **lint count** of 2 that was 3, because the command was piped through
   `tail -2` and the summary line never read.
 - **The same lint claim again three commits later**, with the count on screen
-  directly above the commit — and one of the three intervening commits is the
-  one that wrote the corrective rule.
+  directly above the commit — and one of the two commits in between is the one
+  that wrote the corrective rule.
 
 Three corollaries, each of which had to be learned separately:
 
 - **Adding a test invalidates every previously measured failure count.** A
   mutation matrix is only true of the tree it was run against. After any test
   change, re-run the whole table — or print only the rows you re-ran, and say
-  that is what they are. What is forbidden is reprinting the old numbers under a
-  heading that says they were re-measured, which is what happened.
+  that is what they are. Reprinting old numbers under a heading that says they
+  were re-measured is the case that happened, and the clearest one to avoid; a
+  table mixing fresh rows with carried-over ones and saying so is honest, and
+  one mixing them silently is the same defect wearing a smaller number.
 - **Never truncate a gate's output past its summary line.** `| tail -2` hides
   the count on the line above it, which is how a regression becomes invisible
   to a run that believes it measured.
