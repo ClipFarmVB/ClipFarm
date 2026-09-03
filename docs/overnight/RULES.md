@@ -86,8 +86,11 @@ must come from a call made *for that reply*. A number recalled, inferred from
 nearby context, or carried over from an earlier lap is not evidence, and
 presenting it as one is how a correct finding gets discarded.
 
-Quoting only what you fetched is not a rule about disputes. It holds for every
-number a run publishes, and a disputing reply is only where it costs most.
+Quoting only what you fetched is not a rule about disputes. It holds for
+everything a run publishes, and a disputing reply is only where it costs most.
+The carve-out below is not an exception to that: *agreeing* with a finding may
+lean on an earlier reading, because a needless fix is cheap and visible, while a
+wrongly rejected finding is not.
 [Measure what you publish](#measure-what-you-publish) is the general form, and
 lists what it has cost.
 
@@ -474,9 +477,13 @@ first and leaves `SINCE`.
 
 ### Measure what you publish
 
-**A number that will be read as measured must come from the run that produced
-it.** Not from memory, not from a subagent's report, not from an earlier run of
-the same command.
+**Anything that will be read as measured must come from the run that produced
+it** — a number, but also a line reference, a file location, a quotation, a
+grep result. Not from memory, not from a subagent's report, not from an earlier
+run of the same command. The instances below are mostly numbers because numbers
+are what a run publishes most; the head SHA on a marker and "the rule is in this
+file" are the same claim wearing different clothes, and both have been wrong
+here.
 
 This is the general form of a rule the brief already carries four times, for
 four surfaces: [Evidence](#evidence-and-the-higher-bar-for-rejecting-a-finding)
@@ -520,16 +527,21 @@ Three corollaries, each of which had to be learned separately:
   the count on the line above it, which is how a regression becomes invisible
   to a run that believes it measured.
 - **Write a gate's numbers from the run you just read, never from the run you
-  expected.** This is the one the two lint failures prove is load-bearing:
+  expected.** This is [`BRIEFS.md`'s rule for
+  mutations](BRIEFS.md#the-cold-reviewers-brief) — write the prose claiming a
+  gap is closed *after* running it, never before — on a different surface. This is the one the two lint failures prove is load-bearing:
   the first came from not seeing the number, the second from seeing it and not
   letting it change a message already written. Composing the claim before
   reading the result is the actual defect, and no rule about *how* to run the
   command reaches it.
 
 **The tell is a sentence that would be embarrassing if someone re-ran it.**
-Every one of the six above was caught by a review round doing exactly that,
-which is cheap for them and free for you: run it again before you write it
-down.
+Four of the six above were caught by a review round doing exactly that. The
+other two the run caught itself, within minutes and before anyone looked — the
+round count, three minutes after the label went on, and the second lint claim,
+forty-two seconds after the commit. That is the encouraging half: the check is
+cheap enough to run on yourself, and twice it was the run's own re-reading
+rather than a reviewer that found the error.
 
 ### Repo traps that have already cost time
 
