@@ -56,7 +56,7 @@ run that learned it.
   that had since been amended.
 
 A step-1 lap that only selects costs about 26k tokens of brief instead of 50k;
-one that also spawns a round, about 31k. A step-2 lap is about 22k, a step-3 lap
+one that also spawns a round, about 32k. A step-2 lap is about 22k, a step-3 lap
 about 14k. That is the whole point of the split.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
