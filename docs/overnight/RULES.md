@@ -87,10 +87,9 @@ nearby context, or carried over from an earlier lap is not evidence, and
 presenting it as one is how a correct finding gets discarded.
 
 Quoting only what you fetched is not a rule about disputes. It holds for every
-number a run publishes, and a disputing reply is only where it costs most —
-see
-[Measure what you publish](#measure-what-you-publish), which is the general
-form and lists what it has cost.
+number a run publishes, and a disputing reply is only where it costs most.
+[Measure what you publish](#measure-what-you-publish) is the general form, and
+lists what it has cost.
 
 The run of 2026-09-01 rejected a true finding on #451 this way. A semi-cold
 round said the PR body still carried two overclaims; the reply answered that a
@@ -280,7 +279,8 @@ it, so nothing errors and the ceiling arrives early.
 A resolved timestamp, UTC and `Z`-suffixed — produce it with
 `date -u +%Y-%m-%dT%H:%M:%SZ` and write the **result**. This is one instance of
 [Measure what you publish](#measure-what-you-publish); the general rule is
-there, and it covers every number a run states, not only timestamps. Writing the command
+there, and it covers every number a run states, not only timestamps.
+Writing the command
 itself into the log is not a near miss: everything downstream compares strings,
 `$` sorts below every digit, so a literal `$(date …)` on that line makes every
 comparison true and the per-run bounds silently become all-time ones. Several
