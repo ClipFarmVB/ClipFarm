@@ -276,18 +276,16 @@ that only prints lets the failure it detected proceed anyway. Both failures poin
 way as the `$(date …)` trap below: they widen the window rather than narrowing
 it, so nothing errors and the ceiling arrives early.
 
-A resolved timestamp, UTC and `Z`-suffixed — produce it with
-`date -u +%Y-%m-%dT%H:%M:%SZ` and write the **result**. This is one instance of
-[Measure what you publish](#measure-what-you-publish); the general rule is
-there, and it covers every number a run states, not only timestamps.
-Writing the command
+A resolved timestamp, UTC and `Z`-suffixed — produce it with `date -u
++%Y-%m-%dT%H:%M:%SZ` and write the **result**. This is one instance of [Measure
+what you publish](#measure-what-you-publish); the general rule is there, and it
+covers every number a run states, not only timestamps. Writing the command
 itself into the log is not a near miss: everything downstream compares strings,
 `$` sorts below every digit, so a literal `$(date …)` on that line makes every
 comparison true and the per-run bounds silently become all-time ones. Several
 bounds are recovered by comparing against this line after a compaction — see
 [the counting windows](#logging-and-the-counting-windows). Write it before the
-first iteration does
-anything.
+first iteration does anything.
 
 ### Priority order
 
