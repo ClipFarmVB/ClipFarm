@@ -32,10 +32,19 @@ logger = logging.getLogger(__name__)
 
 # The tracking space speed_pxps defaults were tuned in. Keep in sync with
 # ball.REFERENCE_FRAME_HEIGHT — asserted by test_reference_frame_height_matches_ball
-# in ml/tests/test_dead_time.py. Not imported from there because ball.py imports
-# numpy at module scope and this module stays dependency-light so the dead-time
-# harness runs on a laptop. (The original reason given here was cv2, which CF-174
-# made lazy; numpy is the one that remains.)
+# in ml/tests/test_dead_time.py.
+#
+# Duplicated rather than imported, and NOT to stay dependency-light: that reason
+# has expired. It was cv2, which CF-174 made lazy, and the replacement claim once
+# written here — "numpy is the one that remains" — was already false, because this
+# module imports numpy itself in the block above. `from ml.pipeline.ball import
+# REFERENCE_FRAME_HEIGHT` costs nothing but stdlib today.
+#
+# What is left is layering, not weight: this module turns contacts into windows
+# and never calls the detector, and the constant describes the footage both were
+# tuned on rather than either module. Preferring the import to the duplicate is a
+# defensible trade — just make it on those grounds, and drop the guard test with
+# it, rather than preserving a dependency constraint that no longer exists.
 REFERENCE_FRAME_HEIGHT = 360.0
 
 
@@ -241,6 +250,12 @@ def bridge_windows_by_motion(
     it stays correct at every height and clamping it would only make it wrong.
     If SEG_MAX_SPEED_PXPS ever scales (CF-229) the clamp disappears and the two
     halves converge on their own.
+
+    Be explicit about what that costs, because ball.py's no-regression claim does
+    not cover it: above the clamp the condense path as a whole *does* differ from
+    `main`. Same contacts, bridged at 900 px/s instead of 150 at 2160p, so gaps
+    `main` bridged now stay cut. Tightening, not widening, and unmeasured — every
+    dead-time fixture is 1080p or shorter.
     """
     if len(windows) < 2 or not positions:
         return list(windows)

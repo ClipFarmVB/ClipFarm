@@ -216,6 +216,16 @@ condenses, and that trade is the thing to look at before touching its tunables:
 test3 is a game the ball tracker cannot follow, so both measure something other
 than which builder is better.
 
+> **The `rules` column is stale on the 1080p fixtures as of CF-174.** It was
+> measured before `bridge_windows_by_motion` took a `frame_height`, so `v0`
+> bridged 1080p footage at a 360p threshold — 150 px/s where production now runs
+> 450. Re-running the ladder moves every `rules` figure except test1's, which is
+> 360p and scales by exactly 1.0, and moves it toward *more* dead time removed
+> and more live play cut, because fewer gaps clear the higher bar. The `guarded`
+> column is unaffected: that builder never goes through the bridge and already
+> took the frame height. Regenerating needs the R2 ball caches, so these figures
+> stand as the last measured ones until someone has them.
+
 Strictly better on one, a paid trade on three, an abstain on one. At the 4:1
 live-cut exchange rate the harness and trainer share, that nets **+533s against
 `rules`' +134s** over the three comparable fixtures. Counting all five gives

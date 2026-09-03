@@ -10,6 +10,7 @@ Step 0 reproduces the recorded container baseline. If that row doesn't match
 exactly, nothing below it is trustworthy, so it prints the expected values.
 
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
+
 CF-174 — read the labels as REFERENCE (360p) values, not effective ones. The
 two px/s tunables (CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS) are
 multiplied by ball._scale_for(frame_height) at use, and
@@ -18,8 +19,6 @@ moves the clamp underneath itself. The default fixture is test1 at 360p, where
 the scale is exactly 1.0 and label == effective, which is why the pinned
 baseline still reproduces; on the 1080p fixtures a row reading
 "CONTACT_HIT_SPEED_PXPS=360" is applying 1080. main() prints the active scale.
-
-  docker compose run --rm --no-deps worker python -m ml.eval.tune_contacts
 """
 from __future__ import annotations
 
@@ -95,7 +94,13 @@ def main() -> None:
             label, r["contacts"], r["windows"], r["hit"],
             r["live"], 100 * r["dead"], 100 * r["recall"], 100 * r["cond"]))
 
-    scale = B._scale_for(frame_h)
+    # log=False: this is the per-run *label* for the table below, not a second
+    # opinion on the video. Left logging on, it reprints _scale_for's multi-line
+    # 1080p warning — which find_contacts already emits on every scored row —
+    # into the middle of the results table, on exactly the fixtures this tool was
+    # extended to cover. classify_contact_action passes log=False for the same
+    # reason.
+    scale = B._scale_for(frame_h, log=False)
     units = ("labels below are effective px/s" if scale == 1.0
              else "labels below are REFERENCE px/s — multiply by the scale")
     print(f"fixture frame_height={frame_h} -> CF-174 threshold scale {scale:.2f}"

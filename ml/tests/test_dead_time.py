@@ -23,16 +23,17 @@ from ml.pipeline.dead_time import (
 
 def test_reference_frame_height_matches_ball():
     """
-    dead_time duplicates ball.REFERENCE_FRAME_HEIGHT rather than importing it,
-    to stay dependency-light. The comment at that constant has always claimed
-    this assertion existed; the CF-174 review found it never had been written,
-    so the two could drift silently — the same class of unit mismatch CF-174 fixes.
+    dead_time duplicates ball.REFERENCE_FRAME_HEIGHT rather than importing it.
+    The comment at that constant has always claimed this assertion existed; the
+    CF-174 review found it never had been written, so the two could drift
+    silently — the same class of unit mismatch CF-174 fixes.
 
-    Importing ball costs numpy, which nothing else in this file needs; skip
-    rather than fail so one missing dep cannot take the dependency-light
-    dead-time tests down with it.
+    The import below is unguarded on purpose. It used to sit behind
+    `pytest.importorskip("numpy")`, on the reasoning that importing ball costs a
+    dependency the dead-time tests do not otherwise need. That was never true:
+    this file imports numpy at the top, and so does dead_time itself, so the skip
+    could not fire and only made the trade look more expensive than it is.
     """
-    pytest.importorskip("numpy", reason="ml/pipeline/ball.py does its maths in numpy")
     from ml.pipeline.ball import REFERENCE_FRAME_HEIGHT as BALL_REFERENCE_FRAME_HEIGHT
 
     assert REFERENCE_FRAME_HEIGHT == BALL_REFERENCE_FRAME_HEIGHT

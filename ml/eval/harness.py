@@ -343,8 +343,10 @@ def _require_r2_key(raw: dict, test_id: str) -> str:
             "python -m ml.eval.visualize_deadtime, which reads ml/eval/ball_caches/."
         )
     return r2_key
+
+
 def _assert_declared_frame_height(
-    fixture, frame_h: int, test_id: str, r2_key: str, mode: str
+    fixture: Fixture | DeadFixture, frame_h: int, test_id: str, r2_key: str, mode: str
 ) -> None:
     """
     Refuse to score if the decoded source is not the height the fixture declares.

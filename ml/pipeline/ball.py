@@ -163,10 +163,13 @@ MAX_SAMPLE_GAP_SEC        = 1.0     # skip triples spanning a detection gap
 #
 # _scale_for therefore returns 1.0 above the clamp point rather than the capped
 # value — the shipped row, i.e. pre-CF-174 behaviour, which over-fires but is
-# never narrower, so no resolution regresses against `main`. That is an interim,
-# not a fix: the real one is scaling SEG_MAX_SPEED_PXPS, blocked on the tracking
-# pollution documented above (CF-229), after which the clamp is unnecessary
-# entirely.
+# never narrower, so *these gates* do not regress against `main` at any
+# resolution. Read that as scoped to contact detection and not to the condense
+# path: dead_time.bridge_windows_by_motion scales unconditionally, so above the
+# clamp the pipeline joins `main`'s contact set with a 6x-tighter bridge. See the
+# asymmetry note in that function. That is an interim, not a fix: the real one is
+# scaling SEG_MAX_SPEED_PXPS, blocked on the tracking pollution documented above
+# (CF-229), after which the clamp is unnecessary entirely.
 CONTACT_SPEED_CEILING_FRAC = 0.80   # cap scaled contact speeds at this × SEG_MAX_SPEED_PXPS
 MAX_VALIDATED_FRAME_HEIGHT = 1080   # tallest footage CF-174 was measured on
 # Legacy thresholds — still used by fuse_with_ball_contacts "strong contact" check
@@ -583,8 +586,21 @@ def _scale_for(frame_height: int, *, log: bool = True) -> float:
         #
         # Unscaled thresholds at 2160p give a band of 0.111-0.556 fh/s. Also
         # wrong, and over-firing rather than silent — but strictly wider, and it
-        # is what `main` does today, so this cannot be a regression at any
-        # resolution. Reverting is the honest interim until SEG_MAX_SPEED_PXPS
+        # is what `main` does today, so *this gate* cannot be a regression at any
+        # resolution.
+        #
+        # That claim stops at find_contacts; it is not a claim about the condense
+        # path. dead_time.bridge_windows_by_motion scales unconditionally, and
+        # correctly so (one-sided threshold, no ceiling to collide with), which
+        # means above this clamp point the pipeline runs `main`'s contact set
+        # joined by a 6x-tightened bridge at 2160p: fewer gaps bridged, windows
+        # `main` joined left split. That pairing is new in CF-174 and is measured
+        # nowhere — every dead-time fixture is 1080p or shorter. It tightens
+        # rather than widens, which is the safer direction, but it is a real
+        # behaviour change at the resolution phones shoot. Measuring it needs a
+        # 4K fixture and is its own card.
+        #
+        # Reverting is the honest interim until SEG_MAX_SPEED_PXPS
         # can scale (CF-229) and the clamp stops being needed at all.
         #
         # The discontinuity at this height is real and deliberate: thresholds
@@ -630,13 +646,19 @@ def _scale_for(frame_height: int, *, log: bool = True) -> float:
             logger.warning(
                 "frame_height %d is above the %dp CF-174 was measured on. Contact "
                 "detection admits only %.3f-%.3f frame-heights/s here (%.0f-%.0f "
-                "px/s, a %.2fx band vs 5.00x at %.0fp) because SEG_MAX_SPEED_PXPS "
+                "px/s, a %.2fx band vs %.2fx at %.0fp) because SEG_MAX_SPEED_PXPS "
                 "does not scale; this height is unmeasured and contacts get scarcer "
                 "as the band closes. Scaling the ceiling is the real fix (CF-229).",
                 frame_height, MAX_VALIDATED_FRAME_HEIGHT,
                 floor / frame_height, SEG_MAX_SPEED_PXPS / frame_height,
                 floor, SEG_MAX_SPEED_PXPS,
-                SEG_MAX_SPEED_PXPS / floor, REFERENCE_FRAME_HEIGHT,
+                SEG_MAX_SPEED_PXPS / floor,
+                # Derived, not literal: this is the reference band, and it moves
+                # whenever either constant is tuned (CF-103 lowers the floor to
+                # 220 and it becomes 5.45x). It is the one number in this line a
+                # reader cannot cross-check against the others.
+                SEG_MAX_SPEED_PXPS / CONTACT_HIT_SPEED_PXPS,
+                REFERENCE_FRAME_HEIGHT,
             )
     return scale
 
