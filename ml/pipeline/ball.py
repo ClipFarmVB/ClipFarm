@@ -99,6 +99,38 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 # video keeps growing. Further down the contact count still climbs with
 # rallies-hit flat, i.e. only false positives are being added.
 #
+# CONTACT_HIT_SPEED_PXPS was the other half of the same mis-calibration, and it
+# was invisible until the floor came down: while the floor sat at 480 the sweep
+# returned an identical 214 contacts at every hit-speed value tried, so the first
+# pass concluded the knob did nothing. It is now 220, down from 240 — scored on
+# test1/test2/test4 with leave-one-game-out (CF-103 stage 2), so each number
+# below comes from a game the value was not chosen on:
+#
+#   held out   rallies with >= 1 contact      live play wrongly cut
+#   test1      101 -> 103 of 126              176s -> 147s
+#   test2       20 ->  22 of 27                31s ->  16s
+#   test4       26 ->  26 of 46                89s ->  89s
+#
+# 220 is the knee, by the same argument that picked the floor: 220 -> 200
+# recovers zero further rallies while shedding another 75s of dead-time removal,
+# i.e. past this point the extra contacts are false positives. Going the other
+# way is far worse than the gain — 240 -> 300 loses 30 rallies — which is what
+# says this threshold was set too high rather than merely arbitrarily.
+#
+# The cost is real and lands on dead-time removal: 56.2% -> 55.3% on test1,
+# 54.4% -> 50.4% on test2. Same trade CF-46 and #118 took deliberately — a
+# condensed game missing whole rallies is worse than one that runs longer.
+#
+# One neighbouring knob measured as a no-op, worth knowing before touching it.
+# (There were two. The other, MIN_SPEED_PXPS, was subsumed by this gate at every
+# value CF-103 swept; CF-174 then removed it outright — see the note below the
+# scaling paragraph.)
+#   - CONTACT_RESIDUAL_RATIO is inert *downward* only. max(floor, ratio × speed)
+#     picks the ratio term on 9.7% of test1's candidate triples and 0% of
+#     test2/test4/test3's, and on none of them does it reject a contact the floor
+#     had already passed — so lowering it is measurably a no-op, while raising it
+#     above 0.5 does cut contacts. Not dead code; a one-sided knob.
+#
 # Measured on the dead-time metric only. find_contacts feeds a second consumer:
 # tasks.py runs it through contacts_to_rallies for highlight clips, where
 # MIN_RALLY_CONTACTS gates at 3 — so the extra contacts can lift marginal 1-2
@@ -106,8 +138,10 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 # score it with the CF-55 highlight mode against results/test1.jsonl before
 # tuning this further.
 #
-# Re-tune by scoring, not by inspecting a trajectory:
-#   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
+# Re-tune by scoring, not by inspecting a trajectory. Runs on a laptop off the
+# committed fixtures + ball caches — no container, no video download:
+#   python -m ml.eval.tune_contacts --knob CONTACT_HIT_SPEED_PXPS
+#   python -m ml.eval.tune_contacts --candidates
 #
 # CF-174: the two px/s constants below are scaled by
 # frame_height / REFERENCE_FRAME_HEIGHT at use (see _scale_for). px/s is frame-rate
@@ -130,31 +164,36 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 REFERENCE_FRAME_HEIGHT    = 360.0   # tracking space the px/s constants below assume
 CONTACT_RESIDUAL_RATIO    = 0.50    # residual must exceed this fraction of ball speed
 CONTACT_RESIDUAL_MIN_PXPS = 240.0   # ...and this absolute floor (px/s, above noise)
-CONTACT_HIT_SPEED_PXPS    = 240.0   # px/s: a real hit has speed on at least one side
+CONTACT_HIT_SPEED_PXPS    = 220.0   # px/s: a real hit has speed on at least one side
 MIN_CONTACT_SPACING       = 0.6     # seconds: debounce — one hit can't fire twice
 MAX_SAMPLE_GAP_SEC        = 1.0     # skip triples spanning a detection gap
 # The scale factor is capped so the scaled hit-speed floor cannot reach
 # SEG_MAX_SPEED_PXPS. _segment_track splits any pair faster than that ceiling,
 # so speed inside a segment is always below it — once CONTACT_HIT_SPEED_PXPS *
 # scale meets it the two constraints are disjoint and find_contacts returns
-# nothing at all. Unclamped that lands at 1800p, and phones shoot 2160p.
+# nothing at all. Unclamped that lands at ~1964p, and phones shoot 2160p.
 #
 # Read the cap as damage control, NOT as 4K support. It moves the floor and
 # cannot move the ceiling, so the admissible band keeps closing with resolution:
 #
-#     360p   floor 0.667  ceiling 3.333 frame-heights/s   band 5.00x
-#     720p   floor 0.667  ceiling 1.667                   band 2.50x
-#    1080p   floor 0.667  ceiling 1.111                   band 1.67x
-#    1440p   floor 0.667  ceiling 0.833                   band 1.25x  <- clamp
+#     360p   floor 0.611  ceiling 3.333 frame-heights/s   band 5.45x
+#     720p   floor 0.611  ceiling 1.667                   band 2.73x
+#    1080p   floor 0.611  ceiling 1.111                   band 1.82x
+#    1440p   floor 0.611  ceiling 0.833                   band 1.36x
+#    1571p   floor 0.611  ceiling 0.764                   band 1.25x  <- clamp
 #
 # Every row above ships. What the cap would give past the clamp point does not,
 # and is listed only because it is the reason for the row under it:
 #
 #    2160p   floor 0.444  ceiling 0.556  (frozen scale)   band 1.25x  rejected
-#    2160p   floor 0.111  ceiling 0.556  (unscaled)       band 5.00x  shipped
+#    2160p   floor 0.102  ceiling 0.556  (unscaled)       band 5.45x  shipped
+#
+# Recomputed for CF-103's 220 px/s floor. The unclamped collision moves 1800p ->
+# ~1964p and the clamp point 1440p -> ~1571p, so the bands widen slightly and
+# 1440p now scales normally instead of sitting on the clamp. Shape unchanged.
 #
 # Read the rejected row carefully: the floor drops to 0.444. Below the clamp the
-# scale tracks resolution and the floor stays put at the validated 0.667 while
+# scale tracks resolution and the floor stays put at the validated 0.611 while
 # only the ceiling closes — degradation, but in the right direction. Past the
 # clamp the scale is frozen under a growing frame, so the whole band slides
 # below where real play lives (0.3-0.9 fh/s). Measured on real tracks: at 2160p
