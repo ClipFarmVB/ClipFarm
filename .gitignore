@@ -44,6 +44,16 @@ ball-track/
 # belong in results/*.jsonl; the raw track does not.
 ml/eval/results/*_ball_track.json
 
+# Raw-detection sweep caches from ml/eval/sweep_ball_conf.py (its default
+# --cache-dir). Same reasoning as the ball-track dumps above: keyed by
+# md5+model+floor and regenerable by re-running the sweep. The thresholds
+# chosen *from* them are what belong in the repo.
+ml/eval/ball_caches/
+
+# Roboflow dataset exports. Multi-hundred-MB archives that live in the
+# workspace they came from, not in git — GitHub rejects blobs over 100MB.
+*.zip
+
 # ML / data
 *.pt
 *.pth

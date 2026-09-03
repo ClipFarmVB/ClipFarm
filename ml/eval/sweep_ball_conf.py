@@ -75,13 +75,19 @@ def _count_in(spans: list[tuple[float, float]], times: list[float]) -> list[int]
 # Pass A — one inference sweep at the floor, every detection kept
 # ─────────────────────────────────────────────────────────────────────────────
 
-def collect_raw(video: Path, floor: float, cache_dir: Path) -> dict:
+def collect_raw(video: Path, floor: float, cache_dir: Path, model_id: str) -> dict:
     """
     Infer on every sample_every-th frame at `floor` confidence and keep all
-    predictions, not just the picked one. Cached by (md5, floor).
+    predictions, not just the picked one. Cached by (md5, model, floor).
+
+    The model id is part of the cache key for the same reason it is part of the
+    R2 ball-cache key: a retrained detector returns different boxes for the same
+    frames, so without it a sweep against a new version silently replays the
+    old one's detections and reports them as the new model's.
     """
     md5 = _file_md5(video)
-    cache = cache_dir / f"{md5}-raw{floor:g}.json"
+    model_slug = model_id.replace("/", "-")
+    cache = cache_dir / f"{md5}-{model_slug}-raw{floor:g}.json"
     if cache.exists():
         print(f"Raw-detection cache hit: {cache}")
         return json.loads(cache.read_text(encoding="utf-8"))
@@ -90,7 +96,7 @@ def collect_raw(video: Path, floor: float, cache_dir: Path) -> dict:
 
     import cv2
 
-    from ml.pipeline.ball import _load_model
+    from inference import get_model
 
     api_key = os.environ.get("ROBOFLOW_API_KEY", "")
     if not api_key:
@@ -104,8 +110,8 @@ def collect_raw(video: Path, floor: float, cache_dir: Path) -> dict:
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     sample_every = max(1, round(fps / 3.0))  # matches process_game_task
 
-    model = _load_model(api_key)
-    print(f"{video.name}: {total} frames @ {fps:.1f} fps, sampling every "
+    model = get_model(model_id, api_key=api_key)
+    print(f"{video.name} [{model_id}]: {total} frames @ {fps:.1f} fps, sampling every "
           f"{sample_every} -> ~{total // sample_every} inferences at conf >= {floor}")
 
     # grab() past skipped frames instead of read() — same CF-42 decode saving
@@ -137,6 +143,7 @@ def collect_raw(video: Path, floor: float, cache_dir: Path) -> dict:
     data = {
         "video": video.name,
         "md5": md5,
+        "model": model_id,
         "fps": fps,
         "frame_height": frame_h,
         "sample_every": sample_every,
@@ -196,20 +203,25 @@ def main() -> None:
                     help="inference confidence floor for pass A (default 0.05)")
     ap.add_argument("--cache-dir", type=Path, default=Path("ml/eval/ball_caches"))
     ap.add_argument("--thresholds", type=float, nargs="+", default=DEFAULT_THRESHOLDS)
+    ap.add_argument("--model", default=None,
+                    help="Roboflow model id (default: ball.py's MODEL_ID)")
     args = ap.parse_args()
 
-    from ml.pipeline.ball import find_contacts
+    from ml.pipeline.ball import MODEL_ID, find_contacts
+
+    model_id = args.model or MODEL_ID
 
     fx = load_deadtime_fixture(args.test)
     rallies = sorted(fx.keep)
     rally_sec = sum(b - a for a, b in rallies)
 
-    raw = collect_raw(args.video, args.floor, args.cache_dir)
+    raw = collect_raw(args.video, args.floor, args.cache_dir, model_id)
     frame_h = raw["frame_height"]
 
     n_frames = len(raw["frames"])
     n_dets = sum(len(f["preds"]) for f in raw["frames"])
     seen = sum(1 for f in raw["frames"] if f["preds"])
+    print(f"\nModel: {model_id}")
     print(f"\nPass A: {n_frames} sampled frames, {n_dets} raw detections at "
           f"conf >= {args.floor}; {seen} frames ({100 * seen / max(n_frames, 1):.1f}%) "
           "have at least one")
