@@ -18,7 +18,7 @@ not the ones it is not. Every rule lives in exactly one file.
 |---|---|---|
 | [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.0k |
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.4k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 9.1k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 9.3k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.9k |
 | [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.2k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |

@@ -86,6 +86,11 @@ must come from a call made *for that reply*. A number recalled, inferred from
 nearby context, or carried over from an earlier lap is not evidence, and
 presenting it as one is how a correct finding gets discarded.
 
+That is this rule at its highest stakes. It holds for every number a run
+publishes, not only the ones in a disputing reply — see
+[Measure what you publish](#measure-what-you-publish), which is the general
+form and lists what it has cost.
+
 The run of 2026-09-01 rejected a true finding on #451 this way. A semi-cold
 round said the PR body still carried two overclaims; the reply answered that a
 body edit had preceded "your marker comment at `06:31:36Z`", so the round had
@@ -414,10 +419,9 @@ entries from, and losing entries makes the budget read *low* — so the run keep
 reviewing past 40 and starves step 3, failing toward more reviewing rather than
 less.
 
-When log and markers disagree, **the markers win.** That is the same rule as
-[Measure what you publish](#measure-what-you-publish) applied to a count: the
-log records what a round intended, the markers record what the PR carries, and
-only one of the two was produced by the thing being counted. The log records
+When log and markers disagree, **the markers win** —
+[Measure what you publish](#measure-what-you-publish) is the general form of
+that. The log records
 what a round intended; the markers record what the PR actually carries, and
 every other rule here reads the PR. A log ahead of the markers means a round's
 marker did not land, which the check above is there to catch at the time; a log
@@ -473,9 +477,17 @@ first and leaves `SINCE`.
 
 **A number that will be read as measured must come from the run that produced
 it.** Not from memory, not from a subagent's report, not from an earlier run of
-the same command. The SHA rule above and the marker-count rule are instances of
-this; they were written as instances, and each new surface then arrived as a
-fresh mistake.
+the same command.
+
+This is the general form of a rule the brief already carries three times, in
+three places, for three surfaces: [Evidence](#evidence-and-the-higher-bar-for-rejecting-a-finding)
+above, for the numbers in a reply that disputes a finding; the
+[run-start timestamp](#log-before-you-finish-each-iteration), which must be the
+output of `date -u` rather than the command written out; and
+[the counting windows](#logging-and-the-counting-windows), which say the markers
+beat the log. `REVIEW.md` carries a fourth, for the head SHA on a marker. Each
+was written for its own surface, and each new surface then arrived as a fresh
+mistake rather than as a case of something already known.
 
 The run of 2026-09-02 published six wrong figures across three PRs while
 reading this file every iteration (CF-370). They are listed because the shape
@@ -491,14 +503,17 @@ is easier to recognise than the rule is to remember:
 - **Mutation rows printed as re-measured that were carried over.**
 - A **lint count** of 2 that was 3, because the command was piped through
   `tail -2` and the summary line never read.
-- **The same lint claim again one commit later**, with the count on screen
-  directly above the commit.
+- **The same lint claim again three commits later**, with the count on screen
+  directly above the commit — and one of the three intervening commits is the
+  one that wrote the corrective rule.
 
 Three corollaries, each of which had to be learned separately:
 
 - **Adding a test invalidates every previously measured failure count.** A
-  mutation matrix is only true of the tree it was run against. Re-run the whole
-  table after any test change, or do not print it.
+  mutation matrix is only true of the tree it was run against. After any test
+  change, re-run the whole table — or print only the rows you re-ran, and say
+  that is what they are. What is forbidden is reprinting the old numbers under a
+  heading that says they were re-measured, which is what happened.
 - **Never truncate a gate's output past its summary line.** `| tail -2` hides
   the count on the line above it, which is how a regression becomes invisible
   to a run that believes it measured.
