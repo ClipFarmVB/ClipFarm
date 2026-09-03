@@ -30,6 +30,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Whose games are in the module cache. Compared rather than the event name
   // so every way the identity can change is covered by one branch (CF-299).
   const lastUserIdRef = useRef<string | null>(null);
+  // Whether any session has resolved yet. Distinct from `lastUserIdRef` being
+  // null, which cannot tell "this page has never resolved a session" from
+  // "this page is signed out" — and those need opposite handling below.
+  const resolvedOnceRef = useRef(false);
 
   useEffect(() => {
     // Both entry points go through here so the ref's first assignment is
@@ -39,36 +43,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // deserialise would throw here, before `setLoading(false)` below, and
       // strand the whole app on the loading screen.
       const userId = session?.user?.id ?? null;
-      if (userId !== lastUserIdRef.current) {
-        // Identity changed. A null previous id means this provider has not
-        // seen one yet — the first resolution after a mount — so there is
-        // nothing it is responsible for dropping.
-        if (lastUserIdRef.current !== null) {
-          // Both module caches, together. Clearing one and not the other is
-          // the same disclosure with a different noun: `clearMe` is otherwise
-          // reachable only from the sign-out button, so on the account-switch
-          // path below — no sign-out, no null session — `fetchMe()` returns
-          // the previous user's profile from `if (_me) return`, and B gets A's
-          // handle and avatar in the chrome, A's `needsHandle` answer, and A's
-          // id as the viewer.
-          clearGamesCache();
-          clearMe();
-          // Clearing alone leaves the incoming user blank forever. `useMe`'s
-          // effect is keyed on `enabled`, which does not change on the switch
-          // path — the session goes A -> B with no null between and `loading`
-          // is already false — so nothing re-subscribes and nothing refetches.
-          // Worse than cosmetic: `needsHandle(null)` is false, so a genuinely
-          // new user is never prompted to choose a handle, which is one of the
-          // harms clearing was added to prevent, reached from the other side.
-        }
+      if (!resolvedOnceRef.current) {
+        // First resolution on this page. Any `getMe()` already in flight was
+        // issued microseconds ago by a consumer's own effect, under this same
+        // session, so it is the fetch we want rather than one to invalidate.
+        resolvedOnceRef.current = true;
         lastUserIdRef.current = userId;
-        // Outside the branch above on purpose. Signing in from a signed-out
-        // tab has no previous id to clear, but it still needs the fetch:
-        // consumers pass a constant `enabled` (PostGrid and ClipModal pass
-        // SOCIAL_ENABLED), so `useMe`'s effect ran once at mount and will not
-        // run again — the incoming user renders as anonymous until a reload.
-        // `fetchMe` dedupes on `_me` and `_promise`, so the mount path does
-        // not issue a second request.
+      } else if (userId !== lastUserIdRef.current) {
+        // A change *after* the page has settled, which includes signing in
+        // from a tab that was signed out. That case has no previous id, and
+        // the guard this replaced skipped it for that reason — wrongly.
+        // Consumers pass a constant `enabled` (PostGrid and ClipModal pass
+        // SOCIAL_ENABLED), so such a tab already has an anonymous `getMe()`
+        // in flight; without dropping it, `fetchMe()` below dedupes onto that
+        // request, it 401s, and its catch publishes null over the user who
+        // just signed in. The refetch then silently does nothing on the one
+        // path it exists for.
+        clearGamesCache();
+        clearMe();
+        lastUserIdRef.current = userId;
+        // After the clears, so it cannot dedupe onto what they invalidated.
         if (userId !== null) void fetchMe();
       }
       setSession(session);

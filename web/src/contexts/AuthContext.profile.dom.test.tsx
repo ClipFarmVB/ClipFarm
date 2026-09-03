@@ -158,6 +158,40 @@ describe("AuthProvider + useMe — the profile cache across an identity change (
     expect(handle()).toBe("bob|noprompt");
   });
 
+  it("does not dedupe the sign-in fetch onto the anonymous one still in flight", async () => {
+    // The case the sibling test above cannot see, because it drains the
+    // anonymous rejection before signing in. A signed-out tab has a `getMe()`
+    // in flight from a consumer's own effect; if the identity change does not
+    // invalidate it, `fetchMe()` returns that same promise, it 401s, and its
+    // catch publishes null over the user who just signed in — the refetch
+    // doing nothing at all on the one path it was widened to cover.
+    const anonymous = deferred<ReturnType<typeof profile>>();
+    mocks.getMe.mockReturnValueOnce(anonymous.promise);
+    mocks.initialSession = null;
+    await act(async () => {
+      root.render(
+        <AuthProvider>
+          <Chrome />
+        </AuthProvider>,
+      );
+    });
+
+    // Left deliberately unsettled: this is the state the bug needs.
+    mocks.getMe.mockResolvedValueOnce(profile("bob"));
+    await act(async () => {
+      mocks.emit?.("SIGNED_IN", sessionFor("user-b"));
+    });
+    await act(async () => {
+      anonymous.reject(new Error("API error 401"));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(handle()).toBe("bob|noprompt");
+  });
+
   it("prompts a genuinely new user to choose a handle", async () => {
     // Without this case the `needsHandle` half of the assertion cannot fail:
     // every profile the file builds answers `false`, and so does `null`, so
