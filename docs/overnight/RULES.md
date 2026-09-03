@@ -272,7 +272,9 @@ way as the `$(date …)` trap below: they widen the window rather than narrowing
 it, so nothing errors and the ceiling arrives early.
 
 A resolved timestamp, UTC and `Z`-suffixed — produce it with
-`date -u +%Y-%m-%dT%H:%M:%SZ` and write the **result**. Writing the command
+`date -u +%Y-%m-%dT%H:%M:%SZ` and write the **result**. This is one instance of
+[Measure what you publish](#measure-what-you-publish); the general rule is
+there, and it covers every number a run states, not only timestamps. Writing the command
 itself into the log is not a near miss: everything downstream compares strings,
 `$` sorts below every digit, so a literal `$(date …)` on that line makes every
 comparison true and the per-run bounds silently become all-time ones. Several
@@ -412,7 +414,10 @@ entries from, and losing entries makes the budget read *low* — so the run keep
 reviewing past 40 and starves step 3, failing toward more reviewing rather than
 less.
 
-When log and markers disagree, **the markers win.** The log records
+When log and markers disagree, **the markers win.** That is the same rule as
+[Measure what you publish](#measure-what-you-publish) applied to a count: the
+log records what a round intended, the markers record what the PR carries, and
+only one of the two was produced by the thing being counted. The log records
 what a round intended; the markers record what the PR actually carries, and
 every other rule here reads the PR. A log ahead of the markers means a round's
 marker did not land, which the check above is there to catch at the time; a log
@@ -463,6 +468,51 @@ be counted from the run start, sweeping in the rounds it already spent and
 hitting the ceiling early — the failure this section exists to prevent. Sorting
 `Z`-suffixed UTC lexicographically picks the later; an empty `REOPENED` sorts
 first and leaves `SINCE`.
+
+### Measure what you publish
+
+**A number that will be read as measured must come from the run that produced
+it.** Not from memory, not from a subagent's report, not from an earlier run of
+the same command. The SHA rule above and the marker-count rule are instances of
+this; they were written as instances, and each new surface then arrived as a
+fresh mistake.
+
+The run of 2026-09-02 published six wrong figures across three PRs while
+reading this file every iteration (CF-370). They are listed because the shape
+is easier to recognise than the rule is to remember:
+
+- A **round count** acted on before it was measured — `unsettled: ran out of
+  rounds` posted and labelled, then the marker query run, which said six of
+  seven. A PR's terminal state was decided by a number held in the head.
+- A **figure from a subagent's report** restated as measurement: "a bare
+  `mypy api/app` reports 14 errors" when it is 93.
+- A **grep result asserted for the wrong tree** — "resolves in both directions
+  on `main`", when one direction *was* the PR under review.
+- **Mutation rows printed as re-measured that were carried over.**
+- A **lint count** of 2 that was 3, because the command was piped through
+  `tail -2` and the summary line never read.
+- **The same lint claim again one commit later**, with the count on screen
+  directly above the commit.
+
+Three corollaries, each of which had to be learned separately:
+
+- **Adding a test invalidates every previously measured failure count.** A
+  mutation matrix is only true of the tree it was run against. Re-run the whole
+  table after any test change, or do not print it.
+- **Never truncate a gate's output past its summary line.** `| tail -2` hides
+  the count on the line above it, which is how a regression becomes invisible
+  to a run that believes it measured.
+- **Write a gate's numbers from the run you just read, never from the run you
+  expected.** This is the one the two lint failures prove is load-bearing:
+  the first came from not seeing the number, the second from seeing it and not
+  letting it change a message already written. Composing the claim before
+  reading the result is the actual defect, and no rule about *how* to run the
+  command reaches it.
+
+**The tell is a sentence that would be embarrassing if someone re-ran it.**
+Every one of the six above was caught by a review round doing exactly that,
+which is cheap for them and free for you: run it again before you write it
+down.
 
 ### Repo traps that have already cost time
 
