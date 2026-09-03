@@ -8,8 +8,8 @@ container. Ball positions come from the committed-by-hand ball caches in
 `ml/eval/ball_caches/` (see `ml/eval/README.md` for how to populate them).
 
 **Read every px/s label below as a REFERENCE (360p) value, not an effective
-one (CF-174).** `CONTACT_HIT_SPEED_PXPS`, `CONTACT_RESIDUAL_MIN_PXPS` and
-`MIN_SPEED_PXPS` are multiplied by `ball._scale_for(frame_height)` at use, and
+one (CF-174).** `CONTACT_HIT_SPEED_PXPS` and `CONTACT_RESIDUAL_MIN_PXPS` are
+multiplied by `ball._scale_for(frame_height)` at use, and
 `SEG_MAX_SPEED_PXPS` additionally feeds that function's cap — so a row sweeping
 it moves the clamp underneath itself. At 360p the scale is exactly 1.0 and
 label == effective, which is why the pinned baseline reproduces; on a 1080p
@@ -99,7 +99,6 @@ SWEEPS: dict[str, tuple] = {
     "CONTACT_HIT_SPEED_PXPS":    (300.0, 240.0, 220.0, 200.0, 180.0, 150.0, 120.0),
     "CONTACT_RESIDUAL_MIN_PXPS": (360.0, 300.0, 240.0, 180.0, 120.0),
     "CONTACT_RESIDUAL_RATIO":    (0.70, 0.50, 0.35, 0.25, 0.15),
-    "MIN_SPEED_PXPS":            (240.0, 180.0, 120.0, 60.0),
     "SEG_MIN_POSITIONS":         (5, 4, 3),
     "SEG_MIN_MEDIAN_SPEED_PXPS": (90.0, 60.0, 40.0, 20.0),
     "SEG_MAX_SPEED_PXPS":        (900.0, 1200.0, 1800.0, 2400.0),

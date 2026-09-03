@@ -4,9 +4,13 @@ Structural facts about find_contacts' speed gates (CF-103, #116).
 The #116 threshold sweep concluded that CONTACT_RESIDUAL_RATIO and
 CONTACT_HIT_SPEED_PXPS "aren't inert, they're masked by the residual floor". The
 multi-fixture re-run (ml/eval/tune_contacts.py) showed that was only half right:
-one of them really does move contacts once the floor is down, the other two are
-no-ops for reasons that live in the *shape* of the conditions rather than in any
-fixture. Those reasons are what this file pins.
+one of them really does move contacts once the floor is down, while
+CONTACT_RESIDUAL_RATIO is a no-op for a reason that lives in the *shape* of its
+condition rather than in any fixture. Those reasons are what this file pins.
+
+(A third gate, MIN_SPEED_PXPS, was pinned here as subsumed-but-live. CF-174
+went further and removed it as dead code — mutation-checked — so the class that
+covered it is gone; test_ball_scaling.py now pins its absence instead.)
 
 Worth having as tests and not only as comments, because both facts silently
 invert the meaning of a sweep: a knob that cannot move is easy to mistake for a
@@ -25,7 +29,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import ml.pipeline.ball as ball  # noqa: E402
 from ml.pipeline.ball import (  # noqa: E402
     CONTACT_HIT_SPEED_PXPS,
-    MIN_SPEED_PXPS,
     BallPosition,
     TrackedBall,
     find_contacts,
@@ -70,29 +73,6 @@ class TestHitSpeedGate:
         assert find_contacts(marginal, frame_height=360) == []
         ball.CONTACT_HIT_SPEED_PXPS = 220.0
         assert len(find_contacts(marginal, frame_height=360)) == 1
-
-
-class TestMinSpeedIsSubsumed:
-    def test_min_speed_gate_cannot_fire_below_the_hit_speed_gate(self):
-        """
-        MIN_SPEED_PXPS needs *both* sides slow; the hit-speed gate needs only the
-        faster side slow. So while CONTACT_HIT_SPEED_PXPS >= MIN_SPEED_PXPS,
-        anything the first would reject the second has already rejected, and the
-        sweep measures a flat line at every value. Pinned so a future tuner reads
-        that flat line as "subsumed", not as "correctly set".
-        """
-        assert CONTACT_HIT_SPEED_PXPS >= MIN_SPEED_PXPS
-
-    @pytest.mark.parametrize("min_speed", [240.0, 180.0, 120.0, 60.0, 0.0])
-    def test_sweeping_min_speed_changes_nothing(self, restore_constants, min_speed):
-        ball.MIN_SPEED_PXPS = min_speed
-        contacts = find_contacts(struck_track(0.9 * 360), frame_height=360)
-        assert [c["time"] for c in contacts] == [8 * 0.33]
-
-    def test_it_does_bite_once_pushed_above_the_hit_speed_gate(self, restore_constants):
-        """Not dead code — it is the guard that starts working if hit speed drops."""
-        ball.MIN_SPEED_PXPS = CONTACT_HIT_SPEED_PXPS * 4
-        assert find_contacts(struck_track(0.9 * 360), frame_height=360) == []
 
 
 class TestResidualRatioIsOneSided:

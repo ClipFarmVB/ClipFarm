@@ -121,11 +121,10 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 # 54.4% -> 50.4% on test2. Same trade CF-46 and #118 took deliberately — a
 # condensed game missing whole rallies is worse than one that runs longer.
 #
-# Two neighbouring knobs measured as no-ops, worth knowing before touching them:
-#   - MIN_SPEED_PXPS is fully subsumed while CONTACT_HIT_SPEED_PXPS >= it. Its
-#     gate needs *both* sides slow, which already implies max(before, after) is
-#     under the hit-speed gate above it. Sweeping it moves nothing at any value;
-#     it only starts to bite if hit speed is ever pushed below it.
+# One neighbouring knob measured as a no-op, worth knowing before touching it.
+# (There were two. The other, MIN_SPEED_PXPS, was subsumed by this gate at every
+# value CF-103 swept; CF-174 then removed it outright — see the note below the
+# scaling paragraph.)
 #   - CONTACT_RESIDUAL_RATIO is inert *downward* only. max(floor, ratio × speed)
 #     picks the ratio term on 9.7% of test1's candidate triples and 0% of
 #     test2/test4/test3's, and on none of them does it reject a contact the floor
