@@ -265,6 +265,22 @@ class TestInvarianceBreaksDownAbove1080p:
         assert "found nothing" in caplog.text
         assert "hit_speed" in caplog.text
 
+    def test_an_empty_track_is_not_blamed_on_the_segment_filters(self, caplog):
+        """
+        The third route to zero, and the one the other two messages must not be
+        confused with: no ball was ever detected. _segment_track returns [] for
+        an empty position list *before* consulting any threshold, so naming
+        SEG_MIN_POSITIONS and SEG_MIN_MEDIAN_SPEED_PXPS here sends an operator
+        tuning the segmenter at a Roboflow outage — the precise mix-up the
+        message above exists to prevent.
+        """
+        import logging
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
+            assert find_contacts(TrackedBall(positions=[]), frame_height=1080) == []
+        assert "the track is empty" in caplog.text
+        assert "SEG_MIN_POSITIONS" not in caplog.text
+        assert "SEG_MIN_MEDIAN_SPEED_PXPS" not in caplog.text
+
     def test_an_empty_return_names_the_segment_filter_when_that_is_the_cause(self, caplog):
         """
         The other way to reach zero: 1.5 fh/s at 2160p is above the fixed
@@ -589,3 +605,87 @@ class TestLazyOpenCV:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+class TestTheScalingHasARuntimeKillSwitch:
+    """
+    CF-174 moves highlight selection on every non-360p upload, and there is no
+    ground truth at those resolutions to measure that against —
+    MIN_RALLY_CONTACTS gates hard at 3, so a rally that loses a contact leaves
+    highlights entirely. `settings.ball_contact_scale_enabled` makes the
+    response a restart rather than a deploy.
+
+    What these pin is that the switch is *whole*: off is `main` everywhere the
+    scale reaches, and the gate and the classifier cannot land on opposite
+    sides of it.
+    """
+
+    def test_off_is_the_identity_scale_at_every_resolution(self):
+        for height in (*RESOLUTIONS, 1440, 2160):
+            assert _scale_for(height, normalize=False) == 1.0
+
+    def test_off_is_silent(self, caplog):
+        """An operator who set it meant it, and _scale_for runs per contact."""
+        import logging
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
+            _scale_for(2160, normalize=False)
+            _scale_for(0, normalize=False)
+        assert caplog.text == ""
+
+    def test_off_reproduces_mains_contacts_at_1080p(self):
+        """
+        The switch has to actually change something, and the something has to be
+        `main`'s answer — not a third behaviour. 0.4 fh/s at 1080p is 432 px/s:
+        over the unscaled 240 floor and under the scaled 720 one, so it is
+        exactly the sample the scaling newly rejects.
+        """
+        track = rally_track(1080, 0.4)
+        assert find_contacts(track, frame_height=1080) == []
+        off = find_contacts(track, frame_height=1080, normalize=False)
+        assert off, "normalize=False should restore main's more permissive gate"
+        # `main`'s answer, reached by `main`'s route: unscaled means the gate
+        # reads raw pixels, so the comparison track is the one carrying the same
+        # *pixel* speed at the reference height (scale exactly 1.0), not the
+        # physically-equivalent one.
+        same_pixel_motion = rally_track(360, 0.4 * 1080 / 360)
+        assert len(off) == len(find_contacts(same_pixel_motion, frame_height=360))
+
+    def test_off_takes_the_classifier_with_it(self):
+        """
+        The gate and the classifier must not disagree about what a px/s means.
+        With the scaling off, a 1080p hit is judged in raw pixels — so it gets
+        the label `main` gives it, which is the label the *unnormalized* 360p
+        pixel motion would get, not the physically-equivalent one.
+
+        0.4 fh/s at 1080p is 432 px/s, which reads as 144 px/s in reference
+        space: inside SET's 45-240 band normalized, outside it unscaled. That is
+        the degenerate 1080p labelling this PR set out to fix, so it is the right
+        thing for the switch to hand back.
+        """
+        i = 8
+        positions = rally_track(1080, 0.4).positions
+        normalized = classify_contact_action(positions, i, 1080)
+        off = classify_contact_action(positions, i, 1080, normalize=False)
+        assert off != normalized, (
+            "if these agree the classifier is not on the switch at all"
+        )
+        # And it is `main`'s label specifically. rally_track puts the ball at
+        # y = 0.5 * height, so a 360p track carrying the *same pixel* speed
+        # (0.9 x 1080 = 972 px/s = 2.7 fh/s at 360p) has an identical y_frac and
+        # identical velocities — which is exactly what the unscaled classifier
+        # sees on the 1080p footage.
+        same_pixel_motion_at_the_reference = rally_track(360, 0.4 * 1080 / 360)
+        assert off == classify_contact_action(
+            same_pixel_motion_at_the_reference.positions, i, 360,
+        )
+
+    def test_on_is_the_default_everywhere(self):
+        """
+        The switch ships True: omitting it must not quietly disable the change
+        this card exists to make.
+        """
+        track = rally_track(1080, 0.4)
+        assert find_contacts(track, frame_height=1080) == []
+        assert classify_contact_action(track.positions, 8, 1080) == (
+            classify_contact_action(track.positions, 8, 1080, normalize=True)
+        )

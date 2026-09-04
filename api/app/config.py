@@ -742,6 +742,22 @@ class Settings(BaseSettings):
     condense_bridge_speed_pxps: float = 150.0   # px/s at 360p; scaled at use
     condense_bridge_fast_fraction: float = 0.35  # bridge when ≥ this fraction of samples are fast
     condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
+    # CF-174 kill switch. False restores `main`'s unscaled contact thresholds and
+    # `main`'s action labels — both, because the gate and the classifier have to
+    # agree about what a px/s means. It ships True; this exists because the
+    # scaling moves highlight selection on every non-360p upload and there is no
+    # ground truth at those resolutions to measure that against. MIN_RALLY_CONTACTS
+    # gates hard at 3, so a rally that drops from 3 contacts to 2 leaves highlights
+    # entirely, and 1080p is what the app uploads. Unlike the condense knobs above,
+    # the alternative to a setting here is a code deploy.
+    #
+    # A switch, not a knob: it takes the whole scaling out, and turning it off on a
+    # non-360p deployment restores a detector this PR argues is measurably wrong for
+    # that footage. It does not reach the condense motion bridge, which scales
+    # unconditionally (see condense_bridge_speed_pxps) — off means `main`'s contacts
+    # against a scaled bridge, the same asymmetry documented for footage above the
+    # clamp point.
+    ball_contact_scale_enabled: bool = True
     # Which keep-window builder the condense stage uses. A failure *inside* the
     # guarded builder falls back to "rules", so a feature mismatch degrades the
     # condense rather than failing the run. Note the fallback is within-builder

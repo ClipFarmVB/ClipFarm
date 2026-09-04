@@ -216,15 +216,28 @@ condenses, and that trade is the thing to look at before touching its tunables:
 test3 is a game the ball tracker cannot follow, so both measure something other
 than which builder is better.
 
-> **The `rules` column is stale on the 1080p fixtures as of CF-174.** It was
-> measured before `bridge_windows_by_motion` took a `frame_height`, so `v0`
-> bridged 1080p footage at a 360p threshold — 150 px/s where production now runs
-> 450. Re-running the ladder moves every `rules` figure except test1's, which is
-> 360p and scales by exactly 1.0, and moves it toward *more* dead time removed
-> and more live play cut, because fewer gaps clear the higher bar. The `guarded`
-> column is unaffected: that builder never goes through the bridge and already
-> took the frame height. Regenerating needs the R2 ball caches, so these figures
-> stand as the last measured ones until someone has them.
+> **Every figure above is stale on the 1080p fixtures as of CF-174 — both
+> columns, not just `rules`.** Two separate reasons, and the second one is easy
+> to miss:
+>
+> - `rules` was measured before `bridge_windows_by_motion` took a `frame_height`,
+>   so `v0` bridged 1080p footage at a 360p threshold — 150 px/s where production
+>   now runs 450.
+> - **Both** builders consume `game.contacts`, and `deadtime_variants.load_game`
+>   builds those with `find_contacts(tracker, frame_height=frame_h)`. CF-174
+>   scales `CONTACT_HIT_SPEED_PXPS` and `CONTACT_RESIDUAL_MIN_PXPS` inside that
+>   call — 240 → 720 on the 1080p fixtures — so `guarded`'s windows move too,
+>   even though it never touches the bridge.
+>
+> test1 is the exception on both counts: it is 360p, so the scale is exactly 1.0.
+> Everything else — test2, test3, test4, test5, in either column — is a
+> pre-CF-174 number, and the **+533s vs +134s net below is computed from two
+> stale columns**, so read it as the last measured comparison rather than the
+> current one. Re-running the ladder moves the `rules` figures toward *more* dead
+> time removed and more live play cut, because fewer gaps clear the higher bar;
+> the direction on `guarded` is not predictable from the threshold alone.
+> Regenerating needs the R2 ball caches, so these figures stand as the last
+> measured ones until someone has them.
 
 Strictly better on one, a paid trade on three, an abstain on one. At the 4:1
 live-cut exchange rate the harness and trainer share, that nets **+533s against
