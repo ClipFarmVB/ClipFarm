@@ -226,6 +226,11 @@ def _build_condense_windows(
             speed_pxps=settings.condense_bridge_speed_pxps,
             fast_fraction=settings.condense_bridge_fast_fraction,
             max_bridge_seconds=settings.condense_bridge_max_seconds,
+            # CF-174: without this the bridge compares a 1080p track against a
+            # threshold tuned at 360p, so "fast" means a third of what it should
+            # and dead time survives the bridge. CF-187 moved this call in here;
+            # the frame height it needs is already a parameter of this function.
+            frame_height=frame_height,
         )
     return windows, built_by
 
@@ -1115,7 +1120,15 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         local_video, tmp, sample_every=sample_every, r2_key=r2_key,
                         video_md5=video_md5, on_progress=progress.update,
                     )
-                    contacts  = find_contacts(tracker, frame_height=_frame_h)
+                    contacts  = find_contacts(
+                        tracker, frame_height=_frame_h,
+                        # CF-174 kill switch: False is `main`'s thresholds and
+                        # labels. The one contact set feeds both highlights and
+                        # condense, so this is read once here rather than per
+                        # consumer — two consumers on different scales would be
+                        # worse than either scale. See settings.ball_contact_scale_enabled.
+                        normalize=_cfg.ball_contact_scale_enabled,
+                    )
                     detections = contacts_to_rallies(contacts, video_duration, _frame_h)
                     ball_ok   = True
                     ball_contacts = contacts

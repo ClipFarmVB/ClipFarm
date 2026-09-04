@@ -19,6 +19,7 @@ spans — the harness derives dead time as the complement.
   "source_video_md5": "<content MD5 — matches the ball-cache key>",
   "source_r2_key": "raw/<game_id>.mp4",
   "video_duration_sec": 3660.0,
+  "source_frame_height": 1080,
   "keep_tiers": ["M", "C", "N"],
   "spans": [
     { "start": "01:30", "end": "02:01", "tier": "C", "note": "rally" },
@@ -38,6 +39,13 @@ spans — the harness derives dead time as the complement.
   dead time is `[0, duration]` minus the in-play spans, so without it the
   dead-time total is wrong (it falls back to the last rally end and undercounts
   trailing dead time).
+- `source_frame_height` — the labeled file's pixel height. Optional, but supply
+  it: since CF-174 the contact thresholds scale with frame height, so a source
+  that decodes at a different resolution scores against thresholds this fixture
+  never meant. `--mode deadtime --offline` compares it against the decoded
+  height and refuses to run on a mismatch — the only runtime check that the
+  source is the labeled one, since `source_video_md5` is pinned here but
+  verified nowhere at runtime.
 - Pin the video by **content MD5**, not a game id — game rows get deleted; the
   hash identifies the exact bytes forever and matches the ball-cache key.
 

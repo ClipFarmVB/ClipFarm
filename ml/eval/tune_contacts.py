@@ -10,6 +10,15 @@ Step 0 reproduces the recorded container baseline. If that row doesn't match
 exactly, nothing below it is trustworthy, so it prints the expected values.
 
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
+
+CF-174 — read the labels as REFERENCE (360p) values, not effective ones. The
+two px/s tunables (CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS) are
+multiplied by ball._scale_for(frame_height) at use, and
+SEG_MAX_SPEED_PXPS additionally feeds that function's cap, so a row sweeping it
+moves the clamp underneath itself. The default fixture is test1 at 360p, where
+the scale is exactly 1.0 and label == effective, which is why the pinned
+baseline still reproduces; on the 1080p fixtures a row reading
+"CONTACT_HIT_SPEED_PXPS=360" is applying 1080. main() prints the active scale.
 """
 from __future__ import annotations
 
@@ -33,7 +42,7 @@ BRIDGE: dict[str, Any] = dict(speed_pxps=150.0, fast_fraction=0.35, max_bridge_s
 
 TUNABLES = (
     "CONTACT_RESIDUAL_RATIO", "CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_HIT_SPEED_PXPS",
-    "MIN_SPEED_PXPS", "MIN_CONTACT_SPACING", "SEG_MIN_POSITIONS",
+    "MIN_CONTACT_SPACING", "SEG_MIN_POSITIONS",
     "SEG_MIN_MEDIAN_SPEED_PXPS", "SEG_MAX_SPEED_PXPS", "MAX_SAMPLE_GAP_SEC",
 )
 
@@ -65,7 +74,7 @@ def main() -> None:
             contacts = B.find_contacts(track, frame_height=frame_h)
             w = active_windows_from_contacts(
                 [{"time": c["time"]} for c in contacts], fx.duration, **COND)
-            w = bridge_windows_by_motion(w, positions, **BRIDGE)
+            w = bridge_windows_by_motion(w, positions, frame_height=frame_h, **BRIDGE)
             s = evaluate_deadtime(fx.keep, w, fx.duration)
             times = sorted(c["time"] for c in contacts)
             hit = i = 0
@@ -85,6 +94,17 @@ def main() -> None:
             label, r["contacts"], r["windows"], r["hit"],
             r["live"], 100 * r["dead"], 100 * r["recall"], 100 * r["cond"]))
 
+    # log=False: this is the per-run *label* for the table below, not a second
+    # opinion on the video. Left logging on, it reprints _scale_for's multi-line
+    # 1080p warning — which find_contacts already emits on every scored row —
+    # into the middle of the results table, on exactly the fixtures this tool was
+    # extended to cover. classify_contact_action passes log=False for the same
+    # reason.
+    scale = B._scale_for(frame_h, log=False)
+    units = ("labels below are effective px/s" if scale == 1.0
+             else "labels below are REFERENCE px/s — multiply by the scale")
+    print(f"fixture frame_height={frame_h} -> CF-174 threshold scale {scale:.2f}"
+          f"  ({units})\n")
     print("%-34s %5s %5s %8s %8s %9s %9s %9s" % (
         "config", "cont", "win", "rally", "live-lost", "dead-rm", "recall", "condense"))
     show("BASELINE (shipping defaults)", score())

@@ -109,13 +109,20 @@ def _from_contacts(game: Game, contacts: list[dict], **overrides) -> list[Interv
 # ── variants ───────────────────────────────────────────────────────────────
 
 def v0_shipped(game: Game) -> list[Interval]:
-    """condense_mode="rules": contacts → padded windows → motion bridge."""
+    """condense_mode="rules": contacts → padded windows → motion bridge.
+
+    frame_height is passed for the same reason v5 gets it (CF-174): without it
+    the bridge applies a 360p threshold to the 1080p fixtures, so v0 over-bridges
+    relative to what production does and every v1..v5 comparison is scored
+    against a baseline that does not ship.
+    """
     return bridge_windows_by_motion(
         _from_contacts(game, game.contacts),
         game.positions,
         speed_pxps=BRIDGE["speed_pxps"],
         fast_fraction=BRIDGE["fast_fraction"],
         max_bridge_seconds=BRIDGE["max_bridge_seconds"],
+        frame_height=game.frame_height,
     )
 
 

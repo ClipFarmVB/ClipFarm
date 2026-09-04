@@ -171,6 +171,10 @@ class TestTest1DeadtimeFixture:
         assert mc == set(highlight.clips)
         assert dead.raw["source_video_md5"] == highlight.raw["source_video_md5"]
         assert dead.duration == highlight.video_duration_sec
+        # Same file, so the same tracking space — and both halves of the harness
+        # scale CF-174's contact thresholds off this number, so a disagreement
+        # would score the two modes against different thresholds on one video.
+        assert dead.raw["source_frame_height"] == highlight.raw["source_frame_height"]
 
 
 class TestGroundTruthTierFilter:
@@ -259,6 +263,24 @@ class TestGroundTruthTierFilter:
         the same guard the dead-time class carries, for the same reason."""
         assert HIGHLIGHT_IDS, "no highlight fixtures found"
         assert "test1" in HIGHLIGHT_IDS, HIGHLIGHT_IDS
+
+    @pytest.mark.parametrize("test_id", HIGHLIGHT_IDS)
+    def test_every_highlight_fixture_pins_its_tracking_space(self, test_id):
+        """
+        `source_frame_height` is what arms `_assert_declared_frame_height`, and
+        the guard returns early when the key is absent rather than failing — so
+        a fixture that omits it disables the only runtime check that the source
+        is the labeled one.
+
+        The dead-time twin of this assertion has existed since CF-174, but it is
+        parametrized over DEADTIME_IDS, so nothing pushed the highlight fixtures
+        to acquire the key and the highlight half of the guard was inert: a
+        re-encode of test1 at a different resolution would have shifted every
+        find_contacts threshold, run to completion, and recorded a
+        plausible-looking row. That is the exact failure the guard exists for.
+        """
+        raw = load_fixture(test_id).raw
+        assert raw.get("source_frame_height", 0) > 0
 
     @pytest.mark.parametrize("test_id", HIGHLIGHT_IDS)
     def test_every_highlight_fixture_declares_a_known_tier_for_every_clip(self, test_id):

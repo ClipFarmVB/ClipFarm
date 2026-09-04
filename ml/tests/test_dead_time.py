@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ml.pipeline.dead_time import (
     Abstained,
+    REFERENCE_FRAME_HEIGHT,
     active_windows_from_contacts,
     active_windows_from_detections,
     active_windows_guarded,
@@ -18,6 +19,24 @@ from ml.pipeline.dead_time import (
     speed_samples,
     track_is_usable,
 )
+
+
+def test_reference_frame_height_matches_ball():
+    """
+    dead_time duplicates ball.REFERENCE_FRAME_HEIGHT rather than importing it.
+    The comment at that constant has always claimed this assertion existed; the
+    CF-174 review found it never had been written, so the two could drift
+    silently — the same class of unit mismatch CF-174 fixes.
+
+    The import below is unguarded on purpose. It used to sit behind
+    `pytest.importorskip("numpy")`, on the reasoning that importing ball costs a
+    dependency the dead-time tests do not otherwise need. That was never true:
+    this file imports numpy at the top, and so does dead_time itself, so the skip
+    could not fire and only made the trade look more expensive than it is.
+    """
+    from ml.pipeline.ball import REFERENCE_FRAME_HEIGHT as BALL_REFERENCE_FRAME_HEIGHT
+
+    assert REFERENCE_FRAME_HEIGHT == BALL_REFERENCE_FRAME_HEIGHT
 
 
 def contacts_at(*times: float) -> list[dict]:
@@ -167,6 +186,26 @@ class TestBridgeWindowsByMotion:
             [(0.0, 10.0), (15.0, 25.0), (30.0, 40.0)], positions,
         )
         assert windows == [(0.0, 40.0)]
+
+    def test_frame_height_scales_the_speed_threshold(self):
+        # CF-174: 300 px/s is fast at 360p and ordinary handling at 1080p, so
+        # the same track bridges at the reference height and must not at 3x it.
+        positions = ball_path(10.0, 20.0, speed_pxps=300.0)
+        assert bridge_windows_by_motion(
+            [(0.0, 10.0), (20.0, 30.0)], positions, frame_height=360,
+        ) == [(0.0, 30.0)]
+        assert bridge_windows_by_motion(
+            [(0.0, 10.0), (20.0, 30.0)], positions, frame_height=1080,
+        ) == [(0.0, 10.0), (20.0, 30.0)]
+
+    def test_omitted_frame_height_says_so(self, caplog):
+        # The unscaled path is the pre-CF-174 bug; of the two call paths that
+        # take frame_height this is the one that would otherwise stay silent.
+        import logging
+        positions = ball_path(10.0, 20.0, speed_pxps=300.0)
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.dead_time"):
+            bridge_windows_by_motion([(0.0, 10.0), (20.0, 30.0)], positions)
+        assert "without frame_height" in caplog.text
 
     def test_single_window_unchanged(self):
         assert bridge_windows_by_motion([(0.0, 10.0)], ball_path(0, 10, 300)) == [(0.0, 10.0)]
