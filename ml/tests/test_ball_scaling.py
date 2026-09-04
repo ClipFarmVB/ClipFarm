@@ -679,6 +679,44 @@ class TestTheScalingHasARuntimeKillSwitch:
             same_pixel_motion_at_the_reference.positions, i, 360,
         )
 
+    def test_the_switch_reaches_the_classifier_through_find_contacts(self, caplog):
+        """
+        The gate/classifier promise has to survive the *plumbing*, not just the
+        two helpers in isolation.
+
+        `_scale_for` is the single policy, but nothing forces find_contacts to
+        hand it the flag: `normalize` has a True default at every layer, so
+        dropping `normalize=normalize` from the classify_contact_action call is
+        silent — mypy is happy, and the other four cases in this class still
+        pass, because they call the helpers directly. What comes out is exactly
+        the split the design exists to prevent: `main`'s gate admitting a
+        contact that the normalized classifier then judges in reference space.
+
+        1440p, 0.2 -> 0.45 frame-heights/s, redirected downward high in frame.
+        Unscaled that is a hard drive — `main` calls it a spike at 0.88.
+        Normalized it divides by 4.0 into the SET band and comes back "set" at
+        0.58. Same contact, same trajectory, opposite half of the policy.
+
+        Non-reference height on purpose: at 360p the scale is exactly 1.0 and
+        the two policies agree by construction, so a 360p case would pass
+        against the broken version.
+        """
+        import logging
+        height = 1440
+        positions = physical_track(height, 0.2, 0.45)
+
+        with caplog.at_level(logging.CRITICAL, logger="ml.pipeline.ball"):
+            contacts = find_contacts(
+                TrackedBall(positions=positions), frame_height=height, normalize=False,
+            )
+        assert len(contacts) == 1, "the unscaled gate should admit this contact"
+
+        labelled = (contacts[0]["action"], contacts[0]["action_confidence"])
+        assert labelled == classify_contact_action(positions, 4, height, normalize=False)
+        assert labelled != classify_contact_action(positions, 4, height, normalize=True), (
+            "the two policies must disagree here, or this case cannot see the split"
+        )
+
     def test_on_is_the_default_everywhere(self):
         """
         The switch ships True: omitting it must not quietly disable the change
