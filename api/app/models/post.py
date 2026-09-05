@@ -89,5 +89,13 @@ class Post(Base):
         # The feed's sort key (migration 019). Declared DESC to match both the
         # ORDER BY and the row-value cursor, so the keyset comparison is a plain
         # range scan from the cursor position rather than an Incremental Sort.
+        #
+        # Declared here so `Base.metadata.create_all` builds it for the Postgres
+        # test fixtures — *not* for the autogenerate drift protection the
+        # comment above claims for its neighbour. That reasoning holds for
+        # `ix_posts_author_created`, which is a plain column index; alembic
+        # cannot compare **expression** indexes and skips them in both
+        # directions with a warning, so this one is invisible to autogenerate
+        # either way.
         Index("ix_posts_created_at_id", text("created_at DESC"), text("id DESC")),
     )

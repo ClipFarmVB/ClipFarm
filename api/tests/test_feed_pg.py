@@ -369,3 +369,118 @@ def test_the_feed_does_not_load_credentials(world):
 
 def feed_query(feed_router, viewer_id):
     return feed_router.feed_query(viewer_id)
+
+
+def test_the_page_costs_one_query(world):
+    """The card's no-N+1 criterion, counted rather than grepped.
+
+    This replaces `test_one_page_is_one_query`, which split the handler's source
+    on the literal `"cursors.split_page"` and indexed `[1]` — so renaming the
+    helper raised `IndexError` rather than failing, and any rewrite keeping the
+    substring passed. Counting statements on the connection cannot be satisfied
+    by text.
+
+    One SELECT for the page. The author, clip and game all arrive as joined
+    columns, and nothing in the render loop touches the session — which is also
+    what `raiseload("*")` enforces at the column level.
+    """
+    from sqlalchemy import event
+
+    from app.routers import feed as feed_router
+
+    async_url, ids = world
+    statements: list[str] = []
+
+    async def go():
+        engine = create_async_engine(async_url)
+
+        def record(conn, cursor, statement, params, context, executemany):
+            statements.append(statement)
+
+        event.listen(engine.sync_engine, "before_cursor_execute", record)
+        try:
+            async with AsyncSession(engine) as db:
+                return await feed_router.get_feed(db=db, user_id=ids["viewer"])
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", record)
+            await engine.dispose()
+
+    page = asyncio.run(go())
+
+    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    assert len(page.items) == 4, "precondition: a full page came back"
+    assert len(selects) == 1, (
+        "one SELECT for the page, not one per post — got:\n"
+        + "\n".join(selects)
+    )
+    assert not any("COUNT(" in s.upper() for s in selects), (
+        "has_more comes from the +1 over-fetch, not a COUNT over the same set"
+    )
+
+
+def test_the_avatar_is_signed_once_per_page(world, monkeypatch):
+    """A profile grid is many posts by one author.
+
+    Without a per-page cache the same stored URL was signed once per row — 50
+    identical SigV4 HMACs for one answer. The feed has the milder version of the
+    same shape whenever an account owns several posts on a page, which the seed
+    data does not, so this asserts the mechanism where it is cheapest to see:
+    two posts by the same author, one signature.
+    """
+    from sqlalchemy import create_engine
+
+    from app.models.visibility import Visibility
+    from app.services import storage
+
+    async_url, ids = world
+
+    # A second post by an author already in the feed, so one avatar covers two
+    # cards. Built through the ORM rather than raw SQL: `games` has several
+    # NOT NULL columns with Python-side defaults, so a hand-written INSERT has
+    # to know all of them and breaks whenever one is added.
+    from sqlalchemy.orm import Session
+
+    from app.models.clip import ActionType, Clip
+    from app.models.game import Game
+    from app.models.post import Post
+
+    sync = create_engine(async_url.replace("postgresql+asyncpg://", "postgresql://"))
+    with Session(sync) as session:
+        game = Game(
+            id=uuid.uuid4(), owner_id=ids["backfill"], title="g",
+            visibility=Visibility.public,
+        )
+        clip = Clip(
+            id=uuid.uuid4(), game_id=game.id, action_type=ActionType.spike,
+            confidence=0.9, start_time=1.0, end_time=2.0,
+            clip_url="https://pub.example.com/clips/d.mp4",
+        )
+        post = Post(
+            id=uuid.uuid4(), author_id=ids["backfill"], clip_id=clip.id,
+            visibility=Visibility.public,
+            created_at=datetime(2026, 8, 1, 12, 10, tzinfo=timezone.utc),
+        )
+        for row in (game, clip, post):
+            session.add(row)
+            session.flush()
+        session.commit()
+    sync.dispose()
+
+    signed: list[str] = []
+    monkeypatch.setattr(storage, "r2_configured", lambda: True)
+
+    def record(url, **kw):
+        signed.append(url)
+        return url + "?signed=1"
+
+    monkeypatch.setattr(storage, "presign_from_stored_url", record)
+
+    page = _feed(async_url, ids["viewer"])
+
+    avatar = "https://pub.example.com/avatars/js.png"
+    cards = [i for i in page.items if i.author.display_name == "Johnsmith"]
+    assert len(cards) == 2, "precondition: two cards share an author"
+    assert all(c.author.avatar_url == avatar + "?signed=1" for c in cards)
+    assert signed.count(avatar) == 1, (
+        "one signature for one URL, however many cards render it"
+    )

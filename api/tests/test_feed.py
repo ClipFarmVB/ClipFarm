@@ -8,7 +8,6 @@ comparison to the ORDER BY. Paging behaviour under concurrent inserts is
 exercised live against Postgres (see the PR body).
 """
 import base64
-import inspect
 import uuid
 from datetime import datetime, timezone
 
@@ -120,24 +119,18 @@ def test_visibility_is_not_optional_for_signed_in_viewers():
 
 
 def test_the_feed_query_is_not_reusable_for_anonymous_reads():
-    """`feed_query(None)` is a bug, not an anonymous feed.
+    """`feed_query(None)` is a bug, not an anonymous feed — and now it says so.
 
-    It compiles to `author_id IS NULL OR author_id IN (SELECT ... WHERE
-    follower_id IS NULL)` — unsatisfiable, so the query returns nothing forever
-    with no error. Three tests here used to assert against exactly that dead
-    statement and were really testing nothing. The route is authenticated so it
-    cannot happen through the API; CF-114's explore feed is the anonymous
-    consumer and needs its own query. Pinned so it is not quietly reused.
+    It used to compile to `author_id IS NULL OR author_id IN (SELECT ... WHERE
+    follower_id IS NULL)`: unsatisfiable, so the query returned nothing forever
+    with no error, and three tests here asserted against that dead statement.
+    The docstring explained the trap and then relied on the route being
+    authenticated to prevent it, which is advice rather than enforcement —
+    CF-114's explore feed is named as the caller most likely to reach for this
+    builder. A raise makes it enforceable.
     """
-    assert "uuid.UUID" in str(
-        inspect.signature(feed_router.feed_query).parameters["user_id"].annotation
-    ) or inspect.signature(feed_router.feed_query).parameters["user_id"].annotation is uuid.UUID
-    sql = _sql(feed_router.feed_query(None)).lower()  # type: ignore[arg-type]
-    assert "is null" in sql, (
-        "if this ever stops producing a NULL predicate the dead-query trap is "
-        "gone and this test should be deleted rather than adjusted"
-    )
-
+    with pytest.raises(ValueError, match="requires a viewer"):
+        feed_router.feed_query(None)  # type: ignore[arg-type]
 
 # ── cursor ──────────────────────────────────────────────────────────────────
 
@@ -172,51 +165,22 @@ def test_a_malformed_cursor_is_a_400_not_a_500(bad):
     assert exc.value.status_code == 400
 
 
-def test_paging_uses_a_keyset_not_an_offset():
-    """OFFSET re-counts from the top on every page, so a post inserted while
-    someone scrolls shifts every later page by one — duplicating a row at the
-    boundary and skipping another. This is the acceptance criterion."""
-    import inspect
-
-    src = inspect.getsource(feed_router.feed_query)
-    assert "tuple_" in src, "keyset comparison expected"
-    assert ".offset(" not in src, "OFFSET paging would duplicate/skip rows"
 
 
-def test_the_cursor_comparison_matches_the_order_by():
-    """A keyset that compares on a different key than it sorts by is worse than
-    OFFSET — it skips rows deterministically rather than only under writes."""
-    import inspect
 
-    src = inspect.getsource(feed_router.feed_query)
-    assert "Post.created_at.desc(), Post.id.desc()" in src
-    assert "tuple_(Post.created_at, Post.id) < (created_at, post_id)" in src
-
-
-# ── no N+1 ──────────────────────────────────────────────────────────────────
-
-
-def test_one_page_is_one_query():
-    """The card's criterion: a feed page must not issue a query per post. The
-    author, clip and game all arrive as joined columns."""
-    import inspect
-
-    handler = inspect.getsource(feed_router.get_feed)
-    body = handler.split("cursors.split_page")[1]
-    assert "await db.execute" not in body, "no queries inside the serialize loop"
-    assert "db.get(" not in body
-    assert "select(Post, Clip, User)" in inspect.getsource(feed_router.feed_query), (
-        "author must be joined, not fetched per row"
-    )
+# The keyset comparison, the ORDER BY it must match, the `limit + 1` and the
+# absence of an N+1 were all asserted here as substrings of the router's own
+# source. Each passed for any semantically broken rewrite that kept the text,
+# and each failed on a `ruff format` that wrapped the line — a test that cannot
+# fail for its stated reason and can fail for an unrelated one. They are now
+# behavioural in `test_feed_pg.py`: the cursor walk covers the keyset and the
+# ordering, `test_the_page_costs_one_query` counts the statements, and
+# `test_has_more_is_read_before_the_page_is_truncated` below covers the +1 over
+# real values.
 
 
-def test_has_more_costs_no_extra_query():
-    """limit + 1 and discard, rather than a COUNT over the same filtered set."""
-    import inspect
 
-    src = inspect.getsource(feed_router.feed_query)
-    assert "limit + 1" in src
-    assert "func.count" not in src
+
 
 
 def test_has_more_is_read_before_the_page_is_truncated():

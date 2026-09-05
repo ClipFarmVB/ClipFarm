@@ -29,7 +29,9 @@ from app.services import profiles, storage
 logger = logging.getLogger(__name__)
 
 
-def _playback(clip: Clip, *, r2_ready: bool) -> PostPlayback:
+def _playback(
+    clip: Clip, *, r2_ready: bool, failures: list[str] | None = None
+) -> PostPlayback:
     """Resolve playback from the clip at read time.
 
     Resolved per request rather than stored on the post so a trim (CF-52) or a
@@ -71,24 +73,44 @@ def _playback(clip: Clip, *, r2_ready: bool) -> PostPlayback:
     # the identical call since CF-107 for the same reason; the feed's blast
     # radius is 40x a profile's, and it is the default screen.
     return PostPlayback(
-        clip_url=_presign(clip.clip_url),
-        thumbnail_url=_presign(clip.thumbnail_url),
+        clip_url=_presign(clip.clip_url, failures),
+        thumbnail_url=_presign(clip.thumbnail_url, failures),
         proxy_url=None,  # CF-48 populates this
         start_time=clip.start_time,
         end_time=clip.end_time,
     )
 
 
-def _presign(stored_url: str | None) -> str | None:
+def _presign(stored_url: str | None, failures: list[str] | None = None) -> str | None:
     if not stored_url:
         return None
     try:
         return storage.presign_from_stored_url(stored_url, expires_in=3600)
     except Exception:
         # Degrade to the stored form: unusable in a browser, but the card still
-        # renders with its caption, author and counts. Logged, not swallowed.
-        logger.warning("Could not presign %s", stored_url, exc_info=True)
+        # renders with its caption, author and counts. Never swallowed silently.
+        #
+        # A page renderer passes `failures` and reports once at the end. A
+        # misconfigured bucket fails every URL it touches, so logging here with
+        # a traceback apiece meant up to 40 stack traces per feed page per
+        # request — the signal buried in its own volume. Single-post callers
+        # pass nothing and keep the traceback, where one is one.
+        if failures is None:
+            logger.warning("Could not presign %s", stored_url, exc_info=True)
+        else:
+            failures.append(stored_url)
         return stored_url
+
+
+def _avatar(
+    url: str | None, *, r2_ready: bool, cache: dict[str, str | None] | None
+) -> str | None:
+    """Sign an avatar at most once per page."""
+    if url is None or cache is None:
+        return profiles.presign_avatar(url, r2_ready=r2_ready)
+    if url not in cache:
+        cache[url] = profiles.presign_avatar(url, r2_ready=r2_ready)
+    return cache[url]
 
 
 def serialize(
@@ -98,6 +120,8 @@ def serialize(
     *,
     r2_ready: bool,
     viewer_has_liked: bool = False,
+    avatar_cache: dict[str, str | None] | None = None,
+    failures: list[str] | None = None,
 ) -> PostOut:
     """One post, rendered.
 
@@ -110,6 +134,12 @@ def serialize(
     than a hardcoded literal so that when CF-113 resolves it with one query for
     the whole page, there is one call site to thread it through instead of two
     that have to be found.
+
+    `avatar_cache` is per page, keyed by the stored URL. A profile grid is many
+    posts by *one* author, so without it a 50-post page signed the same string
+    fifty times — fifty SigV4 HMACs for one answer. The feed has the milder
+    version whenever an account owns several posts on a page. Optional so a
+    single-post caller passes nothing.
     """
     rendered = PostAuthor.from_author(author)  # type: ignore[arg-type]
     return PostOut(
@@ -127,8 +157,12 @@ def serialize(
             # done this since CF-107 and its docstring anticipated the feed
             # doing the same; `PostAuthor` is not a `ProfileOut`, so it could
             # not simply be handed to that function.
-            update={"avatar_url": profiles.presign_avatar(rendered.avatar_url)}
+            update={
+                "avatar_url": _avatar(
+                    rendered.avatar_url, r2_ready=r2_ready, cache=avatar_cache
+                )
+            }
         ),
-        playback=_playback(clip, r2_ready=r2_ready),
+        playback=_playback(clip, r2_ready=r2_ready, failures=failures),
         viewer_has_liked=viewer_has_liked,
     )

@@ -56,7 +56,7 @@ def serialize(user: User, schema: type[_Schema]) -> _Schema:
     return out.model_copy(update={"avatar_url": presign_avatar(user.avatar_url)})
 
 
-def presign_avatar(avatar_url: str | None) -> str | None:
+def presign_avatar(avatar_url: str | None, *, r2_ready: bool | None = None) -> str | None:
     """The avatar half of `serialize`, callable on its own.
 
     Split out for CF-111: the feed renders a `PostAuthor`, not a `ProfileOut`,
@@ -67,8 +67,17 @@ def presign_avatar(avatar_url: str | None) -> str | None:
     Returns the stored value unchanged when there is nothing to sign or signing
     fails: a signing failure shouldn't take a whole profile — or a whole feed
     page — down, and the avatar degrading to broken is the smaller loss.
+
+    `r2_ready` may be passed by a caller that already knows the answer, which a
+    page renderer does. Left optional so the single-profile callers read as
+    before. Probing it here per card was the cost `post_view._playback` was
+    refactored to avoid three functions away in the same file — the hoist
+    reached playback and not the avatar, so a 50-row page still re-read five
+    settings fields fifty times for a process-wide constant.
     """
-    if not avatar_url or not storage.r2_configured():
+    if not avatar_url:
+        return avatar_url
+    if not (storage.r2_configured() if r2_ready is None else r2_ready):
         return avatar_url
     try:
         return storage.presign_from_stored_url(avatar_url)

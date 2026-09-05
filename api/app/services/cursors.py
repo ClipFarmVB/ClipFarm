@@ -65,7 +65,10 @@ def decode(cursor: str) -> tuple[datetime, uuid.UUID]:
             raise ValueError("cursor timestamp must be timezone-aware")
         return parsed, uuid.UUID(row_id)
     except (ValueError, binascii.Error, UnicodeDecodeError):
-        raise HTTPException(status_code=400, detail="Invalid cursor")
+        # `from None`: a malformed cursor is ordinary client error, and chaining
+        # the base64/ValueError traceback onto every one of them puts noise in
+        # Sentry for something that is not a fault of ours.
+        raise HTTPException(status_code=400, detail="Invalid cursor") from None
 
 
 def split_page(rows: Sequence[T], limit: int) -> tuple[list[T], bool]:

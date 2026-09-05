@@ -30,7 +30,12 @@ ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
 
 
 def _serialize(
-    post: Post, clip: Clip, author: User, *, r2_ready: bool | None = None
+    post: Post,
+    clip: Clip,
+    author: User,
+    *,
+    r2_ready: bool | None = None,
+    avatar_cache: dict[str, str | None] | None = None,
 ) -> PostOut:
     """Thin wrapper over the shared renderer.
 
@@ -48,6 +53,7 @@ def _serialize(
         clip,
         author,
         r2_ready=storage.r2_configured() if r2_ready is None else r2_ready,
+        avatar_cache=avatar_cache,
     )
 
 
@@ -220,8 +226,16 @@ async def list_user_posts(
 
     # Probed once for the page rather than per row: it reads five settings
     # fields for an answer that is process-wide and cannot change mid-response.
+    #
+    # The avatar cache matters more here than in the feed: this page is many
+    # posts by *one* author, so without it a 50-post profile grid signed the
+    # same avatar URL fifty times.
     r2_ready = storage.r2_configured()
-    return [_serialize(post, clip, author, r2_ready=r2_ready) for post, clip in rows]
+    avatar_cache: dict[str, str | None] = {}
+    return [
+        _serialize(post, clip, author, r2_ready=r2_ready, avatar_cache=avatar_cache)
+        for post, clip in rows
+    ]
 
 
 @router.patch("/{post_id}", response_model=PostOut)

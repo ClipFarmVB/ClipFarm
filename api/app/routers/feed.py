@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import Select, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import load_only
+from sqlalchemy.orm import load_only, raiseload
 
 from app.auth import get_current_user_id
 from app.database import get_db
@@ -58,7 +58,16 @@ def feed_query(
     authenticated so the case cannot arise through the API; CF-114's explore
     feed is the anonymous-capable consumer and needs its own query rather than
     this one handed a `None`.
+
+    Enforced rather than described: the paragraph above is only advice, and
+    CF-114 is named as the caller most likely to reach for this builder.
     """
+    if user_id is None:
+        raise ValueError(
+            "feed_query requires a viewer; None compiles to a predicate no row "
+            "can satisfy. CF-114's explore feed needs its own query."
+        )
+
     q = (
         access.apply_post_visibility(select(Post, Clip, User), user_id)
         .join(User, Post.author_id == User.id)
@@ -76,7 +85,14 @@ def feed_query(
                 User.display_name,
                 User.avatar_url,
                 User.username_is_generated,
-            )
+            ),
+            # `load_only` *defers* the rest rather than forbidding it, so a
+            # future line in `post_view.serialize` touching, say, `author.bio`
+            # would emit a deferred-column load — from a threadpool worker,
+            # against an `AsyncSession`, i.e. `MissingGreenlet` at runtime and
+            # nothing visible at review time. `raiseload` turns that into an
+            # immediate, obvious error at the line that caused it.
+            raiseload("*"),
         )
         # Authors whose posts may appear: accepted edges, plus self. The rule
         # comes from follow_graph rather than being restated here — see
@@ -137,13 +153,30 @@ async def get_feed(
     # loop either way, since the handler has nothing else to await meanwhile.
     r2_ready = storage.r2_configured()
 
+    # Per page: one signature per distinct avatar, and one log line for however
+    # many URLs failed rather than a traceback each.
+    avatar_cache: dict[str, str | None] = {}
+    failures: list[str] = []
+
     def render() -> list[PostOut]:
         return [
-            post_view.serialize(post, clip, author, r2_ready=r2_ready)
+            post_view.serialize(
+                post,
+                clip,
+                author,
+                r2_ready=r2_ready,
+                avatar_cache=avatar_cache,
+                failures=failures,
+            )
             for post, clip, author in page
         ]
 
     items = await run_in_threadpool(render)
+    if failures:
+        logger.warning(
+            "Could not presign %d of this feed page's URLs (first: %s)",
+            len(failures), failures[0],
+        )
 
     return FeedPage(
         items=items,

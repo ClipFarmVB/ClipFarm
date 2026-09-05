@@ -616,3 +616,34 @@ def test_the_cursor_round_trips_through_a_real_page(people):
         "a cursor on created_at alone would return the same tied row again"
     )
     assert second.next_cursor is None, "two rows, two pages"
+
+
+def test_an_empty_cursor_is_rejected_on_every_follows_list(people):
+    """CF-111's contract change, pinned on the endpoints it actually changed.
+
+    Extracting `services/cursors` also moved these three from `if cursor:` to
+    `if cursor is not None:`, so `?cursor=` went from silently returning page 1
+    — a client emitting an empty template value scrolling forever without
+    advancing — to a 400. That is the better contract and it is CF-111 that
+    made it, on endpoints CF-110 had already shipped. The feed pinned it for
+    itself; these three had nothing, so the change was invisible in the diff
+    that caused it.
+    """
+    from fastapi import HTTPException
+
+    from app.routers import follows as r
+
+    async_url, ids = people
+
+    calls = (
+        ("followers", lambda db: r.list_followers(
+            "publictarget", db, viewer_id=ids["viewer"], cursor="")),
+        ("following", lambda db: r.list_following(
+            "publictarget", db, viewer_id=ids["viewer"], cursor="")),
+        ("follow-requests", lambda db: r.list_follow_requests(
+            ids["priv"], db, cursor="")),
+    )
+    for name, call in calls:
+        with pytest.raises(HTTPException) as exc:
+            _run(async_url, call)
+        assert exc.value.status_code == 400, f"{name} accepted an empty cursor"
