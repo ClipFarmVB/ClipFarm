@@ -57,27 +57,33 @@ def _playback(
     that cannot change mid-page, and probing it per row re-read five settings
     fields per card for an answer that was already known.
     """
-    if not r2_ready:
-        return PostPlayback(
-            clip_url=clip.clip_url,
-            thumbnail_url=clip.thumbnail_url,
-            proxy_url=None,
-            start_time=clip.start_time,
-            end_time=clip.end_time,
-        )
+    # One construction, two URL sources. Written as a branch on the URLs rather
+    # than two `return PostPlayback(...)` calls so a field added to the schema —
+    # CF-112 added two — cannot be filled on one path and forgotten on the
+    # other, which is the same duplication-by-copy this module exists to end.
+    #
+    # Signing is guarded per URL. A page is up to 40 signings, and an unguarded
+    # one turns a single malformed `clip_url` — a stored value that never
+    # matched `r2_public_url`, say, after a bucket rename — into a 500 for the
+    # whole page rather than one card with no video. `profiles.serialize` has
+    # wrapped the identical call since CF-107 for the same reason; the feed's
+    # blast radius is 40x a profile's, and it is the default screen.
+    clip_url = _presign(clip.clip_url, failures) if r2_ready else clip.clip_url
+    thumbnail_url = (
+        _presign(clip.thumbnail_url, failures) if r2_ready else clip.thumbnail_url
+    )
 
-    # Guarded per URL. A page is up to 40 signings, and an unguarded one turns a
-    # single malformed `clip_url` — a stored value that never matched
-    # `r2_public_url`, say, after a bucket rename — into a 500 for the whole
-    # page rather than one card with no video. `profiles.serialize` has wrapped
-    # the identical call since CF-107 for the same reason; the feed's blast
-    # radius is 40x a profile's, and it is the default screen.
     return PostPlayback(
-        clip_url=_presign(clip.clip_url, failures),
-        thumbnail_url=_presign(clip.thumbnail_url, failures),
+        clip_url=clip_url,
+        thumbnail_url=thumbnail_url,
         proxy_url=None,  # CF-48 populates this
         start_time=clip.start_time,
         end_time=clip.end_time,
+        # The volleyball-specific bits the feed overlay surfaces (CF-112). They
+        # live on the clip, which is already joined, so they are free here and
+        # would be the per-post N+1 CF-111 exists to avoid anywhere else.
+        action_type=clip.action_type.value,
+        highlight_score=clip.highlight_score,
     )
 
 
