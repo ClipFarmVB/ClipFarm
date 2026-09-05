@@ -150,8 +150,25 @@ async def follow_user(handle: str, user_id: UserId, db: DB):
                 .where(Follow.id == existing.id, Follow.status == FollowStatus.pending)
                 .values(status=FollowStatus.accepted)
             )
-            if promoted.rowcount == 1:
-                await _adjust_counts(db, user_id, target_id, +1)
+            if promoted.rowcount != 1:
+                # The third mutation in this file, and it needs the same ending
+                # as the other two: the counters were guarded on rowcount but
+                # the *response* was not, so a promote that wrote nothing still
+                # answered `accepted / following: true`. Withdraw on one device
+                # while tapping Follow on another and the DELETE lands first —
+                # the client then renders Following over an edge that does not
+                # exist, and the next `follow-state` call says `null`. Exactly
+                # the lie `unfollow_user` and `reject_follow_request` were
+                # rewritten to stop telling.
+                await db.rollback()
+                survivor = await _edge(db, user_id, target_id)
+                logger.info(
+                    "follow: promote matched nothing for %s -> %s (now %s)",
+                    user_id, target_id, survivor.status if survivor else None,
+                )
+                return _state(survivor)
+
+            await _adjust_counts(db, user_id, target_id, +1)
             await db.commit()
             return FollowStateOut(status=FollowStatus.accepted, following=True)
         return _state(existing)
@@ -411,9 +428,16 @@ async def list_follow_requests(
     Paginated like the two lists beside it, and for a sharper reason: this is
     the one endpoint whose backlog size nobody controls. `follows` has no rate
     limiting yet (CF-116), and follow-spam is the named vector — so an unbounded
-    version loads every pending row plus its joined `User` and runs
-    `presign_from_stored_url` once per row, a synchronous network round trip per
-    avatar on the event loop thread, sized by whoever is doing the spamming.
+    version loads every pending row plus its joined `User` and signs an avatar
+    URL for each, on the event loop thread, sized by whoever is spamming.
+
+    That cost is **CPU, not I/O**, and the distinction is worth keeping
+    straight: `generate_presigned_url` computes a SigV4 HMAC locally and issues
+    no request, and `storage._client()` is `lru_cache`d so there is no
+    per-call client build either (its own docstring says so). Measured with the
+    repo's `_BOTO_CONFIG`, 40 signings is ~16 ms. Real at 50 rows and worth
+    bounding; not a network hop, and calling it one would point the next person
+    with a profiler at somewhere nothing happens.
     """
     q = _page_query(
         _findable(

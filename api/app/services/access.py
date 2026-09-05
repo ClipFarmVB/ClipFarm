@@ -215,7 +215,12 @@ def can_view_clip(
     )
 
 
-def can_identify(viewer_id: uuid.UUID | None, game: Game | None) -> bool:
+def can_identify(
+    viewer_id: uuid.UUID | None,
+    game: Game | None,
+    *,
+    viewer_follows_owner: bool = False,
+) -> bool:
     """Whether a caller may attach the game's title and its players' names.
 
     **Scope: this is one endpoint's gate, not a module-wide invariant.** Unlike
@@ -244,8 +249,19 @@ def can_identify(viewer_id: uuid.UUID | None, game: Game | None) -> bool:
     cleartext), CF-101's zip entries will ask it again, and a rule living
     inline in one router is one the second caller re-derives — differently.
     Whichever way CF-283 settles, it settles here.
+
+    `viewer_follows_owner` is threaded through for the same reason every other
+    entry point takes it — and this is where omitting it was easiest to miss,
+    because it fails *closed*. Before CF-110 the keyword could not matter:
+    `followers` resolved False for everyone, so delegating without it was exact.
+    The moment an accepted follower could read a `followers`-tier clip, the
+    delegate began answering a different question than `can_view_clip` did for
+    the same viewer — 200 on the download, filename stripped of the game title
+    and the player's name, while `list_clips` handed that same viewer
+    `player_name` straight from SQL. One signed-in reader, two answers, which is
+    the split this docstring already exists to warn about, on a second axis.
     """
-    return can_view_game(viewer_id, game)
+    return can_view_game(viewer_id, game, viewer_follows_owner=viewer_follows_owner)
 
 
 def visible_games_filter(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:

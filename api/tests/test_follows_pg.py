@@ -404,6 +404,70 @@ def test_a_stranded_request_is_promoted_when_the_account_goes_public(people):
     assert _counts(async_url, ids["priv"])[0] == 1, "promotion must move the counters"
 
 
+def test_a_promote_that_wrote_nothing_does_not_claim_to_have_followed(people):
+    """The third mutation, held to the same standard as the other two.
+
+    The counters were guarded on `rowcount` and the response was not, so a
+    promote matching zero rows still answered `accepted / following: true`.
+    Withdraw on one device while tapping Follow on another: the DELETE lands
+    first, the UPDATE matches nothing, and the client renders Following over an
+    edge that does not exist — while the very next `follow-state` call says
+    `null`. The same lie `unfollow` and `reject` were rewritten to stop telling.
+    """
+    from sqlalchemy import create_engine
+
+    from app.routers import follows as r
+
+    async_url, ids = people
+
+    _run(async_url, lambda db: r.follow_user("privatetarget", ids["viewer"], db))
+    sync = create_engine(async_url.replace("postgresql+asyncpg://", "postgresql://"))
+    with sync.begin() as c:
+        c.execute(
+            text("UPDATE users SET is_private = false WHERE id = :i"), {"i": ids["priv"]}
+        )
+    sync.dispose()
+
+    async def interleaved(db):
+        # The handler reads a `pending` edge; the withdrawal commits before its
+        # guarded UPDATE runs. `_edge` is the read the guard is built on.
+        original = r._edge
+        fired = []
+
+        async def once(session, a, b):
+            edge = await original(session, a, b)
+            if not fired:
+                fired.append(True)
+                inner = create_engine(
+                    async_url.replace("postgresql+asyncpg://", "postgresql://")
+                )
+                with inner.begin() as c:
+                    c.execute(
+                        text(
+                            "DELETE FROM follows WHERE follower_id = :a "
+                            "AND followee_id = :b"
+                        ),
+                        {"a": ids["viewer"], "b": ids["priv"]},
+                    )
+                inner.dispose()
+            return edge
+
+        r._edge = once
+        try:
+            return await r.follow_user("privatetarget", ids["viewer"], db)
+        finally:
+            r._edge = original
+
+    state = _run(async_url, interleaved)
+
+    assert _edge_status(async_url, ids["viewer"], ids["priv"]) is None, (
+        "precondition: the withdrawal won"
+    )
+    assert state.following is False, "must not report a follow it did not write"
+    assert state.status is None
+    assert _counts(async_url, ids["priv"])[0] == 0, "and must not move the counters"
+
+
 def test_unfollowing_from_a_zero_counter_still_revokes(people):
     """The CHECK must not be able to wedge a revocation.
 

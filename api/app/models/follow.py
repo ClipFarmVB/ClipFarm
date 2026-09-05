@@ -10,6 +10,8 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     Enum as SAEnum,
+    func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,8 +54,17 @@ class Follow(Base):
         server_default=FollowStatus.pending.value,
         default=FollowStatus.pending,
     )
+    # `server_default` mirrors the migration's `sa.func.now()`, and `nullable`
+    # mirrors its NOT NULL. Without them a `create_all`-built database — every
+    # `*_pg.py` fixture — had no default on a NOT NULL column while a migrated
+    # one did, so any INSERT not going through this ORM had to supply the value
+    # by hand. `test_follows_pg.py`'s raw INSERTs already did, which is the
+    # symptom rather than the fix. Same family as the counter CHECKs above.
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        default=lambda: datetime.now(timezone.utc),
     )
 
     __table_args__ = (
@@ -65,9 +76,23 @@ class Follow(Base):
         CheckConstraint("follower_id <> followee_id", name="ck_follow_not_self"),
         # The two directions the lists page, plus the EXISTS the visibility
         # filters run per row — all three want `status` in the key so an
-        # accepted-only lookup never touches the table. Names and column order
-        # match migration 017 exactly; agreeing with the database is the whole
-        # point of declaring them here rather than leaving them implicit.
-        Index("ix_follows_follower", "follower_id", "status"),
-        Index("ix_follows_followee", "followee_id", "status"),
+        # accepted-only lookup never touches the table, and the sort key after
+        # it so a keyset page is a range scan rather than a sort of the whole
+        # matching set. Names and column order match migration 017 exactly;
+        # agreeing with the database is the whole point of declaring them here
+        # rather than leaving them implicit.
+        Index(
+            "ix_follows_follower",
+            "follower_id",
+            "status",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+        Index(
+            "ix_follows_followee",
+            "followee_id",
+            "status",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
     )

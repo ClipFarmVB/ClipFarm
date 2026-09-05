@@ -500,3 +500,67 @@ def test_both_halves_are_pinned_not_just_the_sql_one():
         assert "accepted" in inspect.getsource(fn), (
             f"{fn.__module__}.{fn.__name__} must constrain status to accepted"
         )
+
+
+def test_every_read_gate_honours_the_follow_edge():
+    """`can_identify` was the one that didn't.
+
+    It delegates to `can_view_game`, whose `viewer_follows_owner` defaults to
+    False — correct before CF-110, when `followers` resolved False for
+    everyone, and silently wrong the moment an accepted follower could read a
+    `followers`-tier clip. The delegate then answered a different question than
+    `can_view_clip` did for the same viewer: 200 on the download, filename
+    stripped of the game title and the player's name, while `list_clips` handed
+    that same viewer `player_name` from SQL.
+
+    It fails closed, which is why nothing caught it. Asserted over the set so
+    the next gate added here cannot be the one that forgets.
+    """
+    import inspect
+
+    for fn in (
+        access.can_view_game,
+        access.can_view_clip,
+        access.can_view_post,
+        access.can_identify,
+        access.assert_can_view_game,
+    ):
+        params = inspect.signature(fn).parameters
+        assert "viewer_follows_owner" in params or "viewer_follows_author" in params, (
+            f"{fn.__name__} cannot see the follow edge, so it answers as if "
+            "nobody follows anybody"
+        )
+
+
+def test_can_identify_agrees_with_can_view_clip_for_a_follower():
+    """The two answers, side by side, over the case that made them differ."""
+
+    class _Clip:
+        def __init__(self, game_id):
+            self.game_id = game_id
+            self.visibility = None  # inherit — every clip the pipeline produces
+
+    game = _Game(Visibility.followers)
+    clip = _Clip(game.id)
+
+    assert access.can_view_clip(VIEWER, clip, game, viewer_follows_owner=True) is True
+    assert access.can_identify(VIEWER, game, viewer_follows_owner=True) is True
+    # And still closed for a viewer with no edge.
+    assert access.can_identify(VIEWER, game) is False
+
+
+def test_the_counter_checks_reach_the_metadata():
+    """Migration 017 creates them; `Base.metadata` has to know.
+
+    Every `*_pg.py` fixture builds its schema with `Base.metadata.create_all`,
+    so a constraint declared only in the migration is absent from the database
+    the tests actually run against. `test_unfollowing_from_a_zero_counter_still_revokes`
+    is the one that cared: its subject is the CHECK aborting a transaction, and
+    without the constraint present it verified the `GREATEST` floor alone while
+    reading as though it covered both.
+    """
+    from app.models.user import User
+
+    names = {c.name for c in User.__table__.constraints if c.name}
+    assert "ck_users_follower_count_non_negative" in names
+    assert "ck_users_following_count_non_negative" in names

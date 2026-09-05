@@ -61,8 +61,29 @@ def upgrade() -> None:
     # The two directions the lists page, plus the EXISTS the visibility filters
     # run per row — all three want status in the index so accepted-only lookups
     # never touch the table.
-    op.create_index("ix_follows_follower", "follows", ["follower_id", "status"])
-    op.create_index("ix_follows_followee", "follows", ["followee_id", "status"])
+    #
+    # **The sort key is in the index too, and that is the half that makes the
+    # pagination worth having.** Every list here orders by
+    # `created_at DESC, id DESC` and pages with a row-value cursor over that
+    # pair. With only `(col, status)` the planner finds the matching rows and
+    # then sorts the entire set to hand back one page — on every page — so
+    # keyset paging costs the whole backlog rather than a page of it, which is
+    # the exact property it was chosen for. It bites hardest on
+    # `list_follow_requests`, the one endpoint whose size nobody controls:
+    # `follows` has no rate limiting yet (CF-116) and follow-spam is the named
+    # vector.
+    #
+    # DESC to match the ORDER BY exactly, so the row-value comparison becomes a
+    # range scan from the cursor position. Cheap here; a CREATE INDEX on a live
+    # table later.
+    op.execute(
+        "CREATE INDEX ix_follows_follower ON follows "
+        "(follower_id, status, created_at DESC, id DESC)"
+    )
+    op.execute(
+        "CREATE INDEX ix_follows_followee ON follows "
+        "(followee_id, status, created_at DESC, id DESC)"
+    )
 
     # Denormalized counters (epic decision 6). A profile renders these on every
     # view; COUNT(*) over a growing edge table per page load is the thing this
