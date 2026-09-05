@@ -122,31 +122,52 @@ three paths so the split stays a decision rather than an accident.
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import ColumnElement, Select, and_, or_
+from sqlalchemy import ColumnElement, Select, and_, or_, select
 
 from app.models.clip import Clip
+from app.models.follow import Follow, FollowStatus
 from app.models.game import Game
 from app.models.post import Post
 from app.models.visibility import Visibility
 
 
-def is_follower(viewer_id: uuid.UUID | None, owner_id: uuid.UUID) -> bool:
-    """Whether `viewer_id` is an accepted follower of `owner_id`.
+def accepted_follow_exists(viewer_id: uuid.UUID, owner_col) -> ColumnElement[bool]:
+    """SQL half of the `followers` tier: does `viewer_id` follow `owner_col`?
 
-    Always False until CF-110 (#140) builds the follow graph. That is the
-    fail-closed answer: `followers`-tier content stays owner-only until there is
-    a real follow relationship to check, rather than being readable by everyone
-    in the meantime.
+    An EXISTS correlated to the outer query, so list endpoints resolve the tier
+    in the database rather than by pulling rows into Python — which is the same
+    rule as everywhere else here, for the same reason.
 
-    CF-110 replaces the body with a lookup against `follows` where
-    `status = 'accepted'`, and swaps the filter helpers below to an EXISTS
-    subquery so list queries stay in SQL.
+    `status = 'accepted'` is the security-relevant part. A pending request must
+    grant nothing: until the target approves, a requester sees exactly what a
+    stranger sees, which is what makes "private by default" more than a label.
     """
-    return False
+    return (
+        select(Follow.id)
+        .where(
+            Follow.follower_id == viewer_id,
+            Follow.followee_id == owner_col,
+            Follow.status == FollowStatus.accepted,
+        )
+        .exists()
+    )
+
+
+def effective(clip: Clip | None, game: Game | None) -> Visibility | None:
+    """A clip's visibility, resolving NULL as "inherit from the game".
+
+    Public because the read paths need the resolved tier to decide whether a
+    follow lookup is worth issuing at all — asking `access` beats each router
+    re-deriving `clip.visibility or game.visibility` and getting the inherit
+    rule subtly wrong.
+    """
+    if clip is None or game is None:
+        return None
+    return _effective(clip, game)
 
 
 def _effective(clip: Clip, game: Game) -> Visibility:
-    """A clip's visibility, resolving NULL as "inherit from the game"."""
+    """Non-optional form, for callers that have already narrowed both."""
     return clip.visibility or game.visibility
 
 
@@ -182,37 +203,66 @@ def widest_allowed(clip: Clip | None, game: Game | None) -> Visibility:
     return _effective(clip, game)
 
 
-def may_read(viewer_id: uuid.UUID | None, owner_id: uuid.UUID, level: Visibility) -> bool:
+def may_read(
+    viewer_id: uuid.UUID | None,
+    owner_id: uuid.UUID,
+    level: Visibility,
+    viewer_follows_owner: bool = False,
+) -> bool:
     """The tier ladder itself, for any object that carries an owner and a level.
 
     Public rather than private because posts need the same ladder, and the only
     thing worse than exporting it is having it written out a second time.
+
+    `viewer_follows_owner` is resolved by the caller (see
+    `services.follow_graph`) rather than looked up here: this module stays
+    synchronous and database-free, which is what lets it be tested as pure logic
+    and reused from anywhere. **It defaults to False**, so a caller that forgets
+    to resolve the edge grants *less* access, not more.
     """
     if viewer_id is not None and viewer_id == owner_id:
         return True  # the owner always sees their own content
     if level is Visibility.public:
         return True  # including signed-out visitors
     if level is Visibility.followers:
-        return is_follower(viewer_id, owner_id)
+        return viewer_follows_owner
     return False  # private
 
 
-def can_view_game(viewer_id: uuid.UUID | None, game: Game | None) -> bool:
+def can_view_game(
+    viewer_id: uuid.UUID | None,
+    game: Game | None,
+    *,
+    viewer_follows_owner: bool = False,
+) -> bool:
     """`viewer_id` is None for a signed-out visitor."""
     if game is None:
         return False
-    return may_read(viewer_id, game.owner_id, game.visibility)
+    return may_read(viewer_id, game.owner_id, game.visibility, viewer_follows_owner)
 
 
-def can_view_clip(viewer_id: uuid.UUID | None, clip: Clip | None, game: Game | None) -> bool:
+def can_view_clip(
+    viewer_id: uuid.UUID | None,
+    clip: Clip | None,
+    game: Game | None,
+    *,
+    viewer_follows_owner: bool = False,
+) -> bool:
     """The parent game is required — it carries the owner, and the clip's own
     visibility may be NULL meaning "inherit"."""
     if clip is None or game is None or clip.game_id != game.id:
         return False
-    return may_read(viewer_id, game.owner_id, _effective(clip, game))
+    return may_read(
+        viewer_id, game.owner_id, _effective(clip, game), viewer_follows_owner
+    )
 
 
-def can_identify(viewer_id: uuid.UUID | None, game: Game | None) -> bool:
+def can_identify(
+    viewer_id: uuid.UUID | None,
+    game: Game | None,
+    *,
+    viewer_follows_owner: bool = False,
+) -> bool:
     """Whether a caller may attach the game's title and its players' names.
 
     **Scope: this is one endpoint's gate, not a module-wide invariant.** Unlike
@@ -241,8 +291,19 @@ def can_identify(viewer_id: uuid.UUID | None, game: Game | None) -> bool:
     cleartext), CF-101's zip entries will ask it again, and a rule living
     inline in one router is one the second caller re-derives — differently.
     Whichever way CF-283 settles, it settles here.
+
+    `viewer_follows_owner` is threaded through for the same reason every other
+    entry point takes it — and this is where omitting it was easiest to miss,
+    because it fails *closed*. Before CF-110 the keyword could not matter:
+    `followers` resolved False for everyone, so delegating without it was exact.
+    The moment an accepted follower could read a `followers`-tier clip, the
+    delegate began answering a different question than `can_view_clip` did for
+    the same viewer — 200 on the download, filename stripped of the game title
+    and the player's name, while `list_clips` handed that same viewer
+    `player_name` straight from SQL. One signed-in reader, two answers, which is
+    the split this docstring already exists to warn about, on a second axis.
     """
-    return can_view_game(viewer_id, game)
+    return can_view_game(viewer_id, game, viewer_follows_owner=viewer_follows_owner)
 
 
 def visible_games_filter(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
@@ -257,9 +318,15 @@ def visible_games_filter(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
     clauses = [Game.visibility == Visibility.public]
     if viewer_id is not None:
         clauses.append(Game.owner_id == viewer_id)
-    # No `followers` clause: is_follower() is False for everyone until CF-110,
-    # and emitting a clause that can never be true would only mislead a reader
-    # of the generated SQL. CF-110 adds an EXISTS against `follows` here.
+        # Anonymous viewers get no `followers` branch at all — they can't follow
+        # anyone, so an always-false EXISTS on every signed-out read is pure
+        # cost with no effect on the result.
+        clauses.append(
+            and_(
+                Game.visibility == Visibility.followers,
+                accepted_follow_exists(viewer_id, Game.owner_id),
+            )
+        )
     return or_(*clauses)
 
 
@@ -270,6 +337,21 @@ def _clips_predicate(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
     clauses = [Clip.visibility == Visibility.public, inherited_public]
     if viewer_id is not None:
         clauses.append(Game.owner_id == viewer_id)
+        # `followers` either on the clip or inherited from its game. Written as
+        # one EXISTS over both cases rather than one per branch: the two differ
+        # only in which column carries the tier, and the subquery is identical.
+        clauses.append(
+            and_(
+                or_(
+                    Clip.visibility == Visibility.followers,
+                    and_(
+                        Clip.visibility.is_(None),
+                        Game.visibility == Visibility.followers,
+                    ),
+                ),
+                accepted_follow_exists(viewer_id, Game.owner_id),
+            )
+        )
     return or_(*clauses)
 
 
@@ -298,6 +380,9 @@ def can_view_post(
     post: Post | None,
     clip: Clip | None,
     game: Game | None,
+    *,
+    viewer_follows_author: bool = False,
+    viewer_follows_owner: bool = False,
 ) -> bool:
     """Two gates, both required.
 
@@ -308,9 +393,16 @@ def can_view_post(
     """
     if post is None or clip is None or post.clip_id != clip.id:
         return False
-    return may_read(viewer_id, post.author_id, post.visibility) and can_view_clip(
-        viewer_id, clip, game
-    )
+    # Two principals, two flags. The post's tier belongs to its author and the
+    # clip's to the game's owner, and they are the same person only because
+    # create_post refuses to publish someone else's footage — an invariant held
+    # by one write path and by nothing in the schema. Collapsing them into one
+    # boolean was correct today and silently wrong the moment anything transfers
+    # a game, which would authorize a post read against a follow edge to the
+    # wrong account. Callers that know they coincide pass the same value twice.
+    return may_read(
+        viewer_id, post.author_id, post.visibility, viewer_follows_author
+    ) and can_view_clip(viewer_id, clip, game, viewer_follows_owner=viewer_follows_owner)
 
 
 def _posts_predicate(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
@@ -320,7 +412,12 @@ def _posts_predicate(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
     clauses = [Post.visibility == Visibility.public]
     if viewer_id is not None:
         clauses.append(Post.author_id == viewer_id)
-    # No `followers` clause until CF-110, for the same reason as games above.
+        clauses.append(
+            and_(
+                Post.visibility == Visibility.followers,
+                accepted_follow_exists(viewer_id, Post.author_id),
+            )
+        )
     return or_(*clauses)
 
 
@@ -343,14 +440,19 @@ def apply_post_visibility(stmt: Select, viewer_id: uuid.UUID | None) -> Select:
     )
 
 
-def assert_can_view_game(viewer_id: uuid.UUID | None, game: Game | None) -> Game:
+def assert_can_view_game(
+    viewer_id: uuid.UUID | None,
+    game: Game | None,
+    *,
+    viewer_follows_owner: bool = False,
+) -> Game:
     """Return the game or raise 404.
 
     404 rather than 403 on purpose: a 403 confirms the object exists, which
     leaks which game ids are real to anyone probing. This mirrors what the
     routers already did for owner-only content.
     """
-    if not can_view_game(viewer_id, game):
+    if not can_view_game(viewer_id, game, viewer_follows_owner=viewer_follows_owner):
         raise HTTPException(status_code=404, detail="Game not found")
     assert game is not None  # narrowed by can_view_game
     return game

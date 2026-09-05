@@ -21,7 +21,7 @@ from app.schemas.clip import (
     ClipTagRequest,
     ClipTrimRequest,
 )
-from app.services import access, storage
+from app.services import access, follow_graph, storage
 from app.services.filenames import clip_download_filename
 from app.workers.celery_app import celery_app
 
@@ -36,20 +36,38 @@ ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
 
 async def _get_viewable_clip(
     clip_id: uuid.UUID, viewer_id: uuid.UUID | None, db: AsyncSession
-) -> tuple[Clip, Game]:
+) -> tuple[Clip, Game, bool]:
     """Fetch a clip the viewer is allowed to READ (CF-108).
 
     Distinct from _get_owned_clip below, which still gates every write. Reads go
     through services/access.py so visibility is decided in one place; writes stay
     owner-only and must not use this.
+
+    **Returns the resolved follow edge as well**, because the caller's *next*
+    question usually needs it and re-deriving it is how the two answers drift.
+    `can_identify` was exactly that: it re-asked `can_view_game` without the
+    edge, so the keyword defaulted to False and an accepted follower who had
+    just been served the clip was told they may not know its title — while the
+    same viewer got `player_name` from `list_clips`, which resolves the tier in
+    SQL. One signed-in viewer, two answers, which is the split `can_identify`'s
+    own docstring exists to warn about. The edge was already computed here and
+    thrown away.
     """
     clip = await db.get(Clip, clip_id)
     game = await db.get(Game, clip.game_id) if clip else None
-    if not access.can_view_clip(viewer_id, clip, game):
+    # Costs a query only when the effective tier is `followers` — see
+    # follow_graph.resolve_follow.
+    follows = await follow_graph.resolve_follow(
+        db,
+        viewer_id,
+        game.owner_id if game else None,
+        access.effective(clip, game),
+    )
+    if not access.can_view_clip(viewer_id, clip, game, viewer_follows_owner=follows):
         # 404 not 403 — a 403 would confirm the clip exists to anyone probing.
         raise HTTPException(status_code=404, detail="Clip not found")
     assert clip is not None and game is not None  # narrowed by can_view_clip
-    return clip, game
+    return clip, game, follows
 
 
 async def _get_owned_clip(
@@ -130,7 +148,14 @@ async def list_clips(
     # back the narrowed one, so this needs no `assert` further down. The bare
     # assert that used to do the narrowing is stripped by `python -O`, which
     # would turn a contract into nothing on an optimised interpreter.
-    game = access.assert_can_view_game(viewer_id, await db.get(Game, game_id))
+    #
+    # The row is fetched first because resolve_follow needs the owner and the
+    # tier to decide whether the edge is worth a query at all (CF-110).
+    game = await db.get(Game, game_id)
+    follows = await follow_graph.resolve_follow(
+        db, viewer_id, game.owner_id if game else None, game.visibility if game else None
+    )
+    game = access.assert_can_view_game(viewer_id, game, viewer_follows_owner=follows)
 
     # Clips are filtered IN SQL (CF-108). Post-filtering the page in Python
     # would silently break pagination — ask for 50, get however many survived —
@@ -376,7 +401,7 @@ async def share_clip(
     viewer_id: ViewerId = None,
 ):
     # Read path (CF-108): anyone who may view the clip may mint a share link.
-    clip, _game = await _get_viewable_clip(clip_id, viewer_id, db)
+    clip, _game, _follows = await _get_viewable_clip(clip_id, viewer_id, db)
     # NOTE: still a 1h presigned URL even for public clips. CF-108's card flags
     # revisiting this — a public clip's link is meant to be passed around, so a
     # short expiry is user-hostile, while a long one is a bearer token nobody
@@ -406,14 +431,14 @@ async def download_clip(
     flagged there, and answering it differently in two places would settle it by
     accident.
     """
-    clip, game = await _get_viewable_clip(clip_id, viewer_id, db)
+    clip, game, follows = await _get_viewable_clip(clip_id, viewer_id, db)
 
     # The filename is part of the response, not just decoration: presign_url
     # puts it in the URL's ResponseContentDisposition, in cleartext. So the
     # question is not only "may this viewer have the bytes" but "may they have
     # these strings" — a different question, answered in access.py alongside
     # the asymmetry that makes the two differ. CF-101's zip needs the same gate.
-    identify = access.can_identify(viewer_id, game)
+    identify = access.can_identify(viewer_id, game, viewer_follows_owner=follows)
 
     # Explicit fetch, not clip.player: the relationship is not eagerly loaded
     # anywhere, and touching it here would lazy-load inside the event loop and

@@ -13,7 +13,7 @@ from app.models.collection import Collection, CollectionClip
 from app.models.player import Player
 from app.schemas.clip import ClipOut
 from app.schemas.collection import CollectionOut, CollectionCreate, CollectionRename, CollectionAddClip
-from app.services import access, storage
+from app.services import access, follow_graph, storage
 
 router = APIRouter(prefix="/collections", tags=["collections"])
 
@@ -177,7 +177,16 @@ async def add_clip_to_collection(
     # made public clips unsaveable the moment feeds exist.
     clip = await db.get(Clip, body.clip_id)
     game = await db.get(Game, clip.game_id) if clip else None
-    if not access.can_view_clip(user_id, clip, game):
+    # The follow edge has to be resolved here too (CF-110). `can_view_clip`
+    # takes `viewer_follows_owner` and defaults it to False — fail-closed, which
+    # is the right default and also a silent one: without this, an accepted
+    # follower gets a 404 saving a `followers`-tier clip that this same router
+    # lists for them perfectly well through `apply_clip_visibility`, because the
+    # list path resolves the tier in SQL and this path resolved it nowhere.
+    follows = await follow_graph.resolve_follow(
+        db, user_id, game.owner_id if game else None, access.effective(clip, game)
+    )
+    if not access.can_view_clip(user_id, clip, game, viewer_follows_owner=follows):
         raise HTTPException(status_code=404, detail="Clip not found")
 
     # Upsert — silently succeed if already in collection
