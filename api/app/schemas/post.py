@@ -94,6 +94,10 @@ class PostOut(BaseModel):
     created_at: datetime
     author: PostAuthor
     playback: PostPlayback
+    # Always False until CF-113 adds likes. Shipped now so the response shape
+    # doesn't change under the client when it does, and so the feed can fill it
+    # with one query for the whole page rather than one per card.
+    viewer_has_liked: bool = False
 
 
 class PostCreate(BaseModel):

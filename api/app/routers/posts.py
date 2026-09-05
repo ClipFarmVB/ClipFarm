@@ -12,8 +12,8 @@ from app.models.clip import Clip
 from app.models.game import Game
 from app.models.post import Post
 from app.models.user import User
-from app.schemas.post import PostAuthor, PostCreate, PostOut, PostPlayback, PostUpdate
-from app.services import access, follow_graph, profiles, storage
+from app.schemas.post import PostCreate, PostOut, PostUpdate
+from app.services import access, follow_graph, post_view, profiles, storage
 
 logger = logging.getLogger(__name__)
 
@@ -29,58 +29,31 @@ ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
 # module's docstring names as the most expensive for them to drift.
 
 
-def _serialize(post: Post, clip: Clip, author: User) -> PostOut:
-    """Build the response, resolving playback from the clip at read time.
+def _serialize(
+    post: Post,
+    clip: Clip,
+    author: User,
+    *,
+    r2_ready: bool | None = None,
+    avatar_cache: dict[str, str | None] | None = None,
+) -> PostOut:
+    """Thin wrapper over the shared renderer.
 
-    Resolved per request rather than stored on the post so a trim (CF-52) or a
-    re-materialized file is reflected without touching post rows.
+    The body used to live here and a verbatim copy of it lived in
+    `routers/feed.py`. `services/post_view.py` is now the single copy — see its
+    module docstring for the three defects that only ever existed in whichever
+    copy the tests did not reach.
 
-    **A presigned URL outlives the revocation the read path enforces.** The
-    signature is valid for an hour and is bearer authority on the object: once
-    it has been handed out, deleting the post, deleting the clip, or narrowing
-    either one's visibility stops the *API* serving it and does nothing to the
-    URL. So "delete the clip and the post 404s" is a true statement about this
-    service and not about the footage, and the honest window is up to an hour.
-
-    Not shortened here, because the tradeoff is real in both directions: the
-    feed (CF-111/CF-112) holds a page of these across a scroll session, so a
-    short expiry trades a narrower revocation window for playback that dies
-    mid-scroll — and re-presigning on failure just moves the same problem. The
-    actual fix is the one CF-112's review already named: a stable URL through
-    an endpoint that re-checks visibility per request, with the object private.
-    That is a storage change, not a posts one.
-
-    Recorded rather than quietly accepted so that whoever writes the takedown
-    path (CF-116) knows the guarantee they are inheriting is "within the hour",
-    and can decide whether that is good enough for a moderation action.
+    `r2_ready` is optional so the single-post handlers read like they always
+    did; `list_user_posts` passes it once for the whole page rather than
+    re-probing process-wide config per row.
     """
-    if storage.r2_configured():
-        clip_url = storage.presign_from_stored_url(clip.clip_url, expires_in=3600)
-        thumb = (
-            storage.presign_from_stored_url(clip.thumbnail_url, expires_in=3600)
-            if clip.thumbnail_url
-            else None
-        )
-    else:
-        clip_url, thumb = clip.clip_url, clip.thumbnail_url
-
-    return PostOut(
-        id=post.id,
-        clip_id=post.clip_id,
-        caption=post.caption,
-        visibility=post.visibility,
-        like_count=post.like_count,
-        comment_count=post.comment_count,
-        created_at=post.created_at,
-        author=PostAuthor.from_author(author),
-        playback=PostPlayback(
-            clip_url=clip_url,
-            thumbnail_url=thumb,
-            # CF-48 populates this; until then every post plays from its file.
-            proxy_url=None,
-            start_time=clip.start_time,
-            end_time=clip.end_time,
-        ),
+    return post_view.serialize(
+        post,
+        clip,
+        author,
+        r2_ready=storage.r2_configured() if r2_ready is None else r2_ready,
+        avatar_cache=avatar_cache,
     )
 
 
@@ -251,7 +224,18 @@ async def list_user_posts(
         )
     ).all()
 
-    return [_serialize(post, clip, author) for post, clip in rows]
+    # Probed once for the page rather than per row: it reads five settings
+    # fields for an answer that is process-wide and cannot change mid-response.
+    #
+    # The avatar cache matters more here than in the feed: this page is many
+    # posts by *one* author, so without it a 50-post profile grid signed the
+    # same avatar URL fifty times.
+    r2_ready = storage.r2_configured()
+    avatar_cache: dict[str, str | None] = {}
+    return [
+        _serialize(post, clip, author, r2_ready=r2_ready, avatar_cache=avatar_cache)
+        for post, clip in rows
+    ]
 
 
 @router.patch("/{post_id}", response_model=PostOut)

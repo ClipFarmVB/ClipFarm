@@ -1,8 +1,5 @@
-import base64
-import binascii
 import logging
 import uuid
-from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -22,7 +19,7 @@ from app.schemas.follow import (
     FollowStateOut,
 )
 from app.schemas.profile import ProfileOut
-from app.services import profiles
+from app.services import cursors, profiles
 
 logger = logging.getLogger(__name__)
 
@@ -257,35 +254,6 @@ async def get_follow_state(handle: str, user_id: UserId, db: DB):
     return _state(await _edge(db, user_id, target.id))
 
 
-def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
-    """`<iso timestamp>|<uuid>` → the sort key, or 400.
-
-    The timestamp must carry an offset, and the reason is not the one you might
-    expect. asyncpg does **not** raise when a naive datetime meets a
-    `timestamptz` column — measured, it returns the same rows as the aware
-    equivalent, because it silently reinterprets naive input as UTC. So the
-    failure mode is not a 500, it is a page that starts in the wrong place
-    whenever the client meant a local time, with no error anywhere.
-
-    A cursor this endpoint issued is always aware. A naive one is therefore
-    hand-crafted and malformed, and 400 is the honest answer.
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
-        ts, _, follow_id = raw.partition("|")
-        parsed = datetime.fromisoformat(ts)
-        if parsed.tzinfo is None:
-            raise ValueError("cursor timestamp must be timezone-aware")
-        return parsed, uuid.UUID(follow_id)
-    except (ValueError, binascii.Error, UnicodeDecodeError):
-        raise HTTPException(status_code=400, detail="Invalid cursor")
-
-
-def _encode_cursor(follow: Follow) -> str:
-    raw = f"{follow.created_at.isoformat()}|{follow.id}"
-    return base64.urlsafe_b64encode(raw.encode()).decode()
-
-
 def _findable(stmt):
     """Drop rows whose handle was never chosen.
 
@@ -319,8 +287,11 @@ def _page_query(stmt, cursor: str | None, limit: int):
     same filtered set.
     """
     stmt = stmt.order_by(Follow.created_at.desc(), Follow.id.desc()).limit(limit + 1)
-    if cursor:
-        stmt = stmt.where(tuple_(Follow.created_at, Follow.id) < _decode_cursor(cursor))
+    if cursor is not None:
+        # `is not None`, not truthiness — `?cursor=` would otherwise skip the
+        # decoder and silently restart from page 1, so a client emitting an empty
+        # template value scrolls forever without advancing.
+        stmt = stmt.where(tuple_(Follow.created_at, Follow.id) < cursors.decode(cursor))
     return stmt
 
 
@@ -344,9 +315,7 @@ async def _edge_page(
         limit,
     )
 
-    rows = (await db.execute(q)).all()
-    has_more = len(rows) > limit
-    rows = rows[:limit]
+    rows, has_more = cursors.split_page((await db.execute(q)).all(), limit)
     return FollowPage(
         items=[
             FollowOut(
@@ -354,7 +323,9 @@ async def _edge_page(
             )
             for follow, user in rows
         ],
-        next_cursor=_encode_cursor(rows[-1][0]) if (has_more and rows) else None,
+        next_cursor=cursors.encode(rows[-1][0].created_at, rows[-1][0].id)
+        if (has_more and rows)
+        else None,
     )
 
 
@@ -449,9 +420,7 @@ async def list_follow_requests(
         limit,
     )
 
-    rows = (await db.execute(q)).all()
-    has_more = len(rows) > limit
-    rows = rows[:limit]
+    rows, has_more = cursors.split_page((await db.execute(q)).all(), limit)
     return FollowRequestPage(
         items=[
             FollowRequestOut(
@@ -461,7 +430,9 @@ async def list_follow_requests(
             )
             for follow, user in rows
         ],
-        next_cursor=_encode_cursor(rows[-1][0]) if (has_more and rows) else None,
+        next_cursor=cursors.encode(rows[-1][0].created_at, rows[-1][0].id)
+        if (has_more and rows)
+        else None,
     )
 
 

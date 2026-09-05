@@ -1,5 +1,6 @@
 """Cloudflare R2 (or AWS S3) object storage helpers."""
 import re
+import threading
 import uuid
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -62,6 +63,12 @@ _BOTO_CONFIG = Config(
 )
 
 
+# Guards construction only — see `_client`. Not a guard on the *use* of the
+# returned client, which botocore documents as thread-safe for the signing
+# calls made here.
+_CLIENT_LOCK = threading.Lock()
+
+
 @lru_cache(maxsize=1)
 def _client():
     """Cached: constructing a boto3 client is not free, and presigning is a
@@ -88,16 +95,30 @@ def _client():
     Note the cache does not touch the per-object cost: `generate_presigned_url`
     is a local HMAC, and a 100-post page still does 200 of them on the event
     loop. Only the construction is avoided.
+
+    **Construction is serialized, because `lru_cache` does not do that.** It
+    holds no lock across the wrapped call, so callers that miss at the same
+    moment run the body concurrently — and botocore's session and loader are
+    documented as unsafe to *build* from several threads at once, the guidance
+    being a client per thread or construction under a lock. That could not
+    arise while every caller was the event loop thread. CF-111 moved feed
+    presigning into `run_in_threadpool`, so a cold process taking several
+    `GET /feed` requests together now dispatches several worker threads that
+    all miss this cache at once — and `post_view._presign` catches broadly, so
+    whatever botocore raised would surface as a page of unsigned URLs and a few
+    warning lines rather than as an error anyone would notice. One uncontended
+    acquire per call removes the question.
     """
-    endpoint = f"https://{settings.r2_account_id}.r2.cloudflarestorage.com"
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=settings.r2_access_key_id,
-        aws_secret_access_key=settings.r2_secret_access_key,
-        config=_BOTO_CONFIG,
-        region_name="auto",
-    )
+    with _CLIENT_LOCK:
+        endpoint = f"https://{settings.r2_account_id}.r2.cloudflarestorage.com"
+        return boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=settings.r2_access_key_id,
+            aws_secret_access_key=settings.r2_secret_access_key,
+            config=_BOTO_CONFIG,
+            region_name="auto",
+        )
 
 
 def upload_file(local_path: str | Path, key: str, content_type: str = "application/octet-stream") -> str:
