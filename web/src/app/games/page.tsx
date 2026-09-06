@@ -6,8 +6,15 @@ import { AlertCircle, ArrowRight, Pencil, Plus, Trash2 } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
-import { deleteGame, renameGame, type Game } from "@/lib/api";
-import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
+import {
+  deleteGame,
+  renameGame,
+  fetchGames,
+  getCachedGames,
+  getInflightGames,
+  updateGamesCache,
+  type Game,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 // `uploading` is filtered out by the api's list endpoint — a game whose video

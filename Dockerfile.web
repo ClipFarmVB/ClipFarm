@@ -5,10 +5,13 @@ WORKDIR /app
 # Install root workspace deps used by the web workspace.
 COPY package.json package-lock.json ./
 COPY web/package.json ./web/package.json
+COPY packages/api-client/package.json ./packages/api-client/package.json
 RUN npm ci
 
-# Copy app source.
+# Copy app source. The shared api client is source, not a build artifact, so
+# the web dev server compiles it in place along with the app (CF-314).
 COPY web ./web
+COPY packages ./packages
 
 EXPOSE 3000
 

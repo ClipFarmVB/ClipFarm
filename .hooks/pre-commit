@@ -278,9 +278,26 @@ printf "  tsc (web) ...        "
 npm run typecheck --workspace=web --silent
 echo "ok"
 
+# ── Shared api client: TypeScript ─────────────────────────────────────────────
+# Its own tsconfig, not web's: the package has to compile for a React Native
+# consumer too, and web's lib/paths would hide a coupling that breaks there.
+printf "  tsc (api-client) ... "
+npm run typecheck --workspace=packages/api-client --silent
+echo "ok"
+
 # ── Web: unit tests (vitest) ──────────────────────────────────────────────────
 printf "  vitest (web) ...     "
 if ! _vitest_out=$(npm run test --workspace=web --silent 2>&1); then
+  echo "FAIL"
+  echo "$_vitest_out"
+  exit 1
+fi
+echo "ok"
+
+# ── Shared api client: unit tests (vitest) ────────────────────────────────────
+# The suites that moved out of web/src/lib with their modules (CF-314).
+printf "  vitest (api-client)  "
+if ! _vitest_out=$(npm run test --workspace=packages/api-client --silent 2>&1); then
   echo "FAIL"
   echo "$_vitest_out"
   exit 1

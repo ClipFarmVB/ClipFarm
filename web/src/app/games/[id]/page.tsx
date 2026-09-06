@@ -10,8 +10,21 @@ import { ClipModal } from "@/components/ClipModal";
 import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type Player, type ActionType, type ClipFilters } from "@/lib/api";
-import { estimateEtaSeconds, formatEta, pushSample, type ProgressSample } from "@/lib/eta";
+import {
+  getGame,
+  getClips,
+  getPlayers,
+  deleteClips,
+  estimateEtaSeconds,
+  formatEta,
+  pushSample,
+  type Game,
+  type Clip,
+  type Player,
+  type ActionType,
+  type ClipFilters,
+  type ProgressSample,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];

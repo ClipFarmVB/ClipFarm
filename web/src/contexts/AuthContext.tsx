@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef, type ReactNode } from "react";
 import { type Session, type User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase";
-import { prefetchGames } from "@/lib/gamesCache";
+import { prefetchGames } from "@/lib/api";
 
 interface AuthState {
   user: User | null;

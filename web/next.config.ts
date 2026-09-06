@@ -12,6 +12,11 @@ const sentryRelease =
   process.env.SENTRY_RELEASE || process.env.NEXT_PUBLIC_SENTRY_RELEASE || "";
 
 const nextConfig: NextConfig = {
+  // The shared api client (CF-314) ships TypeScript source rather than a
+  // built dist/, so Next has to put it through the compiler like app code —
+  // workspace packages resolve into node_modules, which is otherwise left
+  // alone.
+  transpilePackages: ["@clipfarm/api-client"],
   // Re-export the resolved release under the public name. Next only inlines
   // NEXT_PUBLIC_* into the browser bundle, so instrumentation-client.ts cannot
   // read SENTRY_RELEASE itself — without this, a build that set only

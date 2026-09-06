@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    // DOM is here for *types* only — `fetch`, `Response`, `RequestInit`,
+    // `Headers`, `FormData`, `File`. Those exist on React Native too (Expo's
+    // tsconfig.base pulls in the same lib), and nothing in this package touches
+    // `window`, `document` or any other DOM API. Adding a runtime DOM
+    // dependency is what the package must not do; borrowing the type names for
+    // web-standard globals is fine.
+    "lib": ["ES2022", "DOM"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
+}

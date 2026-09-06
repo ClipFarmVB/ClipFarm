@@ -21,6 +21,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getUserPosts } from "./api";
+import { configureApiClient } from "./config";
 
 function respondWith(init: { status: number; body: string | null; length?: string }) {
   const headers = new Headers();
@@ -41,8 +42,9 @@ function respondWith(init: { status: number; body: string | null; length?: strin
 }
 
 beforeEach(() => {
-  // getAuthHeaders reaches Supabase; irrelevant to the response handling here.
-  vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
+  // The client is inert until a host binds it (CF-314), so every call throws
+  // without this. Neither value reaches anything here — fetch is stubbed.
+  configureApiClient({ baseUrl: "http://api.test", getToken: () => null });
 });
 
 afterEach(() => {

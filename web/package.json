@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@clipfarm/api-client": "*",
     "@sentry/nextjs": "^10.67.0",
     "@supabase/ssr": "^0.9.0",
     "@supabase/supabase-js": "^2.100.0",

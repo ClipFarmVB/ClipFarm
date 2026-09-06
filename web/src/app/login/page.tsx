@@ -7,7 +7,7 @@ import { AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase";
 import { safeNextPath } from "@/lib/redirect";
-import { AUTH_ERROR_PARAM, authErrorMessage } from "@/lib/authError";
+import { AUTH_ERROR_PARAM, authErrorMessage } from "@/lib/api";
 
 function LoginForm() {
   const router = useRouter();

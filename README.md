@@ -77,9 +77,14 @@ expensive thing the pipeline can do.
 ```
 web/                       Next.js frontend
   src/app/                 routes: /, /login, /signup, /games, /games/[id], /collections, /upload
-  src/lib/api.ts           API client (clips support min_score + sort=score)
+  src/lib/api.ts           binds the shared client to Next (base URL + Supabase token) and re-exports it
   src/components/          UploadZone, ClipCard, ClipModal, Sidebar, ui/
   AGENTS.md                ⚠ read before touching web — this Next.js has breaking changes vs training data
+
+packages/api-client/       the API client itself — platform-agnostic, shared with the Expo app
+  src/api.ts               every call the product makes (clips support min_score + sort=score)
+  src/config.ts            the injected `{ baseUrl, getToken }` each host supplies
+  README.md                how to initialise it, and why it ships source rather than a dist/
 
 api/app/
   main.py                  FastAPI app + router wiring + CORS

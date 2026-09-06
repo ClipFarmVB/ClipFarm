@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
-import { AUTH_ERROR_PARAM, type AuthErrorCode } from "@/lib/authError";
+import { AUTH_ERROR_PARAM, type AuthErrorCode } from "@/lib/api";
 
 /**
  * Email confirmation, verified server-side.
