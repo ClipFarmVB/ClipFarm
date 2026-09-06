@@ -1113,13 +1113,24 @@ def _confined_to_the_opencv_window(specifier: SpecifierSet) -> str | None:
     and a floor at or above the floor proves it downwards. That is the whole
     argument, and it does not grow a case per spelling.
 
-    **Only `<`, `<=` and an exact `==` are read as bounds.** `~=4.8.1.78` and
-    `==4.8.1.*` are confined to the window and are reported here as unbounded
-    anyway, because deriving their implied ceiling is a second thing to get
-    right and this guard has been wrong about opencv often enough. The cost of
-    that direction is a loud failure telling an author to write the bound out;
-    the cost of the other is a headless opencv nobody sees. Stated rather than
-    fixed, so a later change that reads them has to delete this paragraph.
+    **`<`, `<=`, `>`, `>=` and an exact `==` or `===` are read as bounds; `!=`,
+    `~=` and a wildcard `==` are not.** An unread operator contributes nothing,
+    so a set written only in them is refused as unbounded — `~=4.8.1.78` and
+    `==4.8.1.*` pin releases inside the window and are refused anyway, because
+    deriving the ceiling those imply is a second thing to get right and this
+    guard has been wrong about opencv often enough.
+
+    **The comparison is against the window's endpoints, not against the
+    releases that exist.** A bound outside the window is refused even when
+    nothing ships between it and the window, so `>4.8.0.74,<=4.10.0.84` and
+    `>=4.8.1.78,<=4.10.0.84.post1` are refused despite admitting nothing out of
+    bounds today. Both refusals would turn correct the moment such a release is
+    published, which is the direction to be wrong in.
+
+    Every one of those is a loud failure telling an author to write the bound
+    out; the other direction leaves a headless opencv nobody sees. They are
+    stated rather than fixed, and asserted below, so a later change that reads
+    one has to delete its row and this paragraph together.
     """
     caps: list[Version] = []
     floors: list[Version] = []
@@ -1128,13 +1139,18 @@ def _confined_to_the_opencv_window(specifier: SpecifierSet) -> str | None:
             continue
         try:
             bound = Version(clause.version)
-        except InvalidVersion:  # `~=`, direct references, anything unparseable
+        except InvalidVersion:
+            # Only `===` reaches this: it takes an arbitrary string, so
+            # `===foobar` is legal and unparseable. `~=` parses fine and is
+            # dropped by the operator check below; a wildcard is dropped by the
+            # `*` check above; a direct reference produces no clause at all.
             continue
         if clause.operator in ("<", "<="):
             caps.append(bound)
         elif clause.operator in (">", ">="):
             floors.append(bound)
-        elif clause.operator == "==":
+        elif clause.operator in ("==", "==="):
+            # Both pin a single version, so each is its own cap and floor.
             caps.append(bound)
             floors.append(bound)
 
@@ -1409,6 +1425,10 @@ _LEGAL_HEADLESS_SPELLINGS = [
     "opencv-python-headless==4.9.0.80",
     "opencv-python-headless[extra]==4.10.0.84",
     "opencv-python-headless>=4.8.1.78,<=4.10.0.84",
+    # Arbitrary equality. It matches one exact string and so can install
+    # nothing else; read as a bound, it was previously refused with the
+    # flatly untrue "puts no upper bound on it".
+    "opencv-python-headless===4.9.0.80",
     "opencv-python",
     "opencv-contrib-python",
     "numpy==2.1.0",
@@ -1435,25 +1455,32 @@ def test_the_legal_headless_spellings_stay_legal(spelling, tmp_path):
 @pytest.mark.parametrize(
     "spelling",
     [
+        # Written in operators the guard does not read.
         "opencv-python-headless~=4.8.1.78",
         "opencv-python-headless==4.8.1.*",
         "opencv-python-headless~=4.10.0",
         "opencv-python-headless==4.10.*",
+        # Read, but bounded outside the window — no release exists in either
+        # gap, so today these admit nothing out of bounds.
+        "opencv-python-headless>4.8.0.74,<=4.10.0.84",
+        "opencv-python-headless>=4.8.1.78,<=4.10.0.84.post1",
     ],
 )
-def test_a_confined_requirement_this_guard_cannot_read_is_refused(spelling, tmp_path):
+def test_a_confined_requirement_this_guard_still_refuses(spelling, tmp_path):
     """Every one of these is confined to the window, and every one is refused.
 
-    Confined against the releases that exist: no opencv-python-headless ships
-    between 4.10.0.84 and 4.11.0.86, so the last two admit nothing outside the
-    window even though their ceiling sits above it. That makes them a refusal
-    this guard chooses, not one the window forces — which is the point.
+    Confined against the releases that exist: nothing ships between 4.10.0.84
+    and 4.11.0.86, or between 4.8.0.74 and 4.8.1.78, so none of the six can
+    install an opencv-python-headless outside the window today. Each is a
+    refusal this guard chooses rather than one the window forces — the first
+    four because the operator carrying their ceiling is not read, the last two
+    because the bound they do write sits outside the window and the comparison
+    is against the endpoints, not against the release list.
 
-    `_confined_to_the_opencv_window` reads `<`, `<=` and an exact `==` and
-    nothing else, so a ceiling implied by `~=` or a wildcard is invisible to
-    it. That is a stated bound rather than a bug, and stating it in prose only
-    would let a later change quietly widen or narrow it — so it is asserted,
-    and closing the gap means deleting this test and the paragraph together.
+    Both are stated bounds rather than bugs, and stating them in prose only
+    would let a later change quietly widen or narrow them — so they are
+    asserted, and closing either gap means deleting its rows and the matching
+    paragraph of `_confined_to_the_opencv_window` together.
     """
     problems = _headless_pin_problems_in(_spec_installing(spelling, tmp_path))
     assert problems, (
