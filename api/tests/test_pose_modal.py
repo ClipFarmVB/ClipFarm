@@ -752,14 +752,11 @@ def _dependency_text(path: Path) -> str:
 INFERENCE_NUMPY_WINDOW = SpecifierSet(">=2.0.0,<2.4.0")
 INFERENCE_OPENCV_WINDOW = SpecifierSet(">=4.8.1.78,<=4.10.0.84")
 
-# Versions outside that window, probed to decide whether a headless requirement
-# is bounded. Named rather than derived, for the reason `_admits_a_numpy_2`
-# names its candidates: deciding what an arbitrary specifier set admits is not
-# something this guard can do, and probing a stated list is something it can.
-# 5.0.0.93 is the release the unpinned image actually installed (CF-359, #440);
-# the two either side of the window catch a bound that is off by one release,
-# and 99.0.0 catches an open upper end however far the ecosystem moves.
-HEADLESS_VERSIONS_OUTSIDE_THE_WINDOW = ("4.8.1.77", "4.11.0.86", "5.0.0.93", "99.0.0")
+# The same window as its two endpoints, because `_confined_to_the_opencv_window`
+# compares bounds against them rather than asking whether a sample version is in
+# the set. Kept beside it so the two spellings of the window cannot drift.
+OPENCV_WINDOW_FLOOR = Version("4.8.1.78")
+OPENCV_WINDOW_CEILING = Version("4.10.0.84")
 
 
 def _admits_a_numpy_2(constraint: str) -> bool:
@@ -1102,6 +1099,58 @@ def _admits_an_inference_opencv(constraint: str) -> bool:
     )
 
 
+def _confined_to_the_opencv_window(specifier: SpecifierSet) -> str | None:
+    """How `specifier` escapes the window, or None if it cannot.
+
+    Decided from the specifier's own clauses. What this replaces asked instead
+    whether the specifier admitted any of four named versions, which is a
+    sample however well the four are chosen: `>=4.10.0.84,!=4.11.*,<5` admits
+    none of them and admits 4.12.0.88, so it passed while installing exactly
+    the major-version split CF-359 exists to close.
+
+    Clauses are conjunctive, so one clause capping at or below the ceiling
+    proves nothing above it can install however the rest of the set is written,
+    and a floor at or above the floor proves it downwards. That is the whole
+    argument, and it does not grow a case per spelling.
+
+    **Only `<`, `<=` and an exact `==` are read as bounds.** `~=4.8.1.78` and
+    `==4.8.1.*` are confined to the window and are reported here as unbounded
+    anyway, because deriving their implied ceiling is a second thing to get
+    right and this guard has been wrong about opencv often enough. The cost of
+    that direction is a loud failure telling an author to write the bound out;
+    the cost of the other is a headless opencv nobody sees. Stated rather than
+    fixed, so a later change that reads them has to delete this paragraph.
+    """
+    caps: list[Version] = []
+    floors: list[Version] = []
+    for clause in specifier:
+        if "*" in clause.version:
+            continue
+        try:
+            bound = Version(clause.version)
+        except InvalidVersion:  # `~=`, direct references, anything unparseable
+            continue
+        if clause.operator in ("<", "<="):
+            caps.append(bound)
+        elif clause.operator in (">", ">="):
+            floors.append(bound)
+        elif clause.operator == "==":
+            caps.append(bound)
+            floors.append(bound)
+
+    # The tightest clause is the one that binds: the lowest cap, the highest
+    # floor. Anything looser than it is already implied.
+    if not caps:
+        return "puts no upper bound on it"
+    if min(caps) > OPENCV_WINDOW_CEILING:
+        return f"caps it no lower than {min(caps)}"
+    if not floors:
+        return "puts no lower bound on it"
+    if max(floors) < OPENCV_WINDOW_FLOOR:
+        return f"floors it no higher than {max(floors)}"
+    return None
+
+
 def _headless_pin_problem(text: str) -> str | None:
     """Why this image-spec argument installs a headless opencv it must not.
 
@@ -1134,15 +1183,11 @@ def _headless_pin_problem(text: str) -> str | None:
         )
 
     specifier = str(requirement.specifier)
-    admitted = [
-        version
-        for version in HEADLESS_VERSIONS_OUTSIDE_THE_WINDOW
-        if requirement.specifier.contains(version, prereleases=True)
-    ]
-    if admitted:
+    escape = _confined_to_the_opencv_window(requirement.specifier)
+    if escape is not None:
         return (
-            f'constrains opencv-python-headless as "{text}", which admits'
-            f" {admitted[0]} — outside the >=4.8.1.78,<=4.10.0.84 that"
+            f'constrains opencv-python-headless as "{text}", which {escape} —'
+            " so it can install outside the >=4.8.1.78,<=4.10.0.84 that"
             " inference==1.3.3 forces on opencv-python and"
             " opencv-contrib-python in the same image. All three write `cv2`"
             " and the last install wins, so this is the major-version split"
@@ -1345,6 +1390,15 @@ _UNBOUNDED_HEADLESS_SPELLINGS = [
     "opencv-python-headless @ https://x/opencv_python_headless-5.0.0.93-any.whl",
     "opencv-python-headless\
 >=5.0.0",
+    # Each of these installs a real release outside the window. The first is
+    # the one a round found: it admits 4.12.0.88 and none of the four versions
+    # the guard used to sample (4.8.1.77, 4.11.0.86, 5.0.0.93, 99.0.0), so it
+    # passed. The other two are bounded above and open or nearly open below —
+    # 3.4.18.65 and 4.5.5.64 — which that sample could only have caught by
+    # growing a fifth and sixth entry, and the next hole after that.
+    "opencv-python-headless>=4.10.0.84,!=4.11.*,<5",
+    "opencv-python-headless<=4.10.0.84",
+    "opencv-python-headless>=4.0,<=4.10.0.84",
 ]
 
 # Legal, and rejecting any of these would block the file as it stands or a
@@ -1376,6 +1430,37 @@ def test_every_unbounded_headless_spelling_is_rejected(spelling, tmp_path):
 def test_the_legal_headless_spellings_stay_legal(spelling, tmp_path):
     problems = _headless_pin_problems_in(_spec_installing(spelling, tmp_path))
     assert not problems, f"{spelling!r} is legal and was rejected: {problems[0]}"
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "opencv-python-headless~=4.8.1.78",
+        "opencv-python-headless==4.8.1.*",
+        "opencv-python-headless~=4.10.0",
+        "opencv-python-headless==4.10.*",
+    ],
+)
+def test_a_confined_requirement_this_guard_cannot_read_is_refused(spelling, tmp_path):
+    """Every one of these is confined to the window, and every one is refused.
+
+    Confined against the releases that exist: no opencv-python-headless ships
+    between 4.10.0.84 and 4.11.0.86, so the last two admit nothing outside the
+    window even though their ceiling sits above it. That makes them a refusal
+    this guard chooses, not one the window forces — which is the point.
+
+    `_confined_to_the_opencv_window` reads `<`, `<=` and an exact `==` and
+    nothing else, so a ceiling implied by `~=` or a wildcard is invisible to
+    it. That is a stated bound rather than a bug, and stating it in prose only
+    would let a later change quietly widen or narrow it — so it is asserted,
+    and closing the gap means deleting this test and the paragraph together.
+    """
+    problems = _headless_pin_problems_in(_spec_installing(spelling, tmp_path))
+    assert problems, (
+        f"{spelling!r} is now read as bounded. If that is deliberate, delete "
+        "this test and the paragraph in `_confined_to_the_opencv_window` that "
+        "promises it is refused."
+    )
 
 
 def test_a_python_dependency_source_is_read_as_its_image_spec(tmp_path):
