@@ -86,6 +86,14 @@ must come from a call made *for that reply*. A number recalled, inferred from
 nearby context, or carried over from an earlier lap is not evidence, and
 presenting it as one is how a correct finding gets discarded.
 
+Quoting only what you fetched is not a rule about disputes. It holds for
+everything a run publishes, and a disputing reply is only where it costs most.
+The carve-out below is not an exception to that: *agreeing* with a finding may
+lean on an earlier reading, because a needless fix is cheap and visible, while a
+wrongly rejected finding is not.
+[Measure what you publish](#measure-what-you-publish) is the general form, and
+lists what it has cost.
+
 The run of 2026-09-01 rejected a true finding on #451 this way. A semi-cold
 round said the PR body still carried two overclaims; the reply answered that a
 body edit had preceded "your marker comment at `06:31:36Z`", so the round had
@@ -93,13 +101,16 @@ read a stale copy. The marker is at **`06:27:06Z`**, and `06:31:36Z` exists
 nowhere on that PR — the nearest value is `06:31:20Z`, the reply's own
 timestamp. The comments endpoint had never been called.
 
-**The retraction then did it again, which is the part to learn from.** Having
-been caught, the reply reached for the PR's `updated_at` of `06:28:01Z`, called
+**The retraction then did it again, which is the part to learn from.** It
+carried the PR's `updated_at` of `06:28:01Z` forward from the dispute, called
 it "the body edit", and derived that the edit landed 55 seconds after the
-marker. That figure was fetched — but it is not what it was labelled: `06:28:01Z`
-is the `submitted_at` of the round's own **review**, which is what bumped
-`updated_at`. A body edit's time is not recoverable through REST at all, so the
-derivation had no source and the ordering it asserted remains unknown. Fetching
+marker. That figure had been fetched at some point — but not for that sentence,
+and it is not what the sentence called it: `06:28:01Z` is the `submitted_at` of
+the round's own **review**, which is what bumped `updated_at`. Reaching back
+for a number already in the thread is how the second instance happened; a
+figure that answers a new question needs a call made to answer it. A body
+edit's time is not recoverable through REST at all, so the derivation had no
+source and the ordering it asserted remains unknown. Fetching
 a number is necessary and not sufficient; it also has to be the number the
 sentence says it is. A correction written under scrutiny, about this exact
 failure, reproduced it in one step — so treat the first retraction of a claim
@@ -269,14 +280,16 @@ way as the `$(date …)` trap below: they widen the window rather than narrowing
 it, so nothing errors and the ceiling arrives early.
 
 A resolved timestamp, UTC and `Z`-suffixed — produce it with
-`date -u +%Y-%m-%dT%H:%M:%SZ` and write the **result**. Writing the command
-itself into the log is not a near miss: everything downstream compares strings,
-`$` sorts below every digit, so a literal `$(date …)` on that line makes every
-comparison true and the per-run bounds silently become all-time ones. Several
-bounds are recovered by comparing against this line after a compaction — see
-[the counting windows](#logging-and-the-counting-windows). Write it before the
-first iteration does
-anything.
+`date -u +%Y-%m-%dT%H:%M:%SZ` and write the **result**. This is one instance of
+[Measure what you publish](#measure-what-you-publish); the general rule is
+there, and it covers every number a run states, not only timestamps. Writing
+the command itself into the log is not a near miss: everything downstream
+compares strings, `$` sorts below every digit, so a literal `$(date …)` on that
+line makes every comparison true and the per-run bounds silently become
+all-time ones. Several bounds are recovered by comparing against this line
+after a compaction — see [the counting
+windows](#logging-and-the-counting-windows). Write it before the first
+iteration does anything.
 
 ### Priority order
 
@@ -409,8 +422,9 @@ entries from, and losing entries makes the budget read *low* — so the run keep
 reviewing past 40 and starves step 3, failing toward more reviewing rather than
 less.
 
-When log and markers disagree, **the markers win.** The log records
-what a round intended; the markers record what the PR actually carries, and
+When log and markers disagree, **the markers win** — [Measure what you
+publish](#measure-what-you-publish) is the general form of that. The log
+records what a round intended; the markers record what the PR carries, and
 every other rule here reads the PR. A log ahead of the markers means a round's
 marker did not land, which the check above is there to catch at the time; a log
 behind them means a compaction lost an entry. Neither is a reason to trust the
@@ -460,6 +474,74 @@ be counted from the run start, sweeping in the rounds it already spent and
 hitting the ceiling early — the failure this section exists to prevent. Sorting
 `Z`-suffixed UTC lexicographically picks the later; an empty `REOPENED` sorts
 first and leaves `SINCE`.
+
+### Measure what you publish
+
+**Anything that will be read as measured must come from the run that produced
+it** — a number, but also a line reference, a file location, a quotation, a
+grep result. Not from memory, not from a subagent's report, not from an earlier
+run of the same command. The instances below are mostly numbers because numbers
+are what a run publishes most; the head SHA on a marker and "the rule is in this
+file" are the same claim wearing different clothes, and both have been wrong
+here.
+
+This is the general form of a rule the brief already carries four times, for
+four surfaces: [Evidence](#evidence-and-the-higher-bar-for-rejecting-a-finding)
+above, for the numbers in a reply that disputes a finding; the
+[run-start timestamp](#log-before-you-finish-each-iteration), which must be the
+output of `date -u` rather than the command written out; and
+[the counting windows](#logging-and-the-counting-windows), which say the markers
+beat the log. `REVIEW.md` carries a fourth, for the head SHA on a marker. Each
+was written for its own surface, and each new surface then arrived as a fresh
+mistake rather than as a case of something already known.
+
+The run of 2026-09-02 published six wrong figures across three PRs while
+reading this file every iteration (CF-370). They are listed because the shape
+is easier to recognise than the rule is to remember:
+
+- A **round count** acted on before it was measured — `unsettled: ran out of
+  rounds` posted and labelled, then the marker query run, which said six of
+  seven. A PR's terminal state was decided by a number held in the head.
+- A **figure from a subagent's report** restated as measurement: "a bare
+  `mypy api/app` reports 14 errors" when it is 93.
+- A **grep result asserted for the wrong tree** — a PR body said the reference
+  it added resolved in both directions on `main`, when one of the two
+  directions *was* that PR's own change and returns nothing there.
+- **Mutation rows printed as re-measured that were carried over.**
+- A **lint count** of 2 that was 3, because the command was piped through
+  `tail -2` and the summary line never read.
+- **The same lint claim again three commits later**, with the count on screen
+  directly above the commit — and one of the two commits in between is the one
+  that wrote the corrective rule.
+
+Three corollaries, each of which had to be learned separately:
+
+- **Adding a test invalidates every previously measured failure count.** A
+  mutation matrix is only true of the tree it was run against. After any test
+  change, re-run the whole table — or print only the rows you re-ran, and say
+  that is what they are. Reprinting old numbers under a heading that says they
+  were re-measured is the case that happened, and the clearest one to avoid; a
+  table mixing fresh rows with carried-over ones and saying so is honest, and
+  one mixing them silently is the same defect wearing a smaller number.
+- **Never truncate a gate's output past its summary line.** `| tail -2` hides
+  the count on the line above it, which is how a regression becomes invisible
+  to a run that believes it measured.
+- **Write a gate's numbers from the run you just read, never from the run you
+  expected.** This is [`BRIEFS.md`'s rule for
+  mutations](BRIEFS.md#the-cold-reviewers-brief) — write the prose claiming a
+  gap is closed *after* running it, never before — on a different surface. This is the one the two lint failures prove is load-bearing:
+  the first came from not seeing the number, the second from seeing it and not
+  letting it change a message already written. Composing the claim before
+  reading the result is the actual defect, and no rule about *how* to run the
+  command reaches it.
+
+**The tell is a sentence that would be embarrassing if someone re-ran it.**
+Four of the six above were caught by a review round doing exactly that. The
+other two the run caught itself, within minutes and before anyone looked — the
+round count, three minutes after the label went on, and the second lint claim,
+forty-two seconds after the commit. That is the encouraging half: the check is
+cheap enough to run on yourself, and twice it was the run's own re-reading
+rather than a reviewer that found the error.
 
 ### Repo traps that have already cost time
 

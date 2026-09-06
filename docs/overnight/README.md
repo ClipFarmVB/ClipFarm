@@ -16,10 +16,11 @@ not the ones it is not. Every rule lives in exactly one file.
 
 | file | when to read it | ~tokens |
 |---|---|---|
+| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.0k |
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.4k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, repo traps | 8.3k |
-| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.8k |
-| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 4.4k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 9.6k |
+| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.9k |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.2k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
 | [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 2.9k |
 | [`REPORTING.md`](./REPORTING.md) | the end of the run | 2.1k |
@@ -54,16 +55,16 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap that only selects costs about 25k tokens of brief instead of 48k;
-one that also spawns a round, about 29k. A step-2 lap is about 20k, a step-3 lap
-about 13k. That is the whole point of the split.
+A step-1 lap that only selects costs about 27k tokens of brief instead of 50k;
+one that also spawns a round, about 32k. A step-2 lap is about 22k, a step-3 lap
+about 14k. That is the whole point of the split.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
 **18k** tokens, the size that file was *before* the split. Splitting it out took
 that lap from **~32k to ~19k**. Those two are measured across the split, not on
-today's files, because the lap they compare no longer exists here — so they are
-the one pair on this page that the table below cannot reproduce:
+today's files, because the lap they compare no longer exists here. The table
+below cannot reproduce them; the command that can is right here:
 
 ```
 git ls-tree -r --long '596755d^' -- docs/overnight/README.md \
@@ -78,20 +79,36 @@ on this page that exists to be re-run.
 
 **Do not try to recompute the before-figure from the table above.** Two things
 stop it, and only fixing one still gives a wrong answer: that lap needs
-`REVIEW.md` with the briefs folded back in, which is a counterfactual and not a
-file, *and* none of the four was the size the table records today — `README.md`,
-`RULES.md` and `FIX.md` were smaller in August, and `REVIEW.md` was **larger**,
-18.13k, because it still held the briefs. So no substitution into today's row
-values lands on the right answer, in either direction.
+`REVIEW.md` with the briefs still in it, which is `596755d^`'s file and not
+this revision's — 18.13k, because it still held them — *and* none of the four
+was the size the table records today, `README.md`, `RULES.md` and `FIX.md` all
+having been smaller in August. So no substitution into today's row values lands
+on the right answer, in either direction.
 
-Step 1 is unchanged when it spawns, and ~4k cheaper when it does not.
+Two comparisons follow, answering different questions, so each says what it is
+measured on — which is the thing this page gets wrong when it gets anything
+wrong:
 
-**The table and the lap figures** — not the across-the-split pair above, which
-is the one exception and says so — are bytes/4 on the files as they stand, and
-a lap is this file plus `RULES.md` plus the phase file. Each row is rounded to
-the nearest tenth. **Re-measure them when you add a section** — they had drifted
-by a third before CF-275 re-took them, and this is the table a run reads to plan
-what it can afford.
+- **On today's files.** A step-1 lap that only selects is ~5k cheaper than one
+  that also spawns: exactly `BRIEFS.md`, which only the spawning lap reads.
+- **Across the CF-365 split**, at `596755d^` and `596755d`. A *spawning*
+  step-1 lap went 26.70k to 28.05k, having gained a file. A select-only lap
+  reads the same three files on both sides and went 26.70k to 23.60k.
+
+**Everything on this page is bytes/4**, those included — 129000 bytes is the
+32.25k, and the `ls-tree` block prints the bytes to check it. What varies is
+the *revision*, and only ever between two values: the table and the lap figures
+are the files as they stand; anything marked across-the-split is `596755d^`
+against `596755d`, because the lap it compares no longer exists here. A lap is
+this file plus `RULES.md` plus the phase files it reads — **this file's own row
+included**, which is why there is one, and *files* plural because two laps read
+two: a step-1 lap that spawns adds `BRIEFS.md` to `REVIEW.md`, and a step-2 lap
+adds it to `FIX.md`. Each row is rounded to the nearest tenth, and a lap is
+summed from bytes rather than from those rounded rows, so adding the rows up
+lands within a tenth or so rather than exactly.
+**Re-measure them when you add a section** — they had drifted by a third before
+CF-275 re-took them, and this is the table a run reads to plan what it can
+afford.
 
 **The rules are not also summarised into a shorter file.** Splitting by phase
 keeps exactly one copy of each rule, with the reasoning that produced it still

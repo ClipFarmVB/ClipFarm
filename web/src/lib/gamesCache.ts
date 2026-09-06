@@ -79,6 +79,42 @@ export function getInflightGames(): Promise<Game[]> | null {
   return _promise;
 }
 
+/**
+ * Drop the cache when the signed-in identity changes — sign-out, an expiry, or
+ * a switch straight into another account. Game titles carry opponent names,
+ * dates and locations, so the previous user's library surviving into the next
+ * session is a disclosure, not a stale-render bug (CF-299).
+ *
+ * Bumps the generation for the reason every deliberate write does (CF-63): a
+ * fetch already in flight would otherwise resolve into the cache afterwards.
+ *
+ * **Dropping `_promise` is the load-bearing half, and not for that reason.**
+ * `prefetchGames()` opens with `if (_promise) return`, so leaving it behind
+ * makes the next user's sign-in prefetch a no-op and leaves them waiting on a
+ * chain started for the previous account. The generation bump alone would not
+ * cover that, because the bump only decides who may *write*.
+ *
+ * The orphaned chain is marked handled before the reference goes. After this
+ * nothing awaits it — `getInflightGames()` returns null and the `_promise === p`
+ * guards in `prefetchGames` no longer match — so its rethrow would surface as
+ * an unhandled rejection on every sign-out with a warm prefetch, which the
+ * browser Sentry SDK reports. Routine 401 noise is how a real signal gets
+ * buried.
+ *
+ * **This cannot defend against a fetch issued while the old token is still
+ * valid.** `attempt()` re-reads the generation and re-requests, and that retry
+ * is written to the cache; whether it carries the previous user's rows depends
+ * only on whether the session was revoked first. That is why the call site is
+ * after `signOut()` resolves rather than beside `clearMe()` — see AuthContext.
+ */
+export function clearGamesCache(): void {
+  _generation++;
+  if (_promise) _promise.catch(() => {});
+  _promise = null;
+  _data = null;
+  _fetchedAt = 0;
+}
+
 /** Write-through update — call after any mutation that changes the list. */
 export function updateGamesCache(games: Game[]): void {
   _generation++;
