@@ -1439,3 +1439,62 @@ def test_no_module_outside_sync_db_writes_error_message_directly():
         f"{offenders} writes error_message outside _sync_db.py, bypassing the clamp — "
         "go through sync_set_game_status/sync_note_game_error instead"
     )
+
+
+# CF-366: the overnight brief points at the guard above, and used to do it by
+# line number — which drifted twice before anyone noticed. It now quotes the
+# skip message instead, which only resolves while that exact text is reachable
+# by a plain grep from either side. Four ordinary edits break that quietly:
+# rewording the message here, shortening it here, reflowing the paragraph there
+# so the quote wraps across a line, and lengthening the quote there so it no
+# longer names what this file says. The first draft of the doc change shipped
+# with the quote wrapped, and `grep` in `docs/` then found nothing at all.
+_SKIP_MESSAGE = "the lock test database is not reachable"
+_BRIEF = pathlib.Path(__file__).resolve().parents[2] / "docs" / "overnight" / "TICKETS.md"
+
+
+def test_the_brief_can_still_grep_its_way_to_the_skip_guard():
+    """The brief's citation of the `pg_locks` guard must survive a grep, both ways.
+
+    `docs/overnight/TICKETS.md` tells a run how to tell an absent Postgres from
+    a real failure, and quotes this fixture's skip message so the reference does
+    not depend on a line number. Nothing else keeps the two in contact: the doc
+    is prose, and prose reflows.
+
+    Both sides are pinned against one literal, and the doc side by **equality**
+    with the text between its backticks rather than by containment — a quote
+    that has grown a word still contains this string while naming something no
+    `grep` of the code will find, which is the drift this exists to stop, one
+    remove out.
+    """
+    skips = [
+        line
+        for line in pathlib.Path(__file__).read_text(encoding="utf-8").splitlines()
+        if "pytest.skip(" in line and _SKIP_MESSAGE in line
+    ]
+    assert skips, (
+        f"no pytest.skip() in this file carries {_SKIP_MESSAGE!r} any more. The "
+        "brief quotes that text verbatim to reach the pg_locks guard without a "
+        "line number, so rewording or shortening the message strands the "
+        "citation (CF-366, #450). Update docs/overnight/TICKETS.md and "
+        "_SKIP_MESSAGE together. Matching on the skip call rather than on the "
+        "file keeps the constant above from satisfying this by itself."
+    )
+
+    assert _BRIEF.exists(), (
+        f"{_BRIEF} is gone. The brief quotes the pg_locks skip message to cite "
+        "that guard (CF-366, #450); if the file moved, point _BRIEF at it."
+    )
+    # Odd-indexed pieces of a backtick split are the spans *inside* backticks.
+    quoted = [
+        span
+        for line in _BRIEF.read_text(encoding="utf-8").splitlines()
+        for span in line.split("`")[1::2]
+    ]
+    assert _SKIP_MESSAGE in quoted, (
+        f"docs/overnight/TICKETS.md no longer quotes exactly {_SKIP_MESSAGE!r} "
+        "between backticks on one line. Either the quote was edited, or the "
+        "paragraph was reflowed so it wraps — both read fine and both are "
+        "invisible to the grep the citation exists to support (CF-366, #450). "
+        "Requote it on one line, or cite the guard some other way that greps."
+    )
