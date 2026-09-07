@@ -16,11 +16,12 @@ covers them, and `RULES.md`'s prose rule still carries all six. What this does
 catch is a figure that was right when written and rotted while nobody looked,
 which is what the table itself did before CF-275.
 
-Deliberately unpinned: the across-the-split figures further down that page
-(32.25k, 19.09k, 18.13k, 26.70k, 28.05k, 23.60k). Those describe files at
-revision `596755d`, which the page says the table cannot reproduce, and reading
-them needs `git ls-tree` against an old revision — which a shallow clone serves
-silently and wrongly, a trap `RULES.md` already lists.
+Deliberately unpinned: the six across-the-split figures earlier on that page —
+32.25k, 19.09k, 18.13k, 26.70k, 28.05k and 23.60k, which appear in nine places
+between them. Those describe files at revision `596755d`, which the page says
+the table cannot reproduce, and reading them needs `git ls-tree` against an old
+revision — which a shallow clone serves silently and wrongly, a trap `RULES.md`
+already lists.
 """
 
 import pathlib
@@ -57,12 +58,12 @@ def _lap_files(lap):
 # report as a file missing from the table, sending the reader to fix the wrong
 # thing.
 _ROW = re.compile(
-    r"^\| \[`(?P<name>[A-Za-z0-9_]+\.md)`\]\([^)]*\) \|.*\| (?P<stated>[0-9]+(?:\.[0-9])?)k \|$",
+    r"^\| \[`(?P<name>[A-Za-z0-9._-]+\.md)`\]\([^)]*\) \|.*\| (?P<stated>[0-9]+(?:\.[0-9])?)k \|$",
     re.MULTILINE,
 )
 
 # Pinned by its own sentence, never by sweeping for `\d+k`: the page carries
-# nine historical figures it says are not recomputable, and `32k` appears twice.
+# six historical figures it says are not recomputable, and `32k` appears twice.
 #
 # Every gap is `\s+`, built rather than written out, so re-wrapping the
 # paragraph cannot break it. An earlier version wrote the sentence as a literal
@@ -77,11 +78,20 @@ _LAPS_WORDS = (
     r"A step-2 lap is about (?P<step2>\d+)k, a step-3 lap about (?P<step3>\d+)k\."
 )
 _LAPS_SENTENCE = re.compile(r"\s+".join(_LAPS_WORDS.split(" ")))
-_CHEAPER = re.compile(r"only selects is ~(?P<k>\d+)k cheaper than one")
+# Joined on `\\s+` for the same reason as the sentence above, and written the
+# same way so the two cannot drift apart again: this pattern kept its literal
+# spaces when that one was fixed, and re-wrapping its bullet at 60, 64 or 72
+# columns then reported the claim as missing from the page entirely.
+_CHEAPER_WORDS = r"only selects is ~(?P<k>\d+)k cheaper than one"
+_CHEAPER = re.compile(r"\s+".join(_CHEAPER_WORDS.split(" ")))
 
 
 def _size(name):
     """Bytes of a brief file, with CRLF normalised to LF.
+
+    A name the table lists but the directory does not hold gets an assertion
+    rather than a `FileNotFoundError` traceback: the table test above reports
+    that case properly, and a raw traceback from here buries it.
 
     `.gitattributes` pins `eol=lf` for `*.sh` and `.hooks/*` only, and its own
     comment says this repo is worked on from Windows — so with
@@ -90,7 +100,12 @@ def _size(name):
     five laps** change whole-k. The figures describe the content, not the
     checkout.
     """
-    return len((BRIEF / name).read_bytes().replace(b"\r\n", b"\n"))
+    path = BRIEF / name
+    assert path.exists(), (
+        f"docs/overnight/README.md's table has a row for {name}, which is not in "
+        "docs/overnight/. Drop the row, or restore the file (CF-371, #464)."
+    )
+    return len(path.read_bytes().replace(b"\r\n", b"\n"))
 
 
 def _tenths(size):
