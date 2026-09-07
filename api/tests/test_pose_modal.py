@@ -930,7 +930,7 @@ def _consistency_sources(package: str) -> list[tuple[str, Path, bool]]:
         ("api/requirements-dev.txt", REPO_ROOT / "api" / "requirements-dev.txt",
          package == "numpy"),
     ]
-    if package != "numpy":
+    if package == "opencv-python-headless":
         # ml/modal_app.py joins for opencv and is deliberately absent for
         # numpy. Not an oversight, and not laziness: `inference==1.3.3`
         # requires numpy>=2.0.0,<2.4.0, so that image *cannot* carry the
@@ -1180,14 +1180,25 @@ def _headless_pin_problem(text: str) -> str | None:
     headless *requirement* must be bounded inside the window, not merely
     accompanied by one that is.
 
-    Requirements only. A `pip install ...` command line inside `run_commands`
-    parses as no requirement and returns None here; it is still read as text by
-    the `==` scan in the test, and the shell routes the numpy docstring
-    enumerates are open here for the same reasons and are not re-listed.
+    A `pip install ...` command line parses as no requirement, and this used
+    to return None there — which left the whole bug installable one method
+    over. `run_commands("pip install opencv-python-headless")` reintroduced
+    `main`'s state, three distributions writing one `cv2`, and the suite
+    stayed green: the `==` scan in the test sees a *pinned* headless inside
+    such a string but has no `==` to match on an unpinned one, so no reader
+    saw it at all. The numpy half had always fallen through to a text scan
+    here; the asymmetry was the hole. It now falls through too.
+
+    That scan is for a name written out in plain sight. The shell routes the
+    numpy docstring enumerates — adjacent-word concatenation, in-word quoting,
+    `V=... && pip install numpy$V` — are open here for the same reasons and
+    are not re-listed: those *reassemble* the requirement, so the digits never
+    sit next to the name, and no rule keyed on what follows the name can see
+    them. Nothing is reassembled in a plain command line.
     """
     requirement = _as_requirement_for(text, "opencv-python-headless")
     if requirement is None:
-        return None
+        return _headless_pin_problem_in_text(text)
 
     # As with numpy: a direct reference names one artefact and its version is a
     # filename convention, not metadata. Refuse rather than guess.
@@ -1222,6 +1233,52 @@ def _headless_pin_problem(text: str) -> str | None:
             " alongside inference==1.3.3 and the image build fails with"
             " ResolutionImpossible. See CF-359 (#440)."
         )
+    return None
+
+
+# The distribution name as pip canonicalises it, bounded so `opencv-python`
+# and `opencv-contrib-python` cannot match it.
+_HEADLESS_NAME = (
+    r"(?<![A-Za-z0-9_.\-])opencv[-_]python[-_]headless(?![A-Za-z0-9_.\-])"
+)
+
+
+def _headless_pin_problem_in_text(text: str) -> str | None:
+    """The same check over a string `packaging` will not parse as a requirement.
+
+    A command line is the case that matters: `run_commands` emits a Dockerfile
+    `RUN`, and `RUN` is `/bin/sh -c`, so by this file's own standard it is a
+    working install rather than a hypothetical. Mirrors the fallback
+    `_numpy_pin_problem` has always had, with the sign flipped — an
+    unconstrained numpy is legitimate on this island and an unconstrained
+    headless opencv is the bug.
+    """
+    constraints = re.findall(
+        _HEADLESS_NAME
+        + r"((?:[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*[^\s,'\"]+[^\S\n]*,?)*)",
+        text,
+        re.IGNORECASE,
+    )
+    for constraint in constraints:
+        try:
+            specifier = SpecifierSet(constraint)
+        except InvalidSpecifier:
+            return (
+                f'contains the fragment "{text}", an opencv-python-headless'
+                " constraint with no version this guard can read. Write the"
+                " requirement as one string literal so it can be checked"
+                " against >=4.8.1.78,<=4.10.0.84."
+            )
+        escape = _confined_to_the_opencv_window(specifier)
+        if escape is not None:
+            return (
+                f'installs opencv-python-headless inside "{text}", which'
+                f" {escape} — so it can install outside the"
+                " >=4.8.1.78,<=4.10.0.84 that inference==1.3.3 forces on"
+                " opencv-python and opencv-contrib-python in the same image."
+                " A command line is a working install: `run_commands` emits"
+                " `RUN`, and `RUN` is `/bin/sh -c` (CF-359, #440)."
+            )
     return None
 
 
@@ -1415,6 +1472,23 @@ _UNBOUNDED_HEADLESS_SPELLINGS = [
     "opencv-python-headless>=4.10.0.84,!=4.11.*,<5",
     "opencv-python-headless<=4.10.0.84",
     "opencv-python-headless>=4.0,<=4.10.0.84",
+    # Command lines. `packaging` parses none of these as a requirement, and
+    # the guard used to return None for exactly that reason — so the first
+    # row, which is `main`'s state, was installable through `run_commands`
+    # with the whole suite green. The last reaches the unparseable-constraint
+    # branch; `==$V` is the same shape, a shell expansion the digits never
+    # reach.
+    "pip install opencv-python-headless",
+    "pip install opencv_python_headless",
+    "pip install --no-cache-dir opencv-python-headless --upgrade",
+    "pip install opencv-python-headless==5.0.0.93",
+    "pip install opencv-python-headless==abc!!",
+    # Satisfiable by nothing: confined by the clause argument, so
+    # `_confined_to_the_opencv_window` passes them and only
+    # `_admits_an_inference_opencv` refuses. Without these two its branch
+    # deletes green.
+    "opencv-python-headless>=4.10.0.84,<=4.9.0.80",
+    "opencv-python-headless==4.9.0.80,!=4.9.0.80",
 ]
 
 # Legal, and rejecting any of these would block the file as it stands or a
@@ -1429,6 +1503,10 @@ _LEGAL_HEADLESS_SPELLINGS = [
     # nothing else; read as a bound, it was previously refused with the
     # flatly untrue "puts no upper bound on it".
     "opencv-python-headless===4.9.0.80",
+    # A command line carrying a pin in the window is as legal as the
+    # requirement form, and the sibling distributions stay out of scope.
+    "pip install opencv-python-headless==4.10.0.84",
+    "pip install opencv-python opencv-contrib-python",
     "opencv-python",
     "opencv-contrib-python",
     "numpy==2.1.0",
@@ -1487,6 +1565,58 @@ def test_a_confined_requirement_this_guard_still_refuses(spelling, tmp_path):
         f"{spelling!r} is now read as bounded. If that is deliberate, delete "
         "this test and the paragraph in `_confined_to_the_opencv_window` that "
         "promises it is refused."
+    )
+
+
+def test_the_ball_image_joins_the_consistency_leg_only_for_opencv():
+    """A third package must not drag `ml/modal_app.py` in with it.
+
+    The row was keyed on `package != "numpy"`, which is correct for the two
+    packages parametrized today and wrong for the next one. `torch` is the
+    live example: that image installs it, unpinned, and #439 tracks it — so
+    parametrizing it in would have demanded `ml/modal_app.py` pin torch and
+    reported "does not pin torch" against a file with no business pinning it.
+    Keying on the package the rule is actually about states the rule; this
+    asserts it, since the negated form passes every test that existed.
+    """
+    for package in ("torch", "torchvision", "ultralytics"):
+        labels = {label for label, _path, _required in _consistency_sources(package)}
+        assert "ml/modal_app.py" not in labels, (
+            f"ml/modal_app.py joined the {package} consistency leg. Only the "
+            "opencv pin there is load-bearing (CF-359, #440); it installs "
+            "torch unpinned on purpose (#439) and pins no other runtime."
+        )
+
+
+def test_run_commands_cannot_reinstall_the_unpinned_headless(tmp_path):
+    """The reproduction, end to end through a real `run_commands` layer.
+
+    A round appended one line to `ml/modal_app.py` — `.run_commands("pip
+    install opencv-python-headless")` — and got the whole suite green. That is
+    `main`'s state put back in a later layer: headless resolving to 5.0.0.93
+    while `inference==1.3.3` holds the siblings at 4.10.0.84, three
+    distributions writing one `cv2`. The `==` scan caught the *pinned*
+    spelling of the same line and had nothing to match on the unpinned one.
+
+    The tables above cover the argument text; this covers the wiring, because
+    the pinned/unpinned asymmetry lived in which branch of
+    `_headless_pin_problem` a command line reached, not in the text.
+    """
+    spec = tmp_path / "spec.py"
+    spec.write_text(
+        'image = (\n'
+        '    base.pip_install("opencv-python-headless==4.10.0.84")\n'
+        '    .run_commands("pip install opencv-python-headless")\n'
+        '    .add_local_python_source("ml")\n'
+        ')\n',
+        encoding="utf-8",
+    )
+    problems = _headless_pin_problems_in(spec)
+    assert problems, (
+        "an unpinned opencv-python-headless in a `run_commands` line is "
+        "invisible again. `RUN` is `/bin/sh -c`, so that is a working "
+        "install of the exact state CF-359 (#440) exists to undo, and an "
+        "earlier layer's `==` keeps every other assertion true."
     )
 
 
