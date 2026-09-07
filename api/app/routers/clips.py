@@ -4,6 +4,7 @@ from typing import Annotated
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -140,7 +141,18 @@ async def list_clips(
     )
 
     if action_type:
-        types = [ActionType(t.strip()) for t in action_type.split(",") if t.strip()]
+        try:
+            types = [ActionType(t.strip()) for t in action_type.split(",") if t.strip()]
+        except ValueError as exc:
+            # FastAPI would have produced a 422 had the parameter been typed as
+            # the enum; it is a plain `str` so the comma-separated form works,
+            # which moves the validation here. Siblings in this router raise 400
+            # for their own body validation, but this one is a query-parameter
+            # failure and 422 is what the framework layer returns for those.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid action_type: {exc}. Must be from: {sorted(t.value for t in ActionType)}",
+            ) from exc
         if types:
             q = q.where(Clip.action_type.in_(types))
 
@@ -359,7 +371,7 @@ async def delete_clips(
             try:
                 key = urlparse(url).path.lstrip("/")
                 if key:
-                    storage.delete_file(key)
+                    await run_in_threadpool(storage.delete_file, key)
             except Exception:
                 logger.warning("R2 delete failed for clip %s", clip.id, exc_info=True)
         await db.delete(clip)

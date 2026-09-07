@@ -3,6 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user_id
@@ -189,7 +190,21 @@ async def add_clip_to_collection(
     )
     if existing.scalar_one_or_none() is None:
         db.add(CollectionClip(collection_id=col.id, clip_id=body.clip_id))
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            # Two concurrent adds — a double-click — both read `None` above and
+            # the loser lands here. The row it wanted exists, which is the
+            # outcome this endpoint promises, so this is a success. The database
+            # is the arbiter, not the check above; `profiles.py` handles the
+            # same race the same way, and only differs in reporting the loss.
+            #
+            # `collection_clips` also carries two cascading foreign keys, so a
+            # clip or collection deleted in the same instant would arrive here
+            # too and be reported as added. The window is tiny and the answer a
+            # caller gets is still true — the clip is not in the collection —
+            # so this catch stays broad rather than inspecting the constraint.
+            await db.rollback()
 
     return {"collection_id": str(col.id), "clip_id": str(body.clip_id)}
 

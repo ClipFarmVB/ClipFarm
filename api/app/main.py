@@ -54,15 +54,22 @@ async def _check_db() -> bool:
 
 
 async def _check_redis() -> bool:
-    client = aioredis.from_url(settings.redis_url)
+    # `from_url` validates the scheme eagerly, so a malformed REDIS_URL raises
+    # here rather than at ping time — outside the guard, that is a 500 from the
+    # one route whose job is to report a dependency as down. `client` is bound
+    # before the try because the finally below runs even when construction
+    # fails, and would otherwise raise NameError over the real error.
+    client = None
     try:
+        client = aioredis.from_url(settings.redis_url)
         await asyncio.wait_for(client.ping(), timeout=2.0)
         return True
     except Exception:
         logger.exception("health: redis check failed")
         return False
     finally:
-        await client.aclose()
+        if client is not None:
+            await client.aclose()
 
 
 @app.get("/health")
