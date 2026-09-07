@@ -74,9 +74,20 @@ def test_scrub_still_drops_sensitive_headers():
     assert scrubbed["request"]["headers"]["Accept"] == "application/json"
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def _secret_cache_cleared():
-    """Clear the `_secret_values` cache around a test that patches settings.
+    """Clear the `_secret_values` cache around every test in this file.
+
+    **Autouse deliberately.** The hazard is not this test — it is the next one
+    that patches settings and forgets, and `api/tests/` has no `conftest.py` to
+    catch that. Autouse is the only version of this fixture that protects a test
+    nobody has written yet.
+
+    It costs nothing measurable and breaks nothing: the one test that reads
+    `cache_info()` calls `cache_clear()` itself immediately before asserting
+    `misses == 1`, and says in its own docstring that this makes it independent
+    of whatever ran before. An earlier version of the PR body claimed two tests
+    blocked autouse; one does, and it is immune.
 
     **The teardown clear is the load-bearing half.** The test below calls
     `_secret_values()` while settings are patched, so the real `lru_cache` ends
@@ -98,7 +109,7 @@ def _secret_cache_cleared():
     observability._secret_values.cache_clear()
 
 
-def test_secret_values_applies_the_minimum_length_guard(monkeypatch, _secret_cache_cleared):
+def test_secret_values_applies_the_minimum_length_guard(monkeypatch):
     """A short secret must not become a scrub pattern — redacting a 3-character
     string would gut every error message that happens to contain it.
 

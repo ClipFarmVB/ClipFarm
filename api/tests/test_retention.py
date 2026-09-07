@@ -255,11 +255,16 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     # `len(stale)`. With two objects all three are 1 and the reclaimed count
     # pins nothing — mutating it to `len(failed)` left this test green.
     #
-    # It still cannot tell the expression from a constant that happens to equal
-    # it: a literal `2` and `len(stale) - 1` both survive, measured. Separating
-    # those needs a second case with a different failure count, which is more
-    # fixture than the behaviour is worth — so the limit is written down rather
-    # than implied by a passing test.
+    # What it cannot tell apart is *any* expression that evaluates to 2 over this
+    # fixture — measured: a literal `2`, `len(stale) - 1`, `len(failed) + 1` and
+    # `released + 2` all survive. The bound is the value, not the syntax; an
+    # earlier version of this comment said "a constant", which is narrower than
+    # the truth and would have let the next reader trust more than it gives.
+    #
+    # The warning count above has the same property: at 3/1 both `len(failed)`
+    # and `len(stale) - 2` are 1, so that assertion pins the value and not the
+    # expression either. Separating either needs a second case with a different
+    # failure count, which is more fixture than this behaviour is worth.
     rows = [_row("a"), _row("b"), _row("c")]
     fakes = _Fakes(objects=[r["obj"] for r in rows])
     _install(monkeypatch, fakes)
