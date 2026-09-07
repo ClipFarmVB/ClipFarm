@@ -535,6 +535,16 @@ Three corollaries, each of which had to be learned separately:
   reading the result is the actual defect, and no rule about *how* to run the
   command reaches it.
 
+**One class of these is now checked mechanically rather than promised.** The
+figures on `README.md` — the per-file token table and the five lap costs — are
+pure functions of the brief's own file sizes, and
+`api/tests/test_overnight_brief.py` recomputes them in CI (CF-371). That closes
+the *"right when written, rotted untouched"* shape, which is what the table did
+before CF-275 re-took it: three of the six failures above are that shape. It
+does **not** reach the other three, which are a figure composed before its
+command was read — no test can see a sentence that was written first. For those
+the rule below is still the whole of it.
+
 **The tell is a sentence that would be embarrassing if someone re-ran it.**
 Four of the six above were caught by a review round doing exactly that. The
 other two the run caught itself, within minutes and before anyone looked — the
