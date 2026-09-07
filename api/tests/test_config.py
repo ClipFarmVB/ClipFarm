@@ -20,6 +20,7 @@ import pytest
 pytest.importorskip("pydantic_settings")
 
 from pydantic import ValidationError  # noqa: E402
+from pydantic_core import InitErrorDetails, PydanticCustomError  # noqa: E402
 
 from app.config import (  # noqa: E402
     LOCAL_CORS_ORIGINS,
@@ -27,6 +28,7 @@ from app.config import (  # noqa: E402
     REQUIRED_IN_PRODUCTION,
     REQUIRED_IN_PRODUCTION_WORKER,
     Settings,
+    _boot_error,
     _origin_problem,
     _origin_problems,
     _settings_or_boot_error,
@@ -1556,6 +1558,77 @@ def test_a_boot_error_still_names_every_problem(clean_env, monkeypatch):
     message = str(exc.value)
     assert "nothing after it" in message
     assert "wildcard" in message
+
+
+def test_pydantics_own_prefix_does_not_reach_the_operator(clean_env, monkeypatch):
+    """`Value error, ` is pydantic's, and it lands mid-sentence in ours.
+
+    The composed line is the one thing whoever is staring at a failed deploy
+    reads, and it opened `Configuration is not usable: Value error, ENVIRONMENT=
+    production but ...`. Nothing asserted the leading text before this, which is
+    why the wart survived CF-235.
+
+    Both halves are asserted on purpose. A test that only checks the prefix is
+    gone passes just as well if the strip ate the message with it, and this
+    repository has recent form for assertions that hold for the wrong reason.
+    """
+    for name, value in PRODUCTION_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("CORS_ORIGINS", "https://clipfarm.ca/")
+
+    with pytest.raises(RuntimeError) as exc:
+        _settings_or_boot_error(_env_file=None)
+
+    message = str(exc.value)
+    assert "Value error," not in message
+    assert "ENVIRONMENT=production but CORS_ORIGINS" in message
+
+
+def test_the_prefix_strip_is_keyed_on_the_type_and_keeps_a_bare_message():
+    """The two branches of the strip, driven directly because nothing else can.
+
+    Both of these were written first as end-to-end tests through `Settings`,
+    and **both could not fail**: measured, deleting the `type` guard and
+    deleting the empty-remainder guard each left the whole suite green. No env
+    var this codebase accepts produces either input — `config.py`'s two model
+    validators raise from three sites and every one passes non-empty text, so
+    a real error is either a `value_error` with text or a pydantic-generated
+    message that has no such prefix to lose.
+
+    That is the failure class CF-308 is about, so the errors are constructed
+    instead. `_boot_error` takes a `ValidationError` and nothing else, which is
+    what makes driving it directly honest rather than a workaround.
+
+    - A non-`value_error` whose message merely *starts* with pydantic's prefix
+      must keep it: the strip is a fact about where the text came from, not a
+      pattern match on the text.
+    - A `value_error` carrying nothing but the prefix must keep it too, or the
+      composed line becomes `Configuration is not usable: ` and names no
+      problem at all.
+    - A `value_error` whose text opens with characters drawn from the prefix
+      must lose the prefix and nothing else. `rule, all of it` opens with a run
+      of eleven characters that all appear in `"Value error, "`, so `lstrip` in
+      its place eats the message down to `f it` — stopping at the first `f`,
+      the earliest character the prefix does not contain. Without this case
+      that substitution survives the whole suite, because every message a real
+      setting produces starts with `E`, which is not in the set either: the two
+      spellings agree by luck rather than by design.
+    """
+    errors = [
+        InitErrorDetails(
+            type=PydanticCustomError("not_a_value_error", "Value error, mine"),
+            loc=(),
+        ),
+        InitErrorDetails(type="value_error", loc=(), ctx={"error": ValueError("")}),
+        InitErrorDetails(
+            type="value_error", loc=(), ctx={"error": ValueError("rule, all of it")}
+        ),
+    ]
+    message = _boot_error(ValidationError.from_exception_data("Settings", errors))
+
+    assert "Value error, mine" in message
+    assert "Value error, ; " in message
+    assert message.endswith("rule, all of it")
 
 
 def test_a_boot_error_names_every_pydantic_error_not_just_the_first(
