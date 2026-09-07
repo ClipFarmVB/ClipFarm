@@ -274,7 +274,9 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="app.workers.tasks"):
         tasks._sweep_expired_raw_uploads()  # must not raise
 
-    assert "1 object(s) could not be deleted" in caplog.text, (
+    # Anchored on the message prefix: the bare substring "1 object(s)" is also a
+    # substring of "11 object(s)", so `len(failed) + 10` satisfied it.
+    assert "retention: 1 object(s) could not be deleted" in caplog.text, (
         "the sweep did not report the failed delete. Three objects were stale "
         "and one failed, so the warning is the only signal that anything was "
         "left behind (CF-308, #358)."

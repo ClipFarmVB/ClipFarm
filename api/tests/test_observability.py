@@ -87,7 +87,8 @@ def _secret_cache_cleared():
     `cache_info()` calls `cache_clear()` itself immediately before asserting
     `misses == 1`, and says in its own docstring that this makes it independent
     of whatever ran before. An earlier version of the PR body claimed two tests
-    blocked autouse; one does, and it is immune.
+    read `cache_info()` and that this blocked autouse. One test reads it, and it
+    is immune, so nothing blocked it.
 
     **The teardown clear is the load-bearing half.** The test below calls
     `_secret_values()` while settings are patched, so the real `lru_cache` ends
