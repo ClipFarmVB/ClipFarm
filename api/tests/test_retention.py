@@ -19,9 +19,6 @@ import pytest
 pytest.importorskip("celery")
 
 from app.workers import tasks  # noqa: E402
-from app.services import storage as _storage  # noqa: E402
-
-_REAL_DELETE_FILES = _storage.delete_files
 
 NOW = datetime.now(timezone.utc)
 RETENTION_DAYS = 7
@@ -324,15 +321,20 @@ def test_a_raising_client_reaches_the_sweep_as_a_failure_list(monkeypatch, caplo
     """
     from app.services import storage
 
+    real_delete_files = storage.delete_files  # before _install replaces it
+
     rows = [_row("a"), _row("b")]
     fakes = _Fakes(objects=[r["obj"] for r in rows])
     _install(monkeypatch, fakes)
-    monkeypatch.setattr(storage, "delete_files", _REAL_DELETE_FILES)
+    monkeypatch.setattr(storage, "delete_files", real_delete_files)
     monkeypatch.setattr(storage, "_client", _raiser(RuntimeError("no config")))
 
     with caplog.at_level(logging.WARNING):
         tasks._sweep_expired_raw_uploads()  # must not raise
 
+    # The guard's own line is the discriminator: without it the exception
+    # reaches the sweep's guard instead and this message never appears.
+    assert "could not build a client, reporting 2 key(s) as failed" in caplog.text
     assert "2 object(s) could not be deleted" in caplog.text
 
 

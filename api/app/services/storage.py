@@ -393,15 +393,18 @@ def delete_files(keys: Sequence[str]) -> list[str]:
 
     That branch is unreachable from the retention sweep, which is the only
     caller today: it walks `list_objects` first, and that builds the same
-    `lru_cache`d client inside its own guard, so a bad config aborts the sweep
-    a step earlier. The guard is here because this promise is the function's,
+    `lru_cache`d client (see that function) inside the sweep's own guard, so a
+    bad config aborts the sweep a step earlier. The guard is here because this promise is the function's,
     not the sweep's — the next caller need not walk a listing first.
     """
     failed: list[str] = []
     try:
         client = _client()
     except Exception as exc:
-        logger.warning("delete_files: could not build a client, reporting %d key(s) as failed (%s)", len(keys), exc)
+        logger.warning(
+            "delete_files: could not build a client, reporting %d key(s) as failed (%s)",
+            len(keys), exc,
+        )
         return list(keys)
     for i in range(0, len(keys), 1000):
         batch = list(keys[i:i + 1000])
