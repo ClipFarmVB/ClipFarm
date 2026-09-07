@@ -535,11 +535,12 @@ Three corollaries, each of which had to be learned separately:
   reading the result is the actual defect, and no rule about *how* to run the
   command reaches it.
 
-**One class of these is now checked mechanically rather than promised.** The
-figures on `README.md` — the per-file token table, the five lap costs, and the
-select-versus-spawn difference stated below them — are pure functions of the
+**One class of figure — the ones on `README.md` — is now checked mechanically
+rather than promised.** The per-file token table, the five lap costs and the
+select-versus-spawn difference stated below them are pure functions of the
 brief's own file sizes, and `api/tests/test_overnight_brief.py` recomputes them
-in CI (CF-371).
+in CI (CF-371). None of the failures above is on that surface; what follows is
+how little that leaves covered.
 
 **Be exact about how little that covers.** It closes one shape — *right when
 written, rotted untouched* — on one surface, the figures on `README.md`. The

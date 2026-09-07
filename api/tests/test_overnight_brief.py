@@ -3,11 +3,11 @@
 `docs/overnight/README.md` carries a table of per-file token costs, five lap
 costs, and one figure derived from two of those laps, and a run reads them to
 plan what it can afford. They are pure functions of the brief's own file sizes,
-so nothing but discipline kept them true — and
-discipline lost: they had drifted by a third before CF-275 re-took them, and the
-page still says "re-measure them when you add a section" as if asking were
-enough. CF-371 (#464) is that class of failure, a figure that was right when
-written and rotted untouched.
+so nothing but discipline kept them true — and discipline lost: they had
+drifted by a third before CF-275 re-took them, on a page that asked the next
+reader to re-measure and had no way to tell whether they had. CF-371 (#464) is
+that class of failure, a figure that was right when written and rotted
+untouched.
 
 **What this does not reach.** CF-370 lists six wrong published figures and this
 check would have caught **none** of them, because none was on this surface. They
@@ -66,10 +66,9 @@ def _lap_files(lap):
 # This pattern has now been rebuilt twice for that reason and the two sentence
 # patterns once each: four rebuilds, closing five findings raised over five
 # rounds, all of one defect. Writing "**every gap is whitespace-tolerant**"
-# above it was not enough the first time: the
-# rebuilt version still demanded a space before `k`, no indent, and nothing
-# after the closing pipe, and a single trailing space made a row on screen read
-# as a file missing from the table.
+# above it was not enough the first time: the rebuilt version still demanded a
+# space before `k`, no indent, and nothing after the closing pipe, and a single
+# trailing space made a row on screen read as a file missing from the table.
 #
 # So the rule is a check, not an intention: **for any pattern matching this
 # page, write the case that reformats it and confirm the pattern survives.**
@@ -164,8 +163,12 @@ def test_the_table_lists_exactly_the_brief_files():
     present = {p.name for p in BRIEF.glob("*.md")}
     assert listed == present, (
         f"docs/overnight/README.md's table lists {sorted(listed)} but the "
-        f"directory holds {sorted(present)}. Add the row (with its token cost) "
-        "or drop the stale one, and re-measure every figure below the table — "
+        f"directory holds {sorted(present)}. A row is only read when its first "
+        "cell is a markdown link whose text is the file name in backticks and "
+        "its last cell is the token count — a row that reads fine on screen but "
+        "differs in shape is reported here as a missing file. Add the row (with "
+        "its token cost) or drop the stale one, and re-measure every figure "
+        "below the table — "
         "the laps and the difference between the two step-1 laps. A file with "
         "no row is one no lap counts (CF-371, #464)."
     )
@@ -221,9 +224,12 @@ def test_the_five_lap_figures_match_the_files_each_lap_reads():
 def test_the_spawning_lap_costs_what_the_two_lap_figures_differ_by():
     """The one derived claim on the page, checked against what it derives from.
 
-    It is a claim about the *two lap figures* — "a step-1 lap that only selects
-    is ~5k cheaper than one that also spawns" — so it has to be checked against
-    their difference, not against `BRIEFS.md`. Those are not the same number:
+    It is a claim about the *two lap figures* — the page says a step-1 lap that
+    only selects is some whole number of k cheaper than one that also spawns —
+    so it has to be checked against their difference, not against `BRIEFS.md`.
+    The figure itself is deliberately not quoted here: `README.md:92` is the
+    only copy anything pins, and a second one in this docstring would rot the
+    moment the difference moved. Those are not the same number:
     the laps are rounded to whole k before the reader subtracts them, and
     `BRIEFS.md` is rounded separately. A round grew that file to 22000 bytes and
     the page then read 27k, 32k and "~6k cheaper" at once, all three passing,
