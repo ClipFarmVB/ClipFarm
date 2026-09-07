@@ -543,10 +543,11 @@ pure functions of the brief's own file sizes, and
 **Be exact about how little that covers.** It closes one shape — *right when
 written, rotted untouched* — on one surface, the figures on `README.md`. The
 documented instance is that table drifting by a third before CF-275 re-took it.
-**None of the six failures listed above is on that surface**, and each was a
-figure composed before its command was read rather than one that rotted, so the
-check would not have caught any of them. No test can see a sentence that was
-written first. For everything above, the rule is still the whole of it.
+**None of the six failures listed above is on that surface**, so the check would
+not have caught any of them. Nor are they one mechanism a second check could
+close: a carried-over mutation row, a figure lifted from a subagent's report and
+a grep run against the wrong tree are three different ways to publish a number
+you did not measure. For everything above, the rule is still the whole of it.
 
 **The tell is a sentence that would be embarrassing if someone re-ran it.**
 Four of the six above were caught by a review round doing exactly that. The

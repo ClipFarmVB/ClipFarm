@@ -8,12 +8,13 @@ page still says "re-measure them when you add a section" as if asking were
 enough. CF-371 (#464) is that class of failure, a figure that was right when
 written and rotted untouched.
 
-**What this does not reach.** CF-370 lists six wrong published figures, and
-this check would have caught **none** of them: every one was composed before its
-command was read, and none was on this surface. No test sees a sentence that was
-written first, so `RULES.md`'s prose rule still carries all six. What this does
-catch is the shape those six are not — a figure that was right when written and
-rotted while nobody looked, which is what the table itself did before CF-275.
+**What this does not reach.** CF-370 lists six wrong published figures and this
+check would have caught **none** of them, because none was on this surface. They
+are not all one mechanism — a carried-over mutation row, a figure taken from a
+subagent's report, a grep run against the wrong tree — so no single sentence
+covers them, and `RULES.md`'s prose rule still carries all six. What this does
+catch is a figure that was right when written and rotted while nobody looked,
+which is what the table itself did before CF-275.
 
 Deliberately unpinned: the across-the-split figures further down that page
 (32.25k, 19.09k, 18.13k, 26.70k, 28.05k, 23.60k). Those describe files at
@@ -56,17 +57,26 @@ def _lap_files(lap):
 # report as a file missing from the table, sending the reader to fix the wrong
 # thing.
 _ROW = re.compile(
-    r"^\| \[`(?P<name>[A-Z]+\.md)`\]\([^)]*\) \|.*\| (?P<stated>[0-9]+(?:\.[0-9])?)k \|$",
+    r"^\| \[`(?P<name>[A-Za-z0-9_]+\.md)`\]\([^)]*\) \|.*\| (?P<stated>[0-9]+(?:\.[0-9])?)k \|$",
     re.MULTILINE,
 )
 
 # Pinned by its own sentence, never by sweeping for `\d+k`: the page carries
 # nine historical figures it says are not recomputable, and `32k` appears twice.
-_LAPS_SENTENCE = re.compile(
-    r"A step-1 lap that only selects costs about (?P<select>\d+)k tokens of brief\s+"
-    r"instead of (?P<all>\d+)k;\s+one that also spawns a round, about (?P<spawn>\d+)k\.\s+"
-    r"A step-2 lap is about (?P<step2>\d+)k, a step-3 lap\s+about (?P<step3>\d+)k\."
+#
+# Every gap is `\s+`, built rather than written out, so re-wrapping the
+# paragraph cannot break it. An earlier version wrote the sentence as a literal
+# with `\s+` only at today's four line breaks — 29 of its gaps were plain
+# spaces — and a round that reported this was told it did not reproduce,
+# because the three transforms checked against it (as shipped, one line,
+# re-indented) all preserve literal spaces and so could not have disproved it.
+# Re-wrapping the same words at 64, 79 and 100 columns missed at every width.
+_LAPS_WORDS = (
+    r"A step-1 lap that only selects costs about (?P<select>\d+)k tokens of brief "
+    r"instead of (?P<all>\d+)k; one that also spawns a round, about (?P<spawn>\d+)k\. "
+    r"A step-2 lap is about (?P<step2>\d+)k, a step-3 lap about (?P<step3>\d+)k\."
 )
+_LAPS_SENTENCE = re.compile(r"\s+".join(_LAPS_WORDS.split(" ")))
 _CHEAPER = re.compile(r"only selects is ~(?P<k>\d+)k cheaper than one")
 
 
