@@ -17,7 +17,7 @@ covers them, and `RULES.md`'s prose rule still carries all six. What this does
 catch is a figure that was right when written and rotted while nobody looked,
 which is what the table itself did before CF-275.
 
-Deliberately unpinned: the six across-the-split figures earlier on that page —
+Deliberately unpinned: the six across-the-split figures on that page —
 32.25k, 19.09k, 18.13k, 26.70k, 28.05k and 23.60k, which appear in eight places
 between them (`32.25k` and `26.70k` twice each) — plus the rounded restatements
 of the first three, as `18k`, `~32k` and `~19k`. Those describe files at
@@ -63,17 +63,17 @@ def _lap_files(lap):
 # miss — the table test reads it as *a file missing from the table* and tells
 # the reader to add rows that are already there.
 #
-# This pattern has now been rebuilt twice for that reason and the two sentence
-# patterns once each: four rebuilds, closing five findings raised over five
-# rounds, all of one defect. Writing "**every gap is whitespace-tolerant**"
-# above it was not enough the first time: the rebuilt version still demanded a
-# space before `k`, no indent, and nothing after the closing pipe, and a single
-# trailing space made a row on screen read as a file missing from the table.
+# `_ROW` has been loosened in five separate commits and the two sentence
+# patterns in one each. Every one of those seven edits widened what counts as a
+# valid row or sentence; not one narrowed it. Writing "**every gap is
+# whitespace-tolerant**" above it was not enough the first time: the rebuilt
+# version still demanded a space before `k`, no indent, and nothing after the
+# closing pipe, and a single trailing space made a row on screen read as a file
+# missing from the table.
 #
 # So the rule is a check, not an intention: **for any pattern matching this
 # page, write the case that reformats it and confirm the pattern survives.**
-# Every one of the five was found by a reviewer running exactly that, never by
-# the author reading the regex.
+# Every one of the seven came from a reviewer running exactly that.
 _ROW = re.compile(
     r"^\s*\|\s*\[`(?P<name>[^`]+\.md)`\]\([^)]*\)\s*\|"
     r".*\|\s*(?P<stated>[0-9]+(?:\.[0-9]+)?)\s*k\s*\|\s*$",
@@ -227,9 +227,9 @@ def test_the_spawning_lap_costs_what_the_two_lap_figures_differ_by():
     It is a claim about the *two lap figures* — the page says a step-1 lap that
     only selects is some whole number of k cheaper than one that also spawns —
     so it has to be checked against their difference, not against `BRIEFS.md`.
-    The figure itself is deliberately not quoted here: `README.md:92` is the
-    only copy anything pins, and a second one in this docstring would rot the
-    moment the difference moved. Those are not the same number:
+    The value is deliberately not quoted here: the page's own bullet is the only
+    copy anything pins, and a second copy in this docstring would rot the moment
+    the difference moved. The difference and the file are not the same number:
     the laps are rounded to whole k before the reader subtracts them, and
     `BRIEFS.md` is rounded separately. A round grew that file to 22000 bytes and
     the page then read 27k, 32k and "~6k cheaper" at once, all three passing,
