@@ -1,4 +1,5 @@
 """Cloudflare R2 (or AWS S3) object storage helpers."""
+import logging
 import re
 import uuid
 from collections.abc import Iterator, Sequence
@@ -11,6 +12,8 @@ import boto3
 from botocore.config import Config
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class LimitedReader:
@@ -387,11 +390,18 @@ def delete_files(keys: Sequence[str]) -> list[str]:
     past every caller. `_client()` reads `settings.r2_*`, so a missing or
     malformed config fails here and not at import; the promise above would be
     untrue for exactly that case if the construction sat outside the guard.
+
+    That branch is unreachable from the retention sweep, which is the only
+    caller today: it walks `list_objects` first, and that builds the same
+    `lru_cache`d client inside its own guard, so a bad config aborts the sweep
+    a step earlier. The guard is here because this promise is the function's,
+    not the sweep's — the next caller need not walk a listing first.
     """
     failed: list[str] = []
     try:
         client = _client()
-    except Exception:
+    except Exception as exc:
+        logger.warning("delete_files: could not build a client, reporting %d key(s) as failed (%s)", len(keys), exc)
         return list(keys)
     for i in range(0, len(keys), 1000):
         batch = list(keys[i:i + 1000])

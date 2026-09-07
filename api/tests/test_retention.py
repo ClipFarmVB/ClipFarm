@@ -10,6 +10,7 @@ Two layers, because the risk sits in two different places:
 
 Run from the api/ dir: `cd api && pytest tests/test_retention.py`.
 """
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -18,6 +19,9 @@ import pytest
 pytest.importorskip("celery")
 
 from app.workers import tasks  # noqa: E402
+from app.services import storage as _storage  # noqa: E402
+
+_REAL_DELETE_FILES = _storage.delete_files
 
 NOW = datetime.now(timezone.utc)
 RETENTION_DAYS = 7
@@ -301,6 +305,35 @@ def test_a_client_that_cannot_be_built_is_reported_not_raised(monkeypatch):
     monkeypatch.setattr(storage, "_client", _raiser(RuntimeError("no config")))
 
     assert storage.delete_files(["raw/a.mp4", "raw/b.mp4"]) == ["raw/a.mp4", "raw/b.mp4"]
+
+
+def test_a_raising_client_reaches_the_sweep_as_a_failure_list(monkeypatch, caplog):
+    """The sweep runs the real `delete_files` with a client that cannot be built.
+
+    The test above pins `delete_files` in isolation. This one is the seam #467
+    names — a raising `_client()` must not propagate out of the sweep — and it
+    needs the real function, so it undoes `_install`'s fake for that one name.
+    `list_objects` stays faked, which is also what makes the case reachable:
+    the live sweep walks a real listing first and would fail there instead, on
+    the same cached client.
+
+    Both guards keep the sweep from raising, so what distinguishes them is
+    which warning fires. With the guard in `delete_files`, the keys come back
+    as a failure list and the sweep reports them as undeleted. Without it, the
+    exception reaches the sweep's own guard and the message is the other one.
+    """
+    from app.services import storage
+
+    rows = [_row("a"), _row("b")]
+    fakes = _Fakes(objects=[r["obj"] for r in rows])
+    _install(monkeypatch, fakes)
+    monkeypatch.setattr(storage, "delete_files", _REAL_DELETE_FILES)
+    monkeypatch.setattr(storage, "_client", _raiser(RuntimeError("no config")))
+
+    with caplog.at_level(logging.WARNING):
+        tasks._sweep_expired_raw_uploads()  # must not raise
+
+    assert "2 object(s) could not be deleted" in caplog.text
 
 
 # ─── The selection SQL, against a real database ──────────────────────────────
