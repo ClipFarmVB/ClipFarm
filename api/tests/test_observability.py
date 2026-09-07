@@ -109,12 +109,13 @@ def test_secret_values_applies_the_minimum_length_guard(monkeypatch, _secret_cac
     threshold. So it passed with the guard deleted, in CI and on any
     default-config machine (CF-308, #358).
 
-    No length is quoted for those URLs on purpose: an earlier version said "a
-    24-character connection URL", which is three of the four defaults —
-    `database_url` is 62 — and it is a fact about shipped config that nothing
-    here pins, so it would rot the same way the assertion it describes did.
+    No length is quoted for those URLs on purpose. An earlier version named one,
+    which was wrong for one of the four defaults — and naming the right ones
+    here would be the same mistake, since they are facts about shipped config
+    that nothing in this file pins. "Longer than the threshold" is all the
+    argument needs and all that can be relied on.
 
-    Both values are patched rather than one being read off the ambient config:
+    Every value is patched rather than read off the ambient config:
     `Settings` loads `api/.env` if one exists, so an assertion about a value
     this test did not set is an assertion about the developer's machine. The
     comment on `test_postgres_auth_error_survives_scrubbing_under_defaults`
@@ -123,7 +124,11 @@ def test_secret_values_applies_the_minimum_length_guard(monkeypatch, _secret_cac
     monkeypatch.setattr(observability.settings, "r2_access_key_id", "abc")
     monkeypatch.setattr(observability.settings, "jwt_secret", "long-enough-secret")
     # The threshold's own two sides. Without these only 3 and 18 characters are
-    # pinned, so the guard could move anywhere in 4..6 unnoticed.
+    # pinned, and the guard could then sit anywhere in 4..18 unnoticed —
+    # measured, not reasoned: with just those two, >= 4, 5, 6, 7, 8, 12 and 18
+    # all pass and only >= 19 fails. An earlier version of this comment said
+    # "4..6", which understates the gap by twelve and is contradicted by this
+    # file's own >= 7 and >= 8 mutation rows.
     monkeypatch.setattr(observability.settings, "modal_token_id", "12345")
     monkeypatch.setattr(observability.settings, "modal_token_secret", "123456")
     observability._secret_values.cache_clear()
