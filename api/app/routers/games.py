@@ -591,7 +591,9 @@ async def complete_upload(
 
     process_game_task.delay(str(game_id), raw_url, condense=condense)
 
-    return GameOut.model_validate(game)
+    out = GameOut.model_validate(game)
+    _presign_condensed(out, game)
+    return out
 
 
 @router.get("/{game_id}", response_model=GameOut)

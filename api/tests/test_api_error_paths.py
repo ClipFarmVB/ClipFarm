@@ -291,30 +291,58 @@ def test_the_game_list_returns_no_condensed_url_rather_than_a_dead_one():
 
 # ── 4. a double-click must not 500 ─────────────────────────────────────────
 
-def test_two_concurrent_adds_to_a_collection_both_succeed():
-    """Check-then-insert under a comment promising an upsert. Both callers read
-    `None`, and the loser's commit hits the primary key — reported as a 500 for
-    an outcome the endpoint says it guarantees."""
-    from app.routers import collections
+class _ExpiringCollection:
+    """A stand-in for an ORM object that a failed commit has expired.
 
-    game = _Game()
-    clip = type("_Clip", (), {"id": uuid.uuid4(), "game_id": game.id,
-                              "visibility": None})()
-    col = type("_Col", (), {"id": uuid.uuid4(), "owner_id": OWNER})()
+    `AsyncSession.rollback()` clears every loaded attribute — `expire_on_commit`
+    governs commit only — so touching one afterwards emits a lazy SELECT from a
+    synchronous attribute access, which inside async code is `MissingGreenlet`.
+    Reproduced against SQLAlchemy 2.0.36: after a failed commit and a rollback,
+    the instance `__dict__` is empty.
 
-    class _Empty:
+    A plain fake cannot show that, because it has no ORM state to expire and
+    would keep answering happily — a green test for the exact 500 the handler
+    exists to remove. This one raises instead, so the route may only build its
+    response from values it was passed.
+    """
+
+    def __init__(self, owner_id):
+        self._id = uuid.uuid4()
+        self.owner_id = owner_id
+        self.expired = False
+
+    @property
+    def id(self):
+        if self.expired:
+            raise AssertionError(
+                "read an expired ORM attribute after rollback — in a real "
+                "AsyncSession this is MissingGreenlet, i.e. a 500"
+            )
+        return self._id
+
+
+def _collection_db(col, clip, game, *, settles=True):
+    class _Row:
+        def __init__(self, value):
+            self._value = value
+
         def scalar_one_or_none(self):
-            return None
+            return self._value
 
     class _DB:
         def __init__(self):
             self.commits = 0
+            self.rolled_back = False
 
         async def get(self, model, _pk):
             return {"Clip": clip, "Game": game}.get(model.__name__)
 
         async def execute(self, _q):
-            return _Empty()
+            # Before the race: nothing there. After it: whatever the
+            # loser's re-check should find.
+            if self.rolled_back:
+                return _Row(object() if settles else None)
+            return _Row(None)
 
         def add(self, _obj):
             return None
@@ -325,22 +353,62 @@ def test_two_concurrent_adds_to_a_collection_both_succeed():
                 raise IntegrityError("INSERT", {}, Exception("duplicate key"))
 
         async def rollback(self):
-            return None
+            self.rolled_back = True
+            col.expired = True
 
-    db = _DB()
-    monkey = collections._get_owned_collection
+    return _DB()
+
+
+def _add(collections, col, db, clip):
+    body = type("_Body", (), {"clip_id": clip.id})()
+    return asyncio.run(collections.add_clip_to_collection(col._id, body, OWNER, db))
+
+
+def test_two_concurrent_adds_to_a_collection_both_succeed(monkeypatch):
+    """Check-then-insert under a comment promising an upsert. Both callers read
+    `None`, and the loser's commit hits the primary key — reported as a 500 for
+    an outcome the endpoint says it guarantees."""
+    from app.routers import collections
+
+    game = _Game()
+    clip = type("_Clip", (), {"id": uuid.uuid4(), "game_id": game.id,
+                              "visibility": None})()
+    col = _ExpiringCollection(OWNER)
+    db = _collection_db(col, clip, game, settles=True)
 
     async def _owned(_cid, _uid, _db):
         return col
 
-    collections._get_owned_collection = _owned
-    try:
-        body = type("_Body", (), {"clip_id": clip.id})()
-        first = asyncio.run(collections.add_clip_to_collection(col.id, body, OWNER, db))
-        second = asyncio.run(collections.add_clip_to_collection(col.id, body, OWNER, db))
-    finally:
-        collections._get_owned_collection = monkey
+    monkeypatch.setattr(collections, "_get_owned_collection", _owned)
+
+    first = _add(collections, col, db, clip)
+    second = _add(collections, col, db, clip)
 
     assert db.commits == 2, "the second call never reached the insert"
+    assert db.rolled_back, "the IntegrityError was never caught"
     assert first == second
     assert first["clip_id"] == str(clip.id)
+
+
+def test_a_vanished_clip_is_not_reported_as_added(monkeypatch):
+    """The catch is broad, so a clip or collection deleted in the same instant
+    lands in it too. Answering 201 for a row that does not exist would be a
+    lie, so the loser re-reads the table and 404s when nothing settled."""
+    from app.routers import collections
+
+    game = _Game()
+    clip = type("_Clip", (), {"id": uuid.uuid4(), "game_id": game.id,
+                              "visibility": None})()
+    col = _ExpiringCollection(OWNER)
+    db = _collection_db(col, clip, game, settles=False)
+
+    async def _owned(_cid, _uid, _db):
+        return col
+
+    monkeypatch.setattr(collections, "_get_owned_collection", _owned)
+
+    _add(collections, col, db, clip)          # first add wins
+    with pytest.raises(HTTPException) as exc:
+        _add(collections, col, db, clip)      # loses, and nothing is there
+
+    assert exc.value.status_code == 404

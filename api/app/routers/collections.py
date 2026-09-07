@@ -194,19 +194,33 @@ async def add_clip_to_collection(
             await db.commit()
         except IntegrityError:
             # Two concurrent adds — a double-click — both read `None` above and
-            # the loser lands here. The row it wanted exists, which is the
-            # outcome this endpoint promises, so this is a success. The database
-            # is the arbiter, not the check above; `profiles.py` handles the
-            # same race the same way, and only differs in reporting the loss.
+            # the loser lands here. The database is the arbiter, not the check
+            # above, and the row the caller wanted now exists: that is the
+            # outcome this endpoint's contract promises.
             #
-            # `collection_clips` also carries two cascading foreign keys, so a
-            # clip or collection deleted in the same instant would arrive here
-            # too and be reported as added. The window is tiny and the answer a
-            # caller gets is still true — the clip is not in the collection —
-            # so this catch stays broad rather than inspecting the constraint.
+            # But `collection_clips` also carries two cascading foreign keys, so
+            # a clip or collection deleted in the same instant arrives here too,
+            # and answering 201 for a row that does not exist would be a lie.
+            # The constraint name cannot tell the two apart cheaply — the unique
+            # index is redundant with the composite primary key, so a duplicate
+            # reports against the PK — so ask the table instead. One extra read,
+            # and only on a race.
             await db.rollback()
+            settled = await db.execute(
+                select(CollectionClip).where(
+                    CollectionClip.collection_id == collection_id,
+                    CollectionClip.clip_id == body.clip_id,
+                )
+            )
+            if settled.scalar_one_or_none() is None:
+                raise HTTPException(status_code=404, detail="Clip not found") from None
 
-    return {"collection_id": str(col.id), "clip_id": str(body.clip_id)}
+    # `collection_id` rather than `col.id`: a failed commit followed by
+    # `rollback()` expires every attribute on `col`, and reading one back would
+    # emit a lazy SELECT from a synchronous attribute access inside async code
+    # — `MissingGreenlet`, and the 500 this handler exists to remove. The two
+    # values are the same; only one of them is safe to read here.
+    return {"collection_id": str(collection_id), "clip_id": str(body.clip_id)}
 
 
 @router.delete("/{collection_id}/clips/{clip_id}", status_code=status.HTTP_204_NO_CONTENT)
