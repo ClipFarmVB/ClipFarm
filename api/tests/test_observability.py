@@ -78,17 +78,27 @@ def test_scrub_still_drops_sensitive_headers():
 def _secret_cache_cleared():
     """Clear the `_secret_values` cache around a test that patches settings.
 
-    Listed *before* `monkeypatch` in the test signature on purpose: fixtures are
-    torn down in reverse setup order, so this one finalises after the patches
-    are undone. Clearing while a patch is still live would leave the real cache
-    holding a fake secret for every test that runs afterwards.
+    **The teardown clear is the load-bearing half.** The test below calls
+    `_secret_values()` while settings are patched, so the real `lru_cache` ends
+    the test holding a fake secret; without this fixture that value is what the
+    next caller gets. Today the leak is *masked* — `test_secret_values_cache_can_be_cleared`
+    further down the file happens to clear it — so deleting this fixture leaves
+    the suite green while reintroducing the bug, which is why it is a fixture
+    with a reason rather than two bare calls.
+
+    Parameter order does not matter, and an earlier version of this docstring
+    said it did: it claimed listing this before `monkeypatch` mattered because
+    "clearing while a patch is live would poison the cache". `cache_clear()`
+    only empties — it never recomputes — so that hazard does not exist, and
+    swapping the parameters changes nothing. Recorded because the wrong reason
+    for a right fixture is what gets the fixture removed.
     """
     observability._secret_values.cache_clear()
     yield
     observability._secret_values.cache_clear()
 
 
-def test_secret_values_applies_the_minimum_length_guard(_secret_cache_cleared, monkeypatch):
+def test_secret_values_applies_the_minimum_length_guard(monkeypatch, _secret_cache_cleared):
     """A short secret must not become a scrub pattern — redacting a 3-character
     string would gut every error message that happens to contain it.
 
@@ -107,10 +117,22 @@ def test_secret_values_applies_the_minimum_length_guard(_secret_cache_cleared, m
     """
     monkeypatch.setattr(observability.settings, "r2_access_key_id", "abc")
     monkeypatch.setattr(observability.settings, "jwt_secret", "long-enough-secret")
+    # The threshold's own two sides. Without these only 3 and 18 characters are
+    # pinned, so the guard could move anywhere in 4..6 unnoticed.
+    monkeypatch.setattr(observability.settings, "modal_token_id", "12345")
+    monkeypatch.setattr(observability.settings, "modal_token_secret", "123456")
     observability._secret_values.cache_clear()
 
     values = observability._secret_values()
 
+    assert "12345" not in values, (
+        "a 5-character secret became a scrub pattern; the guard admits one "
+        "character below its stated threshold of 6 (CF-308, #358)."
+    )
+    assert "123456" in values, (
+        "a 6-character secret was dropped; the guard excludes the shortest "
+        "value it is supposed to admit (CF-308, #358)."
+    )
     assert "abc" not in values, (
         "a 3-character secret became a scrub pattern. The `len(c) >= 6` guard in "
         "observability._secret_values is what keeps short config values from "
