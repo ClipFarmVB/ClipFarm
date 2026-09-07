@@ -17,8 +17,8 @@ catch is a figure that was right when written and rotted while nobody looked,
 which is what the table itself did before CF-275.
 
 Deliberately unpinned: the six across-the-split figures earlier on that page —
-32.25k, 19.09k, 18.13k, 26.70k, 28.05k and 23.60k, which appear in nine places
-between them. Those describe files at revision `596755d`, which the page says
+32.25k, 19.09k, 18.13k, 26.70k, 28.05k and 23.60k, which appear in eight places
+between them (`32.25k` and `26.70k` twice each). Those describe files at revision `596755d`, which the page says
 the table cannot reproduce, and reading them needs `git ls-tree` against an old
 revision — which a shallow clone serves silently and wrongly, a trap `RULES.md`
 already lists.
@@ -53,12 +53,22 @@ def _lap_files(lap):
     named = LAPS[lap]
     return sorted(p.name for p in BRIEF.glob("*.md")) if named is None else named
 
-# The tenth is optional: a file that lands on a whole number reads `15k`, and a
-# pattern demanding `15.0k` skips the row entirely — which this test would then
-# report as a file missing from the table, sending the reader to fix the wrong
-# thing.
+# Whitespace-tolerant everywhere, and the tenth is optional. Three things a
+# perfectly good row does that a stricter pattern skips: writing a whole number
+# as `15k`, padding the cells as `|  2.1k  |` (what any markdown formatter
+# does), and writing a trailing zero as `2.10k`. A skipped row is not a quiet
+# miss — the table test reads it as *a file missing from the table* and tells
+# the reader to add rows that are already there.
+#
+# This is the fourth pattern in this file to be rebuilt for the same reason.
+# `_LAPS_SENTENCE`, then `_CHEAPER`, then this one: each was written with
+# literal spaces, each broke on a reformat that changed nothing about the
+# figures, and each was found by a separate review round. **A new pattern here
+# is whitespace-tolerant from the start**; that is the rule, not the three
+# individual fixes.
 _ROW = re.compile(
-    r"^\| \[`(?P<name>[A-Za-z0-9._-]+\.md)`\]\([^)]*\) \|.*\| (?P<stated>[0-9]+(?:\.[0-9])?)k \|$",
+    r"^\|\s*\[`(?P<name>[A-Za-z0-9._-]+\.md)`\]\([^)]*\)\s*\|"
+    r".*\|\s*(?P<stated>[0-9]+(?:\.[0-9]+)?)k\s*\|$",
     re.MULTILINE,
 )
 
@@ -102,8 +112,9 @@ def _size(name):
     """
     path = BRIEF / name
     assert path.exists(), (
-        f"docs/overnight/README.md's table has a row for {name}, which is not in "
-        "docs/overnight/. Drop the row, or restore the file (CF-371, #464)."
+        f"{name} is named by this test or by README.md's table, and is not in "
+        "docs/overnight/. If the file was removed, drop its table row and take "
+        "it out of any lap in LAPS that names it (CF-371, #464)."
     )
     return len(path.read_bytes().replace(b"\r\n", b"\n"))
 
