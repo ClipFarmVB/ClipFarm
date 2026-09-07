@@ -7,6 +7,8 @@ Imports only `app.observability`, which pulls in `app.config` — no database,
 no network, no sentry-sdk required.
 """
 
+import pytest
+
 from app import observability
 
 
@@ -72,10 +74,55 @@ def test_scrub_still_drops_sensitive_headers():
     assert scrubbed["request"]["headers"]["Accept"] == "application/json"
 
 
-def test_secret_values_applies_the_minimum_length_guard():
-    # Short values must not become scrub patterns — redacting a 3-character
-    # string would gut every error message that happens to contain it.
-    assert all(len(value) >= 6 for value in observability._secret_values())
+@pytest.fixture
+def _secret_cache_cleared():
+    """Clear the `_secret_values` cache around a test that patches settings.
+
+    Listed *before* `monkeypatch` in the test signature on purpose: fixtures are
+    torn down in reverse setup order, so this one finalises after the patches
+    are undone. Clearing while a patch is still live would leave the real cache
+    holding a fake secret for every test that runs afterwards.
+    """
+    observability._secret_values.cache_clear()
+    yield
+    observability._secret_values.cache_clear()
+
+
+def test_secret_values_applies_the_minimum_length_guard(_secret_cache_cleared, monkeypatch):
+    """A short secret must not become a scrub pattern — redacting a 3-character
+    string would gut every error message that happens to contain it.
+
+    This asserts an exclusion, which needs a short secret to exist. The version
+    this replaces asserted `all(len(v) >= 6 ...)` over the *shipped defaults*,
+    where every candidate is either empty — dropped by the `if c` half, which
+    survives deleting the length guard — or a 24-character connection URL. So it
+    passed with the guard deleted, in CI and on any default-config machine
+    (CF-308, #358).
+
+    Both values are patched rather than one being read off the ambient config:
+    `Settings` loads `api/.env` if one exists, so an assertion about a value
+    this test did not set is an assertion about the developer's machine. The
+    comment on `test_postgres_auth_error_survives_scrubbing_under_defaults`
+    records that biting once already.
+    """
+    monkeypatch.setattr(observability.settings, "r2_access_key_id", "abc")
+    monkeypatch.setattr(observability.settings, "jwt_secret", "long-enough-secret")
+    observability._secret_values.cache_clear()
+
+    values = observability._secret_values()
+
+    assert "abc" not in values, (
+        "a 3-character secret became a scrub pattern. The `len(c) >= 6` guard in "
+        "observability._secret_values is what keeps short config values from "
+        "redacting ordinary words out of every error report (CF-308, #358)."
+    )
+    # The control: without it, a `_secret_values` that returned nothing at all
+    # would satisfy the exclusion above and this test would pass while scrubbing
+    # had stopped entirely.
+    assert "long-enough-secret" in values, (
+        "a secret over the length threshold is missing from the scrub patterns, "
+        "so nothing is being redacted (CF-308, #358)."
+    )
 
 
 # --- caching (raised on #131 review) -----------------------------------------

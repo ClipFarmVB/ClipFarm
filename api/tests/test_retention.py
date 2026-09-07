@@ -10,6 +10,7 @@ Two layers, because the risk sits in two different places:
 
 Run from the api/ dir: `cd api && pytest tests/test_retention.py`.
 """
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -232,9 +233,21 @@ def test_a_failed_release_leaves_its_object_alone(monkeypatch):
     assert fakes.deleted == []
 
 
-def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch):
+def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     """delete_files reports failures instead of raising — they stay unreferenced
-    and past the cutoff, so the next sweep finds them again."""
+    and past the cutoff, so the next sweep finds them again.
+
+    The sweep keeps no bookkeeping for a failed key: `failed` is used twice and
+    discarded, and the object is picked up next time only because it is still
+    unreferenced and past the cutoff. So "still eligible" is a property of the
+    bucket, not stored state, and the two log lines are the whole observable
+    effect of the report — which is what this asserts.
+
+    The version this replaces called the sweep and asserted nothing but a
+    trailing `# must not raise`, so dropping the failure report on the floor
+    kept it green and the behaviour in its own title was uncovered (CF-308,
+    #358).
+    """
     from app.services import storage
 
     rows = [_row("a"), _row("b")]
@@ -242,7 +255,20 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch):
     _install(monkeypatch, fakes)
     monkeypatch.setattr(storage, "delete_files", lambda keys: ["raw/a.mp4"])
 
-    tasks._sweep_expired_raw_uploads()  # must not raise
+    # INFO, not WARNING: the reclaimed count below is only logged at INFO.
+    with caplog.at_level(logging.INFO, logger="app.workers.tasks"):
+        tasks._sweep_expired_raw_uploads()  # must not raise
+
+    assert "1 object(s) could not be deleted" in caplog.text, (
+        "the sweep did not report the failed delete. Two objects were stale and "
+        "one failed, so the warning is the only signal that anything was left "
+        "behind (CF-308, #358)."
+    )
+    assert "reclaimed 1 object(s)" in caplog.text, (
+        "the sweep counted a failed delete as reclaimed. `len(stale) - len(failed)` "
+        "is what keeps that count honest; without it the log says two objects "
+        "were freed when one is still in the bucket (CF-308, #358)."
+    )
 
 
 @pytest.mark.parametrize(
