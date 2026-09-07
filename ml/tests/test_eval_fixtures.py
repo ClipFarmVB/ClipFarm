@@ -9,6 +9,7 @@ show up as a plausible-looking number rather than an error.
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -370,3 +371,56 @@ class TestGroundTruthTierFilter:
             f"ground_truth_tiers, so a shortfall means a clip was re-tiered "
             f"out of scoring or ground_truth_tiers was narrowed."
         )
+
+
+class TestTheFrameHeightGuardSeparatesItsTwoCauses:
+    """
+    `_assert_declared_frame_height` now answers two different questions, and
+    conflating them sends the operator to the wrong place.
+
+    A height that disagrees with the fixture means the source is not the labeled
+    video — re-upload or re-label. A height of 0 means OpenCV could not decode
+    the container at all (truncated download, missing codec), and the video is
+    very likely fine. Reporting the second as the first is a re-labelling errand
+    against a correct fixture.
+
+    Newly reachable on the highlight path: before test1.json declared
+    `source_frame_height`, the helper returned early and never saw a 0.
+    """
+
+    def _fixture(self, declared):
+        return SimpleNamespace(raw={"source_frame_height": declared} if declared else {})
+
+    @pytest.mark.parametrize("mode,flag", [("deadtime", "--windows-json"),
+                                           ("highlight", "--clips-json")])
+    def test_a_zero_height_is_reported_as_a_decode_failure(self, mode, flag):
+        with pytest.raises(SystemExit) as exc:
+            harness._assert_declared_frame_height(
+                self._fixture(360), 0, "test1", "raw/x.mp4", mode)
+        msg = str(exc.value)
+        assert "decode failure" in msg and "not a fixture mismatch" in msg
+        assert flag in msg, "the remediation flag must match the mode"
+        assert "re-label" not in msg.lower(), (
+            "a decode failure must not send the operator to re-label a good fixture"
+        )
+
+    def test_a_zero_height_fails_even_when_the_fixture_declares_nothing(self):
+        """
+        The declared-height check is opt-in and returns early without the key.
+        A broken download is not opt-in: it must fail on any fixture, or the
+        guard is only armed for files that were already the most pinned.
+        """
+        with pytest.raises(SystemExit, match="decode failure"):
+            harness._assert_declared_frame_height(
+                self._fixture(None), 0, "test1", "raw/x.mp4", "highlight")
+
+    def test_a_real_mismatch_still_reports_a_mismatch(self):
+        with pytest.raises(SystemExit) as exc:
+            harness._assert_declared_frame_height(
+                self._fixture(360), 1080, "test1", "raw/x.mp4", "deadtime")
+        assert "decode failure" not in str(exc.value)
+        assert "Re-upload the labeled file, or re-label" in str(exc.value)
+
+    def test_a_matching_height_passes(self):
+        harness._assert_declared_frame_height(
+            self._fixture(360), 360, "test1", "raw/x.mp4", "deadtime")

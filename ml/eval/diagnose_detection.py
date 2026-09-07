@@ -68,6 +68,7 @@ def main() -> None:
 
     import cv2
 
+    from app.config import settings
     from app.services import storage as s3
     from app.workers.tasks import _track_ball_cached
     from ml.pipeline.ball import find_contacts
@@ -89,7 +90,13 @@ def main() -> None:
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
-        contacts = find_contacts(tracker, frame_height=frame_h)
+        # Reads the CF-174 switch from `settings` rather than mirroring it:
+        # this tool already imports the app to reach R2, so it is on the same
+        # footing as harness.py and not on tune_contacts'.
+        contacts = find_contacts(
+            tracker, frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
+        )
 
     pos_times = sorted(p.time for p in tracker.positions)
     con_times = sorted(float(c["time"]) for c in contacts)

@@ -39,6 +39,14 @@ from ml.pipeline.dead_time import active_windows_from_contacts, bridge_windows_b
 COND: dict[str, Any] = dict(gap_seconds=10.0, pad_before=5.0, pad_after=4.0,
                             min_contacts=1, merge_gap_seconds=5.0)
 BRIDGE: dict[str, Any] = dict(speed_pxps=150.0, fast_fraction=0.35, max_bridge_seconds=20.0)
+# The CF-174 kill switch (app.config `ball_contact_scale_enabled`), mirrored the
+# same way and for the same reason as COND/BRIDGE: this tool runs on a dumped
+# track with no app installed, so it cannot read `settings`. It reaches both
+# find_contacts and the motion bridge, exactly as production wires it — a sweep
+# scored with the two halves on different sides of the switch would describe a
+# configuration nothing runs. Held to the app default by
+# test_eval_condense_settings.py.
+NORMALIZE: bool = True
 
 TUNABLES = (
     "CONTACT_RESIDUAL_RATIO", "CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_HIT_SPEED_PXPS",
@@ -71,10 +79,11 @@ def main() -> None:
         for k, v in defaults.items():
             setattr(B, k, overrides.get(k, v))
         try:
-            contacts = B.find_contacts(track, frame_height=frame_h)
+            contacts = B.find_contacts(track, frame_height=frame_h, normalize=NORMALIZE)
             w = active_windows_from_contacts(
                 [{"time": c["time"]} for c in contacts], fx.duration, **COND)
-            w = bridge_windows_by_motion(w, positions, frame_height=frame_h, **BRIDGE)
+            w = bridge_windows_by_motion(w, positions, frame_height=frame_h,
+                                         normalize=NORMALIZE, **BRIDGE)
             s = evaluate_deadtime(fx.keep, w, fx.duration)
             times = sorted(c["time"] for c in contacts)
             hit = i = 0
@@ -100,7 +109,7 @@ def main() -> None:
     # into the middle of the results table, on exactly the fixtures this tool was
     # extended to cover. classify_contact_action passes log=False for the same
     # reason.
-    scale = B._scale_for(frame_h, log=False)
+    scale = B._scale_for(frame_h, log=False, normalize=NORMALIZE)
     units = ("labels below are effective px/s" if scale == 1.0
              else "labels below are REFERENCE px/s — multiply by the scale")
     print(f"fixture frame_height={frame_h} -> CF-174 threshold scale {scale:.2f}"

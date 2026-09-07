@@ -316,6 +316,41 @@ class TestPastTheClampPointItRevertsRatherThanExtrapolating:
         unclamped = 1800 / REFERENCE_FRAME_HEIGHT
         assert ball.CONTACT_HIT_SPEED_PXPS * unclamped >= SEG_MAX_SPEED_PXPS
 
+    def test_the_cap_is_taken_against_the_larger_of_the_two_scaled_floors(self, monkeypatch):
+        """
+        CONTACT_RESIDUAL_MIN_PXPS scales identically to CONTACT_HIT_SPEED_PXPS
+        and gates the same samples, so the clamp has to be derived from
+        whichever reaches SEG_MAX_SPEED_PXPS first.
+
+        The two are equal today, which is what makes this invisible: deriving
+        the cap from the hit speed alone passes every other test in this file.
+        They have been unequal — the committed `baseline` row carries
+        CONTACT_RESIDUAL_MIN_PXPS = 480 — and at that value the residual floor
+        crosses the ceiling at 1080p, inside the validated range and below the
+        clamp, so nothing would have stopped it.
+
+        Asserted as the invariant the config block states, not as an arithmetic
+        restatement of the line: sweep every height, and wherever _scale_for is
+        still applying a scale, neither floor may reach the ceiling. Deriving
+        the clamp from one constant moves the clamp point out to 1440p, so the
+        sweep walks straight through 1080p at scale 3.0 and catches it — which
+        a check that stopped at the *correct* clamp point would not.
+        """
+        monkeypatch.setattr(ball, "CONTACT_RESIDUAL_MIN_PXPS", 480.0)
+        still_scaling = 0
+        for height in range(360, 2161, 60):
+            scale = _scale_for(height, log=False)
+            if scale == 1.0:
+                continue  # reverted to `main`; the invariant is not claimed there
+            still_scaling += 1
+            for name in ("CONTACT_HIT_SPEED_PXPS", "CONTACT_RESIDUAL_MIN_PXPS"):
+                assert getattr(ball, name) * scale < SEG_MAX_SPEED_PXPS, (
+                    f"{name} scaled by {scale:.2f} at {height}p reaches the "
+                    f"{SEG_MAX_SPEED_PXPS:.0f} px/s segmentation ceiling — the "
+                    "two gates are disjoint there and find_contacts returns nothing"
+                )
+        assert still_scaling > 1, "the sweep never reached a scaled height"
+
     def test_past_the_clamp_point_reverts_to_unscaled(self):
         assert _scale_for(2160) == 1.0
         assert _scale_for(int(CLAMP_HEIGHT) + 1) == 1.0

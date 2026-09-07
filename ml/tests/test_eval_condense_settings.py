@@ -18,6 +18,8 @@ import ast
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 REPO = Path(__file__).resolve().parents[2]
@@ -54,6 +56,12 @@ GUARD_TO_KWARG = {
 # rule-based path only. Listed here so the coverage test stays a conscious
 # checkpoint for every new condense_* knob.
 SWITCH_SETTINGS = {"condense_mode"}
+
+# Settings outside the condense_ prefix that the eval tooling still copies, so
+# the coverage test above cannot see them. `ball_contact_scale_enabled` (CF-174)
+# is mirrored as tune_contacts.NORMALIZE and reaches both find_contacts and the
+# motion bridge, which is why drift here would move every swept number.
+NON_CONDENSE_TO_MIRROR = {"ball_contact_scale_enabled": "NORMALIZE"}
 
 
 def _settings_defaults() -> dict[str, object]:
@@ -112,6 +120,21 @@ def _tune_constant(name: str) -> dict[str, object]:
     raise AssertionError(f"{name} not found in {TUNE_PY.name}")
 
 
+def _tune_scalar(name: str) -> object:
+    """The scalar literal assigned to a module-level constant in tune_contacts.py."""
+    tree = ast.parse(TUNE_PY.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+            return ast.literal_eval(value)
+    raise AssertionError(f"{name} not found in {TUNE_PY.name}")
+
+
 class TestTuneContactsMatchesProduction:
     def test_condense_window_settings_match(self):
         settings = _settings_defaults()
@@ -132,6 +155,56 @@ class TestTuneContactsMatchesProduction:
             assert bridge[key] == settings[setting], (
                 f"tune_contacts BRIDGE[{key!r}]={bridge[key]} but "
                 f"app.config {setting}={settings[setting]}"
+            )
+
+    def test_non_condense_mirrors_match(self):
+        """
+        `ball_contact_scale_enabled` is copied into tune_contacts the same way
+        COND and BRIDGE are, but it carries no `condense_` prefix, so the
+        coverage test below cannot see it and would not notice it drifting.
+
+        Drift here is worse than on a condense knob, not better: the switch
+        moves the contact gates *and* the bridge, so a tuner mirroring the wrong
+        value re-scores every row of every sweep against a detector production
+        is not running.
+        """
+        settings = _settings_defaults()
+        for setting, constant in NON_CONDENSE_TO_MIRROR.items():
+            assert setting in settings, f"app.config lost {setting!r}"
+            assert _tune_scalar(constant) == settings[setting], (
+                f"tune_contacts {constant}={_tune_scalar(constant)} but "
+                f"app.config {setting}={settings[setting]}"
+            )
+
+    @pytest.mark.parametrize("callee", ["find_contacts", "bridge_windows_by_motion"])
+    def test_the_switch_reaches_both_halves_of_the_condense_path(self, callee):
+        """
+        The mirrored value is only worth pinning if it is actually passed to
+        both consumers. CF-174's switch is one setting precisely so the contact
+        gates and the motion bridge cannot land on opposite sides of it, and
+        `tune_contacts` is the copy where that wiring is easiest to drop —
+        nothing else in this suite would notice, because the tuner needs a ball
+        track from R2 to run at all.
+
+        Asserted over the parsed call rather than a source substring: a
+        substring check passes or fails on formatting, and the two earlier
+        versions of this idea in the CF-174 branch were both replaced for
+        exactly that. This reads the keyword off the AST, so rewrapping the
+        call is invisible and dropping the argument is not.
+        """
+        tree = ast.parse(TUNE_PY.read_text(encoding="utf-8"))
+        calls = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name | ast.Attribute)
+            and (n.func.id if isinstance(n.func, ast.Name) else n.func.attr) == callee
+        ]
+        assert calls, f"tune_contacts no longer calls {callee}"
+        for call in calls:
+            kwargs = {k.arg for k in call.keywords if k.arg}
+            assert "normalize" in kwargs, (
+                f"tune_contacts calls {callee} at line {call.lineno} without "
+                "normalize=, so that half of the sweep ignores the CF-174 switch"
             )
 
     def test_every_condense_setting_is_covered(self):

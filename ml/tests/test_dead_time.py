@@ -207,6 +207,49 @@ class TestBridgeWindowsByMotion:
             bridge_windows_by_motion([(0.0, 10.0), (20.0, 30.0)], positions)
         assert "without frame_height" in caplog.text
 
+    def test_the_kill_switch_restores_mains_bridge(self):
+        """
+        CF-174's `ball_contact_scale_enabled` reaches this function too, and it
+        has to mean the same thing here as it does in find_contacts: `main`'s
+        behaviour, which for this threshold is raw px/s.
+
+        Same track and same 1080p height as the case above, where scaling makes
+        300 px/s ordinary handling and refuses the bridge. With the switch off
+        the threshold is 150 rather than 450, so the gap bridges again — the
+        answer `main` gives, reached without pretending the video is 360p.
+        """
+        positions = ball_path(10.0, 20.0, speed_pxps=300.0)
+        off = bridge_windows_by_motion(
+            [(0.0, 10.0), (20.0, 30.0)], positions, frame_height=1080, normalize=False,
+        )
+        assert off == [(0.0, 30.0)]
+        # And it is `main`'s answer specifically: identical to the unscaled call
+        # `main` makes, which passes no frame height at all.
+        assert off == bridge_windows_by_motion(
+            [(0.0, 10.0), (20.0, 30.0)], positions,
+        )
+
+    def test_the_kill_switch_is_silent(self, caplog):
+        """
+        The missing-frame_height warning exists because an unscaled 1080p bridge
+        is a bug. With the switch off it is the requested behaviour, and a real
+        frame height was supplied — warning there would fire on every window of
+        every game an operator deliberately rolled back.
+        """
+        import logging
+        positions = ball_path(10.0, 20.0, speed_pxps=300.0)
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.dead_time"):
+            bridge_windows_by_motion(
+                [(0.0, 10.0), (20.0, 30.0)], positions,
+                frame_height=1080, normalize=False,
+            )
+            # Also with no height at all: off means the height is never read, so
+            # there is nothing to warn about either way.
+            bridge_windows_by_motion(
+                [(0.0, 10.0), (20.0, 30.0)], positions, normalize=False,
+            )
+        assert caplog.text == ""
+
     def test_single_window_unchanged(self):
         assert bridge_windows_by_motion([(0.0, 10.0)], ball_path(0, 10, 300)) == [(0.0, 10.0)]
 

@@ -231,6 +231,11 @@ def _build_condense_windows(
             # and dead time survives the bridge. CF-187 moved this call in here;
             # the frame height it needs is already a parameter of this function.
             frame_height=frame_height,
+            # The same kill switch find_contacts gets. Both halves of the
+            # condense path move together: off must mean `main`'s condense
+            # behaviour, not `main`'s contacts joined by a scaled bridge, which
+            # is a combination nothing has measured.
+            normalize=settings.ball_contact_scale_enabled,
         )
     return windows, built_by
 

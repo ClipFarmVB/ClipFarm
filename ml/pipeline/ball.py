@@ -133,11 +133,21 @@ CONTACT_RESIDUAL_MIN_PXPS = 240.0   # ...and this absolute floor (px/s, above no
 CONTACT_HIT_SPEED_PXPS    = 240.0   # px/s: a real hit has speed on at least one side
 MIN_CONTACT_SPACING       = 0.6     # seconds: debounce — one hit can't fire twice
 MAX_SAMPLE_GAP_SEC        = 1.0     # skip triples spanning a detection gap
-# The scale factor is capped so the scaled hit-speed floor cannot reach
-# SEG_MAX_SPEED_PXPS. _segment_track splits any pair faster than that ceiling,
-# so speed inside a segment is always below it — once CONTACT_HIT_SPEED_PXPS *
-# scale meets it the two constraints are disjoint and find_contacts returns
-# nothing at all. Unclamped that lands at 1800p, and phones shoot 2160p.
+# The scale factor is capped so no scaled floor can reach SEG_MAX_SPEED_PXPS.
+# _segment_track splits any pair faster than that ceiling, so speed inside a
+# segment is always below it — once a scaled floor meets it the two constraints
+# are disjoint and find_contacts returns nothing at all. Unclamped that lands at
+# 1800p, and phones shoot 2160p.
+#
+# "No scaled floor", not "the hit-speed floor": CONTACT_RESIDUAL_MIN_PXPS is
+# multiplied by the same scale and gates the same samples, so the cap is taken
+# against whichever of the two is larger. They are equal today, which is exactly
+# why this is easy to get wrong — deriving the cap from CONTACT_HIT_SPEED_PXPS
+# alone reads as correct and silently stops protecting the moment they diverge.
+# They have diverged before: the committed `baseline` row in
+# ml/eval/results/test1_deadtime.jsonl carries CONTACT_RESIDUAL_MIN_PXPS = 480,
+# where the residual floor crosses the ceiling at 1080p — inside the range this
+# PR ships as validated, and under a clamp that would not have fired.
 #
 # Read the cap as damage control, NOT as 4K support. It moves the floor and
 # cannot move the ceiling, so the admissible band keeps closing with resolution:
@@ -595,7 +605,10 @@ def _scale_for(frame_height: int, *, log: bool = True, normalize: bool = True) -
         return 1.0
 
     scale        = frame_height / REFERENCE_FRAME_HEIGHT
-    max_scale    = CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS / CONTACT_HIT_SPEED_PXPS
+    # max(), not CONTACT_HIT_SPEED_PXPS: both floors scale, so the cap has to be
+    # taken against the one that reaches the ceiling first. See the config block.
+    max_scale    = (CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS
+                    / max(CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS))
     clamp_height = max_scale * REFERENCE_FRAME_HEIGHT
 
     if frame_height > clamp_height:
@@ -1082,7 +1095,21 @@ def detect_contacts(
     Full pipeline: detect ball -> track trajectory -> find contacts.
 
     Returns list of contact dicts with keys:
-      time, frame, x, y, angle_change, speed_change
+      time, frame, x, y, angle_change, speed_change, residual,
+      speed_before, speed_after, action, action_confidence
+
+    **`action` changed here in CF-174, and not only as a threshold shift.** This
+    used to call find_contacts with no frame height, which disables trajectory
+    classification outright: every contact came back `("unknown", 0.42)`. It now
+    reads the height from the video, so contacts carry real labels — `spike`,
+    `dig`, `set` and the rest — normalized into REFERENCE_FRAME_HEIGHT space.
+
+    A caller that treated `action` as a constant, or that never saw the key
+    because the old docstring did not list it, gets different output from the
+    same video. Nothing in this repo calls this function today (the worker uses
+    find_contacts directly), which is why the change is safe to make rather than
+    a reason not to document it: the module header offers this as the public
+    entry point, so the next caller arrives through here.
 
     api_key defaults to the ROBOFLOW_API_KEY environment variable.
     sample_every: run inference every N frames (higher = faster, less precise).
@@ -1106,6 +1133,11 @@ def detect_rallies(
 
     Returns list of rally dicts ready for generate_clips():
       {start, end, action, confidence, labels}
+
+    Same CF-174 change as detect_contacts: this used to pass no frame height, so
+    every contact was `unknown` and `action` here was whatever contacts_to_rallies
+    makes of a uniform label set. It now passes the decoded height, which both
+    scales the contact gates and switches on classification.
     """
     key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
     if not key:

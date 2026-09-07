@@ -753,10 +753,18 @@ class Settings(BaseSettings):
     #
     # A switch, not a knob: it takes the whole scaling out, and turning it off on a
     # non-360p deployment restores a detector this PR argues is measurably wrong for
-    # that footage. It does not reach the condense motion bridge, which scales
-    # unconditionally (see condense_bridge_speed_pxps) — off means `main`'s contacts
-    # against a scaled bridge, the same asymmetry documented for footage above the
-    # clamp point.
+    # that footage.
+    #
+    # It reaches BOTH halves of the pipeline CF-174 touched — find_contacts (and,
+    # through it, classify_contact_action) and the condense motion bridge. That is
+    # the point of it being one setting: off is `main`'s behaviour, which is the
+    # half with measured evidence behind it. Gating only the contacts would leave
+    # the bridge at 3x on a 1080p upload, i.e. a third combination nothing has ever
+    # scored — the worst thing for a lever whose whole job is incident response.
+    #
+    # It does not reach the >1440p clamp in ball._scale_for, which is already
+    # `main`'s behaviour there; see the asymmetry note in bridge_windows_by_motion
+    # for what the two halves do above that height while the switch is on.
     ball_contact_scale_enabled: bool = True
     # Which keep-window builder the condense stage uses. A failure *inside* the
     # guarded builder falls back to "rules", so a feature mismatch degrades the

@@ -118,6 +118,17 @@ docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev
   `--dump-windows` on an `--offline` run saves the derived windows so a later
   re-score needs no container and no download.
 
+> **A recorded row describes the tree it was run against, not the current one,
+> and the `git_commit` field is how you tell.** The CF-174 rows tagged
+> `cf174-review-fixes` were recorded at `29a83a5`; their `config_snapshot`
+> still lists `MIN_SPEED_PXPS: 120.0`, a constant that branch later deleted, so
+> the rows are visibly older than the head that ships them. Nothing has since
+> changed the shipping path *for those fixtures* — all three are ≤1080p, the
+> later commits move only the >1440p clamp, logging, comments and tests, and
+> `ball_contact_scale_enabled` defaults on — but that is an **argument that they
+> would reproduce, not a re-run**: re-recording needs the R2 ball caches. Read a
+> row against its own `git_commit` before comparing it to anything.
+
 `--clips-json` input shape:
 ```json
 {
