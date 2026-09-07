@@ -251,9 +251,15 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     from app.services import storage
 
     # Three stale, one failure: reclaimed is 2 and failed is 1, so the assertion
-    # below can tell `len(stale) - len(failed)` from `len(failed)` and from a
-    # literal. With two objects every one of those is 1 and the reclaimed count
+    # below can tell `len(stale) - len(failed)` from `len(failed)` and from
+    # `len(stale)`. With two objects all three are 1 and the reclaimed count
     # pins nothing — mutating it to `len(failed)` left this test green.
+    #
+    # It still cannot tell the expression from a constant that happens to equal
+    # it: a literal `2` and `len(stale) - 1` both survive, measured. Separating
+    # those needs a second case with a different failure count, which is more
+    # fixture than the behaviour is worth — so the limit is written down rather
+    # than implied by a passing test.
     rows = [_row("a"), _row("b"), _row("c")]
     fakes = _Fakes(objects=[r["obj"] for r in rows])
     _install(monkeypatch, fakes)
@@ -264,9 +270,9 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
         tasks._sweep_expired_raw_uploads()  # must not raise
 
     assert "1 object(s) could not be deleted" in caplog.text, (
-        "the sweep did not report the failed delete. Two objects were stale and "
-        "one failed, so the warning is the only signal that anything was left "
-        "behind (CF-308, #358)."
+        "the sweep did not report the failed delete. Three objects were stale "
+        "and one failed, so the warning is the only signal that anything was "
+        "left behind (CF-308, #358)."
     )
     assert "reclaimed 2 object(s)" in caplog.text, (
         "the sweep counted a failed delete as reclaimed. `len(stale) - len(failed)` "

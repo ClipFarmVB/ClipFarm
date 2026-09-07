@@ -137,6 +137,8 @@ def test_secret_values_applies_the_minimum_length_guard(monkeypatch, _secret_cac
 
     values = observability._secret_values()
 
+    # `values` is a tuple, so `in` is exact equality rather than a substring
+    # test — which matters here, since "12345" is a prefix of "123456".
     assert "12345" not in values, (
         "a 5-character secret became a scrub pattern; the guard admits one "
         "character below its stated threshold of 6 (CF-308, #358)."
