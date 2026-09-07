@@ -105,9 +105,14 @@ def test_secret_values_applies_the_minimum_length_guard(monkeypatch, _secret_cac
     This asserts an exclusion, which needs a short secret to exist. The version
     this replaces asserted `all(len(v) >= 6 ...)` over the *shipped defaults*,
     where every candidate is either empty — dropped by the `if c` half, which
-    survives deleting the length guard — or a 24-character connection URL. So it
-    passed with the guard deleted, in CI and on any default-config machine
-    (CF-308, #358).
+    survives deleting the length guard — or a connection URL far longer than the
+    threshold. So it passed with the guard deleted, in CI and on any
+    default-config machine (CF-308, #358).
+
+    No length is quoted for those URLs on purpose: an earlier version said "a
+    24-character connection URL", which is three of the four defaults —
+    `database_url` is 62 — and it is a fact about shipped config that nothing
+    here pins, so it would rot the same way the assertion it describes did.
 
     Both values are patched rather than one being read off the ambient config:
     `Settings` loads `api/.env` if one exists, so an assertion about a value
