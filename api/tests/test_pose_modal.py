@@ -725,6 +725,23 @@ def _image_spec_arguments(path: Path) -> list[str]:
     return arguments
 
 
+# Sources whose dependency text is the image spec rather than their lines.
+# Only the ball image: see `_dependency_text` for why this is not every `.py`.
+IMAGE_SPEC_SOURCES = frozenset({"ml/modal_app.py"})
+
+
+def _reads_as_an_image_spec(path: Path) -> bool:
+    """Whether `path` is one of the sources read through its image spec.
+
+    A path outside the repository is a spec a test just wrote, so it is one by
+    construction — the tables build them precisely to exercise this reading.
+    """
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix() in IMAGE_SPEC_SOURCES
+    except ValueError:
+        return True
+
+
 def _dependency_text(path: Path) -> str:
     """The text of a dependency source, read the way that file should be read.
 
@@ -738,11 +755,25 @@ def _dependency_text(path: Path) -> str:
     lines, so an inline `# not 1.26.4` beside a pin is no longer seen — nothing
     is lost, since a comment is not a pin and a wrong pin still fails as a
     version split. And not every string literal either, so a pin in a helper or
-    a docstring is out of scope; only what reaches the image counts. Both
-    narrowings bind `ml/modal_pose.py` as well as `ml/modal_app.py`, which is
-    the point of there being one function.
+    a docstring is out of scope; only what reaches the image counts.
+
+    **Both narrowings apply to the ball image only** (`IMAGE_SPEC_SOURCES`).
+    An earlier version applied them to every `.py` source, which read as
+    consistency — one function, one reading — and was a regression on a file
+    this card does not own. `ml/modal_pose.py` was already a consistency
+    source, read as lines; routing it through the spec dropped a pin applied
+    at `@app.function(image=image.pip_install(...))` or in a second image,
+    each of which used to be caught as a version split. It also subjected that
+    file to `_image_spec_arguments`' asserts, which reject ordinary Modal
+    idioms — `.run_function(fn)`, `secrets=[modal.Secret.from_name(...)]` —
+    with advice to "write it out" that cannot be followed for a function
+    reference, and hard-fail on `image: modal.Image = ...` or a tuple target.
+
+    So the strict reading is scoped to the file CF-359 is fixing, where seeing
+    through `pip_install` is the whole point. Widening it to another image is
+    a change to that image's card, with its asserts made followable first.
     """
-    if path.suffix == ".py":
+    if path.suffix == ".py" and _reads_as_an_image_spec(path):
         return "\n".join(_image_spec_arguments(path))
     return _code_lines(path)
 
@@ -750,13 +781,18 @@ def _dependency_text(path: Path) -> str:
 # What `inference==1.3.3` will accept. The ball image's numpy has to land in
 # here or the image does not build (CF-359).
 INFERENCE_NUMPY_WINDOW = SpecifierSet(">=2.0.0,<2.4.0")
-INFERENCE_OPENCV_WINDOW = SpecifierSet(">=4.8.1.78,<=4.10.0.84")
 
-# The same window as its two endpoints, because `_confined_to_the_opencv_window`
-# compares bounds against them rather than asking whether a sample version is in
-# the set. Kept beside it so the two spellings of the window cannot drift.
+# The opencv window, written once. `_confined_to_the_opencv_window` compares
+# bounds against the endpoints while everything else asks whether a version is
+# in the set, so both spellings are needed — but a comment claiming they "cannot
+# drift" is not a mechanism, and a round pointed out they were two independent
+# literals with nothing tying them together. The set is now built from the
+# endpoints, so there is one place to change.
 OPENCV_WINDOW_FLOOR = Version("4.8.1.78")
 OPENCV_WINDOW_CEILING = Version("4.10.0.84")
+INFERENCE_OPENCV_WINDOW = SpecifierSet(
+    f">={OPENCV_WINDOW_FLOOR},<={OPENCV_WINDOW_CEILING}"
+)
 
 
 def _admits_a_numpy_2(constraint: str) -> bool:
@@ -777,7 +813,8 @@ def _admits_a_numpy_2(constraint: str) -> bool:
         specifier = SpecifierSet(constraint)
     except InvalidSpecifier as exc:  # a typo should be loud, not permissive
         raise AssertionError(
-            f"ml/modal_app.py has an unparseable numpy constraint {constraint!r}: {exc}"
+            "an image spec has an unparseable numpy constraint"
+            f" {constraint!r}: {exc}"
         ) from exc
 
     candidates = {Version("2.0.0"), Version("2.3.5")}
@@ -1027,7 +1064,11 @@ def _numpy_pin_problem(text: str) -> str | None:
         r"(?<![A-Za-z0-9_.\-])numpy(?![A-Za-z0-9_.\-])"
         r"[^\S\n]*(?:===|==|~=|!=|<=|>=|<|>)[^\S\n]*,?$",
         text.rstrip(),
-        re.IGNORECASE,
+        # Per line, not per string. `$` alone anchors at the end of the whole
+        # argument, so `numpy==` on any but the last line of a multi-command
+        # string fell through to the scan below, matched an empty constraint
+        # and was read as the everything-admitting specifier set.
+        re.IGNORECASE | re.MULTILINE,
     ):
         return (
             f'contains the fragment "{text}", a numpy constraint with no'
@@ -1084,7 +1125,8 @@ def _admits_an_inference_opencv(constraint: str) -> bool:
         specifier = SpecifierSet(constraint)
     except InvalidSpecifier as exc:  # a typo should be loud, not permissive
         raise AssertionError(
-            f"ml/modal_app.py has an unparseable opencv constraint {constraint!r}: {exc}"
+            "an image spec has an unparseable opencv constraint"
+            f" {constraint!r}: {exc}"
         ) from exc
 
     candidates = {Version("4.8.1.78"), Version("4.10.0.84")}
@@ -1279,6 +1321,19 @@ def _headless_pin_problem_in_text(text: str) -> str | None:
                 " A command line is a working install: `run_commands` emits"
                 " `RUN`, and `RUN` is `/bin/sh -c` (CF-359, #440)."
             )
+        # The same second check the requirement path makes. Leaving it out
+        # here made the two paths disagree: a constraint satisfiable by
+        # nothing was refused when written as a requirement and accepted when
+        # written on a command line, which is the asymmetry that let a
+        # command line install the bug in the first place.
+        if not _admits_an_inference_opencv(constraint):
+            return (
+                f'constrains opencv-python-headless inside "{text}" as'
+                f' "{constraint}", which admits no version in'
+                " >=4.8.1.78,<=4.10.0.84, so nothing can satisfy it alongside"
+                " inference==1.3.3 and the image build fails with"
+                " ResolutionImpossible. See CF-359 (#440)."
+            )
     return None
 
 
@@ -1389,6 +1444,11 @@ _CAPPING_NUMPY_SPELLINGS = [
     "numpy [cffi]==1.26.4",
     "numpy @ https://x/numpy-1.26.4-cp311-none-any.whl",
     "numpy==",
+    # A dangling operator that is not at the end of the string. The anchor
+    # was `$` without MULTILINE, so this fell past the fragment check into
+    # the constraint scan, matched empty, and read as the specifier set that
+    # admits everything.
+    "pip install numpy==\n && pip install boto3",
     "pip install numpy<2",
     "pip install numpy\\\n==1.26.4",
 ]
@@ -1461,8 +1521,14 @@ _UNBOUNDED_HEADLESS_SPELLINGS = [
     "opencv-python-headless==5.0.0.93",
     "opencv-python-headless[extra]",
     "opencv-python-headless @ https://x/opencv_python_headless-5.0.0.93-any.whl",
-    "opencv-python-headless\
->=5.0.0",
+    # A *shell* line continuation, so the backslash-newline is in the string
+    # rather than in this file's source. Written with an explicit escape
+    # because the source-continuation spelling collapses at parse time into a
+    # plain duplicate of the row above, which is what these two rows were:
+    # the opencv half had no coverage of `_join_shell_continuations` at all
+    # while appearing to have two rows of it.
+    "opencv-python-headless\\\n>=5.0.0",
+    "pip install opencv-python-headless\\\n>=5.0.0",
     # Each of these installs a real release outside the window. The first is
     # the one a round found: it admits 4.12.0.88 and none of the four versions
     # the guard used to sample (4.8.1.77, 4.11.0.86, 5.0.0.93, 99.0.0), so it
@@ -1489,6 +1555,11 @@ _UNBOUNDED_HEADLESS_SPELLINGS = [
     # deletes green.
     "opencv-python-headless>=4.10.0.84,<=4.9.0.80",
     "opencv-python-headless==4.9.0.80,!=4.9.0.80",
+    # The same two on a command line. They were accepted there while the
+    # requirement spellings above were refused, because the command-line path
+    # ran the bound check and not the satisfiability one.
+    'pip install "opencv-python-headless>=4.10.0.84,<=4.9.0.80"',
+    "pip install opencv-python-headless==4.9.0.80,!=4.9.0.80",
 ]
 
 # Legal, and rejecting any of these would block the file as it stands or a
@@ -1510,8 +1581,7 @@ _LEGAL_HEADLESS_SPELLINGS = [
     "opencv-python",
     "opencv-contrib-python",
     "numpy==2.1.0",
-    "opencv-python-headless\
-==4.10.0.84",
+    "opencv-python-headless\\\n==4.10.0.84",
 ]
 
 
@@ -1565,6 +1635,51 @@ def test_a_confined_requirement_this_guard_still_refuses(spelling, tmp_path):
         f"{spelling!r} is now read as bounded. If that is deliberate, delete "
         "this test and the paragraph in `_confined_to_the_opencv_window` that "
         "promises it is refused."
+    )
+
+
+def test_only_the_ball_image_is_read_through_its_image_spec(tmp_path):
+    """The strict reading must not spread to the other `.py` sources.
+
+    `ml/modal_pose.py` was a consistency source before this card, read as
+    lines. Routing every `.py` through the image spec dropped any pin outside
+    the `image = ...` expression — one applied at
+    `@app.function(image=image.pip_install(...))`, or in a second image — each
+    of which used to be caught as a version split. It also subjected that file
+    to asserts that reject ordinary Modal idioms.
+
+    Asserted rather than described, because the previous scoping was a
+    docstring sentence claiming the narrowing bound both files "which is the
+    point", and nothing tested either way.
+    """
+    pose = REPO_ROOT / "ml" / "modal_pose.py"
+    assert not _reads_as_an_image_spec(pose), (
+        "ml/modal_pose.py is read through its image spec again. That drops "
+        "pins this file used to catch and binds it to asserts CF-359 has no "
+        "business imposing on it."
+    )
+    # The reading itself, not only the predicate that selects it — routing
+    # every `.py` through the spec bypasses the predicate entirely, and an
+    # assertion on the predicate alone stays green while it does.
+    assert _dependency_text(pose) == _code_lines(pose), (
+        "ml/modal_pose.py is no longer read as its lines. A pin at "
+        "`@app.function(image=...)` or in a second image is invisible again."
+    )
+    assert _reads_as_an_image_spec(REPO_ROOT / "ml" / "modal_app.py"), (
+        "the ball image must be read through its spec — seeing through "
+        "pip_install is what CF-359 (#440) needs."
+    )
+
+    # The behaviour the scoping protects: a pin outside the image expression.
+    source = tmp_path / "second_image.py"
+    source.write_text(
+        'image = base.pip_install("numpy==2.1.0")\n'
+        'other = base.pip_install("numpy==1.26.4")\n',
+        encoding="utf-8",
+    )
+    assert "1.26.4" in _code_lines(source), (
+        "a pin in a second image is invisible to the line reading, so the "
+        "consistency check on ml/modal_pose.py would not catch it either."
     )
 
 
