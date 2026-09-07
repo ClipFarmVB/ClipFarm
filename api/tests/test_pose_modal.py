@@ -794,6 +794,34 @@ INFERENCE_OPENCV_WINDOW = SpecifierSet(
     f">={OPENCV_WINDOW_FLOOR},<={OPENCV_WINDOW_CEILING}"
 )
 
+# Every release each project actually published inside its window, read from
+# PyPI's JSON API on 2026-09-07 rather than reasoned out.
+#
+# The `_admits_a_*` helpers below decide satisfiability by probing candidates,
+# and probing only the endpoints answers "admits nothing in the window" for
+# every requirement that excludes both and admits something between them:
+# `>4.8.1.78,<4.10.0.84` is satisfied by the real 4.9.0.80 and was refused with
+# a message saying no such version exists. That is the third time a helper here
+# has asserted "admits no ..." about a version that ships — it was retracted for
+# `numpy<2.4` and again for `numpy==2.1.0`, and it came back because the
+# candidate set, not the comparison, was the thing that was too small.
+#
+# Staleness runs one way only. A release published after this date is missing
+# from the list, so a requirement admitting nothing but that release reads as
+# unsatisfiable and fails loudly — the direction this file is allowed to be
+# wrong in. A missing release can never make an escape look confined.
+_PUBLISHED_OPENCV_IN_WINDOW = [
+    Version(v) for v in ("4.8.1.78", "4.9.0.80", "4.10.0.82", "4.10.0.84")
+]
+_PUBLISHED_NUMPY_IN_WINDOW = [
+    Version(v) for v in (
+        "2.0.0", "2.0.1", "2.0.2",
+        "2.1.0", "2.1.1", "2.1.2", "2.1.3",
+        "2.2.0", "2.2.1", "2.2.2", "2.2.3", "2.2.4", "2.2.5", "2.2.6",
+        "2.3.0", "2.3.1", "2.3.2", "2.3.3", "2.3.4", "2.3.5",
+    )
+]
+
 
 def _admits_a_numpy_2(constraint: str) -> bool:
     """Whether a numpy requirement admits any version inference would accept.
@@ -805,9 +833,12 @@ def _admits_a_numpy_2(constraint: str) -> bool:
     dependency is free: `packaging` is one of pytest's own requirements, so it
     is present anywhere this suite runs.
 
-    Candidates are the window's endpoints plus every version literal the
-    constraint itself names. That is what makes an exact pin work: the only
-    version `numpy==2.1.0` admits is one the constraint told us about.
+    Candidates are every release published inside the window, plus every
+    version literal the constraint itself names. The literals are what make an
+    exact pin work — the only version `numpy==2.1.0` admits is one the
+    constraint told us about — and the published list is what stops a
+    requirement that excludes both endpoints and admits something between them
+    reading as unsatisfiable. See `_PUBLISHED_NUMPY_IN_WINDOW`.
     """
     try:
         specifier = SpecifierSet(constraint)
@@ -817,7 +848,7 @@ def _admits_a_numpy_2(constraint: str) -> bool:
             f" {constraint!r}: {exc}"
         ) from exc
 
-    candidates = {Version("2.0.0"), Version("2.3.5")}
+    candidates = set(_PUBLISHED_NUMPY_IN_WINDOW)
     for literal in re.findall(r"[0-9][0-9A-Za-z.*+!]*", constraint):
         try:
             candidates.add(Version(literal.rstrip(".*")))
@@ -1117,9 +1148,16 @@ def _admits_an_inference_opencv(constraint: str) -> bool:
     """Whether a headless requirement admits any version `inference` allows.
 
     The same shape as `_admits_a_numpy_2`, and for the same reason: candidates
-    are the window's endpoints plus every version the constraint itself names,
-    so an exact pin is decided by the version it told us about rather than by
-    sampling.
+    are every release published inside the window plus every version the
+    constraint itself names, so an exact pin is decided by the version it told
+    us about and a range excluding both endpoints is decided by what actually
+    ships between them. See `_PUBLISHED_OPENCV_IN_WINDOW`.
+
+    Distinct from `_confined_to_the_opencv_window`, which compares *bounds*
+    against the endpoints and is deliberately conservative about releases that
+    do not exist. This one asks whether anything installable satisfies the
+    requirement, so answering from the endpoints alone made it say "admits no
+    version in the window" about requirements 4.9.0.80 satisfies.
     """
     try:
         specifier = SpecifierSet(constraint)
@@ -1129,7 +1167,7 @@ def _admits_an_inference_opencv(constraint: str) -> bool:
             f" {constraint!r}: {exc}"
         ) from exc
 
-    candidates = {Version("4.8.1.78"), Version("4.10.0.84")}
+    candidates = set(_PUBLISHED_OPENCV_IN_WINDOW)
     for literal in re.findall(r"[0-9][0-9A-Za-z.*+!]*", constraint):
         try:
             candidates.add(Version(literal.rstrip(".*")))
@@ -1280,8 +1318,17 @@ def _headless_pin_problem(text: str) -> str | None:
 
 # The distribution name as pip canonicalises it, bounded so `opencv-python`
 # and `opencv-contrib-python` cannot match it.
+#
+# `.` is a separator alongside `-` and `_`: PEP 503 normalises any run of them
+# to a single `-`, so `opencv.python.headless` names this distribution and pip
+# installs it. The requirement path has always known that — it goes through
+# `canonicalize_name` — and this text scan did not, which put a working
+# `pip install opencv.python.headless` past the guard while the identical
+# requirement spelling was caught. That is the requirement-vs-command-line
+# asymmetry `4b4cce0` closed, reopened one separator over, and it is the reason
+# the two paths are now written to agree about the name as well as the check.
 _HEADLESS_NAME = (
-    r"(?<![A-Za-z0-9_.\-])opencv[-_]python[-_]headless(?![A-Za-z0-9_.\-])"
+    r"(?<![A-Za-z0-9_.\-])opencv[-_.]python[-_.]headless(?![A-Za-z0-9_.\-])"
 )
 
 
@@ -1465,6 +1512,11 @@ _LEGAL_NUMPY_SPELLINGS = [
     "msgpack-numpy==0.4.8",
     "pip install requests",
     "pip install numpy\\\n==2.1.0",
+    # Excludes both window endpoints and admits 2.1.x and 2.2.x, all of which
+    # ship. Endpoint-only candidates read it as admitting no numpy 2 — the
+    # same false rejection, and the same false message, that was retracted for
+    # `numpy<2.4` and for `numpy==2.1.0`.
+    "numpy>2.0.0,<2.3.0",
 ]
 
 # Routes a shell reassembles that this guard does **not** catch, demonstrated
@@ -1560,6 +1612,12 @@ _UNBOUNDED_HEADLESS_SPELLINGS = [
     # ran the bound check and not the satisfiability one.
     'pip install "opencv-python-headless>=4.10.0.84,<=4.9.0.80"',
     "pip install opencv-python-headless==4.9.0.80,!=4.9.0.80",
+    # A dot-separated name. PEP 503 normalises it to the same distribution and
+    # pip installs it unpinned, so it is the bug this guard exists to catch —
+    # and the text scan could not see it while `canonicalize_name` on the
+    # requirement path could.
+    "pip install opencv.python.headless",
+    "opencv.python.headless",
 ]
 
 # Legal, and rejecting any of these would block the file as it stands or a
@@ -1582,6 +1640,13 @@ _LEGAL_HEADLESS_SPELLINGS = [
     "opencv-contrib-python",
     "numpy==2.1.0",
     "opencv-python-headless\\\n==4.10.0.84",
+    # Bounded strictly inside the window. 4.9.0.80 and 4.10.0.82 both ship in
+    # here, so this installs a version inference can follow — but every
+    # candidate was an endpoint, both are excluded, and it was refused as
+    # admitting nothing. The dot-separated name is legal in the same breath
+    # once it carries a pin.
+    "opencv-python-headless>4.8.1.78,<4.10.0.84",
+    "pip install opencv.python.headless==4.10.0.84",
 ]
 
 

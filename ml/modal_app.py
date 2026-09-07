@@ -39,7 +39,7 @@ image = (
         # opencv-contrib-python at <=4.10.0.84 and both land in this image:
         # unpinned, pip resolves headless to 5.x, and three distributions
         # write the same `cv2` package across a major version with whichever
-        # installs last winning (CF-278). Matching ml/modal_pose.py and
+        # installs last winning (CF-359). Matching ml/modal_pose.py and
         # ml/requirements.txt is a consequence, not the reason — bumping all
         # of them together would still break this image, which is what
         # test_the_ball_image_pins_opencv_where_inference_can_follow asserts.
