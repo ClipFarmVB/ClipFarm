@@ -537,9 +537,9 @@ Three corollaries, each of which had to be learned separately:
 
 **One class of these is now checked mechanically rather than promised.** The
 figures on `README.md` — the per-file token table, the five lap costs, and the
-`~5k` difference derived from two of them — are
-pure functions of the brief's own file sizes, and
-`api/tests/test_overnight_brief.py` recomputes them in CI (CF-371).
+select-versus-spawn difference stated below them — are pure functions of the
+brief's own file sizes, and `api/tests/test_overnight_brief.py` recomputes them
+in CI (CF-371).
 
 **Be exact about how little that covers.** It closes one shape — *right when
 written, rotted untouched* — on one surface, the figures on `README.md`. The

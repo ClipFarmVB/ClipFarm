@@ -110,9 +110,10 @@ lands within a tenth or so rather than exactly.
 CF-275 re-took them, and this is the table a run reads to plan what it can
 afford. **`api/tests/test_overnight_brief.py` now fails when they drift**, so a
 brief edit that moves a file past a tenth reddens CI until this page is
-re-measured (CF-371). It pins the rows, the five lap figures, and the `~5k`
-difference derived from two of them, on this page only; the across-the-split figures above are a different revision and stay
-unpinned, for the reason given with them.
+re-measured (CF-371). It pins the rows, the five lap figures, and the
+select-versus-spawn difference stated below them, on this page only; the
+across-the-split figures above are a different revision and stay unpinned, for
+the reason given with them.
 
 **The rules are not also summarised into a shorter file.** Splitting by phase
 keeps exactly one copy of each rule, with the reasoning that produced it still

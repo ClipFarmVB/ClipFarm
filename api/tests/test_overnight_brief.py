@@ -2,8 +2,8 @@
 
 `docs/overnight/README.md` carries a table of per-file token costs, five lap
 costs, and one figure derived from two of those laps, and a run reads them to
-plan what it can afford. They are pure functions
-of the brief's own file sizes, so nothing but discipline kept them true — and
+plan what it can afford. They are pure functions of the brief's own file sizes,
+so nothing but discipline kept them true — and
 discipline lost: they had drifted by a third before CF-275 re-took them, and the
 page still says "re-measure them when you add a section" as if asking were
 enough. CF-371 (#464) is that class of failure, a figure that was right when
@@ -65,8 +65,8 @@ def _lap_files(lap):
 #
 # This pattern has now been rebuilt twice for that reason and the two sentence
 # patterns once each: four rebuilds, closing five findings raised over five
-# rounds, all of one defect. Writing "**every
-# gap is whitespace-tolerant**" above it was not enough the first time: the
+# rounds, all of one defect. Writing "**every gap is whitespace-tolerant**"
+# above it was not enough the first time: the
 # rebuilt version still demanded a space before `k`, no indent, and nothing
 # after the closing pipe, and a single trailing space made a row on screen read
 # as a file missing from the table.
@@ -165,8 +165,9 @@ def test_the_table_lists_exactly_the_brief_files():
     assert listed == present, (
         f"docs/overnight/README.md's table lists {sorted(listed)} but the "
         f"directory holds {sorted(present)}. Add the row (with its token cost) "
-        "or drop the stale one, and re-measure the lap figures — a file with no "
-        "row is one no lap counts (CF-371, #464)."
+        "or drop the stale one, and re-measure every figure below the table — "
+        "the laps and the difference between the two step-1 laps. A file with "
+        "no row is one no lap counts (CF-371, #464)."
     )
 
 
@@ -179,9 +180,10 @@ def test_every_row_states_the_size_the_file_actually_is():
             wrong.append(f"{name}: table says {stated}k, file is {actual}k ({_size(name)} bytes)")
     assert not wrong, (
         "docs/overnight/README.md's token table has drifted from the files it "
-        "describes:\n  " + "\n  ".join(wrong) + "\nRe-measure the table and the "
-        "five lap figures below it. This is the drift CF-275 had to re-take by "
-        "hand once already (CF-371, #464)."
+        "describes:\n  " + "\n  ".join(wrong) + "\nRe-measure the table and "
+        "every figure below it — the five laps and the difference between the "
+        "two step-1 laps. This is the drift CF-275 had to re-take by hand once "
+        "already (CF-371, #464)."
     )
 
 
