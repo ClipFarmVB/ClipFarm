@@ -65,11 +65,11 @@ def _lap_files(lap):
 #
 # `_ROW` has been loosened in five separate commits and the two sentence
 # patterns in one each. Every one of those seven edits widened what counts as a
-# valid row or sentence; not one narrowed it. Writing "**every gap is
-# whitespace-tolerant**" above it was not enough the first time: the rebuilt
-# version still demanded a space before `k`, no indent, and nothing after the
-# closing pipe, and a single trailing space made a row on screen read as a file
-# missing from the table.
+# valid row or sentence; not one narrowed it. Writing "**A new pattern here is
+# whitespace-tolerant from the start**" above it, as `2204f84` did, was not
+# enough: that rebuilt version still forbade a space before `k`, forbade an
+# indent, and forbade anything after the closing pipe, so a single trailing
+# space made a row on screen read as a file missing from the table.
 #
 # So the rule is a check, not an intention: **for any pattern matching this
 # page, write the case that reformats it and confirm the pattern survives.**
@@ -121,8 +121,9 @@ def _size(name):
     How many move is a property of today's file sizes, not of this rule, so it
     is stated with the revision it was taken at rather than left to rot: at
     `2204f84`, six of the nine rows changed tenth and two of the five laps
-    changed whole-k. It said *seven* rows for three commits, which was true when
-    written and falsified by the commit that grew `README.md` past 2.05k — the
+    changed whole-k. It said *seven* rows in four consecutive commits, and was
+    true in the first two of them: `2932b85` grew `README.md` past 2.05k, which
+    falsified it, and two more commits carried it before anyone re-ran it — the
     defect this whole file exists to catch, in the file that catches it.
     """
     path = BRIEF / name
@@ -167,10 +168,10 @@ def test_the_table_lists_exactly_the_brief_files():
         "cell is a markdown link whose text is the file name in backticks and "
         "its last cell is the token count — a row that reads fine on screen but "
         "differs in shape is reported here as a missing file. Add the row (with "
-        "its token cost) or drop the stale one, and re-measure every figure "
-        "below the table — "
-        "the laps and the difference between the two step-1 laps. A file with "
-        "no row is one no lap counts (CF-371, #464)."
+        "its token cost) or drop the stale one, and re-measure the five lap "
+        "figures and the difference stated below them — not the "
+        "across-the-split figures further down, which describe an older "
+        "revision. A file with no row is one no lap counts (CF-371, #464)."
     )
 
 
@@ -183,9 +184,10 @@ def test_every_row_states_the_size_the_file_actually_is():
             wrong.append(f"{name}: table says {stated}k, file is {actual}k ({_size(name)} bytes)")
     assert not wrong, (
         "docs/overnight/README.md's token table has drifted from the files it "
-        "describes:\n  " + "\n  ".join(wrong) + "\nRe-measure the table and "
-        "every figure below it — the five laps and the difference between the "
-        "two step-1 laps. This is the drift CF-275 had to re-take by hand once "
+        "describes:\n  " + "\n  ".join(wrong) + "\nRe-measure the table, the "
+        "five lap figures and the difference stated below them — not the "
+        "across-the-split figures further down, which describe an older "
+        "revision. This is the drift CF-275 had to re-take by hand once "
         "already (CF-371, #464)."
     )
 
