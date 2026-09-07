@@ -136,8 +136,10 @@ def _tenths(size):
     Half-up, not Python's `round`, which is half-even. The two differ only at an
     exact tie, so the example has to be one: a file of exactly 21000 bytes is
     5.25k, where a human re-measuring writes 5.3 and `round(5.25, 1)` gives 5.2.
-    `BRIEFS.md` is 20990 bytes — ten below that tie — so the rules are one small
-    edit apart from disagreeing.
+    That is not hypothetical for long: at `d899f17`, `BRIEFS.md` was 20990 bytes,
+    ten below the tie, so the two rules were one small edit apart from
+    disagreeing. Dated because it is a fact about a file size rather than about
+    this function, and nothing here pins it.
     """
     return (Decimal(size) / 4000).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
@@ -226,6 +228,7 @@ def test_the_spawning_lap_costs_what_the_two_lap_figures_differ_by():
     spawn = _whole(sum(_size(name) for name in _lap_files("step-1, spawning a round")))
     assert Decimal(stated.group("k")) == spawn - select, (
         f"docs/overnight/README.md says a select-only lap is ~{stated.group('k')}k cheaper "
-        f"than a spawning one, but the two lap figures on that page are {select}k "
-        f"and {spawn}k, a difference of {spawn - select}k. Re-measure (CF-371, #464)."
+        f"than a spawning one. Recomputed from the files, those two laps are "
+        f"{select}k and {spawn}k, a difference of {spawn - select}k — which is what the "
+        f"page should say. Re-measure (CF-371, #464)."
     )
