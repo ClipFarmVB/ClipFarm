@@ -60,15 +60,20 @@ def _lap_files(lap):
 # miss — the table test reads it as *a file missing from the table* and tells
 # the reader to add rows that are already there.
 #
-# This is the fourth pattern in this file to be rebuilt for the same reason.
-# `_LAPS_SENTENCE`, then `_CHEAPER`, then this one: each was written with
-# literal spaces, each broke on a reformat that changed nothing about the
-# figures, and each was found by a separate review round. **A new pattern here
-# is whitespace-tolerant from the start**; that is the rule, not the three
-# individual fixes.
+# This pattern has now been rebuilt twice for that reason and the two sentence
+# patterns once each — five findings, five rounds, one defect. Writing "**every
+# gap is whitespace-tolerant**" above it was not enough the first time: the
+# rebuilt version still demanded a space before `k`, no indent, and nothing
+# after the closing pipe, and a single trailing space made a row on screen read
+# as a file missing from the table.
+#
+# So the rule is a check, not an intention: **for any pattern matching this
+# page, write the case that reformats it and confirm the pattern survives.**
+# Every one of the five was found by a reviewer running exactly that, never by
+# the author reading the regex.
 _ROW = re.compile(
-    r"^\|\s*\[`(?P<name>[A-Za-z0-9._-]+\.md)`\]\([^)]*\)\s*\|"
-    r".*\|\s*(?P<stated>[0-9]+(?:\.[0-9]+)?)k\s*\|$",
+    r"^\s*\|\s*\[`(?P<name>[^`]+\.md)`\]\([^)]*\)\s*\|"
+    r".*\|\s*(?P<stated>[0-9]+(?:\.[0-9]+)?)\s*k\s*\|\s*$",
     re.MULTILINE,
 )
 
@@ -105,10 +110,16 @@ def _size(name):
 
     `.gitattributes` pins `eol=lf` for `*.sh` and `.hooks/*` only, and its own
     comment says this repo is worked on from Windows — so with
-    `core.autocrlf=true` these files check out fatter: **seven of the nine rows**
-    change tenth (only `TICKETS.md` and `RATIONALE.md` hold) and **two of the
-    five laps** change whole-k. The figures describe the content, not the
+    `core.autocrlf=true` these files check out fatter, and enough of the figures
+    move to redden the build. The figures describe the content, not the
     checkout.
+
+    How many move is a property of today's file sizes, not of this rule, so it
+    is stated with the revision it was taken at rather than left to rot: at
+    `2204f84`, six of the nine rows changed tenth and two of the five laps
+    changed whole-k. It said *seven* rows for three commits, which was true when
+    written and falsified by the commit that grew `README.md` past 2.05k — the
+    defect this whole file exists to catch, in the file that catches it.
     """
     path = BRIEF / name
     assert path.exists(), (
