@@ -382,9 +382,17 @@ def delete_files(keys: Sequence[str]) -> list[str]:
     a batch that fails outright is reported the same way rather than raising,
     since one bad batch must not abandon the rest. Deleting a missing key is
     not an error — S3 and R2 both report it as deleted.
+
+    **A client we cannot build is reported the same way**, rather than raising
+    past every caller. `_client()` reads `settings.r2_*`, so a missing or
+    malformed config fails here and not at import; the promise above would be
+    untrue for exactly that case if the construction sat outside the guard.
     """
     failed: list[str] = []
-    client = _client()
+    try:
+        client = _client()
+    except Exception:
+        return list(keys)
     for i in range(0, len(keys), 1000):
         batch = list(keys[i:i + 1000])
         try:

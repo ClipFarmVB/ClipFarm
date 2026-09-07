@@ -245,22 +245,62 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch):
     tasks._sweep_expired_raw_uploads()  # must not raise
 
 
+_ON_STORAGE = {"list_objects", "delete_files"}
+
+
 @pytest.mark.parametrize(
-    "failing", ["sync_expired_raw_uploads", "sync_referenced_raw_keys", "list_objects"]
+    "failing",
+    [
+        "sync_expired_raw_uploads",
+        "sync_clear_raw_video_url",
+        "sync_referenced_raw_keys",
+        "list_objects",
+        "delete_files",
+    ],
 )
 def test_sweep_never_raises(monkeypatch, failing):
     """Reporting must never break processing: process_game calls this once the
-    game is already marked ready."""
+    game is already marked ready.
+
+    One case per seam the sweep calls out to, so the parametrize is checkable
+    against the function rather than a subset someone has to notice is short.
+    `delete_files` was the seam it omitted, and the only one the sweep did not
+    guard (CF-372, #467); the other four were already guarded when this list
+    grew to cover them.
+    """
     from app.services import storage
     from app.workers import _sync_db
 
     r = _row()
     fakes = _Fakes(expired=[(r["id"], r["url"])], objects=[r["obj"]])
     _install(monkeypatch, fakes)
-    module = storage if failing == "list_objects" else _sync_db
+    module = storage if failing in _ON_STORAGE else _sync_db
     monkeypatch.setattr(module, failing, _raiser(RuntimeError("boom")))
 
     tasks._sweep_expired_raw_uploads()  # must not raise
+
+
+def test_a_client_that_cannot_be_built_is_reported_not_raised(monkeypatch):
+    """`delete_files` promises a failed batch is reported rather than raised.
+
+    Distinct from `test_undeletable_objects_are_left_for_the_next_sweep` above,
+    which patches `delete_files` away and so pins what the *sweep* does with a
+    returned failure list. This one runs the real `delete_files` and breaks the
+    thing it does before any batch — building the client, which reads
+    `settings.r2_*` and so fails on a missing or malformed config rather than
+    at import.
+
+    `_client` is `lru_cache`d, so this patches the module attribute that
+    `delete_files` looks up at call time. Clearing the cache instead would
+    outlive the test: `monkeypatch` does not undo `cache_clear()`, and a later
+    test that has already presigned would sign against whatever config it then
+    rebuilt from.
+    """
+    from app.services import storage
+
+    monkeypatch.setattr(storage, "_client", _raiser(RuntimeError("no config")))
+
+    assert storage.delete_files(["raw/a.mp4", "raw/b.mp4"]) == ["raw/a.mp4", "raw/b.mp4"]
 
 
 # ─── The selection SQL, against a real database ──────────────────────────────

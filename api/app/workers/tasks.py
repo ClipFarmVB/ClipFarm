@@ -794,7 +794,15 @@ def _sweep_expired_raw_uploads() -> None:
     if not stale:
         return
 
-    failed = s3.delete_files(stale)
+    try:
+        failed = s3.delete_files(stale)
+    except Exception as exc:
+        logger.warning(
+            "Raw-upload retention: could not delete %d object(s), leaving them "
+            "for the next sweep (%s)", len(stale), exc,
+        )
+        return
+
     if failed:
         # Not lost: they stay unreferenced and past the cutoff, so the next
         # sweep finds them again.
