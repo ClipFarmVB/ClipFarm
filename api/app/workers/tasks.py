@@ -798,8 +798,8 @@ def _sweep_expired_raw_uploads() -> None:
         failed = s3.delete_files(stale)
     except Exception as exc:
         logger.warning(
-            "Raw-upload retention: could not delete %d object(s), leaving them "
-            "for the next sweep (%s)", len(stale), exc,
+            "Raw-upload retention: released %d row(s), but could not delete %d "
+            "object(s) — leaving them for the next sweep (%s)", released, len(stale), exc,
         )
         return
 

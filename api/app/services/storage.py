@@ -394,8 +394,9 @@ def delete_files(keys: Sequence[str]) -> list[str]:
     That branch is unreachable from the retention sweep, which is the only
     caller today: it walks `list_objects` first, and that builds the same
     `lru_cache`d client (see that function) inside the sweep's own guard, so a
-    bad config aborts the sweep a step earlier. The guard is here because this promise is the function's,
-    not the sweep's — the next caller need not walk a listing first.
+    bad config aborts the sweep a step earlier. The guard is here because this
+    promise is the function's, not the sweep's — the next caller need not walk
+    a listing first.
     """
     failed: list[str] = []
     try:
