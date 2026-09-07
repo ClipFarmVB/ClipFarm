@@ -1,7 +1,8 @@
 """The overnight brief's own token figures, recomputed rather than trusted.
 
-`docs/overnight/README.md` carries a table of per-file token costs and five lap
-costs, and a run reads them to plan what it can afford. They are pure functions
+`docs/overnight/README.md` carries a table of per-file token costs, five lap
+costs, and one figure derived from two of those laps, and a run reads them to
+plan what it can afford. They are pure functions
 of the brief's own file sizes, so nothing but discipline kept them true — and
 discipline lost: they had drifted by a third before CF-275 re-took them, and the
 page still says "re-measure them when you add a section" as if asking were
@@ -18,10 +19,12 @@ which is what the table itself did before CF-275.
 
 Deliberately unpinned: the six across-the-split figures earlier on that page —
 32.25k, 19.09k, 18.13k, 26.70k, 28.05k and 23.60k, which appear in eight places
-between them (`32.25k` and `26.70k` twice each). Those describe files at revision `596755d`, which the page says
-the table cannot reproduce, and reading them needs `git ls-tree` against an old
-revision — which a shallow clone serves silently and wrongly, a trap `RULES.md`
-already lists.
+between them (`32.25k` and `26.70k` twice each) — plus the rounded restatements
+of the first three, as `18k`, `~32k` and `~19k`. Those describe files at
+`596755d^` and `596755d`, the two sides of the CF-365 split rather than one
+revision, which the page says the table cannot reproduce; reading them needs
+`git ls-tree` against an old revision — which a shallow clone serves silently
+and wrongly, a trap `RULES.md` already lists.
 """
 
 import pathlib
@@ -61,7 +64,8 @@ def _lap_files(lap):
 # the reader to add rows that are already there.
 #
 # This pattern has now been rebuilt twice for that reason and the two sentence
-# patterns once each — five findings, five rounds, one defect. Writing "**every
+# patterns once each: four rebuilds, closing five findings raised over five
+# rounds, all of one defect. Writing "**every
 # gap is whitespace-tolerant**" above it was not enough the first time: the
 # rebuilt version still demanded a space before `k`, no indent, and nothing
 # after the closing pipe, and a single trailing space made a row on screen read
@@ -82,7 +86,8 @@ _ROW = re.compile(
 #
 # Every gap is `\s+`, built rather than written out, so re-wrapping the
 # paragraph cannot break it. An earlier version wrote the sentence as a literal
-# with `\s+` only at today's four line breaks — 29 of its gaps were plain
+# with `\s+` at only four of its 33 gaps — today's two line breaks plus the two
+# string-concatenation boundaries of the literal itself, leaving 29 plain
 # spaces — and a round that reported this was told it did not reproduce,
 # because the three transforms checked against it (as shipped, one line,
 # re-indented) all preserve literal spaces and so could not have disproved it.
