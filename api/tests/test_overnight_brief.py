@@ -8,10 +8,12 @@ page still says "re-measure them when you add a section" as if asking were
 enough. CF-371 (#464) is that class of failure, a figure that was right when
 written and rotted untouched.
 
-**What this does not reach.** CF-370 lists six wrong published figures; three
-are this shape and three are a figure composed before its command was read. No
-test sees a sentence that was written first, so `RULES.md`'s prose rule still
-carries those.
+**What this does not reach.** CF-370 lists six wrong published figures, and
+this check would have caught **none** of them: every one was composed before its
+command was read, and none was on this surface. No test sees a sentence that was
+written first, so `RULES.md`'s prose rule still carries all six. What this does
+catch is the shape those six are not — a figure that was right when written and
+rotted while nobody looked, which is what the table itself did before CF-275.
 
 Deliberately unpinned: the across-the-split figures further down that page
 (32.25k, 19.09k, 18.13k, 26.70k, 28.05k, 23.60k). Those describe files at
@@ -29,19 +31,34 @@ README = BRIEF / "README.md"
 
 # Which files each lap reads, from the reading protocol. Every lap reads
 # README.md itself — "this file's own row included, which is why there is one".
-ALL_FILES = [
-    "README.md", "START.md", "RULES.md", "REVIEW.md", "BRIEFS.md",
-    "FIX.md", "TICKETS.md", "REPORTING.md", "RATIONALE.md",
-]
+# "The whole brief" is read off the directory, never listed here. A hardcoded
+# list unpins the one figure that is about *all* of them: a round added a tenth
+# file with a correct row and a correct README row, and the suite stayed green
+# while the page said 51k and the directory summed to 53k. The named laps below
+# are hardcoded on purpose — which files a lap reads is a fact about the reading
+# protocol, not about what happens to be in the directory.
 LAPS = {
     "step-1, select only": ["README.md", "RULES.md", "REVIEW.md"],
-    "the whole brief": ALL_FILES,
+    "the whole brief": None,
     "step-1, spawning a round": ["README.md", "RULES.md", "REVIEW.md", "BRIEFS.md"],
     "step-2": ["README.md", "RULES.md", "FIX.md", "BRIEFS.md"],
     "step-3": ["README.md", "RULES.md", "TICKETS.md"],
 }
 
-_ROW = re.compile(r"^\| \[`(?P<name>[A-Z]+\.md)`\]\([^)]*\) \|.*\| (?P<stated>[0-9]+\.[0-9])k \|$", re.MULTILINE)
+
+def _lap_files(lap):
+    """The files a lap reads; `None` means every brief file there is."""
+    named = LAPS[lap]
+    return sorted(p.name for p in BRIEF.glob("*.md")) if named is None else named
+
+# The tenth is optional: a file that lands on a whole number reads `15k`, and a
+# pattern demanding `15.0k` skips the row entirely — which this test would then
+# report as a file missing from the table, sending the reader to fix the wrong
+# thing.
+_ROW = re.compile(
+    r"^\| \[`(?P<name>[A-Z]+\.md)`\]\([^)]*\) \|.*\| (?P<stated>[0-9]+(?:\.[0-9])?)k \|$",
+    re.MULTILINE,
+)
 
 # Pinned by its own sentence, never by sweeping for `\d+k`: the page carries
 # nine historical figures it says are not recomputable, and `32k` appears twice.
@@ -58,8 +75,10 @@ def _size(name):
 
     `.gitattributes` pins `eol=lf` for `*.sh` and `.hooks/*` only, and its own
     comment says this repo is worked on from Windows — so with
-    `core.autocrlf=true` these files check out fatter and five of the nine rows
-    would change tenth. The figures describe the content, not the checkout.
+    `core.autocrlf=true` these files check out fatter: **seven of the nine rows**
+    change tenth (only `TICKETS.md` and `RATIONALE.md` hold) and **two of the
+    five laps** change whole-k. The figures describe the content, not the
+    checkout.
     """
     return len((BRIEF / name).read_bytes().replace(b"\r\n", b"\n"))
 
@@ -67,10 +86,11 @@ def _size(name):
 def _tenths(size):
     """`bytes/4` in thousands, to the nearest tenth.
 
-    Half-up, not Python's `round`, which is half-even: a human re-measuring
-    5.2475k -> 5.25k writes 5.3 and `round()` gives 5.2. `BRIEFS.md` sits ten
-    bytes below that exact tie, so the two rules are one edit apart from
-    disagreeing.
+    Half-up, not Python's `round`, which is half-even. The two differ only at an
+    exact tie, so the example has to be one: a file of exactly 21000 bytes is
+    5.25k, where a human re-measuring writes 5.3 and `round(5.25, 1)` gives 5.2.
+    `BRIEFS.md` is 20990 bytes — ten below that tie — so the rules are one small
+    edit apart from disagreeing.
     """
     return (Decimal(size) / 4000).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
@@ -132,7 +152,7 @@ def test_the_five_lap_figures_match_the_files_each_lap_reads():
             "spawn": "step-1, spawning a round", "step2": "step-2", "step3": "step-3"}
     wrong = []
     for group, lap in keys.items():
-        total = sum(_size(name) for name in LAPS[lap])
+        total = sum(_size(name) for name in _lap_files(lap))
         actual = _whole(total)
         if Decimal(stated.group(group)) != actual:
             wrong.append(f"{lap}: page says {stated.group(group)}k, files sum to {actual}k ({total} bytes)")
@@ -142,18 +162,23 @@ def test_the_five_lap_figures_match_the_files_each_lap_reads():
     )
 
 
-def test_the_spawning_lap_costs_briefs_md_more():
-    """The one derived claim on the page, checked against the file it names.
+def test_the_spawning_lap_costs_what_the_two_lap_figures_differ_by():
+    """The one derived claim on the page, checked against what it derives from.
 
-    The difference between the two step-1 laps is `BRIEFS.md` by construction,
-    so what is worth pinning is that the stated `~5k` is still what that file
-    rounds to.
+    It is a claim about the *two lap figures* — "a step-1 lap that only selects
+    is ~5k cheaper than one that also spawns" — so it has to be checked against
+    their difference, not against `BRIEFS.md`. Those are not the same number:
+    the laps are rounded to whole k before the reader subtracts them, and
+    `BRIEFS.md` is rounded separately. A round grew that file to 22000 bytes and
+    the page then read 27k, 32k and "~6k cheaper" at once, all three passing,
+    because 5.5k rounds up on its own while 32 - 27 stays 5.
     """
     stated = _CHEAPER.search(README.read_text(encoding="utf-8"))
     assert stated, "docs/overnight/README.md no longer states the select-vs-spawn difference (CF-371, #464)."
-    actual = _whole(_size("BRIEFS.md"))
-    assert Decimal(stated.group("k")) == actual, (
-        f"docs/overnight/README.md says a select-only lap is ~{stated.group('k')}k cheaper than a "
-        f"spawning one, but BRIEFS.md — the only file between them — is {actual}k "
-        f"({_size('BRIEFS.md')} bytes). Re-measure (CF-371, #464)."
+    select = _whole(sum(_size(name) for name in _lap_files("step-1, select only")))
+    spawn = _whole(sum(_size(name) for name in _lap_files("step-1, spawning a round")))
+    assert Decimal(stated.group("k")) == spawn - select, (
+        f"docs/overnight/README.md says a select-only lap is ~{stated.group('k')}k cheaper "
+        f"than a spawning one, but the two lap figures on that page are {select}k "
+        f"and {spawn}k, a difference of {spawn - select}k. Re-measure (CF-371, #464)."
     )
