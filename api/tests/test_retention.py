@@ -250,7 +250,11 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     """
     from app.services import storage
 
-    rows = [_row("a"), _row("b")]
+    # Three stale, one failure: reclaimed is 2 and failed is 1, so the assertion
+    # below can tell `len(stale) - len(failed)` from `len(failed)` and from a
+    # literal. With two objects every one of those is 1 and the reclaimed count
+    # pins nothing — mutating it to `len(failed)` left this test green.
+    rows = [_row("a"), _row("b"), _row("c")]
     fakes = _Fakes(objects=[r["obj"] for r in rows])
     _install(monkeypatch, fakes)
     monkeypatch.setattr(storage, "delete_files", lambda keys: ["raw/a.mp4"])
@@ -264,9 +268,9 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
         "one failed, so the warning is the only signal that anything was left "
         "behind (CF-308, #358)."
     )
-    assert "reclaimed 1 object(s)" in caplog.text, (
+    assert "reclaimed 2 object(s)" in caplog.text, (
         "the sweep counted a failed delete as reclaimed. `len(stale) - len(failed)` "
-        "is what keeps that count honest; without it the log says two objects "
+        "is what keeps that count honest; without it the log says three objects "
         "were freed when one is still in the bucket (CF-308, #358)."
     )
 

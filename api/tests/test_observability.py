@@ -115,7 +115,9 @@ def test_secret_values_applies_the_minimum_length_guard(monkeypatch, _secret_cac
     that nothing in this file pins. "Longer than the threshold" is all the
     argument needs and all that can be relied on.
 
-    Every value is patched rather than read off the ambient config:
+    Every value this test asserts on is patched rather than read off the
+    ambient config — the connection URLs in the result are still shipped
+    defaults, and nothing here asserts about them:
     `Settings` loads `api/.env` if one exists, so an assertion about a value
     this test did not set is an assertion about the developer's machine. The
     comment on `test_postgres_auth_error_survives_scrubbing_under_defaults`
@@ -127,11 +129,11 @@ def test_secret_values_applies_the_minimum_length_guard(monkeypatch, _secret_cac
     # pinned, and the guard could then sit anywhere in 4..18 unnoticed —
     # measured, not reasoned: with just those two, >= 4, 5, 6, 7, 8, 12 and 18
     # all pass and only >= 19 fails. An earlier version of this comment said
-    # "4..6", which understates the gap by twelve and is contradicted by this
-    # file's own >= 7 and >= 8 mutation rows.
+    # "4..6", understating the gap by twelve — and the >= 7 and >= 8 mutation
+    # rows that contradict it live in the PR, not in this file, which is why
+    # nothing here caught it.
     monkeypatch.setattr(observability.settings, "modal_token_id", "12345")
     monkeypatch.setattr(observability.settings, "modal_token_secret", "123456")
-    observability._secret_values.cache_clear()
 
     values = observability._secret_values()
 
