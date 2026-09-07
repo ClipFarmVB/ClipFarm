@@ -1,3 +1,4 @@
+import logging
 import uuid
 from typing import Annotated
 
@@ -15,6 +16,8 @@ from app.models.player import Player
 from app.schemas.clip import ClipOut
 from app.schemas.collection import CollectionOut, CollectionCreate, CollectionRename, CollectionAddClip
 from app.services import access, storage
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/collections", tags=["collections"])
 
@@ -189,10 +192,10 @@ async def add_clip_to_collection(
         )
     )
     if existing.scalar_one_or_none() is None:
-        db.add(CollectionClip(collection_id=col.id, clip_id=body.clip_id))
+        db.add(CollectionClip(collection_id=collection_id, clip_id=body.clip_id))
         try:
             await db.commit()
-        except IntegrityError:
+        except IntegrityError as exc:
             # Two concurrent adds — a double-click — both read `None` above and
             # the loser lands here. The database is the arbiter, not the check
             # above, and the row the caller wanted now exists: that is the
@@ -213,7 +216,16 @@ async def add_clip_to_collection(
                 )
             )
             if settled.scalar_one_or_none() is None:
-                raise HTTPException(status_code=404, detail="Clip not found") from None
+                # Not the duplicate: the clip or the collection went away under
+                # us, or some constraint nobody here anticipated failed. Record
+                # the cause — swallowing it would make an unexpected failure a
+                # traceless 404, which is how this kind of handler goes wrong.
+                logger.warning(
+                    "Add to collection %s failed and nothing settled (%s)", collection_id, exc,
+                )
+                raise HTTPException(
+                    status_code=404, detail="Clip or collection not found"
+                ) from None
 
     # `collection_id` rather than `col.id`: a failed commit followed by
     # `rollback()` expires every attribute on `col`, and reading one back would
