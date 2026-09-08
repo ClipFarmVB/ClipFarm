@@ -11,6 +11,7 @@ what is easy to get wrong. It does **not** re-describe the project — for that:
 | Evaluating detection / dead-time changes | `ml/eval/README.md` |
 | Deploying | `DEPLOY_RENDER.md` (production, Render), `DEPLOY.md` (backend on a VPS), `DOCKER.md` |
 | Running an unattended `/loop` overnight | `docs/overnight/README.md` — it indexes the brief, which is split by phase |
+| What license this is under, and why AGPL rather than MIT | `docs/licensing.md` — it also holds the dependency audit |
 
 Read the relevant section before changing detection or pipeline code. The
 `Key Concepts` section in the README exists specifically to prevent well-meaning
