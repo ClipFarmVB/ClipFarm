@@ -173,6 +173,62 @@ def test_secret_values_applies_the_minimum_length_guard(monkeypatch):
     )
 
 
+def test_every_secret_source_reaches_the_scrub_patterns(monkeypatch):
+    """Each candidate source, pinned individually.
+
+    The exclusions in the test above assert that a short value is *absent*, and
+    absence has two causes: the guard rejected it, or the setting is not a
+    candidate at all. That made them satisfiable by deleting the very settings
+    they name — measured, not reasoned: dropping `r2_access_key_id` and
+    `modal_token_id` from the candidate list and weakening the guard to
+    `>= 4` left all eighteen tests in this file green. The guard CF-308 exists
+    to pin moved by two characters with nothing red.
+
+    So this pins the wiring the other test's exclusions depend on. Every value
+    is long enough to clear the threshold, distinct, and patched rather than
+    read off the ambient config, so a missing one names the source that dropped
+    it rather than reporting a length failure a second time.
+    """
+    scalars = {
+        "supabase_service_role_key": "scrub-supabase-service-role-key",
+        "r2_access_key_id": "scrub-r2-access-key-id",
+        "r2_secret_access_key": "scrub-r2-secret-access-key",
+        "modal_token_id": "scrub-modal-token-id",
+        "modal_token_secret": "scrub-modal-token-secret",
+        "jwt_secret": "scrub-jwt-secret",
+    }
+    for name, value in scalars.items():
+        monkeypatch.setattr(observability.settings, name, value)
+    monkeypatch.setenv("ROBOFLOW_API_KEY", "scrub-roboflow-api-key")
+
+    # A connection URL covers the last two entries at once: the URL itself, and
+    # the password lifted out of it for the re-rendered forms. Both are their
+    # own line in `candidates`, and both were unpinned.
+    monkeypatch.setattr(
+        observability.settings, "database_url",
+        "postgresql+asyncpg://postgres.abc:scrub-db-password@db.example.com:5432/postgres")
+
+    values = observability._secret_values()
+
+    for name, value in scalars.items():
+        assert value in values, (
+            f"settings.{name} is not a scrub pattern, so its value would appear "
+            f"verbatim in an error report (CF-308, #358)."
+        )
+    assert "scrub-roboflow-api-key" in values, (
+        "the ROBOFLOW_API_KEY environment variable is not a scrub pattern "
+        "(CF-308, #358)."
+    )
+    assert any("scrub-db-password@" in v for v in values), (
+        "a connection URL is not a scrub pattern, and those are the most common "
+        "thing an error tracker sees (CF-308, #358)."
+    )
+    assert "scrub-db-password" in values, (
+        "a connection URL's password is not a scrub pattern on its own, so a "
+        "re-rendered form of the URL would leak it (CF-308, #358)."
+    )
+
+
 # --- caching (raised on #131 review) -----------------------------------------
 # before_send AND before_breadcrumb call _secret_values() on every invocation,
 # and breadcrumbs are high-frequency — with the framework integrations on,

@@ -263,8 +263,16 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     #
     # The warning count above has the same property: at 3/1 both `len(failed)`
     # and `len(stale) - 2` are 1, so that assertion pins the value and not the
-    # expression either. Separating either needs a second case with a different
-    # failure count, which is more fixture than this behaviour is worth.
+    # expression either.
+    #
+    # Separating them needs a *second failure count*, not a second case — and
+    # `test_expired_upload_is_released_then_reclaimed` above already sweeps
+    # 1 stale / 0 failed, where the correct reclaimed count is 1 and
+    # `len(stale) - 1` is 0. An earlier version of this comment said the
+    # separation was "more fixture than this behaviour is worth", which
+    # overstated the cost: the fixture exists. Left as it is because the two
+    # counts are asserted in the file that owns each fixture rather than
+    # crossing between them, and the survivors are disclosed either way.
     rows = [_row("a"), _row("b"), _row("c")]
     fakes = _Fakes(objects=[r["obj"] for r in rows])
     _install(monkeypatch, fakes)
@@ -276,6 +284,16 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
 
     # Anchored on the message prefix: the bare substring "1 object(s)" is also a
     # substring of "11 object(s)", so `len(failed) + 10` satisfied it.
+    # Severity, not just text: the capture above is widened to INFO so the
+    # reclaimed count is visible, which means a `logger.warning` demoted to
+    # `logger.info` would still satisfy a plain `in caplog.text`. Anything
+    # alerting on WARN would lose the "objects left behind" signal silently.
+    assert any(r.levelno == logging.WARNING and "could not be deleted" in r.message
+               for r in caplog.records), (
+        "the failed delete was reported below WARNING. The count is right, so a "
+        "text-only assertion passes, but an alert on WARN never fires "
+        "(CF-308, #358)."
+    )
     assert "retention: 1 object(s) could not be deleted" in caplog.text, (
         "the sweep did not report the failed delete. Three objects were stale "
         "and one failed, so the warning is the only signal that anything was "
