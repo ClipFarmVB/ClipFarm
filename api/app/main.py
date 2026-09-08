@@ -69,7 +69,19 @@ async def _check_redis() -> bool:
         return False
     finally:
         if client is not None:
-            await client.aclose()
+            try:
+                await client.aclose()
+            except Exception:
+                # A teardown that fails is part of the same incident as a ping
+                # that fails — closing a broken connection is exactly when this
+                # raises — so it must not be the thing that takes the route
+                # down. An exception from a `finally` *replaces* the `return
+                # False` above, and `health`'s gather has no
+                # `return_exceptions`, so letting it out is the same 500 this
+                # function was rewritten to remove, reached through cleanup
+                # rather than construction. `_check_db` already has this
+                # property: its teardown runs inside its own guard.
+                logger.exception("health: redis client teardown failed")
 
 
 @app.get("/health")

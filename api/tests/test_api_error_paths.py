@@ -143,6 +143,51 @@ def test_the_health_route_degrades_on_a_malformed_redis_url(monkeypatch):
     assert body["checks"]["database"] == "ok"
 
 
+def test_a_failing_teardown_still_reports_redis_down(monkeypatch):
+    """The other half of the same defect, through cleanup instead of construction.
+
+    An exception raised in a `finally` *replaces* the `return False` above it,
+    and `health`'s `asyncio.gather` has no `return_exceptions`, so an `aclose()`
+    that raises takes the whole route out — 500, database signal lost, from the
+    one endpoint whose job is to report a dependency as down.
+
+    Redis being unreachable and its teardown failing is one incident, not two:
+    closing a broken connection is exactly when that raises. So the case is both
+    halves failing, not a failing close on a healthy client.
+    """
+    from app import main
+
+    class _BrokenClient:
+        async def ping(self):
+            raise ConnectionError("redis unreachable")
+
+        async def aclose(self):
+            raise ConnectionError("teardown failed")
+
+    monkeypatch.setattr(main.aioredis, "from_url", lambda _url: _BrokenClient())
+
+    assert asyncio.run(main._check_redis()) is False
+
+
+def test_the_action_type_error_does_not_leak_the_enum_class_name():
+    """`str(ValueError)` here is "'spke' is not a valid ActionType" — the
+    offending value is the useful half, the internal class name is not."""
+    from app.routers import clips
+
+    game = _Game()
+
+    class _DB:
+        async def get(self, _model, _pk):
+            return game
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(clips.list_clips(game.id, _DB(), viewer_id=OWNER, action_type="spke"))
+
+    detail = str(exc.value.detail)
+    assert "spke" in detail
+    assert "ActionType" not in detail
+
+
 # ── 2. best-effort R2 cleanup must not block the event loop ─────────────────
 
 def _thread_recording_delete(recorder):

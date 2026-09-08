@@ -141,17 +141,25 @@ async def list_clips(
     )
 
     if action_type:
+        types = []
         try:
-            types = [ActionType(t.strip()) for t in action_type.split(",") if t.strip()]
+            for raw in action_type.split(","):
+                token = raw.strip()
+                if token:
+                    types.append(ActionType(token))
         except ValueError as exc:
             # FastAPI would have produced a 422 had the parameter been typed as
             # the enum; it is a plain `str` so the comma-separated form works,
             # which moves the validation here. Siblings in this router raise 400
             # for their own body validation, but this one is a query-parameter
             # failure and 422 is what the framework layer returns for those.
+            # Names the offending value, not the exception: `str(ValueError)`
+            # here is "'spke' is not a valid ActionType", which hands a client
+            # the internal class name for nothing.
             raise HTTPException(
                 status_code=422,
-                detail=f"Invalid action_type: {exc}. Must be from: {sorted(t.value for t in ActionType)}",
+                detail=f"Invalid action_type '{token}'. Must be from: "
+                       f"{sorted(t.value for t in ActionType)}",
             ) from exc
         if types:
             q = q.where(Clip.action_type.in_(types))
