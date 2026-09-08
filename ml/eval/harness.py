@@ -198,6 +198,12 @@ def config_snapshot() -> dict:
         app_snap = {
             "highlight_score_threshold": settings.highlight_score_threshold,
             "clip_verify_enabled": settings.clip_verify_enabled,
+            # Named rather than caught by the condense_ prefix below, because it
+            # is not a condense knob and would otherwise never reach a row:
+            # CF-174's scaling moves both the contact gates and the bridge, so
+            # two rows on opposite sides of this switch describe different
+            # detectors while looking directly comparable.
+            "ball_contact_scale_enabled": settings.ball_contact_scale_enabled,
         }
         fields = getattr(type(settings), "model_fields", None) or getattr(type(settings), "__fields__", {})
         app_snap.update({
@@ -345,6 +351,53 @@ def _require_r2_key(raw: dict, test_id: str) -> str:
     return r2_key
 
 
+def _assert_declared_frame_height(
+    fixture: Fixture | DeadFixture, frame_h: int, test_id: str, r2_key: str, mode: str
+) -> None:
+    """
+    Refuse to score if the decoded source is not the height the fixture declares.
+
+    CF-174 made the contact thresholds scale with frame height, so a source that
+    decodes at a different resolution is scored against thresholds the fixture
+    never meant — and the numbers still look plausible, which is what makes it
+    worth failing over.
+
+    This is the ONLY runtime check that the source is the labeled one.
+    `source_video_md5` is pinned in every fixture but verified nowhere at
+    runtime — only fixture-to-fixture in `test_eval_fixtures.py` — so without
+    this a re-encode that changed resolution would shift every threshold
+    silently and still produce a recorded row.
+
+    Opt-in per fixture: absent `source_frame_height` skips the check rather than
+    failing, so fixtures written before the key existed still run.
+
+    A non-positive height is handled first and separately. OpenCV reports 0 for
+    a container it cannot decode — a truncated download, a missing codec — and
+    that is a broken *file*, not a re-labelled one. Reported as a mismatch it
+    reads as "the source is not what the fixture says" and sends the operator to
+    re-upload or re-label a video that is fine; the deadtime path has said so
+    since CF-98, and the highlight path only reached this helper at all once
+    test1.json gained the key.
+    """
+    if frame_h <= 0:
+        flag = "--windows-json" if mode == "deadtime" else "--clips-json"
+        raise SystemExit(
+            f"Offline {mode}: OpenCV read a frame height of {frame_h} from "
+            f"{r2_key}. That is a decode failure, not a fixture mismatch — the "
+            "download is probably truncated or its codec is unavailable here. "
+            f"Check the file plays locally, or score a dumped list with {flag}."
+        )
+    declared = fixture.raw.get("source_frame_height")
+    if declared is None or int(declared) == frame_h:
+        return
+    raise SystemExit(
+        f"Offline {mode}: {test_id} declares source_frame_height={int(declared)} "
+        f"but {r2_key} decodes at {frame_h}px. CF-174 thresholds scale with frame "
+        "height, so this run would not be comparable to the fixture's recorded "
+        "numbers. Re-upload the labeled file, or re-label against this one."
+    )
+
+
 def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     """
     Re-run the detection + scoring stages against the fixture's source video,
@@ -383,6 +436,9 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         cap.release()
         duration = n_frames / fps
 
+        # Same guard as the deadtime path: this mode scales the same thresholds.
+        _assert_declared_frame_height(fixture, frame_h, test_id, r2_key, "highlight")
+
         audio = compute_audio_energy(str(local))
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
@@ -390,7 +446,14 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         # both skipped, so a mode documented as "no re-tracking" would silently
         # fall through to a ~30-minute local CPU re-track.
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
-        contacts = find_contacts(tracker, frame_height=frame_h)
+        # normalize: this mode reads every other production knob off `settings`
+        # (the gate threshold below, the condense_* tunables on the deadtime
+        # path), so reading the CF-174 switch from anywhere else would score a
+        # detector production is not running whenever it is off.
+        contacts = find_contacts(
+            tracker, frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
+        )
         detections = contacts_to_rallies(contacts, duration, frame_h)
         if audio is not None:
             detections = score_cheers(detections, *audio)
@@ -511,27 +574,27 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
 
-        # A container OpenCV cannot decode reports 0 here, and every guarded
-        # speed threshold is normalized by frame height — so the builder would
-        # raise ValueError several frames of stack away from the cause. This
-        # function's other bad-input paths all exit with instructions; so does
-        # this one.
-        if frame_h <= 0:
-            raise SystemExit(
-                f"Offline deadtime: OpenCV read a frame height of {frame_h} from "
-                f"{r2_key}. Its codec is probably unavailable in this environment "
-                "— check the file plays locally, or score a dumped keep-window "
-                "list with --windows-json instead."
-            )
+        # The frame_h <= 0 check that used to sit here moved into
+        # _assert_declared_frame_height below, which runs on both offline paths
+        # rather than only this one.
+        #
         # Prefer the fixture's declared duration (the same value that anchors the
         # dead-time complement); fall back to the decoded frame count.
         duration = fixture.duration or (n_frames / fps)
+
+        _assert_declared_frame_height(fixture, frame_h, test_id, r2_key, "deadtime")
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
         # Pass r2_key so the ball-cache lookup hits; without it this silently
         # falls through to a ~30-minute local CPU re-track (see _run_offline).
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
-        contacts = find_contacts(tracker, frame_height=frame_h)
+        # Same reason as the highlight path: every condense knob below comes
+        # from `settings`, so this one must too, or an offline row scores a
+        # detector production is not running.
+        contacts = find_contacts(
+            tracker, frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
+        )
 
         pre_bridge = active_windows_from_contacts(
             contacts, duration,
@@ -571,6 +634,8 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
             speed_pxps=settings.condense_bridge_speed_pxps,
             fast_fraction=settings.condense_bridge_fast_fraction,
             max_bridge_seconds=settings.condense_bridge_max_seconds,
+            frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
         )
 
         if mode == "rules":

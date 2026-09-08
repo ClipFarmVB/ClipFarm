@@ -732,9 +732,38 @@ class Settings(BaseSettings):
     # play (far-court possessions, occlusions). Bridges a gap when enough of
     # the tracked ball's speed samples inside it are fast — in-play flight is
     # fast, between-rally ball handling is mostly slow.
-    condense_bridge_speed_pxps: float = 150.0   # a speed sample this fast counts as in-play
+    # CF-174: this is a REFERENCE value, in 360p pixel space. bridge_windows_by_motion
+    # multiplies it by frame_height / 360 at use, so the effective threshold on a
+    # 1080p upload is 450 px/s, not 150. Tune it against 360p footage, or divide
+    # what you observe by (frame_height / 360) before setting it — setting 150
+    # here from a 1080p observation applies 450 and the bridge stops firing.
+    condense_bridge_speed_pxps: float = 150.0   # px/s at 360p; scaled at use
     condense_bridge_fast_fraction: float = 0.35  # bridge when ≥ this fraction of samples are fast
     condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
+    # CF-174 kill switch. False restores `main`'s unscaled contact thresholds and
+    # `main`'s action labels — both, because the gate and the classifier have to
+    # agree about what a px/s means. It ships True; this exists because the
+    # scaling moves highlight selection on every non-360p upload and there is no
+    # ground truth at those resolutions to measure that against. MIN_RALLY_CONTACTS
+    # gates hard at 3, so a rally that drops from 3 contacts to 2 leaves highlights
+    # entirely, and 1080p is what the app uploads. Unlike the condense knobs above,
+    # the alternative to a setting here is a code deploy.
+    #
+    # A switch, not a knob: it takes the whole scaling out, and turning it off on a
+    # non-360p deployment restores a detector this PR argues is measurably wrong for
+    # that footage.
+    #
+    # It reaches BOTH halves of the pipeline CF-174 touched — find_contacts (and,
+    # through it, classify_contact_action) and the condense motion bridge. That is
+    # the point of it being one setting: off is `main`'s behaviour, which is the
+    # half with measured evidence behind it. Gating only the contacts would leave
+    # the bridge at 3x on a 1080p upload, i.e. a third combination nothing has ever
+    # scored — the worst thing for a lever whose whole job is incident response.
+    #
+    # It does not reach the >1440p clamp in ball._scale_for, which is already
+    # `main`'s behaviour there; see the asymmetry note in bridge_windows_by_motion
+    # for what the two halves do above that height while the switch is on.
+    ball_contact_scale_enabled: bool = True
     # Which keep-window builder the condense stage uses. A failure *inside* the
     # guarded builder falls back to "rules", so a feature mismatch degrades the
     # condense rather than failing the run. Note the fallback is within-builder

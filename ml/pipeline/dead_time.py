@@ -30,6 +30,23 @@ from ml.pipeline.intervals import Interval, merge_intervals
 
 logger = logging.getLogger(__name__)
 
+# The tracking space speed_pxps defaults were tuned in. Keep in sync with
+# ball.REFERENCE_FRAME_HEIGHT — asserted by test_reference_frame_height_matches_ball
+# in ml/tests/test_dead_time.py.
+#
+# Duplicated rather than imported, and NOT to stay dependency-light: that reason
+# has expired. It was cv2, which CF-174 made lazy, and the replacement claim once
+# written here — "numpy is the one that remains" — was already false, because this
+# module imports numpy itself in the block above. `from ml.pipeline.ball import
+# REFERENCE_FRAME_HEIGHT` costs nothing but stdlib today.
+#
+# What is left is layering, not weight: this module turns contacts into windows
+# and never calls the detector, and the constant describes the footage both were
+# tuned on rather than either module. Preferring the import to the duplicate is a
+# defensible trade — just make it on those grounds, and drop the guard test with
+# it, rather than preserving a dependency constraint that no longer exists.
+REFERENCE_FRAME_HEIGHT = 360.0
+
 
 class Abstained(list):
     """The whole-video window returned when the track is too sparse to judge.
@@ -193,6 +210,8 @@ def bridge_windows_by_motion(
     max_bridge_seconds: float = 20.0,
     max_sample_spacing: float = 1.5,
     min_samples: int = 3,
+    frame_height: int = 0,
+    normalize: bool = True,
 ) -> list[Interval]:
     """
     Merge adjacent windows when the tracked ball keeps moving fast through
@@ -215,9 +234,59 @@ def bridge_windows_by_motion(
     positions are dicts with "time", "x", "y" (ball-track samples). Speeds
     are taken between consecutive samples closer than max_sample_spacing,
     so a tracking dropout contributes no samples rather than a huge jump.
+
+    speed_pxps is in REFERENCE_FRAME_HEIGHT pixel space and is scaled to this
+    video's frame_height (CF-174) — the same physical motion covers ~3x more
+    pixels at 1080p, so an unscaled threshold calls ordinary handling "fast"
+    and bridges gaps that are really dead time. frame_height <= 0 keeps the
+    unscaled (360p) behaviour.
+
+    normalize=False turns the scaling off and restores `main`'s bridge, and it
+    is the same CF-174 kill switch that reaches find_contacts
+    (`BALL_CONTACT_SCALE_ENABLED`, threaded from tasks.py). Both halves of the
+    condense path are on it deliberately: the lever exists to restore `main`, and
+    a switch that returned `main`'s contacts while leaving this threshold at 3x
+    would hand an operator a third combination nothing has ever measured — the
+    one thing worse than either shipped behaviour. Silent when off, for the same
+    reason _scale_for is: an operator who set it meant it.
+
+    Note the asymmetry with the other half of the condense path *while the
+    switch is on*: this scales unconditionally, while ball._scale_for stops at a
+    clamp point and reverts to 1.0 above it. So a 2160p upload finds contacts with unscaled gates and joins
+    their windows with a 6x-scaled threshold. That is deliberate, not an
+    oversight — the clamp exists because the scaled contact floor walks into the
+    fixed SEG_MAX_SPEED_PXPS ceiling and the two gates go disjoint. This
+    threshold is one-sided: there is no ceiling here to collide with, so scaling
+    it stays correct at every height and clamping it would only make it wrong.
+    If SEG_MAX_SPEED_PXPS ever scales (CF-229) the clamp disappears and the two
+    halves converge on their own.
+
+    Be explicit about what that costs, because ball.py's no-regression claim does
+    not cover it: above the clamp the condense path as a whole *does* differ from
+    `main`. Same contacts, bridged at 900 px/s instead of 150 at 2160p, so gaps
+    `main` bridged now stay cut. Tightening, not widening, and unmeasured — every
+    dead-time fixture is 1080p or shorter.
     """
     if len(windows) < 2 or not positions:
         return list(windows)
+
+    # normalize=False leaves speed_pxps in raw px/s — `main`'s threshold — and
+    # says nothing, because a missing frame height is only worth warning about
+    # when the height was going to be used.
+    if normalize:
+        if frame_height > 0:
+            speed_pxps = speed_pxps * frame_height / REFERENCE_FRAME_HEIGHT
+        else:
+            # Same failure and same reasoning as ball._scale_for's warning:
+            # silently applying a 360p threshold to a 1080p video is the bug
+            # this parameter exists to prevent, and of the two call paths this
+            # is the one that would otherwise never say so.
+            logger.warning(
+                "bridge_windows_by_motion called without frame_height — assuming a "
+                "%.0fpx tracking space; speed_pxps=%.0f will read as 'fast' for "
+                "ordinary ball handling on taller footage and over-bridge dead time",
+                REFERENCE_FRAME_HEIGHT, speed_pxps,
+            )
 
     pts = sorted((p["time"], p["x"], p["y"]) for p in positions)
     speeds: list[tuple[float, float]] = []  # (midpoint time, px/s)
