@@ -6,8 +6,10 @@ bridge_windows_by_motion -> evaluate_deadtime — against the dead-time fixture,
 so a candidate threshold costs a few seconds and no video download. Requires
 only the dump from diagnose_detection.py, which the container mounts.
 
-Step 0 reproduces the recorded container baseline. If that row doesn't match
-exactly, nothing below it is trustworthy, so it prints the expected values.
+Step 0 reproduces the newest recorded row whose constants still match the
+shipping ones, and prints its values. If step 0 doesn't match, nothing below it
+is trustworthy. The expectation is read from that row rather than written down,
+so a constant moving under it retires the pin instead of falsifying it (CF-309).
 
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts test2
@@ -92,26 +94,48 @@ def _row(label: str, r: dict, total_rallies: int) -> str:
         r["live"], 100 * r["dead"], 100 * r["recall"], 100 * r["cond"])
 
 
-def _baseline_note(test_id: str) -> str:
-    """What the step-0 row can be compared against, if anything.
+def _recorded_baseline(test_id: str) -> dict | None:
+    """The newest recorded row whose constants still match the shipping ones.
 
-    Two separate reasons it may be nothing. Only test1 has a recorded row at
-    all, so any other fixture has no pin — printing test1's expectation beside
-    another video's numbers would invite reading a different fixture as drift.
+    Read, never hardcoded. The literal it replaces — "expect 214 contacts, 517s
+    live-lost, 68.4% dead-rm, 58.4% recall" — is the `baseline` row, recorded
+    when `ball.py` shipped `CONTACT_RESIDUAL_MIN_PXPS = 480`; CF-103 lowered it
+    to 240 and the literal was never re-taken, so step 0 could not match and the
+    tool declared its own output untrustworthy on every run. That is CF-309
+    (#359), and reading the row is the fix that card asks for, because it cannot
+    drift again: a row stops being the pin the moment a constant moves under it.
 
-    And test1's row is itself stale: it was recorded when `ball.py` shipped
-    `CONTACT_RESIDUAL_MIN_PXPS = 480` and CF-103 lowered it to 240, which is
-    the self-invalidation CF-309 (#359) is open for. Saying so is not the fix —
-    re-recording it is, and that needs the R2 ball caches — but presenting it
-    as a clean control while it cannot match is worse than printing nothing.
+    A key in the snapshot that no longer exists on the module was deleted since
+    the row was written, and is skipped rather than counted as a mismatch —
+    otherwise the first deletion would make every recorded row stale forever.
     """
-    if test_id != DEFAULT_FIXTURE:
-        return f"  ^ no recorded baseline for {test_id}; the row above is not pinned\n"
+    path = RESULTS_DIR / f"{test_id}_deadtime.jsonl"
+    if not path.exists():
+        return None
+    match = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        snap = row.get("config_snapshot", {}).get("ml.pipeline.ball", {})
+        if all(getattr(B, k) == v for k, v in snap.items() if hasattr(B, k)):
+            match = row
+    return match
+
+
+def _baseline_note(test_id: str) -> str:
+    """What the step-0 row can be compared against, if anything."""
+    row = _recorded_baseline(test_id)
+    if row is None:
+        return (f"  ^ no recorded row for {test_id} matches the shipping "
+                f"constants; the row above is not pinned\n")
+    d = row["deadtime"]
     return (
-        "  ^ recorded expectation: 214 contacts, 517s live-lost, 68.4% dead-rm, "
-        "58.4% recall\n"
-        "    STALE — taken at CONTACT_RESIDUAL_MIN_PXPS=480, shipping is 240 "
-        "(CF-103). A mismatch here is that, not your sweep. See #359.\n"
+        "  ^ expect %.0fs live-lost, %.1f%% dead-rm, %.1f%% recall  "
+        "(recorded %s, %s)\n"
+        % (d["live_removed_sec"], 100 * d["dead_removed_pct"],
+           100 * d["kept_play_pct"], row.get("version_tag", "?"),
+           row.get("git_commit", "?"))
     )
 
 
@@ -122,11 +146,12 @@ def main(argv: list[str] | None = None) -> None:
     # Restored on the way out: main() takes an argument now, so it is callable
     # rather than only a __main__ entry point, and a global logging level it
     # never puts back leaks into whatever called it.
+    previous = logging.root.manager.disable
     logging.disable(logging.INFO)
     try:
         _sweep(test_id)
     finally:
-        logging.disable(logging.NOTSET)
+        logging.disable(previous)
 
 
 def _sweep(test_id: str) -> None:
