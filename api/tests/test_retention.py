@@ -271,7 +271,7 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     # `len(stale) - 1` is 0. An earlier version of this comment said the
     # separation was "more fixture than this behaviour is worth", which
     # overstated the cost: the fixture exists. Left as it is because the two
-    # counts are asserted in the file that owns each fixture rather than
+    # counts are asserted in the test that owns each fixture rather than
     # crossing between them, and the survivors are disclosed either way.
     rows = [_row("a"), _row("b"), _row("c")]
     fakes = _Fakes(objects=[r["obj"] for r in rows])
@@ -288,7 +288,10 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     # reclaimed count is visible, which means a `logger.warning` demoted to
     # `logger.info` would still satisfy a plain `in caplog.text`. Anything
     # alerting on WARN would lose the "objects left behind" signal silently.
-    assert any(r.levelno == logging.WARNING and "could not be deleted" in r.message
+    # `>=`, not `==`: the message below says an alert on WARN would not fire,
+    # and escalating to ERROR does not have that effect. `getMessage()` rather
+    # than `.message`, which only exists because a handler formatted the record.
+    assert any(r.levelno >= logging.WARNING and "could not be deleted" in r.getMessage()
                for r in caplog.records), (
         "the failed delete was reported below WARNING. The count is right, so a "
         "text-only assertion passes, but an alert on WARN never fires "

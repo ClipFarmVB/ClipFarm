@@ -201,12 +201,28 @@ def test_every_secret_source_reaches_the_scrub_patterns(monkeypatch):
         monkeypatch.setattr(observability.settings, name, value)
     monkeypatch.setenv("ROBOFLOW_API_KEY", "scrub-roboflow-api-key")
 
-    # A connection URL covers the last two entries at once: the URL itself, and
-    # the password lifted out of it for the re-rendered forms. Both are their
-    # own line in `candidates`, and both were unpinned.
-    monkeypatch.setattr(
-        observability.settings, "database_url",
-        "postgresql+asyncpg://postgres.abc:scrub-db-password@db.example.com:5432/postgres")
+    # The four connection-URL settings, written out rather than read from
+    # `_CONNECTION_URL_SETTINGS`. Two earlier versions of this got it wrong in
+    # opposite ways. The first patched `database_url` alone and claimed it
+    # "covers the last two entries at once" — true of the two *lines* in
+    # `candidates`, false of the four *sources* they iterate, so deleting
+    # `redis_url`, `celery_broker_url` or `celery_result_backend` left the
+    # whole api suite green. The second built this dict *from* the tuple, which
+    # is worse: a deleted name is then neither patched nor asserted, so all
+    # four deletions passed. A test that enumerates the thing under test cannot
+    # see the thing under test shrink.
+    url_settings = ("database_url", "redis_url",
+                    "celery_broker_url", "celery_result_backend")
+    assert set(observability._CONNECTION_URL_SETTINGS) == set(url_settings), (
+        "the connection-URL settings changed. Add the new one here with its own "
+        "patched value — this list is deliberately not read from the module, so "
+        "that a source dropped from it fails rather than disappearing quietly "
+        "(CF-308, #358)."
+    )
+    urls = {name: f"postgresql+asyncpg://postgres.abc:scrub-pw-{name}@db.example.com:5432/x"
+            for name in url_settings}
+    for name, url in urls.items():
+        monkeypatch.setattr(observability.settings, name, url)
 
     values = observability._secret_values()
 
@@ -219,14 +235,15 @@ def test_every_secret_source_reaches_the_scrub_patterns(monkeypatch):
         "the ROBOFLOW_API_KEY environment variable is not a scrub pattern "
         "(CF-308, #358)."
     )
-    assert any("scrub-db-password@" in v for v in values), (
-        "a connection URL is not a scrub pattern, and those are the most common "
-        "thing an error tracker sees (CF-308, #358)."
-    )
-    assert "scrub-db-password" in values, (
-        "a connection URL's password is not a scrub pattern on its own, so a "
-        "re-rendered form of the URL would leak it (CF-308, #358)."
-    )
+    for name, url in urls.items():
+        assert url in values, (
+            f"settings.{name} is not a scrub pattern. Connection URLs are the "
+            f"most common thing an error tracker sees (CF-308, #358)."
+        )
+        assert f"scrub-pw-{name}" in values, (
+            f"settings.{name}'s password is not a scrub pattern on its own, so "
+            f"a re-rendered form of that URL would leak it (CF-308, #358)."
+        )
 
 
 # --- caching (raised on #131 review) -----------------------------------------
