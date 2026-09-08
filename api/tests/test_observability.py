@@ -245,6 +245,22 @@ def test_every_secret_source_reaches_the_scrub_patterns(monkeypatch):
             f"a re-rendered form of that URL would leak it (CF-308, #358)."
         )
 
+    # The drift guard for the scalars, which have no named tuple to compare
+    # against the way the URLs do — they are a literal list inside
+    # `_secret_values`. Equality rather than containment, so a *new* candidate
+    # source shows up here as an unexpected pattern and has to be given its own
+    # assertion above, instead of joining the list unpinned. That asymmetry is
+    # this file's own recurring failure — one surface covered and the identical
+    # one beside it not — so it is closed rather than noted.
+    expected = (set(scalars.values()) | {"scrub-roboflow-api-key"}
+                | set(urls.values()) | {f"scrub-pw-{name}" for name in urls})
+    assert set(values) == expected, (
+        "the set of scrub patterns is not the set this test patched. Extra "
+        f"{sorted(set(values) - expected)} means a candidate source is not "
+        f"pinned here; missing {sorted(expected - set(values))} means one "
+        "stopped being scrubbed (CF-308, #358)."
+    )
+
 
 # --- caching (raised on #131 review) -----------------------------------------
 # before_send AND before_breadcrumb call _secret_values() on every invocation,

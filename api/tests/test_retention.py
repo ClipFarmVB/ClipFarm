@@ -103,15 +103,23 @@ def _install(monkeypatch, fakes, retention_days=RETENTION_DAYS):
     monkeypatch.setattr(storage, "delete_files", fakes.delete_files)
 
 
-def test_expired_upload_is_released_then_reclaimed(monkeypatch):
+def test_expired_upload_is_released_then_reclaimed(monkeypatch, caplog):
     r = _row()
     fakes = _Fakes(expired=[(r["id"], r["url"])], objects=[r["obj"]], referenced=[r["key"]])
     _install(monkeypatch, fakes)
 
-    tasks._sweep_expired_raw_uploads()
+    with caplog.at_level(logging.INFO, logger="app.workers.tasks"):
+        tasks._sweep_expired_raw_uploads()
 
     assert fakes.cleared == [r["id"]]
     assert fakes.deleted == [r["key"]]
+    # 1 stale, 0 failed. The reclaimed count is asserted here as well as in the
+    # 3/1 case below because the two fixtures separate what neither can alone:
+    # at 3/1 any expression worth 2 survives, and `len(stale) - 1` is one of
+    # them — but here it is 0, and would ship "reclaimed 0 object(s)" on every
+    # clean sweep. The comment there used to say closing this needed a fixture
+    # that did not exist; it did exist, and it is this one.
+    assert "reclaimed 1 object(s)" in caplog.text, caplog.text
 
 
 def test_row_is_released_before_the_object_is_deleted(monkeypatch):
