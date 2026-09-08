@@ -535,6 +535,21 @@ Three corollaries, each of which had to be learned separately:
   reading the result is the actual defect, and no rule about *how* to run the
   command reaches it.
 
+**One class of figure — the ones on `README.md` — is now checked mechanically
+rather than promised.** The per-file token table, the five lap costs and the
+select-versus-spawn difference stated below them are pure functions of the
+brief's own file sizes, and `api/tests/test_overnight_brief.py` recomputes them
+in CI (CF-371).
+
+**Be exact about how little that covers.** It closes one shape — *right when
+written, rotted untouched* — on one surface, the figures on `README.md`. The
+documented instance is that table drifting by a third before CF-275 re-took it.
+**None of the six failures listed above is on that surface**, so the check would
+not have caught any of them. Nor are they one mechanism a second check could
+close: a carried-over mutation row, a figure lifted from a subagent's report and
+a grep run against the wrong tree are three different ways to publish a number
+you did not measure. For everything above, the rule is still the whole of it.
+
 **The tell is a sentence that would be embarrassing if someone re-ran it.**
 Four of the six above were caught by a review round doing exactly that. The
 other two the run caught itself, within minutes and before anyone looked — the
