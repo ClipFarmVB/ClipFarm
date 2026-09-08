@@ -132,7 +132,15 @@ def _baseline_note(test_id: str) -> str:
     if row is None:
         return f"  ^ no recorded run for {test_id}\n"
     d = row.get("deadtime") or {}
-    if not all(k in d for k in ("live_removed_sec", "dead_removed_pct", "kept_play_pct")):
+    # `is not None`, not `in`: two of these three are *legitimately* null in a
+    # well-formed row. metrics.py returns None for dead_removed_pct when the
+    # fixture has no human dead time and for kept_play_pct when it has no human
+    # keep time, and harness._round passes None through on purpose, so the key
+    # is present and the value is not a number. A presence-only guard let that
+    # row reach `100 * None`, and this note is printed before the first sweep
+    # row -- a malformed record has to degrade the note, not kill the run.
+    if not all(d.get(k) is not None
+               for k in ("live_removed_sec", "dead_removed_pct", "kept_play_pct")):
         return f"  ^ last recorded run for {test_id} has no dead-time metrics\n"
     return (
         "  ^ last recorded run (%s, %s): %.0fs live-lost, %.1f%% dead-rm, "

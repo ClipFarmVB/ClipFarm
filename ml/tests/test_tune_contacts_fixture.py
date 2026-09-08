@@ -44,8 +44,15 @@ def test_the_rally_denominator_comes_from_the_fixture():
 
 def test_the_row_keeps_its_column_width_across_denominators():
     """The header is built with fixed widths, so a denominator of a different
-    length must not shift the columns to its right."""
+    length must not shift the columns to its right.
+
+    Holds up to three digits, which is the `%-3d` field and every rally count
+    these fixtures have (27, 46, 126). A four-digit denominator would shift the
+    row; nothing here is near it, and widening the column to buy a case that
+    cannot occur would move every existing table by a space.
+    """
     assert len(T._row("x", _ROW, 126)) == len(T._row("x", _ROW, 45))
+    assert len(T._row("x", _ROW, 7)) == len(T._row("x", _ROW, 999))
 
 
 def test_main_sweeps_the_fixture_it_was_given(monkeypatch):
@@ -202,11 +209,19 @@ def test_the_cli_reads_its_fixture_from_argv(monkeypatch):
     assert seen["test_id"] == T.DEFAULT_FIXTURE
 
 
-def test_a_recorded_run_is_reported_without_claiming_it_matches():
+def test_a_recorded_run_is_reported_without_claiming_it_matches(tmp_path, monkeypatch):
     """The note is context, not a pin: an earlier version filtered rows by a
     config-match predicate that review kept finding holes in. It must not read
-    as pass/fail."""
-    note = T._baseline_note("test1")
+    as pass/fail.
+
+    Builds its row like the rest of this section rather than reading
+    `test1_deadtime.jsonl`, which it used to. The next run appended to that file
+    becomes whatever this asserts against, so a recorded row with no dead-time
+    metrics would flip the note to the other branch and fail here — red caused
+    by data rather than by code.
+    """
+    _write_rows(tmp_path, monkeypatch, _good_row())
+    note = T._baseline_note("probe")
     assert "last recorded run" in note
     assert "NOT a pass/fail check" in note
     assert "expect" not in note
@@ -268,3 +283,26 @@ def test_a_row_without_metrics_is_reported_as_such(tmp_path, monkeypatch):
         json.dumps({"git_commit": "x", "deadtime": {}}) + "\n", encoding="utf-8")
     monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
     assert "no dead-time metrics" in T._baseline_note("probe")
+
+
+def test_a_null_metric_degrades_the_note_rather_than_killing_the_sweep(
+        tmp_path, monkeypatch, capsys):
+    """`dead_removed_pct` and `kept_play_pct` are null in a *well-formed* row —
+    `metrics.py` returns None when the fixture has no human dead time or no
+    human keep time, and `harness._round` passes None through deliberately. So
+    the key is there and the value is not a number.
+
+    Asserted through `_sweep`, not just the helper, because that is what makes
+    it more than cosmetic: the note prints before the first sweep row, so
+    `100 * None` took down the whole run at step 0.
+    """
+    import json
+    (tmp_path / "synthetic_deadtime.jsonl").write_text(json.dumps({
+        "git_commit": "x", "version_tag": "x",
+        "deadtime": {"live_removed_sec": 0.0, "dead_removed_pct": None,
+                     "kept_play_pct": 0.9},
+    }) + "\n", encoding="utf-8")
+    monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
+    out = _run(monkeypatch, [(1.0, 5.0)], capsys)
+    assert "no dead-time metrics" in out, out
+    assert "BASELINE" in out, out
