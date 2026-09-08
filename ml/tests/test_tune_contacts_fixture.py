@@ -20,6 +20,8 @@ could not match and the tool called its own output untrustworthy every run
 Behavioural rather than a source scan: the guards in this suite were converted
 away from `inspect.getsource` substring checks in CF-174's own review rounds.
 """
+import sys
+
 import pytest
 
 pytest.importorskip("numpy")
@@ -67,41 +69,6 @@ def test_main_sweeps_the_fixture_it_was_given(monkeypatch):
     assert seen["test_id"] == T.DEFAULT_FIXTURE, "no argument must still mean test1"
 
 
-def test_the_expectation_is_read_from_a_row_matching_the_shipping_constants():
-    """`test1_deadtime.jsonl` holds two rows. The older one is where the
-    hardcoded "517s live-lost, 68.4% dead-rm, 58.4% recall" came from, and it
-    carries `CONTACT_RESIDUAL_MIN_PXPS = 480` against a shipping 240 — so it
-    could never match, which is CF-309 (#359). The pin must be the other one."""
-    row = T._recorded_baseline("test1")
-    assert row is not None
-    assert row["git_commit"] == "29a83a5", "picked the row recorded at 480"
-    snap = row["config_snapshot"]["ml.pipeline.ball"]
-    assert snap["CONTACT_RESIDUAL_MIN_PXPS"] == B.CONTACT_RESIDUAL_MIN_PXPS
-
-    note = T._baseline_note("test1")
-    assert "68.4" not in note, "still printing the 480-era numbers"
-    assert "56.2" in note
-
-
-def test_a_constant_moving_under_the_row_retires_the_pin(monkeypatch):
-    """The property that makes this unable to drift again, and the whole reason
-    for reading the row instead of re-typing its numbers: move a constant and
-    the row stops being the pin, rather than staying and being wrong."""
-    assert T._recorded_baseline("test1") is not None
-    monkeypatch.setattr(B, "CONTACT_HIT_SPEED_PXPS", B.CONTACT_HIT_SPEED_PXPS + 1)
-    assert T._recorded_baseline("test1") is None
-    assert "not pinned" in T._baseline_note("test1")
-
-
-def test_a_deleted_constant_does_not_retire_every_row(monkeypatch):
-    """Both committed rows snapshot `MIN_SPEED_PXPS`, which CF-174 removed. If
-    a key the module no longer has counted as a mismatch, the first deletion
-    would make every recorded row stale forever."""
-    assert not hasattr(B, "MIN_SPEED_PXPS")
-    snap = T._recorded_baseline("test1")["config_snapshot"]["ml.pipeline.ball"]
-    assert "MIN_SPEED_PXPS" in snap
-
-
 def test_the_newest_matching_row_wins(tmp_path, monkeypatch):
     """Rows are appended, so a later re-recording must supersede an earlier one.
 
@@ -112,12 +79,7 @@ def test_the_newest_matching_row_wins(tmp_path, monkeypatch):
     """
     _write_rows(tmp_path, monkeypatch,
                 _good_row("older"), _good_row("newer"))
-    assert T._recorded_baseline("probe")["git_commit"] == "newer"
-
-
-def test_a_fixture_with_no_matching_row_is_not_pinned():
-    assert T._recorded_baseline("nosuchfixture") is None
-    assert "not pinned" in T._baseline_note("nosuchfixture")
+    assert T._last_recorded_run("probe")["git_commit"] == "newer"
 
 
 def test_main_restores_the_global_logging_level():
@@ -181,12 +143,13 @@ def test_the_printed_denominator_comes_from_the_fixture(monkeypatch, capsys):
     assert "/126" not in out
 
 
-def test_the_printed_pin_comes_from_the_recorded_row(monkeypatch, capsys):
+def test_the_printed_note_comes_from_the_helper(monkeypatch, capsys):
     """Likewise for `print(_baseline_note(test_id))`: with the old literal
-    hardcoded back in, the helper tests still pass."""
+    hardcoded back in, the helper tests still pass. The synthetic fixture has no
+    results file, so the helper's no-run branch is what must appear."""
     out = _run(monkeypatch, [(1.0, 5.0)], capsys)
     assert "214 contacts" not in out
-    assert "not pinned" in out, out
+    assert "no recorded run for synthetic" in out, out
 
 
 # ── what makes a recorded row usable as a pin ───────────────────────────────
@@ -198,50 +161,10 @@ def _write_rows(tmp_path, monkeypatch, *rows):
     monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
 
 
-def _good_row(commit="good", **overrides):
-    ball = {k: getattr(B, k) for k in T.TUNABLES}
-    app = dict(T._MIRRORED)
-    ball.update(overrides.pop("ball", {}))
-    app.update(overrides.pop("app", {}))
+def _good_row(commit="good"):
     return {"git_commit": commit, "version_tag": commit,
-            "config_snapshot": {"ml.pipeline.ball": ball, "app.config": app},
             "deadtime": {"live_removed_sec": 1.0, "dead_removed_pct": 0.5,
                          "kept_play_pct": 0.5}}
-
-
-def test_a_row_with_no_ball_snapshot_is_not_a_pin(tmp_path, monkeypatch):
-    """`all()` over an empty mapping is True, so a row carrying no snapshot
-    would match unconditionally — and being newest, supersede every verified
-    row and print its figures as authoritative. `harness.config_snapshot`
-    produces exactly that shape when an import fails, so it needs no
-    hand-editing to occur. A wrong pin is worse than none: step 0's rule tells
-    the operator to distrust everything below an unmatched baseline."""
-    bogus = {"git_commit": "NOSNAPSHOT", "version_tag": "bogus",
-             "config_snapshot": {"app.config": {}},
-             "deadtime": {"live_removed_sec": 9999.0, "dead_removed_pct": 0.99,
-                          "kept_play_pct": 0.01}}
-    _write_rows(tmp_path, monkeypatch, _good_row(), bogus)
-    assert T._recorded_baseline("probe")["git_commit"] == "good"
-    assert "9999" not in T._baseline_note("probe")
-
-
-def test_a_row_missing_one_swept_constant_is_not_a_pin(tmp_path, monkeypatch):
-    """A snapshot too thin to say anything about what was swept is not a pin
-    either — the vacuous-match hole one step narrower."""
-    thin = _good_row("thin")
-    del thin["config_snapshot"]["ml.pipeline.ball"][T.TUNABLES[0]]
-    _write_rows(tmp_path, monkeypatch, thin)
-    assert T._recorded_baseline("probe") is None
-
-
-def test_a_condense_knob_moving_retires_the_row(tmp_path, monkeypatch):
-    """Every figure in the row depends on the condense settings too — harness.py
-    says they decide every dead-time number (CF-98) — and this tool mirrors them
-    in COND because it runs with no app installed. Matching on ball constants
-    alone would let the pin survive a knob it actually depends on."""
-    _write_rows(tmp_path, monkeypatch,
-                _good_row("drifted", app={"condense_pad_before": T.COND["pad_before"] + 1}))
-    assert T._recorded_baseline("probe") is None
 
 
 def test_a_truncated_line_does_not_lose_the_pin(tmp_path, monkeypatch):
@@ -250,4 +173,48 @@ def test_a_truncated_line_does_not_lose_the_pin(tmp_path, monkeypatch):
         __import__("json").dumps(_good_row()) + "\n{\"git_commit\": \"trunc",
         encoding="utf-8")
     monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
-    assert T._recorded_baseline("probe")["git_commit"] == "good"
+    assert T._last_recorded_run("probe")["git_commit"] == "good"
+
+
+def test_the_cli_reads_its_fixture_from_argv(monkeypatch):
+    """`main()` with no argument is the documented `python -m ml.eval.tune_contacts`
+    path, and it must still take a fixture from the command line. Replacing the
+    parse with `argv or []` leaves every other test green, because they all pass
+    argv explicitly."""
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _fake_load(test_id=T.DEFAULT_FIXTURE):
+        seen["test_id"] = test_id
+        raise _Stop()
+
+    monkeypatch.setattr(T, "load", _fake_load)
+    monkeypatch.setattr(sys, "argv", ["tune_contacts", "test4"])
+    with pytest.raises(_Stop):
+        T.main()
+    assert seen["test_id"] == "test4"
+
+    monkeypatch.setattr(sys, "argv", ["tune_contacts"])
+    with pytest.raises(_Stop):
+        T.main()
+    assert seen["test_id"] == T.DEFAULT_FIXTURE
+
+
+def test_a_recorded_run_is_reported_without_claiming_it_matches():
+    """The note is context, not a pin: an earlier version filtered rows by a
+    config-match predicate that four rounds each found another hole in. It must
+    not read as pass/fail."""
+    note = T._baseline_note("test1")
+    assert "last recorded run" in note
+    assert "NOT a pass/fail check" in note
+    assert "expect" not in note
+
+
+def test_a_row_without_metrics_is_reported_as_such(tmp_path, monkeypatch):
+    import json
+    (tmp_path / "probe_deadtime.jsonl").write_text(
+        json.dumps({"git_commit": "x", "deadtime": {}}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
+    assert "no dead-time metrics" in T._baseline_note("probe")

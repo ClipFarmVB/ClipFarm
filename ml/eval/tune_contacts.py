@@ -6,10 +6,11 @@ bridge_windows_by_motion -> evaluate_deadtime — against the dead-time fixture,
 so a candidate threshold costs a few seconds and no video download. Requires
 only the dump from diagnose_detection.py, which the container mounts.
 
-Step 0 reproduces the newest recorded row whose constants still match the
-shipping ones, and prints its values. If step 0 doesn't match, nothing below it
-is trustworthy. The expectation is read from that row rather than written down,
-so a constant moving under it retires the pin instead of falsifying it (CF-309).
+Step 0 prints the sweep's own baseline row, and beneath it the last recorded
+run for that fixture with the tag and commit it came from. That is context, not
+a pass/fail check: nothing here verifies the recorded run describes the
+configuration you are on. Restoring step 0 to a trustworthy control is CF-309
+(#359) — it needs the row re-recorded, which needs the R2 ball caches.
 
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts test2
@@ -61,18 +62,6 @@ BRIDGE: dict[str, Any] = dict(speed_pxps=150.0, fast_fraction=0.35, max_bridge_s
 # test_eval_condense_settings.py.
 NORMALIZE: bool = True
 
-# The app.config values this tool mirrors, and so the ones a recorded row must
-# still agree with before its figures can be used as a pin. Kept beside the
-# mirrors themselves so the two move together.
-_MIRRORED: dict[str, Any] = {
-    "condense_gap_seconds": COND["gap_seconds"],
-    "condense_pad_before": COND["pad_before"],
-    "condense_pad_after": COND["pad_after"],
-    "condense_min_contacts": COND["min_contacts"],
-    "condense_merge_gap_seconds": COND["merge_gap_seconds"],
-    "ball_contact_scale_enabled": NORMALIZE,
-}
-
 TUNABLES = (
     "CONTACT_RESIDUAL_RATIO", "CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_HIT_SPEED_PXPS",
     "MIN_CONTACT_SPACING", "SEG_MIN_POSITIONS",
@@ -106,82 +95,55 @@ def _row(label: str, r: dict, total_rallies: int) -> str:
         r["live"], 100 * r["dead"], 100 * r["recall"], 100 * r["cond"])
 
 
-def _recorded_baseline(test_id: str) -> dict | None:
-    """The newest recorded row whose constants still match the shipping ones.
+def _last_recorded_run(test_id: str) -> dict | None:
+    """The newest row in the fixture's results file, or None.
 
-    Read, never hardcoded. The literal it replaces — "expect 214 contacts, 517s
-    live-lost, 68.4% dead-rm, 58.4% recall" — is the `baseline` row, recorded
-    when `ball.py` shipped `CONTACT_RESIDUAL_MIN_PXPS = 480`; CF-103 lowered it
-    to 240 and the literal was never re-taken, so step 0 could not match and the
-    tool declared its own output untrustworthy on every run. That is CF-309
-    (#359), and reading the row is the fix that card asks for, because it cannot
-    drift again: a row stops being the pin the moment a constant moves under it.
+    **Deliberately not filtered by whether it describes what is running.** An
+    earlier version of this function tried: it compared the row's snapshot of
+    the ball constants, then also the condense settings this tool mirrors. Four
+    review rounds each found another input the numbers depend on and the
+    predicate missed — `condense_mode` selects a different window builder
+    entirely, the bridge knobs are a third set, and an absent snapshot section
+    matched vacuously. Deciding "does this row describe today's configuration"
+    means enumerating every input to the figures, and getting it wrong produces
+    a *wrong* pin, which is worse than none: step 0's rule tells the operator to
+    distrust everything below an unmatched baseline.
 
-    A key in the snapshot that no longer exists on the module was deleted since
-    the row was written, and is skipped rather than counted as a mismatch —
-    otherwise the first deletion would make every recorded row stale forever.
+    So this no longer claims. It reports what was last recorded and what it was
+    recorded against, and leaves the comparison to the reader. Making step 0 a
+    trustworthy control again is CF-309 (#359), which is open and owns exactly
+    that; it wants the row re-recorded, not a matcher bolted on here.
     """
     path = RESULTS_DIR / f"{test_id}_deadtime.jsonl"
     if not path.exists():
         return None
-    match = None
+    last = None
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
-            row = json.loads(line)
+            last = json.loads(line)
         except json.JSONDecodeError:
-            continue        # a truncated append is not a pin; keep the last good one
-        if _row_matches_shipping(row):
-            match = row
-    return match
-
-
-def _row_matches_shipping(row: dict) -> bool:
-    """Whether a recorded row describes the configuration running today.
-
-    Both halves are required, and requiring them is the point. `all()` over an
-    empty mapping is `True`, so a row carrying no snapshot — which
-    `harness.config_snapshot` produces silently when an import fails — would
-    otherwise match unconditionally, and being newest would make it supersede
-    every verified row. A wrong pin is worse than none here: step 0's rule tells
-    the operator to distrust everything below an unmatched baseline, so a bogus
-    one either stops a good sweep or blesses a bad one.
-
-    The ball constants alone are not enough either. Every figure in the row also
-    depends on the condense knobs, which `harness.py` says decide every
-    dead-time number (CF-98) and which this tool mirrors in COND/BRIDGE because
-    it runs with no app installed. A row matching on ball constants while
-    `condense_pad_before` moved underneath is exactly the drift this is meant to
-    retire.
-
-    Only keys the row recorded are compared: one that did not exist when it was
-    written cannot be checked against it, and one the module has since dropped
-    is skipped rather than retiring every row forever.
-    """
-    snap = row.get("config_snapshot") or {}
-    ball = snap.get("ml.pipeline.ball") or {}
-    app = snap.get("app.config") or {}
-    if not all(k in ball for k in TUNABLES):
-        return False        # no snapshot, or one too thin to say anything
-    if not all(getattr(B, k) == v for k, v in ball.items() if hasattr(B, k)):
-        return False
-    return all(app[k] == v for k, v in _MIRRORED.items() if k in app)
+            continue        # a crashed append leaves a partial last line
+    return last
 
 
 def _baseline_note(test_id: str) -> str:
-    """What the step-0 row can be compared against, if anything."""
-    row = _recorded_baseline(test_id)
+    """Context for the step-0 row — explicitly not a pass/fail pin."""
+    row = _last_recorded_run(test_id)
     if row is None:
-        return (f"  ^ no recorded row for {test_id} matches the shipping "
-                f"constants; the row above is not pinned\n")
-    d = row["deadtime"]
+        return f"  ^ no recorded run for {test_id}\n"
+    d = row.get("deadtime") or {}
+    if not all(k in d for k in ("live_removed_sec", "dead_removed_pct", "kept_play_pct")):
+        return f"  ^ last recorded run for {test_id} has no dead-time metrics\n"
     return (
-        "  ^ expect %.0fs live-lost, %.1f%% dead-rm, %.1f%% recall  "
-        "(recorded %s, %s)\n"
-        % (d["live_removed_sec"], 100 * d["dead_removed_pct"],
-           100 * d["kept_play_pct"], row.get("version_tag", "?"),
-           row.get("git_commit", "?"))
+        "  ^ last recorded run (%s, %s): %.0fs live-lost, %.1f%% dead-rm, "
+        "%.1f%% recall\n"
+        "    NOT a pass/fail check — whether that run describes your "
+        "configuration is not verified here (#359).\n"
+        % (row.get("version_tag", "?"), row.get("git_commit", "?"),
+           d["live_removed_sec"], 100 * d["dead_removed_pct"],
+           100 * d["kept_play_pct"])
     )
 
 
