@@ -1,0 +1,308 @@
+"""CF-174: the tuner can be pointed at a fixture, and its row follows it.
+
+`tune_contacts` grew a CF-174 note telling the reader how to interpret rows "on
+the 1080p fixtures", while `main()` called `load()` with no argument — so the
+only fixture it could sweep was test1, at 360p, the one resolution where the
+note does not apply. The advice was unreachable from the entry point.
+
+Adding the selector alone would have been worse than leaving it: two of the
+outputs were test1's, inlined. The rally denominator was the literal `126`,
+and the "expect …" line reported a row recorded against test1. Pointed at test2
+those print a wrong denominator and invite reading a different video's numbers
+as drift, so all three move together.
+
+The step-0 line is now a report rather than an expectation: it names the last
+recorded run and says outright that nothing here verifies that run describes
+the configuration you are on. The literal it replaced was taken at
+`CONTACT_RESIDUAL_MIN_PXPS = 480` against a shipping 240, so it could not match
+and the tool called its own output untrustworthy every run. Deciding whether a
+recorded row still applies is CF-309 (#359), not this file.
+
+Behavioural rather than a source scan: the guards in this suite were converted
+away from `inspect.getsource` substring checks in CF-174's own review rounds.
+"""
+import sys
+
+import pytest
+
+pytest.importorskip("numpy")
+
+from ml.eval import tune_contacts as T  # noqa: E402
+from ml.pipeline import ball as B  # noqa: E402
+
+_ROW = dict(contacts=214, windows=40, hit=100, live=517.0,
+            dead=0.684, recall=0.584, cond=0.58)
+
+
+def test_the_rally_denominator_comes_from_the_fixture():
+    """`126` is test1's rally count. On any other fixture it is simply wrong,
+    and it was invisible while test1 was the only reachable fixture."""
+    assert "/126" in T._row("x", _ROW, 126)
+    assert "/45" in T._row("x", _ROW, 45)
+    assert "/126" not in T._row("x", _ROW, 45)
+
+
+def test_the_row_keeps_its_column_width_across_denominators():
+    """The header is built with fixed widths, so a denominator of a different
+    length must not shift the columns to its right.
+
+    Holds up to three digits, which is the `%-3d` field and every rally count
+    these fixtures have (27, 46, 126). A four-digit denominator would shift the
+    row; nothing here is near it, and widening the column to buy a case that
+    cannot occur would move every existing table by a space.
+    """
+    assert len(T._row("x", _ROW, 126)) == len(T._row("x", _ROW, 45))
+    assert len(T._row("x", _ROW, 7)) == len(T._row("x", _ROW, 999))
+
+
+def test_main_sweeps_the_fixture_it_was_given(monkeypatch):
+    seen = {}
+
+    def _fake_load(test_id=T.DEFAULT_FIXTURE):
+        seen["test_id"] = test_id
+        raise _Stop()
+
+    class _Stop(Exception):
+        pass
+
+    monkeypatch.setattr(T, "load", _fake_load)
+
+    with pytest.raises(_Stop):
+        T.main(["test2"])
+    assert seen["test_id"] == "test2"
+
+    seen.clear()
+    with pytest.raises(_Stop):
+        T.main([])
+    assert seen["test_id"] == T.DEFAULT_FIXTURE, "no argument must still mean test1"
+
+
+def test_the_newest_matching_row_wins(tmp_path, monkeypatch):
+    """Rows are appended, so a later re-recording must supersede an earlier one.
+
+    Built rather than read so the assertion cannot pass by accident of which
+    row happens to be committed: the file here has two, and only the second may
+    be reported.
+    """
+    _write_rows(tmp_path, monkeypatch,
+                _good_row("older"), _good_row("newer"))
+    assert T._last_recorded_run("probe")["git_commit"] == "newer"
+
+
+def test_main_restores_the_global_logging_level():
+    """`main()` disables INFO for the sweep's duration. It takes an argument
+    now, so it is callable rather than only a `__main__` entry point, and a
+    global it never puts back leaks into the caller — in this suite, into every
+    test that runs after it."""
+    import logging
+
+    class _Stop(Exception):
+        pass
+
+    def _fake_load(test_id=T.DEFAULT_FIXTURE):
+        raise _Stop()
+
+    # Set the level explicitly first. Reading it as "before" is not enough: an
+    # earlier test in this file also calls main(), so without the restore the
+    # level is already disabled by the time this runs and the assertion holds
+    # either way. That is how the first version of this test passed against the
+    # unrestored build.
+    logging.disable(logging.NOTSET)
+    T_load = T.load
+    T.load = _fake_load
+    try:
+        with pytest.raises(_Stop):
+            T.main([])
+    finally:
+        T.load = T_load
+    assert logging.root.manager.disable == logging.NOTSET
+
+
+# ── the wiring, not just the helpers ────────────────────────────────────────
+
+def _synthetic(monkeypatch, rallies):
+    """A track short enough to sweep in milliseconds. It finds no contacts, and
+    that is fine: these tests are about which numbers `_sweep` puts where, not
+    about detection."""
+    from ml.eval.harness import DeadFixture
+
+    pos = [{"time": i * 0.1, "x": float(100 + (i % 20) * 15),
+            "y": float(200 + (30 if (i // 20) % 2 else -30))} for i in range(200)]
+    track = B.TrackedBall(positions=[
+        B.BallPosition(frame=i, time=p["time"], x=p["x"], y=p["y"], confidence=1.0)
+        for i, p in enumerate(pos)])
+    fx = DeadFixture(test_id="synthetic", keep=rallies, duration=20.0, raw={})
+    monkeypatch.setattr(T, "load", lambda test_id="synthetic": (track, pos, 360, fx))
+
+
+def _run(monkeypatch, rallies, capsys, fixture="synthetic"):
+    _synthetic(monkeypatch, rallies)
+    T.main([fixture])
+    return capsys.readouterr().out
+
+
+def test_the_printed_denominator_comes_from_the_fixture(monkeypatch, capsys):
+    """The helper tests pin `_row`; this pins the call. Reverting
+    `_row(label, r, len(rallies))` to the old hardcoded `126` leaves every
+    helper test green, because none of them runs `_sweep` at all."""
+    out = _run(monkeypatch, [(1.0, 5.0), (8.0, 12.0)], capsys)
+    assert "/2 " in out, out
+    assert "/126" not in out
+
+
+def test_the_printed_note_comes_from_the_helper(monkeypatch, capsys):
+    """Likewise for `print(_baseline_note(test_id))`: with the old literal
+    hardcoded back in, the helper tests still pass. The synthetic fixture has no
+    results file, so the helper's no-run branch is what must appear."""
+    out = _run(monkeypatch, [(1.0, 5.0)], capsys)
+    assert "214 contacts" not in out
+    assert "no recorded run for synthetic" in out, out
+
+
+# ── what makes a recorded row usable as a pin ───────────────────────────────
+
+def _write_rows(tmp_path, monkeypatch, *rows):
+    import json
+    (tmp_path / "probe_deadtime.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
+
+
+def _good_row(commit="good"):
+    return {"git_commit": commit, "version_tag": commit,
+            "deadtime": {"live_removed_sec": 1.0, "dead_removed_pct": 0.5,
+                         "kept_play_pct": 0.5}}
+
+
+def test_a_truncated_line_does_not_lose_the_pin(tmp_path, monkeypatch):
+    """Rows are appended, so a crashed write leaves a partial last line."""
+    (tmp_path / "probe_deadtime.jsonl").write_text(
+        __import__("json").dumps(_good_row()) + "\n{\"git_commit\": \"trunc",
+        encoding="utf-8")
+    monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
+    assert T._last_recorded_run("probe")["git_commit"] == "good"
+
+
+def test_the_cli_reads_its_fixture_from_argv(monkeypatch):
+    """`main()` with no argument is the documented `python -m ml.eval.tune_contacts`
+    path, and it must still take a fixture from the command line. Replacing the
+    parse with `argv or []` leaves every other test green, because they all pass
+    argv explicitly."""
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _fake_load(test_id=T.DEFAULT_FIXTURE):
+        seen["test_id"] = test_id
+        raise _Stop()
+
+    monkeypatch.setattr(T, "load", _fake_load)
+    monkeypatch.setattr(sys, "argv", ["tune_contacts", "test4"])
+    with pytest.raises(_Stop):
+        T.main()
+    assert seen["test_id"] == "test4"
+
+    monkeypatch.setattr(sys, "argv", ["tune_contacts"])
+    with pytest.raises(_Stop):
+        T.main()
+    assert seen["test_id"] == T.DEFAULT_FIXTURE
+
+
+def test_a_recorded_run_is_reported_without_claiming_it_matches(tmp_path, monkeypatch):
+    """The note is context, not a pin: an earlier version filtered rows by a
+    config-match predicate that review kept finding holes in. It must not read
+    as pass/fail.
+
+    Builds its row like the rest of this section rather than reading
+    `test1_deadtime.jsonl`, which it used to. The next run appended to that file
+    becomes whatever this asserts against, so a recorded row with no dead-time
+    metrics would flip the note to the other branch and fail here — red caused
+    by data rather than by code.
+    """
+    _write_rows(tmp_path, monkeypatch, _good_row())
+    note = T._baseline_note("probe")
+    assert "last recorded run" in note
+    assert "NOT a pass/fail check" in note
+    assert "expect" not in note
+
+
+def test_each_reported_figure_comes_from_its_own_field(tmp_path, monkeypatch):
+    """Every number in the note was unpinned: swapping dead-rm for recall, or
+    dropping a `100 *`, or hardcoding the tag left the whole suite green. Three
+    distinguishable values and a distinct tag and commit, so no two can be
+    exchanged without the assertion noticing."""
+    import json
+
+    (tmp_path / "probe_deadtime.jsonl").write_text(json.dumps({
+        "version_tag": "TAG", "git_commit": "COMMIT",
+        "deadtime": {"live_removed_sec": 111.0, "dead_removed_pct": 0.222,
+                     "kept_play_pct": 0.333},
+    }) + "\n", encoding="utf-8")
+    monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
+
+    note = T._baseline_note("probe")
+    assert "(TAG, COMMIT)" in note, note
+    assert "111s live-lost" in note, note
+    assert "22.2% dead-rm" in note, note     # percentages, not fractions
+    assert "33.3% recall" in note, note
+
+
+def test_the_padding_sweep_restores_COND_when_a_row_raises(monkeypatch, capsys):
+    """`COND` is a module global the padding sweep rebinds per row. Restoring it
+    only after the loop leaves it on the last swept value when a row raises —
+    the same leak `main` closes for the logging level and `score` for the ball
+    constants, in the one sweep that still had it.
+
+    Driven through the real `_sweep`: `evaluate_deadtime` is a module-level name
+    the closure looks up at call time, so failing it once `COND` has been
+    rebound reaches inside without replacing the function under test. An earlier
+    version of this test monkeypatched `_sweep` with a copy of the loop, which
+    asserted only that the copy was correct.
+    """
+    real_eval = T.evaluate_deadtime
+    before = dict(T.COND)
+
+    def _fail_once_padding_starts(*a, **k):
+        if T.COND["pad_before"] != before["pad_before"]:
+            raise RuntimeError("row failed")
+        return real_eval(*a, **k)
+
+    monkeypatch.setattr(T, "evaluate_deadtime", _fail_once_padding_starts)
+    _synthetic(monkeypatch, [(1.0, 5.0)])
+
+    with pytest.raises(RuntimeError):
+        T.main(["synthetic"])
+    capsys.readouterr()
+    assert T.COND == before
+
+
+def test_a_row_without_metrics_is_reported_as_such(tmp_path, monkeypatch):
+    import json
+    (tmp_path / "probe_deadtime.jsonl").write_text(
+        json.dumps({"git_commit": "x", "deadtime": {}}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
+    assert "no dead-time metrics" in T._baseline_note("probe")
+
+
+def test_a_null_metric_degrades_the_note_rather_than_killing_the_sweep(
+        tmp_path, monkeypatch, capsys):
+    """`dead_removed_pct` and `kept_play_pct` are null in a *well-formed* row —
+    `metrics.py` returns None when the fixture has no human dead time or no
+    human keep time, and `harness._round` passes None through deliberately. So
+    the key is there and the value is not a number.
+
+    Asserted through `_sweep`, not just the helper, because that is what makes
+    it more than cosmetic: the note prints before the first sweep row, so
+    `100 * None` took down the whole run at step 0.
+    """
+    import json
+    (tmp_path / "synthetic_deadtime.jsonl").write_text(json.dumps({
+        "git_commit": "x", "version_tag": "x",
+        "deadtime": {"live_removed_sec": 0.0, "dead_removed_pct": None,
+                     "kept_play_pct": 0.9},
+    }) + "\n", encoding="utf-8")
+    monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
+    out = _run(monkeypatch, [(1.0, 5.0)], capsys)
+    assert "no dead-time metrics" in out, out
+    assert "BASELINE" in out, out

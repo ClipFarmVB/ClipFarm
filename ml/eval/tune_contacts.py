@@ -6,30 +6,42 @@ bridge_windows_by_motion -> evaluate_deadtime — against the dead-time fixture,
 so a candidate threshold costs a few seconds and no video download. Requires
 only the dump from diagnose_detection.py, which the container mounts.
 
-Step 0 reproduces the recorded container baseline. If that row doesn't match
-exactly, nothing below it is trustworthy, so it prints the expected values.
+Step 0 prints the sweep's own baseline row, and beneath it the last recorded
+run for that fixture with the tag and commit it came from. That is context, not
+a pass/fail check: nothing here verifies the recorded run describes the
+configuration you are on. Restoring step 0 to a trustworthy control is CF-309
+(#359) — it needs the row re-recorded, which needs the R2 ball caches.
 
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
+  docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts test2
+
+An optional fixture id selects which dump to sweep; it defaults to test1. Each
+needs its own `{test_id}_ball_track.json` from diagnose_detection.py — the
+tuner reads a dump, never a video, so a fixture with no dump mounted fails at
+load rather than silently sweeping the wrong one.
 
 CF-174 — read the labels as REFERENCE (360p) values, not effective ones. The
 two px/s tunables (CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS) are
 multiplied by ball._scale_for(frame_height) at use, and
 SEG_MAX_SPEED_PXPS additionally feeds that function's cap, so a row sweeping it
 moves the clamp underneath itself. The default fixture is test1 at 360p, where
-the scale is exactly 1.0 and label == effective, which is why the pinned
-baseline still reproduces; on the 1080p fixtures a row reading
+the scale is exactly 1.0 and label == effective, so a row's label is the number
+actually applied; on the 1080p fixtures a row reading
 "CONTACT_HIT_SPEED_PXPS=360" is applying 1080. main() prints the active scale.
 """
 from __future__ import annotations
 
 import json
 import logging
+import sys
 from typing import Any
 
 from ml.eval.harness import RESULTS_DIR, load_deadtime_fixture
 from ml.eval.metrics import evaluate_deadtime
 from ml.pipeline import ball as B
 from ml.pipeline.dead_time import active_windows_from_contacts, bridge_windows_by_motion
+
+DEFAULT_FIXTURE = "test1"
 
 # Production condense settings for the rule-based path (condense_mode="rules"),
 # as recorded in the baseline result row. Annotated Any because the values are
@@ -55,7 +67,7 @@ TUNABLES = (
 )
 
 
-def load(test_id: str = "test1"):
+def load(test_id: str = DEFAULT_FIXTURE):
     d = json.loads((RESULTS_DIR / f"{test_id}_ball_track.json").read_text(encoding="utf-8"))
     fps = d["fps"]
     track = B.TrackedBall(positions=[
@@ -69,9 +81,95 @@ def load(test_id: str = "test1"):
     return track, positions, d["frame_height"], load_deadtime_fixture(test_id)
 
 
-def main() -> None:
+def _row(label: str, r: dict, total_rallies: int) -> str:
+    """One results line. The rally denominator comes from the fixture.
+
+    It was `126` — test1's rally count — inlined in the format string, which was
+    invisible while test1 was the only fixture this could run on and wrong for
+    every other one the moment it could (CF-174, CF-309).
+    """
+    return "%-34s %5d %5d %4d/%-3d %7.0fs %8.1f%% %8.1f%% %8.1f%%" % (
+        label, r["contacts"], r["windows"], r["hit"], total_rallies,
+        r["live"], 100 * r["dead"], 100 * r["recall"], 100 * r["cond"])
+
+
+def _last_recorded_run(test_id: str) -> dict | None:
+    """The newest row in the fixture's results file, or None.
+
+    **Deliberately not filtered by whether it describes what is running.** An
+    earlier version of this function tried: it compared the row's snapshot of
+    the ball constants, then also the condense settings this tool mirrors. It
+    lasted two review rounds, and each found more inputs the numbers depend on
+    and the predicate missed — `condense_mode` selects a different window builder
+    entirely, the bridge knobs are a third set, and an absent snapshot section
+    matched vacuously. Deciding "does this row describe today's configuration"
+    means enumerating every input to the figures, and getting it wrong produces
+    a *wrong* pin, which is worse than none: step 0's rule tells the operator to
+    distrust everything below an unmatched baseline.
+
+    So this no longer claims. It reports what was last recorded and what it was
+    recorded against, and leaves the comparison to the reader. Making step 0 a
+    trustworthy control again is CF-309 (#359), which is open and owns exactly
+    that; it wants the row re-recorded, not a matcher bolted on here.
+    """
+    path = RESULTS_DIR / f"{test_id}_deadtime.jsonl"
+    if not path.exists():
+        return None
+    last = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            last = json.loads(line)
+        except json.JSONDecodeError:
+            continue        # a crashed append leaves a partial last line
+    return last
+
+
+def _baseline_note(test_id: str) -> str:
+    """Context for the step-0 row — explicitly not a pass/fail pin."""
+    row = _last_recorded_run(test_id)
+    if row is None:
+        return f"  ^ no recorded run for {test_id}\n"
+    d = row.get("deadtime") or {}
+    # `is not None`, not `in`: two of these three are *legitimately* null in a
+    # well-formed row. metrics.py returns None for dead_removed_pct when the
+    # fixture has no human dead time and for kept_play_pct when it has no human
+    # keep time, and harness._round passes None through on purpose, so the key
+    # is present and the value is not a number. A presence-only guard let that
+    # row reach `100 * None`, and this note is printed before the first sweep
+    # row -- a malformed record has to degrade the note, not kill the run.
+    if not all(d.get(k) is not None
+               for k in ("live_removed_sec", "dead_removed_pct", "kept_play_pct")):
+        return f"  ^ last recorded run for {test_id} has no dead-time metrics\n"
+    return (
+        "  ^ last recorded run (%s, %s): %.0fs live-lost, %.1f%% dead-rm, "
+        "%.1f%% recall\n"
+        "    NOT a pass/fail check — whether that run describes your "
+        "configuration is not verified here (#359).\n"
+        % (row.get("version_tag", "?"), row.get("git_commit", "?"),
+           d["live_removed_sec"], 100 * d["dead_removed_pct"],
+           100 * d["kept_play_pct"])
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = sys.argv[1:] if argv is None else argv
+    test_id = args[0] if args else DEFAULT_FIXTURE
+
+    # Restored on the way out: main() takes an argument now, so it is callable
+    # rather than only a __main__ entry point, and a global logging level it
+    # never puts back leaks into whatever called it.
+    previous = logging.root.manager.disable
     logging.disable(logging.INFO)
-    track, positions, frame_h, fx = load()
+    try:
+        _sweep(test_id)
+    finally:
+        logging.disable(previous)
+
+
+def _sweep(test_id: str) -> None:
+    track, positions, frame_h, fx = load(test_id)
     defaults = {k: getattr(B, k) for k in TUNABLES}
     rallies = sorted(fx.keep)
 
@@ -99,9 +197,7 @@ def main() -> None:
                 setattr(B, k, v)
 
     def show(label, r):
-        print("%-34s %5d %5d %4d/126 %7.0fs %8.1f%% %8.1f%% %8.1f%%" % (
-            label, r["contacts"], r["windows"], r["hit"],
-            r["live"], 100 * r["dead"], 100 * r["recall"], 100 * r["cond"]))
+        print(_row(label, r, len(rallies)))
 
     # log=False: this is the per-run *label* for the table below, not a second
     # opinion on the video. Left logging on, it reprints _scale_for's multi-line
@@ -117,7 +213,7 @@ def main() -> None:
     print("%-34s %5s %5s %8s %8s %9s %9s %9s" % (
         "config", "cont", "win", "rally", "live-lost", "dead-rm", "recall", "condense"))
     show("BASELINE (shipping defaults)", score())
-    print("  ^ expect 214 contacts, 517s live-lost, 68.4% dead-rm, 58.4% recall\n")
+    print(_baseline_note(test_id))
 
     for v in (360.0, 240.0, 180.0, 120.0):
         show(f"CONTACT_RESIDUAL_MIN_PXPS={v:.0f}", score(CONTACT_RESIDUAL_MIN_PXPS=v))
@@ -156,11 +252,17 @@ def main() -> None:
     print("\n-- padding sweep, on top of the full best contact combo --")
     global COND
     keep_cond = dict(COND)
-    for pb, pa, mg in ((5.0, 4.0, 5.0), (4.0, 3.0, 3.0), (3.0, 2.0, 3.0),
-                       (3.0, 2.0, 2.0), (2.0, 1.5, 2.0), (2.0, 1.0, 1.0)):
-        COND = dict(keep_cond, pad_before=pb, pad_after=pa, merge_gap_seconds=mg)
-        show(f"pad {pb:.0f}/{pa:.1f} merge {mg:.0f}", score(**best))
-    COND = keep_cond
+    try:
+        for pb, pa, mg in ((5.0, 4.0, 5.0), (4.0, 3.0, 3.0), (3.0, 2.0, 3.0),
+                           (3.0, 2.0, 2.0), (2.0, 1.5, 2.0), (2.0, 1.0, 1.0)):
+            COND = dict(keep_cond, pad_before=pb, pad_after=pa, merge_gap_seconds=mg)
+            show(f"pad {pb:.0f}/{pa:.1f} merge {mg:.0f}", score(**best))
+    finally:
+        # Restored on the failure path too: a raise inside the loop would
+        # otherwise leave this module global on the last swept value. `score`
+        # already guards the ball constants this way, and `main` the logging
+        # level; this was the one sweep still restoring only on success.
+        COND = keep_cond
 
 
 if __name__ == "__main__":
