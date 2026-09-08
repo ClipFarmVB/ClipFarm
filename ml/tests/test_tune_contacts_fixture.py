@@ -11,11 +11,12 @@ and the "expect …" line reported a row recorded against test1. Pointed at test
 those print a wrong denominator and invite reading a different video's numbers
 as drift, so all three move together.
 
-The expectation is now read from the results row whose constants still match
-the shipping ones, rather than written down at all: the literal it replaced was
-taken at `CONTACT_RESIDUAL_MIN_PXPS = 480` against a shipping 240, so step 0
-could not match and the tool called its own output untrustworthy every run
-(CF-309, #359).
+The step-0 line is now a report rather than an expectation: it names the last
+recorded run and says outright that nothing here verifies that run describes
+the configuration you are on. The literal it replaced was taken at
+`CONTACT_RESIDUAL_MIN_PXPS = 480` against a shipping 240, so it could not match
+and the tool called its own output untrustworthy every run. Deciding whether a
+recorded row still applies is CF-309 (#359), not this file.
 
 Behavioural rather than a source scan: the guards in this suite were converted
 away from `inspect.getsource` substring checks in CF-174's own review rounds.
@@ -72,10 +73,9 @@ def test_main_sweeps_the_fixture_it_was_given(monkeypatch):
 def test_the_newest_matching_row_wins(tmp_path, monkeypatch):
     """Rows are appended, so a later re-recording must supersede an earlier one.
 
-    Undistinguishable against the committed data — only one row there matches
-    the shipping constants, so "first match" and "last match" agree — which is
-    why this builds a file where two do. Without it the docstring's "newest"
-    would be an untested word.
+    Built rather than read so the assertion cannot pass by accident of which
+    row happens to be committed: the file here has two, and only the second may
+    be reported.
     """
     _write_rows(tmp_path, monkeypatch,
                 _good_row("older"), _good_row("newer"))
@@ -204,12 +204,62 @@ def test_the_cli_reads_its_fixture_from_argv(monkeypatch):
 
 def test_a_recorded_run_is_reported_without_claiming_it_matches():
     """The note is context, not a pin: an earlier version filtered rows by a
-    config-match predicate that four rounds each found another hole in. It must
-    not read as pass/fail."""
+    config-match predicate that review kept finding holes in. It must not read
+    as pass/fail."""
     note = T._baseline_note("test1")
     assert "last recorded run" in note
     assert "NOT a pass/fail check" in note
     assert "expect" not in note
+
+
+def test_each_reported_figure_comes_from_its_own_field(tmp_path, monkeypatch):
+    """Every number in the note was unpinned: swapping dead-rm for recall, or
+    dropping a `100 *`, or hardcoding the tag left the whole suite green. Three
+    distinguishable values and a distinct tag and commit, so no two can be
+    exchanged without the assertion noticing."""
+    import json
+
+    (tmp_path / "probe_deadtime.jsonl").write_text(json.dumps({
+        "version_tag": "TAG", "git_commit": "COMMIT",
+        "deadtime": {"live_removed_sec": 111.0, "dead_removed_pct": 0.222,
+                     "kept_play_pct": 0.333},
+    }) + "\n", encoding="utf-8")
+    monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
+
+    note = T._baseline_note("probe")
+    assert "(TAG, COMMIT)" in note, note
+    assert "111s live-lost" in note, note
+    assert "22.2% dead-rm" in note, note     # percentages, not fractions
+    assert "33.3% recall" in note, note
+
+
+def test_the_padding_sweep_restores_COND_when_a_row_raises(monkeypatch, capsys):
+    """`COND` is a module global the padding sweep rebinds per row. Restoring it
+    only after the loop leaves it on the last swept value when a row raises —
+    the same leak `main` closes for the logging level and `score` for the ball
+    constants, in the one sweep that still had it.
+
+    Driven through the real `_sweep`: `evaluate_deadtime` is a module-level name
+    the closure looks up at call time, so failing it once `COND` has been
+    rebound reaches inside without replacing the function under test. An earlier
+    version of this test monkeypatched `_sweep` with a copy of the loop, which
+    asserted only that the copy was correct.
+    """
+    real_eval = T.evaluate_deadtime
+    before = dict(T.COND)
+
+    def _fail_once_padding_starts(*a, **k):
+        if T.COND["pad_before"] != before["pad_before"]:
+            raise RuntimeError("row failed")
+        return real_eval(*a, **k)
+
+    monkeypatch.setattr(T, "evaluate_deadtime", _fail_once_padding_starts)
+    _synthetic(monkeypatch, [(1.0, 5.0)])
+
+    with pytest.raises(RuntimeError):
+        T.main(["synthetic"])
+    capsys.readouterr()
+    assert T.COND == before
 
 
 def test_a_row_without_metrics_is_reported_as_such(tmp_path, monkeypatch):

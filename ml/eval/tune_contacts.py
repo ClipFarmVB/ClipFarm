@@ -27,9 +27,7 @@ SEG_MAX_SPEED_PXPS additionally feeds that function's cap, so a row sweeping it
 moves the clamp underneath itself. The default fixture is test1 at 360p, where
 the scale is exactly 1.0 and label == effective, so a row's label is the number
 actually applied; on the 1080p fixtures a row reading
-"CONTACT_HIT_SPEED_PXPS=360" is applying 1080. main() prints the active scale,
-and the pinned baseline expectation is printed only for the fixture it was
-recorded against.
+"CONTACT_HIT_SPEED_PXPS=360" is applying 1080. main() prints the active scale.
 """
 from __future__ import annotations
 
@@ -100,9 +98,9 @@ def _last_recorded_run(test_id: str) -> dict | None:
 
     **Deliberately not filtered by whether it describes what is running.** An
     earlier version of this function tried: it compared the row's snapshot of
-    the ball constants, then also the condense settings this tool mirrors. Four
-    review rounds each found another input the numbers depend on and the
-    predicate missed — `condense_mode` selects a different window builder
+    the ball constants, then also the condense settings this tool mirrors. It
+    lasted two review rounds, and each found more inputs the numbers depend on
+    and the predicate missed — `condense_mode` selects a different window builder
     entirely, the bridge knobs are a third set, and an absent snapshot section
     matched vacuously. Deciding "does this row describe today's configuration"
     means enumerating every input to the figures, and getting it wrong produces
@@ -246,11 +244,17 @@ def _sweep(test_id: str) -> None:
     print("\n-- padding sweep, on top of the full best contact combo --")
     global COND
     keep_cond = dict(COND)
-    for pb, pa, mg in ((5.0, 4.0, 5.0), (4.0, 3.0, 3.0), (3.0, 2.0, 3.0),
-                       (3.0, 2.0, 2.0), (2.0, 1.5, 2.0), (2.0, 1.0, 1.0)):
-        COND = dict(keep_cond, pad_before=pb, pad_after=pa, merge_gap_seconds=mg)
-        show(f"pad {pb:.0f}/{pa:.1f} merge {mg:.0f}", score(**best))
-    COND = keep_cond
+    try:
+        for pb, pa, mg in ((5.0, 4.0, 5.0), (4.0, 3.0, 3.0), (3.0, 2.0, 3.0),
+                           (3.0, 2.0, 2.0), (2.0, 1.5, 2.0), (2.0, 1.0, 1.0)):
+            COND = dict(keep_cond, pad_before=pb, pad_after=pa, merge_gap_seconds=mg)
+            show(f"pad {pb:.0f}/{pa:.1f} merge {mg:.0f}", score(**best))
+    finally:
+        # Restored on the failure path too: a raise inside the loop would
+        # otherwise leave this module global on the last swept value. `score`
+        # already guards the ball constants this way, and `main` the logging
+        # level; this was the one sweep still restoring only on success.
+        COND = keep_cond
 
 
 if __name__ == "__main__":
