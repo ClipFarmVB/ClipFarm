@@ -25,6 +25,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 REPO = Path(__file__).resolve().parents[2]
 CONFIG_PY = REPO / "api" / "app" / "config.py"
 TUNE_PY = REPO / "ml" / "eval" / "tune_contacts.py"
+# Every eval module that consumes the NORMALIZE mirror. deadtime_variants
+# imports it from tune_contacts, so a check that scanned only the file the
+# constant is *declared* in could not see the consumer that drops it — which
+# is exactly what happened: v0_shipped, the baseline every v1..v5 is scored
+# against, passed it to find_contacts and not to the bridge.
+MIRROR_CONSUMERS = (
+    TUNE_PY,
+    REPO / "ml" / "eval" / "deadtime_variants.py",
+)
 DEAD_TIME_PY = REPO / "ml" / "pipeline" / "dead_time.py"
 
 # tune_contacts constant -> the app.config setting it copies.
@@ -176,35 +185,43 @@ class TestTuneContactsMatchesProduction:
                 f"app.config {setting}={settings[setting]}"
             )
 
+    @pytest.mark.parametrize("module_py", MIRROR_CONSUMERS, ids=lambda p: p.name)
     @pytest.mark.parametrize("callee", ["find_contacts", "bridge_windows_by_motion"])
-    def test_the_switch_reaches_both_halves_of_the_condense_path(self, callee):
+    def test_the_switch_reaches_both_halves_of_the_condense_path(self, module_py, callee):
         """
         The mirrored value is only worth pinning if it is actually passed to
-        both consumers. CF-174's switch is one setting precisely so the contact
-        gates and the motion bridge cannot land on opposite sides of it, and
-        `tune_contacts` is the copy where that wiring is easiest to drop —
-        nothing else in this suite would notice, because the tuner needs a ball
-        track from R2 to run at all.
+        every consumer. CF-174's switch is one setting precisely so the contact
+        gates and the motion bridge cannot land on opposite sides of it, and the
+        eval mirrors are where that wiring is easiest to drop — nothing else in
+        this suite would notice, because both tools need a ball track from R2 to
+        run at all.
+
+        Parametrized over the *modules*, not just the callees, because the first
+        version of this test scanned only `tune_contacts` — the file the constant
+        is declared in — and therefore could not see `deadtime_variants.v0_shipped`
+        passing the mirror to its contacts and not to its bridge. A test whose
+        docstring claims both halves are covered has to check both files, or it
+        is the same class of unverified claim it exists to catch.
 
         Asserted over the parsed call rather than a source substring: a
-        substring check passes or fails on formatting, and the two earlier
-        versions of this idea in the CF-174 branch were both replaced for
-        exactly that. This reads the keyword off the AST, so rewrapping the
-        call is invisible and dropping the argument is not.
+        substring check passes or fails on formatting, and two earlier versions
+        of this idea in the CF-174 branch were replaced for exactly that. This
+        reads the keyword off the AST, so rewrapping the call is invisible and
+        dropping the argument is not.
         """
-        tree = ast.parse(TUNE_PY.read_text(encoding="utf-8"))
+        tree = ast.parse(module_py.read_text(encoding="utf-8"))
         calls = [
             n for n in ast.walk(tree)
             if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Name | ast.Attribute)
             and (n.func.id if isinstance(n.func, ast.Name) else n.func.attr) == callee
         ]
-        assert calls, f"tune_contacts no longer calls {callee}"
+        assert calls, f"{module_py.name} no longer calls {callee}"
         for call in calls:
             kwargs = {k.arg for k in call.keywords if k.arg}
             assert "normalize" in kwargs, (
-                f"tune_contacts calls {callee} at line {call.lineno} without "
-                "normalize=, so that half of the sweep ignores the CF-174 switch"
+                f"{module_py.name} calls {callee} at line {call.lineno} without "
+                "normalize=, so that half of the run ignores the CF-174 switch"
             )
 
     def test_every_condense_setting_is_covered(self):

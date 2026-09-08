@@ -115,6 +115,14 @@ def v0_shipped(game: Game) -> list[Interval]:
     the bridge applies a 360p threshold to the 1080p fixtures, so v0 over-bridges
     relative to what production does and every v1..v5 comparison is scored
     against a baseline that does not ship.
+
+    NORMALIZE goes with it, and for a sharper version of the same reason. The
+    contacts in `game` already honour the mirror (load_game), so passing it here
+    is what keeps both halves of this baseline on one side of the switch. Without
+    it, turning the mirror off — which is what matching a rolled-back production
+    requires — leaves `main`'s contacts joined by a scaled bridge: the third
+    combination CF-174 removed from tasks.py, reintroduced in the function every
+    other variant is measured against.
     """
     return bridge_windows_by_motion(
         _from_contacts(game, game.contacts),
@@ -123,6 +131,7 @@ def v0_shipped(game: Game) -> list[Interval]:
         fast_fraction=BRIDGE["fast_fraction"],
         max_bridge_seconds=BRIDGE["max_bridge_seconds"],
         frame_height=game.frame_height,
+        normalize=NORMALIZE,
     )
 
 

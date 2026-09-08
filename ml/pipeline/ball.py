@@ -584,8 +584,9 @@ def _scale_for(frame_height: int, *, log: bool = True, normalize: bool = True) -
                                       still right, the ceiling is closing in
       past the clamp point            return 1.0, i.e. pre-CF-174 behaviour
 
-    The clamp point is where CONTACT_HIT_SPEED_PXPS * scale would reach
-    CONTACT_SPEED_CEILING_FRAC of SEG_MAX_SPEED_PXPS. Freezing the scale there
+    The clamp point is where the *larger* scaled floor — max of
+    CONTACT_HIT_SPEED_PXPS and CONTACT_RESIDUAL_MIN_PXPS, both of which carry
+    this scale — would reach CONTACT_SPEED_CEILING_FRAC of SEG_MAX_SPEED_PXPS. Freezing the scale there
     keeps the two gates from becoming disjoint, but a frozen scale under a
     growing frame is not a weaker normalization — it is the wrong one, and it
     ends up narrower than no normalization at all. So past that height this
@@ -607,8 +608,14 @@ def _scale_for(frame_height: int, *, log: bool = True, normalize: bool = True) -
     scale        = frame_height / REFERENCE_FRAME_HEIGHT
     # max(), not CONTACT_HIT_SPEED_PXPS: both floors scale, so the cap has to be
     # taken against the one that reaches the ceiling first. See the config block.
-    max_scale    = (CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS
-                    / max(CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS))
+    #
+    # Named once and used by the clamp *and* by both log branches below. Deriving
+    # the cap correctly and then describing the band from the hit speed alone
+    # would leave the messages understating the live floor by 2x at the historical
+    # CONTACT_RESIDUAL_MIN_PXPS = 480 the committed baseline row carries — in the
+    # lines whose entire job is telling an operator which numbers are in force.
+    ref_floor    = max(CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS)
+    max_scale    = CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS / ref_floor
     clamp_height = max_scale * REFERENCE_FRAME_HEIGHT
 
     if frame_height > clamp_height:
@@ -659,11 +666,11 @@ def _scale_for(frame_height: int, *, log: bool = True, normalize: bool = True) -
                 "(%.0f-%.0f px/s). Contact detection is not normalized at this "
                 "resolution; scaling SEG_MAX_SPEED_PXPS is the fix (CF-229).",
                 frame_height, clamp_height,
-                CONTACT_HIT_SPEED_PXPS * max_scale / frame_height,
+                ref_floor * max_scale / frame_height,
                 SEG_MAX_SPEED_PXPS / frame_height,
-                CONTACT_HIT_SPEED_PXPS / frame_height,
+                ref_floor / frame_height,
                 SEG_MAX_SPEED_PXPS / frame_height,
-                CONTACT_HIT_SPEED_PXPS, SEG_MAX_SPEED_PXPS,
+                ref_floor, SEG_MAX_SPEED_PXPS,
             )
         return 1.0
 
@@ -679,7 +686,7 @@ def _scale_for(frame_height: int, *, log: bool = True, normalize: bool = True) -
         # leaves 1.666x: the same footage in every practical sense), so there is
         # nothing here to page anyone about. The height past which normalizing
         # is actively worse than not is the clamp point, handled above.
-        floor = CONTACT_HIT_SPEED_PXPS * scale
+        floor = ref_floor * scale
         if log:
             logger.warning(
                 "frame_height %d is above the %dp CF-174 was measured on. Contact "
@@ -695,7 +702,7 @@ def _scale_for(frame_height: int, *, log: bool = True, normalize: bool = True) -
                 # whenever either constant is tuned (CF-103 lowers the floor to
                 # 220 and it becomes 5.45x). It is the one number in this line a
                 # reader cannot cross-check against the others.
-                SEG_MAX_SPEED_PXPS / CONTACT_HIT_SPEED_PXPS,
+                SEG_MAX_SPEED_PXPS / ref_floor,
                 REFERENCE_FRAME_HEIGHT,
             )
     return scale
@@ -1090,6 +1097,8 @@ def detect_contacts(
     video_path: str,
     api_key: str | None = None,
     sample_every: int = SAMPLE_EVERY,
+    *,
+    normalize: bool = True,
 ) -> list[dict]:
     """
     Full pipeline: detect ball -> track trajectory -> find contacts.
@@ -1111,6 +1120,12 @@ def detect_contacts(
     a reason not to document it: the module header offers this as the public
     entry point, so the next caller arrives through here.
 
+    normalize forwards the CF-174 kill switch
+    (`settings.ball_contact_scale_enabled`). Defaulted rather than required so
+    existing callers are unaffected, but present: without it the switch is
+    reachable from the worker and unreachable from the module's own documented
+    entry point, and a caller reproducing a rolled-back production could not.
+
     api_key defaults to the ROBOFLOW_API_KEY environment variable.
     sample_every: run inference every N frames (higher = faster, less precise).
     """
@@ -1118,8 +1133,13 @@ def detect_contacts(
     if not key:
         raise ValueError("ROBOFLOW_API_KEY not set and api_key not provided")
 
+    # Read the height before tracking, as detect_rallies does. Reading it after
+    # reopened a file track_ball had just finished with, for a property that
+    # cannot have changed — and left the two entry points doing the same job
+    # two different ways.
+    frame_height = _read_frame_height(video_path)
     tracker  = track_ball(video_path, key, sample_every=sample_every)
-    contacts = find_contacts(tracker, _read_frame_height(video_path))
+    contacts = find_contacts(tracker, frame_height, normalize=normalize)
     return contacts
 
 
@@ -1127,6 +1147,8 @@ def detect_rallies(
     video_path: str,
     api_key: str | None = None,
     sample_every: int = SAMPLE_EVERY,
+    *,
+    normalize: bool = True,
 ) -> list[dict]:
     """
     Full pipeline: detect ball -> track -> contacts -> rally clip boundaries.
@@ -1137,7 +1159,8 @@ def detect_rallies(
     Same CF-174 change as detect_contacts: this used to pass no frame height, so
     every contact was `unknown` and `action` here was whatever contacts_to_rallies
     makes of a uniform label set. It now passes the decoded height, which both
-    scales the contact gates and switches on classification.
+    scales the contact gates and switches on classification, and forwards
+    `normalize` for the same reason detect_contacts does.
     """
     key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
     if not key:
@@ -1154,6 +1177,6 @@ def detect_rallies(
     video_duration = total_frames / fps
 
     tracker  = track_ball(video_path, key, sample_every=sample_every)
-    contacts = find_contacts(tracker, frame_height)
+    contacts = find_contacts(tracker, frame_height, normalize=normalize)
     rallies  = contacts_to_rallies(contacts, video_duration, frame_height)
     return rallies

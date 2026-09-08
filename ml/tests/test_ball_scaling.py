@@ -351,6 +351,34 @@ class TestPastTheClampPointItRevertsRatherThanExtrapolating:
                 )
         assert still_scaling > 1, "the sweep never reached a scaled height"
 
+    @pytest.mark.parametrize("height,level", [(1200, "warning"), (2160, "error")])
+    def test_both_log_branches_quantify_from_the_floor_actually_in_force(
+        self, caplog, monkeypatch, height, level,
+    ):
+        """
+        The messages exist to tell an operator which numbers are live, so they
+        have to be derived the same way the clamp is: from whichever floor
+        reaches the ceiling first, not from CONTACT_HIT_SPEED_PXPS alone.
+
+        Inert while both constants are 240 — which is exactly why it was missed
+        when max_scale was fixed one line above these branches. At the
+        CONTACT_RESIDUAL_MIN_PXPS = 480 the committed baseline row carries, a
+        hit-speed-only message understates the live floor by 2x, in the line
+        whose stated job is naming what is in force.
+        """
+        import logging
+        monkeypatch.setattr(ball, "CONTACT_RESIDUAL_MIN_PXPS", 480.0)
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
+            _scale_for(height)
+        assert caplog.records, f"expected a {level} at {height}p"
+        text = caplog.text
+        # 480 is the floor in force; 240 is the one a hit-speed-only message
+        # would print. Both appear as "%.0f px/s" in these lines.
+        assert "480" in text, (
+            f"the {level} at {height}p does not mention the 480 px/s floor that "
+            "is actually gating — it is quantifying from CONTACT_HIT_SPEED_PXPS"
+        )
+
     def test_past_the_clamp_point_reverts_to_unscaled(self):
         assert _scale_for(2160) == 1.0
         assert _scale_for(int(CLAMP_HEIGHT) + 1) == 1.0
@@ -761,4 +789,52 @@ class TestTheScalingHasARuntimeKillSwitch:
         assert find_contacts(track, frame_height=1080) == []
         assert classify_contact_action(track.positions, 8, 1080) == (
             classify_contact_action(track.positions, 8, 1080, normalize=True)
+        )
+
+
+class TestThePublicEntryPointsForwardTheSwitch:
+    """
+    `detect_contacts` and `detect_rallies` are what the module header offers as
+    the way in. The switch reaching the worker but not them would make a
+    rolled-back production impossible to reproduce through the documented API —
+    the one thing someone opens these for during an incident.
+
+    Nothing calls them today, which is why this was a nit rather than a bug, and
+    also why nothing else in the suite would notice the argument being dropped.
+    """
+
+    @pytest.mark.parametrize("entry", ["detect_contacts", "detect_rallies"])
+    @pytest.mark.parametrize("normalize", [True, False])
+    def test_normalize_reaches_find_contacts(self, monkeypatch, entry, normalize):
+        seen = {}
+
+        def fake_find_contacts(tracker, frame_height=0, **kw):
+            seen["frame_height"] = frame_height
+            seen["normalize"] = kw.get("normalize", "NOT PASSED")
+            return []
+
+        monkeypatch.setattr(ball, "find_contacts", fake_find_contacts)
+        monkeypatch.setattr(ball, "track_ball",
+                            lambda *a, **k: TrackedBall(positions=[]))
+        monkeypatch.setattr(ball, "_read_frame_height", lambda *a, **k: 1080)
+        monkeypatch.setattr(ball, "contacts_to_rallies", lambda *a, **k: [])
+        # detect_rallies reads fps/frames/height from cv2 directly.
+        fake_cv2 = types.SimpleNamespace(
+            CAP_PROP_FPS=5, CAP_PROP_FRAME_COUNT=7, CAP_PROP_FRAME_HEIGHT=4,
+            VideoCapture=lambda *_: types.SimpleNamespace(
+                get=lambda prop: {5: 30.0, 7: 900.0, 4: 1080.0}[prop],
+                release=lambda: None,
+            ),
+        )
+        monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+
+        getattr(ball, entry)("video.mp4", api_key="k", normalize=normalize)
+
+        assert seen["normalize"] is normalize, (
+            f"{entry} did not forward normalize={normalize} to find_contacts "
+            f"(saw {seen['normalize']!r})"
+        )
+        assert seen["frame_height"] == 1080, (
+            f"{entry} stopped passing a real frame height, which also disables "
+            "action classification"
         )
