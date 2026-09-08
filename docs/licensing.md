@@ -112,9 +112,12 @@ Either way, relicensing applies from that point forward, not retroactively.
   `api/requirements-dev.txt` is not covered — it is test-only and never in the
   production image (pytest MIT, PyYAML MIT, numpy BSD, checked but not swept
   systematically).
-- **npm:** the `license` field of the `package.json` of all **591** installed
-  packages under `node_modules/` — the full transitive tree, not just direct
-  deps.
+- **npm:** the `license` field of every entry in the committed
+  `package-lock.json` — **705** packages, the full transitive tree across all
+  platforms. Deliberately *not* a sweep of an installed `node_modules/`: that
+  inherits the sweeping machine's platform and cannot see the other platforms'
+  optional dependencies, which is how this audit got the sharp/libvips rows
+  wrong twice (recorded under [weak copyleft](#weak-copyleft-in-the-npm-tree--39-packages-all-fine)).
 - **Bundled binaries:** read out of the installed wheel itself, not inferred
   (see [FFmpeg](#ffmpeg-two-separate-questions)).
 
@@ -126,9 +129,9 @@ real limit, stated rather than papered over.
 
 | Package | License | Where | Status |
 |---|---|---|---|
-| `ultralytics==8.3.55` | **AGPL-3.0-or-later** | `ml/modal_pose.py:59` | **Determines the repo's license.** See above. |
-| `psycopg2-binary` | **LGPL-3.0 with exceptions** | `api/requirements.txt` | Fine, but for the LGPL's own reason rather than the exception's: the LGPL already permits linking from software under any license. psycopg2's "special exception" is specifically an **OpenSSL** exception — permission to distribute combinations linked against OpenSSL, whose licence is otherwise GPL-incompatible. It grants nothing about *our* code. What makes this fine is the LGPL plus the fact that we neither modify nor redistribute it. Second-most copyleft thing in the tree, so worth knowing it is here. |
-| `@sentry/cli` (+ `-win32-x64`) | **FSL-1.1-MIT** | npm, transitive via `@sentry/nextjs` | Fine, but **not OSI open source** — Functional Source License, source-available, forbids competing with Sentry. Build-time only (source-map upload); never in the shipped bundle. Noted because "all our npm deps are permissive" would be a false statement. |
+| `ultralytics==8.3.55` | **AGPL-3.0-or-later** | `ml/modal_pose.py:59`, `ml/requirements.txt:2` | **Determines the repo's license.** See above. |
+| `psycopg2-binary` | **LGPL-3.0-or-later**, with an OpenSSL exception | `api/requirements.txt` | Fine, but for the LGPL's own reason rather than the exception's: the LGPL already permits linking from software under any license. psycopg2's "special exception" is specifically an **OpenSSL** exception — permission to distribute combinations linked against OpenSSL, whose licence is otherwise GPL-incompatible. It grants nothing about *our* code. What makes this fine is the LGPL plus the fact that we neither modify nor redistribute it. Second-most copyleft thing in the tree, so worth knowing it is here. |
+| `@sentry/cli` (+ 8 platform binaries, all OSes) | **FSL-1.1-MIT** | npm, transitive via `@sentry/nextjs` | Fine, but **not OSI open source** — Functional Source License, source-available, forbids competing with Sentry. Build-time only (source-map upload); never in the shipped bundle. Noted because "all our npm deps are permissive" would be a false statement. |
 | RF-DETR ball weights `volleyball-ball-tracking-0eo7r/3` | **UNKNOWN** | `ml/pipeline/ball.py:37` | **Open — see below.** |
 
 ### Model weights are licensed separately from the libraries that load them
@@ -178,9 +181,12 @@ conflating them produces the wrong answer.
    changes, this becomes live, and Debian's published sources satisfy it.
 
    **One case that sweep does not cover, named rather than left implied:**
-   `modal deploy` uploads a built image to Modal's registry, and
-   `ml/modal_pose.py` `apt_install`s ffmpeg and pip-installs ultralytics into
-   it. Whether pushing an image to a third-party host you then run on is
+   `ml/modal_pose.py:48` `apt_install`s ffmpeg and `:59` pip-installs
+   ultralytics into an image that `modal deploy` builds and stores on Modal's
+   infrastructure. (Modal takes the image *definition* plus local sources and
+   builds server-side rather than receiving a built image — the mechanism
+   differs from a `docker push`, the question of whether a GPL ffmpeg ending up
+   on third-party infrastructure is conveying does not.) Whether pushing an image to a third-party host you then run on is
    "conveying" is exactly the sort of question this document reasons about
    elsewhere, and it is not answered here — the GitHub/Render sweep simply does
    not reach it. Flagged as uncovered, not as resolved. It is the same shape as
@@ -199,35 +205,64 @@ conflating them produces the wrong answer.
    which is both the wrong version and, being *older* avcodec from a *newer*
    opencv, self-evidently not the pinned wheel.)
 
-#### Weak copyleft in the npm tree — 5 packages, all fine
+#### Weak copyleft in the npm tree — 39 packages, all fine
 
-Full sweep of 591 installed packages. MPL-2.0 is **file-level** copyleft:
-obligations attach only to modified MPL files, and we modify none.
+**Swept from `package-lock.json`, not from a `node_modules/`** — 705 entries,
+committed, and the same on every machine. The counts below are what a
+case-insensitive match for GPL/LGPL/AGPL/MPL/SSPL/BUSL/CDDL/EPL/CPL over the
+lockfile's `license` fields returns; reproduce with `jq` or five lines of
+Python. MPL-2.0 is **file-level** copyleft: obligations attach only to modified
+MPL files, and we modify none. LGPL obligations (§4/§6) attach on
+distribution, which we do not do.
 
-| Package | License | Note |
-|---|---|---|
-| `@vercel/og`, `axe-core`, `lightningcss`, `lightningcss-win32-x64-msvc` | MPL-2.0 | Unmodified. No obligation. |
-| `@img/sharp-libvips-*` (every platform, incl. `-linux-x64`) | Apache-2.0 AND LGPL-3.0-or-later | **Present on the deployed platform.** libvips is not inside the `sharp-<platform>` package; each one pulls a separate `sharp-libvips-<platform>` as an optional dependency, and every one of those is LGPL-3.0-or-later. On Linux that is `@img/sharp-libvips-linux-x64` 1.2.4. LGPL §4/§6 obligations attach on distribution, which we do not do — see below. |
+| Package | Count | License | Note |
+|---|---|---|---|
+| `axe-core`, `lightningcss` + 23 `lightningcss-<platform>` binaries | 25 | MPL-2.0 | Unmodified. No obligation. Both `lightningcss` 1.32.0 and 1.33.0 are present, the second nested under `vite`. |
+| `@img/sharp-libvips-<platform>` | 10 | LGPL-3.0-or-later | The libvips binary, shipped as a **separate optional dependency** of each `sharp-<platform>` package. `@img/sharp-libvips-linux-x64` 1.2.4 is the one that resolves on the platform Render builds. |
+| `@img/sharp-win32-{x64,arm64,ia32}` | 3 | Apache-2.0 AND LGPL-3.0-or-later | The Windows builds **embed** libvips instead of depending on it — no `optionalDependencies` at all — which is why their declared license is the compound one and the libvips packages' is bare LGPL. |
+| `@img/sharp-wasm32` | 1 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | Same embedding, plus MIT for the wasm glue. |
 
-No GPL, AGPL, SSPL, BUSL or CDDL anywhere in the npm tree.
+No GPL, AGPL, SSPL, BUSL or CDDL anywhere in the npm tree. `@sentry/cli` and
+its eight platform binaries are FSL-1.1-MIT — source-available rather than
+copyleft, and covered in the findings table above.
 
-> **Correction, and a limit on the method above.** An earlier version of this
-> table listed only `@img/sharp-win32-x64` and called it "a Windows-only
-> optional binary — a dev-machine artifact. The deployed Linux build resolves
-> `@img/sharp-linux-x64`. Not in the shipped bundle." That was wrong on the
-> platform this actually deploys to. `sharp-linux-x64` is Apache-2.0 and does
-> *not* contain libvips; it pulls `@img/sharp-libvips-linux-x64`, which is
-> LGPL-3.0-or-later and is in the checked-in `package-lock.json`. The
-> conclusion did not change — the obligation attaches on distribution either
-> way — but the reason given for it was false.
+> **Two corrections, and the method change they forced.** This table has been
+> wrong twice, in opposite directions, and both times because it was
+> hand-written from one machine's `node_modules/`.
 >
-> The cause is visible in the numbers: the sweep counted 591 packages and named
-> the `win32` variants of both sharp and `@sentry/cli`, i.e. it ran against a
-> Windows `node_modules` and then asserted about the Linux tree. **A sweep of
-> one platform's installed tree cannot see platform-optional dependencies for
-> the others**, and sharp ships eleven of them. Read the lockfile, which is
-> platform-independent and committed, rather than a `node_modules` — that is
-> how the row above was rebuilt.
+> The first version listed `@img/sharp-win32-x64` alone and called it "a
+> Windows-only optional binary — a dev-machine artifact. The deployed Linux
+> build resolves `@img/sharp-linux-x64`. Not in the shipped bundle." False on
+> the platform this deploys to: `sharp-linux-x64` is Apache-2.0 and does not
+> contain libvips — it pulls `@img/sharp-libvips-linux-x64`, LGPL-3.0-or-later.
+> The sweep had run on Windows (591 packages, `win32` variants named in two
+> rows) and asserted about the Linux tree.
+>
+> The correction then made the mirror-image error: it replaced the row with a
+> libvips-only one, which **dropped the four `sharp-win32-*`/`wasm32` packages
+> entirely** — the ones that embed libvips rather than depending on it, so the
+> replacement's own prose ("libvips is not inside the `sharp-<platform>`
+> package") was false for exactly the packages it had just removed. It also
+> carried a compound license string onto rows that do not declare it, said
+> "eleven" where the lockfile has ten, and left the header at "5 packages"
+> while the row covered ten.
+>
+> Neither error changed a conclusion. Both changed which platform the
+> conclusion had been checked on, which is the part a reader cannot verify
+> without redoing the work.
+>
+> **So the table is no longer curated by hand.** It is a sweep of the lockfile,
+> which is platform-independent and in the repo, and the counts are stated so a
+> reader can re-run it and get the same numbers. A sweep of an installed tree
+> inherits that machine's platform and cannot see the other platforms'
+> optional dependencies — sharp alone ships 24 of them.
+>
+> The same blindness was in two neighbouring rows and is fixed here too: the
+> MPL row named only `lightningcss-win32-x64-msvc` when every platform's binary
+> is equally MPL and equally in the lockfile, and it named `@vercel/og`, which
+> **is not a dependency of this repo at all** — absent from every
+> `package.json`, from all 705 lockfile entries, and from both `node_modules/`
+> trees. Where it came from is not recoverable; it is removed.
 
 #### Everything else
 
