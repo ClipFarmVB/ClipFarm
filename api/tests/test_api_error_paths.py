@@ -262,13 +262,17 @@ def test_renaming_a_game_presigns_the_condensed_url(monkeypatch):
     assert out.condensed_video_url == "https://signed.invalid/x.mp4?sig=1"
 
 
-def test_the_game_list_returns_no_condensed_url_rather_than_a_dead_one():
-    """The list deliberately does not presign — see the note in `list_games`.
-    What it must not do is hand back the stored form, which is a dead URL
-    against a private bucket and indistinguishable from a live one."""
+def test_the_game_list_presigns_the_condensed_url(monkeypatch):
+    """The list returned the stored form, which is a dead URL against a private
+    bucket and indistinguishable from a live one. It presigns like every other
+    route that returns this field."""
     from app.routers import games
 
     game = _Game(condensed="https://pub.invalid/condensed/x.mp4")
+    monkeypatch.setattr(
+        games.storage, "presign_from_stored_url",
+        lambda url, download_filename=None: "https://signed.invalid/x.mp4?sig=1",
+    )
 
     class _Result:
         def scalars(self):
@@ -286,7 +290,37 @@ def test_the_game_list_returns_no_condensed_url_rather_than_a_dead_one():
 
     out = asyncio.run(games.list_games(OWNER, _DB()))
     assert len(out) == 1
-    assert out[0].condensed_video_url is None
+    assert out[0].condensed_video_url == "https://signed.invalid/x.mp4?sig=1"
+
+
+def test_the_game_list_signs_nothing_when_there_is_no_condensed_cut(monkeypatch):
+    """The cost claim in the PR body rests on this: the helper is guarded, and
+    `condense` is opt-in, so a library of un-condensed games signs nothing."""
+    from app.routers import games
+
+    calls = []
+    monkeypatch.setattr(
+        games.storage, "presign_from_stored_url",
+        lambda url, download_filename=None: calls.append(url) or "x",
+    )
+
+    class _Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [_Game(), _Game(), _Game()]
+
+        def __iter__(self):
+            return iter([])
+
+    class _DB:
+        async def execute(self, _q):
+            return _Result()
+
+    out = asyncio.run(games.list_games(OWNER, _DB()))
+    assert len(out) == 3
+    assert calls == [], "signed a URL for a game with no condensed cut"
 
 
 # ── 4. a double-click must not 500 ─────────────────────────────────────────

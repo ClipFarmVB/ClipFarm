@@ -171,15 +171,12 @@ async def list_games(user_id: UserId, db: DB):
     for g in games:
         d = GameOut.model_validate(g)
         d.clip_count = counts.get(g.id, 0)
-        # Not presigned, and so not returned at all. The stored form is a dead
-        # URL against a private bucket, and presigning here would mint a
-        # one-hour credential per row on the event loop — this route has no
-        # limit or pagination, and `storage._client`'s docstring warns about
-        # exactly that shape. Nothing reads this field from the list: the web
-        # client uses it only on the game detail page, which fetches
-        # `/games/{id}`. A null says "ask the detail route", which is true;
-        # the stored URL said "here is your video" and was not (CF-303).
-        d.condensed_video_url = None
+        # Presigned like every other route that returns this field. The stored
+        # form is a dead URL against a private bucket, so returning it unsigned
+        # was the defect. The cost is bounded by the guard inside the helper
+        # and by `condense` being opt-in: only rows that actually have a
+        # condensed cut pay a signature, and most have none (CF-303).
+        _presign_condensed(d, g)
         out.append(d)
     return out
 

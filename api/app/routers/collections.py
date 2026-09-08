@@ -174,7 +174,11 @@ async def list_collection_clips(collection_id: uuid.UUID, user_id: UserId, db: D
 async def add_clip_to_collection(
     collection_id: uuid.UUID, body: CollectionAddClip, user_id: UserId, db: DB
 ):
-    col = await _get_owned_collection(collection_id, user_id, db)
+    # Called for the check, not the row: it 404s a collection this caller does
+    # not own. Nothing below needs the object, and holding one would invite
+    # reading an attribute off it after the rollback below — which expires
+    # every one of them.
+    await _get_owned_collection(collection_id, user_id, db)
 
     # Saving is a read-side action: anything the user may view, they may add
     # to their own collection (CF-108). Previously owner-only, which would have
@@ -187,7 +191,7 @@ async def add_clip_to_collection(
     # Upsert — silently succeed if already in collection
     existing = await db.execute(
         select(CollectionClip).where(
-            CollectionClip.collection_id == col.id,
+            CollectionClip.collection_id == collection_id,
             CollectionClip.clip_id == body.clip_id,
         )
     )
