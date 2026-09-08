@@ -5,15 +5,23 @@ from urllib.parse import urlparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from app.config import settings
 from app.models.game import Game, GameStatus
 from app.models.clip import Clip, ActionType
 from app.models.upload_event import UploadEvent
 
-# Sync engine (Celery workers don't run in an asyncio loop)
+# Sync engine (Celery workers don't run in an asyncio loop).
+#
+# NullPool, not the default QueuePool (CF-65b): with the prefork pool, a pooled
+# connection created before the fork would be shared by every child — two
+# processes interleaving on one socket. NullPool opens per checkout and closes on
+# return, so nothing is ever inherited, and idle connections don't accumulate
+# against Supabase's pooler cap as concurrency rises. The cost is a connect per
+# session, which is irrelevant next to a multi-minute processing job.
 _sync_url = settings.database_url.replace("+asyncpg", "")
-_engine = create_engine(_sync_url, pool_pre_ping=True)
+_engine = create_engine(_sync_url, poolclass=NullPool, pool_pre_ping=True)
 
 
 # games.error_message was a bounded column and nothing on the write path
