@@ -22,8 +22,8 @@ two px/s tunables (CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS) are
 multiplied by ball._scale_for(frame_height) at use, and
 SEG_MAX_SPEED_PXPS additionally feeds that function's cap, so a row sweeping it
 moves the clamp underneath itself. The default fixture is test1 at 360p, where
-the scale is exactly 1.0 and label == effective, which is why the pinned
-baseline still reproduces; on the 1080p fixtures a row reading
+the scale is exactly 1.0 and label == effective, so a row's label is the number
+actually applied; on the 1080p fixtures a row reading
 "CONTACT_HIT_SPEED_PXPS=360" is applying 1080. main() prints the active scale,
 and the pinned baseline expectation is printed only for the fixture it was
 recorded against.
@@ -92,11 +92,44 @@ def _row(label: str, r: dict, total_rallies: int) -> str:
         r["live"], 100 * r["dead"], 100 * r["recall"], 100 * r["cond"])
 
 
+def _baseline_note(test_id: str) -> str:
+    """What the step-0 row can be compared against, if anything.
+
+    Two separate reasons it may be nothing. Only test1 has a recorded row at
+    all, so any other fixture has no pin — printing test1's expectation beside
+    another video's numbers would invite reading a different fixture as drift.
+
+    And test1's row is itself stale: it was recorded when `ball.py` shipped
+    `CONTACT_RESIDUAL_MIN_PXPS = 480` and CF-103 lowered it to 240, which is
+    the self-invalidation CF-309 (#359) is open for. Saying so is not the fix —
+    re-recording it is, and that needs the R2 ball caches — but presenting it
+    as a clean control while it cannot match is worse than printing nothing.
+    """
+    if test_id != DEFAULT_FIXTURE:
+        return f"  ^ no recorded baseline for {test_id}; the row above is not pinned\n"
+    return (
+        "  ^ recorded expectation: 214 contacts, 517s live-lost, 68.4% dead-rm, "
+        "58.4% recall\n"
+        "    STALE — taken at CONTACT_RESIDUAL_MIN_PXPS=480, shipping is 240 "
+        "(CF-103). A mismatch here is that, not your sweep. See #359.\n"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = sys.argv[1:] if argv is None else argv
     test_id = args[0] if args else DEFAULT_FIXTURE
 
+    # Restored on the way out: main() takes an argument now, so it is callable
+    # rather than only a __main__ entry point, and a global logging level it
+    # never puts back leaks into whatever called it.
     logging.disable(logging.INFO)
+    try:
+        _sweep(test_id)
+    finally:
+        logging.disable(logging.NOTSET)
+
+
+def _sweep(test_id: str) -> None:
     track, positions, frame_h, fx = load(test_id)
     defaults = {k: getattr(B, k) for k in TUNABLES}
     rallies = sorted(fx.keep)
@@ -141,14 +174,7 @@ def main(argv: list[str] | None = None) -> None:
     print("%-34s %5s %5s %8s %8s %9s %9s %9s" % (
         "config", "cont", "win", "rally", "live-lost", "dead-rm", "recall", "condense"))
     show("BASELINE (shipping defaults)", score())
-    if test_id == DEFAULT_FIXTURE:
-        print("  ^ expect 214 contacts, 517s live-lost, 68.4% dead-rm, 58.4% recall\n")
-    else:
-        # The pinned row above is test1's. There is no recorded baseline for the
-        # other fixtures, so printing test1's expectation beside their numbers
-        # would invite reading a mismatch as drift rather than as a different
-        # video (CF-174).
-        print(f"  ^ no recorded baseline for {test_id}; the row above is not pinned\n")
+    print(_baseline_note(test_id))
 
     for v in (360.0, 240.0, 180.0, 120.0):
         show(f"CONTACT_RESIDUAL_MIN_PXPS={v:.0f}", score(CONTACT_RESIDUAL_MIN_PXPS=v))
