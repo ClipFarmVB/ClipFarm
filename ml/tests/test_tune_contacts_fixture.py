@@ -110,23 +110,9 @@ def test_the_newest_matching_row_wins(tmp_path, monkeypatch):
     why this builds a file where two do. Without it the docstring's "newest"
     would be an untested word.
     """
-    import json
-
-    def _row(commit, extra):
-        return json.dumps({
-            "git_commit": commit, "version_tag": commit,
-            "config_snapshot": {"ml.pipeline.ball": {
-                "CONTACT_HIT_SPEED_PXPS": B.CONTACT_HIT_SPEED_PXPS}},
-            "deadtime": {"live_removed_sec": extra, "dead_removed_pct": 0.5,
-                         "kept_play_pct": 0.5},
-        })
-
-    (tmp_path / "twin_deadtime.jsonl").write_text(
-        _row("older", 111.0) + "\n" + _row("newer", 222.0) + "\n", encoding="utf-8")
-    monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
-
-    assert T._recorded_baseline("twin")["git_commit"] == "newer"
-    assert "222s" in T._baseline_note("twin")
+    _write_rows(tmp_path, monkeypatch,
+                _good_row("older"), _good_row("newer"))
+    assert T._recorded_baseline("probe")["git_commit"] == "newer"
 
 
 def test_a_fixture_with_no_matching_row_is_not_pinned():
@@ -161,3 +147,107 @@ def test_main_restores_the_global_logging_level():
     finally:
         T.load = T_load
     assert logging.root.manager.disable == logging.NOTSET
+
+
+# ── the wiring, not just the helpers ────────────────────────────────────────
+
+def _synthetic(monkeypatch, rallies):
+    """A track short enough to sweep in milliseconds. It finds no contacts, and
+    that is fine: these tests are about which numbers `_sweep` puts where, not
+    about detection."""
+    from ml.eval.harness import DeadFixture
+
+    pos = [{"time": i * 0.1, "x": float(100 + (i % 20) * 15),
+            "y": float(200 + (30 if (i // 20) % 2 else -30))} for i in range(200)]
+    track = B.TrackedBall(positions=[
+        B.BallPosition(frame=i, time=p["time"], x=p["x"], y=p["y"], confidence=1.0)
+        for i, p in enumerate(pos)])
+    fx = DeadFixture(test_id="synthetic", keep=rallies, duration=20.0, raw={})
+    monkeypatch.setattr(T, "load", lambda test_id="synthetic": (track, pos, 360, fx))
+
+
+def _run(monkeypatch, rallies, capsys, fixture="synthetic"):
+    _synthetic(monkeypatch, rallies)
+    T.main([fixture])
+    return capsys.readouterr().out
+
+
+def test_the_printed_denominator_comes_from_the_fixture(monkeypatch, capsys):
+    """The helper tests pin `_row`; this pins the call. Reverting
+    `_row(label, r, len(rallies))` to the old hardcoded `126` leaves every
+    helper test green, because none of them runs `_sweep` at all."""
+    out = _run(monkeypatch, [(1.0, 5.0), (8.0, 12.0)], capsys)
+    assert "/2 " in out, out
+    assert "/126" not in out
+
+
+def test_the_printed_pin_comes_from_the_recorded_row(monkeypatch, capsys):
+    """Likewise for `print(_baseline_note(test_id))`: with the old literal
+    hardcoded back in, the helper tests still pass."""
+    out = _run(monkeypatch, [(1.0, 5.0)], capsys)
+    assert "214 contacts" not in out
+    assert "not pinned" in out, out
+
+
+# ── what makes a recorded row usable as a pin ───────────────────────────────
+
+def _write_rows(tmp_path, monkeypatch, *rows):
+    import json
+    (tmp_path / "probe_deadtime.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
+
+
+def _good_row(commit="good", **overrides):
+    ball = {k: getattr(B, k) for k in T.TUNABLES}
+    app = dict(T._MIRRORED)
+    ball.update(overrides.pop("ball", {}))
+    app.update(overrides.pop("app", {}))
+    return {"git_commit": commit, "version_tag": commit,
+            "config_snapshot": {"ml.pipeline.ball": ball, "app.config": app},
+            "deadtime": {"live_removed_sec": 1.0, "dead_removed_pct": 0.5,
+                         "kept_play_pct": 0.5}}
+
+
+def test_a_row_with_no_ball_snapshot_is_not_a_pin(tmp_path, monkeypatch):
+    """`all()` over an empty mapping is True, so a row carrying no snapshot
+    would match unconditionally — and being newest, supersede every verified
+    row and print its figures as authoritative. `harness.config_snapshot`
+    produces exactly that shape when an import fails, so it needs no
+    hand-editing to occur. A wrong pin is worse than none: step 0's rule tells
+    the operator to distrust everything below an unmatched baseline."""
+    bogus = {"git_commit": "NOSNAPSHOT", "version_tag": "bogus",
+             "config_snapshot": {"app.config": {}},
+             "deadtime": {"live_removed_sec": 9999.0, "dead_removed_pct": 0.99,
+                          "kept_play_pct": 0.01}}
+    _write_rows(tmp_path, monkeypatch, _good_row(), bogus)
+    assert T._recorded_baseline("probe")["git_commit"] == "good"
+    assert "9999" not in T._baseline_note("probe")
+
+
+def test_a_row_missing_one_swept_constant_is_not_a_pin(tmp_path, monkeypatch):
+    """A snapshot too thin to say anything about what was swept is not a pin
+    either — the vacuous-match hole one step narrower."""
+    thin = _good_row("thin")
+    del thin["config_snapshot"]["ml.pipeline.ball"][T.TUNABLES[0]]
+    _write_rows(tmp_path, monkeypatch, thin)
+    assert T._recorded_baseline("probe") is None
+
+
+def test_a_condense_knob_moving_retires_the_row(tmp_path, monkeypatch):
+    """Every figure in the row depends on the condense settings too — harness.py
+    says they decide every dead-time number (CF-98) — and this tool mirrors them
+    in COND because it runs with no app installed. Matching on ball constants
+    alone would let the pin survive a knob it actually depends on."""
+    _write_rows(tmp_path, monkeypatch,
+                _good_row("drifted", app={"condense_pad_before": T.COND["pad_before"] + 1}))
+    assert T._recorded_baseline("probe") is None
+
+
+def test_a_truncated_line_does_not_lose_the_pin(tmp_path, monkeypatch):
+    """Rows are appended, so a crashed write leaves a partial last line."""
+    (tmp_path / "probe_deadtime.jsonl").write_text(
+        __import__("json").dumps(_good_row()) + "\n{\"git_commit\": \"trunc",
+        encoding="utf-8")
+    monkeypatch.setattr(T, "RESULTS_DIR", tmp_path)
+    assert T._recorded_baseline("probe")["git_commit"] == "good"

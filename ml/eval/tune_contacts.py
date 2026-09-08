@@ -61,6 +61,18 @@ BRIDGE: dict[str, Any] = dict(speed_pxps=150.0, fast_fraction=0.35, max_bridge_s
 # test_eval_condense_settings.py.
 NORMALIZE: bool = True
 
+# The app.config values this tool mirrors, and so the ones a recorded row must
+# still agree with before its figures can be used as a pin. Kept beside the
+# mirrors themselves so the two move together.
+_MIRRORED: dict[str, Any] = {
+    "condense_gap_seconds": COND["gap_seconds"],
+    "condense_pad_before": COND["pad_before"],
+    "condense_pad_after": COND["pad_after"],
+    "condense_min_contacts": COND["min_contacts"],
+    "condense_merge_gap_seconds": COND["merge_gap_seconds"],
+    "ball_contact_scale_enabled": NORMALIZE,
+}
+
 TUNABLES = (
     "CONTACT_RESIDUAL_RATIO", "CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_HIT_SPEED_PXPS",
     "MIN_CONTACT_SPACING", "SEG_MIN_POSITIONS",
@@ -116,11 +128,45 @@ def _recorded_baseline(test_id: str) -> dict | None:
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
-        row = json.loads(line)
-        snap = row.get("config_snapshot", {}).get("ml.pipeline.ball", {})
-        if all(getattr(B, k) == v for k, v in snap.items() if hasattr(B, k)):
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue        # a truncated append is not a pin; keep the last good one
+        if _row_matches_shipping(row):
             match = row
     return match
+
+
+def _row_matches_shipping(row: dict) -> bool:
+    """Whether a recorded row describes the configuration running today.
+
+    Both halves are required, and requiring them is the point. `all()` over an
+    empty mapping is `True`, so a row carrying no snapshot — which
+    `harness.config_snapshot` produces silently when an import fails — would
+    otherwise match unconditionally, and being newest would make it supersede
+    every verified row. A wrong pin is worse than none here: step 0's rule tells
+    the operator to distrust everything below an unmatched baseline, so a bogus
+    one either stops a good sweep or blesses a bad one.
+
+    The ball constants alone are not enough either. Every figure in the row also
+    depends on the condense knobs, which `harness.py` says decide every
+    dead-time number (CF-98) and which this tool mirrors in COND/BRIDGE because
+    it runs with no app installed. A row matching on ball constants while
+    `condense_pad_before` moved underneath is exactly the drift this is meant to
+    retire.
+
+    Only keys the row recorded are compared: one that did not exist when it was
+    written cannot be checked against it, and one the module has since dropped
+    is skipped rather than retiring every row forever.
+    """
+    snap = row.get("config_snapshot") or {}
+    ball = snap.get("ml.pipeline.ball") or {}
+    app = snap.get("app.config") or {}
+    if not all(k in ball for k in TUNABLES):
+        return False        # no snapshot, or one too thin to say anything
+    if not all(getattr(B, k) == v for k, v in ball.items() if hasattr(B, k)):
+        return False
+    return all(app[k] == v for k, v in _MIRRORED.items() if k in app)
 
 
 def _baseline_note(test_id: str) -> str:
