@@ -10,6 +10,12 @@ Step 0 reproduces the recorded container baseline. If that row doesn't match
 exactly, nothing below it is trustworthy, so it prints the expected values.
 
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
+  docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts test2
+
+An optional fixture id selects which dump to sweep; it defaults to test1. Each
+needs its own `{test_id}_ball_track.json` from diagnose_detection.py — the
+tuner reads a dump, never a video, so a fixture with no dump mounted fails at
+load rather than silently sweeping the wrong one.
 
 CF-174 — read the labels as REFERENCE (360p) values, not effective ones. The
 two px/s tunables (CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS) are
@@ -18,18 +24,23 @@ SEG_MAX_SPEED_PXPS additionally feeds that function's cap, so a row sweeping it
 moves the clamp underneath itself. The default fixture is test1 at 360p, where
 the scale is exactly 1.0 and label == effective, which is why the pinned
 baseline still reproduces; on the 1080p fixtures a row reading
-"CONTACT_HIT_SPEED_PXPS=360" is applying 1080. main() prints the active scale.
+"CONTACT_HIT_SPEED_PXPS=360" is applying 1080. main() prints the active scale,
+and the pinned baseline expectation is printed only for the fixture it was
+recorded against.
 """
 from __future__ import annotations
 
 import json
 import logging
+import sys
 from typing import Any
 
 from ml.eval.harness import RESULTS_DIR, load_deadtime_fixture
 from ml.eval.metrics import evaluate_deadtime
 from ml.pipeline import ball as B
 from ml.pipeline.dead_time import active_windows_from_contacts, bridge_windows_by_motion
+
+DEFAULT_FIXTURE = "test1"
 
 # Production condense settings for the rule-based path (condense_mode="rules"),
 # as recorded in the baseline result row. Annotated Any because the values are
@@ -55,7 +66,7 @@ TUNABLES = (
 )
 
 
-def load(test_id: str = "test1"):
+def load(test_id: str = DEFAULT_FIXTURE):
     d = json.loads((RESULTS_DIR / f"{test_id}_ball_track.json").read_text(encoding="utf-8"))
     fps = d["fps"]
     track = B.TrackedBall(positions=[
@@ -69,9 +80,24 @@ def load(test_id: str = "test1"):
     return track, positions, d["frame_height"], load_deadtime_fixture(test_id)
 
 
-def main() -> None:
+def _row(label: str, r: dict, total_rallies: int) -> str:
+    """One results line. The rally denominator comes from the fixture.
+
+    It was `126` — test1's rally count — inlined in the format string, which was
+    invisible while test1 was the only fixture this could run on and wrong for
+    every other one the moment it could (CF-174, CF-309).
+    """
+    return "%-34s %5d %5d %4d/%-3d %7.0fs %8.1f%% %8.1f%% %8.1f%%" % (
+        label, r["contacts"], r["windows"], r["hit"], total_rallies,
+        r["live"], 100 * r["dead"], 100 * r["recall"], 100 * r["cond"])
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = sys.argv[1:] if argv is None else argv
+    test_id = args[0] if args else DEFAULT_FIXTURE
+
     logging.disable(logging.INFO)
-    track, positions, frame_h, fx = load()
+    track, positions, frame_h, fx = load(test_id)
     defaults = {k: getattr(B, k) for k in TUNABLES}
     rallies = sorted(fx.keep)
 
@@ -99,9 +125,7 @@ def main() -> None:
                 setattr(B, k, v)
 
     def show(label, r):
-        print("%-34s %5d %5d %4d/126 %7.0fs %8.1f%% %8.1f%% %8.1f%%" % (
-            label, r["contacts"], r["windows"], r["hit"],
-            r["live"], 100 * r["dead"], 100 * r["recall"], 100 * r["cond"]))
+        print(_row(label, r, len(rallies)))
 
     # log=False: this is the per-run *label* for the table below, not a second
     # opinion on the video. Left logging on, it reprints _scale_for's multi-line
@@ -117,7 +141,14 @@ def main() -> None:
     print("%-34s %5s %5s %8s %8s %9s %9s %9s" % (
         "config", "cont", "win", "rally", "live-lost", "dead-rm", "recall", "condense"))
     show("BASELINE (shipping defaults)", score())
-    print("  ^ expect 214 contacts, 517s live-lost, 68.4% dead-rm, 58.4% recall\n")
+    if test_id == DEFAULT_FIXTURE:
+        print("  ^ expect 214 contacts, 517s live-lost, 68.4% dead-rm, 58.4% recall\n")
+    else:
+        # The pinned row above is test1's. There is no recorded baseline for the
+        # other fixtures, so printing test1's expectation beside their numbers
+        # would invite reading a mismatch as drift rather than as a different
+        # video (CF-174).
+        print(f"  ^ no recorded baseline for {test_id}; the row above is not pinned\n")
 
     for v in (360.0, 240.0, 180.0, 120.0):
         show(f"CONTACT_RESIDUAL_MIN_PXPS={v:.0f}", score(CONTACT_RESIDUAL_MIN_PXPS=v))
