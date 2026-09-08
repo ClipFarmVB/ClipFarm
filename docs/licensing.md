@@ -113,7 +113,8 @@ Either way, relicensing applies from that point forward, not retroactively.
   production image (pytest MIT, PyYAML MIT, numpy BSD, checked but not swept
   systematically).
 - **npm:** the `license` field of every entry in the committed
-  `package-lock.json` — **705** packages, the full transitive tree across all
+  `package-lock.json` — **704** packages plus the root entry, the full
+  transitive tree across all
   platforms. Deliberately *not* a sweep of an installed `node_modules/`: that
   inherits the sweeping machine's platform and cannot see the other platforms'
   optional dependencies, which is how this audit got the sharp/libvips rows
@@ -207,8 +208,8 @@ conflating them produces the wrong answer.
 
 #### Weak copyleft in the npm tree — 39 packages, all fine
 
-**Swept from `package-lock.json`, not from a `node_modules/`** — 705 entries,
-committed, and the same on every machine. The counts below are what a
+**Swept from `package-lock.json`, not from a `node_modules/`** — 704 packages
+plus the root entry, committed, and the same on every machine. The counts below are what a
 case-insensitive match for GPL/LGPL/AGPL/MPL/SSPL/BUSL/CDDL/EPL/CPL over the
 lockfile's `license` fields returns; reproduce with `jq` or five lines of
 Python. MPL-2.0 is **file-level** copyleft: obligations attach only to modified
@@ -217,7 +218,7 @@ distribution, which we do not do.
 
 | Package | Count | License | Note |
 |---|---|---|---|
-| `axe-core`, `lightningcss` + 23 `lightningcss-<platform>` binaries | 25 | MPL-2.0 | Unmodified. No obligation. Both `lightningcss` 1.32.0 and 1.33.0 are present, the second nested under `vite`. |
+| `axe-core`, 2 × `lightningcss` core + 22 `lightningcss-<platform>` binaries | 25 | MPL-2.0 | Unmodified. No obligation. Both `lightningcss` 1.32.0 and 1.33.0 are present, the second nested under `vite`. |
 | `@img/sharp-libvips-<platform>` | 10 | LGPL-3.0-or-later | The libvips binary, shipped as a **separate optional dependency** of each `sharp-<platform>` package. `@img/sharp-libvips-linux-x64` 1.2.4 is the one that resolves on the platform Render builds. |
 | `@img/sharp-win32-{x64,arm64,ia32}` | 3 | Apache-2.0 AND LGPL-3.0-or-later | The Windows builds **embed** libvips instead of depending on it — no `optionalDependencies` at all — which is why their declared license is the compound one and the libvips packages' is bare LGPL. |
 | `@img/sharp-wasm32` | 1 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | Same embedding, plus MIT for the wasm glue. |
@@ -278,9 +279,26 @@ Permissive, no obligations beyond attribution:
   `pydantic-settings`, `redis`, `sentry-sdk`, `sqlalchemy` (MIT); `uvicorn`,
   `celery`, `httpx` (BSD-3-Clause); `asyncpg`, `boto3`, `modal`,
   `python-multipart` (Apache-2.0).
-- **npm:** 476 MIT, 48 Apache-2.0, 22 ISC, 16 BSD-2-Clause, 7 BSD-3-Clause,
-  6 BlueOak-1.0.0, plus single instances of Python-2.0 (`argparse`), CC-BY-4.0
-  (`caniuse-lite`, a data file), MIT-0, CC0-1.0 and 0BSD.
+- **npm:** from the same lockfile sweep — 541 MIT, 56 Apache-2.0, 22 ISC,
+  16 BSD-2-Clause, 6 BlueOak-1.0.0, 6 BSD-3-Clause, plus single instances of
+  Python-2.0 (`argparse`), CC-BY-4.0 (`caniuse-lite`, a data file), MIT-0,
+  CC0-1.0, 0BSD and one dual `(MIT OR CC0-1.0)`. Three entries declare no
+  `license` field at all: `dom-walk`, and the two `web` workspace links, which
+  are this repo. With the 39 copyleft and 9 FSL above, that is all 704
+  packages.
+
+  > An earlier version of this line read "476 MIT, 48 Apache-2.0, … 7
+  > BSD-3-Clause". Those were the *installed* `node_modules/` counts — 609
+  > entries on one machine — left behind when the copyleft table moved to the
+  > lockfile. The correction note below promises a reader can re-run the sweep
+  > and get the same numbers, and for this line they could not. Re-swept.
+
+#### `easyocr` and `python-doctr`
+
+The card asks about both. **Neither is a dependency of this repo** — no
+occurrence in any requirements file, any Dockerfile, or any source file. There
+is nothing to audit; recorded here so the deliverable is answered rather than
+silently skipped.
 
 #### `paddleocr` stays excluded
 
