@@ -386,6 +386,12 @@ def delete_files(keys: Sequence[str]) -> list[str]:
     since one bad batch must not abandon the rest. Deleting a missing key is
     not an error — S3 and R2 both report it as deleted.
 
+    **Every failure path logs its reason here**, because the return value cannot
+    carry one: it is a key list, and the reason — an exception on the call, or a
+    per-key `Code`/`Message` — is gone by the time the caller sees it. The only
+    caller today reports a count, so without these lines a persistent failure is
+    a number that never changes and nothing to act on.
+
     **A client we cannot build is reported the same way**, rather than raising
     past every caller. `_client()` reads `settings.r2_*`, so a missing or
     malformed config fails here and not at import; the promise above would be
@@ -414,10 +420,34 @@ def delete_files(keys: Sequence[str]) -> list[str]:
                 Bucket=settings.r2_bucket_name,
                 Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True},
             )
-        except Exception:
+        except Exception as exc:
+            # The return value carries *which* keys failed; only this line can
+            # carry *why*. Without it the sole trace of a persistent failure is
+            # the caller's count — the retention sweep logs "N object(s) could
+            # not be deleted, retrying next sweep" on every completed game —
+            # which cannot distinguish a credential that lost DeleteObject from
+            # an object lock from a transient network fault.
+            logger.warning(
+                "delete_files: batch of %d key(s) failed outright, reporting them "
+                "as undeleted (%s)", len(batch), exc,
+            )
             failed.extend(batch)
             continue
-        failed.extend(err["Key"] for err in resp.get("Errors", []))
+        # Per-key rejections inside an otherwise successful call. `Code` and
+        # `Message` are the diagnosis and are not recoverable from the key
+        # list, so they are logged here rather than discarded; the return value
+        # stays keys-only, which is what the caller retries on.
+        errors = resp.get("Errors", [])
+        if errors:
+            logger.warning(
+                "delete_files: %d of %d key(s) in this batch were rejected: %s",
+                len(errors), len(batch),
+                "; ".join(
+                    f"{err.get('Key')}: {err.get('Code')} {err.get('Message')}"
+                    for err in errors[:10]
+                ) + (f" (+{len(errors) - 10} more)" if len(errors) > 10 else ""),
+            )
+        failed.extend(err["Key"] for err in errors)
     return failed
 
 
