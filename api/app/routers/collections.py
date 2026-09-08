@@ -225,7 +225,8 @@ async def add_clip_to_collection(
                 # the cause — swallowing it would make an unexpected failure a
                 # traceless 404, which is how this kind of handler goes wrong.
                 logger.warning(
-                    "Add to collection %s failed and nothing settled (%s)", collection_id, exc,
+                    "Add to collection %s failed and nothing settled (%s)",
+                    collection_id, exc, exc_info=True,
                 )
                 raise HTTPException(
                     status_code=404, detail="Clip or collection not found"

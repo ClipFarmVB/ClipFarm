@@ -1,8 +1,10 @@
 """CF-303: five api error paths that reported the wrong thing, or blocked.
 
-Each test below fails against `main` and passes with its own fix, and they are
-kept in one file because the card is one cleanup pass rather than five
-unrelated changes — the shared theme is what the caller is told when something
+Nine of the eleven fail against `main` and pass with their own fix — measured,
+by running this file against the base commit: 9 failed, 2 passed. The other two
+are controls that by design cannot fail on a revert, and are named as such where
+they sit. They are kept in one file because the card is one cleanup pass rather
+than five unrelated changes — the shared theme is what the caller is told when something
 goes wrong, and what it costs everyone else while it happens.
 
 Follows the house pattern from test_profile_routes.py / test_clip_tag_access.py

@@ -613,10 +613,12 @@ def _presign_condensed(out: GameOut, game: Game) -> None:
 
     The bucket is not public, so the stored form is not loadable by a client;
     only the routes that presign it return something usable. Every route that
-    returns a single game calls this, so a new one is a one-line addition
-    rather than a silently dead URL (CF-303).
+    returns a game calls this — `complete_upload`, `get_game`, `rename_game`
+    and `list_games` — so a new route is a one-line addition rather than a
+    silently dead URL (CF-303).
 
-    `list_games` deliberately does not: see the note there.
+    The guard matters on the list route: `condense` is opt-in, so most rows
+    have nothing to sign and cost nothing.
     """
     if out.condensed_video_url:
         out.condensed_video_url = storage.presign_from_stored_url(
