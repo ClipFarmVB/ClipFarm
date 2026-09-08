@@ -36,8 +36,13 @@ Three postures were coherent. We took the third:
 
 We depend on **`ultralytics`, which is AGPL-3.0-or-later.**
 
-- Pinned at `ultralytics==8.3.55`, installed in exactly one place:
-  `ml/modal_pose.py:59` (the Modal pose image).
+- Pinned at `ultralytics==8.3.55` in two places: `ml/modal_pose.py:59` (the
+  Modal pose image) and `ml/requirements.txt:2`. The second is a documented
+  install path, not a dead pin — `README.md:330`, `DEPLOY.md:232` and
+  `Dockerfile.api:55` all direct the reader to it, and
+  `api/tests/test_pose_modal.py:973` asserts ultralytics is in it. An earlier
+  version of this section said "installed in exactly one place", which was
+  contradicted by a file the audit method above says it read.
 - Imported at `ml/pipeline/detect.py:66`, `:148` and `:485` — all lazy, all
   behind guards that degrade rather than crash.
 - Its pretrained weights (`yolov8s-pose.pt`, `yolov8n-pose.pt`, baked into the
@@ -104,6 +109,9 @@ Either way, relicensing applies from that point forward, not retroactively.
 - **Python:** license expression / `license` field / trove classifiers read
   from the PyPI JSON API (`https://pypi.org/pypi/<name>/json`) for every
   direct dependency in `api/requirements.txt` and `ml/requirements.txt`.
+  `api/requirements-dev.txt` is not covered — it is test-only and never in the
+  production image (pytest MIT, PyYAML MIT, numpy BSD, checked but not swept
+  systematically).
 - **npm:** the `license` field of the `package.json` of all **591** installed
   packages under `node_modules/` — the full transitive tree, not just direct
   deps.
@@ -119,7 +127,7 @@ real limit, stated rather than papered over.
 | Package | License | Where | Status |
 |---|---|---|---|
 | `ultralytics==8.3.55` | **AGPL-3.0-or-later** | `ml/modal_pose.py:59` | **Determines the repo's license.** See above. |
-| `psycopg2-binary` | **LGPL-3.0 with exceptions** | `api/requirements.txt` | Fine. psycopg2's exception explicitly permits linking from software under any license, and we neither modify nor redistribute it. Second-most copyleft thing in the tree, so worth knowing it is here. |
+| `psycopg2-binary` | **LGPL-3.0 with exceptions** | `api/requirements.txt` | Fine, but for the LGPL's own reason rather than the exception's: the LGPL already permits linking from software under any license. psycopg2's "special exception" is specifically an **OpenSSL** exception — permission to distribute combinations linked against OpenSSL, whose licence is otherwise GPL-incompatible. It grants nothing about *our* code. What makes this fine is the LGPL plus the fact that we neither modify nor redistribute it. Second-most copyleft thing in the tree, so worth knowing it is here. |
 | `@sentry/cli` (+ `-win32-x64`) | **FSL-1.1-MIT** | npm, transitive via `@sentry/nextjs` | Fine, but **not OSI open source** — Functional Source License, source-available, forbids competing with Sentry. Build-time only (source-map upload); never in the shipped bundle. Noted because "all our npm deps are permissive" would be a false statement. |
 | RF-DETR ball weights `volleyball-ball-tracking-0eo7r/3` | **UNKNOWN** | `ml/pipeline/ball.py:37` | **Open — see below.** |
 
@@ -169,15 +177,27 @@ conflating them produces the wrong answer.
    `docker/build-push-action` anywhere in `.github/workflows/`). If that ever
    changes, this becomes live, and Debian's published sources satisfy it.
 
+   **One case that sweep does not cover, named rather than left implied:**
+   `modal deploy` uploads a built image to Modal's registry, and
+   `ml/modal_pose.py` `apt_install`s ffmpeg and pip-installs ultralytics into
+   it. Whether pushing an image to a third-party host you then run on is
+   "conveying" is exactly the sort of question this document reasons about
+   elsewhere, and it is not answered here — the GitHub/Render sweep simply does
+   not reach it. Flagged as uncovered, not as resolved. It is the same shape as
+   the AGPL §13 question and points the same way: the source offer is
+   satisfiable, since this repo is public and now carries a `LICENSE`.
+
 2. **The FFmpeg bundled inside `opencv-python-headless`.** Read out of the
    installed wheel rather than assumed: `cv2.getBuildInformation()` reports
-   `FFMPEG: YES (prebuilt binaries)` with avcodec 58.134.100 / avformat
-   58.76.100, and the wheel's own `LICENSE-3RD-PARTY.txt` states *"FFmpeg is
-   redistributed within all opencv-python packages"* under **LGPL-2.1**. This
-   one really is linked into `cv2`. LGPL-2.1 §6 obligations again attach on
-   distribution only, which we do not do. (Inspected against 4.13.0.92, the
-   locally installed build; we pin 4.10.0.84 and the bundling behaviour is the
-   same.)
+   `FFMPEG: YES` with avcodec 59.37.100 / avformat 59.27.100, and the wheel's
+   own `LICENSE-3RD-PARTY.txt:243` states *"FFmpeg is redistributed within all
+   opencv-python packages"* under **LGPL-2.1**. This one really is linked into
+   `cv2`. LGPL-2.1 §6 obligations again attach on distribution only, which we
+   do not do. (Read out of `opencv-python-headless==4.10.0.84`, the version
+   this repo pins. An earlier version of this paragraph quoted a different
+   build's figures — avcodec 58.134.100 — from a locally installed 4.13.0.92,
+   which is both the wrong version and, being *older* avcodec from a *newer*
+   opencv, self-evidently not the pinned wheel.)
 
 #### Weak copyleft in the npm tree — 5 packages, all fine
 
@@ -187,9 +207,27 @@ obligations attach only to modified MPL files, and we modify none.
 | Package | License | Note |
 |---|---|---|
 | `@vercel/og`, `axe-core`, `lightningcss`, `lightningcss-win32-x64-msvc` | MPL-2.0 | Unmodified. No obligation. |
-| `@img/sharp-win32-x64` | Apache-2.0 AND LGPL-3.0-or-later | Windows-only optional binary — a dev-machine artifact. The deployed Linux build resolves `@img/sharp-linux-x64`. Not in the shipped bundle. |
+| `@img/sharp-libvips-*` (every platform, incl. `-linux-x64`) | Apache-2.0 AND LGPL-3.0-or-later | **Present on the deployed platform.** libvips is not inside the `sharp-<platform>` package; each one pulls a separate `sharp-libvips-<platform>` as an optional dependency, and every one of those is LGPL-3.0-or-later. On Linux that is `@img/sharp-libvips-linux-x64` 1.2.4. LGPL §4/§6 obligations attach on distribution, which we do not do — see below. |
 
 No GPL, AGPL, SSPL, BUSL or CDDL anywhere in the npm tree.
+
+> **Correction, and a limit on the method above.** An earlier version of this
+> table listed only `@img/sharp-win32-x64` and called it "a Windows-only
+> optional binary — a dev-machine artifact. The deployed Linux build resolves
+> `@img/sharp-linux-x64`. Not in the shipped bundle." That was wrong on the
+> platform this actually deploys to. `sharp-linux-x64` is Apache-2.0 and does
+> *not* contain libvips; it pulls `@img/sharp-libvips-linux-x64`, which is
+> LGPL-3.0-or-later and is in the checked-in `package-lock.json`. The
+> conclusion did not change — the obligation attaches on distribution either
+> way — but the reason given for it was false.
+>
+> The cause is visible in the numbers: the sweep counted 591 packages and named
+> the `win32` variants of both sharp and `@sentry/cli`, i.e. it ran against a
+> Windows `node_modules` and then asserted about the Linux tree. **A sweep of
+> one platform's installed tree cannot see platform-optional dependencies for
+> the others**, and sharp ships eleven of them. Read the lockfile, which is
+> platform-independent and committed, rather than a `node_modules` — that is
+> how the row above was rebuilt.
 
 #### Everything else
 
