@@ -142,16 +142,59 @@ describe("playing a post from the grid", () => {
     expect(tiles().length).toBeGreaterThan(0);
   });
 
-  it("opens a player on the post that was clicked", async () => {
-    getUserPosts.mockResolvedValue([post("p1", "public")]);
+  it("opens a player on the post that was clicked, not the first one", async () => {
+    // Two posts with different URLs, and the SECOND clicked. With one post the
+    // test's own name is untestable: `setPlaying(posts[0])` passes.
+    const second = post("p2", "public");
+    second.playback.clip_url = "https://x.test/second.mp4";
+    getUserPosts.mockResolvedValue([post("p1", "public"), second]);
     await render(false);
     expect(dialog()).toBeNull();
 
-    await click(playButtons()[0]);
+    await click(playButtons()[1]);
 
     const video = dialog()?.querySelector("video");
     expect(video).not.toBeNull();
-    expect(video?.getAttribute("src")).toBe("https://x.test/c.mp4");
+    expect(video?.getAttribute("src")).toBe("https://x.test/second.mp4");
+    expect(video?.hasAttribute("autoplay")).toBe(true);
+  });
+
+  it("names the post in the play control rather than labelling them all alike", async () => {
+    // Fifty tiles announcing "Play this post" are fifty identical controls.
+    // A prefix match on "Play" cannot see this: both versions produce it.
+    const captioned = post("p1", "public");
+    captioned.caption = "match point" as never;
+    getUserPosts.mockResolvedValue([captioned]);
+    await render(false);
+
+    expect(playButtons()[0].getAttribute("aria-label")).toContain("match point");
+  });
+
+  it("says the visibility tier in words, not only as an icon", async () => {
+    // The badge is `pointer-events-none` so the play target underneath stays
+    // clickable, which also means the browser never renders its `title` — and
+    // a `title` on a bare span was never a reliable accessible name anyway.
+    getUserPosts.mockResolvedValue([post("p1", "followers")]);
+    await render(false);
+
+    expect(host.textContent).toContain("Visible to your followers");
+  });
+
+  it("traps the keyboard in the player and closes on Escape", async () => {
+    // The player sits over a grid full of focusable tiles. Deleting the focus
+    // trap entirely left the suite green.
+    getUserPosts.mockResolvedValue([post("p1", "public")]);
+    await render(false);
+    await click(playButtons()[0]);
+
+    expect(dialog()?.contains(document.activeElement)).toBe(true);
+
+    await act(async () => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(dialog()).toBeNull();
   });
 
   it("closes again", async () => {
@@ -205,8 +248,13 @@ describe("playing a post from the grid", () => {
 
     // Same for the tier badge. Smaller consequence — a dead corner rather than
     // a dead strip — but the same class of bug, and free to pin here.
-    const badge = host.querySelector("span[title]");
-    expect(badge).not.toBeNull();
+    // The badge is the span wrapping the sr-only tier text — it no longer
+    // carries a `title`, because `pointer-events-none` means a browser would
+    // never render one.
+    const badge = [...host.querySelectorAll("span")].find((el) =>
+      el.querySelector("span.sr-only"),
+    );
+    expect(badge).toBeDefined();
     expect(badge!.className).toContain("pointer-events-none");
   });
 

@@ -7,6 +7,13 @@ import { SOCIAL_ENABLED } from "@/lib/features";
 import { useMe } from "@/lib/useMe";
 import { PostPlayerModal } from "./PostPlayerModal";
 
+/** Read aloud in place of the icon; the icon alone conveyed the tier. */
+const VISIBILITY_LABEL: Record<Visibility, string> = {
+  private: "Only you can see this",
+  followers: "Visible to your followers",
+  public: "Visible to everyone",
+};
+
 const TIER_ICON: Record<Visibility, typeof Lock> = {
   private: Lock,
   followers: Users,
@@ -179,8 +186,9 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
               {/* The play affordance covers the frame, and sits BELOW the
                   tier badge and the delete button in the stacking order so
                   those stay clickable. A button rather than an onClick on the
-                  tile div, so it is reachable by keyboard — one tab stop per
-                  post, which is what a grid of watchable things should have. */}
+                  tile div, so it is reachable by keyboard: one tab stop per
+                  post for a visitor, and two on your own profile, where Remove
+                  is the second. */}
               <button
                 type="button"
                 onClick={() => setPlaying(post)}
@@ -188,11 +196,17 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
                 className="absolute inset-0 z-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand"
               />
 
-              <span
-                className="pointer-events-none absolute left-1.5 top-1.5 z-10 rounded bg-black/60 p-1 text-white/80"
-                title={post.visibility}
-              >
-                <Tier className="h-3 w-3" />
+              {/* `pointer-events-none` keeps the play target underneath
+                  clickable, and it also means this element is never a hit
+                  target — so `:hover` never applies and the browser never
+                  renders a `title`. The tooltip that used to name the tier is
+                  gone for good; the tier now rides in text instead, which is
+                  also the first time it has been available to a screen reader
+                  (a `title` on a bare span is not a reliable accessible name).
+                  Icon hidden from the tree so the two are not read twice. */}
+              <span className="pointer-events-none absolute left-1.5 top-1.5 z-10 rounded bg-black/60 p-1 text-white/80">
+                <Tier className="h-3 w-3" aria-hidden="true" />
+                <span className="sr-only">{VISIBILITY_LABEL[post.visibility]}</span>
               </span>
 
               {isSelf && (

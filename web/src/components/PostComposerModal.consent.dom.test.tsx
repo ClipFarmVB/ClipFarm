@@ -196,3 +196,69 @@ describe("when the server refuses anyway", () => {
     expect(card().textContent).toContain("This clip is private, so it can only…");
   });
 });
+
+describe("gaps a review round found", () => {
+  it("asks for consent when the clip's tier is unreadable, not when it is not", async () => {
+    // The component's own `?? "private"` fail-closed default. The unit test
+    // pins the helper for `undefined`; nothing pinned the coalesce here, which
+    // also feeds the sentence the user is consenting to.
+    mount(null);
+
+    await click(tier("Followers"));
+    expect(consentBox()).not.toBeNull();
+    expect(card().textContent).toContain("this clip is private");
+  });
+
+  it("re-disables Post when the tick is taken back", async () => {
+    // Every existing assertion ticks. A checkbox that cannot be unticked reads
+    // as consent the user is not allowed to withdraw.
+    mount("private");
+    await click(tier("Followers"));
+    await tick();
+    expect(postButton().disabled).toBe(false);
+
+    await act(async () => {
+      const box = consentBox()!;
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "checked",
+      )!.set!;
+      setter.call(box, false);
+      box.dispatchEvent(new Event("click", { bubbles: true }));
+    });
+
+    expect(postButton().disabled).toBe(true);
+  });
+
+  it("points the disabled Post button at the reason it is disabled", async () => {
+    // A disabled button is out of the tab order and explains nothing. The
+    // blocked tier already had this wiring; the button did not.
+    mount("private");
+    await click(tier("Followers"));
+
+    const described = postButton().getAttribute("aria-describedby");
+    expect(described).toBeTruthy();
+    expect(card().querySelector(`#${described}`)).not.toBeNull();
+    expect(card().querySelector(`#${described}`)?.textContent).toContain(
+      "will also change the clip itself",
+    );
+  });
+
+  it("drops the pointer once the button is usable", async () => {
+    mount("private");
+    await click(tier("Followers"));
+    await tick();
+    expect(postButton().getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("announces a refusal rather than only showing it", async () => {
+    createPost.mockRejectedValue(new Error("This clip is private, so it can only…"));
+    mount("followers");
+    await click(tier("Followers"));
+    await click(postButton());
+
+    const alert = card().querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent).toContain("This clip is private");
+  });
+});

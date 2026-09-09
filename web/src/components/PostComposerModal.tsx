@@ -323,7 +323,10 @@ export function PostComposerModal({
           // can see of the CLIP, which outlives the post and is not undone by
           // deleting it. So it says exactly what changes, and the button stays
           // disabled until it is ticked.
-          <label className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200/90">
+          <label
+            id="raise-consent"
+            className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200/90"
+          >
             <input
               type="checkbox"
               checked={raiseConsent}
@@ -334,13 +337,21 @@ export function PostComposerModal({
               {CEILING_PHRASE[ceiling]}. Posting to{" "}
               <strong className="font-semibold">{selectedLabel}</strong> will
               also change the clip itself, so it stays visible to them after
-              this post is deleted. You can change it back later.
+              this post is deleted.
             </span>
           </label>
         )}
 
         {error && (
-          <p className="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+          // Announced. The 409 and the 422 are this component's whole backstop
+          // — a clip narrowed between page load and click, and the two
+          // PUBLIC_POSTING_ENABLED flags disagreeing — and focus stays on the
+          // Post button, so without a live region they are invisible to a
+          // screen-reader user.
+          <p
+            role="alert"
+            className="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400"
+          >
             {error}
           </p>
         )}
@@ -353,10 +364,17 @@ export function PostComposerModal({
             size="sm"
             onClick={submit}
             disabled={saving || done || (needsRaise && !raiseConsent)}
+            // Points at the consent block when that is what is holding it,
+            // the same way a blocked tier points at its own reason. A disabled
+            // button is out of the tab order and explains nothing on its own,
+            // so without this a screen-reader user meets a Post they cannot
+            // reach and no statement of why.
+            aria-describedby={needsRaise && !raiseConsent ? "raise-consent" : undefined}
           >
             {done ? (
               <>
-                <Check className="h-3.5 w-3.5" /> Posted
+                <Check className="h-3.5 w-3.5" />{" "}
+                <span role="status">Posted</span>
               </>
             ) : (
               "Post"
