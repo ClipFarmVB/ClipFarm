@@ -22,9 +22,22 @@ import type { Post } from "@/lib/api";
 const getClipDownloadUrl = vi.hoisted(() => vi.fn());
 const getClipShareUrl = vi.hoisted(() => vi.fn());
 const startCrossOriginDownload = vi.hoisted(() => vi.fn());
+const likePost = vi.hoisted(() => vi.fn());
+const unlikePost = vi.hoisted(() => vi.fn());
+const getComments = vi.hoisted(() => vi.fn());
+const createComment = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/api", () => ({ getClipDownloadUrl, getClipShareUrl }));
+vi.mock("@/lib/api", () => ({
+  getClipDownloadUrl,
+  getClipShareUrl,
+  likePost,
+  unlikePost,
+  getComments,
+  createComment,
+  deleteComment: vi.fn(),
+}));
 vi.mock("@/lib/download", () => ({ startCrossOriginDownload }));
+vi.mock("@/lib/useMe", () => ({ useMe: () => null }));
 
 // jsdom implements neither, and the card calls them on mount.
 beforeEach(() => {
@@ -222,5 +235,156 @@ describe("when autoplay is refused", () => {
 
     await click(byLabel("Play")[0]);
     expect(byLabel("Play")).toHaveLength(0);
+  });
+});
+
+// The like button is optimistic, which is the whole reason it needs pinning:
+// the fill has to land on the tap (a like that waits for a round trip reads as
+// a dropped tap), the server's count has to win afterwards (someone else's
+// like arrived while this one was in flight), and a rejection has to put the
+// old state back rather than leave a red heart on a like that never happened.
+function railCount(label: string): string | null {
+  const button = byLabel(label)[0];
+  return button ? (button.textContent ?? "") : null;
+}
+
+describe("liking a post", () => {
+  it("fills in before the server answers, then takes the server's count", async () => {
+    let release: (v: { liked: boolean; like_count: number }) => void = () => {};
+    likePost.mockReturnValue(new Promise((r) => (release = r)));
+    mount(makePost()); // like_count 3, viewer_has_liked false
+
+    await click(byLabel("Like")[0]);
+
+    // Optimistic: the label flipped and the count moved without a response.
+    expect(byLabel("Unlike")).toHaveLength(1);
+    expect(railCount("Unlike")).toContain("4");
+
+    // 9, not 4: a like from someone else landed while this one was in flight.
+    // Trusting the optimistic arithmetic here would show a stale count until
+    // the next refetch, which is why both writes return the full state.
+    await act(async () => release({ liked: true, like_count: 9 }));
+    expect(railCount("Unlike")).toContain("9");
+    expect(likePost).toHaveBeenCalledWith("post-1");
+  });
+
+  it("puts the previous state back when the write fails", async () => {
+    likePost.mockRejectedValue(new Error("network"));
+    mount(makePost());
+
+    await click(byLabel("Like")[0]);
+
+    expect(byLabel("Like")).toHaveLength(1);
+    expect(railCount("Like")).toContain("3");
+    expect(railCount("Like")).toContain("Failed");
+  });
+
+  it("unlikes when the viewer has already liked it, emptying before the server answers", async () => {
+    // The optimistic step is asserted on THIS path too, not just the like.
+    // Resolving immediately never observes the guess, so a version that always
+    // added one — never subtracting on an unlike — read the server's number and
+    // passed.
+    let release: (v: { liked: boolean; like_count: number }) => void = () => {};
+    unlikePost.mockReturnValue(new Promise((r) => (release = r)));
+    mount({ ...makePost(), viewer_has_liked: true } as Post); // count 3
+
+    expect(byLabel("Unlike")).toHaveLength(1);
+    await click(byLabel("Unlike")[0]);
+
+    expect(unlikePost).toHaveBeenCalledWith("post-1");
+    expect(likePost).not.toHaveBeenCalled();
+    expect(byLabel("Like")).toHaveLength(1);
+    expect(railCount("Like")).toContain("2");
+
+    await act(async () => release({ liked: false, like_count: 7 }));
+    expect(railCount("Like")).toContain("7");
+  });
+
+  it("re-seeds when the card is handed a different post", async () => {
+    // `useState` reads its argument once, so without the sync effect the counts
+    // and the fill freeze at the first payload. Unreachable while the feed keys
+    // cards by id and only appends — which is why nothing would report it the
+    // day that stops being true.
+    mount(makePost()); // like_count 3, comment_count 1, not liked
+    expect(railCount("Like")).toContain("3");
+
+    await act(async () => {
+      root.render(
+        <FeedPost
+          post={{ ...makePost(), id: "post-2", like_count: 9, comment_count: 4, viewer_has_liked: true } as Post}
+          active={false}
+          loaded={false}
+          muted
+          onToggleSound={() => {}}
+        />,
+      );
+    });
+
+    expect(railCount("Unlike")).toContain("9");
+    expect(railCount("Comments")).toContain("4");
+  });
+
+  it("sends one request for a double tap", async () => {
+    let release: (v: { liked: boolean; like_count: number }) => void = () => {};
+    likePost.mockReturnValue(new Promise((r) => (release = r)));
+    mount(makePost());
+
+    await click(byLabel("Like")[0]);
+    // Second tap lands on the flipped label while the first is still in
+    // flight. Without the busy ref this sent an unlike that raced the like.
+    await click(byLabel("Unlike")[0]);
+    await act(async () => release({ liked: true, like_count: 4 }));
+
+    expect(likePost).toHaveBeenCalledTimes(1);
+    expect(unlikePost).not.toHaveBeenCalled();
+  });
+});
+
+describe("the comment sheet", () => {
+  it("opens from the rail and reports the count the card was given", async () => {
+    getComments.mockResolvedValue({ items: [], next_cursor: null });
+    mount(makePost()); // comment_count 1
+
+    expect(railCount("Comments")).toContain("1");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    await click(byLabel("Comments")[0]);
+
+    // The sheet portals to document.body, not into the card's container.
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(getComments).toHaveBeenCalledWith("post-1", null);
+  });
+
+  it("moves the rail count when a comment is posted inside the sheet", async () => {
+    // The sheet reports a delta rather than the card refetching the post, so
+    // the rail count is only right if the card applies it. Nothing else would
+    // catch a card that renders `post.comment_count` forever.
+    getComments.mockResolvedValue({ items: [], next_cursor: null });
+    createComment.mockResolvedValue({
+      id: "c1",
+      post_id: "post-1",
+      body: "first",
+      created_at: "2026-08-01T12:00:00+00:00",
+      author: { id: "user-2", username: "bob", display_name: "Bob", avatar_url: null },
+    });
+    mount(makePost()); // comment_count 1
+    await click(byLabel("Comments")[0]);
+
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement;
+    const textarea = dialog.querySelector("textarea") as HTMLTextAreaElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(textarea, "first");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const post = [...dialog.querySelectorAll("button")].find((b) =>
+      (b.textContent ?? "").startsWith("Post"),
+    )!;
+    await click(post);
+
+    expect(railCount("Comments")).toContain("2");
   });
 });

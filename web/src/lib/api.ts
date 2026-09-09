@@ -498,3 +498,62 @@ export async function getUserPosts(username: string, limit = 50): Promise<Post[]
 export function deletePost(postId: string): Promise<void> {
   return request<void>(`/posts/${postId}`, { method: "DELETE" });
 }
+
+// ─── Engagement (CF-113) ──────────────────────────────────────────────────────
+
+/**
+ * What the server reconciles a like to.
+ *
+ * Both the like and the unlike return this rather than a 204, deliberately:
+ * the card renders the tap optimistically, and the count it guessed can be
+ * wrong under concurrent likes. The server's number is the one that matches
+ * the rows, so it comes back on every write and the card settles on it.
+ */
+export interface LikeState {
+  liked: boolean;
+  like_count: number;
+}
+
+export function likePost(postId: string): Promise<LikeState> {
+  return request<LikeState>(`/posts/${postId}/like`, { method: "POST" });
+}
+
+export function unlikePost(postId: string): Promise<LikeState> {
+  return request<LikeState>(`/posts/${postId}/like`, { method: "DELETE" });
+}
+
+export interface Comment {
+  id: string;
+  post_id: string;
+  body: string;
+  created_at: string;
+  author: Post["author"];
+}
+
+/** One page of a post's comments, newest first. `next_cursor` is null on the last page. */
+export interface CommentPage {
+  items: Comment[];
+  next_cursor: string | null;
+}
+
+/** Same contract as `getFeed`: the cursor is opaque, pass it back verbatim. */
+export function getComments(
+  postId: string,
+  cursor?: string | null,
+  limit = 50,
+): Promise<CommentPage> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set("cursor", cursor);
+  return request<CommentPage>(`/posts/${postId}/comments?${params}`);
+}
+
+export function createComment(postId: string, body: string): Promise<Comment> {
+  return request<Comment>(`/posts/${postId}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
+}
+
+export function deleteComment(commentId: string): Promise<void> {
+  return request<void>(`/comments/${commentId}`, { method: "DELETE" });
+}

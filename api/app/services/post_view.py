@@ -21,12 +21,40 @@ two, leaving the other quietly returning a wrong value forever.
 """
 import logging
 
+from sqlalchemy.orm import load_only
+
 from app.models.clip import Clip
 from app.models.post import Post
+from app.models.user import User
 from app.schemas.post import PostAuthor, PostOut, PostPlayback
 from app.services import profiles, storage
 
 logger = logging.getLogger(__name__)
+
+# The five `User` columns `PostAuthor.from_author` renders, and nothing else.
+# Owned by the renderer rather than by the feed, because every statement that
+# hands a `User` row to this module off a threadpool needs the same loader —
+# the feed, and since CF-113 the comment list.
+#
+# `load_only` *defers* the rest rather than forbidding it, so a future line in
+# `serialize` touching, say, `author.bio` would emit a deferred-column load —
+# from a threadpool worker, against an `AsyncSession`, i.e. `MissingGreenlet`
+# at runtime and nothing visible at review time. `raiseload=True` *here* turns
+# that into an immediate `InvalidRequestError` at the line that caused it. It
+# has to be this keyword: a separate `raiseload("*")` option — which an earlier
+# version used, and documented as doing this — governs *relationship* loads
+# only and lets a deferred column load silently. Verified against the pinned
+# 2.0.36: with `raiseload("*")` the access emitted one extra SELECT and
+# returned the value; with this keyword it raised. `test_feed.py` applies this
+# object to a real row and proves the raise, rather than trusting this comment.
+AUTHOR_COLUMNS = load_only(
+    User.id,
+    User.username,
+    User.display_name,
+    User.avatar_url,
+    User.username_is_generated,
+    raiseload=True,
+)
 
 
 def _playback(
