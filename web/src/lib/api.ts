@@ -447,10 +447,44 @@ export function createPost(
   clipId: string,
   caption: string,
   visibility: Visibility,
+  /**
+   * Widen the CLIP to match, in the same transaction, when it is narrower than
+   * the post (CF-109b).
+   *
+   * Opt-in and defaulted off, because it is the one argument here that changes
+   * something other than the post being created: it makes the underlying
+   * footage readable by whoever the post is addressed to. Sent as a flag on
+   * this request rather than a separate PATCH first, so a post that fails to
+   * insert cannot leave the clip widened behind it.
+   */
+  raiseClipVisibility = false,
 ): Promise<Post> {
   return request<Post>("/posts", {
     method: "POST",
-    body: JSON.stringify({ clip_id: clipId, caption, visibility }),
+    body: JSON.stringify({
+      clip_id: clipId,
+      caption,
+      visibility,
+      raise_clip_visibility: raiseClipVisibility,
+    }),
+  });
+}
+
+/**
+ * Set who may read a clip (CF-109b). Owner only.
+ *
+ * The clip's OWN tier, which overrides its game's rather than being bounded by
+ * it — a public clip inside a private game is a supported state on the API
+ * side. Both directions: narrowing is how a user takes something back, and
+ * deleting a post does not do it.
+ */
+export function setClipVisibility(
+  clipId: string,
+  visibility: Visibility,
+): Promise<Clip> {
+  return request<Clip>(`/clips/${clipId}/visibility`, {
+    method: "PATCH",
+    body: JSON.stringify({ visibility }),
   });
 }
 
