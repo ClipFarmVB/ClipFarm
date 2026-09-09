@@ -9,16 +9,34 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ml.pipeline.dead_time import (
     Abstained,
+    REFERENCE_FRAME_HEIGHT,
     active_windows_from_contacts,
     active_windows_from_detections,
     active_windows_guarded,
     bridge_windows_by_motion,
-    merge_intervals,
     motion_anchor_windows,
     speed_gate_contacts,
     speed_samples,
     track_is_usable,
 )
+
+
+def test_reference_frame_height_matches_ball():
+    """
+    dead_time duplicates ball.REFERENCE_FRAME_HEIGHT rather than importing it.
+    The comment at that constant has always claimed this assertion existed; the
+    CF-174 review found it never had been written, so the two could drift
+    silently — the same class of unit mismatch CF-174 fixes.
+
+    The import below is unguarded on purpose. It used to sit behind
+    `pytest.importorskip("numpy")`, on the reasoning that importing ball costs a
+    dependency the dead-time tests do not otherwise need. That was never true:
+    this file imports numpy at the top, and so does dead_time itself, so the skip
+    could not fire and only made the trade look more expensive than it is.
+    """
+    from ml.pipeline.ball import REFERENCE_FRAME_HEIGHT as BALL_REFERENCE_FRAME_HEIGHT
+
+    assert REFERENCE_FRAME_HEIGHT == BALL_REFERENCE_FRAME_HEIGHT
 
 
 def contacts_at(*times: float) -> list[dict]:
@@ -33,25 +51,6 @@ def ball_path(t_start: float, t_end: float, speed_pxps: float, step: float = 0.3
         t += step
     return out
 
-
-class TestMergeIntervals:
-    def test_empty(self):
-        assert merge_intervals([]) == []
-
-    def test_disjoint_stay_separate(self):
-        assert merge_intervals([(0, 1), (5, 6)], merge_gap_seconds=1.0) == [(0, 1), (5, 6)]
-
-    def test_within_gap_merge(self):
-        assert merge_intervals([(0, 1), (2, 3)], merge_gap_seconds=1.5) == [(0, 3)]
-
-    def test_overlapping_merge(self):
-        assert merge_intervals([(0, 5), (3, 8)]) == [(0, 8)]
-
-    def test_contained_interval_absorbed(self):
-        assert merge_intervals([(0, 10), (2, 4)]) == [(0, 10)]
-
-    def test_unsorted_input(self):
-        assert merge_intervals([(5, 6), (0, 1)], merge_gap_seconds=0.5) == [(0, 1), (5, 6)]
 
 
 class TestActiveWindowsFromContacts:
@@ -187,6 +186,69 @@ class TestBridgeWindowsByMotion:
             [(0.0, 10.0), (15.0, 25.0), (30.0, 40.0)], positions,
         )
         assert windows == [(0.0, 40.0)]
+
+    def test_frame_height_scales_the_speed_threshold(self):
+        # CF-174: 300 px/s is fast at 360p and ordinary handling at 1080p, so
+        # the same track bridges at the reference height and must not at 3x it.
+        positions = ball_path(10.0, 20.0, speed_pxps=300.0)
+        assert bridge_windows_by_motion(
+            [(0.0, 10.0), (20.0, 30.0)], positions, frame_height=360,
+        ) == [(0.0, 30.0)]
+        assert bridge_windows_by_motion(
+            [(0.0, 10.0), (20.0, 30.0)], positions, frame_height=1080,
+        ) == [(0.0, 10.0), (20.0, 30.0)]
+
+    def test_omitted_frame_height_says_so(self, caplog):
+        # The unscaled path is the pre-CF-174 bug; of the two call paths that
+        # take frame_height this is the one that would otherwise stay silent.
+        import logging
+        positions = ball_path(10.0, 20.0, speed_pxps=300.0)
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.dead_time"):
+            bridge_windows_by_motion([(0.0, 10.0), (20.0, 30.0)], positions)
+        assert "without frame_height" in caplog.text
+
+    def test_the_kill_switch_restores_mains_bridge(self):
+        """
+        CF-174's `ball_contact_scale_enabled` reaches this function too, and it
+        has to mean the same thing here as it does in find_contacts: `main`'s
+        behaviour, which for this threshold is raw px/s.
+
+        Same track and same 1080p height as the case above, where scaling makes
+        300 px/s ordinary handling and refuses the bridge. With the switch off
+        the threshold is 150 rather than 450, so the gap bridges again — the
+        answer `main` gives, reached without pretending the video is 360p.
+        """
+        positions = ball_path(10.0, 20.0, speed_pxps=300.0)
+        off = bridge_windows_by_motion(
+            [(0.0, 10.0), (20.0, 30.0)], positions, frame_height=1080, normalize=False,
+        )
+        assert off == [(0.0, 30.0)]
+        # And it is `main`'s answer specifically: identical to the unscaled call
+        # `main` makes, which passes no frame height at all.
+        assert off == bridge_windows_by_motion(
+            [(0.0, 10.0), (20.0, 30.0)], positions,
+        )
+
+    def test_the_kill_switch_is_silent(self, caplog):
+        """
+        The missing-frame_height warning exists because an unscaled 1080p bridge
+        is a bug. With the switch off it is the requested behaviour, and a real
+        frame height was supplied — warning there would fire on every window of
+        every game an operator deliberately rolled back.
+        """
+        import logging
+        positions = ball_path(10.0, 20.0, speed_pxps=300.0)
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.dead_time"):
+            bridge_windows_by_motion(
+                [(0.0, 10.0), (20.0, 30.0)], positions,
+                frame_height=1080, normalize=False,
+            )
+            # Also with no height at all: off means the height is never read, so
+            # there is nothing to warn about either way.
+            bridge_windows_by_motion(
+                [(0.0, 10.0), (20.0, 30.0)], positions, normalize=False,
+            )
+        assert caplog.text == ""
 
     def test_single_window_unchanged(self):
         assert bridge_windows_by_motion([(0.0, 10.0)], ball_path(0, 10, 300)) == [(0.0, 10.0)]

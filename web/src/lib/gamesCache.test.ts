@@ -194,3 +194,118 @@ describe("getCachedGames", () => {
     }
   });
 });
+
+describe("clearGamesCache — identity change (CF-299)", () => {
+  it("forces the next visit to refetch", async () => {
+    const { getGames, cache } = await load();
+    cache.updateGamesCache([game("a1")]);
+    expect(cache.getCachedGames()).not.toBeNull();
+
+    cache.clearGamesCache();
+
+    expect(cache.getCachedGames()).toBeNull();
+    getGames.mockResolvedValueOnce([game("b1")]);
+    cache.prefetchGames();
+    expect(getGames).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the next user's prefetch start, rather than no-opping on the old one", async () => {
+    // The consequence that makes dropping `_promise` load-bearing:
+    // prefetchGames() opens with `if (_promise) return`, so a clear that left
+    // the promise behind would leave the incoming user with no fetch of their
+    // own — silently, and only when the previous sign-in was still in flight.
+    const { getGames, cache } = await load();
+    const inflight = deferred<Game[]>();
+    getGames.mockReturnValueOnce(inflight.promise);
+    cache.prefetchGames();
+    expect(cache.getInflightGames()).not.toBeNull();
+
+    cache.clearGamesCache();
+
+    expect(cache.getInflightGames()).toBeNull();
+    getGames.mockResolvedValueOnce([game("b1")]);
+    cache.prefetchGames();
+    expect(getGames).toHaveBeenCalledTimes(2);
+
+    inflight.resolve([game("a1")]);
+  });
+
+  it("does not leave the previous list readable to a caller after the clear", async () => {
+    // A clear written as `_fetchedAt = 0` alone satisfies both of the card's
+    // acceptance criteria — getCachedGames() is null and the next call
+    // refetches — while `_data` still holds the outgoing user's rows, which
+    // `attempt()`'s `if (_data) return _data` hands straight to a caller that
+    // loses a generation race. Pinned here because the obvious test cannot
+    // see it.
+    const { getGames, cache } = await load();
+    cache.updateGamesCache([game("a1")]);
+
+    cache.clearGamesCache();
+
+    const inflight = deferred<Game[]>();
+    getGames.mockReturnValueOnce(inflight.promise);
+    getGames.mockResolvedValueOnce([game("b1")]);
+    const pending = cache.fetchGames();
+    // A second clear is the racing write on purpose: `updateGamesCache` would
+    // set `_data` itself and mask whether the first clear ever nulled it, which
+    // is how the first version of this test passed against a clear that only
+    // reset `_fetchedAt`.
+    cache.clearGamesCache();
+    inflight.resolve([game("a2")]);
+
+    expect(await pending).toEqual([game("b1")]);
+  });
+
+  it("does not let a fetch started before the clear repopulate the cache after it", async () => {
+    // The race useMe.test.ts pins for the profile cache. Note what is asserted:
+    // *not* that the cache stays empty — the losing fetch legitimately retries
+    // and that retry, issued under the incoming session, is supposed to land.
+    // What must never appear is the outgoing user's list.
+    const { getGames, cache } = await load();
+    const inflight = deferred<Game[]>();
+    getGames.mockReturnValueOnce(inflight.promise);
+    getGames.mockResolvedValueOnce([game("user-b")]);
+    cache.prefetchGames();
+
+    cache.clearGamesCache(); // sign-out mid-flight
+
+    inflight.resolve([game("user-a")]);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(cache.getCachedGames()).toEqual([game("user-b")]);
+  });
+});
+
+describe("clearGamesCache — the orphaned fetch (CF-299)", () => {
+  it("does not leave the dropped promise rejecting unhandled", async () => {
+    // After the clear nothing awaits the old chain — getInflightGames() is null
+    // and prefetchGames()'s `_promise === p` guards no longer match — so its
+    // rethrow would surface as an unhandled rejection on every sign-out that
+    // interrupted a prefetch, which the browser Sentry SDK reports.
+    const { getGames, cache } = await load();
+    const inflight = deferred<Game[]>();
+    let reject!: (e: unknown) => void;
+    getGames.mockReturnValueOnce(
+      new Promise<Game[]>((_, r) => {
+        reject = r;
+      }),
+    );
+    cache.prefetchGames();
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      cache.clearGamesCache();
+      reject(new Error("API error 401"));
+      // Two macrotask turns: rejection settles, then Node decides it is unhandled.
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+
+    expect(unhandled).toEqual([]);
+    void inflight;
+  });
+});

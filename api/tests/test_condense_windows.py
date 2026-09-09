@@ -340,3 +340,51 @@ class TestTheClearIsActuallyGatedOnTheVerdict:
         assert _maybe_clear_previous_condensed(
             "game-5", [], ball_ok=True, built_by="guarded", _require_lock=lambda: None,
         ) is True
+
+
+class TestTheCF174KillSwitchReachesTheBridge:
+    """
+    `ball_contact_scale_enabled` gates find_contacts *and* the condense motion
+    bridge, and this is the wiring for the second half.
+
+    It is one setting on purpose. The lever exists for incident response, so off
+    has to mean `main`'s condense behaviour; gating only the contacts would leave
+    the bridge scaled and hand an operator `main`'s contacts joined at 3x — a
+    third combination nothing has ever scored, and the worst possible thing to
+    discover mid-incident. Nothing else in this suite would notice the kwarg
+    being dropped: the bridge is reached through two layers of builder.
+    """
+
+    def _bridge_threshold(self, monkeypatch, *, enabled, frame_height):
+        """The speed_pxps bridge_windows_by_motion is actually reached with."""
+        import ml.pipeline.dead_time as dt
+        seen = {}
+        real = dt.bridge_windows_by_motion
+
+        def spy(windows, positions, **kw):
+            seen.update(kw)
+            return real(windows, positions, **kw)
+
+        monkeypatch.setattr(dt, "bridge_windows_by_motion", spy)
+        monkeypatch.setattr(settings, "ball_contact_scale_enabled", enabled)
+        _build_condense_windows(
+            "rules", contacts_at(12.0, 15.0, 18.0, 70.0), track(),
+            DURATION, frame_height, settings,
+        )
+        assert "normalize" in seen, (
+            "_build_condense_windows stopped passing normalize= to the bridge, "
+            "so the kill switch no longer reaches the condense half"
+        )
+        return seen
+
+    def test_on_scales_the_bridge_with_frame_height(self, monkeypatch):
+        seen = self._bridge_threshold(monkeypatch, enabled=True, frame_height=1080)
+        assert seen["normalize"] is True
+        assert seen["frame_height"] == 1080
+
+    def test_off_hands_the_bridge_mains_unscaled_threshold(self, monkeypatch):
+        seen = self._bridge_threshold(monkeypatch, enabled=False, frame_height=1080)
+        assert seen["normalize"] is False
+        # The height is still passed; `normalize=False` is what stops it being
+        # used, so the two halves cannot disagree about which video this is.
+        assert seen["frame_height"] == 1080

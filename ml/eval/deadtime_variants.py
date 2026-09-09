@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ml.eval.harness import load_deadtime_fixture
-from ml.eval.tune_contacts import BRIDGE, COND
+from ml.eval.tune_contacts import BRIDGE, COND, NORMALIZE
 from ml.pipeline.ball import BallPosition, TrackedBall, find_contacts
 from ml.pipeline.dead_time import (
     Interval,
@@ -81,7 +81,7 @@ def load_game(test_id: str) -> Game:
         duration=fx.duration,
         frame_height=frame_h,
         positions=[{"time": p["time"], "x": p["x"], "y": p["y"]} for p in positions],
-        contacts=find_contacts(tracker, frame_height=frame_h),
+        contacts=find_contacts(tracker, frame_height=frame_h, normalize=NORMALIZE),
         human_keep=sorted(fx.keep),
         raw=fx.raw,
     )
@@ -109,13 +109,29 @@ def _from_contacts(game: Game, contacts: list[dict], **overrides) -> list[Interv
 # ── variants ───────────────────────────────────────────────────────────────
 
 def v0_shipped(game: Game) -> list[Interval]:
-    """condense_mode="rules": contacts → padded windows → motion bridge."""
+    """condense_mode="rules": contacts → padded windows → motion bridge.
+
+    frame_height is passed for the same reason v5 gets it (CF-174): without it
+    the bridge applies a 360p threshold to the 1080p fixtures, so v0 over-bridges
+    relative to what production does and every v1..v5 comparison is scored
+    against a baseline that does not ship.
+
+    NORMALIZE goes with it, and for a sharper version of the same reason. The
+    contacts in `game` already honour the mirror (load_game), so passing it here
+    is what keeps both halves of this baseline on one side of the switch. Without
+    it, turning the mirror off — which is what matching a rolled-back production
+    requires — leaves `main`'s contacts joined by a scaled bridge: the third
+    combination CF-174 removed from tasks.py, reintroduced in the function every
+    other variant is measured against.
+    """
     return bridge_windows_by_motion(
         _from_contacts(game, game.contacts),
         game.positions,
         speed_pxps=BRIDGE["speed_pxps"],
         fast_fraction=BRIDGE["fast_fraction"],
         max_bridge_seconds=BRIDGE["max_bridge_seconds"],
+        frame_height=game.frame_height,
+        normalize=NORMALIZE,
     )
 
 

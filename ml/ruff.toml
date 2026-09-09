@@ -1,5 +1,5 @@
 # Mirrors api/ruff.toml so ml/ is linted against an explicit rule set rather
-# than ruff's defaults. Without this, `ruff check ml/eval` inherits whatever
+# than ruff's defaults. Without this, `ruff check ml/` inherits whatever
 # ruff currently ships as default — ruff 0.16 widened that set (S, BLE, ISC,
 # PYI, RUF, I) and broke CI on untouched code. Pinning the selection here keeps
 # lint results a function of our config, not of the installed ruff version.

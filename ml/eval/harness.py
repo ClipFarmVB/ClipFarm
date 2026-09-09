@@ -35,11 +35,12 @@ from pathlib import Path
 from ml.eval.metrics import (
     DeadTimeSignals,
     EvalSignals,
-    Interval,
+    IncorrectTime,
     ModelWindow,
     evaluate,
     evaluate_deadtime,
 )
+from ml.pipeline.intervals import Interval
 
 EVAL_DIR = Path(__file__).resolve().parent
 FIXTURES_DIR = EVAL_DIR / "fixtures"
@@ -197,6 +198,12 @@ def config_snapshot() -> dict:
         app_snap = {
             "highlight_score_threshold": settings.highlight_score_threshold,
             "clip_verify_enabled": settings.clip_verify_enabled,
+            # Named rather than caught by the condense_ prefix below, because it
+            # is not a condense knob and would otherwise never reach a row:
+            # CF-174's scaling moves both the contact gates and the bridge, so
+            # two rows on opposite sides of this switch describe different
+            # detectors while looking directly comparable.
+            "ball_contact_scale_enabled": settings.ball_contact_scale_enabled,
         }
         fields = getattr(type(settings), "model_fields", None) or getattr(type(settings), "__fields__", {})
         app_snap.update({
@@ -208,25 +215,71 @@ def config_snapshot() -> dict:
     return snap
 
 
+# results/*.jsonl is committed so runs can be diffed across versions, and raw
+# float tails defeat that: `59.99999999999943` vs `60.00000000000012` is the
+# same number twice and reads as a change (CF-94). 4dp is 0.01% on the ratios
+# and 0.1 ms on the seconds — finer than anything either measures.
+#
+# The interval lists below stay at 3dp. Different unit, different natural
+# floor: 1 ms is already well under a frame at any frame rate this pipeline
+# sees, so more digits there would be recording jitter, not signal.
+RESULT_FLOAT_PLACES = 4
+
+
+def _round(value: float | None, places: int = RESULT_FLOAT_PLACES) -> float | None:
+    """`round`, but None survives.
+
+    captured_pct, auc, dead_removed_pct and the rest are legitimately None —
+    no human clips, or no positive/negative windows to separate — and round()
+    raises TypeError on None rather than passing it through.
+    """
+    return None if value is None else round(value, places)
+
+
+def _incorrect_seconds_to_dict(t: IncorrectTime) -> dict:
+    """The four parts, rounded, plus a `total` that is their sum.
+
+    `IncorrectTime.total` is a property over the *raw* parts, so rounding it
+    directly lets a written row disagree with itself: 60.0 + 5.0 + 11.8333 +
+    2.8333 is 79.6666 beside a written total of 79.6667. Nothing reads these
+    files back programmatically — humans diff them across runs, and a row whose
+    parts do not add up is exactly what misleads that reader. `_decompose_window`
+    documents the decomposition as exact, so the file should show it that way.
+
+    Summing the rounded parts moves `total` by at most four half-ulps at 4dp —
+    4 x 5e-5, so **2e-4 s**, not 5e-5; the first version of this comment said
+    the latter. Still three orders of magnitude below anything this metric
+    means, and well inside the 1e-3 that
+    `test_rounding_does_not_move_a_value_meaningfully` allows. The outer round
+    is there because adding floats reintroduces a tail of its own: without it
+    the fixture writes 79.66659999999999.
+    """
+    # `round`, not `_round`: these four are `float` on IncorrectTime and never
+    # None, and the type has to say so for `sum` below to typecheck.
+    parts: dict[str, float] = {
+        "junk": round(t.junk, RESULT_FLOAT_PLACES),
+        "lead_slop": round(t.lead_slop, RESULT_FLOAT_PLACES),
+        "tail_slop": round(t.tail_slop, RESULT_FLOAT_PLACES),
+        "bridge": round(t.bridge, RESULT_FLOAT_PLACES),
+    }
+    return {**parts, "total": round(sum(parts.values()), RESULT_FLOAT_PLACES)}
+
+
 def _signals_to_dict(s: EvalSignals) -> dict:
     return {
-        "captured_pct": s.captured_pct,
+        "captured_pct": _round(s.captured_pct),
+        # Counts, not measurements — left alone. Rounding an int is a no-op
+        # that invites the next reader to wonder what it is guarding against.
         "buckets": {
             "well_captured": s.buckets.well_captured,
             "butchered": s.buckets.butchered,
             "missed": s.buckets.missed,
             "total": s.buckets.total,
         },
-        "incorrect_seconds": {
-            "junk": s.incorrect.junk,
-            "lead_slop": s.incorrect.lead_slop,
-            "tail_slop": s.incorrect.tail_slop,
-            "bridge": s.incorrect.bridge,
-            "total": s.incorrect.total,
-        },
-        "auc": s.auc,
-        "human_seconds": s.human_seconds,
-        "model_seconds": s.model_seconds,
+        "incorrect_seconds": _incorrect_seconds_to_dict(s.incorrect),
+        "auc": _round(s.auc),
+        "human_seconds": _round(s.human_seconds),
+        "model_seconds": _round(s.model_seconds),
     }
 
 
@@ -298,6 +351,53 @@ def _require_r2_key(raw: dict, test_id: str) -> str:
     return r2_key
 
 
+def _assert_declared_frame_height(
+    fixture: Fixture | DeadFixture, frame_h: int, test_id: str, r2_key: str, mode: str
+) -> None:
+    """
+    Refuse to score if the decoded source is not the height the fixture declares.
+
+    CF-174 made the contact thresholds scale with frame height, so a source that
+    decodes at a different resolution is scored against thresholds the fixture
+    never meant — and the numbers still look plausible, which is what makes it
+    worth failing over.
+
+    This is the ONLY runtime check that the source is the labeled one.
+    `source_video_md5` is pinned in every fixture but verified nowhere at
+    runtime — only fixture-to-fixture in `test_eval_fixtures.py` — so without
+    this a re-encode that changed resolution would shift every threshold
+    silently and still produce a recorded row.
+
+    Opt-in per fixture: absent `source_frame_height` skips the check rather than
+    failing, so fixtures written before the key existed still run.
+
+    A non-positive height is handled first and separately. OpenCV reports 0 for
+    a container it cannot decode — a truncated download, a missing codec — and
+    that is a broken *file*, not a re-labelled one. Reported as a mismatch it
+    reads as "the source is not what the fixture says" and sends the operator to
+    re-upload or re-label a video that is fine; the deadtime path has said so
+    since CF-98, and the highlight path only reached this helper at all once
+    test1.json gained the key.
+    """
+    if frame_h <= 0:
+        flag = "--windows-json" if mode == "deadtime" else "--clips-json"
+        raise SystemExit(
+            f"Offline {mode}: OpenCV read a frame height of {frame_h} from "
+            f"{r2_key}. That is a decode failure, not a fixture mismatch — the "
+            "download is probably truncated or its codec is unavailable here. "
+            f"Check the file plays locally, or score a dumped list with {flag}."
+        )
+    declared = fixture.raw.get("source_frame_height")
+    if declared is None or int(declared) == frame_h:
+        return
+    raise SystemExit(
+        f"Offline {mode}: {test_id} declares source_frame_height={int(declared)} "
+        f"but {r2_key} decodes at {frame_h}px. CF-174 thresholds scale with frame "
+        "height, so this run would not be comparable to the fixture's recorded "
+        "numbers. Re-upload the labeled file, or re-label against this one."
+    )
+
+
 def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     """
     Re-run the detection + scoring stages against the fixture's source video,
@@ -336,6 +436,9 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         cap.release()
         duration = n_frames / fps
 
+        # Same guard as the deadtime path: this mode scales the same thresholds.
+        _assert_declared_frame_height(fixture, frame_h, test_id, r2_key, "highlight")
+
         audio = compute_audio_energy(str(local))
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
@@ -343,7 +446,14 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         # both skipped, so a mode documented as "no re-tracking" would silently
         # fall through to a ~30-minute local CPU re-track.
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
-        contacts = find_contacts(tracker, frame_height=frame_h)
+        # normalize: this mode reads every other production knob off `settings`
+        # (the gate threshold below, the condense_* tunables on the deadtime
+        # path), so reading the CF-174 switch from anywhere else would score a
+        # detector production is not running whenever it is off.
+        contacts = find_contacts(
+            tracker, frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
+        )
         detections = contacts_to_rallies(contacts, duration, frame_h)
         if audio is not None:
             detections = score_cheers(detections, *audio)
@@ -464,27 +574,27 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
 
-        # A container OpenCV cannot decode reports 0 here, and every guarded
-        # speed threshold is normalized by frame height — so the builder would
-        # raise ValueError several frames of stack away from the cause. This
-        # function's other bad-input paths all exit with instructions; so does
-        # this one.
-        if frame_h <= 0:
-            raise SystemExit(
-                f"Offline deadtime: OpenCV read a frame height of {frame_h} from "
-                f"{r2_key}. Its codec is probably unavailable in this environment "
-                "— check the file plays locally, or score a dumped keep-window "
-                "list with --windows-json instead."
-            )
+        # The frame_h <= 0 check that used to sit here moved into
+        # _assert_declared_frame_height below, which runs on both offline paths
+        # rather than only this one.
+        #
         # Prefer the fixture's declared duration (the same value that anchors the
         # dead-time complement); fall back to the decoded frame count.
         duration = fixture.duration or (n_frames / fps)
+
+        _assert_declared_frame_height(fixture, frame_h, test_id, r2_key, "deadtime")
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
         # Pass r2_key so the ball-cache lookup hits; without it this silently
         # falls through to a ~30-minute local CPU re-track (see _run_offline).
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
-        contacts = find_contacts(tracker, frame_height=frame_h)
+        # Same reason as the highlight path: every condense knob below comes
+        # from `settings`, so this one must too, or an offline row scores a
+        # detector production is not running.
+        contacts = find_contacts(
+            tracker, frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
+        )
 
         pre_bridge = active_windows_from_contacts(
             contacts, duration,
@@ -524,6 +634,8 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
             speed_pxps=settings.condense_bridge_speed_pxps,
             fast_fraction=settings.condense_bridge_fast_fraction,
             max_bridge_seconds=settings.condense_bridge_max_seconds,
+            frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
         )
 
         if mode == "rules":
@@ -652,15 +764,27 @@ def format_deadtime_comparison(
 
 def _deadtime_to_dict(s: DeadTimeSignals) -> dict:
     return {
-        "dead_removed_pct": s.dead_removed_pct,
-        "live_removed_sec": s.live_removed_sec,
-        "live_removed_pct": s.live_removed_pct,
-        "kept_play_pct": s.kept_play_pct,
-        "condense_ratio": s.condense_ratio,
-        "human_keep_sec": s.human_keep_sec,
-        "human_dead_sec": s.human_dead_sec,
-        "model_keep_sec": s.model_keep_sec,
-        "duration": s.duration,
+        "dead_removed_pct": _round(s.dead_removed_pct),
+        "live_removed_sec": _round(s.live_removed_sec),
+        "live_removed_pct": _round(s.live_removed_pct),
+        "kept_play_pct": _round(s.kept_play_pct),
+        "condense_ratio": _round(s.condense_ratio),
+        # These two partition [0, duration] by construction in
+        # evaluate_deadtime, so they sum to `duration` exactly before rounding
+        # and can fail to afterwards — the same shape CF-352 fixed for
+        # incorrect_seconds. Measured: human=(0, 100.00005) over a 200.0001s
+        # duration writes 100.0001 + 100.0001 = 200.0002 beside a duration of
+        # 200.0001. Deliberately not changed here: unlike incorrect_seconds,
+        # where `total` is derived from the parts, all three of these are
+        # independent fields and deciding which one gives way is a call about
+        # what the file means, not a rounding detail. Measured and argued in
+        # #401; `kept_play_pct` / `live_removed_pct` were checked and are *not*
+        # exposed — 800k samples plus every half-ulp tie point at the 5th
+        # decimal produced no case where the rounded pair fails to sum to 1.0.
+        "human_keep_sec": _round(s.human_keep_sec),
+        "human_dead_sec": _round(s.human_dead_sec),
+        "model_keep_sec": _round(s.model_keep_sec),
+        "duration": _round(s.duration),
         "over_cut_live": [[round(a, 3), round(b, 3)] for a, b in s.over_cut_live],
         "missed_dead": [[round(a, 3), round(b, 3)] for a, b in s.missed_dead],
     }

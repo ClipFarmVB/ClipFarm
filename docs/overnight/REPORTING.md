@@ -9,8 +9,9 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`START.md`](./START.md) | once, at the start of a run |
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round, cold or semi-cold |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background |
 
@@ -79,28 +80,49 @@ The report contains:
   cards are missing from it
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
+- **PRs held back from settling by a check**, each with the check's name and its
+  conclusion — or `queued`/`in_progress`, or that the head had no check runs at
+  all. These PRs carry **no label** (see [the settle
+  bar](FIX.md#the-cycle-and-the-settle-bar)), so this bullet is the only place
+  they are visible; without it they are indistinguishable from PRs the run never
+  reached. CF-275 is the case: six rounds against red CI and nobody told, on a
+  failure that was an upstream incompatibility rather than anything in the diff.
+
+  **Also say whether the same check is red on `main`'s head**, which is cheap to
+  read and separates "this PR broke it" from "the runner or an upstream pin broke
+  it". Read `main`'s head, not the PR's `base.sha` — that is the base as of the
+  PR's last sync and can be many commits behind. **This is informational and no
+  rule acts on it:** both cases block settling identically, and deliberately, since
+  a run cannot fix an upstream breakage unattended either way. It is here because
+  the two want different humans, and a report that does not say which is which
+  sends the question to the wrong one.
 - PRs labelled `unsettled`, split by the four reasons their `unsettled:` comment
-  gives — `needs a decision` (a reviewer found a judgement call), `latched` (a
-  collaborator pushed to the branch, **or** the guard could not verify it),
-  `not our branch` (the author's next push
-  re-opens it), and `ran out of rounds` (the per-PR ceiling, or the run-wide
-  budget) — and what is still outstanding on each
-- **Latched PRs by name, each saying why it latched.** Two of these reasons want
-  a human and want *different* humans doing different things: a judgement call
-  needs the reviewer's question answered, a latch needs someone to decide what to
-  do about a branch. A single "N need a human" figure hides that, which is the
+  gives — `needs a decision` (a reviewer found a judgement call), `latched` (the
+  harness refused the push), `not our branch` (the author's next push re-opens
+  it), and `ran out of rounds` (the per-PR ceiling, or the run-wide budget) — and
+  what is still outstanding on each
+- **Latched PRs by name, each saying exactly what refused the push.** Two of
+  these reasons want a human and want *different* humans doing different things:
+  a judgement call needs the reviewer's question answered, a latch needs someone
+  to unblock the push. A single "N need a human" figure hides that, which is the
   same signal loss the bullet below describes for the bounds.
 
-  A latch has two causes and they want different responses, so name the cause,
-  not just the state:
+  Name the refusal, not just the state — the error, and what you had tried to
+  push:
 
-  > `#312` is latched — `@sam` has pushed to the branch, so the run may not.
-  > 2 Medium and 3 nits are written up in the review. Someone needs to take this
-  > one over: merge it, push the fix, or hand it back to `@sam`.
+  > `#312` is latched — the push was refused by the harness (`permission denied
+  > by the auto mode classifier`), retried once with the same result. 2 Medium
+  > and 3 nits are written up in the review, and the patch is in the
+  > `unsettled:` comment. Someone needs to push it, or grant the run the
+  > permission.
 
-  > `#288` is latched — the guard could not verify it, because the branch has
-  > more than 250 commits. Nobody may have pushed to it at all. Someone needs to
-  > confirm whose branch it is; the findings are in the review either way.
+  **A latch should now be rare and is worth treating as an environment fault.**
+  Until 2026-08-29 the commonest cause was a collaborator's commit on the branch;
+  that condition was removed from the push test after it fired on ten of eleven
+  PRs in one queue and was a false positive every time. What is left is the push
+  machinery genuinely saying no, which is closer to something broken than to a
+  routine outcome — so if latches are common again, report *that* as the finding
+  rather than the individual PRs.
 
   **These PRs cannot be returned to the loop by anything a run does**, which is
   why the report line is not optional: it is the only place a latched PR is
