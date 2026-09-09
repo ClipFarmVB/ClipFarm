@@ -9,8 +9,9 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`START.md`](./START.md) | once, at the start of a run |
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round, cold or semi-cold |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background |
 
@@ -22,6 +23,30 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 
 > **A PR needs a round unless it carries `review-settled` or `unsettled` and
 > that label's carve-out has not fired.**
+
+**One case is unlabelled and still does not need a round:** a PR that **clears
+the settle bar** and is unlabelled only because [its checks have not
+passed](FIX.md#the-cycle-and-the-settle-bar). What it needs is a check read,
+which spends no round — if the checks have since passed, settle it on the spot;
+if they have not, it is done for this lap and goes in the report.
+
+**"Clears the settle bar" is [that bar](FIX.md#the-cycle-and-the-settle-bar),
+not a summary of it**, and the distinction is the whole safety of this clause.
+It is *not* "the latest round found nothing": a PR that has never had a finding
+needs **two** head-matching `cold: clean` markers, which is why [the routing
+table](#routing-what-the-marker-tells-the-run-to-do-next) sends a PR sitting on one of them
+to another cold round. Read loosely, the clause would swallow that PR — the
+selection test runs before the table, so the table's row never gets consulted —
+and then settle it off a single reviewer's silence on the next visit. If you
+cannot tell whether the bar is cleared, it is not cleared, and the PR takes its
+round.
+This has to be said here rather than left to the reader, because the test is
+keyed on labels and that PR deliberately carries none: read literally, it needs
+a round forever, and no round can change the thing holding it. Everything that
+consumes this test inherits the clause — the [`review-only` stop
+condition](START.md#when-a-review-only-run-is-done) and [step 3's "when 1 and 2
+are clear"](TICKETS.md#step-3--ticket-work) — which is what keeps a night whose
+remaining queue is one red PR from having no way to end.
 
 **And one filter in front of that test: the run's `review scope`.** With scope
 `own`, a PR whose author is not this account is out of scope and gets no round —
@@ -54,19 +79,22 @@ nothing. It is the same REST-versus-GraphQL trap as `created_at` against
 gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".user.login"
 ```
 
-Note that scope and pushability now share a test rather than being unrelated
-questions: both ask whether the PR's `.user.login` is this account. Pushing adds
-one further condition — that no collaborator has pushed to the branch, see
-[The push test](RULES.md#the-push-test) — so a PR in scope at `own` is one this run may
-push to *unless it is latched*. They were wholly different questions while the
-push rule keyed on which run created the branch.
+Note that scope and pushability are now the **same** test, not merely a shared
+first half: both ask whether the PR's `.user.login` is this account, and since
+2026-08-29 pushing adds nothing further — see
+[The push test](RULES.md#the-push-test). So a PR in scope at `own` is one this run
+may push to, full stop, unless the harness itself refuses. They were wholly
+different questions while the push rule keyed on which run created the branch,
+and differed by one condition while it also read commit authorship.
 
 The obvious phrasing — "no marker at all, or commits since the last marker" —
 leaves a hole. A PR sitting on its first `cold: clean` with no new commits has a
 marker *and* no new commits, so neither clause selects it; yet that is precisely
 the PR owing a second clean round before it may be labelled, and it would sit
-there forever. **Unlabelled means unfinished.** What it needs next comes from
-the routing table below.
+there forever. **Unlabelled means unfinished** — with the one exception named
+[on the selection test](#step-1--which-prs-need-a-round), a PR that cleared the
+bar and is waiting on a check, which is unfinished but owes no round. What it
+needs next comes from the routing table below.
 
 Note also that "needs a round" is never decided from GitHub review objects. A
 round does submit one — the two artifacts are described below — but the review
@@ -75,6 +103,52 @@ that is what tells a round's review from a human's — but every selection and
 counting rule here is phrased against marker **comments**, and a rule phrased
 against reviews would be counting an artifact that is deliberately outside the
 budget and the ceiling.
+
+##### Reading the checks: before a round, and again before settling
+
+**Read the check runs on the PR's head commit.** Selection does not depend on
+them — a red PR still gets reviewed, for the reason below — but settling does,
+and the report does. **Which conclusions block settling is stated once, in [the
+settle bar](FIX.md#the-cycle-and-the-settle-bar)**; this section is how and when
+to read them.
+
+The command and the two endpoints that look like it and are wrong here are
+[point 7](#what-a-non-gh-tool-must-provide).
+
+**Red does not block reviewing.** The rounds CF-275 was filed over produced real
+findings, and that PR's failure was an upstream incompatibility rather than
+anything in its diff — so refusing to review would have stranded a PR that
+reviewing could still improve. The waste was never the reviewing; it was that
+nobody was told about the red. Review it, do not settle it, and report it.
+
+**Read them again at settle time, not only at selection.** A carry runs several
+rounds and a push of its own; a check read at the start of it is stale by the
+end, which is exactly #307's shape. This is the same rule as [checking claims
+outside the diff at settle time](BRIEFS.md#the-cold-reviewers-brief) — the check is such a
+claim.
+
+**Read the conclusion, not the log's summary.** #307's failing run ends with
+
+```
+ Test Files   7 passed (7)
+      Tests   103 passed (103)
+     Errors   1 error
+```
+
+and a `failure` conclusion. An unhandled error killed the worker before the test
+file loaded, so the tally counts what did run and says nothing about what did
+not — and the file that never ran was the test file for the card under review.
+The check was right and the summary was misleading, which is the case *for*
+reading the conclusion rather than a caution against trusting it.
+
+**A green conclusion can still mean nothing ran**, though, and that is a
+different case: a workflow that skips reports `success`. `CLAUDE.md` documents
+this for `claude-review.yml` — a skipped run is green and has reviewed nothing.
+
+**A check's name does not tell you what it ran.** `Web (lint + typecheck)` also
+runs vitest; `API (ruff + mypy)` runs `ruff check ml/` and both test suites.
+Read `ci.yml` if you need to know what a check covered — and do not narrow by
+name, per [point 7](#what-a-non-gh-tool-must-provide).
 
 ##### What a non-`gh` tool must provide
 
@@ -120,20 +194,81 @@ sentence. The failure if any item is missing is silent rather than loud:
    Confirm you get a login and not a null before trusting the filter. A `null`
    under `own` excludes every PR silently, and the run reports a full queue as a
    deliberate scoping decision having reviewed nothing.
+7. **The check runs on the PR's head commit** — each with its `name`, `status`
+   and `conclusion` — for [the check-status read](#reading-the-checks-before-a-round-and-again-before-settling).
+   Other surfaces look like this one and are wrong here; the ones tried so far
+   are named below, with why each fails:
+
+   ```
+   SHA=$(gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha")
+   gh api repos/ClipFarmVB/ClipFarm/commits/$SHA/check-runs \
+     --jq '.check_runs[] | "\(.name) \(.status) \(.conclusion)"'
+   ```
+
+   **Not the combined commit status.** `/commits/<sha>/status` — and anything
+   built on it — returns `state: pending, total_count: 0` on this repository,
+   because nothing here posts a commit status; every check is a check *run*.
+   Measured on #422 and #307 — the latter a merged PR, green on both jobs, still
+   reporting `pending`. A rule written against that endpoint reads `pending`
+   forever, and since both `pending` and `total_count: 0` **block** settling, it
+   is wrong in the direction that fires on every PR: nothing would ever settle
+   again. That is the loud failure rather than the silent one, which is the only
+   good thing about it.
+
+   **Not the required-checks set either.** Which contexts `main` requires lives
+   in the branch-protection ruleset, is admin-scoped, and a run may well get 403
+   reading it — so **the loop cannot compute "required"** and no rule here may
+   depend on it. It would also be wrong if it could: #428 carries a third check
+   run, `Mobile (lint + typecheck + test)`, from a job on an unmerged branch that
+   cannot be in the ruleset. Read every check run on the head and treat them all
+   as load-bearing.
+
+   REST rather than `gh pr view --json statusCheckRollup` deliberately: the
+   rollup is GraphQL, and the first unattended run had GraphQL disabled — see
+   [the capability checks](START.md#first-establish-what-you-can-actually-do).
 
 **Confirm your tool paginates before you trust a marker read**, and name the
 tool in the report. A run that cannot establish point 1 should say so and treat
 every marker read as unverified rather than assuming it saw the newest.
 
 **Where the GitHub MCP tools fail these, specifically.** They are the expected
-non-`gh` tool in the web sandbox, and they satisfy the list — but three of the
-failures are silent, and all three were hit in the run of 2026-08-27:
+non-`gh` tool in the web sandbox, and they satisfy the list — but each row below
+is a trap, in one of two ways. The label *write* and the `get_status` row are
+**silent**: the call succeeds and returns a wrong answer. The label *read* and
+the page-size row fail **loudly** — `Could not resolve to an Issue`, and a
+refusal for size — and are traps only because the error reads like a missing
+label or an empty page rather than like the wrong call. **The label *read* row
+is the one that carries both**: under its loud failure sits a silent one, a
+`label:` search that lags behind the write and answers with a plausible list
+missing the row you just wrote. Which kind a row is, each row says. The first
+three were hit in the run of 2026-08-27 and the check-runs row comes from
+CF-275, which is what added point 7; the nested `label:` trap is later than
+all of them, 2026-09-01, and the row it sits under says so.
 
 - **Labels cannot be read off a PR the obvious way.** `issue_read` with
   `get_labels` returns `Could not resolve to an Issue` for a pull request
   number. Read them from `list_pull_requests` instead. Use that to *verify a
   label landed*, too: the write returns success whether or not it did, so a
   settle that never took looks identical to one that did.
+
+  **Do not verify it with a `label:` search.** On 2026-09-01 a
+  `search_pull_requests` query for `label:review-settled` returned two other
+  PRs and omitted the one labelled seconds earlier; a query by another term
+  returned that PR *with* the label. The search index lags behind the write,
+  and it fails in the opposite direction to the `get_labels` error above: that
+  one is loud and cannot be mistaken for an answer, this one is a populated,
+  plausible result that is simply missing a row. An empty or short `label:`
+  result is inconclusive, never evidence the write was lost.
+
+  **What that costs the step 1 sweep depends on how the sweep asks.** The
+  same observation is reassuring about the `labels` *field*: the query by
+  another term returned the PR with its label present, so a row that comes
+  back carries a current label. It is the `label:` **filter** that dropped the
+  row. So a sweep must not filter on `label:` — the `is:pr is:open` query
+  below is fine, and `labels` read off its rows is current — or a PR settled
+  seconds earlier looks unlabelled and gets re-spawned. The log is the backstop
+  either way: it records the settle immediately, so check it before spawning on
+  a PR you settled this run.
 - **Writing labels replaces the whole set.** Read the current labels first or
   you will silently drop one. On a PR carrying only your own label this is
   invisible.
@@ -142,6 +277,38 @@ failures are silent, and all three were hit in the run of 2026-08-27:
   `minimal_output: true`, and on this repository a default page is refused for
   size — which costs a call and returns nothing. Pass a small `perPage` (1–5)
   and page. This is why point 1's pagination requirement is not academic here.
+
+  **For the step 1 sweep, reach for `search_pull_requests` rather than
+  `list_pull_requests`.** Pass a **`fields`** parameter naming only what
+  selection needs — `number`, `labels`, `user`, `draft` — with the query
+  `repo:<owner>/<repo> is:pr is:open`. It returns the whole open queue in one
+  call, without a single body.
+
+  **This does not retire `list_pull_requests`**, and the first bullet above
+  still stands: reading labels back off one PR — to verify a settle actually
+  landed — is what that call is for, at `perPage: 1`. The sweep is the case
+  where its cost is all waste, because it returns twenty bodies to answer a
+  question about four fields. One PR, one call, small page: fine. Whole queue:
+  use the search.
+
+  The saving is not marginal. On the run of 2026-08-30 one `list_pull_requests`
+  page returned roughly **15k tokens** of PR bodies — comparable to reading a
+  whole phase file — to obtain four fields per PR. The same sweep via
+  `search_pull_requests` with `fields` was a few hundred. **Tool output is the
+  larger context cost on a review lap, not the brief**, and this is the single
+  call where that is most true.
+
+  Two cautions that come with it. `search_pull_requests` is a *search* endpoint,
+  so the [false-zero warning](RULES.md#repo-traps-that-have-already-cost-time) applies — cross-check a
+  negative rather than concluding the queue is empty. And `fields` silently omits
+  what you did not name, so a run that forgets `labels` reads every PR as
+  unlabelled and re-reviews the whole queue; name the fields the selection test
+  actually reads, and check one row looks right before trusting the sweep.
+- **For point 7, `pull_request_read` with `get_check_runs` is the one that
+  works.** `get_status` on the same PR returns `state: pending, total_count: 0`
+  — not because anything is pending, but because this repository posts no commit
+  statuses at all. It is the silent-wrong-answer case, and the two calls are one
+  argument apart.
 
 None of these changes a rule. They change what "I checked" is worth, which is
 the same class of problem as everything else in this section.
@@ -195,9 +362,9 @@ above](#what-a-non-gh-tool-must-provide) gives:
 | `cold: findings` | differs | — | **semi-cold** — a fix has already been pushed; check those findings against the new head |
 | `cold: clean` | matches | a finding is still open, **and** commits have landed since the marker that raised it | **semi-cold** — that fix is what needs checking; only a semi-cold can close a finding |
 | `cold: clean` | matches | a finding is still open, **and** nothing has landed since the marker that raised it | **step 2** — nothing to check, so spend no round; fix it |
-| `cold: clean` | matches | nothing open, and a finding was raised **in the counting window** | **settle it** — apply `review-settled` |
+| `cold: clean` | matches | nothing open, and a finding was raised **in the counting window** | **settle it** — apply `review-settled`, unless [a check blocks it](FIX.md#the-cycle-and-the-settle-bar) |
 | `cold: clean` | matches | nothing open, none raised in the window, and this is its **only** head-matching `cold: clean` | **cold round** — the second of the two that case requires |
-| `cold: clean` | matches | nothing open, none raised in the window, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled` |
+| `cold: clean` | matches | nothing open, none raised in the window, and a **second** head-matching `cold: clean` is already there | **settle it** — apply `review-settled`, unless [a check blocks it](FIX.md#the-cycle-and-the-settle-bar) |
 | `cold: clean` | differs | — | **cold round** — new code nothing has looked at; see the re-open rule below |
 | `semi-cold: closes` | — | — | **cold round** |
 | `semi-cold: does not close` | matches | — | **step 2** — fix it again |
@@ -288,8 +455,8 @@ that prefix matching separates `semi-cold: closes` from `semi-cold: does not
 close` only because neither is a prefix of the other — preserve that if you ever
 add a fifth marker.
 
-**Use `ROUNDS` wherever something is counted or routed** — the six-round
-ceiling, the 32-round budget, the latest-round lookup. A pattern that also
+**Use `ROUNDS` wherever something is counted or routed** — the seven-round
+ceiling, the 40-round budget, the latest-round lookup. A pattern that also
 matched `reopened:` or `unsettled:` would charge those comments against the
 ceiling and route on them, and neither is a round.
 
@@ -394,7 +561,7 @@ real review; it is the record that someone looked and found it clean.
 
 **The two cannot collide, for exactly the reason the marker cannot be a review.**
 Everything that reads state — `ROUNDS` matching, the latest-marker lookup, the
-six-round ceiling, the 32-round budget — reads the comments endpoint, and a
+seven-round ceiling, the 40-round budget — reads the comments endpoint, and a
 review is not in it. So the review is invisible to every count, and adding it
 changes no arithmetic anywhere in this document.
 
@@ -451,10 +618,14 @@ once between its two clean rounds, once after the second.
 
 A `cold: clean` marker on an unlabelled PR therefore means: apply the label now
 — settle bar permitting — unless one of the routing table's exceptions applies.
-Two do: a PR with a finding still open takes a semi-cold round, or step 2 where
-nothing has landed since the finding's marker, rather than settling; and a PR
-with no finding raised in the counting window that carries only one such marker
-wants its second clean cold round first.
+A PR with a finding still open takes a semi-cold round, or step 2 where nothing
+has landed since the finding's marker, rather than settling; and a PR with no
+finding raised in the counting window that carries only one such marker wants its
+second clean cold round first. The rows themselves are the list — deliberately
+not counted here, because this sentence has already been one short once: it said
+"two" while the rows carried a third qualifier, added when checks began blocking
+settling. "Settle bar permitting" is doing real work in that sentence and is not
+a hedge.
 
 **Count only `cold: clean` markers whose SHA is the current head.** The rule is
 about *this code* having been read clean twice, not about the PR's history: a
@@ -552,7 +723,7 @@ something a commit does not fix:
 | `ran out of rounds` | the ceiling or the budget stopped it, findings still open | **new commits**, no human needed | reset |
 | `not our branch` | findings are fixable, but the branch belongs to **another account** and this run may not push | **new commits**, no human needed | reset |
 | `needs a decision` | a finding needs a judgement nobody unattended should make | **a human removing the label** — commits do not | — |
-| `latched` | this account's PR, but [the push test](RULES.md#the-push-test) forbids pushing — a collaborator has pushed to the branch, **or** the branch is over 250 commits and the guard cannot see far enough to tell | **a human, outside the loop** — no run can clear it | — |
+| `latched` | this account's PR and [the push test](RULES.md#the-push-test) passes, but the **harness** refuses the push | **a human, outside the loop** — no run can clear it | — |
 
 **When more than one is true, `needs a decision` wins**, over each of the other
 three; note the losing one in the comment as context rather than as the reason.
@@ -600,19 +771,26 @@ Each reason in full — what it means, and why it clears the way the table says:
   a human to also clear a label by hand.
 
   **This reason is only ever about another account's PR**, and those reach the
-  queue only at `review scope: all`. A branch a collaborator has pushed to is a
-  different case with its own reason, below.
+  queue only at `review scope: all`.
 - `needs a decision` — a finding requires a judgement nobody unattended should
   make. Only a human removing the label re-opens it. Commits do not, because the
   decision is not something a commit clears; the author pushing something
   unrelated would otherwise buy fresh rounds to re-derive the same finding off
   the same unchanged lines.
-- `latched` — this account opened the PR, but [The push test](RULES.md#the-push-test)
-  forbids pushing to it: either a collaborator has pushed to the branch, or the
-  branch is over 250 commits and the guard cannot see far enough to rule that
-  out. Both take this reason; the report distinguishes them. The findings
-  may be entirely mechanical; what is blocked is not any one of them but the
-  PR-level question of whether to write over someone else's in-flight work.
+- `latched` — this account opened the PR and [The push test](RULES.md#the-push-test)
+  passes, but the push does not go out: the harness refuses it, or the remote
+  rejects it for a reason no run can resolve. The findings may be entirely
+  mechanical; what is blocked is the mechanism, not any one of them.
+
+  **Since 2026-08-29 this reason no longer covers a collaborator's commits.** The
+  push test stopped reading commit authorship, because authorship records where
+  code came from rather than who is holding the branch, and rebases and replays
+  decouple the two — see [the push test](RULES.md#the-push-test) for the
+  measurement that retired it. A branch a teammate has pushed to is now
+  reviewable *and* pushable by the letter of this document, so **the judgement
+  moved to the run**: read the PR, and where a conversation about work in
+  progress is live, write a comment instead of pushing. That is discretion, not a
+  gate — say in the report when you exercised it.
 
   **Commits do not re-open it, and that is the whole point.** At `own` the
   account that pushes is the one running, so a commits carve-out would re-open
@@ -623,10 +801,9 @@ Each reason in full — what it means, and why it clears the way the table says:
   the one actor that cannot act.
 
   **It is cleared by a human, outside the loop, and there is deliberately no way
-  for a run to clear it.** Merge the PR, push the fix yourself, or ask the
-  collaborator to — whichever fits. What there is *not* is a comment or a label a
-  run can act on to authorise itself past the person whose work is on that
-  branch.
+  for a run to clear it.** Merge the PR, push the fix yourself, or fix whatever
+  is refusing the push — whichever fits. What there is *not* is a comment or a
+  label a run can act on to authorise itself past a gate that stopped it.
 
   That was tried. A `latch-override:` grant was added on 2026-08-25 and removed
   on 2026-08-26, and in between it produced the worst defect in the change that
@@ -643,13 +820,17 @@ Each reason in full — what it means, and why it clears the way the table says:
   report is the only place it is visible.
 
   **The latch is permanent by design, and since the grant went there is nothing
-  to soften it.** The guard reads the branch's whole history, so one commit from
-  a collaborator keeps the PR latched however many times this account pushes
-  afterwards — and no run can now lift it. Both halves are deliberate, and the
-  second is why the first matters more than it used to: scoping the guard to
-  "since this account's last push" would let a run overwrite exactly the
-  in-flight work being guarded, so the permanence stays, and the cost of it
-  lands on the report line rather than on a mechanism.
+  to soften it.** A refused push is not a condition a run can retry its way out
+  of: whatever refused it will refuse the next one too, so re-attempting only
+  spends budget re-deriving findings that still cannot be pushed. The cost of the
+  permanence lands on the report line rather than on a mechanism.
+
+  **It should now be rare.** Until 2026-08-29 the commonest way to latch was a
+  collaborator's commit on the branch, and on one measured queue that fired on
+  ten PRs of eleven, every one of them a false positive. With authorship out of
+  the push test, a latch means the push machinery itself said no — which is worth
+  reporting loudly, because it is closer to a broken environment than to a
+  routine outcome.
 
 ##### Record comments, human removal, and re-opening
 
@@ -686,10 +867,12 @@ clean markers from before the finding was ever raised.
 **`unsettled: latched` is the exception to the two rules above** — the
 `reopened:` marker and the routing that follows it. It still posts its record
 comment like every other reason; what it does not get is a `reopened:` marker or
-a route back into the cycle. Nothing about
-a latch is cleared by removing a label: the collaborator's commits are still on
-the branch, so the push test latches the PR again on the next round. If the
-branch is unchanged, re-apply `unsettled: latched @ <sha>`.
+a route back into the cycle. Nothing about a latch is cleared by removing a
+label: whatever refused the push will refuse the next one, so the PR latches
+again on the next round. **Retry the push once** before re-applying — a refusal
+can be transient in a way a collaborator's commits never were, and that is the
+one respect in which this reason got cheaper on 2026-08-29. If it is refused
+again, re-apply `unsettled: latched @ <sha>`.
 
 **Say in the report that the label was removed while the branch was still
 latched**, and say it every time it happens. Removing the label is the only
@@ -749,7 +932,7 @@ Which record carries that SHA depends on the label:
 fixes what it can and *pushes* before labelling, so by the time the label goes
 on, the head has already moved past the last round's marker. Reading that marker
 would report "commits since" on a PR nobody has touched since, re-opening it
-with a fresh six-round ceiling on the very next look — turning the ceiling into
+with a fresh seven-round ceiling on the very next look — turning the ceiling into
 no ceiling at all. The label's own record is written at labelling time, after
 that push, so it is the one that actually moves with the label.
 
@@ -808,219 +991,13 @@ the only thing that can continue the cycle. That case is `all`-scope only since
 the push rule changed, but the carve-out still has to work when it arises, and a
 date test breaks it silently. Identity has no such failure mode.
 
-##### Cold and semi-cold rounds
+##### Spawning the round — see [`BRIEFS.md`](./BRIEFS.md)
 
-**Never review from this session. Spawn a subagent and let it review cold.**
-The session that wrote the code is the most anchored possible reviewer: once it
-has judged a file fine it checks the delta rather than re-deriving that
-judgement, so everything already blessed becomes invisible. A long context also
-spends attention on conversation history that a cold reviewer spends entirely on
-the diff. Clearing the context is not a retry — it produces a *different
-reviewer*, which is why a fresh pass keeps finding real things after both sides
-agreed a PR was ready. In this loop one session writes the code, opens the PR,
-reviews it and fixes it; nothing in that chain is cold unless you make it so.
+Everything a round needs to be told — that it must be a subagent and never this
+session, the difference between a cold and a semi-cold brief, the marker line
+each must write, and how findings are tiered — is in
+[`BRIEFS.md`](./BRIEFS.md). It moved there (CF-365) so a step 2 lap can reach
+the semi-cold brief without loading this file.
 
-**There are two kinds of round, and they do different jobs.**
-
-A **cold** round gets the PR number and nothing about how the diff came to be:
-no plan, no reasoning, no summary of what was built, no earlier findings. It
-reads the repository itself. Re-deriving that context is what a subagent
-normally costs you; here that cost is the point. Step 2 of
-[Working a ticket](TICKETS.md#working-a-ticket) already spawns one to cross-check plans —
-same mechanism, pointed at a diff. **The first round on a PR is always cold**,
-and so is the round that awards `review-settled`.
-
-A **semi-cold** round is for checking a fix — **whoever pushed it.** Usually
-that is this run; on another account's branch, it is the author responding to
-the review, and that case has to work or a `unsettled: not our branch` PR could
-never satisfy the settle bar and would burn to the ceiling on every visit. It
-gets the finding it is checking, the commits that landed since the marker that
-raised it, and any reply on the thread — and it is asked to judge whether that
-finding is actually closed, then review the new head for anything the change
-introduced. It is anchored by construction: it will check the delta rather than
-re-derive the whole diff. That is the trade, and it buys the one thing a cold
-round cannot do — someone other than the author confirming the fix does what
-the finding asked.
-##### The semi-cold reviewer's brief
-
-
-**It posts one marker comment like every other round** — body starting with the
-literal `semi-cold: closes @ <sha>` or `semi-cold: does not close @ <sha>`,
-carrying the same head SHA the cold brief specifies, before any heading, and
-nothing after it but an optional one-line summary. Each finding it checked, with
-the reason, and anything the fix introduced, goes in its **review**, tiered as
-below — not in the comment. Tell it, as you tell the cold reviewer, to post the
-marker with `gh pr comment` — never `gh pr review`, never
-`/code-review --comment` — and then to submit that write-up as a review with
-`gh pr review <n> --comment --body "…"`, **opening the review body with the same
-marker line** so step 2 can tell it from a human's review. One
-*comment* per round, never one per finding: the rules that recover state after a
-compaction count marker comments, and a round posting several inflates that
-count as surely as one posting none. The review is not a comment and is not
-counted; it is what makes the round visible as work.
-
-**Check the marker landed, every time.** Immediately after a round posts, read
-the latest marker back and confirm it is the one that round wrote, with the SHA
-it reviewed. A round whose marker was posted as a review, prefixed with a
-heading, or phrased outside the four forms is invisible to every rule here, and
-the two bookkeeping sources — your logged round count and the marker count on
-the PR — then disagree with nothing to say which is right. If it did not land,
-re-post it correctly; that repost is not a new round and does not spend budget.
-
-**Measure the commits to check from the marker that raised the finding, never
-from a later `cold: clean`.** Where a clean round was posted over a still-open
-finding, that clean marker matching the head says only that nothing has landed
-since *it* — the finding may be several commits older, and a fix may sit between
-the two. That fix is precisely what the round exists to check. Reading emptiness
-off the clean marker instead would write `does not close` against already-fixed
-code, for the reason
-[the routing table](#routing-what-the-marker-tells-the-run-to-do-next) gives
-under its open-finding rows.
-
-**If a round is ever dispatched with nothing to check, write `does not close`.**
-Routing does not send one: the open-finding rows split on whether anything
-landed since the finding's marker, and the empty case goes to step 2 without
-spending a round. This is the answer if some other path produces one anyway —
-nothing landed, so the finding is unfixed by definition. Do not improvise a
-verdict from an empty diff.
-
-**A "does not close" verdict leaves the finding open.** Fix it again and take
-another semi-cold round, or, if you cannot, apply the `unsettled` label with a
-comment naming the reason that fits — any of the four, and note that a
-collaborator pushing mid-cycle makes `latched` reachable here by the shortest
-route in the document — record it, and move on. It does not become closed by
-being argued with.
-
-**Never let a semi-cold round settle a PR.** It was handed the previous
-reviewer's conclusions, so its silence inherits their blind spots; treating that
-as the terminal state is the anchored judgement stamped final, one remove away.
-
-**It is cold to this session, not to the PR.** Given a number it will read the
-body you wrote and every thread on it, including the "what changed" replies step
-2 requires — so your framing reaches it anyway, through GitHub rather than
-through the prompt. That leak is not fully closable while reviews happen on a
-PR. Narrow it: write PR bodies and thread replies to state *what changed*, not
-to argue the change is right. A body that pre-empts objections anchors every
-reviewer who ever reads it, cold or not.
-
-What "cold" does **not** withhold is how to do the job. Give it the review
-instructions below in full, plus the rules that bind it as an agent: **no
-attribution stamps** on its comment, never push, never merge, never deploy,
-never echo a credential. Pass those rules explicitly — do **not** hand it the
-[Hard rules](RULES.md#hard-rules) section wholesale, which would tell the reviewer you
-just spawned that it is never the reviewer. A subagent in a sandbox inherits
-none of your local settings, so the no-stamp rule has to travel with it or its
-review arrives signed.
-
-**Capture the head SHA yourself, before spawning, and pass it in.** Do not let
-the reviewer fetch its own: a push can land while the round is running — from
-another account at `all` scope, or from a concurrent process — and it would then
-stamp a SHA it never read — after which the SHA test reports "same" and the new
-code is never looked at. Read it once, hand it over, and **re-read it when the
-round finishes**: if the head moved during the round, that round is void. It
-does not count against the ceiling, and the PR needs a fresh one against the new
-head.
-
-##### The cold reviewer's brief
-
-Its brief: run `/code-review high` on that PR, post one marker comment, and
-submit its findings as a review. Give it the head SHA you captured, and require
-the comment's body to **start** with the literal `cold: findings @ <sha>` or
-`cold: clean @ <sha>`, before any heading or
-formatting, since that whole line is what selection matches and routes on.
-
-**Which of the two is decided by Critical and Medium alone.** `cold: findings`
-means at least one Critical or Medium. A round that found *only* nits, or
-nothing at all, writes `cold: clean` — the settle bar permits nits, and a round
-that reports one as `cold: findings` routes the PR to a fix it does not need,
-which on another account's branch ends as `unsettled` on a PR that had actually
-cleared the bar. The nits go in the review, as they would for any other round;
-the comment stays a marker line either way.
-
-A summary may follow on the same line (`cold: findings @ 2c1a865 — 2 Critical,
-1 Medium`); nothing may precede the
-marker, and the SHA is not optional — the routing table is keyed on it, and a
-marker without one can never match a head.
-
-**That line is the whole comment.** The findings do not go in it — they go in
-the review, tiered:
-
-- **Critical** — correctness, security, data loss
-- **Medium** — should fix before merge
-- **Nit** — style, naming, comments
-
-**Post the marker with `gh pr comment`. Not `gh pr review`, and not
-`/code-review --comment`.** This belongs in the brief you hand over, not only in
-the selection rules above, because the skill you just told it to run documents
-`--comment` as its own way to publish findings — inline review comments, which
-is the move a reviewer holding the skill reaches for first. Neither shows up as
-a comment in the REST comments listing that selection reads, so either one
-strands the PR on its previous marker.
-
-**The ban is on the marker, and it still stands.** A review is now required
-*as well*, but it is submitted deliberately with `gh pr review --comment` after
-the marker is posted — not by letting `/code-review --comment` publish inline
-comments in place of either artifact.
-
-**Then submit the findings as a review**, `gh pr review <n> --comment
---body "…"`, **opening the review body with the same marker line** and putting
-the tiered findings under it. Both artifacts, every round, and the findings
-appear in exactly one of them: the marker comment is what routing reads back,
-the review is what a human reads, what step 2 retrieves the findings from, and
-what the contribution graph counts. The repeated marker line is how step 2 finds
-the right review — a maintainer's review carries none, and is otherwise
-indistinguishable. Self-reviews count too, which matters because most of what this run
-opens it will also review.
-
-Challenge the design where warranted, not only the code; say so when a premise
-looks wrong. **Verify claims against the repository** rather than trusting the PR
-description — that has caught real errors here more than once. Never mark a
-finding confirmed without checking it.
-
-**Executing a claim is necessary and not sufficient — the inputs have to be able
-to disprove it.** The worst error of the third run was a comment calling a live
-branch unreachable, "verified" by running two values that were *both blank after
-stripping*. Both shared the property under test, so neither could have
-disproved the claim, and the real way in (`CORS_ORIGINS=","`) was already listed
-in that same file and already pinned by a passing test. Before believing a
-check: ask which input would make the claim false, and confirm your set contains
-it. A green suite proves nothing until a control mutation shows the harness can
-go red at all.
-
-**Ask what the repository already asserts before deriving anything.** Six times
-in one run the answer was already written down — in another line of the same
-file, in an existing test, or in the installed package's own source. Reading it
-is cheaper and more reliable than re-deriving it, and a file that contradicts
-itself is itself the finding.
-
-**Check claims about anything outside the diff, and check them again at settle
-time.** The costliest class here is not a claim that was wrong when written — it
-is one that was *right* when written and went false while the PR sat open. One
-PR body carried six: a test count, a file that had since been renamed on another
-branch, a sibling PR described in the present tense that had not landed, and a
-pre-commit behaviour that `main` had since replaced. None was careless; nothing
-re-checked them. So before settling a PR, list every assertion it makes about
-something it does not itself contain — another branch, another PR, `main`, a
-tool's behaviour, a hook — and re-verify each against current state. This is a
-grep and a handful of reads, not a review round, and it is where the most
-valuable finding of the third run came from: a merge note that told the next
-person which checks to keep from a parallel branch stack, and named the wrong
-ones.
-
-**The reviewer runs on the same model as this session.** A spawned agent takes
-its model from its definition's frontmatter when it has one, and only inherits
-the parent's otherwise — so a definition added later can quietly review at a
-different, weaker model with nothing in this brief to notice. There is no
-`.claude/agents/` directory in this repo today, so inheritance is what happens;
-if that changes, or if you spawn a type that pins its own model, **say so in the
-report**. A review's depth is not something that should vary by accident.
-
-**Pin the level explicitly.** `/code-review` reuses the level you last typed,
-and a freshly spawned subagent has no last level — leaving it off makes the
-depth of every review an accident of the harness. `high` is the level that
-matches this brief: broader coverage, some uncertain findings included.
-
-Do not use `/code-review ultra`. Whether or not it counts as an effort level
-alongside `low`…`max`, it launches a multi-agent review in the cloud, is billed
-separately and is user-triggered — none of which an unattended run should reach
-for.
+**Read it on any lap that actually spawns a round.** Selection and routing above
+decide *which* round; that file says what to hand it.

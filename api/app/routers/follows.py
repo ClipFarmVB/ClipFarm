@@ -62,12 +62,21 @@ async def _adjust_counts(db: AsyncSession, follower_id: uuid.UUID, followee_id: 
         follower_expr = User.follower_count + delta
         following_expr = User.following_count + delta
 
-    await db.execute(
-        update(User).where(User.id == followee_id).values(follower_count=follower_expr)
+    # Issued in *id* order, not role order. Each UPDATE takes a row lock it
+    # holds to commit; ordered by role, a follow-back (A follows B while B
+    # follows A) locks the two rows in opposite orders and Postgres aborts one
+    # side with 40P01 — which asyncpg raises as a plain DBAPIError, not the
+    # IntegrityError `follow_user` catches, so it was a 500. A fixed global
+    # order removes the cycle; the two statements do not depend on each other.
+    writes = sorted(
+        (
+            (followee_id, update(User).where(User.id == followee_id).values(follower_count=follower_expr)),
+            (follower_id, update(User).where(User.id == follower_id).values(following_count=following_expr)),
+        ),
+        key=lambda pair: pair[0],
     )
-    await db.execute(
-        update(User).where(User.id == follower_id).values(following_count=following_expr)
-    )
+    for _uid, stmt in writes:
+        await db.execute(stmt)
 
 
 def _state(existing: Follow | None) -> FollowStateOut:

@@ -4,6 +4,7 @@ from typing import Annotated
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +14,7 @@ from app.models.clip import Clip, ActionType
 from app.models.correction import Correction
 from app.models.player import Player
 from app.models.game import Game
+from app.routers.players import get_owned_player
 from app.schemas.clip import (
     ClipDeleteRequest,
     ClipLabelsRequest,
@@ -54,13 +56,22 @@ async def _get_viewable_clip(
     """
     clip = await db.get(Clip, clip_id)
     game = await db.get(Game, clip.game_id) if clip else None
-    # Costs a query only when the effective tier is `followers` — see
-    # follow_graph.resolve_follow.
+    # Costs a query only when one of the tiers it is asked about is
+    # `followers` — see follow_graph.resolve_follow. BOTH tiers, because the
+    # edge this returns is spent twice: `can_view_clip` asks about the clip's
+    # effective tier and `download_clip`'s `can_identify` asks about the
+    # game's, and those coincide only when the clip inherits. Resolved from
+    # the clip's tier alone, a public clip inside a `followers` game
+    # short-circuited the lookup and handed `can_identify` a False that meant
+    # "not asked" — bytes served, title and player name stripped from the
+    # filename, while `list_clips` gave the same follower the name from SQL.
+    # `resolve_follow` is variadic for exactly this.
     follows = await follow_graph.resolve_follow(
         db,
         viewer_id,
         game.owner_id if game else None,
         access.effective(clip, game),
+        game.visibility if game else None,
     )
     if not access.can_view_clip(viewer_id, clip, game, viewer_follows_owner=follows):
         # 404 not 403 — a 403 would confirm the clip exists to anyone probing.
@@ -164,7 +175,26 @@ async def list_clips(
     )
 
     if action_type:
-        types = [ActionType(t.strip()) for t in action_type.split(",") if t.strip()]
+        types = []
+        try:
+            for raw in action_type.split(","):
+                token = raw.strip()
+                if token:
+                    types.append(ActionType(token))
+        except ValueError as exc:
+            # FastAPI would have produced a 422 had the parameter been typed as
+            # the enum; it is a plain `str` so the comma-separated form works,
+            # which moves the validation here. Siblings in this router raise 400
+            # for their own body validation, but this one is a query-parameter
+            # failure and 422 is what the framework layer returns for those.
+            # Names the offending value, not the exception: `str(ValueError)`
+            # here is "'spke' is not a valid ActionType", which hands a client
+            # the internal class name for nothing.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid action_type '{token}'. Must be from: "
+                       f"{sorted(t.value for t in ActionType)}",
+            ) from exc
         if types:
             q = q.where(Clip.action_type.in_(types))
 
@@ -186,7 +216,10 @@ async def list_clips(
     result = await db.execute(q)
     clips = result.scalars().all()
 
-    # Attach player names
+    # No ownership filter here on purpose (CF-263): a viewer entitled to the
+    # clip is entitled to the name tagged on it, anonymous viewers of public
+    # clips included — publishing a clip publishes its attribution. The
+    # reasoning is in services/access.py; test_public_player_name.py pins it.
     player_ids = {c.player_id for c in clips if c.player_id}
     player_map: dict[uuid.UUID, str] = {}
     if player_ids:
@@ -209,9 +242,12 @@ async def tag_clip(
 ):
     clip, game = await _get_owned_clip(clip_id, user_id, db)
 
-    player = await db.get(Player, body.player_id)
-    if not player:
-        raise HTTPException(status_code=404, detail="Player not found")
+    # Ownership, not existence (CF-234). `db.get` here accepted any player id in
+    # the table, so a caller could stamp another tenant's player onto their own
+    # clip and read the name back off the response. 404 rather than 403, so the
+    # endpoint cannot confirm that an id exists — same convention as
+    # _get_owned_clip above and services/access.py.
+    player = await get_owned_player(body.player_id, user_id, db)
 
     clip.player_id = body.player_id
     await db.commit()
@@ -377,7 +413,7 @@ async def delete_clips(
             try:
                 key = urlparse(url).path.lstrip("/")
                 if key:
-                    storage.delete_file(key)
+                    await run_in_threadpool(storage.delete_file, key)
             except Exception:
                 logger.warning("R2 delete failed for clip %s", clip.id, exc_info=True)
         await db.delete(clip)

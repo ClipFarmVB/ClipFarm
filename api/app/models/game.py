@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Float, String, Text, DateTime, ForeignKey, Enum as SAEnum
+from sqlalchemy import Boolean, Float, String, Text, DateTime, ForeignKey, Enum as SAEnum, Index, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -22,6 +22,18 @@ class GameStatus(str, enum.Enum):
 
 class Game(Base):
     __tablename__ = "games"
+    __table_args__ = (
+        # Migration 018's shape, declared so `Base.metadata` agrees with the
+        # database. Without this the next `--autogenerate` sees an index the
+        # models never mention and proposes dropping it — the same
+        # repository-says-one-thing problem 018 exists to repair — and every
+        # `*_pg.py` fixture, built by `create_all`, runs without it.
+        Index(
+            "ix_games_visibility_public",
+            "id",
+            postgresql_where=text("visibility = 'public'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
