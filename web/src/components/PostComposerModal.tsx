@@ -257,6 +257,25 @@ export function PostComposerModal({
           })}
         </div>
 
+        {ceiling === "private" && (
+          // Every wider tier is greyed out and each says why, but the reason
+          // reads as a property of *this* clip — as though another clip might
+          // offer more. None does: no endpoint anywhere writes a clip's or a
+          // game's visibility, so `private` is the ceiling on everything, for
+          // everyone. CF-109b item 1 (#398) is the setter that changes it, and
+          // that PR is what deletes these three lines.
+          //
+          // The second sentence is CF-109b item 3. The obvious move for a user
+          // who has just been told "private" is to go flip the Private/Public
+          // switch in settings, which governs whether following needs approval
+          // and nothing else — so they would find no change and no explanation.
+          <p className="mt-2 rounded-md border border-border bg-surface-high px-3 py-2 text-[11px] text-subtle">
+            Raising a clip&apos;s visibility isn&apos;t built yet, so every post
+            is Only me for now. The Private/Public switch in settings controls
+            who can follow you, not who can see a clip.
+          </p>
+        )}
+
         {error && (
           <p className="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
             {error}
