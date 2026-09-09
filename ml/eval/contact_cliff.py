@@ -55,6 +55,10 @@ class Ladder:
                  *, normalize: bool):
         self.normalize = normalize
         self.contacts = contacts
+        # The same segmentation contacts_to_rallies runs below — it calls
+        # this function, which is why the extraction exists. If that ever
+        # stops being true the ladder attributes losses to the wrong gate
+        # silently, so the coupling is stated rather than assumed.
         self.segments = B.contact_segments(self.contacts)
         self.sizes = Counter(len(s) for s in self.segments)
         # The real function, not a reimplementation of its two gates: the point
@@ -94,12 +98,30 @@ class Ladder:
 
     @property
     def at_risk(self) -> int:
-        """Rallies sitting exactly on the gate — one lost contact from deletion."""
-        return self.sizes[AT_RISK]
+        """EMITTED RALLIES sitting exactly on the gate — one contact from deletion.
+
+        Counted off the rallies rather than off the segment histogram. A
+        segment with exactly three contacts that then dies on the duration gate
+        is not a rally at risk, it is a rally already gone; taking it from
+        `sizes` reported it as the former and could make this number exceed the
+        rally count directly above it.
+
+        `_make_rally` puts the count in `features`, so this needs no second
+        pass over the segments.
+        """
+        return sum(
+            1 for r in self.rallies if r["features"]["contact_count"] == AT_RISK
+        )
 
     def rows(self) -> list[tuple[str, int]]:
         return [
             ("contacts found", len(self.contacts)),
+            # Its own row, because a rally can be lost BEFORE either gate: tighten
+            # contact detection far enough and every contact in a rally goes, so
+            # the segment never forms. That is the same mechanism as the count
+            # gate one step earlier, it is a plausible large contributor at
+            # 1080p, and with no row for it the ladder's two gate rows silently
+            # failed to add up to the rallies lost.
             ("segments (both gates ahead)", len(self.segments)),
             (f"  deleted: <{B.MIN_RALLY_CONTACTS} contacts", self.deleted_by_count),
             ("  survive the count gate", self.survive_count_gate),
@@ -146,12 +168,30 @@ def report(on: Ladder, off: Ladder, frame_height: int, scale: float) -> str:
     out.append("")
     lost = len(off.rallies) - len(on.rallies)
     plural = "rally" if abs(lost) == 1 else "rallies"
-    if lost > 0:
+    if scale == 1.0:
+        # The conclusion is the quotable line, and at a scale of 1.0 the two
+        # columns are the same run — so stating a cost of zero here reads as
+        # evidence that there is no cliff, which is the one thing this fixture
+        # cannot show. The note at the top says so; a reader who scrolls to the
+        # bottom sees only this.
+        out.append(
+            "No conclusion available from this fixture: at a scale of 1.00 the "
+            "two columns are the same run. Use a 1080p fixture (CF-375, #475)."
+        )
+    elif lost > 0:
+        # Three channels, not two. A rally can also be lost before either gate,
+        # by losing every contact it had — the segment then never forms, and
+        # attributing the whole loss to the gates would hide it.
+        never_formed = len(off.segments) - len(on.segments)
         by_count = on.deleted_by_count - off.deleted_by_count
         by_dur = on.deleted_by_duration - off.deleted_by_duration
         out.append(
-            f"Scaling costs {lost} {plural} on this fixture: {by_count} to the count "
-            f"gate, {by_dur} to the duration gate."
+            f"Scaling costs {lost} {plural} on this fixture: {never_formed} whose "
+            f"segment never formed, {by_count} to the count gate, {by_dur} to the "
+            f"duration gate."
+        )
+        assert never_formed + by_count + by_dur == lost, (
+            "the three channels must account for every lost rally"
         )
         out.append(
             f"{on.at_risk} of the {len(on.rallies)} surviving rallies sit at exactly "
@@ -165,7 +205,10 @@ def report(on: Ladder, off: Ladder, frame_height: int, scale: float) -> str:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    # `or ""` because -OO strips docstrings, and a measurement tool should not
+    # die on its own --help.
+    summary = ((__doc__ or "").splitlines() or [""])[1:2]
+    ap = argparse.ArgumentParser(description=summary[0] if summary else None)
     ap.add_argument("test_id", nargs="?", default="test2",
                     help="fixture id whose ball-track dump to read (default test2, 1080p)")
     args = ap.parse_args(argv)

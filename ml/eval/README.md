@@ -342,6 +342,12 @@ production saw 34 clips become 11 on the same ball cache.
 positions side by side, off the same dumped track `tune_contacts` reads:
 
 ```bash
+# The dump first, if you do not have it already: the tool reads a dumped track
+# and never a video, and results/{test_id}_ball_track.json is gitignored, so a
+# fresh clone has none. `tune_contacts` needs the same file.
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.diagnose_detection --test test2 --dump results/test2_ball_track.json
+
 docker compose --env-file .env.docker run --rm --no-deps eval \
   python -m ml.eval.contact_cliff test2
 ```
