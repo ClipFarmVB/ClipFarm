@@ -85,6 +85,17 @@ class StubSession:
     async def get(self, model, pk):
         return self.rows.get((model.__name__, pk))
 
+    async def execute(self, stmt):
+        # The one statement these handlers issue is CF-113's `viewer_has_liked`
+        # point lookup on `post_likes`; there are no likes here, so it finds
+        # nothing. Anything else would be a handler doing work these tests
+        # were not written to model.
+        class _Nothing:
+            def first(self):
+                return None
+
+        return _Nothing()
+
     def add(self, obj):
         self.added.append(obj)
 

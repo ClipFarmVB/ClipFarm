@@ -363,7 +363,8 @@ def test_the_feed_does_not_load_credentials(world):
         try:
             async with AsyncSession(engine) as db:
                 rows = (await db.execute(feed_query(feed_router, ids["viewer"]))).all()
-                return [sa_inspect(author).unloaded for *_, author in rows]
+                # Four columns since CF-113 — the last is `viewer_has_liked`.
+                return [sa_inspect(author).unloaded for _post, _clip, author, _liked in rows]
         finally:
             await engine.dispose()
 
