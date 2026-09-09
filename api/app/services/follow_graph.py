@@ -7,7 +7,7 @@ a session lives here instead, and callers pass the resolved boolean in.
 """
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.follow import Follow, FollowStatus
@@ -59,3 +59,25 @@ async def resolve_follow(
     if Visibility.followers not in levels:
         return False
     return await is_accepted_follower(db, viewer_id, owner_id)
+
+
+def followed_author_ids(viewer_id: uuid.UUID) -> Select[tuple[uuid.UUID]]:
+    """Subquery: the ids `viewer_id` has an **accepted** edge to.
+
+    Here rather than inline in the feed because "which accounts count as
+    followed" is the question this module exists to answer, and it had drifted
+    into a third copy — `access.accepted_follow_exists`, `is_accepted_follower`,
+    and one more written out in the router. Only the first was pinned by a test,
+    so dropping `status == accepted` from the router's copy changed real
+    behaviour and the whole feed suite still passed.
+
+    What that regression leaks is narrower than it sounds — the visibility
+    ladder is unaffected, since both predicates independently require an
+    accepted edge — but an author's *public* posts would appear in the feed of
+    someone who had merely requested to follow them. One source, one place to
+    pin it.
+    """
+    return select(Follow.followee_id).where(
+        Follow.follower_id == viewer_id,
+        Follow.status == FollowStatus.accepted,
+    )

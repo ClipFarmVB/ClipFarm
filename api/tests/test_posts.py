@@ -359,17 +359,26 @@ def test_a_generated_handle_is_withheld_from_the_post_author():
     assert chosen.username == "matt", "a claimed handle is exactly what should show"
 
 
-def test_the_router_never_serializes_an_author_the_raw_way():
+def test_no_renderer_serializes_an_author_the_raw_way():
     """`model_validate` skips the withholding entirely, so the constructor is
-    the only supported path — and this is what stops the next serializer from
-    reaching around it."""
+    the only supported path.
+
+    Checked across every module that renders a post, not just this router. The
+    feed was the second one, it used `model_validate`, and this test could not
+    see it — which is the reason the body now lives in one place
+    (`services/post_view`) and the reason this asserts over a set.
+    """
     import inspect
 
-    src = inspect.getsource(posts_router)
-    assert "PostAuthor.from_author" in src
-    assert "PostAuthor.model_validate" not in src, (
-        "model_validate copies username verbatim, generated or not"
-    )
+    from app.routers import feed as feed_router
+    from app.services import post_view
+
+    assert "PostAuthor.from_author" in inspect.getsource(post_view)
+    for module in (posts_router, feed_router, post_view):
+        assert "PostAuthor.model_validate" not in inspect.getsource(module), (
+            f"{module.__name__}: model_validate copies username verbatim, "
+            "generated or not"
+        )
 
 
 def test_every_clip_response_resolves_its_derived_fields():
