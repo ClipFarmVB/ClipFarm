@@ -337,7 +337,7 @@ export function PostComposerModal({
               {CEILING_PHRASE[ceiling]}. Posting to{" "}
               <strong className="font-semibold">{selectedLabel}</strong> will
               also change the clip itself, so it stays visible to them after
-              this post is deleted.
+              this post is deleted. You can make it private again from the clip.
             </span>
           </label>
         )}

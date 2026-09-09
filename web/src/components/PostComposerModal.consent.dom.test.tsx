@@ -138,6 +138,10 @@ describe("posting wider than the clip", () => {
     // The half a user would otherwise discover later: deleting the post does
     // not put the clip back.
     expect(text).toContain("after this post is deleted");
+    // ...and where the undo is. This sentence was removed when the API allowed
+    // narrowing and no control did — a promise the user would go looking for
+    // and not find. The control exists now, so it names where.
+    expect(text).toContain("make it private again from the clip");
   });
 
   it("sends the raise once acknowledged", async () => {
