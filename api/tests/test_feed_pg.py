@@ -387,7 +387,10 @@ def test_the_page_costs_one_query(world):
 
     One SELECT for the page. The author, clip and game all arrive as joined
     columns, and nothing in the render loop touches the session — which is also
-    what `raiseload("*")` enforces at the column level.
+    what `load_only(..., raiseload=True)` enforces at the column level. (An
+    earlier version said `raiseload("*")` did that; it governs relationships
+    only, and a deferred column loaded silently under it. `test_feed.py` pins
+    the raise on the real loader object.)
     """
     from sqlalchemy import event
 

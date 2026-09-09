@@ -3,6 +3,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +37,7 @@ def _serialize(
     *,
     r2_ready: bool | None = None,
     avatar_cache: dict[str, str | None] | None = None,
+    failures: list[str] | None = None,
 ) -> PostOut:
     """Thin wrapper over the shared renderer.
 
@@ -54,6 +56,7 @@ def _serialize(
         author,
         r2_ready=storage.r2_configured() if r2_ready is None else r2_ready,
         avatar_cache=avatar_cache,
+        failures=failures,
     )
 
 
@@ -232,10 +235,34 @@ async def list_user_posts(
     # same avatar URL fifty times.
     r2_ready = storage.r2_configured()
     avatar_cache: dict[str, str | None] = {}
-    return [
-        _serialize(post, clip, author, r2_ready=r2_ready, avatar_cache=avatar_cache)
-        for post, clip in rows
-    ]
+    # Same shape as `feed.get_feed`, and for the same reason: signing is pure
+    # CPU inside an `async def`, this page is up to 100 cards — five times the
+    # feed's — and it is reachable without a credential. Rendered off the loop,
+    # and presign failures reported once per page rather than as a traceback
+    # apiece, which under a broken bucket was up to 200 per request here.
+    failures: list[str] = []
+
+    def render() -> list[PostOut]:
+        return [
+            _serialize(
+                post,
+                clip,
+                author,
+                r2_ready=r2_ready,
+                avatar_cache=avatar_cache,
+                failures=failures,
+            )
+            for post, clip in rows
+        ]
+
+    items = await run_in_threadpool(render)
+    if failures:
+        logger.warning(
+            "Could not presign %d of this profile page's URLs (first: %s)",
+            len(failures),
+            failures[0],
+        )
+    return items
 
 
 @router.patch("/{post_id}", response_model=PostOut)

@@ -56,8 +56,20 @@ def serialize(user: User, schema: type[_Schema]) -> _Schema:
     return out.model_copy(update={"avatar_url": presign_avatar(user.avatar_url)})
 
 
-def presign_avatar(avatar_url: str | None, *, r2_ready: bool | None = None) -> str | None:
+def presign_avatar(
+    avatar_url: str | None,
+    *,
+    r2_ready: bool | None = None,
+    failures: list[str] | None = None,
+) -> str | None:
     """The avatar half of `serialize`, callable on its own.
+
+    `failures`, when given, collects the URL instead of logging a traceback —
+    a page renderer reports the whole page once (the contract
+    `post_view._presign` already has for clip URLs; without this the avatar was
+    the one door it did not cover, so a broken bucket logged one aggregated
+    line for the clips and one traceback per distinct avatar). Single-profile
+    callers pass nothing and keep the traceback, where one is one.
 
     Split out for CF-111: the feed renders a `PostAuthor`, not a `ProfileOut`,
     so it cannot go through `serialize` — and the copy it wrote instead simply
@@ -82,7 +94,10 @@ def presign_avatar(avatar_url: str | None, *, r2_ready: bool | None = None) -> s
     try:
         return storage.presign_from_stored_url(avatar_url)
     except Exception:
-        logger.warning("Could not presign avatar %s", avatar_url, exc_info=True)
+        if failures is None:
+            logger.warning("Could not presign avatar %s", avatar_url, exc_info=True)
+        else:
+            failures.append(avatar_url)
         return avatar_url
 
 

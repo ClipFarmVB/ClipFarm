@@ -557,6 +557,112 @@ def test_can_identify_agrees_with_can_view_clip_for_a_follower():
     assert access.can_identify(VIEWER, game) is False
 
 
+def test_the_clip_read_path_resolves_the_edge_for_both_tiers_it_spends_it_on(monkeypatch):
+    """The test above pins the two predicates side by side with `visibility =
+    None`, the inherit case — where the clip's effective tier *is* the game's
+    and they cannot disagree by construction. It stops one step short of the
+    case that broke: an explicit override. `_get_viewable_clip` resolved the
+    edge from `access.effective(clip, game)` alone, then `download_clip` spent
+    it on `can_identify`, which asks about `game.visibility`. A public clip in
+    a `followers` game short-circuited the lookup, so an accepted follower was
+    served the bytes with the title and player name stripped from the filename
+    while `list_clips` handed the same viewer the name from SQL. Two reviewers
+    reproduced it independently.
+
+    Asserted against the router, not `access`: the predicates were always
+    right, the caller resolved from the wrong tier, and only driving the
+    caller can see that.
+    """
+    import asyncio
+
+    from app.routers import clips as r
+
+    game = _Game(Visibility.followers)
+
+    class _Clip:
+        def __init__(self, game_id):
+            self.id = uuid.uuid4()
+            self.game_id = game_id
+            self.visibility = Visibility.public  # the override, deliberately
+
+    clip = _Clip(game.id)
+
+    class _Session:
+        async def get(self, model, key):
+            return {Clip: clip, Game: game}[model]
+
+    asked: list[tuple] = []
+
+    async def _record(db, viewer_id, owner_id, *levels):
+        asked.append(levels)
+        # An accepted edge exists — what the real lookup would find.
+        return any(level is Visibility.followers for level in levels)
+
+    monkeypatch.setattr(follow_graph, "resolve_follow", _record)
+
+    _clip, _game, follows = asyncio.run(r._get_viewable_clip(clip.id, VIEWER, _Session()))
+
+    assert asked == [(Visibility.public, Visibility.followers)], (
+        "the edge must be resolved against the game's tier as well as the clip's "
+        "effective one, or `can_identify` is handed a False that means 'not asked'"
+    )
+    assert follows is True
+    assert access.can_identify(VIEWER, game, viewer_follows_owner=follows) is True
+
+
+def test_migration_018s_partial_indexes_reach_the_metadata():
+    """`018` reshaped two partial indexes in the database; the models have to
+    say so, or the next `--autogenerate` proposes dropping them and every
+    `*_pg.py` fixture, built by `create_all`, runs without them. The follow
+    table already declines the `index=True` shortcut for exactly this reason;
+    these two were the remaining gap.
+    """
+    from sqlalchemy import Index
+
+    def _partial(table, name):
+        idx = next(i for i in table.indexes if i.name == name)
+        assert isinstance(idx, Index)
+        return [c.name for c in idx.columns], str(idx.dialect_options["postgresql"]["where"])
+
+    assert _partial(Game.__table__, "ix_games_visibility_public") == (
+        ["id"], "visibility = 'public'"
+    )
+    assert _partial(Clip.__table__, "ix_clips_visibility_public") == (
+        ["game_id"], "visibility IS NULL OR visibility = 'public'"
+    )
+
+
+def test_the_counter_updates_are_issued_in_id_order():
+    """Two `UPDATE users` rows per follow, each holding its row lock to commit.
+    Ordered by *role*, a follow-back locks the pair in opposite orders and one
+    side dies with a deadlock — which asyncpg surfaces as a plain DBAPIError,
+    not the IntegrityError the endpoint catches. A fixed order by id has no
+    cycle. Pinned by driving `_adjust_counts` both ways round and reading the
+    id each UPDATE targets off the statement it was given.
+    """
+    import asyncio
+
+    from app.routers import follows as r
+
+    a, b = sorted((uuid.uuid4(), uuid.uuid4()))
+
+    class _Session:
+        def __init__(self):
+            self.targets: list[uuid.UUID] = []
+
+        async def execute(self, stmt):
+            params = stmt.compile().params
+            self.targets.append(next(v for k, v in params.items() if k.startswith("id_")))
+
+    for follower, followee in ((a, b), (b, a)):
+        db = _Session()
+        asyncio.run(r._adjust_counts(db, follower, followee, +1))
+        assert db.targets == [a, b], (
+            f"follower={follower == a and 'a' or 'b'}: the two UPDATEs must lock "
+            "the lower id first regardless of which side is following"
+        )
+
+
 def test_the_counter_checks_reach_the_metadata():
     """Migration 017 creates them; `Base.metadata` has to know.
 
