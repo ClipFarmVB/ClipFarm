@@ -14,8 +14,11 @@ import { PostGrid } from "./PostGrid";
  *
  * Identity plus the post grid (CF-109), gated by the visibility model (CF-108).
  * A private account still renders its profile so someone can find it and
- * request to follow — only the *content* is hidden, and the grid gets that for
- * free because `GET /posts?username=` filters in SQL for the viewer.
+ * request to follow, AND still renders its grid: `is_private` governs follow
+ * approval and nothing else, so the filtering is `GET /posts?username=`'s job
+ * and it does it in SQL for the asking viewer. The private-account notice is a
+ * notice; it stopped standing in for the grid because doing so told a stranger
+ * the content was gone while the API went on serving it.
  *
  * Split out of page.tsx so the SOCIAL_ENABLED check can live in a server
  * component: `notFound()` from a client component only runs after hydration,
@@ -102,19 +105,32 @@ export function ProfileView({ handle }: { handle: string }) {
         )}
       </div>
 
-      {profile.is_private && !isSelf ? (
-        <div className="mt-8 rounded-md border border-dashed border-border px-4 py-10 text-center">
+      {profile.is_private && !isSelf && (
+        // A notice, no longer a REPLACEMENT for the grid.
+        //
+        // This used to render instead of the grid, which made the web say the
+        // opposite of both the API and the settings screen: `is_private`
+        // governs whether following needs approval and nothing else, so a
+        // private account's `public` post is deliberately readable by anyone —
+        // `services/access.py` argues that at length and
+        // `test_account_privacy_does_not_clamp_post_visibility` pins it.
+        //
+        // Hiding the grid therefore reassured a stranger that the content was
+        // gone while `GET /posts?username=` went on serving it, which is the
+        // worse of the two ways to be wrong. The comment that used to sit in
+        // the other arm of this branch said exactly that, from inside the
+        // branch doing it.
+        //
+        // Nothing leaks by showing the grid: `getUserPosts` filters by
+        // visibility in SQL for the asking viewer, so a stranger sees the
+        // public posts and no others — today, none.
+        <div className="mt-8 rounded-md border border-dashed border-border px-4 py-3 text-center">
           <p className="text-sm text-muted">
-            This account is private. Follow to see their clips.
+            This account is private. Follow to see clips shared with followers.
           </p>
         </div>
-      ) : (
-        // Not conditional on the account flag beyond this: a private account's
-        // *public* post is deliberately readable (see services/access.py), so
-        // hiding the grid entirely would contradict the API. The card above is
-        // for the case where there is provably nothing to show.
-        <PostGrid handle={handle} isSelf={isSelf} />
       )}
+      <PostGrid handle={handle} isSelf={isSelf} />
     </div>
   );
 }

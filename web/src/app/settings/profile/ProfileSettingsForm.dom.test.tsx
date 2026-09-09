@@ -68,6 +68,16 @@ function text(): string {
   return container.textContent ?? "";
 }
 
+/** The switch itself, so an assertion cannot be satisfied by text elsewhere. */
+function switchButton(): HTMLButtonElement {
+  return [...container.querySelectorAll("button")].find((b) =>
+    (b.textContent ?? "").includes("account"),
+  ) as HTMLButtonElement;
+}
+function switchText(): string {
+  return switchButton().textContent ?? "";
+}
+
 function toggle() {
   const button = [...container.querySelectorAll("button")].find((b) =>
     (b.textContent ?? "").includes("account"),
@@ -80,14 +90,19 @@ function toggle() {
 describe("what the privacy switch says it does", () => {
   it("describes Private as an approval gate on followers", async () => {
     await mount(true);
-    expect(text()).toContain("Private account");
-    expect(text()).toContain("approval");
+    // Scoped to the switch. Reading the whole form cannot tell "the switch says
+    // this in this state" from "the page contains it somewhere" — rendering
+    // both mutually exclusive blurbs at once passed that way.
+    expect(switchText()).toContain("Private account");
+    expect(switchText()).toContain("approval");
+    expect(switchText()).not.toContain("follow you without asking");
   });
 
   it("describes Public as open following", async () => {
     await mount(false);
-    expect(text()).toContain("Public account");
-    expect(text()).toContain("follow you without asking");
+    expect(switchText()).toContain("Public account");
+    expect(switchText()).toContain("follow you without asking");
+    expect(switchText()).not.toContain("approval");
   });
 
   it("never claims the switch controls who can see a clip, in either state", async () => {
@@ -107,19 +122,43 @@ describe("what the privacy switch says it does", () => {
   });
 
   it("says where clip visibility is actually chosen, in either state", async () => {
+    // The whole sentence. `toContain("chosen when")` was two words that
+    // survived arbitrary nonsense in the rest of it.
+    const sentence =
+      "This controls follows, not footage. Who can see a clip is chosen when you post it";
     await mount(true);
-    expect(text()).toContain("This controls follows, not footage");
-    expect(text()).toContain("chosen when");
+    expect(text().replace(/\s+/g, " ")).toContain(sentence);
 
     await toggle();
     // The note sits outside the switch, so it must survive the toggle — a
     // reader who flips to Public is exactly the one about to assume it
     // published something.
-    expect(text()).toContain("This controls follows, not footage");
+    expect(text().replace(/\s+/g, " ")).toContain(sentence);
   });
 
-  it("warns that switching to Private does not retract a public post", async () => {
+  it("warns that switching to Private does not take back what is already shared", async () => {
     await mount(false);
-    expect(text()).toContain("stays public");
+    expect(text().replace(/\s+/g, " ")).toContain(
+      "switching to Private later won't take back anything you have already shared",
+    );
+  });
+
+  it("says the setting does nothing yet, because following is not built", async () => {
+    // The composer signposts its own unbuilt feature; this surface was applying
+    // a standard it did not meet. `access.is_follower` returns False
+    // unconditionally and there is no follows table, so the switch is inert in
+    // both positions.
+    await mount(true);
+    expect(text()).toContain("Following isn't built yet");
+  });
+
+  it("points the switch at the correction, not only at the blurb", async () => {
+    // A screen-reader user tabbing to the control would otherwise hear the
+    // blurb and never the sentence saying the blurb is not about footage.
+    await mount(true);
+    const described = switchButton().getAttribute("aria-describedby");
+    expect(described).toBeTruthy();
+    const note = container.querySelector(`#${described}`);
+    expect(note?.textContent).toContain("This controls follows, not footage");
   });
 });
