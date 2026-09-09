@@ -136,15 +136,24 @@ def test_the_ladder_is_not_duplicated_in_the_router():
         assert hasattr(access, name)
 
 
-def test_followers_tier_is_closed_until_cf110():
-    """Mirrors the CF-108 seam: `followers` posts stay author-only until the
-    follow graph exists, rather than defaulting to visible."""
-    assert access.is_follower(STRANGER, AUTHOR) is False
+def test_followers_tier_now_admits_an_accepted_follower():
+    """CF-110: the edge is resolved by the caller (follow_graph) and threaded
+    in. Pending requests resolve False upstream, so `followers` posts stay
+    author-only until a request is actually accepted."""
     game = _Game(Visibility.public)
     clip = _Clip(game)
     post = _Post(Visibility.followers)
     post.clip_id = clip.id
     assert access.can_view_post(STRANGER, post, clip, game) is False
+    # The post's own tier is the author's to grant, so the *author* flag is what
+    # opens it. Passing only the owner flag must not — that conflation is what
+    # the CF-110 review found, and this is the assertion that keeps it fixed.
+    assert access.can_view_post(
+        STRANGER, post, clip, game, viewer_follows_owner=True
+    ) is False
+    assert access.can_view_post(
+        STRANGER, post, clip, game, viewer_follows_author=True
+    ) is True
 
 
 # ── the page must be filtered in SQL, not after the LIMIT ───────────────────
@@ -268,12 +277,19 @@ def test_account_privacy_does_not_clamp_post_visibility():
 def test_the_profile_posts_route_hides_generated_handles():
     """Review finding: `GET /posts?username=...` resolved the email-derived
     handles that `/u/{handle}` deliberately 404s, which is the same existence
-    oracle through a second door."""
+    oracle through a second door.
+
+    CF-109 fixed it with a local resolver because services/profiles.py did not
+    exist yet; CF-110 lifted that module, so the assertion is that this route
+    uses the shared one rather than keeping a second copy of the rule.
+    """
     import inspect
 
-    src = inspect.getsource(posts_router._findable_author)
-    assert "username_is_generated" in src
-    assert "handles.normalize" in src, "must normalize the way every other route does"
+    from app.services import profiles as profile_service
+
+    assert "username_is_generated" in inspect.getsource(profile_service.by_handle)
+    assert "profiles.by_handle" in inspect.getsource(posts_router.list_user_posts)
+    assert not hasattr(posts_router, "_findable_author"), "the duplicate should be gone"
 
 
 def test_the_profile_posts_route_does_not_lowercase_by_hand():
@@ -281,11 +297,35 @@ def test_the_profile_posts_route_does_not_lowercase_by_hand():
     routes disagreed about whether `' matt '` is a handle."""
     import inspect
 
-    src = inspect.getsource(posts_router.list_user_posts) + inspect.getsource(
-        posts_router._findable_author
-    )
-    assert "username.lower()" not in src
+    assert "username.lower()" not in inspect.getsource(posts_router)
 
+
+def test_the_two_principals_are_not_interchangeable():
+    """A post is gated on its author's tier and its clip's owner's, and those
+    are the same person only by convention (`create_post` refuses to publish
+    someone else's footage) rather than by any constraint. So the predicate
+    takes two flags, and neither one answers the other's question."""
+    import inspect
+
+    game = _Game(Visibility.public, owner_id=STRANGER)   # owner != author
+    clip = _Clip(game, visibility=Visibility.followers)  # clip tier is the owner's
+    post = _Post(Visibility.public)                      # post tier is the author's
+    post.clip_id = clip.id
+
+    # Following the author opens the post but not the footage behind it, which
+    # belongs to a different account.
+    viewer = uuid.uuid4()
+    assert access.can_view_post(
+        viewer, post, clip, game, viewer_follows_author=True
+    ) is False
+    # Following both is what it takes.
+    assert access.can_view_post(
+        viewer, post, clip, game, viewer_follows_author=True, viewer_follows_owner=True
+    ) is True
+
+    sig = inspect.signature(access.can_view_post)
+    assert sig.parameters["viewer_follows_author"].default is False
+    assert sig.parameters["viewer_follows_owner"].default is False
 
 # ── a generated handle must not ride out on a post ──────────────────────────
 

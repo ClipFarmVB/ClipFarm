@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, String, DateTime
+from sqlalchemy import Boolean, CheckConstraint, Integer, String, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -48,6 +48,36 @@ class User(Base):
     # both on a name they never picked.
     username_is_generated: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
+    )
+
+    # Denormalized follow counters (CF-110, epic decision 6). A profile renders
+    # both on every view; COUNT(*) over a growing edge table per page load is
+    # what this avoids. Written in the same transaction as the edge; the CF-116
+    # reconciliation job is what catches drift.
+    follower_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    following_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+
+    # The CHECKs migration 017 creates, declared so they reach `Base.metadata`.
+    # Without this the constraints existed only in the migration: a database
+    # built by `Base.metadata.create_all` — which is how every `*_pg.py` test
+    # fixture builds its schema — had no CHECK on either counter, so the entire
+    # PG suite ran against a `users` table that could not enforce them. That
+    # matters most for `test_unfollowing_from_a_zero_counter_still_revokes`,
+    # whose subject *is* the CHECK aborting a transaction: without the
+    # constraint present it verified the `GREATEST` floor and nothing else,
+    # while reading as though it covered both.
+    #
+    # Same reasoning as `follow.py`'s index declarations and `post.py`'s: the
+    # repository and the database must not be able to say different things.
+    __table_args__ = (
+        CheckConstraint("follower_count >= 0", name="ck_users_follower_count_non_negative"),
+        CheckConstraint(
+            "following_count >= 0", name="ck_users_following_count_non_negative"
+        ),
     )
 
     games: Mapped[list["Game"]] = relationship(back_populates="owner")  # type: ignore[name-defined]

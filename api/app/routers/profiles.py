@@ -1,7 +1,7 @@
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, TypeVar
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -13,7 +13,7 @@ from app.auth import get_current_user_id
 from app.database import get_db
 from app.models.user import User
 from app.schemas.profile import HandleAvailability, MeOut, ProfileOut, ProfileUpdate
-from app.services import handles, storage
+from app.services import handles, profiles, storage
 
 logger = logging.getLogger(__name__)
 
@@ -122,54 +122,6 @@ def _log_avatar_type(event: str, user_id: uuid.UUID, declared: str, sniffed: str
         pass
 
 
-_Schema = TypeVar("_Schema", bound=ProfileOut)
-
-
-def _serialize(user: User, schema: type[_Schema]) -> _Schema:
-    """Render a user, presigning the avatar.
-
-    The R2 bucket is not public — every other media URL in the app is presigned
-    before it reaches a browser (clips, thumbnails, condensed video). Returning
-    the stored `r2_public_url` form here would hand the client a URL it cannot
-    load, and the API would still report success.
-
-    Presigned URLs also carry a fresh signature each time, so a re-uploaded
-    avatar is picked up without a cache-busting query param — which is just as
-    well, since a `?v=` baked into the stored value breaks the key extraction in
-    `presign_from_stored_url`.
-
-    The cost of that freshness is that the URL never repeats, so an unchanged
-    avatar is re-fetched on every page load and sidebar mount. Negligible at one
-    avatar per page; not negligible once CF-109 renders a feed of them. The fix
-    then is a stable URL plus a version token taken from the object itself (an
-    ETag, or an `avatar_updated_at` column) — that buys freshness *and* caching.
-    Worth doing before the feed multiplies the request count, not now.
-    """
-    out = schema.model_validate(user)
-    if not user.avatar_url or not storage.r2_configured():
-        return out
-    try:
-        return out.model_copy(
-            update={"avatar_url": storage.presign_from_stored_url(user.avatar_url)}
-        )
-    except Exception:
-        # A signing failure shouldn't take the whole profile down — the rest of
-        # the response is still useful, and the avatar degrades to broken.
-        logger.warning("Could not presign avatar for user %s", user.id, exc_info=True)
-        return out
-
-
-async def _by_handle(handle: str, db: AsyncSession) -> User:
-    """Look a user up by handle, case-insensitively (matches the unique index)."""
-    result = await db.execute(
-        select(User).where(func.lower(User.username) == handles.normalize(handle))
-    )
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    return user
-
-
 async def _handle_taken(handle: str, db: AsyncSession, *, excluding: uuid.UUID) -> bool:
     result = await db.execute(
         select(User.id).where(
@@ -190,7 +142,7 @@ async def get_me(user_id: UserId, db: DB):
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return _serialize(user, MeOut)
+    return profiles.serialize(user, MeOut)
 
 
 @router.get("/handle-available", response_model=HandleAvailability)
@@ -289,7 +241,7 @@ async def update_me(body: ProfileUpdate, user_id: UserId, db: DB):
         raise HTTPException(status_code=409, detail="That username isn't available")
 
     await db.refresh(user)
-    return _serialize(user, MeOut)
+    return profiles.serialize(user, MeOut)
 
 
 @router.post("/me/avatar", response_model=MeOut)
@@ -369,12 +321,12 @@ async def upload_avatar(user_id: UserId, db: DB, file: UploadFile = File(...)):
     # Stored in the same `{r2_public_url}/{key}` form as every other media URL,
     # so `presign_from_stored_url` can slice the key back off it. No `?v=`
     # cache-buster: it would end up inside the extracted Key and 404 at R2, and
-    # it isn't needed — `_serialize` presigns on read and every signature is
+    # it isn't needed — `profiles.serialize` presigns on read and every signature is
     # different, so a re-uploaded avatar is fetched fresh anyway.
     user.avatar_url = avatar_url
     await db.commit()
     await db.refresh(user)
-    return _serialize(user, MeOut)
+    return profiles.serialize(user, MeOut)
 
 
 @router.get("/{handle}", response_model=ProfileOut)
@@ -404,7 +356,6 @@ async def get_profile(handle: str, db: DB):
     and does not cover it. Tracked in CF-186 (#189); until then it is a
     deliberate risk, not an oversight.
     """
-    user = await _by_handle(handle, db)
-    if user.username_is_generated:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    return _serialize(user, ProfileOut)
+    # The generated-handle 404 lives in services.profiles.by_handle so every
+    # handle-keyed endpoint gets it, not just this one.
+    return profiles.serialize(await profiles.by_handle(handle, db), ProfileOut)
