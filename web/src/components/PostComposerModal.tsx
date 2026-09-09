@@ -72,11 +72,18 @@ const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof L
  * Posting never widens the clip itself — and the tiers a clip cannot support
  * are shown disabled, with the reason, rather than offered and then refused.
  *
- * That is the half this was missing. Nothing in the product can raise a clip's
- * or a game's visibility yet (there is no write path for either), and both
- * default to private, so for a real user "Followers" and "Everyone" both ended
- * in a 409 telling them to go do something that does not exist. An unreachable
- * option that explains why is a limit; one that fails on submit is a dead end.
+ * That is the half this was missing. For two releases nothing in the product
+ * could raise a clip's visibility at all, and both a clip and its game default
+ * to private, so for a real user "Followers" and "Everyone" both ended in a 409
+ * telling them to go do something that does not exist. An unreachable option
+ * that explains why is a limit; one that fails on submit is a dead end.
+ *
+ * CF-109b (#398) built the write path — `PATCH /clips/{id}/visibility`, and
+ * `raise_clip_visibility` on the create request. THIS COMPONENT DOES NOT USE IT
+ * YET: offering the raise with an explicit confirmation is the web half of that
+ * card and lands next, on top of the API branch. Until then the greyed-out
+ * tiers are still correct for anyone who has not set the clip's visibility
+ * some other way, which is everyone.
  *
  * `clip.effective_visibility` carries the ceiling the API derives. The 409 is
  * still handled and still surfaced as-is — it stays the backstop for a clip

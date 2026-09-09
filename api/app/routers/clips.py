@@ -21,8 +21,9 @@ from app.schemas.clip import (
     ClipOut,
     ClipTagRequest,
     ClipTrimRequest,
+    ClipVisibilityRequest,
 )
-from app.services import access, storage
+from app.services import access, publishing, storage
 from app.services.ratelimit import POLICIES, rate_limit
 from app.services.filenames import clip_download_filename
 from app.workers.celery_app import celery_app
@@ -241,6 +242,51 @@ async def tag_clip(
 
 
 VALID_LABELS = {"spike", "serve", "dig", "set", "block", "not_an_action"}
+
+
+@router.patch("/clips/{clip_id}/visibility", response_model=ClipOut)
+async def update_clip_visibility(
+    clip_id: uuid.UUID,
+    body: ClipVisibilityRequest,
+    db: DB,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+):
+    """Set who may read this clip (CF-109b, #398).
+
+    **The write path that did not exist.** Until this, no endpoint anywhere set
+    `Clip.visibility` or `Game.visibility`, so every clip resolved to `private`
+    and the composer could only ever offer "Only me" — a user could publish a
+    post, but only to themselves. `api/tests/test_no_visibility_write_path.py`
+    enforced that absence and is deleted by this change, which is where the
+    ordering decision it was protecting gets recorded.
+
+    **The clip's own tier, never the game's.** Raising the game would publish
+    every clip in it, which is precisely the silent side effect `create_post`'s
+    409 exists to prevent; the card decided this shape. A public clip inside a
+    private game is a supported state — reachable by direct link and through a
+    collection, while `GET /games/{id}/clips` still 404s, because an override
+    publishes *that clip* and not the right to enumerate its game.
+
+    Owner-only, through the same `_get_owned_clip` gate as every other write
+    here. Narrowing is allowed and takes effect immediately for anything that
+    has not already been handed a presigned URL — a link minted before the
+    change keeps working until it expires, which is the revocation window
+    `/share` documents and not something this endpoint can close.
+
+    `public` additionally depends on `PUBLIC_POSTING_ENABLED`; see
+    `services/publishing.py` for why that tier is gated apart from `followers`.
+    """
+    # Ownership FIRST, then the tier. The other order answers a stranger with
+    # "public posting is turned off on this deployment", which is a fact about
+    # the deployment handed to someone who has no business here — and it breaks
+    # the 404-not-403 rule the rest of this router keeps, by giving a refusal
+    # that is not the one a non-owner should ever see.
+    clip, game = await _get_owned_clip(clip_id, user_id, db)
+    publishing.assert_tier_allowed(body.visibility)
+    clip.visibility = body.visibility
+    await db.commit()
+    await db.refresh(clip)
+    return _clip_out(clip, game)
 
 
 @router.patch("/clips/{clip_id}/labels", response_model=ClipOut)

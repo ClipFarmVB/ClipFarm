@@ -102,6 +102,21 @@ class PostCreate(BaseModel):
     # Defaults to private, like everything else in the epic — publishing wider
     # than that is an explicit act.
     visibility: Visibility = Visibility.private
+    # Widen the CLIP to match, in the same transaction, when it is narrower
+    # than the post being published (CF-109b, #398).
+    #
+    # Opt-in and defaulted off, because it is the one field here that changes
+    # something other than the object being created: it makes the underlying
+    # footage readable by whoever the post is addressed to, which is a bigger
+    # act than publishing the post. CF-109 refused this outright with a 409 and
+    # named the confirmation as the alternative it was not taking; this is that
+    # alternative, and the confirmation is the client's job.
+    #
+    # A flag on this request rather than a separate PATCH-then-POST, so a post
+    # that fails to insert cannot leave the clip widened behind it. The
+    # standalone setter exists too, for narrowing and for clips that are not
+    # being posted.
+    raise_clip_visibility: bool = False
 
 
 class PostUpdate(BaseModel):

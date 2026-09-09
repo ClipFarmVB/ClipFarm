@@ -142,13 +142,14 @@ services:
       # landed; CF-116 (abuse, moderation, counters) is still open, and this is
       # what makes the anonymous read surface reachable.
       #
-      # What bounds the exposure meanwhile: **nothing user-generated can be
-      # public.** Games and clips both default to private and no write path
-      # exists for either one's visibility, so a post can only ever be private
-      # — the composer now greys out the wider tiers for exactly that reason
-      # (CF-109), and create_post refuses them server-side regardless. The
-      # anonymous endpoints therefore reach the database and 404, which is a
-      # load question and not a disclosure one.
+      # What bounded the exposure through CF-108 and CF-109 was that **nothing
+      # user-generated could be public** — no write path existed for a clip's or
+      # a game's visibility at all. CF-109b (#398) ends that, so the bound is
+      # now PUBLIC_POSTING_ENABLED below rather than the absence of a setter.
+      #
+      # Games still cannot be widened by anything, deliberately: raising a game
+      # publishes every clip in it. A clip overrides its game rather than being
+      # bounded by it, so one clip can be published without the rest.
       #
       # Naming the endpoint that is actually anonymous, since "no footage can be
       # public" does not by itself cover it: **GET /posts?username=** takes no
@@ -157,7 +158,8 @@ services:
       # *generated* handle, so it cannot be used to test whether an email-derived
       # account exists; and it filters through apply_post_visibility with
       # viewer_id=None, which for an anonymous caller admits only public posts
-      # over public clips — the set that cannot be non-empty today.
+      # over public clips — a set that was empty by construction until CF-109b
+      # (#398) and is now empty because PUBLIC_POSTING_ENABLED below is off.
       #
       # What was left is genuinely a load and enumeration-rate concern, and
       # that was CF-186 (#189) — now discharged. The six anonymous reads are
@@ -168,19 +170,34 @@ services:
       # router shares one bucket and the limiter throttles the whole internet
       # together.
       #
-      # The order that must hold: whoever ships the clip-visibility write path
-      # is the person who makes "public" real. Rate limiting had to land before
-      # they do, and has. Reassess this flag when they land, not after.
+      # The ordering this block used to demand has been served: rate limiting
+      # (CF-186) landed first, and the clip-visibility write path (CF-109b)
+      # followed. SOCIAL_ENABLED is reassessed here, as that ordering asked,
+      # and stays on — what it exposes is now bounded by
+      # PUBLIC_POSTING_ENABLED below rather than by the absence of a setter.
       #
-      # That ordering is a test, not a hope: api/tests/
-      # test_no_visibility_write_path.py fails the day a router can widen a
-      # clip or a game. The bound above is a property of the current schema,
-      # and a comment in a deploy file is not something the PR adding a
-      # visibility setter would ever be pointed at — so the constraint lives
-      # where that PR will run into it. Deleting that test is a legitimate
-      # move; doing it in the same PR is what puts the decision in a diff.
+      # Still a test rather than a hope, in narrowed form:
+      # api/tests/test_visibility_write_paths_are_declared.py fails the day
+      # anything widens a GAME, or the day a clip is widened outside the two
+      # functions that gate the tier on PUBLIC_POSTING_ENABLED. A comment in a
+      # deploy file is not something the next such PR would ever be pointed at,
+      # so the constraint lives where that PR will run into it.
       - key: SOCIAL_ENABLED
         value: "true"
+      # The `public` visibility tier (CF-109b, #398). OFF, and the ONE flag that
+      # decides whether this deployment serves youth-sports footage to
+      # signed-out strangers.
+      #
+      # `followers` is unaffected and is the whole social product for a
+      # signed-in user: the home feed runs on it, and its audience was approved
+      # one by one, so it needs no moderation surface. `public` is the tier that
+      # wants terms of service (CF-75/CF-88, not on main) and a report and
+      # takedown path (CF-116, open). Both are built; this decides which the API
+      # accepts, so turning it on the day those land is this line and a deploy.
+      #
+      # See api/app/services/publishing.py for the argument in full.
+      - key: PUBLIC_POSTING_ENABLED
+        value: "false"
       # The number of reverse proxies in front of uvicorn — one, Render's
       # router — and the setting the whole per-caller limiter rests on.
       #

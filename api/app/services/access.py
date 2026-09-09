@@ -74,16 +74,24 @@ about. CF-186 put it behind authentication instead. **So it no longer shares
 /share's authorization**, which it did when both were written; do not re-merge
 them on the grounds that they are the same read.
 
-**Nothing user-generated can be public yet**, so all of that traffic still
-404s, which is what keeps this a load question rather than a disclosure one —
-and the reason is only that no row can be set `public`, not the 404 choice
-below. The moment the visibility setter lands (CF-109b, #398) these routes
-start serving real footage. That used to make rate limiting a blocker on it;
-the limiter has landed, so it no longer is. What remains is to reassess the
-numbers against real public traffic, which nobody can do until there is any.
-``api/tests/test_no_visibility_write_path.py`` is the guard that keeps the
-setter from arriving unnoticed, and it is #398's to delete. The 404-not-403
-choice below keeps none of these an existence oracle in the meantime.
+**The visibility setter has landed (CF-109b, #398), so this is no longer a
+load question alone.** For two releases nothing user-generated could be
+`public` — no write path existed and
+``api/tests/test_no_visibility_write_path.py`` enforced that — so every
+anonymous read reached the database and 404'd. `PATCH /clips/{id}/visibility`
+and `POST /posts` with `raise_clip_visibility` end that, and the guard test is
+deleted in the same change.
+
+Two things bound what actually became reachable. **`public` is off by default**
+behind ``PUBLIC_POSTING_ENABLED``, so a stock deployment still serves no
+anonymous footage — `services/publishing.py` argues why that tier waits on
+CF-75/CF-88 (terms) and CF-116 (report and takedown) while `followers` does
+not. And the six anonymous reads are throttled per caller (CF-186), with
+``/clips/{id}/download`` behind auth.
+
+What is genuinely open: nobody has reassessed those limits against real public
+traffic, because there has not been any. The 404-not-403 choice below keeps
+none of these an existence oracle in the meantime.
 
 **Player names ride along with a viewable clip in the two listings, by design
 (CF-263).** ``list_clips`` and ``list_collection_clips`` attach ``player_name``
@@ -91,9 +99,19 @@ with a bare id lookup and no ownership filter, so whoever may read a clip there
 may read the name tagged on it. Of the two, ``GET /games/{game_id}/clips`` is
 the one that can carry a name to an *unauthenticated* caller, because it takes an
 optional viewer; ``GET /collections/{id}/clips`` requires auth, though it spans
-owners. Neither does so yet, for the reason the paragraph above gives: no router
-writes ``Game.visibility`` or ``Clip.visibility``, so the anonymous case is one
-CF-109 creates rather than a live one.
+owners. **The collection one is live as of CF-109b**: a clip can now be set
+`public`, so a signed-in stranger reading it through
+``GET /collections/{id}/clips`` gets the tagged player's real name. That is the
+intended behaviour argued below, and it is worth saying plainly rather than
+leaving the reader with the old sentence, which said the case could not arise
+because nothing wrote a visibility.
+
+The ANONYMOUS variant is still unreachable, and for a different reason than
+before: ``GET /games/{game_id}/clips`` is gated on the *game*, and
+``Game.visibility`` is written by nothing —
+``test_visibility_write_paths_are_declared.py`` holds that. A clip's own tier
+publishes the clip, not the right to enumerate its game, which is the
+asymmetry two paragraphs down.
 
 That behaviour is intended: publishing a clip publishes it *with* its
 attribution, and a listing that blanked the name for exactly the viewers CF-109

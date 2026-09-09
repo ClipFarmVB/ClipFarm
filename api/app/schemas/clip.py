@@ -54,5 +54,25 @@ class ClipTrimRequest(BaseModel):
     end_delta: float    # seconds to add/subtract from end (positive = extend later)
 
 
+class ClipVisibilityRequest(BaseModel):
+    """Who may read this clip (CF-109b).
+
+    The clip's OWN tier, which overrides the game's rather than being bounded
+    by it — `access._effective` resolves NULL as "inherit", and a set value
+    wins. A public clip inside a private game is a supported and documented
+    state: it is reachable by direct link and through a collection, while
+    `GET /games/{id}/clips` still 404s the whole game. Publishing *that clip*
+    is not the right to enumerate its game.
+
+    There is no way back to NULL — "inherit from the game" is a state only the
+    detector's original write produces. It costs nothing today, because no
+    write path for a game's visibility exists, so every game is private and an
+    explicit `private` and an inherited one are the same answer. If a game
+    setter ever lands, this is the thing to revisit.
+    """
+
+    visibility: Visibility
+
+
 class ClipDeleteRequest(BaseModel):
     clip_ids: list[uuid.UUID]

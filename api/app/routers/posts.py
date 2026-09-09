@@ -13,7 +13,7 @@ from app.models.game import Game
 from app.models.post import Post
 from app.models.user import User
 from app.schemas.post import PostAuthor, PostCreate, PostOut, PostPlayback, PostUpdate
-from app.services import access, handles, storage
+from app.services import access, handles, publishing, storage
 from app.services.ratelimit import POLICIES, rate_limit
 
 logger = logging.getLogger(__name__)
@@ -153,7 +153,25 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
     if clip is None or game is None or game.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Clip not found")
 
+    # The post's own tier, whether or not the clip has to move for it: a public
+    # post over an already-public clip is still public posting.
+    publishing.assert_tier_allowed(body.visibility)
+
     clip_level = access.widest_allowed(clip, game)
+    if not access.at_most(body.visibility, clip_level) and body.raise_clip_visibility:
+        # The caller asked for the clip to come with it (CF-109b, #398). Set on
+        # the ORM object and committed alongside the INSERT below, so a post
+        # that fails to insert cannot leave the footage widened behind it —
+        # which a separate PATCH-then-POST could.
+        #
+        # To exactly the post's tier, never wider. `followers` on the post
+        # means `followers` on the clip; there is no path here that reaches
+        # `public` unless that is what was asked for and the deployment allows
+        # it. And the CLIP, never the game — raising the game publishes every
+        # clip in it, the silent side effect the 409 below exists to prevent.
+        clip.visibility = body.visibility
+        clip_level = body.visibility
+
     if not access.at_most(body.visibility, clip_level):
         # Refuse rather than silently widening the clip. Raising the clip's
         # visibility exposes the whole game's footage and has to be a separate,
@@ -168,18 +186,25 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
         # it. Anything that denormalizes `posts.visibility` into a feed query or
         # a cache — rather than joining the clip — breaks that property.
         #
-        # The message names the ceiling but no longer prescribes a remedy: no
-        # write path for a clip's or a game's visibility exists yet, so telling
-        # the user to "change the clip's visibility first" pointed at something
-        # the product cannot do. `ClipOut.effective_visibility` carries the same
-        # ceiling to clients so the composer can grey out what it cannot offer
+        # The message names a remedy again, because since CF-109b there is
+        # one: `raise_clip_visibility`, or the standalone
+        # `PATCH /clips/{id}/visibility`. It said nothing for a release
+        # because no write path existed and pointing at one would have sent the
+        # user somewhere the product could not go.
+        #
+        # This branch is still reached, and is still the security-relevant one:
+        # a caller who did not ask to widen the clip gets refused rather than
+        # silently widening it. `ClipOut.effective_visibility` carries the same
+        # ceiling to clients so the composer can offer the raise up front
         # instead of letting the user find it here.
         raise HTTPException(
             status_code=409,
             detail=(
                 f"This clip is {clip_level.value}, so it can only be posted to "
                 f"{clip_level.value}. A {body.visibility.value} post would show "
-                f"more of the footage than the clip itself does."
+                f"more of the footage than the clip itself does. Set the clip to "
+                f"{body.visibility.value} first, or post with "
+                f"raise_clip_visibility."
             ),
         )
 
