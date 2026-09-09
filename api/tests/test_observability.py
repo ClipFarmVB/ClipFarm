@@ -7,6 +7,8 @@ Imports only `app.observability`, which pulls in `app.config` — no database,
 no network, no sentry-sdk required.
 """
 
+import typing
+
 import pytest
 
 from app import observability
@@ -184,7 +186,7 @@ def test_every_secret_source_reaches_the_scrub_patterns(monkeypatch):
     candidate at all. That made them satisfiable by deleting the very settings
     they name — measured, not reasoned: dropping `r2_access_key_id` and
     `modal_token_id` from the candidate list and weakening the guard to
-    `>= 4` left all eighteen tests in this file green. The guard CF-308 exists
+    `>= 4` left every test in this file green. The guard CF-308 exists
     to pin moved by two characters with nothing red.
 
     So this pins the wiring the other test's exclusions depend on. Every value
@@ -202,8 +204,15 @@ def test_every_secret_source_reaches_the_scrub_patterns(monkeypatch):
     # the candidate list left the suite green. The sentinel has no `:` or `@`,
     # so `_url_passwords` lifts nothing out of it, and it clears the length
     # guard, so the `if c and len(c) >= 6` half cannot hide it either.
+    #
+    # `str | None` counts as str-typed too. `field.annotation is str` is False
+    # for it, so a candidate declared that way — `sentry_dsn: str | None` is an
+    # ordinary future edit — would keep its None default, be filtered by `if c`,
+    # and join the list unpinned; review measured exactly that. No such field
+    # exists today (every str-ish setting is bare `str`; `condense_mode` is a
+    # `Literal`, whose `get_args` are its string *values*, so it stays out).
     for name, field in type(observability.settings).model_fields.items():
-        if field.annotation is str:
+        if field.annotation is str or str in typing.get_args(field.annotation):
             monkeypatch.setattr(observability.settings, name, f"sentinel-{name}-value")
 
     scalars = {

@@ -277,9 +277,16 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     # `test_expired_upload_is_released_then_reclaimed` sweeps 1 stale /
     # 0 failed, where `len(stale) - 1` is 0 and a literal 2 is wrong, so both
     # now fail there. This test keeps the 3/1 shape because that is what tells
-    # `len(stale) - len(failed)` from `len(failed)` and `len(stale)`. The
-    # warning count's twin (`len(stale) - 2`) is the one survivor left; it
-    # would need a third fixture shape and is disclosed rather than closed.
+    # `len(stale) - len(failed)` from `len(failed)` and `len(stale)`.
+    #
+    # Two survivors are left, disclosed rather than closed. The warning
+    # count's twin (`len(stale) - 2`) is 1 at 3/1, same as `len(failed)`. And
+    # the reclaimed count's `len(failed) + 1` is 2 at 3/1 and 1 at 1/0 — right
+    # at both fixtures — so it survives the pair; an earlier version of this
+    # comment listed it as a 3/1 survivor two paragraphs up and then said only
+    # one was left, which review caught by re-running the table. A 2 stale /
+    # 0 failed sweep (reclaimed 2, `len(failed) + 1` = 1) would kill it; it is
+    # a third fixture shape for one expression, and named here instead.
     rows = [_row("a"), _row("b"), _row("c")]
     fakes = _Fakes(objects=[r["obj"] for r in rows])
     _install(monkeypatch, fakes)
