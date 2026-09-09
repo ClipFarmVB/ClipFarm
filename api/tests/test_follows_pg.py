@@ -514,9 +514,16 @@ def test_a_generated_handle_never_appears_in_an_edge_list(people):
 
     async_url, ids = people
 
-    # It cannot reach the endpoint (by_handle 404s its own handle, not the
-    # target's), so the edge is written directly — which is also how a backfill
-    # account that followed before CF-107 would already be sitting in the table.
+    # The edge is written directly here, standing in for the legacy case — a
+    # backfill account that followed before CF-107 and is already sitting in
+    # the table. An earlier version of this comment said the endpoint was
+    # unreachable for such an account; it is not. `follow_user` resolves only
+    # the *target* by handle and takes the caller off the bearer token, so a
+    # generated-handle account can `POST /users/publictarget/follow` today and
+    # succeed. The live path therefore produces the same row this inserts,
+    # which is what makes the render-side filter below load-bearing rather
+    # than historical — and is why CF-116's count/list divergence is reachable
+    # by current writes, not only by old ones.
     from sqlalchemy import create_engine
 
     sync = create_engine(async_url.replace("postgresql+asyncpg://", "postgresql://"))

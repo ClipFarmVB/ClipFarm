@@ -54,13 +54,22 @@ async def _get_viewable_clip(
     """
     clip = await db.get(Clip, clip_id)
     game = await db.get(Game, clip.game_id) if clip else None
-    # Costs a query only when the effective tier is `followers` — see
-    # follow_graph.resolve_follow.
+    # Costs a query only when one of the tiers it is asked about is
+    # `followers` — see follow_graph.resolve_follow. BOTH tiers, because the
+    # edge this returns is spent twice: `can_view_clip` asks about the clip's
+    # effective tier and `download_clip`'s `can_identify` asks about the
+    # game's, and those coincide only when the clip inherits. Resolved from
+    # the clip's tier alone, a public clip inside a `followers` game
+    # short-circuited the lookup and handed `can_identify` a False that meant
+    # "not asked" — bytes served, title and player name stripped from the
+    # filename, while `list_clips` gave the same follower the name from SQL.
+    # `resolve_follow` is variadic for exactly this.
     follows = await follow_graph.resolve_follow(
         db,
         viewer_id,
         game.owner_id if game else None,
         access.effective(clip, game),
+        game.visibility if game else None,
     )
     if not access.can_view_clip(viewer_id, clip, game, viewer_follows_owner=follows):
         # 404 not 403 — a 403 would confirm the clip exists to anyone probing.
