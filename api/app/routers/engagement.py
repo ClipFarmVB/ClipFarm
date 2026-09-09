@@ -98,15 +98,24 @@ async def like_post(post_id: uuid.UUID, user_id: UserId, db: DB):
     post, _clip, _author = await post_read.load_for_read(post_id, user_id, db)
     post_id = post.id  # a plain local; nothing below reads the ORM row
 
-    landed = await db.execute(
-        pg_insert(PostLike)
-        .values(post_id=post_id, user_id=user_id)
-        .on_conflict_do_nothing(index_elements=[PostLike.post_id, PostLike.user_id])
-    )
-    if landed.rowcount == 1:
-        count = await _bump(db, post_id, Post.like_count, +1)
-        await db.commit()
-        return LikeStateOut(liked=True, like_count=count)
+    try:
+        landed = await db.execute(
+            pg_insert(PostLike)
+            .values(post_id=post_id, user_id=user_id)
+            .on_conflict_do_nothing(index_elements=[PostLike.post_id, PostLike.user_id])
+        )
+        if landed.rowcount == 1:
+            count = await _bump(db, post_id, Post.like_count, +1)
+            await db.commit()
+            return LikeStateOut(liked=True, like_count=count)
+    except IntegrityError:
+        # The author deleted the post between the gate above and this insert,
+        # so post_likes.post_id has nothing to point at. `create_comment`
+        # handles the identical race the identical way; this was the one
+        # mutation that did not, and it answered 500 where every sibling
+        # answers 404.
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Post not found") from None
 
     # Already liked. Answer for the row that exists, and keep the transaction
     # clean — nothing was written.
@@ -272,7 +281,16 @@ async def create_comment(post_id: uuid.UUID, body: CommentCreate, user_id: UserI
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=404, detail="Post not found")
+        raise HTTPException(status_code=404, detail="Post not found") from None
+    except HTTPException:
+        # `_bump` raises 404 rather than IntegrityError when its RETURNING comes
+        # back empty, and an HTTPException is not caught above. Reaching here
+        # with the comment INSERT pending would leave the transaction dirty for
+        # whatever `get_db` does next. Arguably unreachable — the autoflush hits
+        # the foreign key first — but the module claims a clean transaction as
+        # an invariant, and this was the one path where it was implicit.
+        await db.rollback()
+        raise
     await db.refresh(comment)
     return _render_comment(comment, author, r2_ready=storage.r2_configured())
 
