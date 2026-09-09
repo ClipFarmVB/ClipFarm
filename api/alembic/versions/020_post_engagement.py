@@ -20,6 +20,17 @@ NULL` whose rowcount gates the counter — the same shape `follows` uses for
 accept and reject, and for the same reason: a second tap on Delete must not
 decrement twice.
 
+**Deleting a USER leaves both counters high, and that is not fixed here.**
+Both child tables cascade from `users`, and nothing decrements
+`posts.like_count` or `posts.comment_count` when those rows vanish, so a
+post's counts would over-report by whatever the departing user contributed.
+Latent rather than live: there is no user-delete endpoint, and `api/app/`
+contains no `db.delete` against `User`. It is stated here rather than left to
+be discovered because the drift runs *upward*, which is the direction neither
+guard catches — `GREATEST` only floors a decrement, and a `>= 0` CHECK is
+happy with a number that is too big. Whoever builds account deletion owns
+reconciling these, and CF-116's counter reconciliation is the natural home.
+
 **The two counter CHECKs on `posts`.** `016` created `like_count` and
 `comment_count` without them because no writer existed yet; `017` gave the
 `users` counters theirs. Now that something writes these, they get the same

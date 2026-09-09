@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user_id, get_optional_user_id
@@ -136,6 +136,32 @@ async def get_post(post_id: uuid.UUID, db: DB, viewer_id: ViewerId = None):
     return _serialize(post, clip, author, viewer_has_liked=liked)
 
 
+def user_posts_query(
+    viewer_id: uuid.UUID | None, author_id: uuid.UUID, *, limit: int = 50
+) -> Select:
+    """One author's visible posts, newest first, as one statement.
+
+    Module-level for the reason `feed.feed_query` and
+    `engagement.comments_query` are: so the tests assert against the query the
+    router runs rather than a stand-in. The third column is `viewer_has_liked`,
+    one EXISTS per row on the `post_likes` primary key — a literal `false` and
+    no subquery for an anonymous viewer (CF-113).
+    """
+    return (
+        access.apply_post_visibility(
+            select(
+                Post,
+                Clip,
+                engagement.viewer_liked_column(viewer_id).label("viewer_has_liked"),
+            ),
+            viewer_id,
+        )
+        .where(Post.author_id == author_id)
+        .order_by(Post.created_at.desc(), Post.id.desc())
+        .limit(limit)
+    )
+
+
 @router.get("", response_model=list[PostOut])
 async def list_user_posts(
     db: DB,
@@ -166,24 +192,7 @@ async def list_user_posts(
     # limit. Filtering after it would mean the limit counted rows this viewer
     # can't see — an author with 60 private posts then 20 public ones would hand
     # a stranger an empty page and no way to page past it.
-    rows = (
-        await db.execute(
-            access.apply_post_visibility(
-                # The third column is `viewer_has_liked`, one EXISTS per row on
-                # the `post_likes` PK — a literal `false` and no subquery for
-                # an anonymous viewer (CF-113).
-                select(
-                    Post,
-                    Clip,
-                    engagement.viewer_liked_column(viewer_id).label("viewer_has_liked"),
-                ),
-                viewer_id,
-            )
-            .where(Post.author_id == author.id)
-            .order_by(Post.created_at.desc(), Post.id.desc())
-            .limit(limit)
-        )
-    ).all()
+    rows = (await db.execute(user_posts_query(viewer_id, author.id, limit=limit))).all()
 
     # Probed once for the page rather than per row: it reads five settings
     # fields for an answer that is process-wide and cannot change mid-response.

@@ -12,9 +12,12 @@ Fake sessions and `asyncio.run`, like `test_follows.py`: the routers are
 driven directly, the statements they issue are captured and compiled, and
 nothing here needs Postgres.
 """
+import ast
 import asyncio
+import pathlib
 import re
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -30,7 +33,8 @@ from app.models.post_comment import PostComment  # noqa: E402
 from app.models.post_like import PostLike  # noqa: E402
 from app.routers import engagement as r  # noqa: E402
 from app.routers import feed as feed_router  # noqa: E402
-from app.services import engagement, post_read  # noqa: E402
+from app.routers import posts as posts_router  # noqa: E402
+from app.services import cursors, engagement, post_read  # noqa: E402
 
 VIEWER = uuid.uuid4()
 AUTHOR = uuid.uuid4()
@@ -304,6 +308,31 @@ def test_a_comment_whose_post_vanished_is_a_404_not_a_500(monkeypatch):
     assert db.rolled_back == 1
 
 
+def test_a_like_on_a_post_that_vanished_is_a_404_not_a_500(monkeypatch):
+    """The same race as the comment above, on the other write.
+
+    The author deletes the post between `load_for_read` and the insert, so
+    `post_likes.post_id` has nothing to point at. Every sibling path answers
+    404 for this — `create_comment` catches the IntegrityError, `_bump` raises
+    when its RETURNING comes back empty — and `like_post` was the one that did
+    not, so it answered 500.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    post = _post()
+    _gate(monkeypatch, post)
+
+    class _Db(_Session):
+        async def execute(self, stmt, *a, **k):
+            raise IntegrityError("insert", {}, Exception("fk"))
+
+    db = _Db([])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(r.like_post(post.id, VIEWER, db))
+    assert exc.value.status_code == 404
+    assert db.rolled_back == 1
+
+
 def test_no_orm_attribute_is_read_after_a_rollback():
     """`follows.py`'s lesson, pinned the same way: after `rollback()` every
     loaded row is expired and the next attribute access is a `MissingGreenlet`
@@ -385,3 +414,96 @@ def test_a_generated_handle_is_withheld_but_the_comment_stays():
     out = r._render_comment(comment, backfill, r2_ready=False)
     assert out.body == "hi"
     assert out.author.username is None
+
+
+def test_the_comment_page_is_scoped_to_the_post_it_was_asked_for():
+    """The gate proves the *post* is readable; the query is what makes the page
+    be about that post.
+
+    Drop the `post_id` predicate and `GET /posts/{A}/comments` starts returning
+    every live comment in the table, on every post, private ones included —
+    and nothing else notices, because `load_for_read` still passes. The
+    cursor-window test above asserts the ordering, the soft-delete filter, the
+    limit and the join, and would stay green through exactly that change.
+    """
+    wanted, other = uuid.uuid4(), uuid.uuid4()
+    sql = _sql(r.comments_query(wanted))
+    assert f"post_comments.post_id = '{wanted}'" in sql
+    assert str(other) not in sql
+
+    # And the predicate must survive paging, which rebuilds the where clause.
+    token = cursors.encode(datetime(2026, 8, 1, tzinfo=timezone.utc), uuid.uuid4())
+    assert f"post_comments.post_id = '{wanted}'" in _sql(
+        r.comments_query(wanted, cursor=token)
+    )
+
+
+def test_an_anonymous_reader_is_never_told_they_liked_something():
+    """`false()`, not an unconstrained EXISTS or a bare literal `true`.
+
+    A regression here tells every signed-out visitor they have liked every
+    post in the feed — visible on the first page load, and invisible to the
+    rest of the suite, which always passes a real viewer.
+    """
+    assert _sql(engagement.viewer_liked_column(None)).strip().lower() == "false"
+
+    # The point-lookup form takes the same branch and must not query at all: a
+    # signed-out reader has no row to find, and asking is a round trip per read.
+    class _Explodes:
+        async def execute(self, *_a, **_k):
+            raise AssertionError("anonymous must not reach the database")
+
+    assert asyncio.run(engagement.viewer_has_liked(_Explodes(), None, uuid.uuid4())) is False
+
+
+def test_the_profile_grid_query_fills_the_liked_flag_for_a_signed_in_viewer():
+    """`list_user_posts` is the other consumer of the widened row.
+
+    The feed's copy is pinned above; this one was not, so a version that
+    hardcoded `viewer_has_liked=False` on the profile grid — every post on
+    your own profile showing unliked — shipped green.
+    """
+    sql = _sql(posts_router.user_posts_query(VIEWER, AUTHOR))
+    assert "post_likes" in sql
+    assert str(VIEWER) in sql
+    # ...and an anonymous grid pays for no subquery, same as the feed's.
+    assert "post_likes" not in _sql(posts_router.user_posts_query(None, AUTHOR))
+
+
+def test_the_engagement_routes_are_registered_and_gated_with_the_rest_of_social():
+    """Nothing else here touches the FastAPI wiring.
+
+    Every test in this file drives the router coroutines directly, so deleting
+    `app.include_router(engagement.router)` makes the whole feature
+    unreachable with the suite still green — and so does renaming a path or
+    changing a method. Both are asserted, and the registration is asserted to
+    sit inside the `social_enabled` block: routed while the rest of the social
+    surface is hidden, these would be the endpoints that serve other people's
+    footage with nothing around them.
+    """
+    declared = {
+        (route.path, method)
+        for route in r.router.routes
+        for method in getattr(route, "methods", set())
+        if method != "HEAD"
+    }
+    assert declared == {
+        ("/posts/{post_id}/like", "POST"),
+        ("/posts/{post_id}/like", "DELETE"),
+        ("/posts/{post_id}/comments", "GET"),
+        ("/posts/{post_id}/comments", "POST"),
+        ("/comments/{comment_id}", "DELETE"),
+    }
+
+    main_src = (pathlib.Path(r.__file__).resolve().parents[1] / "main.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(main_src)
+    gated = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and "social_enabled" in ast.dump(node.test)
+        and "engagement" in ast.dump(ast.Module(body=node.body, type_ignores=[]))
+    ]
+    assert gated, "engagement.router must be included under `if settings.social_enabled`"

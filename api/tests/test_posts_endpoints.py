@@ -86,10 +86,21 @@ class StubSession:
         return self.rows.get((model.__name__, pk))
 
     async def execute(self, stmt):
-        # The one statement these handlers issue is CF-113's `viewer_has_liked`
+        # The ONE statement these handlers issue is CF-113's `viewer_has_liked`
         # point lookup on `post_likes`; there are no likes here, so it finds
-        # nothing. Anything else would be a handler doing work these tests
-        # were not written to model.
+        # nothing.
+        #
+        # Asserted rather than assumed. A stub that answers "nothing" to every
+        # statement lets a handler start issuing arbitrary SQL — a second
+        # lookup, a counter read, a whole page query — while these tests go on
+        # passing and modelling none of it. Naming the table is what keeps this
+        # a narrow stand-in instead of a silence.
+        rendered = str(stmt)
+        assert "post_likes" in rendered, (
+            "StubSession models only the post_likes lookup; this handler now "
+            f"issues something else and the test does not model it:\n{rendered}"
+        )
+
         class _Nothing:
             def first(self):
                 return None

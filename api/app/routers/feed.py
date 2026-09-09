@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import Select, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.auth import get_current_user_id
 from app.database import get_db
 from app.models.clip import Clip
