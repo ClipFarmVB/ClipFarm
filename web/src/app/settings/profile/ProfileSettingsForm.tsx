@@ -252,7 +252,23 @@ function ProfileSettingsContent() {
           <span className="text-xs text-muted">{bio.length}/280</span>
         </label>
 
-        {/* Privacy */}
+        {/* Privacy.
+
+            This switch governs ONE thing: whether following you needs your
+            approval. It does not clamp or widen what anyone can see —
+            `services/access.py` argues that at length and
+            `test_account_privacy_does_not_clamp_post_visibility` pins it, so a
+            private account's `public` post stays readable by a signed-out
+            stranger.
+
+            The copy used to say the opposite — "Only followers you approve can
+            see your clips" against Private, "Anyone can see your clips" against
+            Public — which is the wrong thing to be wrong about on youth-sports
+            footage. It reads as the control that protects the footage, so the
+            failure it invites is specific: publish some clips publicly, later
+            flip to Private believing that retracted them, and it did not.
+            CF-109b item 3 (#398) is the card; it asks for signposting, and the
+            existing sentences had to go rather than be annotated. */}
         <button
           type="button"
           onClick={() => setIsPrivate(!isPrivate)}
@@ -269,11 +285,16 @@ function ProfileSettingsContent() {
             </span>
             <span className="block text-xs text-muted">
               {isPrivate
-                ? "Only followers you approve can see your clips. Recommended — game footage often shows minors."
-                : "Anyone can see your clips, including people who aren't signed in."}
+                ? "New followers need your approval. Recommended — game footage often shows minors."
+                : "Anyone can follow you without asking."}
             </span>
           </span>
         </button>
+        <p className="-mt-1 text-xs text-subtle">
+          This controls follows, not footage. Who can see a clip is chosen when
+          you post it, and a clip you already posted publicly stays public if
+          you switch to Private.
+        </p>
 
         <div className="flex items-center gap-3">
           <Button onClick={save} disabled={saving || blockedByHandle || !username.trim()}>
