@@ -279,14 +279,17 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     # now fail there. This test keeps the 3/1 shape because that is what tells
     # `len(stale) - len(failed)` from `len(failed)` and `len(stale)`.
     #
-    # Two survivors are left, disclosed rather than closed. The warning
-    # count's twin (`len(stale) - 2`) is 1 at 3/1, same as `len(failed)`. And
-    # the reclaimed count's `len(failed) + 1` is 2 at 3/1 and 1 at 1/0 — right
-    # at both fixtures — so it survives the pair; an earlier version of this
-    # comment listed it as a 3/1 survivor two paragraphs up and then said only
-    # one was left, which review caught by re-running the table. A 2 stale /
-    # 0 failed sweep (reclaimed 2, `len(failed) + 1` = 1) would kill it; it is
-    # a third fixture shape for one expression, and named here instead.
+    # What survives is not a list, and two versions of this comment tried to
+    # make it one and were wrong both times. The bound is the value: *any*
+    # expression equal to 1 at 1/0 and 2 at 3/1 passes both fixtures —
+    # `len(failed) + 1` is the one a real edit might plausibly produce, but
+    # `len(stale) // 2 + 1` does too, and review found it by trying. Likewise
+    # the warning count at 3/1: anything equal to 1 (`len(stale) - 2`, a
+    # literal, `released + 1`). The fixtures pin the two counts to their
+    # values and separate the expressions a real edit would reach for
+    # (`len(failed)`, `len(stale)`, `released`, the neighbours by one); they
+    # do not, and cannot, exclude every arithmetic coincidence. Disclosed as
+    # that, rather than as a count that the next mutation run makes wrong.
     rows = [_row("a"), _row("b"), _row("c")]
     fakes = _Fakes(objects=[r["obj"] for r in rows])
     _install(monkeypatch, fakes)

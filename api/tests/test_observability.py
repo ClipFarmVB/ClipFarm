@@ -211,6 +211,10 @@ def test_every_secret_source_reaches_the_scrub_patterns(monkeypatch):
     # and join the list unpinned; review measured exactly that. No such field
     # exists today (every str-ish setting is bare `str`; `condense_mode` is a
     # `Literal`, whose `get_args` are its string *values*, so it stays out).
+    # The guarantee is scoped to `Settings` fields: a second
+    # `os.environ.get(...)` candidate would not be sentinelled here and would
+    # join the list unpinned. There is one such source and it is asserted by
+    # name below; a new one needs its own line.
     for name, field in type(observability.settings).model_fields.items():
         if field.annotation is str or str in typing.get_args(field.annotation):
             monkeypatch.setattr(observability.settings, name, f"sentinel-{name}-value")
