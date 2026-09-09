@@ -160,3 +160,67 @@ describe("the sound controls", () => {
     expect(onToggleSound).toHaveBeenCalledTimes(1);
   });
 });
+
+// The play effect used to swallow `play()`'s rejection and did not depend on
+// `muted`. `muted` is page state shared by every card, so once the user
+// unmuted, the next post to become active called `play()` unmuted from a
+// scroll-driven effect — which iOS refuses — and the poster sat there frozen.
+// Re-muting, the obvious recovery, changed nothing the effect depended on, so
+// it never retried; there was no play button; the only escape was to swipe
+// away and back. Every post after the first unmute, on the platform the card
+// names as the target.
+function mountActive(post: Post, muted: boolean) {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => {
+    root.render(
+      <FeedPost post={post} active loaded muted={muted} onToggleSound={() => {}} />,
+    );
+  });
+}
+
+describe("when autoplay is refused", () => {
+  it("shows a play affordance instead of a frozen poster", async () => {
+    HTMLMediaElement.prototype.play = vi
+      .fn()
+      .mockRejectedValue(new DOMException("denied", "NotAllowedError"));
+    await act(async () => mountActive(makePost(), false));
+
+    expect(byLabel("Play")).toHaveLength(1);
+  });
+
+  it("does not show it while playback is fine", async () => {
+    await act(async () => mountActive(makePost(), true));
+    expect(byLabel("Play")).toHaveLength(0);
+  });
+
+  it("retries play() when the mute state changes", async () => {
+    const play = vi.fn().mockResolvedValue(undefined);
+    HTMLMediaElement.prototype.play = play;
+    await act(async () => mountActive(makePost(), false));
+    const calls = play.mock.calls.length;
+    expect(calls).toBeGreaterThan(0);
+
+    await act(async () => {
+      root.render(
+        <FeedPost post={makePost()} active loaded muted onToggleSound={() => {}} />,
+      );
+    });
+    // Re-muting is the user's recovery gesture; it must re-run the effect.
+    expect(play.mock.calls.length).toBeGreaterThan(calls);
+  });
+
+  it("recovers on tap, which is a gesture the browser allows", async () => {
+    const play = vi
+      .fn()
+      .mockRejectedValueOnce(new DOMException("denied", "NotAllowedError"))
+      .mockResolvedValue(undefined);
+    HTMLMediaElement.prototype.play = play;
+    await act(async () => mountActive(makePost(), false));
+    expect(byLabel("Play")).toHaveLength(1);
+
+    await click(byLabel("Play")[0]);
+    expect(byLabel("Play")).toHaveLength(0);
+  });
+});

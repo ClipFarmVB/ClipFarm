@@ -25,6 +25,13 @@ function Feed() {
   const [error, setError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [muted, setMuted] = useState(true);
+  // Stable, so `FeedPost`'s `memo` can hold: an inline arrow here allocated a
+  // fresh callback per render, and every `activeIndex` change re-rendered
+  // every mounted card — ~500 `<article>` subtrees per swipe on the long
+  // scroll the card's acceptance criteria contemplate. Main-thread cost only
+  // (the media effects are dep-guarded), but it worked against the
+  // "doesn't degrade" criterion the rest of the design is built around.
+  const toggleSound = useCallback(() => setMuted((m) => !m), []);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
   // Read inside the fetcher without making it a dependency — otherwise every
@@ -121,7 +128,23 @@ function Feed() {
   }
 
   if (error && posts.length === 0) {
-    return <Empty title="Could not load your feed" body={error} />;
+    // A retry here for the same reason the page-2 tail has one: nothing
+    // re-fires on its own. The prefetch effect keys on `[activeIndex,
+    // posts.length]` and a failed *first* fetch changes neither, so a blip on
+    // the request that runs right after sign-in — the first screen a user
+    // sees, now that `/feed` is the landing — was a static "could not load"
+    // until they worked out that a full reload was the fix.
+    return (
+      <Empty
+        title="Could not load your feed"
+        body={error}
+        action={
+          <Button variant="secondary" onClick={() => void loadMore(true)} disabled={loading}>
+            {loading ? "Retrying…" : "Try again"}
+          </Button>
+        }
+      />
+    );
   }
 
   if (posts.length === 0) {
@@ -142,12 +165,23 @@ function Feed() {
 
   return (
     // Breaks out of the root layout's padded, max-width column: this is the one
-    // route that owns the whole viewport. `left-0 md:left-[220px]` clears the
-    // fixed sidebar on desktop and ignores it on a phone — the sidebar's own
-    // mobile behaviour is CF-60, not this card.
+    // route that owns the whole viewport — but it has to respect the same
+    // chrome the layout reserves. Below `lg` the sidebar is a 52px fixed top
+    // bar (z-20) holding the only "Open navigation" trigger, with the drawer
+    // (z-40) and its backdrop (z-30) stacked above it; the layout offsets
+    // content with `pt-[52px]`. This scroller used to be `inset-y-0 z-30`,
+    // which painted over that bar at every width under 1024px — and since this
+    // PR makes `/feed` the post-login landing, a phone user had no way to reach
+    // Library, Upload or Settings at all. So: `top-[52px]` and `z-10` under
+    // `lg`, where the header, backdrop and drawer all win; from `lg` the bar
+    // is gone and the 220px column exists, so `top-0 left-[220px]`. It is `lg`
+    // and not `md` because the column only exists from `lg` (`Sidebar.tsx`
+    // translates it off-screen below that, `layout.tsx` offsets with
+    // `lg:ml-[220px]`); at `md` this indented 220px for a sidebar that was not
+    // there — a dead black strip on every tablet and landscape phone.
     <div
       ref={scrollerRef}
-      className="fixed inset-y-0 right-0 left-0 z-30 snap-y snap-mandatory overflow-y-scroll overscroll-y-contain bg-black md:left-[220px]"
+      className="fixed inset-x-0 top-[52px] bottom-0 z-10 snap-y snap-mandatory overflow-y-scroll overscroll-y-contain bg-black lg:top-0 lg:left-[220px]"
     >
       {posts.map((post, i) => (
         <div key={post.id} data-index={i} className="h-full">
@@ -156,7 +190,7 @@ function Feed() {
             active={i === activeIndex}
             loaded={isLoaded(i, activeIndex)}
             muted={muted}
-            onToggleSound={() => setMuted((m) => !m)}
+            onToggleSound={toggleSound}
           />
         </div>
       ))}
@@ -186,14 +220,13 @@ function Feed() {
               own, and the only way back is to scroll up far enough to change
               `activeIndex` and then come back down. That is not a recovery a
               user can be expected to discover from a line of grey text. */}
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setError(null);
-              void loadMore();
-            }}
-            disabled={loading}
-          >
+          {/* Not `setError(null)` first: that and `loadMore`'s own
+              `setLoading(true)` batch into one render that unmounts this
+              panel, so the "Retrying…" state below could never paint and a
+              slow retry looked like a tap that did nothing. `loadMore` clears
+              `error` itself on success; while it runs the panel stays, disabled
+              and labelled. */}
+          <Button variant="secondary" onClick={() => void loadMore()} disabled={loading}>
             {loading ? "Retrying…" : "Try again"}
           </Button>
         </div>

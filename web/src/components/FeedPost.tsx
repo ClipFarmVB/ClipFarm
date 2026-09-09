@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Download,
   Heart,
   MessageCircle,
+  Play,
   Share2,
   Volume2,
   VolumeX,
@@ -49,12 +50,24 @@ export interface FeedPostProps {
  * source we deliberately released, and releasing is the part that has to be
  * exact.
  */
-export function FeedPost({ post, active, loaded, muted, onToggleSound }: FeedPostProps) {
+export const FeedPost = memo(function FeedPost({
+  post,
+  active,
+  loaded,
+  muted,
+  onToggleSound,
+}: FeedPostProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   // A ref rather than state: this only serialises two rapid taps on one card,
   // and re-rendering the post to disable a button would restart nothing but
   // would put a render in the middle of a video that is playing.
   const downloading = useRef(false);
+  // `play()` was refused while this post is the one on screen, or the source
+  // errored. Either way the poster is all the user sees, and without an
+  // affordance the only escape was to swipe away and back. State rather than a
+  // ref because it renders something.
+  const [stalled, setStalled] = useState(false);
+  const [shareState, setShareState] = useState<"idle" | "copied" | "failed">("idle");
   const { playback: pb } = post;
 
   // Prefer the per-game proxy and seek within it; fall back to the per-clip
@@ -93,16 +106,41 @@ export function FeedPost({ post, active, loaded, muted, onToggleSound }: FeedPos
 
     if (active) {
       if (useProxy) video.currentTime = pb.start_time;
-      // Autoplay is refused while a tab is backgrounded, and unmuted playback
-      // is refused without a gesture. Neither is an error worth surfacing —
-      // the post simply sits on its first frame until the user interacts.
-      void video.play().catch(() => {});
+      // Applied here, before `play()`, and `muted` is a dependency of this
+      // effect on purpose. `muted` is page-level state shared by every card,
+      // so once the user unmutes, the *next* post to become active calls
+      // `play()` unmuted from a scroll-driven effect with no user activation
+      // — which iOS refuses. That refusal used to be swallowed, and because
+      // `muted` was not a dependency, tapping Mute (the obvious recovery) set
+      // the property and never retried: the post stayed frozen on its poster
+      // with no play button anywhere, for every post after the first unmute.
+      // Now a re-mute re-runs this and retries, and a refusal while this post
+      // is the one on screen shows the affordance below instead of nothing.
+      // A backgrounded tab still refuses too; that case clears itself the
+      // moment the post becomes active again.
+      video.muted = muted;
+      video.play().then(
+        () => setStalled(false),
+        () => setStalled(true)
+      );
     } else {
+      setStalled(false);
       video.pause();
       if (useProxy) video.currentTime = pb.start_time;
       else video.currentTime = 0;
     }
-  }, [active, loaded, useProxy, pb.start_time]);
+  }, [active, loaded, useProxy, pb.start_time, muted]);
+
+  // A tap is a user gesture, so this `play()` is allowed unmuted where the
+  // effect's was not.
+  const resume = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.play().then(
+      () => setStalled(false),
+      () => {}
+    );
+  }, []);
 
   // Muting is a property, not an attribute — React's `muted` prop is famously
   // not applied on hydration, so it is set here for both.
@@ -128,10 +166,17 @@ export function FeedPost({ post, active, loaded, muted, onToggleSound }: FeedPos
     try {
       const { url } = await getClipShareUrl(post.clip_id);
       await navigator.clipboard.writeText(url);
+      setShareState("copied");
     } catch {
-      // Clipboard is permission-gated and share links can 404 on a withdrawn
-      // clip. Neither is worth an error modal over a video.
+      // Clipboard is permission-gated (undefined outside a secure context,
+      // rejects on a denied permission or an unfocused document) and share
+      // links can 404 on a withdrawn clip. None of that is worth an error modal
+      // over a video — but silence on *both* outcomes meant a user who tapped
+      // Share reasonably assumed the link was on the clipboard and pasted
+      // whatever was there before. The rail label swaps briefly instead.
+      setShareState("failed");
     }
+    window.setTimeout(() => setShareState("idle"), 1500);
   }
 
   /**
@@ -201,8 +246,23 @@ export function FeedPost({ post, active, loaded, muted, onToggleSound }: FeedPos
         playsInline
         preload="metadata"
         onTimeUpdate={onTimeUpdate}
+        // The presigned URL is good for an hour; `post_view`'s own docstring
+        // names "playback that dies mid-scroll" as the cost of that trade.
+        // Without this the card showed a black frame and said nothing.
+        onError={() => setStalled(true)}
         className="h-full w-full object-contain"
       />
+
+      {stalled && active && (
+        <button
+          type="button"
+          onClick={resume}
+          aria-label="Play"
+          className="absolute inset-0 z-[15] flex items-center justify-center bg-black/30 text-white"
+        >
+          <Play size={44} className="drop-shadow" />
+        </button>
+      )}
 
       {/* Gradient so white overlay text stays legible over a bright court. */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/80 to-transparent" />
@@ -272,7 +332,18 @@ export function FeedPost({ post, active, loaded, muted, onToggleSound }: FeedPos
           label="Comments — coming with CF-113"
           disabled
         />
-        <RailButton icon={<Share2 size={22} />} label="Copy share link" onClick={share} />
+        <RailButton
+          icon={<Share2 size={22} />}
+          label={
+            shareState === "copied"
+              ? "Copied"
+              : shareState === "failed"
+                ? "Couldn't copy"
+                : "Copy share link"
+          }
+          note={shareState === "copied" ? "Copied" : shareState === "failed" ? "Failed" : undefined}
+          onClick={share}
+        />
         {pb.clip_url && (
           <RailButton
             icon={<Download size={22} />}
@@ -291,7 +362,7 @@ export function FeedPost({ post, active, loaded, muted, onToggleSound }: FeedPos
       </div>
     </article>
   );
-}
+});
 
 function Avatar({ url, name }: { url: string | null; name: string }) {
   if (url) {
@@ -319,12 +390,16 @@ function RailButton({
   icon,
   count,
   label,
+  note,
   onClick,
   disabled,
 }: {
   icon: React.ReactNode;
   count?: number;
   label: string;
+  /** A transient word under the icon — the visible half of a state change
+   *  that `aria-label` already carries for assistive tech. */
+  note?: string;
   onClick?: () => void;
   disabled?: boolean;
 }) {
@@ -344,6 +419,7 @@ function RailButton({
       {count != null && (
         <span className="text-[11px] font-semibold tabular-nums">{count}</span>
       )}
+      {note && <span className="text-[11px] font-semibold">{note}</span>}
     </button>
   );
 }
