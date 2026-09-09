@@ -158,7 +158,8 @@ services:
       # *generated* handle, so it cannot be used to test whether an email-derived
       # account exists; and it filters through apply_post_visibility with
       # viewer_id=None, which for an anonymous caller admits only public posts
-      # over public clips — the set that cannot be non-empty today.
+      # over public clips — a set that was empty by construction until CF-109b
+      # (#398) and is now empty because PUBLIC_POSTING_ENABLED below is off.
       #
       # What was left is genuinely a load and enumeration-rate concern, and
       # that was CF-186 (#189) — now discharged. The six anonymous reads are
@@ -169,17 +170,18 @@ services:
       # router shares one bucket and the limiter throttles the whole internet
       # together.
       #
-      # The order that must hold: whoever ships the clip-visibility write path
-      # is the person who makes "public" real. Rate limiting had to land before
-      # they do, and has. Reassess this flag when they land, not after.
+      # The ordering this block used to demand has been served: rate limiting
+      # (CF-186) landed first, and the clip-visibility write path (CF-109b)
+      # followed. SOCIAL_ENABLED is reassessed here, as that ordering asked,
+      # and stays on — what it exposes is now bounded by
+      # PUBLIC_POSTING_ENABLED below rather than by the absence of a setter.
       #
-      # That ordering is a test, not a hope: api/tests/
-      # test_no_visibility_write_path.py fails the day a router can widen a
-      # clip or a game. The bound above is a property of the current schema,
-      # and a comment in a deploy file is not something the PR adding a
-      # visibility setter would ever be pointed at — so the constraint lives
-      # where that PR will run into it. Deleting that test is a legitimate
-      # move; doing it in the same PR is what puts the decision in a diff.
+      # Still a test rather than a hope, in narrowed form:
+      # api/tests/test_visibility_write_paths_are_declared.py fails the day
+      # anything widens a GAME, or the day a clip is widened outside the two
+      # functions that gate the tier on PUBLIC_POSTING_ENABLED. A comment in a
+      # deploy file is not something the next such PR would ever be pointed at,
+      # so the constraint lives where that PR will run into it.
       - key: SOCIAL_ENABLED
         value: "true"
       # The `public` visibility tier (CF-109b, #398). OFF, and the ONE flag that

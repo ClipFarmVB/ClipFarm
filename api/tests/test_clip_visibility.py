@@ -281,6 +281,27 @@ def test_publishing_raises_the_clip_no_wider_than_the_post():
     assert clip.visibility is not Visibility.public
 
 
+def test_raise_never_narrows_a_clip_that_is_already_wider():
+    """The flag is named "raise" and must only raise.
+
+    Posting `private` over a `followers` clip with the flag set must leave the
+    clip alone. Widening it to match would be a narrowing, and it would
+    withdraw every OTHER post over that clip — a side effect on content the
+    caller did not mention, from a request about one new post.
+
+    The production guard is the `not at_most(...)` condition, which is easy to
+    read as redundant next to the 409 below and is not.
+    """
+    owner = User()
+    game = Game(owner.id)
+    clip = Clip(game, visibility=Visibility.followers)
+    db = StubSession(game, clip, owner)
+
+    _post(db, clip.id, owner.id, Visibility.private, raise_clip=True)
+
+    assert clip.visibility is Visibility.followers, "the clip must not be narrowed"
+
+
 def test_without_the_flag_publishing_still_refuses_and_leaves_the_clip_alone():
     """The 409 is the security-relevant branch and does not go away.
 

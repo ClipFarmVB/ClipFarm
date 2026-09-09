@@ -99,9 +99,19 @@ with a bare id lookup and no ownership filter, so whoever may read a clip there
 may read the name tagged on it. Of the two, ``GET /games/{game_id}/clips`` is
 the one that can carry a name to an *unauthenticated* caller, because it takes an
 optional viewer; ``GET /collections/{id}/clips`` requires auth, though it spans
-owners. Neither does so yet, for the reason the paragraph above gives: no router
-writes ``Game.visibility`` or ``Clip.visibility``, so the anonymous case is one
-CF-109 creates rather than a live one.
+owners. **The collection one is live as of CF-109b**: a clip can now be set
+`public`, so a signed-in stranger reading it through
+``GET /collections/{id}/clips`` gets the tagged player's real name. That is the
+intended behaviour argued below, and it is worth saying plainly rather than
+leaving the reader with the old sentence, which said the case could not arise
+because nothing wrote a visibility.
+
+The ANONYMOUS variant is still unreachable, and for a different reason than
+before: ``GET /games/{game_id}/clips`` is gated on the *game*, and
+``Game.visibility`` is written by nothing —
+``test_visibility_write_paths_are_declared.py`` holds that. A clip's own tier
+publishes the clip, not the right to enumerate its game, which is the
+asymmetry two paragraphs down.
 
 That behaviour is intended: publishing a clip publishes it *with* its
 attribution, and a listing that blanked the name for exactly the viewers CF-109
