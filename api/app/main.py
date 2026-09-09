@@ -29,15 +29,30 @@ init_sentry("api")
 # hardened.
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    client = aioredis.from_url(settings.redis_url)
-    ratelimit.set_backend(ratelimit.RedisBackend(client))
+    # Guarded for the reason _check_redis binds its client outside the try:
+    # `from_url` validates the scheme EAGERLY, so a malformed REDIS_URL raises
+    # here. Before this lifespan existed the api booted fine with one and
+    # /healthz reported redis down; letting it out would turn that into a
+    # crash loop, which is a worse outage than an unthrottled read surface and
+    # is not a trade this card gets to make. The limiter keeps its in-process
+    # backend instead, and /health goes on saying why.
+    client = None
+    try:
+        client = aioredis.from_url(settings.redis_url)
+        ratelimit.set_backend(ratelimit.RedisBackend(client))
+    except Exception:
+        logger.exception("rate limit: could not build the redis client")
     try:
         yield
     finally:
         # Back to the in-process backend, so a limiter call after shutdown
         # counts locally rather than reaching a closed connection.
         ratelimit.set_backend(ratelimit.MemoryBackend())
-        await client.aclose()
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                logger.exception("rate limit: redis client teardown failed")
 
 
 app = FastAPI(title="ClipFarm API", version="0.1.0", lifespan=lifespan)

@@ -16,20 +16,29 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.config import settings
+from app.auth import get_current_user_id
+from app.config import Settings, settings
 from app.routers import clips, games, posts, profiles
 from app.services import ratelimit
 from app.services.ratelimit import MemoryBackend, RateLimiter
 
-# path -> the policy that path must carry. Both halves matter: a route with the
-# wrong policy is throttled at somebody else's number.
+# path -> (policy name, the settings field it reads, the number that field
+# defaults to). All three, because the name alone pins almost nothing: a policy
+# can carry the right name and read another route's setting, and every default
+# can be raised to 30000, with the name-only check still green. The README,
+# config.py and four route docstrings all state these numbers as decisions;
+# this table is what makes them true.
 THROTTLED = {
-    ("/users/{handle}", "GET"): "profile",
-    ("/posts", "GET"): "user_posts",
-    ("/games/{game_id}", "GET"): "game",
-    ("/games/{game_id}/clips", "GET"): "games_clips",
-    ("/clips/{clip_id}/share", "GET"): "share",
-    ("/posts/{post_id}", "GET"): "post",
+    ("/users/{handle}", "GET"): ("profile", "rate_limit_profile_per_minute", 30),
+    ("/posts", "GET"): ("user_posts", "rate_limit_user_posts_per_minute", 30),
+    ("/games/{game_id}", "GET"): ("game", "rate_limit_game_per_minute", 60),
+    ("/games/{game_id}/clips", "GET"): (
+        "games_clips",
+        "rate_limit_games_clips_per_minute",
+        60,
+    ),
+    ("/clips/{clip_id}/share", "GET"): ("share", "rate_limit_share_per_minute", 120),
+    ("/posts/{post_id}", "GET"): ("post", "rate_limit_post_per_minute", 120),
 }
 
 ROUTERS = [clips.router, games.router, posts.router, profiles.router]
@@ -45,23 +54,71 @@ def _all_routes():
                 yield route.path, method, route
 
 
-def _policies_on(route) -> list[str]:
+def _limiters_on(route) -> list:
     return [
-        d.dependency.policy.name
+        d.dependency
         for d in (route.dependencies or [])
         if isinstance(getattr(d, "dependency", None), RateLimiter)
     ]
 
 
-@pytest.mark.parametrize("path,method,expected", [(p, m, n) for (p, m), n in THROTTLED.items()])
+def _policies_on(route) -> list[str]:
+    return [limiter.policy.name for limiter in _limiters_on(route)]
+
+
+def _dependency_callables(route) -> set:
+    """Every callable in the route's resolved dependency tree."""
+    seen = set()
+    stack = list(getattr(route.dependant, "dependencies", []))
+    while stack:
+        dep = stack.pop()
+        if dep.call is not None:
+            seen.add(dep.call)
+        stack.extend(dep.dependencies)
+    return seen
+
+
+def _route_for(path, method):
+    for route_path, route_method, route in _all_routes():
+        if (route_path, route_method) == (path, method):
+            return route
+    raise AssertionError(f"{method} {path} is not registered on any router")
+
+
+@pytest.mark.parametrize(
+    "path,method,expected", [(p, m, v) for (p, m), v in THROTTLED.items()]
+)
 def test_every_anonymous_read_carries_its_limiter(path, method, expected):
-    found = [
-        _policies_on(route)
-        for route_path, route_method, route in _all_routes()
-        if (route_path, route_method) == (path, method)
-    ]
-    assert found, f"{method} {path} is not registered on any router"
-    assert found[0] == [expected], f"{method} {path} carries {found[0]}, expected [{expected}]"
+    name, setting, default = expected
+    limiters = _limiters_on(_route_for(path, method))
+    assert [limiter.policy.name for limiter in limiters] == [name], (
+        f"{method} {path} carries {[x.policy.name for x in limiters]}, expected [{name}]"
+    )
+    policy = limiters[0].policy
+    # The setting, not just the name: a policy reading another route's field is
+    # throttled at somebody else's number and the name check cannot see it.
+    assert policy.setting == setting
+    assert policy.window_seconds == 60, "the numbers above are all per minute"
+    # The default off the field itself rather than the live Settings, so a test
+    # elsewhere that monkeypatched a limit cannot make this pass or fail.
+    assert Settings.model_fields[setting].default == default
+
+
+@pytest.mark.parametrize(
+    "path,method", [(p, m) for (p, m) in THROTTLED], ids=lambda v: str(v)
+)
+def test_every_throttled_read_stays_anonymous(path, method):
+    """The mirror image of the download change, and the likelier regression.
+
+    Someone "making /share consistent with /download" would break every public
+    share link. Nothing else in the suite would notice: these routes are
+    exercised by calling their coroutines directly, which never resolves an
+    auth dependency at all.
+    """
+    calls = _dependency_callables(_route_for(path, method))
+    assert get_current_user_id not in calls, (
+        f"{method} {path} now requires auth; it is an anonymous read"
+    )
 
 
 def test_the_download_route_requires_auth_instead_of_a_limiter():
@@ -161,6 +218,28 @@ def test_retry_after_is_exposed_to_the_browser():
     cors = [m for m in app.user_middleware if "CORS" in m.cls.__name__]
     assert cors, "no CORS middleware"
     assert "Retry-After" in cors[0].kwargs["expose_headers"]
+
+
+def test_a_malformed_redis_url_does_not_crash_the_boot(monkeypatch):
+    """Before this lifespan existed, a bad REDIS_URL booted fine.
+
+    `from_url` validates the scheme eagerly — `_check_redis` binds its client
+    outside the try for exactly that reason — so an unguarded lifespan turns a
+    typo in one env var into a crash loop. That is a worse outage than an
+    unthrottled read surface, and not a trade this card gets to make: the
+    limiter falls back to counting in-process and /health goes on saying redis
+    is down.
+    """
+    import app.main as main
+
+    monkeypatch.setattr(settings, "redis_url", "postgres://not-a-redis-url")
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend())
+
+    async def drive():
+        async with main.lifespan(main.app):
+            assert isinstance(ratelimit.get_backend(), MemoryBackend)
+
+    asyncio.run(drive())
 
 
 def test_the_lifespan_installs_and_removes_the_redis_backend(monkeypatch):

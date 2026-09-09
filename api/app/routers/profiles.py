@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user_id, get_optional_user_id
+from app.auth import get_current_user_id
 from app.database import get_db
 from app.models.user import User
 from app.schemas.profile import HandleAvailability, MeOut, ProfileOut, ProfileUpdate
@@ -22,9 +22,6 @@ router = APIRouter(prefix="/users", tags=["profiles"])
 
 DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
-# Only get_profile takes one (CF-186): it is anonymous, and the limiter gives a
-# signed-in caller their own budget rather than sharing the address's.
-ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
 
 # A handle may be changed once per this window.
 #
@@ -386,7 +383,7 @@ async def upload_avatar(user_id: UserId, db: DB, file: UploadFile = File(...)):
     response_model=ProfileOut,
     dependencies=[Depends(rate_limit(POLICIES["profile"]))],
 )
-async def get_profile(handle: str, db: DB, viewer_id: ViewerId = None):
+async def get_profile(handle: str, db: DB):
     """Public profile by handle.
 
     Registered last so it can't shadow `/users/me` or `/users/handle-available`
@@ -426,11 +423,18 @@ async def get_profile(handle: str, db: DB, viewer_id: ViewerId = None):
     per-caller counter the two say the same thing about whether a handle
     exists, so the honest answer costs nothing here.
 
-    `viewer_id` is taken for the limiter alone — nothing below reads it. It
-    means a signed-in enumerator spends their own budget rather than the
-    address's, which is the better trade in both directions: a shared office
-    does not throttle itself, and a walker who signed in is identifiable and
-    bannable in a way an address is not.
+    The budget is per client ADDRESS, not per account, even for a signed-in
+    caller — the one exposure-B routes do differently. Signup here is
+    self-serve, so a per-account bucket is one an attacker mints: "create an
+    account, spend 30, create another" turns 30/min into 30N/min and the figure
+    above into a division. It also keeps this route free of an auth dependency
+    it otherwise has no use for, which matters because `get_optional_user_id`
+    re-raises a JWKS failure — a public profile read should not start answering
+    503 because auth is having a bad day. `Policy.by_address` carries the rule.
+
+    The cost is that an office behind one address shares this budget. That is
+    the right side to err on: nothing in the app polls this route, so 30/min is
+    far above real browsing, and being wrong the other way is silently no limit.
     """
     user = await _by_handle(handle, db)
     if user.username_is_generated:

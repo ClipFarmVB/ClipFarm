@@ -237,7 +237,9 @@ async def list_user_posts(
     throttled.** 30/min per signed-in user, or per client address when there is
     none — deliberately the same number as `GET /users/{handle}`. A walker
     hitting either door learns the same thing, so a different budget on one of
-    them would only advertise which is cheaper.
+    them would only advertise which is cheaper. Per ADDRESS even when the
+    caller is signed in, unlike the exposure-B routes: signup is self-serve, so
+    a per-account budget is one an attacker mints. `Policy.by_address`.
 
     Capped rather than paged, deliberately for now — a profile grid shows the
     recent ones and the card scopes it there. When it does need paging it wants

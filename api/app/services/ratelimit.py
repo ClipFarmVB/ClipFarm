@@ -53,6 +53,21 @@ limiter has never been what keeps a private clip private.
 **Keys are prefixed ``rl:``** because ``redis_url`` and ``celery_broker_url``
 point at the same database (db 0), so the limiter shares a keyspace with the
 broker.
+
+That prefix prevents a name collision and not a memory one, which is worth
+stating because Render's instance is ``noeviction``: filling it makes broker
+writes fail, so an attack on the read surface could stop job processing.
+Two things bound it. Every key carries a one-window TTL, so steady-state
+cardinality is distinct callers per minute per policy rather than anything
+cumulative; and ``REDIS_URL`` is a separate setting from ``CELERY_BROKER_URL``,
+so an operator who wants the guarantee rather than the bound points them at
+different instances. A shared *database number* would not help — memory is per
+instance.
+
+**``EXPIRE ... NX`` needs Redis 7.0 or newer.** Against 6.x the queued command
+is rejected, ``execute()`` raises, and the limiter then fails open permanently
+with one log line a minute — quiet, and indistinguishable from Redis being
+fine. Render's keyvalue is 7.x; DEPLOY.md says so for the VPS path.
 """
 # DELIBERATELY NO `from __future__ import annotations`.
 #
@@ -97,11 +112,29 @@ class Policy:
     instead of a deploy. ``name`` is what goes in the key: two policies must
     never share a counter, or ``/share`` and ``/users/{handle}`` would spend
     each other's budget.
+
+    ``by_address`` forces the key onto the client address even for a signed-in
+    caller. **Exposure A sets it and exposure B does not**, and the difference
+    is the whole point of splitting the card:
+
+    * B bounds *load from a client*, so a signed-in caller should have their own
+      budget — the game page polls from an authenticated owner, and a household
+      behind one NAT must not throttle itself.
+    * A bounds *enumeration from a source*. Signup here is self-serve, so a
+      per-account bucket is a bucket an attacker can mint: "create account, spend
+      30, create another" turns 30/min into 30N/min and the walk-time figure into
+      a division. Keying on the address is what makes the budget mean something.
+
+    The cost of A's choice is a shared office sharing one profile-read budget.
+    That is the right side to err on: nothing in the app polls those two routes,
+    so 30/min is far above real browsing, and being wrong the other way is
+    silently no limit at all.
     """
 
     name: str
     setting: str
     window_seconds: int = 60
+    by_address: bool = False
 
     @property
     def limit(self) -> int:
@@ -114,8 +147,11 @@ class Policy:
 POLICIES: dict[str, Policy] = {
     # Exposure A — enumeration. Deliberately the same number for both: a
     # different one would only tell a walker which of the two doors is cheaper.
-    "profile": Policy("profile", "rate_limit_profile_per_minute"),
-    "user_posts": Policy("user_posts", "rate_limit_user_posts_per_minute"),
+    # by_address because signup is self-serve; see Policy.
+    "profile": Policy("profile", "rate_limit_profile_per_minute", by_address=True),
+    "user_posts": Policy(
+        "user_posts", "rate_limit_user_posts_per_minute", by_address=True
+    ),
     # Exposure B — content. The game pair is sized by the detail page's own
     # polling; the share pair is a load bound, not an anti-enumeration one.
     "game": Policy("game", "rate_limit_game_per_minute"),
@@ -178,6 +214,11 @@ class RedisBackend:
         count, _set, ttl = await pipe.execute()
         # -1 (no expiry) and -2 (no key) are both "cannot say"; the window is
         # the honest upper bound and the caller only uses this for Retry-After.
+        # No floor needed here, unlike MemoryBackend: TTL answers in whole
+        # seconds, and anything not strictly positive has already fallen through
+        # to the window. A `max(1, ...)` would be unreachable, and unreachable
+        # code that looks like a safety check is worse than none — it invites
+        # the reader to assume the case is handled somewhere.
         reset_in = ttl if ttl and ttl > 0 else window_seconds
         return Hit(int(count), int(reset_in))
 
@@ -228,7 +269,14 @@ def client_ip(request: Request) -> str:
     peer = request.client.host if request.client else "unknown"
     if hops <= 0:
         return peer
-    forwarded = request.headers.get("x-forwarded-for", "")
+    # `getlist`, not `get`. A proxy may APPEND A SECOND HEADER LINE rather than
+    # concatenate into the existing one, and nothing merges them for us —
+    # `.get` would return the first line only. A caller who sends their own
+    # X-Forwarded-For would then win against a proxy that appends a line,
+    # because the counting-from-the-right rule below would be counting inside
+    # the attacker's line. Joining every line first restores the one thing the
+    # rule depends on: that the last entries are the ones proxies wrote.
+    forwarded = ",".join(request.headers.getlist("x-forwarded-for"))
     parts = [p.strip() for p in forwarded.split(",") if p.strip()]
     if len(parts) < hops:
         # A chain shorter than we expect means the request did not come through
@@ -238,9 +286,13 @@ def client_ip(request: Request) -> str:
     return parts[-hops]
 
 
-def identity(request: Request, viewer_id: uuid.UUID | None) -> str:
-    """Who is spending this budget. Signed-in callers get their own."""
-    if viewer_id is not None:
+def identity(request: Request, viewer_id: uuid.UUID | None, policy: Policy) -> str:
+    """Who is spending this budget.
+
+    Signed-in callers get their own, except on an ``by_address`` policy, where
+    an account is something the attacker can mint — see ``Policy``.
+    """
+    if viewer_id is not None and not policy.by_address:
         return f"user:{viewer_id}"
     return f"ip:{client_ip(request)}"
 
@@ -273,7 +325,7 @@ class RateLimiter:
         policy = self.policy
         if not settings.rate_limit_enabled:
             return
-        key = f"rl:{policy.name}:{identity(request, viewer_id)}"
+        key = f"rl:{policy.name}:{identity(request, viewer_id, policy)}"
         try:
             hit = await get_backend().hit(key, policy.window_seconds)
         except Exception as exc:  # noqa: BLE001 — fail open, see module docstring

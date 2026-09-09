@@ -226,6 +226,11 @@ another address, *every* caller looks like the proxy and shares one bucket.
 Left at the default of `0` the limiter is not merely ineffective, it throttles
 all of your readers together, and nothing local will show it.
 
+**Redis must be 7.0 or newer.** The limiter sets its window with
+`EXPIRE ... NX`, which 6.x rejects — the limiter then fails open permanently
+and logs once a minute, which looks exactly like Redis being fine. Check your
+own if you supply Redis rather than using the compose stack's image.
+
 ---
 
 ## Known limitations & related tickets

@@ -1,7 +1,8 @@
 """The precondition `render.yaml` turns SOCIAL_ENABLED on against (CF-106/109).
 
-Production runs the social surface with CF-116 (abuse/moderation) still open.
-CF-186 (rate limiting, #189) was the other one and has landed. The argument for doing that is one sentence:
+Production runs the social surface with CF-116 (abuse/moderation) still open —
+CF-186 (rate limiting, #189) was the other precondition and has since landed.
+The argument for running it anyway is one sentence:
 **nothing user-generated can be public.** Games and clips both default to
 `private`, no endpoint can widen either, so a post can only ever be private,
 `create_post` refuses wider tiers regardless, and the anonymous read endpoints

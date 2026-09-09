@@ -15,6 +15,7 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
+from starlette.datastructures import Headers
 
 from app.config import settings
 from app.services import ratelimit
@@ -39,10 +40,27 @@ class FakeClock:
 
 
 class FakeRequest:
-    """Only what client_ip touches: a headers mapping and a peer."""
+    """Only what client_ip touches: headers and a peer.
 
-    def __init__(self, peer: str = "198.51.100.9", forwarded: str | None = None) -> None:
-        self.headers = {"x-forwarded-for": forwarded} if forwarded else {}
+    A real `Headers`, not a dict, because the interesting case is a REPEATED
+    header. HTTP allows `X-Forwarded-For` to appear more than once and nothing
+    merges the lines, so a dict-shaped fake cannot express the case where a
+    caller sends their own line and a proxy appends a second one — which is
+    exactly the bypass `client_ip` has to survive.
+
+    `forwarded` takes a string for the ordinary single-line case, or a list for
+    one entry per header line.
+    """
+
+    def __init__(
+        self,
+        peer: str = "198.51.100.9",
+        forwarded: str | list[str] | None = None,
+    ) -> None:
+        lines = [forwarded] if isinstance(forwarded, str) else (forwarded or [])
+        self.headers = Headers(
+            raw=[(b"x-forwarded-for", line.encode()) for line in lines]
+        )
         self.client = type("C", (), {"host": peer})()
 
 
@@ -263,6 +281,27 @@ def test_a_caller_cannot_pick_their_bucket_by_prepending_an_address(monkeypatch)
     assert client_ip(spoofed) == client_ip(other)
 
 
+def test_a_second_forwarded_header_line_cannot_outrank_the_proxys(monkeypatch):
+    """The bypass that defeats the whole design if `.get` is used.
+
+    `Headers.get` returns the FIRST matching line and silently drops the rest.
+    A proxy is free to append a second `X-Forwarded-For` line rather than
+    concatenate into the caller's, and nothing merges them — so with `.get`,
+    counting from the right would be counting inside the ATTACKER's line, and
+    every caller could hand themselves a private bucket by sending one header.
+
+    Joining every line first is what restores the invariant the rule rests on:
+    that the rightmost entries are the ones proxies wrote.
+    """
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 1)
+    request = FakeRequest(peer="10.0.0.1", forwarded=["6.6.6.6", "203.0.113.7"])
+    assert client_ip(request) == "203.0.113.7"
+
+    # ...and rotating the attacker's line must not buy a fresh budget.
+    other = FakeRequest(peer="10.0.0.1", forwarded=["7.7.7.7", "203.0.113.7"])
+    assert client_ip(request) == client_ip(other)
+
+
 def test_two_trusted_hops_read_past_the_inner_proxy(monkeypatch):
     # Each proxy appends what it saw, so with two the client is second from the
     # right and the last entry is the outer proxy's view of the inner one.
@@ -363,3 +402,69 @@ def test_keys_are_namespaced_away_from_the_celery_broker(monkeypatch):
     monkeypatch.setattr(settings, "rate_limit_profile_per_minute", 10)
     call(rate_limit(TEST_POLICY), FakeRequest(peer="203.0.113.7"))
     assert redis.calls[0] == ("incr", "rl:test:ip:203.0.113.7")
+
+
+# ── exposure A keys on the address, not the account ──────────────────────────
+
+def test_an_enumeration_policy_ignores_the_account(monkeypatch):
+    """Signup is self-serve, so a per-account budget is one an attacker mints.
+
+    Without this, "create an account, spend 30, create another" turns the
+    profile budget into 30 per account per minute and the walk-time figure in
+    get_profile's docstring into a division.
+    """
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend(clock=FakeClock()))
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(settings, "rate_limit_profile_per_minute", 2)
+    dep = rate_limit(ratelimit.POLICIES["profile"])
+    request = FakeRequest(peer="203.0.113.7")
+
+    call(dep, request, uuid.uuid4())
+    call(dep, request, uuid.uuid4())
+    # A third account, same address, no budget left.
+    with pytest.raises(HTTPException) as exc:
+        call(dep, request, uuid.uuid4())
+    assert exc.value.status_code == 429
+
+
+def test_a_content_policy_still_gives_a_signed_in_caller_their_own(monkeypatch):
+    # The other half of the split: exposure B bounds load from a client, and a
+    # household behind one NAT must not throttle itself.
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend(clock=FakeClock()))
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(settings, "rate_limit_game_per_minute", 2)
+    dep = rate_limit(ratelimit.POLICIES["game"])
+    request = FakeRequest(peer="203.0.113.7")
+
+    call(dep, request, uuid.uuid4())
+    call(dep, request, uuid.uuid4())
+    assert call(dep, request, uuid.uuid4()) is None
+
+
+def test_exactly_the_enumeration_policies_key_by_address():
+    # Stated as a set so adding a policy forces a decision about which it is,
+    # rather than defaulting to the account key and being wrong quietly.
+    by_address = {n for n, p in ratelimit.POLICIES.items() if p.by_address}
+    assert by_address == {"profile", "user_posts"}
+
+
+def test_retry_after_is_never_zero_at_the_end_of_a_window():
+    """A Retry-After of 0 tells the client to retry immediately.
+
+    That is the one thing a 429 exists to prevent, and it is reachable only at
+    the very end of a window — which is why the clock has to be driven almost
+    all the way there. A test taken at the start of the window has 60 seconds
+    remaining and passes with or without the floor.
+    """
+    clock = FakeClock()
+    memory = MemoryBackend(clock=clock)
+    asyncio.run(memory.hit("k", 60))
+    clock.advance(59.9)
+    assert asyncio.run(memory.hit("k", 60)).reset_in >= 1
+
+    # The Redis backend needs no floor: TTL answers in whole seconds and
+    # anything not strictly positive falls through to the window.
+    assert asyncio.run(RedisBackend(StubRedis(ttl=0)).hit("k", 60)).reset_in == 60
+    assert asyncio.run(RedisBackend(StubRedis(ttl=1)).hit("k", 60)).reset_in == 1
