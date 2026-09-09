@@ -69,15 +69,33 @@ export const FeedPost = memo(function FeedPost({
   // ref because it renders something.
   const [stalled, setStalled] = useState(false);
   const [shareState, setShareState] = useState<"idle" | "copied" | "failed">("idle");
-  // Per-card, seeded from the payload; the parent keys cards by `post.id`, so
-  // this cannot bleed between posts. The server's answer replaces the guess on
-  // every write — see `LikeState` in `lib/api.ts` for why both writes return
-  // one.
+  // Per-card, seeded from the payload. The server's answer replaces the guess
+  // on every write — see `LikeState` in `lib/api.ts` for why both writes
+  // return one.
   const [like, setLike] = useState({ liked: post.viewer_has_liked, count: post.like_count });
   const [likeNote, setLikeNote] = useState<string | undefined>(undefined);
   const likeBusy = useRef(false);
   const [commentCount, setCommentCount] = useState(post.comment_count);
   const [commentsOpen, setCommentsOpen] = useState(false);
+
+  // Re-seed when the card is handed a different post.
+  //
+  // `useState` only reads its argument on the first render, so without this the
+  // counts and the fill are frozen at whatever the first payload said. The feed
+  // keys cards by `post.id` and only appends pages, so today a new id means a
+  // new component and this never fires — which is precisely why it is cheap to
+  // add and expensive to discover later: the day the feed refetches page one or
+  // refreshes a post in place, every visible card would keep rendering the old
+  // like count with no way to tell.
+  const seededFor = useRef(post.id);
+  useEffect(() => {
+    if (seededFor.current === post.id) return;
+    seededFor.current = post.id;
+    setLike({ liked: post.viewer_has_liked, count: post.like_count });
+    setCommentCount(post.comment_count);
+    setLikeNote(undefined);
+    setCommentsOpen(false);
+  }, [post.id, post.viewer_has_liked, post.like_count, post.comment_count]);
   const { playback: pb } = post;
 
   /**

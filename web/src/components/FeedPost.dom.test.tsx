@@ -279,16 +279,49 @@ describe("liking a post", () => {
     expect(railCount("Like")).toContain("Failed");
   });
 
-  it("unlikes when the viewer has already liked it", async () => {
-    unlikePost.mockResolvedValue({ liked: false, like_count: 2 });
-    mount({ ...makePost(), viewer_has_liked: true } as Post);
+  it("unlikes when the viewer has already liked it, emptying before the server answers", async () => {
+    // The optimistic step is asserted on THIS path too, not just the like.
+    // Resolving immediately never observes the guess, so a version that always
+    // added one — never subtracting on an unlike — read the server's number and
+    // passed.
+    let release: (v: { liked: boolean; like_count: number }) => void = () => {};
+    unlikePost.mockReturnValue(new Promise((r) => (release = r)));
+    mount({ ...makePost(), viewer_has_liked: true } as Post); // count 3
 
     expect(byLabel("Unlike")).toHaveLength(1);
     await click(byLabel("Unlike")[0]);
 
     expect(unlikePost).toHaveBeenCalledWith("post-1");
     expect(likePost).not.toHaveBeenCalled();
+    expect(byLabel("Like")).toHaveLength(1);
     expect(railCount("Like")).toContain("2");
+
+    await act(async () => release({ liked: false, like_count: 7 }));
+    expect(railCount("Like")).toContain("7");
+  });
+
+  it("re-seeds when the card is handed a different post", async () => {
+    // `useState` reads its argument once, so without the sync effect the counts
+    // and the fill freeze at the first payload. Unreachable while the feed keys
+    // cards by id and only appends — which is why nothing would report it the
+    // day that stops being true.
+    mount(makePost()); // like_count 3, comment_count 1, not liked
+    expect(railCount("Like")).toContain("3");
+
+    await act(async () => {
+      root.render(
+        <FeedPost
+          post={{ ...makePost(), id: "post-2", like_count: 9, comment_count: 4, viewer_has_liked: true } as Post}
+          active={false}
+          loaded={false}
+          muted
+          onToggleSound={() => {}}
+        />,
+      );
+    });
+
+    expect(railCount("Unlike")).toContain("9");
+    expect(railCount("Comments")).toContain("4");
   });
 
   it("sends one request for a double tap", async () => {

@@ -11,6 +11,8 @@ import {
   type Comment,
   type Post,
 } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
+import { SOCIAL_ENABLED } from "@/lib/features";
 import { useFocusTrap } from "@/lib/useFocusTrap";
 import { useMe } from "@/lib/useMe";
 
@@ -39,13 +41,27 @@ export function CommentSheet({
   onClose: () => void;
   onCountChange?: (delta: number) => void;
 }) {
-  const me = useMe(true);
+  const { user, loading: authLoading } = useAuth();
+  // Gated like every other caller, not `true`. `useMe`'s own docstring says
+  // `enabled` is false while signed out precisely to avoid a guaranteed 401 —
+  // and `fetchMe` caches only on success, so an unconditional `true` re-fires
+  // that 401 on EVERY open of this sheet rather than once. The answer is the
+  // same either way (`me === null` shows no delete controls, which is the
+  // right non-optimistic reading of both "signed out" and "still loading"),
+  // so this is about the requests, not the behaviour.
+  const me = useMe(SOCIAL_ENABLED && Boolean(user) && !authLoading);
   const [items, setItems] = useState<Comment[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [saving, setSaving] = useState(false);
+  // Serialises deletes, the way `saving` serialises posting and FeedPost's
+  // `likeBusy` serialises the like. Without it a double-tap on a 22px trash
+  // icon sends two DELETEs: the second either draws a "not found" banner for a
+  // deletion that worked, or — if both clear the pre-check — decrements the
+  // card's count twice for one comment.
+  const [deleting, setDeleting] = useState<string | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -76,9 +92,18 @@ export function CommentSheet({
   }
 
   useEffect(() => {
+    // Reset before loading. `load` APPENDS, and `cursor` is not otherwise
+    // cleared, so without this a change of `post.id` on a mounted sheet would
+    // staple the new post's comments under the old post's and go on paging with
+    // the old post's cursor. Unreachable today — the feed keys cards by id and
+    // only appends pages — which is exactly why it is worth writing down rather
+    // than relying on.
+    setItems(null);
+    setCursor(null);
+    setError(null);
     void load(null);
-    // Only on mount: paging goes through the button below, on the cursor the
-    // server handed back.
+    // Only on `post.id`: paging goes through the button below, on the cursor
+    // the server handed back.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [post.id]);
 
@@ -101,12 +126,17 @@ export function CommentSheet({
   }
 
   async function remove(comment: Comment) {
+    if (deleting) return;
+    setDeleting(comment.id);
+    setError(null);
     try {
       await deleteComment(comment.id);
       setItems((prev) => (prev ?? []).filter((c) => c.id !== comment.id));
       onCountChange?.(-1);
     } catch (e) {
       setError(e instanceof Error && e.message ? e.message : "Could not delete that comment.");
+    } finally {
+      setDeleting(null);
     }
   }
 
@@ -162,8 +192,9 @@ export function CommentSheet({
                   <button
                     type="button"
                     onClick={() => void remove(c)}
+                    disabled={deleting !== null}
                     aria-label="Delete comment"
-                    className="shrink-0 rounded p-1 text-subtle hover:text-red-400"
+                    className="shrink-0 rounded p-1 text-subtle hover:text-red-400 disabled:opacity-40"
                   >
                     <Trash2 size={14} />
                   </button>
@@ -181,7 +212,13 @@ export function CommentSheet({
         </ul>
 
         {error && (
-          <p className="mx-4 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+          // Announced: in a modal this banner is the ONLY feedback for a failed
+          // post or delete, and focus stays in the textarea, so a screen-reader
+          // user would otherwise get silence where a sighted one gets a reason.
+          <p
+            role="alert"
+            className="mx-4 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400"
+          >
             {error}
           </p>
         )}
