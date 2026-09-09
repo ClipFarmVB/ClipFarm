@@ -23,6 +23,7 @@ from app.schemas.clip import (
     ClipTrimRequest,
 )
 from app.services import access, storage
+from app.services.ratelimit import POLICIES, rate_limit
 from app.services.filenames import clip_download_filename
 from app.workers.celery_app import celery_app
 
@@ -33,6 +34,10 @@ router = APIRouter(tags=["clips"])
 DB = Annotated[AsyncSession, Depends(get_db)]
 # Read paths accept a signed-out viewer; writes keep get_current_user_id.
 ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
+# /clips/{id}/download is the one read that does not (CF-186) — see its
+# docstring. Spelled as an alias beside the others rather than inlined, matching
+# games.py and posts.py.
+UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
 
 
 async def _get_viewable_clip(
@@ -112,7 +117,11 @@ def _clip_out(clip: Clip, game: Game, *, player_name: str | None = None) -> Clip
     return out
 
 
-@router.get("/games/{game_id}/clips", response_model=list[ClipOut])
+@router.get(
+    "/games/{game_id}/clips",
+    response_model=list[ClipOut],
+    dependencies=[Depends(rate_limit(POLICIES["games_clips"]))],
+)
 async def list_clips(
     game_id: uuid.UUID,
     db: DB,
@@ -125,6 +134,15 @@ async def list_clips(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 50,
 ):
+    """Clips in one game, visibility-scoped (CF-108).
+
+    **Anonymous exposure B (CF-186, #189): UUID-keyed content, throttled.**
+    Takes a game id, so it cannot be walked; the exposure is load rather than
+    enumeration. 60/min per signed-in user, or per client address when there
+    is none — deliberately the same number as `GET /games/{id}`, because the
+    detail page fetches both together and refetches this one on every filter
+    change. A tighter number here would make the page throttle itself.
+    """
     # The game itself must be viewable, else 404 (indistinguishable from a
     # game that doesn't exist — see access.assert_can_view_game).
     # Take the return value: assert_can_view_game 404s a None game and hands
@@ -389,12 +407,28 @@ async def delete_clips(
     return {"deleted": deleted}
 
 
-@router.get("/clips/{clip_id}/share")
+@router.get(
+    "/clips/{clip_id}/share",
+    dependencies=[Depends(rate_limit(POLICIES["share"]))],
+)
 async def share_clip(
     clip_id: uuid.UUID,
     db: DB,
     viewer_id: ViewerId = None,
 ):
+    """A playable URL for a clip a viewer may see (CF-108).
+
+    **Anonymous exposure B (CF-186, #189): UUID-keyed content, throttled
+    loosely — 120/min, the most generous budget here.** #189 makes the point
+    directly: a per-caller limit *over-throttles* this route, because traffic
+    on a deliberately public clip is the success case and not the attack. The
+    limit is present to bound the presign cost, not to discourage sharing.
+
+    It stays anonymous, unlike its sibling `/download`. The two now differ in
+    authorization as well as in what they mint, which is deliberate: this one
+    plays inline and is meant to be passed around; that one hands over the
+    bytes.
+    """
     # Read path (CF-108): anyone who may view the clip may mint a share link.
     clip, _game = await _get_viewable_clip(clip_id, viewer_id, db)
     # NOTE: still a 1h presigned URL even for public clips. CF-108's card flags
@@ -408,7 +442,7 @@ async def share_clip(
 async def download_clip(
     clip_id: uuid.UUID,
     db: DB,
-    viewer_id: ViewerId = None,
+    user_id: UserId,
 ):
     """The same object as /share, under a name a human can read (CF-100).
 
@@ -418,22 +452,40 @@ async def download_clip(
     together would mean one caller's query parameter deciding whether the other
     caller's link plays or downloads.
 
-    Authorization is /share's, via the same helper — downloading is a read, and
-    the deliberate asymmetry access.py documents (a public clip inside a private
-    game is reachable by direct link) applies here for the same reason.
+    **Anonymous exposure B (CF-186, #189): THIS ROUTE REQUIRES AUTH.** It is
+    the only read that hands over the bytes rather than a row — a presigned
+    attachment URL for the whole clip — so the exposure is an egress bill, not
+    enumeration. A per-caller limit is the wrong instrument for that: a
+    distributed pull of one leaked link costs real money and never trips a
+    per-address counter. Requiring a credential is what actually bounds it, and
+    it costs nothing in the product, because every surface that offers a
+    download already sits behind the web app's auth (ClipCard and ClipModal
+    render only on /games/* and /collections/*, both gated).
+
+    **So its authorization deliberately diverges from /share's**, which it used
+    to share via the same helper. The asymmetry access.py documents — a public
+    clip inside a private game is reachable by direct link — still holds here,
+    but now only for a viewer who is signed in. Do not re-merge the two routes
+    on the grounds that they are "the same read".
+
+    Not rate limited on top of that. Auth is the control, and a limiter that
+    fails open (services/ratelimit.py) would add a failure mode without adding
+    a guarantee. The residual it leaves is a compromised or throwaway account
+    minting attachment URLs in bulk; that wants an egress quota rather than a
+    per-minute counter, and it is not what #189 asked for.
 
     Same 3600s expiry as /share, deliberately: that expiry is an open question
     flagged there, and answering it differently in two places would settle it by
     accident.
     """
-    clip, game = await _get_viewable_clip(clip_id, viewer_id, db)
+    clip, game = await _get_viewable_clip(clip_id, user_id, db)
 
     # The filename is part of the response, not just decoration: presign_url
     # puts it in the URL's ResponseContentDisposition, in cleartext. So the
     # question is not only "may this viewer have the bytes" but "may they have
     # these strings" — a different question, answered in access.py alongside
     # the asymmetry that makes the two differ. CF-101's zip needs the same gate.
-    identify = access.can_identify(viewer_id, game)
+    identify = access.can_identify(user_id, game)
 
     # Explicit fetch, not clip.player: the relationship is not eagerly loaded
     # anywhere, and touching it here would lazy-load inside the event loop and

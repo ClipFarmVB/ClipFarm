@@ -879,6 +879,50 @@ class Settings(BaseSettings):
     r2_bucket_name: str = "clipfarm"
     r2_public_url: str = ""
 
+    # ── Anonymous read limits (CF-186, #189) ─────────────────────────────────
+    # Seven endpoints answer without a credential. Six are throttled per caller
+    # (see services/ratelimit.py for the two exposures and the fail-open
+    # posture); GET /clips/{id}/download is the seventh and requires auth
+    # instead. All limits are per minute, per signed-in user, or per client
+    # address when there is no user.
+    #
+    # A switch, not a knob: the alternative to `rate_limit_enabled` is a code
+    # deploy while the incident is happening.
+    rate_limit_enabled: bool = True
+    # THE NUMBER OF REVERSE PROXIES IN FRONT OF THIS PROCESS, and the setting
+    # most likely to be wrong, because it is silent in both directions.
+    #
+    # uvicorn's own --forwarded-allow-ips defaults to 127.0.0.1 and
+    # scripts/render-start-api.sh passes nothing, so on Render `request.client`
+    # is the platform router for every request on Earth. Left at 0 there, the
+    # whole internet shares one bucket and the limiter throttles every reader
+    # at once — strictly worse than no limiter, and green in every local test.
+    # Set too high, a caller picks their own bucket by sending their own
+    # X-Forwarded-For.
+    #
+    # 0 is right for a direct-to-uvicorn run (docker compose, local dev). Render
+    # sets 1 in render.yaml; any VPS with Caddy or nginx in front wants 1 too
+    # (DEPLOY.md).
+    rate_limit_trusted_proxy_hops: int = Field(default=0, ge=0)
+    # Exposure A — handle-keyed enumeration. A wordlist walk needs thousands of
+    # hits, so 30/min puts a 10k-name list at ~5.5h per identity while a human
+    # reading profiles issues one call per profile.
+    rate_limit_profile_per_minute: int = Field(default=30, ge=1)
+    rate_limit_user_posts_per_minute: int = Field(default=30, ge=1)
+    # Exposure B — UUID-keyed content. The game pair is sized by the detail
+    # page, which polls GET /games/{id} every 5s while processing (12/min per
+    # open tab) and refetches the clips alongside it on every filter change; a
+    # tighter number here would make the page throttle itself.
+    rate_limit_game_per_minute: int = Field(default=60, ge=1)
+    rate_limit_games_clips_per_minute: int = Field(default=60, ge=1)
+    # Loosest deliberately: #189 notes a per-IP limit over-throttles /share,
+    # where traffic on a deliberately public clip is the success case. Present
+    # to bound the presign cost, not to discourage sharing. /posts/{id} is
+    # matched to it — also UUID-keyed, so also a load bound rather than an
+    # anti-enumeration one.
+    rate_limit_share_per_minute: int = Field(default=120, ge=1)
+    rate_limit_post_per_minute: int = Field(default=120, ge=1)
+
     # Redis / Celery
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"

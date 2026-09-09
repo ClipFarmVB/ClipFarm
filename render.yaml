@@ -138,9 +138,9 @@ services:
       #
       # **Turned on with the epic's preconditions knowingly unmet**, which is a
       # decision rather than an oversight and is recorded here so it is not
-      # rediscovered as a surprise. CF-186 (#189, rate limiting) and CF-116
-      # (abuse, moderation, counters) are both open, and this is what makes the
-      # anonymous read surface reachable.
+      # rediscovered as a surprise. CF-186 (#189, rate limiting) has since
+      # landed; CF-116 (abuse, moderation, counters) is still open, and this is
+      # what makes the anonymous read surface reachable.
       #
       # What bounds the exposure meanwhile: **nothing user-generated can be
       # public.** Games and clips both default to private and no write path
@@ -159,13 +159,18 @@ services:
       # viewer_id=None, which for an anonymous caller admits only public posts
       # over public clips — the set that cannot be non-empty today.
       #
-      # What is left is genuinely a load and enumeration-rate concern on an
-      # unthrottled route, and that is CF-186 (#189). It is the reason the
-      # ordering below is not optional.
+      # What was left is genuinely a load and enumeration-rate concern, and
+      # that was CF-186 (#189) — now discharged. The six anonymous reads are
+      # throttled per caller (see api/app/services/ratelimit.py) and
+      # GET /clips/{id}/download requires auth, which is why
+      # RATE_LIMIT_TRUSTED_PROXY_HOPS below is load-bearing rather than
+      # cosmetic: left at its default of 0, every caller behind Render's
+      # router shares one bucket and the limiter throttles the whole internet
+      # together.
       #
       # The order that must hold: whoever ships the clip-visibility write path
-      # is the person who makes "public" real, and rate limiting has to land
-      # before they do. Reassess this flag then, not after.
+      # is the person who makes "public" real. Rate limiting had to land before
+      # they do, and has. Reassess this flag when they land, not after.
       #
       # That ordering is a test, not a hope: api/tests/
       # test_no_visibility_write_path.py fails the day a router can widen a
@@ -176,6 +181,23 @@ services:
       # move; doing it in the same PR is what puts the decision in a diff.
       - key: SOCIAL_ENABLED
         value: "true"
+      # The number of reverse proxies in front of uvicorn — one, Render's
+      # router — and the setting the whole per-caller limiter rests on.
+      #
+      # uvicorn only rewrites `request.client` from X-Forwarded-For when the
+      # connecting peer is in --forwarded-allow-ips, which defaults to
+      # 127.0.0.1, and scripts/render-start-api.sh passes no override. Here the
+      # peer is the platform router on a private address, so `request.client`
+      # is that router for every request on Earth. This setting is what makes
+      # the limiter read the real client instead — see the field's comment in
+      # api/app/config.py for what goes wrong in each direction.
+      #
+      # It is not FORWARDED_ALLOW_IPS="*" because that also changes how the
+      # request's scheme is decided, which is a second behaviour nobody asked
+      # for, and because a rule in the repo is reviewable where a platform env
+      # var is not.
+      - key: RATE_LIMIT_TRUSTED_PROXY_HOPS
+        value: "1"
       - key: JWT_SECRET               # legacy; Supabase JWKS is source of truth. Auto-generated.
         generateValue: true
       - key: API_BASE_URL             # this service's own public URL (custom domain or *.onrender.com)

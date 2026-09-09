@@ -14,6 +14,7 @@ from app.models.post import Post
 from app.models.user import User
 from app.schemas.post import PostAuthor, PostCreate, PostOut, PostPlayback, PostUpdate
 from app.services import access, handles, storage
+from app.services.ratelimit import POLICIES, rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -198,13 +199,29 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
     return _serialize(post, clip, author)
 
 
-@router.get("/{post_id}", response_model=PostOut)
+@router.get(
+    "/{post_id}",
+    response_model=PostOut,
+    dependencies=[Depends(rate_limit(POLICIES["post"]))],
+)
 async def get_post(post_id: uuid.UUID, db: DB, viewer_id: ViewerId = None):
+    """One post, gated by its own tier and the clip beneath it.
+
+    **Anonymous exposure B (CF-186, #189): UUID-keyed content, throttled.**
+    120/min per signed-in user, or per client address when there is none.
+    Matched to `/clips/{id}/share` rather than to the game routes: a post id
+    cannot be walked, so this is a load bound and not an anti-enumeration one,
+    and a post is the object a public link points at.
+    """
     post, clip, author = await _load_for_read(post_id, viewer_id, db)
     return _serialize(post, clip, author)
 
 
-@router.get("", response_model=list[PostOut])
+@router.get(
+    "",
+    response_model=list[PostOut],
+    dependencies=[Depends(rate_limit(POLICIES["user_posts"]))],
+)
 async def list_user_posts(
     db: DB,
     username: str,
@@ -215,6 +232,14 @@ async def list_user_posts(
 
     Not a feed: the feed (CF-111) spans everyone you follow and is cursor
     paginated. This is scoped to a single handle.
+
+    **Anonymous exposure A (CF-186, #189): handle-keyed and enumerable,
+    throttled.** 30/min per signed-in user, or per client address when there is
+    none — deliberately the same number as `GET /users/{handle}`. A walker
+    hitting either door learns the same thing, so a different budget on one of
+    them would only advertise which is cheaper. Per ADDRESS even when the
+    caller is signed in, unlike the exposure-B routes: signup is self-serve, so
+    a per-account budget is one an attacker mints. `Policy.by_address`.
 
     Capped rather than paged, deliberately for now — a profile grid shows the
     recent ones and the card scopes it there. When it does need paging it wants

@@ -57,23 +57,33 @@ third caller belongs in a services/ module rather than in whichever router
 happened to define it first.
 
 **Unauthenticated surface.** Allowing anonymous reads means ``GET /games/{id}``,
-``GET /games/{id}/clips``, ``GET /clips/{id}/share`` and
-``GET /clips/{id}/download`` now reach the database without a credential,
-joining ``GET /users/{handle}`` from CF-107 — five unthrottled endpoints where
-there were none. The download one is the most expensive: it mints an attachment
-URL for the full clip, so an unthrottled caller can pull the bytes rather than
-just a row. Nothing can be public yet, so all of that traffic 404s today, making
-this a load question rather than a disclosure one.
+``GET /games/{id}/clips`` and ``GET /clips/{id}/share`` reach the database
+without a credential, joining ``GET /users/{handle}`` from CF-107 and, with the
+social surface on, ``GET /posts/{id}`` and ``GET /posts?username=``. Six
+endpoints where there were none.
 
-**That last sentence expires with CF-109.** The safety here is not the 404
-choice, it is that no row can be set `public` — so the moment CF-109 lands the
-visibility setter, an unauthenticated caller can walk ``/clips/{id}/download``
-and pull full clip bytes, unthrottled, with an egress bill attached. That makes
-rate limiting (CF-186, #189) a blocker on CF-109 rather than a parallel task,
-and this endpoint is what changed the severity of that ordering. The dependency
-is recorded on CF-109 (#139) too — a paragraph in a module nobody has to open
-is not an ordering constraint. The 404-not-403 choice below keeps none of them
-an existence oracle in the meantime.
+**All six are throttled per caller since CF-186 (#189)** — see
+``services/ratelimit.py`` for the two exposures, the numbers, and why the
+limiter fails open. Each route's own docstring says which exposure it belongs
+to and what was decided, which is that card's acceptance criterion.
+
+``GET /clips/{id}/download`` was the seventh and is no longer on this list: it
+is the only read that hands over the bytes rather than a row, and a distributed
+pull of a leaked link is an egress bill that a per-caller counter does nothing
+about. CF-186 put it behind authentication instead. **So it no longer shares
+/share's authorization**, which it did when both were written; do not re-merge
+them on the grounds that they are the same read.
+
+**Nothing user-generated can be public yet**, so all of that traffic still
+404s, which is what keeps this a load question rather than a disclosure one —
+and the reason is only that no row can be set `public`, not the 404 choice
+below. The moment the visibility setter lands (CF-109b, #398) these routes
+start serving real footage. That used to make rate limiting a blocker on it;
+the limiter has landed, so it no longer is. What remains is to reassess the
+numbers against real public traffic, which nobody can do until there is any.
+``api/tests/test_no_visibility_write_path.py`` is the guard that keeps the
+setter from arriving unnoticed, and it is #398's to delete. The 404-not-403
+choice below keeps none of these an existence oracle in the meantime.
 
 **Player names ride along with a viewable clip in the two listings, by design
 (CF-263).** ``list_clips`` and ``list_collection_clips`` attach ``player_name``

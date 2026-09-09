@@ -1,7 +1,8 @@
 """The precondition `render.yaml` turns SOCIAL_ENABLED on against (CF-106/109).
 
-Production runs the social surface with CF-186 (rate limiting, #189) and CF-116
-(abuse/moderation) still open. The argument for doing that is one sentence:
+Production runs the social surface with CF-116 (abuse/moderation) still open —
+CF-186 (rate limiting, #189) was the other precondition and has since landed.
+The argument for running it anyway is one sentence:
 **nothing user-generated can be public.** Games and clips both default to
 `private`, no endpoint can widen either, so a post can only ever be private,
 `create_post` refuses wider tiers regardless, and the anonymous read endpoints
@@ -13,8 +14,11 @@ and it stops being true the moment someone adds a visibility setter — which is
 a normal-looking feature PR, plausibly written by someone who never opens
 either file. `access.py`'s own docstring says as much: "that last sentence
 expires with CF-109". The failure mode is not a bug in the new endpoint; it is
-that shipping it silently converts four unthrottled anonymous routes from
-"always 404" into "serves real footage", `/clips/{id}/download` included.
+that shipping it silently converts the anonymous read routes from "always 404"
+into "serves real footage". Since CF-186 those routes are throttled per caller
+and `/clips/{id}/download` requires auth, so the sentence is narrower than it
+was — but throttled is not the same as safe, and the disclosure question this
+file guards is untouched by a rate limit.
 
 So the constraint is a test. It fails the day a write path appears, which is
 the day rate limiting stops being a parallel task and becomes a blocker — and
@@ -23,8 +27,8 @@ rather than in production.
 
 **Deleting this test is a legitimate thing to do.** It is not a claim that a
 visibility setter is wrong; it is a claim that landing one is a decision about
-CF-186's ordering. Whoever makes that decision deletes this file in the same
-PR, and the diff is where the argument gets recorded.
+an ordering CF-186 no longer blocks. Whoever makes that decision deletes this
+file in the same PR, and the diff is where the argument gets recorded.
 
 **What it can and cannot see.** It reads the AST of every module under
 `app/` for writes to a Clip or Game `visibility` attribute and for Core
@@ -38,8 +42,8 @@ mattered: CF-109 moves the visibility ladder into `app/services/access.py`
 — `widest_allowed`, `at_most`, `_effective` all live there — so a setter is
 now *more* likely to be written as a service helper than as router-local code,
 and the router would just call it. The guard would have passed, and it is the
-only thing standing between an ordinary-looking feature PR and an unthrottled
-anonymous read surface serving real footage. A guard that misses the idiomatic
+only thing standing between an ordinary-looking feature PR and an anonymous
+read surface serving real footage. A guard that misses the idiomatic
 home of the thing it guards is worse than none, because the green check is
 what stops anyone looking.
 """
@@ -145,11 +149,12 @@ def test_nothing_in_the_app_widens_a_clip_or_a_game(path):
     assert not writes, (
         f"{rel} writes a clip's or a game's visibility: {writes}. That is "
         "the change render.yaml's SOCIAL_ENABLED comment names as the one which "
-        "makes 'public' reachable — and with it the unthrottled anonymous read "
-        "endpoints, /clips/{id}/download among them. CF-186 (#189, rate "
-        "limiting) has to land first. If it has, or the ordering has been "
-        "reconsidered, delete this file in the same PR so the decision is in "
-        "the diff rather than in a silenced test."
+        "makes 'public' reachable — and with it the anonymous read endpoints. "
+        "CF-186 (#189, rate limiting) HAS LANDED: those six reads are throttled "
+        "per caller and /clips/{id}/download requires auth, so the ordering "
+        "this file was protecting is satisfied. Deleting it is now the "
+        "remaining decision — do it in the same PR as the setter, so the "
+        "argument is in the diff rather than in a silenced test."
     )
 
 

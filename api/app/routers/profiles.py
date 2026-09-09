@@ -14,6 +14,7 @@ from app.database import get_db
 from app.models.user import User
 from app.schemas.profile import HandleAvailability, MeOut, ProfileOut, ProfileUpdate
 from app.services import handles, storage
+from app.services.ratelimit import POLICIES, rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +378,11 @@ async def upload_avatar(user_id: UserId, db: DB, file: UploadFile = File(...)):
     return _serialize(user, MeOut)
 
 
-@router.get("/{handle}", response_model=ProfileOut)
+@router.get(
+    "/{handle}",
+    response_model=ProfileOut,
+    dependencies=[Depends(rate_limit(POLICIES["profile"]))],
+)
 async def get_profile(handle: str, db: DB):
     """Public profile by handle.
 
@@ -398,11 +403,38 @@ async def get_profile(handle: str, db: DB):
     guarantee, and it keeps that either way; being publicly resolvable is a
     separate thing the user should opt into by picking a name.
 
-    KNOWN, ACCEPTED FOR NOW: for claimed handles this is unauthenticated and
-    unthrottled, so it is enumerable — "findable by handle" and "bulk-listable
-    by a stranger" are different properties. CF-108 gates *content* visibility
-    and does not cover it. Tracked in CF-186 (#189); until then it is a
-    deliberate risk, not an oversight.
+    **Anonymous exposure A (CF-186, #189): handle-keyed and enumerable,
+    THROTTLED — the decision this route was waiting on.** "Findable by handle"
+    and "bulk-listable by a stranger" are different properties, and only the
+    first was ever decided; CF-108 gates *content* visibility and does not
+    cover this at all. #189 offered throttling or accepting explicitly. We
+    throttle: the handles are backfilled from email local parts, so for every
+    pre-CF-107 account they are guessable rather than random, and a wordlist
+    walk returns display name, bio and avatar for real accounts on a
+    youth-sports product.
+
+    30/min per signed-in user, or per client address when there is none. A
+    wordlist walk needs thousands of hits, so that puts a 10k-name list at
+    roughly five and a half hours per identity, while a human reading profiles
+    issues one call per profile and never approaches it. `GET /posts?username=`
+    carries the same number for the same reason.
+
+    Refusals are 429 with `Retry-After`, not the 404 that leaks less. Against a
+    per-caller counter the two say the same thing about whether a handle
+    exists, so the honest answer costs nothing here.
+
+    The budget is per client ADDRESS, not per account, even for a signed-in
+    caller — the one exposure-B routes do differently. Signup here is
+    self-serve, so a per-account bucket is one an attacker mints: "create an
+    account, spend 30, create another" turns 30/min into 30N/min and the figure
+    above into a division. It also keeps this route free of an auth dependency
+    it otherwise has no use for, which matters because `get_optional_user_id`
+    re-raises a JWKS failure — a public profile read should not start answering
+    503 because auth is having a bad day. `Policy.by_address` carries the rule.
+
+    The cost is that an office behind one address shares this budget. That is
+    the right side to err on: nothing in the app polls this route, so 30/min is
+    far above real browsing, and being wrong the other way is silently no limit.
     """
     user = await _by_handle(handle, db)
     if user.username_is_generated:
