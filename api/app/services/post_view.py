@@ -103,13 +103,23 @@ def _presign(stored_url: str | None, failures: list[str] | None = None) -> str |
 
 
 def _avatar(
-    url: str | None, *, r2_ready: bool, cache: dict[str, str | None] | None
+    url: str | None,
+    *,
+    r2_ready: bool,
+    cache: dict[str, str | None] | None,
+    failures: list[str] | None = None,
 ) -> str | None:
-    """Sign an avatar at most once per page."""
+    """Sign an avatar at most once per page.
+
+    `failures` is threaded through for the same reason `_playback` takes it:
+    the hoist that reached the clip URLs had not reached the avatar, so a
+    page's aggregated warning under-counted and each distinct avatar logged its
+    own traceback beside it.
+    """
     if url is None or cache is None:
-        return profiles.presign_avatar(url, r2_ready=r2_ready)
+        return profiles.presign_avatar(url, r2_ready=r2_ready, failures=failures)
     if url not in cache:
-        cache[url] = profiles.presign_avatar(url, r2_ready=r2_ready)
+        cache[url] = profiles.presign_avatar(url, r2_ready=r2_ready, failures=failures)
     return cache[url]
 
 
@@ -159,7 +169,10 @@ def serialize(
             # not simply be handed to that function.
             update={
                 "avatar_url": _avatar(
-                    rendered.avatar_url, r2_ready=r2_ready, cache=avatar_cache
+                    rendered.avatar_url,
+                    r2_ready=r2_ready,
+                    cache=avatar_cache,
+                    failures=failures,
                 )
             }
         ),

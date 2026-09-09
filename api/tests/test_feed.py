@@ -373,3 +373,40 @@ def test_the_tests_assert_against_the_query_the_router_runs():
     assert "order by" in sql, "the ordering"
     assert "limit" in sql, "the page bound"
     assert "posts.author_id in" in sql, "the author filter"
+
+
+def test_a_deferred_author_column_raises_rather_than_loading():
+    """The feed loads five `User` columns and must *refuse* the rest, not
+    defer them: a deferred column touched inside `run_in_threadpool` against an
+    `AsyncSession` is a `MissingGreenlet` from a worker thread, and the
+    credential columns are exactly what a stray `repr()` would reach for.
+
+    Pinned on the real loader object rather than described. An earlier version
+    used a separate `raiseload("*")` and said in three places that it did this;
+    it governs relationships only, and `author.email` loaded silently under it
+    with one extra SELECT (verified on the pinned 2.0.36). The keyword form is
+    the one that raises, and this test is what stops the comment being the
+    only evidence.
+    """
+    import sqlalchemy as sa
+    from sqlalchemy.exc import InvalidRequestError
+    from sqlalchemy.orm import Session
+
+    from app.models.user import User
+
+    engine = sa.create_engine("sqlite://")
+    User.__table__.create(engine)
+    with Session(engine) as db:
+        db.add(User(email="a@b.c", hashed_password="not-a-real-hash",
+                    username="someone", display_name="Someone", bio="the bio"))
+        db.commit()
+        author = db.execute(
+            sa.select(User).options(feed_router.AUTHOR_COLUMNS)
+        ).scalar_one()
+        assert author.username == "someone"          # loaded
+        with pytest.raises(InvalidRequestError):
+            _ = author.hashed_password                # refused, not deferred
+        with pytest.raises(InvalidRequestError):
+            _ = author.email
+        with pytest.raises(InvalidRequestError):
+            _ = author.bio

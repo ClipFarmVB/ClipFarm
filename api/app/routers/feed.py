@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import Select, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import load_only, raiseload
+from sqlalchemy.orm import load_only
 
 from app.auth import get_current_user_id
 from app.database import get_db
@@ -25,6 +25,28 @@ DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
 
 DEFAULT_PAGE = 20
+
+# The five `User` columns `PostAuthor.from_author` renders, and nothing else.
+# `load_only` *defers* the rest rather than forbidding it, so a future line in
+# `post_view.serialize` touching, say, `author.bio` would emit a
+# deferred-column load — from a threadpool worker, against an `AsyncSession`,
+# i.e. `MissingGreenlet` at runtime and nothing visible at review time.
+# `raiseload=True` *here* turns that into an immediate `InvalidRequestError`
+# at the line that caused it. It has to be this keyword: a separate
+# `raiseload("*")` option — which an earlier version used, and documented as
+# doing this — governs *relationship* loads only and lets a deferred column
+# load silently. Verified against the pinned 2.0.36: with `raiseload("*")` the
+# access emitted one extra SELECT and returned the value; with this keyword it
+# raised. Module-level so `test_feed.py` can apply the same object to a row
+# and prove the raise, rather than trust this comment.
+AUTHOR_COLUMNS = load_only(
+    User.id,
+    User.username,
+    User.display_name,
+    User.avatar_url,
+    User.username_is_generated,
+    raiseload=True,
+)
 
 
 def feed_query(
@@ -79,20 +101,7 @@ def feed_query(
         # treats email as a credential that must not leak; the cheapest way to
         # honour that is not to load it.
         .options(
-            load_only(
-                User.id,
-                User.username,
-                User.display_name,
-                User.avatar_url,
-                User.username_is_generated,
-            ),
-            # `load_only` *defers* the rest rather than forbidding it, so a
-            # future line in `post_view.serialize` touching, say, `author.bio`
-            # would emit a deferred-column load — from a threadpool worker,
-            # against an `AsyncSession`, i.e. `MissingGreenlet` at runtime and
-            # nothing visible at review time. `raiseload` turns that into an
-            # immediate, obvious error at the line that caused it.
-            raiseload("*"),
+            AUTHOR_COLUMNS,
         )
         # Authors whose posts may appear: accepted edges, plus self. The rule
         # comes from follow_graph rather than being restated here — see
