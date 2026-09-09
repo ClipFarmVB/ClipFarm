@@ -2,12 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, ChevronLeft, ChevronRight, Link2, Download, Send } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Link2, Download, Lock, Send } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { PostComposerModal } from "@/components/PostComposerModal";
 import { SOCIAL_ENABLED } from "@/lib/features";
 import { needsHandle, useMe } from "@/lib/useMe";
-import { type Clip, getClipDownloadUrl, getClipShareUrl } from "@/lib/api";
+import { type Clip, getClipDownloadUrl, getClipShareUrl, setClipVisibility } from "@/lib/api";
 import { startCrossOriginDownload } from "@/lib/download";
 import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 import { useFocusTrap } from "@/lib/useFocusTrap";
@@ -17,9 +17,12 @@ interface ClipModalProps {
   onClose: () => void;
   onPrev?: () => void;
   onNext?: () => void;
+  /** Same shape as `ClipCard`'s: hand the parent the row the API returned, so
+   *  the grid's own badge does not go stale behind this dialog. */
+  onUpdate?: (clip: Clip) => void;
 }
 
-export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
+export function ClipModal({ clip, onClose, onPrev, onNext, onUpdate }: ClipModalProps) {
   const videoRef  = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -79,6 +82,8 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   // different visibility. Syncing that with an effect would be a cascading
   // render; this needs no effect at all.
   const [composingFor, setComposingFor] = useState<string | null>(null);
+  const [narrowing, setNarrowing] = useState(false);
+  const [narrowError, setNarrowError] = useState<string | null>(null);
   const composing = composingFor === clip.id;
 
   // Posting needs a claimed handle. `PostAuthor` withholds a *generated* one —
@@ -314,6 +319,63 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
                 guarantees. */}
             <span>Esc close · Tab cycles controls</span>
           </div>
+
+          {/* Taking it back (CF-109b).
+              
+              The composer can widen a clip, with a confirmation, and until this
+              nothing could narrow one — so publishing was a one-way door. On
+              youth-sports footage that is the wrong shape: deleting the post
+              does not narrow the clip, so the only undo was deleting the
+              footage.
+              
+              One button, not a picker. "Make private" is the undo, it is
+              unambiguous, and it needs no confirmation because it can only ever
+              show a clip to fewer people. Stepping *between* the wider tiers is
+              a choice rather than a retraction, and the composer already owns
+              that direction with the consent the widening needs. Offering both
+              here would put an unconfirmed widening one mis-click away from the
+              retraction control.
+              
+              Hidden when the clip is already private, which today is every
+              clip — so this renders only for someone who has actually
+              published, which is who it is for. */}
+          {SOCIAL_ENABLED && clip.effective_visibility && clip.effective_visibility !== "private" && (
+            <div className="mt-3 border-t border-border pt-3">
+              <button
+                type="button"
+                disabled={narrowing}
+                onClick={async () => {
+                  setNarrowing(true);
+                  setNarrowError(null);
+                  try {
+                    const updated = await setClipVisibility(clip.id, "private");
+                    onUpdate?.(updated);
+                  } catch (e) {
+                    // Already decoded by `throwApiError`; decoding again would
+                    // undo the first, the way the composer's used to.
+                    setNarrowError(
+                      e instanceof Error && e.message ? e.message : "Could not change it back",
+                    );
+                  } finally {
+                    setNarrowing(false);
+                  }
+                }}
+                className="flex items-center gap-2 text-xs text-muted hover:text-foreground disabled:opacity-50"
+              >
+                <Lock className="h-3.5 w-3.5" />
+                {narrowing ? "Making private…" : "Make this clip private again"}
+              </button>
+              <p className="mt-1 text-[11px] text-muted">
+                Stops anyone else seeing it. Posts of this clip stay up but will
+                show nothing to other people.
+              </p>
+              {narrowError && (
+                <p role="alert" className="mt-2 text-[11px] text-red-400">
+                  {narrowError}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
       {composing && (
