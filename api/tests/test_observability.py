@@ -94,9 +94,12 @@ def _secret_cache_cleared():
     `_secret_values()` while settings are patched, so the real `lru_cache` ends
     the test holding a fake secret; without this fixture that value is what the
     next caller gets. Today the leak is *masked* — `test_secret_values_cache_can_be_cleared`
-    further down the file happens to clear it — so deleting this fixture leaves
-    the suite green while reintroducing the bug, which is why it is a fixture
-    with a reason rather than two bare calls.
+    further down the file happens to clear it. Deleting this fixture used to
+    leave the suite green while reintroducing the bug, which is why it is a
+    fixture with a reason rather than two bare calls; since
+    `test_every_secret_source_reaches_the_scrub_patterns` asserts on values it
+    patched itself, a stale cache now fails that test — with a message that
+    names a candidate rather than the cache, so read this docstring first.
 
     Parameter order does not matter, and an earlier version of this docstring
     said it did: it claimed listing this before `monkeypatch` mattered because
@@ -189,6 +192,20 @@ def test_every_secret_source_reaches_the_scrub_patterns(monkeypatch):
     read off the ambient config, so a missing one names the source that dropped
     it rather than reporting a length failure a second time.
     """
+    # Every str-typed setting gets a distinct sentinel FIRST, and the explicit
+    # values below override the ones this test is about. The point is the
+    # equality at the bottom: a *new* candidate joining `_secret_values` shows
+    # up there as an unexpected pattern — but only if it has a value, and every
+    # real secret's shipped default is "", so without this a new
+    # `settings.<x>` source was filtered by the `if c` half before the equality
+    # ever saw it. Review measured it: adding `settings.lock_database_url` to
+    # the candidate list left the suite green. The sentinel has no `:` or `@`,
+    # so `_url_passwords` lifts nothing out of it, and it clears the length
+    # guard, so the `if c and len(c) >= 6` half cannot hide it either.
+    for name, field in type(observability.settings).model_fields.items():
+        if field.annotation is str:
+            monkeypatch.setattr(observability.settings, name, f"sentinel-{name}-value")
+
     scalars = {
         "supabase_service_role_key": "scrub-supabase-service-role-key",
         "r2_access_key_id": "scrub-r2-access-key-id",

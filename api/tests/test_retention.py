@@ -273,14 +273,13 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     # and `len(stale) - 2` are 1, so that assertion pins the value and not the
     # expression either.
     #
-    # Separating them needs a *second failure count*, not a second case — and
-    # `test_expired_upload_is_released_then_reclaimed` above already sweeps
-    # 1 stale / 0 failed, where the correct reclaimed count is 1 and
-    # `len(stale) - 1` is 0. An earlier version of this comment said the
-    # separation was "more fixture than this behaviour is worth", which
-    # overstated the cost: the fixture exists. Left as it is because the two
-    # counts are asserted in the test that owns each fixture rather than
-    # crossing between them, and the survivors are disclosed either way.
+    # The reclaimed count's survivors ARE separated, one test up:
+    # `test_expired_upload_is_released_then_reclaimed` sweeps 1 stale /
+    # 0 failed, where `len(stale) - 1` is 0 and a literal 2 is wrong, so both
+    # now fail there. This test keeps the 3/1 shape because that is what tells
+    # `len(stale) - len(failed)` from `len(failed)` and `len(stale)`. The
+    # warning count's twin (`len(stale) - 2`) is the one survivor left; it
+    # would need a third fixture shape and is disclosed rather than closed.
     rows = [_row("a"), _row("b"), _row("c")]
     fakes = _Fakes(objects=[r["obj"] for r in rows])
     _install(monkeypatch, fakes)
