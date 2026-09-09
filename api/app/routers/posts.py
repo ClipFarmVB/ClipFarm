@@ -14,7 +14,7 @@ from app.models.game import Game
 from app.models.post import Post
 from app.models.user import User
 from app.schemas.post import PostCreate, PostOut, PostUpdate
-from app.services import access, follow_graph, post_view, profiles, storage
+from app.services import access, engagement, post_read, post_view, profiles, storage
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ def _serialize(
     r2_ready: bool | None = None,
     avatar_cache: dict[str, str | None] | None = None,
     failures: list[str] | None = None,
+    viewer_has_liked: bool = False,
 ) -> PostOut:
     """Thin wrapper over the shared renderer.
 
@@ -57,69 +58,14 @@ def _serialize(
         r2_ready=storage.r2_configured() if r2_ready is None else r2_ready,
         avatar_cache=avatar_cache,
         failures=failures,
+        viewer_has_liked=viewer_has_liked,
     )
 
 
-async def _load_for_read(
-    post_id: uuid.UUID, viewer_id: uuid.UUID | None, db: AsyncSession
-) -> tuple[Post, Clip, User]:
-    """Fetch a post the viewer may read, or 404.
-
-    Two gates, deliberately both: the post's own visibility, and the underlying
-    clip's. A clip that goes private after being posted must take its post with
-    it — otherwise the post keeps serving footage the owner has since withdrawn.
-    """
-    post = await db.get(Post, post_id)
-    if post is None:
-        raise HTTPException(status_code=404, detail="Post not found")
-
-    clip = await db.get(Clip, post.clip_id)
-    game = await db.get(Game, clip.game_id) if clip else None
-    author = await db.get(User, post.author_id)
-    if clip is None or game is None or author is None:
-        raise HTTPException(status_code=404, detail="Post not found")
-
-    # One lookup when the two principals coincide, which is every post today —
-    # create_post refuses to publish footage you don't own. Resolved separately
-    # when they don't, rather than assuming: the author's edge decides the
-    # post's tier and the owner's decides the clip's, and answering the second
-    # question with the first one's result is how a future ownership transfer
-    # would quietly hand someone else's footage to the wrong follower.
-    #
-    # resolve_follow skips the query entirely unless a tier is `followers`, so
-    # the common path still costs nothing.
-    #
-    # The levels handed to the author lookup depend on whether the principals
-    # coincide, which is what keeps the merged path free of a wasted query. When
-    # they do, one lookup answers both tiers, so both are passed. When they
-    # don't, the author's edge governs the post's tier alone — passing the
-    # clip's as well would fire a `follows` lookup against the *author* whose
-    # result `may_read` then discards, and a second one for the owner anyway.
-    clip_level = access.effective(clip, game)
-    same_principal = post.author_id == game.owner_id
-    author_levels = (
-        (post.visibility, clip_level) if same_principal else (post.visibility,)
-    )
-    follows_author = await follow_graph.resolve_follow(
-        db, viewer_id, post.author_id, *author_levels
-    )
-    follows_owner = (
-        follows_author
-        if same_principal
-        else await follow_graph.resolve_follow(db, viewer_id, game.owner_id, clip_level)
-    )
-    if not access.can_view_post(
-        viewer_id,
-        post,
-        clip,
-        game,
-        viewer_follows_author=follows_author,
-        viewer_follows_owner=follows_owner,
-    ):
-        # 404 not 403 — consistent with CF-108; a 403 confirms the id is real.
-        raise HTTPException(status_code=404, detail="Post not found")
-
-    return post, clip, author
+# `_load_for_read` lived here until CF-113 needed it from a second router. It
+# is `services/post_read.load_for_read` now — one copy of "may this viewer
+# read this post", for the reason `services/profiles.py` gives about rules
+# enforced in one router and not its neighbour.
 
 
 @router.post("", response_model=PostOut, status_code=status.HTTP_201_CREATED)
@@ -184,8 +130,10 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
 
 @router.get("/{post_id}", response_model=PostOut)
 async def get_post(post_id: uuid.UUID, db: DB, viewer_id: ViewerId = None):
-    post, clip, author = await _load_for_read(post_id, viewer_id, db)
-    return _serialize(post, clip, author)
+    post, clip, author = await post_read.load_for_read(post_id, viewer_id, db)
+    # One point lookup on the `post_likes` primary key; skipped for anonymous.
+    liked = await engagement.viewer_has_liked(db, viewer_id, post.id)
+    return _serialize(post, clip, author, viewer_has_liked=liked)
 
 
 @router.get("", response_model=list[PostOut])
@@ -220,7 +168,17 @@ async def list_user_posts(
     # a stranger an empty page and no way to page past it.
     rows = (
         await db.execute(
-            access.apply_post_visibility(select(Post, Clip), viewer_id)
+            access.apply_post_visibility(
+                # The third column is `viewer_has_liked`, one EXISTS per row on
+                # the `post_likes` PK — a literal `false` and no subquery for
+                # an anonymous viewer (CF-113).
+                select(
+                    Post,
+                    Clip,
+                    engagement.viewer_liked_column(viewer_id).label("viewer_has_liked"),
+                ),
+                viewer_id,
+            )
             .where(Post.author_id == author.id)
             .order_by(Post.created_at.desc(), Post.id.desc())
             .limit(limit)
@@ -251,8 +209,9 @@ async def list_user_posts(
                 r2_ready=r2_ready,
                 avatar_cache=avatar_cache,
                 failures=failures,
+                viewer_has_liked=liked,
             )
-            for post, clip in rows
+            for post, clip, liked in rows
         ]
 
     items = await run_in_threadpool(render)
@@ -284,7 +243,10 @@ async def update_post(post_id: uuid.UUID, body: PostUpdate, user_id: UserId, db:
         post.caption = body.caption.strip() or None
     await db.commit()
     await db.refresh(post)
-    return _serialize(post, clip, author)
+    # The author may have liked their own post; not the constant the
+    # docstring in `post_view` warns would be "a wrong value forever".
+    liked = await engagement.viewer_has_liked(db, user_id, post.id)
+    return _serialize(post, clip, author, viewer_has_liked=liked)
 
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
