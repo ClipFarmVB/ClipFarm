@@ -9,7 +9,18 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.observability import init_sentry
-from app.routers import games, clips, players, collections, corrections, profiles, posts, follows, feed
+from app.routers import (
+    games,
+    clips,
+    players,
+    collections,
+    corrections,
+    profiles,
+    posts,
+    follows,
+    feed,
+    engagement,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +54,9 @@ if settings.social_enabled:
     app.include_router(posts.router)
     app.include_router(follows.router)
     app.include_router(feed.router)
+    # Likes and comments (CF-113) are only reachable through a post, so they
+    # share the posts gate rather than carrying their own.
+    app.include_router(engagement.router)
 
 
 async def _check_db() -> bool:

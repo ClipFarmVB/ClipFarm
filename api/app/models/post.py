@@ -2,7 +2,17 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Enum as SAEnum, func, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Enum as SAEnum,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -98,4 +108,13 @@ class Post(Base):
         # directions with a warning, so this one is invisible to autogenerate
         # either way.
         Index("ix_posts_created_at_id", text("created_at DESC"), text("id DESC")),
+        # Migration 020's backstops, now that something writes these counters
+        # (CF-113). Declared here for the reason `user.py` declares its pair:
+        # every `*_pg.py` fixture is built by `create_all`, so a CHECK that
+        # lives only in the migration is absent from every database the tests
+        # run against — `test_the_counter_checks_reach_the_metadata` exists
+        # because that happened once. The router floors its decrements in
+        # SQL, so these fire only for a new bug, never for ordinary drift.
+        CheckConstraint("like_count >= 0", name="ck_posts_like_count_non_negative"),
+        CheckConstraint("comment_count >= 0", name="ck_posts_comment_count_non_negative"),
     )

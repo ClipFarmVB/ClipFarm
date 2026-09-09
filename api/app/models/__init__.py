@@ -14,6 +14,8 @@ from app.models.collection import Collection, CollectionClip
 from app.models.correction import Correction
 from app.models.follow import Follow
 from app.models.post import Post
+from app.models.post_comment import PostComment
+from app.models.post_like import PostLike
 from app.models.upload_event import UploadEvent
 
 __all__ = [
@@ -27,5 +29,7 @@ __all__ = [
     "Correction",
     "Follow",
     "Post",
+    "PostComment",
+    "PostLike",
     "UploadEvent",
 ]
