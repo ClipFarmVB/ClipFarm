@@ -486,6 +486,13 @@ export default function GamePage() {
           onUpdate={(updated) =>
             setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
           }
+          // Every game reachable here is the viewer's own. `GET /games/{id}` is
+          // visibility-scoped rather than owner-only, but no write path exists
+          // for a game's visibility — `test_visibility_write_paths_are_declared`
+          // holds that — so every game is private and only its owner can open
+          // it. Revisit if a game setter ever lands; the collections page,
+          // which really is cross-owner, passes nothing.
+          ownsClip
         />
       )}
     </div>
