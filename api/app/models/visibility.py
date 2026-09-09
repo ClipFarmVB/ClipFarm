@@ -19,13 +19,23 @@ class Visibility(str, enum.Enum):
     public = "public"        # anyone, including signed-out visitors
 
 
-# NOTHING WRITES THIS YET (CF-108 scope).
+# WHAT WRITES THIS (was: nothing, through CF-108 and CF-109).
 #
-# No schema field, no PATCH body and no router assigns visibility, so every game
-# is `private` and every clip NULL until CF-109 adds the setter along with
-# posting. "Nothing becomes newly visible" is therefore true by construction
-# rather than by policy — which is the safe direction, but it means the
-# public/anonymous surface ships unexercised end to end.
+# `Clip.visibility` is written by two paths, both added by CF-109b (#398):
+# `PATCH /clips/{id}/visibility`, and `POST /posts` with
+# `raise_clip_visibility`. Both are owner-only, both set the CLIP and never the
+# game, and both refuse `public` unless `PUBLIC_POSTING_ENABLED` is on — see
+# `services/publishing.py` for why that tier is gated apart from `followers`.
+#
+# `Game.visibility` is still written by nothing, and that is deliberate rather
+# than pending: raising a game publishes every clip in it, which is the silent
+# side effect `create_post`'s 409 exists to prevent. A clip overrides its game
+# rather than being bounded by it, so publishing one clip needs no game write.
+#
+# Until CF-109b, "nothing becomes newly visible" was true by construction — no
+# write path existed at all, and `api/tests/test_no_visibility_write_path.py`
+# enforced that. It is now true by policy instead, which is the weaker guarantee
+# and the reason the flag exists.
 #
 # What that leaves unverified: the ORM enum round-trip, the SQL filters against
 # real rows, and the anonymous HTTP paths. The 44-case matrix in

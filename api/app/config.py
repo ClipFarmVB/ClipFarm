@@ -879,6 +879,21 @@ class Settings(BaseSettings):
     r2_bucket_name: str = "clipfarm"
     r2_public_url: str = ""
 
+    # Whether an owner may set a clip or a post to `public` (CF-109b, #398).
+    #
+    # OFF by default, and that is a product decision rather than a stub — see
+    # services/publishing.py for the argument in full. Short version: the
+    # `followers` tier is the whole social product for a signed-in user and
+    # needs no moderation surface, because the audience was approved one by
+    # one; `public` puts youth-sports footage in front of signed-out strangers
+    # and anything that crawls a link, which is what wants terms of service
+    # (CF-75/CF-88) and a report and takedown path (CF-116). Both tiers are
+    # built and tested; this decides which the API accepts.
+    #
+    # Turning it on is one environment variable, so the day those land there is
+    # no code change to make.
+    public_posting_enabled: bool = False
+
     # ── Anonymous read limits (CF-186, #189) ─────────────────────────────────
     # Seven endpoints answer without a credential. Six are throttled per caller
     # (see services/ratelimit.py for the two exposures and the fail-open
