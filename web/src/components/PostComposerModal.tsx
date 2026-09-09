@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { Check, Globe, Lock, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { createPost, type Clip, type Visibility } from "@/lib/api";
+import { PUBLIC_POSTING_ENABLED } from "@/lib/features";
 import { useFocusTrap } from "@/lib/useFocusTrap";
 import { cn } from "@/lib/utils";
 
@@ -26,19 +27,39 @@ const CEILING_PHRASE: Record<Visibility, string> = {
 };
 
 /**
- * Whether `tier` is wider than this clip allows, and so must be offered
- * disabled rather than offered and refused.
+ * Whether posting at `tier` would also have to widen the clip.
  *
- * Exported so it can be asserted: this is the rule that decides whether a user
- * meets a limit they can understand or a 409 they cannot act on, and it mirrors
- * `access.at_most` on the API — the two orderings of the same three values have
- * to agree, and a UI copy that drifts wide is the one that fails on submit.
+ * Was `tierBlocked`, and the rename is the change CF-109b makes: this used to
+ * decide what to grey out, because nothing could raise a clip's visibility and
+ * the wider tiers were simply unreachable. Now they are reachable, so the same
+ * arithmetic decides what needs the user's consent instead. Keeping the old
+ * name would have left every reader thinking these tiers are still refused.
  *
- * An absent ceiling resolves to `private`, matching `ClipOut`'s own default:
- * a payload that predates the field offers less, never more.
+ * Exported so it can be asserted: it mirrors `access.at_most` on the API, the
+ * two orderings of the same three values have to agree, and a UI copy that
+ * drifts wide is the one that fails on submit.
+ *
+ * An absent ceiling resolves to `private`, matching `ClipOut`'s own default: a
+ * payload that predates the field asks for consent it may not need, rather than
+ * silently widening footage it could not read the tier of.
  */
-export function tierBlocked(tier: Visibility, ceiling: Visibility | undefined): boolean {
+export function tierNeedsRaise(
+  tier: Visibility,
+  ceiling: Visibility | undefined,
+): boolean {
   return RANK[tier] > RANK[ceiling ?? "private"];
+}
+
+/**
+ * Whether this deployment offers `tier` at all.
+ *
+ * Only `public`, and only while `PUBLIC_POSTING_ENABLED` is off. Unlike the
+ * ceiling this is not something the user can act on from here — no consent
+ * makes it available — so it stays a disabled option with a reason, which is
+ * what the ceiling used to be.
+ */
+export function tierUnavailable(tier: Visibility): boolean {
+  return tier === "public" && !PUBLIC_POSTING_ENABLED;
 }
 
 const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof Lock }[] = [
@@ -72,18 +93,30 @@ const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof L
  * Posting never widens the clip itself — and the tiers a clip cannot support
  * are shown disabled, with the reason, rather than offered and then refused.
  *
- * That is the half this was missing. For two releases nothing in the product
- * could raise a clip's visibility at all, and both a clip and its game default
- * to private, so for a real user "Followers" and "Everyone" both ended in a 409
- * telling them to go do something that does not exist. An unreachable option
- * that explains why is a limit; one that fails on submit is a dead end.
+ * For two releases nothing in the product could raise a clip's visibility at
+ * all, and both a clip and its game default to private, so for a real user
+ * "Followers" and "Everyone" both ended in a 409 telling them to go do
+ * something that does not exist. CF-109 greyed those tiers out instead, on the
+ * argument that an unreachable option explaining why is a limit while one that
+ * fails on submit is a dead end.
  *
- * CF-109b (#398) built the write path — `PATCH /clips/{id}/visibility`, and
- * `raise_clip_visibility` on the create request. THIS COMPONENT DOES NOT USE IT
- * YET: offering the raise with an explicit confirmation is the web half of that
- * card and lands next, on top of the API branch. Until then the greyed-out
- * tiers are still correct for anyone who has not set the clip's visibility
- * some other way, which is everyone.
+ * CF-109b (#398) built the write path, so they are reachable now and this
+ * offers them. Two rules, deliberately kept apart:
+ *
+ * - **Wider than the clip** is no longer a refusal, it is a request for
+ *   consent. Picking the tier is not enough: widening the clip changes what
+ *   people can see of the FOOTAGE, which outlives the post and is not undone by
+ *   deleting it, so the checkbox says exactly that and Post stays disabled
+ *   until it is ticked. `create_post` takes the raise as a flag on the same
+ *   request, so a post that fails to insert cannot leave the clip widened.
+ * - **`public` while the deployment has it off** is still a refusal, because no
+ *   consent from here makes it available. It stays a disabled option with a
+ *   reason — what the ceiling used to be.
+ *
+ * The 409 is still handled and still surfaced as-is. It remains the backstop
+ * for a clip narrowed between the page load and the click, which is exactly the
+ * race the server-side check exists for, and the 422 is the backstop for the
+ * two `PUBLIC_POSTING_ENABLED` flags disagreeing.
  *
  * `clip.effective_visibility` carries the ceiling the API derives. The 409 is
  * still handled and still surfaced as-is — it stays the backstop for a clip
@@ -106,6 +139,22 @@ export function PostComposerModal({
 
   const [caption, setCaption] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("private");
+  // Consent to widen the clip along with the post (CF-109b). Reset by
+  // `choose` on every tier change, deliberately: a tick that survived a change
+  // of mind would be consent to something the user was no longer looking at.
+  const [raiseConsent, setRaiseConsent] = useState(false);
+
+  const needsRaise = tierNeedsRaise(visibility, ceiling);
+  const selectedLabel =
+    OPTIONS.find((o) => o.value === visibility)?.label ?? visibility;
+
+  function choose(tier: Visibility) {
+    setVisibility(tier);
+    // Consent belongs to the tier it was given for. Carrying a tick from
+    // "Followers" over to "Everyone" would widen the clip further than the
+    // user agreed to, without asking again.
+    setRaiseConsent(false);
+  }
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -153,7 +202,7 @@ export function PostComposerModal({
     setSaving(true);
     setError(null);
     try {
-      await createPost(clip.id, caption, visibility);
+      await createPost(clip.id, caption, visibility, needsRaise);
       setDone(true);
       onPosted?.();
       closeTimer.current = setTimeout(onClose, 900);
@@ -223,14 +272,17 @@ export function PostComposerModal({
 
         <div className="mt-4 space-y-1.5">
           {OPTIONS.map(({ value, label, blurb, icon: Icon }) => {
-            const blocked = tierBlocked(value, ceiling);
+            // Only the deployment flag disables an option now. A tier above
+            // the clip's ceiling is offered and asks for consent below, which
+            // is the whole of CF-109b item 1 on this side.
+            const blocked = tierUnavailable(value);
             return (
               <button
                 key={value}
                 type="button"
                 disabled={blocked}
                 aria-describedby={blocked ? `vis-${value}-why` : undefined}
-                onClick={() => setVisibility(value)}
+                onClick={() => choose(value)}
                 className={cn(
                   "flex w-full items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors",
                   blocked
@@ -251,8 +303,8 @@ export function PostComposerModal({
                   <span className="block text-[11px] text-muted">
                     {blocked ? (
                       <span id={`vis-${value}-why`}>
-                        Not available — {CEILING_PHRASE[ceiling]}, and a post
-                        can&apos;t show more of the footage than the clip does.
+                        Not available on this app yet. You can share with your
+                        followers instead.
                       </span>
                     ) : (
                       blurb
@@ -264,6 +316,29 @@ export function PostComposerModal({
           })}
         </div>
 
+        {needsRaise && (
+          // The explicit confirmation CF-109 named as the alternative it was
+          // not taking, and CF-109b built. Selecting the tier is not on its own
+          // consent to widen the footage behind it: this changes what people
+          // can see of the CLIP, which outlives the post and is not undone by
+          // deleting it. So it says exactly what changes, and the button stays
+          // disabled until it is ticked.
+          <label className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200/90">
+            <input
+              type="checkbox"
+              checked={raiseConsent}
+              onChange={(e) => setRaiseConsent(e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-amber-400"
+            />
+            <span>
+              {CEILING_PHRASE[ceiling]}. Posting to{" "}
+              <strong className="font-semibold">{selectedLabel}</strong> will
+              also change the clip itself, so it stays visible to them after
+              this post is deleted. You can change it back later.
+            </span>
+          </label>
+        )}
+
         {error && (
           <p className="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
             {error}
@@ -274,7 +349,11 @@ export function PostComposerModal({
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button size="sm" onClick={submit} disabled={saving || done}>
+          <Button
+            size="sm"
+            onClick={submit}
+            disabled={saving || done || (needsRaise && !raiseConsent)}
+          >
             {done ? (
               <>
                 <Check className="h-3.5 w-3.5" /> Posted

@@ -412,6 +412,14 @@ services:
       # build time, so flipping this needs a redeploy, not a restart.
       - key: NEXT_PUBLIC_SOCIAL_ENABLED
         value: "true"
+      # Must match PUBLIC_POSTING_ENABLED on clipfarm-api (CF-109b). This one
+      # decides only what the composer OFFERS; the API refuses `public` with a
+      # 422 regardless, so the two disagreeing is a wrong-looking UI rather than
+      # an exposure. Inlined at build time, so flipping it needs a redeploy of
+      # web, not a restart — and the api half needs only a restart, which is why
+      # they can drift.
+      - key: NEXT_PUBLIC_PUBLIC_POSTING_ENABLED
+        value: "false"
       - key: NEXT_PUBLIC_SUPABASE_URL
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY

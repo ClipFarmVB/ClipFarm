@@ -106,3 +106,119 @@ describe("PostGrid viewer scoping", () => {
     expect(getUserPosts).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── CF-109b item 2 (#398): a post can be watched from here ───────────────────
+//
+// The grid rendered thumbnails and no player, on the argument that playback is
+// CF-112's feed. True, and it left a published clip watchable nowhere — the
+// profile is the only surface that shows posts, and your own posts are not in
+// your own feed, so this hit the author first.
+
+function tiles(): HTMLElement[] {
+  return [...host.querySelectorAll("[data-comment-id], .group")] as HTMLElement[];
+}
+function playButtons(): HTMLButtonElement[] {
+  return [...host.querySelectorAll("button")].filter((b) =>
+    (b.getAttribute("aria-label") ?? "").startsWith("Play"),
+  ) as HTMLButtonElement[];
+}
+function dialog(): HTMLElement | null {
+  return document.querySelector('[role="dialog"]');
+}
+async function click(el: Element) {
+  await act(async () => {
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
+describe("playing a post from the grid", () => {
+  it("gives every tile one keyboard-reachable play control", async () => {
+    getUserPosts.mockResolvedValue([post("p1", "private"), post("p2", "public")]);
+    await render(true);
+
+    // A button, not an onClick on the tile: a grid of watchable things should
+    // have one tab stop per thing.
+    expect(playButtons()).toHaveLength(2);
+    expect(tiles().length).toBeGreaterThan(0);
+  });
+
+  it("opens a player on the post that was clicked", async () => {
+    getUserPosts.mockResolvedValue([post("p1", "public")]);
+    await render(false);
+    expect(dialog()).toBeNull();
+
+    await click(playButtons()[0]);
+
+    const video = dialog()?.querySelector("video");
+    expect(video).not.toBeNull();
+    expect(video?.getAttribute("src")).toBe("https://x.test/c.mp4");
+  });
+
+  it("closes again", async () => {
+    getUserPosts.mockResolvedValue([post("p1", "public")]);
+    await render(false);
+    await click(playButtons()[0]);
+
+    const close = [...(dialog()?.querySelectorAll("button") ?? [])].find(
+      (b) => b.getAttribute("aria-label") === "Close",
+    )!;
+    await click(close);
+
+    expect(dialog()).toBeNull();
+  });
+
+  it("stacks the delete control above the full-frame play target", async () => {
+    // The play affordance covers the whole frame, so the owner's Remove button
+    // has to sit above it or it is unclickable — "delete is broken", and only
+    // on the author's own profile, which is the one place it matters.
+    //
+    // Asserted on the z-index classes rather than by clicking, and the
+    // distinction is the point: jsdom does no layout, so `dispatchEvent` on the
+    // Remove button reaches its handler whatever is painted over it. A click
+    // test here would pass against a version where the control is genuinely
+    // buried. This compares the two orders, which is the part jsdom can see.
+    // A captioned post, so the caption assertion below actually runs — the
+    // shared fixture has `caption: null`, and a guarded assertion on an
+    // element that never renders is not an assertion.
+    const captioned = post("p1", "private");
+    captioned.caption = "nice dig" as never;
+    getUserPosts.mockResolvedValue([captioned]);
+    await render(true);
+
+    const z = (el: Element | null | undefined) => {
+      const hit = (el?.className ?? "").toString().match(/(?:^|\s)z-(\d+)/);
+      return hit ? Number(hit[1]) : 0;
+    };
+    const play = playButtons()[0];
+    const remove = [...host.querySelectorAll("button")].find(
+      (b) => b.getAttribute("aria-label") === "Remove this post",
+    );
+    expect(remove).toBeDefined();
+    expect(z(remove)).toBeGreaterThan(z(play));
+
+    // The caption is painted over the frame too and must not eat the tap.
+    const caption = [...host.querySelectorAll("p")].find((el) =>
+      (el.textContent ?? "").includes("nice dig"),
+    );
+    expect(caption).toBeDefined();
+    expect(caption!.className).toContain("pointer-events-none");
+
+    // Same for the tier badge. Smaller consequence — a dead corner rather than
+    // a dead strip — but the same class of bug, and free to pin here.
+    const badge = host.querySelector("span[title]");
+    expect(badge).not.toBeNull();
+    expect(badge!.className).toContain("pointer-events-none");
+  });
+
+  it("says so rather than showing an empty frame when there is no clip URL", async () => {
+    const broken = post("p1", "public");
+    broken.playback.clip_url = "";
+    getUserPosts.mockResolvedValue([broken]);
+    await render(false);
+
+    await click(playButtons()[0]);
+
+    expect(dialog()?.querySelector("video")).toBeNull();
+    expect(dialog()?.textContent).toContain("isn't available to play");
+  });
+});
