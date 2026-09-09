@@ -216,6 +216,16 @@ it with a reverse proxy (Caddy/nginx/Cloudflare Tunnel) terminating HTTPS.
 Domains, TLS and a proper edge are handled for you on the production path
 (**CF-68**, Render) — this box is deliberately firewalled instead.
 
+**If you do put a proxy in front, set `RATE_LIMIT_TRUSTED_PROXY_HOPS` to the
+number of hops (normally `1`).** The anonymous read endpoints are limited per
+caller (**CF-186**), and the limiter identifies a caller by
+`request.client` unless told how many `X-Forwarded-For` entries to trust.
+uvicorn only rewrites `request.client` when the connecting peer is in
+`--forwarded-allow-ips`, which defaults to `127.0.0.1` — so behind a proxy on
+another address, *every* caller looks like the proxy and shares one bucket.
+Left at the default of `0` the limiter is not merely ineffective, it throttles
+all of your readers together, and nothing local will show it.
+
 ---
 
 ## Known limitations & related tickets

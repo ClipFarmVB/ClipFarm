@@ -24,6 +24,7 @@ from app.schemas.game import (
     UploadTicket,
 )
 from app.services import access, quota, storage
+from app.services.ratelimit import POLICIES, rate_limit
 from app.services.filenames import condensed_download_filename
 from app.workers.tasks import process_game_task
 
@@ -593,8 +594,21 @@ async def complete_upload(
     return out
 
 
-@router.get("/{game_id}", response_model=GameOut)
+@router.get(
+    "/{game_id}",
+    response_model=GameOut,
+    dependencies=[Depends(rate_limit(POLICIES["game"]))],
+)
 async def get_game(game_id: uuid.UUID, db: DB, viewer_id: ViewerId = None):
+    """One game, visibility-scoped (CF-108).
+
+    **Anonymous exposure B (CF-186, #189): UUID-keyed content, throttled.**
+    60/min per signed-in user, or per client address when there is none. The
+    number is set by this route's own busiest caller rather than by an attack
+    model: the detail page polls it every five seconds while a game is
+    processing, so an owner with a few tabs open is already at 12/min per tab.
+    `GET /games/{id}/clips` is pinned to the same number for the same reason.
+    """
     # Read path: visibility-scoped, not owner-only (CF-108). viewer_id is None
     # for a signed-out visitor, which access.py resolves to "public only".
     game = access.assert_can_view_game(viewer_id, await db.get(Game, game_id))

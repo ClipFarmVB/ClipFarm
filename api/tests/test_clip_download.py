@@ -2,9 +2,17 @@
 
 Two halves. `services/filenames.py` is pure string work and is tested directly.
 The endpoint is exercised by calling the router coroutine with a fake session —
-the house pattern here — because what matters is that it reuses /share's
-authorization and threads a name through to the presigner, neither of which
-needs a database or R2.
+the house pattern here — because what matters is how it authorizes and that it
+threads a name through to the presigner, neither of which needs a database or
+R2.
+
+CF-186 (#189) moved this route behind authentication: it is the only read that
+hands over the bytes, so a per-caller limit is the wrong instrument and a
+credential is the control. It therefore no longer reuses /share's
+authorization, and the `viewer_id` every test below passes is now a *required*
+signed-in caller rather than an optional one. That was a rename and not a
+rewrite — no test here ever passed None — which is itself the evidence that the
+anonymous download path had never been exercised.
 """
 import asyncio
 import uuid
@@ -294,7 +302,9 @@ class TestDownloadEndpoint:
         assert presigned == {}, "must not mint a URL for a refused viewer"
 
     def test_a_stranger_may_download_a_public_clip(self, presigned):
-        # The documented asymmetry: an override publishes *that clip*.
+        # The documented asymmetry: an override publishes *that clip*. Since
+        # CF-186 the stranger must be signed in; the asymmetry itself is
+        # unchanged, it just no longer reaches an anonymous caller.
         game = _Game(visibility=Visibility.private)
         clip = _Clip(game, visibility=Visibility.public)
         _download(_FakeSession(game, clip), clip.id, STRANGER)
@@ -305,8 +315,10 @@ class TestDownloadEndpoint:
 
         A public clip inside a private game is reachable by direct link, but
         the game's title is not — /share discloses nothing and list_clips is
-        gated on the game. Naming the file after it would hand an anonymous
-        caller the private game's title.
+        gated on the game. Naming the file after it would hand a signed-in
+        stranger the private game's title. (Anonymous, before CF-186 put this
+        route behind auth; the disclosure is the same either way, because a
+        free account is not a meaningful barrier to reading a filename.)
 
         The earlier version of the test above asserted only `.endswith(".mp4")`
         against this exact configuration, which is why the leak passed review.

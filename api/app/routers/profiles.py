@@ -9,11 +9,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user_id
+from app.auth import get_current_user_id, get_optional_user_id
 from app.database import get_db
 from app.models.user import User
 from app.schemas.profile import HandleAvailability, MeOut, ProfileOut, ProfileUpdate
 from app.services import handles, storage
+from app.services.ratelimit import POLICIES, rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,9 @@ router = APIRouter(prefix="/users", tags=["profiles"])
 
 DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
+# Only get_profile takes one (CF-186): it is anonymous, and the limiter gives a
+# signed-in caller their own budget rather than sharing the address's.
+ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
 
 # A handle may be changed once per this window.
 #
@@ -377,8 +381,12 @@ async def upload_avatar(user_id: UserId, db: DB, file: UploadFile = File(...)):
     return _serialize(user, MeOut)
 
 
-@router.get("/{handle}", response_model=ProfileOut)
-async def get_profile(handle: str, db: DB):
+@router.get(
+    "/{handle}",
+    response_model=ProfileOut,
+    dependencies=[Depends(rate_limit(POLICIES["profile"]))],
+)
+async def get_profile(handle: str, db: DB, viewer_id: ViewerId = None):
     """Public profile by handle.
 
     Registered last so it can't shadow `/users/me` or `/users/handle-available`
@@ -398,11 +406,31 @@ async def get_profile(handle: str, db: DB):
     guarantee, and it keeps that either way; being publicly resolvable is a
     separate thing the user should opt into by picking a name.
 
-    KNOWN, ACCEPTED FOR NOW: for claimed handles this is unauthenticated and
-    unthrottled, so it is enumerable — "findable by handle" and "bulk-listable
-    by a stranger" are different properties. CF-108 gates *content* visibility
-    and does not cover it. Tracked in CF-186 (#189); until then it is a
-    deliberate risk, not an oversight.
+    **Anonymous exposure A (CF-186, #189): handle-keyed and enumerable,
+    THROTTLED — the decision this route was waiting on.** "Findable by handle"
+    and "bulk-listable by a stranger" are different properties, and only the
+    first was ever decided; CF-108 gates *content* visibility and does not
+    cover this at all. #189 offered throttling or accepting explicitly. We
+    throttle: the handles are backfilled from email local parts, so for every
+    pre-CF-107 account they are guessable rather than random, and a wordlist
+    walk returns display name, bio and avatar for real accounts on a
+    youth-sports product.
+
+    30/min per signed-in user, or per client address when there is none. A
+    wordlist walk needs thousands of hits, so that puts a 10k-name list at
+    roughly five and a half hours per identity, while a human reading profiles
+    issues one call per profile and never approaches it. `GET /posts?username=`
+    carries the same number for the same reason.
+
+    Refusals are 429 with `Retry-After`, not the 404 that leaks less. Against a
+    per-caller counter the two say the same thing about whether a handle
+    exists, so the honest answer costs nothing here.
+
+    `viewer_id` is taken for the limiter alone — nothing below reads it. It
+    means a signed-in enumerator spends their own budget rather than the
+    address's, which is the better trade in both directions: a shared office
+    does not throttle itself, and a walker who signed in is identifiable and
+    bannable in a way an address is not.
     """
     user = await _by_handle(handle, db)
     if user.username_is_generated:

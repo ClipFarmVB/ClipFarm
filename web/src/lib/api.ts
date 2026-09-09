@@ -248,6 +248,14 @@ export function getClipShareUrl(clipId: string): Promise<{ url: string }> {
  * origin. So the caller points the browser at this URL and lets the header do
  * the work — through lib/download.ts, which explains why that is a hidden frame
  * rather than window.location.
+ *
+ * REQUIRES A SIGNED-IN CALLER (CF-186). Unlike getClipShareUrl, which stays
+ * anonymous, this endpoint hands over the bytes, so it is gated on a credential
+ * rather than on a rate limit. Every caller today already sits behind auth —
+ * ClipCard and ClipModal render only on /games/* and /collections/*, both
+ * covered by middleware.ts — so nothing had to change for it. Do not wire it
+ * into an anonymous surface: the feed and a public profile would get a 401 at
+ * runtime, not a 404.
  */
 export function getClipDownloadUrl(clipId: string): Promise<{ url: string }> {
   return request<{ url: string }>(`/clips/${clipId}/download`);

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Response
@@ -10,13 +11,36 @@ from app.config import settings
 from app.database import AsyncSessionLocal
 from app.observability import init_sentry
 from app.routers import games, clips, players, collections, corrections, profiles, posts
+from app.services import ratelimit
 
 logger = logging.getLogger(__name__)
 
 # Wire error monitoring before the app is built so startup errors are captured.
 init_sentry("api")
 
-app = FastAPI(title="ClipFarm API", version="0.1.0")
+# One Redis client for the process, held for the rate limiter (CF-186).
+# redis-py connects lazily, so building it here cannot fail at boot with Redis
+# down — the limiter's own fail-open path covers that.
+#
+# The api had no lifespan at all before this. `_check_redis` below deliberately
+# keeps opening its own client rather than sharing this one: its teardown
+# guarantees are about a client it owns, and a health check that reports on a
+# connection it did not open is a different check than the one that was
+# hardened.
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    client = aioredis.from_url(settings.redis_url)
+    ratelimit.set_backend(ratelimit.RedisBackend(client))
+    try:
+        yield
+    finally:
+        # Back to the in-process backend, so a limiter call after shutdown
+        # counts locally rather than reaching a closed connection.
+        ratelimit.set_backend(ratelimit.MemoryBackend())
+        await client.aclose()
+
+
+app = FastAPI(title="ClipFarm API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,6 +48,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
+    # Retry-After is not a CORS-safelisted response header: without this the
+    # browser receives the 429 and the app cannot read how long to wait.
+    expose_headers=["Retry-After"],
 )
 
 app.include_router(games.router)
