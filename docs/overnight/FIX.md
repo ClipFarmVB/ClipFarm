@@ -9,8 +9,9 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`START.md`](./START.md) | once, at the start of a run |
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round, cold or semi-cold |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background |
 
@@ -19,15 +20,19 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 #### Step 2 — fix what the round found
 
 **2 — Address the review findings on the PR you are carrying**, if this account
-opened it **and** no one else has pushed to the branch. The first half is the
-same test the `review scope` filter runs — `gh api user --jq ".login"` against
-the PR's `.user.login` — so at `review scope: own` it is true of every PR in the
-queue. The second half is the collaborator check in
-[The push test](RULES.md#the-push-test), and it is run **immediately before each push**,
-not once when you pick the PR up — a run holds a PR across several rounds, and
-the case it guards against is a collaborator pushing while that is happening.
+opened it. That is the same test the `review scope` filter runs —
+`gh api user --jq ".login"` against the PR's `.user.login` — so at
+`review scope: own` it is true of every PR in the queue. See
+[The push test](RULES.md#the-push-test).
 
-So step 2 applies to most of an `own` queue, not all of it by construction.
+So step 2 applies to the whole of an `own` queue.
+
+*It applied to "most of" one until 2026-08-29*, when the push test also read
+commit authorship. That condition is gone, and the paragraph it justified with
+it: a branch carrying someone else's commits is now pushable, and whether to
+push to it is a judgement the run makes by reading the PR rather than a gate a
+query answers. Where a conversation about work in progress is live, write a
+comment instead — and say in the report that you chose to.
 
 For a PR you may not push to, describe the fix in a comment and apply
 `unsettled` with the reason that fits:
@@ -35,23 +40,27 @@ For a PR you may not push to, describe the fix in a comment and apply
 - **Another account's PR** — `unsettled: not our branch @ <sha>`. Only reaches
   the queue at `review scope: all`. A cheap terminal state, not a dead end: the
   author's next push re-opens it.
-- **A branch a collaborator has pushed to** — `unsettled: latched @ <sha>`. Can
-  arise at either scope. **Commits do not re-open this one**, deliberately, and
-  no run can clear it: a human handles the PR outside the loop. **Report it by
-  name and say what is blocking it** — either who pushed to the branch, or that
-  the guard could not verify it (see the 250-commit bound in
-  [The push test](RULES.md#the-push-test)), plus the fact that the findings are written
-  up in the review. Those two are different problems: one wants a decision about
-  two people on a branch, the other wants someone to confirm whose branch it is.
-  The report is the only place a latched PR is visible; without that line it sits
-  outside the loop with nobody aware.
+- **A push the harness refuses** — `unsettled: latched @ <sha>`. Can arise at
+  either scope. **Commits do not re-open this one**, deliberately, and no run can
+  clear it: a human handles the PR outside the loop. **Report it by name and say
+  exactly what refused the push**, plus the fact that the findings are written up
+  in the review. The report is the only place a latched PR is visible; without
+  that line it sits outside the loop with nobody aware.
 
   **Unless a finding also needs a judgement — then `needs a decision` wins**,
   per the precedence under [the terminal labels and their
   reasons](REVIEW.md#the-terminal-labels-and-their-reasons). The two want different
   things from different people: a judgement call needs the reviewer's question
-  answered, a latch needs someone to decide what to do about a branch two
-  people are working on.
+  answered, a latch needs someone to unblock the push machinery.
+
+**When the thing you are fixing is a wrong claim, grep for every copy of it
+before calling it fixed.** A "one-line" documentation fix turned out to be three
+lines in three files, and the copy that mattered most — the onboarding path a
+fresh clone runs first — was the one left untouched, so the repo then stated two
+different things about one problem in two places. Correcting one instance of a
+claim is not a smaller version of correcting it; it can be worse than leaving all
+of them, because the surviving copies now have a contradicting neighbour to be
+read against.
 
 **Read the findings out of the round's review.** The marker comment carries the
 prefix, the SHA and at most a count; the findings are in the review that round
@@ -130,7 +139,7 @@ without the last one's conclusions, so it is a genuinely different pass, and
 stopping at two stops while that is still paying. Nits may remain — requiring
 zero findings would review forever.
 
-**When a cold round clears that bar, label the PR `review-settled` and post a
+**When a cold round clears that bar — and the checks have passed, below — label the PR `review-settled` and post a
 `settled: @ <sha>` comment with it.** That is the terminal state, and it is what
 stops future runs re-reviewing finished work. The comment carries the SHA the
 carve-out compares against, and it is the only trace left if a human later
@@ -190,6 +199,73 @@ outstanding, only a Critical or Medium may change that head.** Nits found from
 then on go to a card, however cheap they look. "Cheap" is what makes this loop
 attractive on every lap.
 
+**Never settle over a check that has not passed.** The settle bar is about what a
+reviewer found; this is about whether the code runs, and a green review over a
+red suite is the failure CF-275 was filed to prevent. #307 is the evidence, and
+the number that matters is **six**: it ran eight rounds in all, the first six of
+them over red CI, and not one of those six read a check. (Rounds seven and eight
+ran green; the seventh says so in its first clause. #307 merged.) Two things it
+does *not* evidence, because the brief has now got both wrong once: it was never
+settled over red — it was labelled `unsettled: needs a decision`, and its own
+marker says the round ceiling was context rather than the reason — and no human
+is identifiable in the record as having caught it. The rule does not need either.
+It needs the six: nothing in the brief would have *stopped* a settle over any of
+them, because nothing told a round to look. Do not apply `review-settled` while
+any check run on the head SHA is in **any** of these states:
+
+- concluded `failure`, `timed_out`, `cancelled` or `action_required`;
+- **not completed** — `queued` or `in_progress`, where `conclusion` is still
+  `null`. This is a state, not an absence, and it must be named: a rule that
+  lists only failing conclusions permits settling over a suite that has not
+  spoken yet, which is CF-275's shape exactly rather than a milder version of it;
+- or the head has **no check runs at all** — `total_count: 0`. `ci.yml` is
+  `on: pull_request` with no path filter, so every PR gets every job; nothing
+  means the workflow never fired, not that it passed quietly.
+
+`neutral`, `skipped` and `stale` do not block. Say in the report if one appears,
+because a skipped required job and a passing one are the same green to everything
+downstream.
+
+How to read them, and the two endpoints that look right and are not, is
+[in step 1](REVIEW.md#reading-the-checks-before-a-round-and-again-before-settling).
+
+**Pending is a live race, not an edge case — and not a foregone one.** A carry
+pushes a fix and reaches the settle bar within a minute or two; CI here lands in
+about the same time (median 65s across the last 20 runs; every run on this PR's
+own branch landed between 64s and 71s), so which arrives first is not
+predictable and neither outcome is the "ordinary" one to plan around.
+Re-read once after a short wait; if it is still running, the PR is simply not
+settleable yet this lap. That is not a finding, not a label, and not a reason to
+spend a round.
+
+**Leave such a PR unlabelled, and name it in the report.** It needs no new
+`unsettled` reason and must not be given one: `unsettled` records open Critical
+or Medium findings that a round put there, and a PR that reviewed clean has none
+— the label would assert something false, and no carve-out could clear it, since
+a re-run going green moves no SHA for the [carve-out test](REVIEW.md#record-comments-human-removal-and-re-opening)
+to see. Unlabelled already means unfinished. The exit is clean: when CI goes
+green the head has not moved, so the head-matching `cold: clean` markers still
+stand and the next run settles it **spending no round at all**.
+
+**The cost, so it is not discovered instead of decided:** such a PR re-enters the
+queue every night until its CI goes green, and each visit costs the read above.
+**Nothing bounds that.** The per-PR ceiling counts rounds within one run and this
+visit spends none, so it charges nothing; the recurrence is across runs, which no
+counter here windows. It ends when CI goes green, a human acts, or the PR is
+closed — and until then the report bullet is what makes it visible each night.
+
+That is the price of not inventing a label with no way out. The brief has been
+here before from the other side: [CF-274](RULES.md#hard-rules) removed the grant
+mechanism that had been added to give such a label an exit, which is why the
+answer this time is not to create the label.
+
+**This is the one thing that may move a frozen head.** The rule above says only a
+Critical or Medium may change the head once nothing is open. A red check is
+neither, so taken literally a converged-but-red PR could neither take the commit
+that would turn it green nor ever settle — no exit at all. It may take that
+commit. Nothing else about the freeze relaxes: the fix goes in, the head moves,
+and the PR takes the fresh cold round the routing table calls for.
+
 **A finding against the PR body is not a finding against the head.** It still
 has to be fixed — a body is editable and a body edit is not a commit, so it
 changes no SHA and disturbs no marker — but it must not block settling, and it
@@ -206,6 +282,9 @@ check a description would spend the budget the carve-out exists to save.
 And **confirm the body fix actually landed by reading the body back**, the same
 way a label is verified: an update call reports success whether or not the new
 text took, so an unverified body edit and a lost one are indistinguishable.
+(Which call to read a label back with is not obvious — the two that suggest
+themselves both fail, in opposite directions. See
+[what a non-`gh` tool must provide](REVIEW.md#what-a-non-gh-tool-must-provide).)
 Quote the corrected line in the settle comment so the record shows what was
 checked.
 
@@ -220,23 +299,23 @@ means depends on why you cannot fix it, and the four cases part company here:
   and in a reply describing what you would have changed. Then apply `unsettled`
   with an `unsettled: not our branch @ <sha>` comment. The author's next push
   re-opens it.
-- *This account's PR, but a collaborator has pushed to the branch.* Same work —
-  write every finding down, including the mechanical ones — but apply
-  `unsettled: latched @ <sha>` instead. **Not `not our branch`**: that reason
-  re-opens on any commit, and at `own` the account that pushes is the one
-  running, so the PR would re-open on its own pushes and cycle forever.
+- *This account's PR, but the push is refused.* Same work — write every finding
+  down, including the mechanical ones — but apply `unsettled: latched @ <sha>`
+  instead. **Not `not our branch`**: that reason re-opens on any commit, and at
+  `own` the account that pushes is the one running, so the PR would re-open on its
+  own pushes and cycle forever.
 
   **Unless a finding also needs a judgement — then `needs a decision` wins**, per
   the precedence under [the terminal labels and their
   reasons](REVIEW.md#the-terminal-labels-and-their-reasons), with the latch named in
   the comment as context. Where no finding needs one, `latched` is right and
-  `needs a decision` would be wrong: the blocked question is the PR-level one
-  about writing over someone else's work, not anything a reviewer raised.
+  `needs a decision` would be wrong: what is blocked is the mechanism, not
+  anything a reviewer raised.
 
   The distinction matters because the two are answered by different people doing
-  different things. A latch is resolved by whoever decides what to do about a
-  branch two people are working on; a judgement call is resolved by answering the
-  reviewer's question. Filing one as the other loses it.
+  different things. A latch is resolved by whoever can unblock the push; a
+  judgement call is resolved by answering the reviewer's question. Filing one as
+  the other loses it.
 - *A finding needing a human decision, on a branch you may push to.* First fix
   everything else that round raised and push it — those findings are real and
   abandoning them wastes the round that found them. *Then* apply `unsettled`

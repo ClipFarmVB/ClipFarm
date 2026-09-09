@@ -118,6 +118,17 @@ docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev
   `--dump-windows` on an `--offline` run saves the derived windows so a later
   re-score needs no container and no download.
 
+> **A recorded row describes the tree it was run against, not the current one,
+> and the `git_commit` field is how you tell.** The CF-174 rows tagged
+> `cf174-review-fixes` were recorded at `29a83a5`; their `config_snapshot`
+> still lists `MIN_SPEED_PXPS: 120.0`, a constant that branch later deleted, so
+> the rows are visibly older than the head that ships them. Nothing has since
+> changed the shipping path *for those fixtures* — all three are ≤1080p, the
+> later commits move only the >1440p clamp, logging, comments and tests, and
+> `ball_contact_scale_enabled` defaults on — but that is an **argument that they
+> would reproduce, not a re-run**: re-recording needs the R2 ball caches. Read a
+> row against its own `git_commit` before comparing it to anything.
+
 `--clips-json` input shape:
 ```json
 {
@@ -215,6 +226,29 @@ condenses, and that trade is the thing to look at before touching its tunables:
 `visualize_deadtime.py`. test1 is a different labeler on 360p-space footage and
 test3 is a game the ball tracker cannot follow, so both measure something other
 than which builder is better.
+
+> **Every figure above is stale on the 1080p fixtures as of CF-174 — both
+> columns, not just `rules`.** Two separate reasons, and the second one is easy
+> to miss:
+>
+> - `rules` was measured before `bridge_windows_by_motion` took a `frame_height`,
+>   so `v0` bridged 1080p footage at a 360p threshold — 150 px/s where production
+>   now runs 450.
+> - **Both** builders consume `game.contacts`, and `deadtime_variants.load_game`
+>   builds those with `find_contacts(tracker, frame_height=frame_h)`. CF-174
+>   scales `CONTACT_HIT_SPEED_PXPS` and `CONTACT_RESIDUAL_MIN_PXPS` inside that
+>   call — 240 → 720 on the 1080p fixtures — so `guarded`'s windows move too,
+>   even though it never touches the bridge.
+>
+> test1 is the exception on both counts: it is 360p, so the scale is exactly 1.0.
+> Everything else — test2, test3, test4, test5, in either column — is a
+> pre-CF-174 number, and the **+533s vs +134s net below is computed from two
+> stale columns**, so read it as the last measured comparison rather than the
+> current one. Re-running the ladder moves the `rules` figures toward *more* dead
+> time removed and more live play cut, because fewer gaps clear the higher bar;
+> the direction on `guarded` is not predictable from the threshold alone.
+> Regenerating needs the R2 ball caches, so these figures stand as the last
+> measured ones until someone has them.
 
 Strictly better on one, a paid trade on three, an abstain on one. At the 4:1
 live-cut exchange rate the harness and trainer share, that nets **+533s against

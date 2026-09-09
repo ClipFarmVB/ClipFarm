@@ -19,8 +19,9 @@ bucket, which is applied over already-computed per-clip fractions; nothing else
 derives from it.
 
 No app, no DB, no I/O imports — mirrors ml/pipeline conventions. The one import
-is merge_intervals (also pure) so both sides are normalized into
-non-overlapping unions the same way the rest of the pipeline does it.
+is ml.pipeline.intervals (CF-95), which exists to be depended on from here: both
+sides are normalized into non-overlapping unions the same way the rest of the
+pipeline does it, without coupling this module to one that derives keep windows.
 
 Signal definitions (CF-55), where:
   H = union of human-labeled intervals
@@ -31,9 +32,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ml.pipeline.dead_time import merge_intervals
-
-Interval = tuple[float, float]
+from ml.pipeline.intervals import Interval, merge_intervals
 
 
 # ── low-level interval helpers ─────────────────────────────────────────────

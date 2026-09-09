@@ -72,8 +72,13 @@ jobs:
       - run: pip install -r requirements-tooling.txt
       - run: ruff check api/
       - run: mypy api/app --ignore-missing-imports
-      # ml/eval is pure, unit-tested logic — lint it too (rest of ml/ is not yet covered).
-      - run: ruff check ml/eval
+      # Lint all of ml/, not just ml/eval: ml/tests and ml/pipeline sit beside
+      # ml/eval rather than under it, so the narrower glob never reached them
+      # (CF-254). mypy stays on ml/eval, and that is a hold rather than a
+      # permanent split: widening it is a behaviour change for ml/pipeline
+      # (one missing annotation today, not a rewrite) and belongs on its own
+      # card instead of riding along with a lint-scope fix.
+      - run: ruff check ml/
       - run: mypy ml/eval --ignore-missing-imports --explicit-package-bases --namespace-packages
       # numpy is installed AFTER the lint/type steps, for the same reason the api
       # dependencies below are: ruff and mypy are tuned against a dependency-free

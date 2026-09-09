@@ -10,6 +10,7 @@ Two layers, because the risk sits in two different places:
 
 Run from the api/ dir: `cd api && pytest tests/test_retention.py`.
 """
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -245,22 +246,201 @@ def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch):
     tasks._sweep_expired_raw_uploads()  # must not raise
 
 
+_ON_STORAGE = {"list_objects", "delete_files"}
+
+
 @pytest.mark.parametrize(
-    "failing", ["sync_expired_raw_uploads", "sync_referenced_raw_keys", "list_objects"]
+    "failing",
+    [
+        "sync_expired_raw_uploads",
+        "sync_clear_raw_video_url",
+        "sync_referenced_raw_keys",
+        "list_objects",
+        "delete_files",
+    ],
 )
 def test_sweep_never_raises(monkeypatch, failing):
     """Reporting must never break processing: process_game calls this once the
-    game is already marked ready."""
+    game is already marked ready.
+
+    One case per seam the sweep calls out to, so the parametrize is checkable
+    against the function rather than a subset someone has to notice is short.
+    `delete_files` was the seam it omitted, and the only one the sweep did not
+    guard (CF-372, #467); the other four were already guarded when this list
+    grew to cover them.
+    """
     from app.services import storage
     from app.workers import _sync_db
 
     r = _row()
     fakes = _Fakes(expired=[(r["id"], r["url"])], objects=[r["obj"]])
     _install(monkeypatch, fakes)
-    module = storage if failing == "list_objects" else _sync_db
+    module = storage if failing in _ON_STORAGE else _sync_db
     monkeypatch.setattr(module, failing, _raiser(RuntimeError("boom")))
 
     tasks._sweep_expired_raw_uploads()  # must not raise
+
+
+def test_a_client_that_cannot_be_built_is_reported_not_raised(monkeypatch):
+    """`delete_files` promises a failed batch is reported rather than raised.
+
+    Distinct from `test_undeletable_objects_are_left_for_the_next_sweep` above,
+    which patches `delete_files` away and so pins what the *sweep* does with a
+    returned failure list. This one runs the real `delete_files` and breaks the
+    thing it does before any batch — building the client, which reads
+    `settings.r2_*` and so fails on a missing or malformed config rather than
+    at import.
+
+    `_client` is `lru_cache`d, so this patches the module attribute that
+    `delete_files` looks up at call time. Clearing the cache instead would
+    outlive the test: `monkeypatch` does not undo `cache_clear()`, and a later
+    test that has already presigned would sign against whatever config it then
+    rebuilt from.
+    """
+    from app.services import storage
+
+    monkeypatch.setattr(storage, "_client", _raiser(RuntimeError("no config")))
+
+    assert storage.delete_files(["raw/a.mp4", "raw/b.mp4"]) == ["raw/a.mp4", "raw/b.mp4"]
+
+
+def test_a_raising_client_reaches_the_sweep_as_a_failure_list(monkeypatch, caplog):
+    """The sweep runs the real `delete_files` with a client that cannot be built.
+
+    The test above pins `delete_files` in isolation. This one is the seam #467
+    names — a raising `_client()` must not propagate out of the sweep — and it
+    needs the real function, so it undoes `_install`'s fake for that one name.
+    `list_objects` stays faked, which is also what makes the case reachable:
+    the live sweep walks a real listing first and would fail there instead, on
+    the same cached client.
+
+    Both guards keep the sweep from raising, so what distinguishes them is
+    which warning fires. With the guard in `delete_files`, the keys come back
+    as a failure list and the sweep reports them as undeleted. Without it, the
+    exception reaches the sweep's own guard and the message is the other one.
+    """
+    from app.services import storage
+
+    real_delete_files = storage.delete_files  # before _install replaces it
+
+    rows = [_row("a"), _row("b")]
+    fakes = _Fakes(objects=[r["obj"] for r in rows])
+    _install(monkeypatch, fakes)
+    monkeypatch.setattr(storage, "delete_files", real_delete_files)
+    monkeypatch.setattr(storage, "_client", _raiser(RuntimeError("no config")))
+
+    with caplog.at_level(logging.WARNING):
+        tasks._sweep_expired_raw_uploads()  # must not raise
+
+    # The guard's own line is the discriminator: without it the exception
+    # reaches the sweep's guard instead and this message never appears.
+    assert "could not build a client, reporting 2 key(s) as failed" in caplog.text
+    assert "2 object(s) could not be deleted" in caplog.text
+
+
+class _FakeClient:
+    """Stands in for the boto3 client, for the two ways a delete can fail.
+
+    `raises` fails the call outright; `errors` is what R2 puts in the response's
+    `Errors` list when the call succeeds and individual keys are rejected. The
+    two are separate paths in `delete_files` and lose their reason separately.
+    """
+
+    def __init__(self, *, raises: Exception | None = None, errors: list[dict] | None = None):
+        self.raises, self.errors = raises, errors or []
+
+    def delete_objects(self, **_kw):
+        if self.raises:
+            raise self.raises
+        return {"Errors": self.errors}
+
+
+def test_a_batch_that_fails_outright_logs_why(monkeypatch, caplog):
+    """The keys come back; the reason has to come out in the log.
+
+    `delete_files` returns a key list, so the exception is gone by the time the
+    caller sees it — and the only caller reports a count ("N object(s) could not
+    be deleted"). Without this line a credential that lost `DeleteObject` and a
+    transient network fault are the same unchanging number in the worker log,
+    on every completed game, forever.
+    """
+    from app.services import storage
+
+    monkeypatch.setattr(
+        storage, "_client", lambda: _FakeClient(raises=RuntimeError("AccessDenied")),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert storage.delete_files(["raw/a.mp4", "raw/b.mp4"]) == ["raw/a.mp4", "raw/b.mp4"]
+
+    assert "batch of 2 key(s) failed outright" in caplog.text
+    assert "AccessDenied" in caplog.text
+
+
+def test_per_key_rejections_log_their_code_and_message(monkeypatch, caplog):
+    """The other failure path, and the likelier one in production.
+
+    A call can succeed while individual keys are rejected — an object lock, a
+    per-prefix policy. `Code` and `Message` say which, and are not recoverable
+    from the returned key list, so they are asserted here rather than trusted to
+    the caller. The return value must stay keys-only: that is what the sweep
+    retries on.
+    """
+    from app.services import storage
+
+    monkeypatch.setattr(
+        storage, "_client",
+        lambda: _FakeClient(errors=[
+            {"Key": "raw/a.mp4", "Code": "AccessDenied", "Message": "not allowed"},
+        ]),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert storage.delete_files(["raw/a.mp4", "raw/b.mp4"]) == ["raw/a.mp4"]
+
+    assert "1 of 2 key(s) in this batch were rejected" in caplog.text
+    assert "raw/a.mp4: AccessDenied not allowed" in caplog.text
+
+
+def test_a_wholly_rejected_batch_does_not_flood_the_log(monkeypatch, caplog):
+    """A batch is up to 1000 keys, so the per-key line has to be bounded.
+
+    A policy that rejects the whole prefix rejects every key in the batch. Ten
+    entries and a count is enough to name the cause; a thousand key/code/message
+    triples on one line is a log nobody reads and, at one line per completed
+    game, a bill. Pinned because the slice is the kind of thing a later reader
+    simplifies away.
+    """
+    from app.services import storage
+
+    errs = [
+        {"Key": f"raw/{i}.mp4", "Code": "AccessDenied", "Message": "nope"}
+        for i in range(1000)
+    ]
+    monkeypatch.setattr(storage, "_client", lambda: _FakeClient(errors=errs))
+
+    with caplog.at_level(logging.WARNING):
+        assert len(storage.delete_files([e["Key"] for e in errs])) == 1000
+
+    assert "1000 of 1000 key(s) in this batch were rejected" in caplog.text
+    assert "(+990 more)" in caplog.text
+    assert caplog.text.count("AccessDenied") == 10
+
+
+def test_a_clean_delete_logs_no_warning(monkeypatch, caplog):
+    """The guard above must not fire on the path that works.
+
+    `Errors` is absent from a fully successful response, and a warning per
+    successful sweep would bury the two that mean something.
+    """
+    from app.services import storage
+
+    monkeypatch.setattr(storage, "_client", lambda: _FakeClient())
+
+    with caplog.at_level(logging.WARNING):
+        assert storage.delete_files(["raw/a.mp4"]) == []
+
+    assert caplog.text == ""
 
 
 # ─── The selection SQL, against a real database ──────────────────────────────
