@@ -331,12 +331,49 @@ test4); every other column is held out and is starred in the summary. test5 is
 the strongest of those — it was labeled after the variants were written, so it
 could not have shaped them even indirectly.
 
+## Measuring the MIN_RALLY_CONTACTS cliff (CF-376)
+
+CF-174 scaled the contact **speed** thresholds by `frame_height / 360` and left
+`MIN_RALLY_CONTACTS = 3` an absolute count. A rally that drops from 3 detected
+contacts to 2 is therefore not shortened — it is discarded whole, and
+production saw 34 clips become 11 on the same ball cache.
+
+`contact_cliff.py` prints the population that gate is deleting, both switch
+positions side by side, off the same dumped track `tune_contacts` reads:
+
+```bash
+# The dump first, if you do not have it already: the tool reads a dumped track
+# and never a video, and results/{test_id}_ball_track.json is gitignored, so a
+# fresh clone has none. `tune_contacts` needs the same file.
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.diagnose_detection --test test2 --dump results/test2_ball_track.json
+
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.contact_cliff test2
+```
+
+Read it on a **1080p** fixture (test2/test4). On test1 the scale is exactly
+1.0, so the two columns are the same run and the report says so — that is the
+gap CF-375 (#475) exists to close, not evidence that there is no cliff.
+
+The ladder separates two gates, because a fix aimed at one does nothing for
+the other: `MIN_RALLY_CONTACTS` deletes segments with too few contacts, and
+`MIN_RALLY_DURATION` (2.0s) then deletes what is left if the clip is too
+short. Tightening contact detection can trip either — losing the *outermost*
+contacts shortens the rally as well as thinning it. The last line also counts
+the rallies sitting at exactly 3 contacts, which is the population one
+detection away from the same fate.
+
+It measures and decides nothing; the fix is the second deliverable on #476.
+
 ## Files
 ```
 metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
 harness.py             fixture load, model-clip acquisition, report, results append
 diagnose_detection.py  why a rally was missed: BLIND / SPARSE / GATED breakdown
 tune_contacts.py       sweep find_contacts tunables over a dumped ball track
+contact_cliff.py       how many rallies MIN_RALLY_CONTACTS deletes under CF-174
+                       scaling, both switch positions (CF-376)
 deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187)
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 fixtures/              one JSON per test case (ground truth)
