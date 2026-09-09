@@ -164,6 +164,9 @@ function CollectionContent() {
           onClose={() => setActiveClipIndex(null)}
           onPrev={activeClipIndex > 0 ? () => setActiveClipIndex((i) => i! - 1) : undefined}
           onNext={activeClipIndex < clips.length - 1 ? () => setActiveClipIndex((i) => i! + 1) : undefined}
+          onUpdate={(updated) =>
+            setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
+          }
         />
       )}
     </div>

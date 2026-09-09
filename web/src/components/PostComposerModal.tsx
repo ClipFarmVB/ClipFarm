@@ -130,7 +130,10 @@ export function PostComposerModal({
 }: {
   clip: Clip;
   onClose: () => void;
-  onPosted?: () => void;
+  /** Called on success with the tier the CLIP was raised to, or null if it
+   *  was not touched — so the surface behind this can stop showing a stale
+   *  ceiling, and can offer the undo the consent copy promises. */
+  onPosted?: (raisedClipTo: Visibility | null) => void;
 }) {
   // Absent means private — the fail-closed direction, matching the schema's
   // own default. A clip payload that predates this field offers "Only me"
@@ -204,7 +207,10 @@ export function PostComposerModal({
     try {
       await createPost(clip.id, caption, visibility, needsRaise);
       setDone(true);
-      onPosted?.();
+      // The tier, not just "done": widening the clip is the part the caller
+      // cannot see for itself, and without it the undo this dialog promises
+      // stays invisible until a reload.
+      onPosted?.(needsRaise ? visibility : null);
       closeTimer.current = setTimeout(onClose, 900);
     } catch (e) {
       // Already decoded. `throwApiError` runs the body through
@@ -337,7 +343,7 @@ export function PostComposerModal({
               {CEILING_PHRASE[ceiling]}. Posting to{" "}
               <strong className="font-semibold">{selectedLabel}</strong> will
               also change the clip itself, so it stays visible to them after
-              this post is deleted.
+              this post is deleted. You can make it private again from the clip.
             </span>
           </label>
         )}
