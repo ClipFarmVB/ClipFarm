@@ -47,6 +47,60 @@ HIGHLIGHT_IDS = sorted(
 # break / outlier.
 KNOWN_TIERS = frozenset("MCNBO")
 
+# Which tiers are live ball, for a DEAD-TIME fixture. This is the split
+# README_deadtime.md calls "the trap", and it is not the same split the
+# highlight loader uses: `N` (failed serve, shank, average rally) is not
+# highlight-worthy, so test1.json's `ground_truth_tiers` omits it — but it is
+# still play, and the condense stage is built to keep it.
+#
+# Score `N` as dead time and the metrics INVERT: a model that correctly keeps a
+# boring rally reads as missing dead time, and one that aggressively cuts real
+# play reads as removing more of it. The harness would reward the exact failure
+# it exists to catch, and the number it printed would look entirely plausible.
+LIVE_BALL_TIERS = frozenset("MCN")
+DEAD_TIERS = frozenset("BO")
+
+
+def tier_semantics_violations(raw: dict) -> list[str]:
+    """The rule itself, so the checks below and their self-tests share one copy.
+
+    Returns a human-readable reason per violation; empty means the fixture's
+    `keep_tiers` matches the live-ball/dead split above.
+    """
+    spans = raw.get("spans", raw.get("keep", []))
+    present = {s.get("tier") for s in spans if s.get("tier") is not None}
+    if not present:
+        # Untagged fixtures list in-play spans only and are read permissively.
+        # Nothing to check, and demanding a tier set would reject the older
+        # format the loader still documents and supports.
+        return []
+
+    declared = raw.get("keep_tiers")
+    if declared is None:
+        return [
+            "spans carry tiers but `keep_tiers` is absent, so the loader keeps "
+            f"every one of {sorted(present)} as in-play — including any break "
+            "or outlier, which is dead time"
+        ]
+
+    problems = []
+    for tier in sorted(present - KNOWN_TIERS):
+        problems.append(
+            f"unknown tier {tier!r}: add it to KNOWN_TIERS and decide which side "
+            "of the live-ball split it falls on"
+        )
+    for tier in sorted((present & LIVE_BALL_TIERS) - set(declared)):
+        problems.append(
+            f"tier {tier!r} is live ball but is not in keep_tiers, so those spans "
+            "score as dead time — a model that correctly keeps them is penalised"
+        )
+    for tier in sorted(set(declared) & DEAD_TIERS):
+        problems.append(
+            f"tier {tier!r} is a genuine stoppage but is in keep_tiers, so the "
+            "fixture claims a break is live ball"
+        )
+    return problems
+
 
 class TestEveryDeadtimeFixture:
     """
@@ -424,3 +478,103 @@ class TestTheFrameHeightGuardSeparatesItsTwoCauses:
     def test_a_matching_height_passes(self):
         harness._assert_declared_frame_height(
             self._fixture(360), 360, "test1", "raw/x.mp4", "deadtime")
+
+
+class TestTierSemanticsAcrossDeadtimeFixtures:
+    """
+    The live-ball split, for every dead-time fixture rather than just test1.
+
+    `TestTest1DeadtimeFixture` already asserts this for the one file that has
+    tiers today, and README_deadtime.md claims the suite "enforces this" without
+    naming a fixture. It did not: those assertions are hardcoded to test1, so a
+    second tiered fixture inherited none of them. That is exactly how the
+    highlight half of this file went wrong before HIGHLIGHT_IDS was discovered
+    rather than named — see its comment.
+
+    It matters now because CF-375 (#475) asks for a new 1080p fixture, and its
+    own Notes warn that reusing a highlight fixture's tier set here "will
+    silently produce a wrong answer". Silently is the problem: the harness still
+    prints a number. This turns that prose warning into a failing test.
+    """
+
+    @pytest.mark.parametrize("test_id", DEADTIME_IDS)
+    def test_keep_tiers_matches_the_live_ball_split(self, test_id):
+        raw = json.loads((FIXTURES_DIR / f"{test_id}_deadtime.json").read_text(encoding="utf-8"))
+        problems = tier_semantics_violations(raw)
+        assert not problems, f"{test_id}_deadtime.json: " + "; ".join(problems)
+
+    def test_at_least_one_fixture_actually_declares_tiers(self):
+        """
+        Every check above passes vacuously on an untagged fixture, and all but
+        one of ours is untagged. If the tiered fixture ever loses its tiers this
+        class goes quietly green while testing nothing.
+        """
+        tiered = [
+            test_id for test_id in DEADTIME_IDS
+            if any(
+                s.get("tier") is not None
+                for s in json.loads(
+                    (FIXTURES_DIR / f"{test_id}_deadtime.json").read_text(encoding="utf-8")
+                ).get("spans", [])
+            )
+        ]
+        assert tiered, "no dead-time fixture carries tiers; the split is untested"
+
+
+class TestTierSemanticsRule:
+    """
+    Self-tests for the rule, on constructed fixtures — the checked-in files
+    cannot exercise the failure paths, since a fixture that tripped one would
+    fail the class above instead.
+
+    These call `tier_semantics_violations` rather than restating it. A self-test
+    that re-implements the rule passes against a loosened rule, which is the
+    failure mode worth guarding here.
+    """
+
+    @staticmethod
+    def _fixture(keep_tiers, tiers):
+        spans = [
+            {"start": f"00:{i:02d}", "end": f"00:{i + 1:02d}", "tier": t}
+            for i, t in enumerate(tiers)
+        ]
+        raw = {"spans": spans}
+        if keep_tiers is not None:
+            raw["keep_tiers"] = keep_tiers
+        return raw
+
+    def test_the_documented_split_is_clean(self):
+        assert tier_semantics_violations(self._fixture(["M", "C", "N"], "MCNBO")) == []
+
+    def test_a_highlight_tier_set_is_rejected(self):
+        """The exact mistake CF-375's Notes warn about: copying `["M", "C"]`
+        from the highlight fixture, which drops every boring rally into dead
+        time."""
+        problems = tier_semantics_violations(self._fixture(["M", "C"], "MCNBO"))
+        assert len(problems) == 1
+        assert "'N' is live ball" in problems[0]
+
+    def test_a_break_in_keep_tiers_is_rejected(self):
+        problems = tier_semantics_violations(self._fixture(["M", "C", "N", "B"], "MCNB"))
+        assert any("genuine stoppage" in p for p in problems)
+
+    def test_tiered_spans_with_no_tier_set_are_rejected(self):
+        problems = tier_semantics_violations(self._fixture(None, "MCNB"))
+        assert len(problems) == 1
+        assert "keep_tiers` is absent" in problems[0]
+
+    def test_an_unknown_tier_is_rejected(self):
+        problems = tier_semantics_violations(self._fixture(["M", "C", "N", "X"], "MCNX"))
+        assert any("unknown tier 'X'" in p for p in problems)
+
+    def test_an_untagged_fixture_is_exempt(self):
+        """test2-test5 list in-play spans only and carry no tiers. The loader
+        documents and supports that shape, so the rule has to stay silent on it
+        rather than demanding a retrofit."""
+        raw = {"keep": [{"start": "00:01", "end": "00:02"}]}
+        assert tier_semantics_violations(raw) == []
+
+    def test_a_tier_absent_from_the_spans_is_not_demanded(self):
+        """A fixture whose labeling pass happened to produce no `N` spans is
+        fine; the rule is about tiers present in the file, not a required set."""
+        assert tier_semantics_violations(self._fixture(["M", "C"], "MCB")) == []

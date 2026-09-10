@@ -83,8 +83,14 @@ So, for `test1`:
 | `O`  | outlier — camera knocked/adjusted, pause in play | no → dead |
 
 Only genuine stoppages (`B`, `O`) are dead. `ml/tests/test_eval_fixtures.py`
-enforces this: it asserts every `N` span is kept, and that the `M`/`C` subset
-still matches `test1.json` exactly, so the two fixtures can't drift apart.
+enforces this for **every** dead-time fixture, not just `test1`: a fixture whose
+spans carry tiers must declare `keep_tiers`, must include every live-ball tier
+its spans use, and must not list `B` or `O`. So copying `["M", "C"]` across from
+a highlight fixture fails the suite rather than quietly inverting the metric.
+
+On top of that, `test1` is checked against `test1.json` directly — every `N`
+span kept, and the `M`/`C` subset matching exactly — so the two fixtures can't
+drift apart.
 
 ## What the harness does with it
 
