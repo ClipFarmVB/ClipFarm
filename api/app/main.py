@@ -9,7 +9,16 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.observability import init_sentry
-from app.routers import games, clips, players, collections, corrections, profiles, posts
+from app.routers import (
+    games,
+    clips,
+    players,
+    collections,
+    corrections,
+    devices,
+    profiles,
+    posts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +40,12 @@ app.include_router(clips.router)
 app.include_router(players.router)
 app.include_router(collections.router)
 app.include_router(corrections.router)
+# Unconditional, unlike the two below. Push registration serves the
+# transactional "your game is ready" notification (CF-318), which the epic
+# separates from engagement push precisely so it does not sit behind the social
+# flag — a filmer who never touches the social surface still needs to be told
+# their clips are done.
+app.include_router(devices.router)
 # Behind SOCIAL_ENABLED (CF-107): with the flag off the profile routes are not
 # registered at all, so /users/* 404s rather than existing-but-empty. Nothing
 # else in the app depends on them.

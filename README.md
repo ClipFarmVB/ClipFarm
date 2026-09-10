@@ -87,7 +87,7 @@ api/app/
   auth.py                  Supabase JWKS JWT verification (FastAPI dependency + middleware)
   database.py              async SQLAlchemy engine/session
   models/                  User, Team, Player, Game, Clip, Collection, Correction, DeadTime{Run,Clip}
-  routers/                 games, clips, players, collections, dead_time
+  routers/                 games, clips, players, collections, corrections, devices, profiles, posts
   schemas/                 Pydantic request/response models
   services/storage.py      R2/S3 helpers (upload, download, presign, delete, key builders)
   workers/
@@ -403,6 +403,7 @@ Postgres via SQLAlchemy (`api/app/models/`), RLS enabled on all tables.
 | `Correction` | User relabel events (written on relabel; readable via `GET /corrections` + CSV `/corrections/export` — training signal). |
 | `DeadTimeRun` / `DeadTimeClip` | Separate experimental dead-time detection flow. |
 | `UploadEvent` | Append-only quota ledger (CF-91). One row per accepted upload, holding the seconds charged against the per-user window. Deliberately not derived from `Game`: games are hard-deleted, so counting them let a user refund a slot whose GPU cost was already spent. `game_id` is `ON DELETE SET NULL`. |
+| `DeviceToken` | Push destinations for the mobile app (CF-318). One row per app install. `token` is unique across the whole table, not per user: a push token names a *device*, and registering an already-known token re-owns it — a resold or re-signed-in phone must stop notifying its previous owner even when sign-out never ran. `ON DELETE CASCADE` from `users`. |
 
 ---
 
