@@ -171,6 +171,12 @@ async def list_games(user_id: UserId, db: DB):
     for g in games:
         d = GameOut.model_validate(g)
         d.clip_count = counts.get(g.id, 0)
+        # Presigned like every other route that returns this field. The stored
+        # form is a dead URL against a private bucket, so returning it unsigned
+        # was the defect. The cost is bounded by the guard inside the helper
+        # and by `condense` being opt-in: only rows that actually have a
+        # condensed cut pay a signature, and most have none (CF-303).
+        _presign_condensed(d, g)
         out.append(d)
     return out
 
@@ -582,7 +588,9 @@ async def complete_upload(
 
     process_game_task.delay(str(game_id), raw_url, condense=condense)
 
-    return GameOut.model_validate(game)
+    out = GameOut.model_validate(game)
+    _presign_condensed(out, game)
+    return out
 
 
 @router.get("/{game_id}", response_model=GameOut)
@@ -596,12 +604,27 @@ async def get_game(game_id: uuid.UUID, db: DB, viewer_id: ViewerId = None):
     count = clip_count_q.scalar_one()
     out = GameOut.model_validate(game)
     out.clip_count = count
+    _presign_condensed(out, game)
+    return out
+
+
+def _presign_condensed(out: GameOut, game: Game) -> None:
+    """Replace the stored `{r2_public_url}/{key}` form with a presigned URL.
+
+    The bucket is not public, so the stored form is not loadable by a client;
+    only the routes that presign it return something usable. Every route that
+    returns a game calls this — `complete_upload`, `get_game`, `rename_game`
+    and `list_games` — so a new route is a one-line addition rather than a
+    silently dead URL (CF-303).
+
+    The guard matters on the list route: `condense` is opt-in, so most rows
+    have nothing to sign and cost nothing.
+    """
     if out.condensed_video_url:
         out.condensed_video_url = storage.presign_from_stored_url(
             out.condensed_video_url,
             download_filename=condensed_download_filename(game.title),
         )
-    return out
 
 
 @router.patch("/{game_id}", response_model=GameOut)
@@ -612,7 +635,9 @@ async def rename_game(game_id: uuid.UUID, body: GameRename, user_id: UserId, db:
     game.title = body.title
     await db.commit()
     await db.refresh(game)
-    return GameOut.model_validate(game)
+    out = GameOut.model_validate(game)
+    _presign_condensed(out, game)
+    return out
 
 
 @router.delete("/{game_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -651,10 +676,13 @@ async def delete_game(game_id: uuid.UUID, user_id: UserId, db: DB):
     await db.delete(game)
     await db.commit()
 
-    # Best-effort R2 cleanup
+    # Best-effort R2 cleanup. Blocking boto3 calls, so off the loop: a game
+    # with N clips is 2N+2 of them, and on a single-worker api every one stalls
+    # every other request. `abort_multipart` a few routes above already does
+    # this, so the bare call here was drift rather than a decision (CF-303).
     for key in r2_keys:
         try:
             if key:
-                storage.delete_file(key)
+                await run_in_threadpool(storage.delete_file, key)
         except Exception:
             logger.warning("R2 delete failed for key %s", key, exc_info=True)

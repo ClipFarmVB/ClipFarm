@@ -1,8 +1,10 @@
+import logging
 import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user_id
@@ -14,6 +16,8 @@ from app.models.player import Player
 from app.schemas.clip import ClipOut
 from app.schemas.collection import CollectionOut, CollectionCreate, CollectionRename, CollectionAddClip
 from app.services import access, storage
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/collections", tags=["collections"])
 
@@ -105,6 +109,19 @@ async def list_collection_clips(collection_id: uuid.UUID, user_id: UserId, db: D
     )
     clips = result.scalars().all()
 
+    # No ownership filter here on purpose (CF-263): a viewer entitled to the
+    # clip is entitled to the name tagged on it — publishing a clip publishes
+    # its attribution. What that buys *here* is cross-owner collections: this
+    # route requires auth, so unlike the clip listing it has no anonymous
+    # caller, but a collection spans owners the moment a public clip can be
+    # saved into it, and the player on such a clip belongs to someone the
+    # viewer has no relationship with. An ownership filter would blank exactly
+    # those names.
+    #
+    # The reasoning is in services/access.py. `test_public_player_name.py` pins
+    # this route as well as the clip listing — it reads the emitted statement,
+    # because a fake session returns the queued player either way and every
+    # result-level assertion stays green with a filter in place.
     player_ids = {c.player_id for c in clips if c.player_id}
     player_map: dict[uuid.UUID, str] = {}
     if player_ids:
@@ -157,7 +174,11 @@ async def list_collection_clips(collection_id: uuid.UUID, user_id: UserId, db: D
 async def add_clip_to_collection(
     collection_id: uuid.UUID, body: CollectionAddClip, user_id: UserId, db: DB
 ):
-    col = await _get_owned_collection(collection_id, user_id, db)
+    # Called for the check, not the row: it 404s a collection this caller does
+    # not own. Nothing below needs the object, and holding one would invite
+    # reading an attribute off it after the rollback below — which expires
+    # every one of them.
+    await _get_owned_collection(collection_id, user_id, db)
 
     # Saving is a read-side action: anything the user may view, they may add
     # to their own collection (CF-108). Previously owner-only, which would have
@@ -170,15 +191,53 @@ async def add_clip_to_collection(
     # Upsert — silently succeed if already in collection
     existing = await db.execute(
         select(CollectionClip).where(
-            CollectionClip.collection_id == col.id,
+            CollectionClip.collection_id == collection_id,
             CollectionClip.clip_id == body.clip_id,
         )
     )
     if existing.scalar_one_or_none() is None:
-        db.add(CollectionClip(collection_id=col.id, clip_id=body.clip_id))
-        await db.commit()
+        db.add(CollectionClip(collection_id=collection_id, clip_id=body.clip_id))
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            # Two concurrent adds — a double-click — both read `None` above and
+            # the loser lands here. The database is the arbiter, not the check
+            # above, and the row the caller wanted now exists: that is the
+            # outcome this endpoint's contract promises.
+            #
+            # But `collection_clips` also carries two cascading foreign keys, so
+            # a clip or collection deleted in the same instant arrives here too,
+            # and answering 201 for a row that does not exist would be a lie.
+            # The constraint name cannot tell the two apart cheaply — the unique
+            # index is redundant with the composite primary key, so a duplicate
+            # reports against the PK — so ask the table instead. One extra read,
+            # and only on a race.
+            await db.rollback()
+            settled = await db.execute(
+                select(CollectionClip).where(
+                    CollectionClip.collection_id == collection_id,
+                    CollectionClip.clip_id == body.clip_id,
+                )
+            )
+            if settled.scalar_one_or_none() is None:
+                # Not the duplicate: the clip or the collection went away under
+                # us, or some constraint nobody here anticipated failed. Record
+                # the cause — swallowing it would make an unexpected failure a
+                # traceless 404, which is how this kind of handler goes wrong.
+                logger.warning(
+                    "Add to collection %s failed and nothing settled (%s)",
+                    collection_id, exc, exc_info=True,
+                )
+                raise HTTPException(
+                    status_code=404, detail="Clip or collection not found"
+                ) from None
 
-    return {"collection_id": str(col.id), "clip_id": str(body.clip_id)}
+    # `collection_id` rather than `col.id`: a failed commit followed by
+    # `rollback()` expires every attribute on `col`, and reading one back would
+    # emit a lazy SELECT from a synchronous attribute access inside async code
+    # — `MissingGreenlet`, and the 500 this handler exists to remove. The two
+    # values are the same; only one of them is safe to read here.
+    return {"collection_id": str(collection_id), "clip_id": str(body.clip_id)}
 
 
 @router.delete("/{collection_id}/clips/{clip_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -1,0 +1,249 @@
+"""The overnight brief's own token figures, recomputed rather than trusted.
+
+`docs/overnight/README.md` carries a table of per-file token costs, five lap
+costs, and one figure derived from two of those laps, and a run reads them to
+plan what it can afford. They are pure functions of the brief's own file sizes,
+so nothing but discipline kept them true — and discipline lost: they had
+drifted by a third before CF-275 re-took them, on a page that asked the next
+reader to re-measure and had no way to tell whether they had. CF-371 (#464) is
+that class of failure, a figure that was right when written and rotted
+untouched.
+
+**What this does not reach.** CF-370 lists six wrong published figures and this
+check would have caught **none** of them, because none was on this surface. They
+are not all one mechanism — a carried-over mutation row, a figure taken from a
+subagent's report, a grep run against the wrong tree — so no single sentence
+covers them, and `RULES.md`'s prose rule still carries all six. What this does
+catch is a figure that was right when written and rotted while nobody looked,
+which is what the table itself did before CF-275.
+
+Deliberately unpinned: the six across-the-split figures on that page —
+32.25k, 19.09k, 18.13k, 26.70k, 28.05k and 23.60k, which appear in eight places
+between them (`32.25k` and `26.70k` twice each) — plus the rounded restatements
+of the first three, as `18k`, `~32k` and `~19k`. Those describe files at
+`596755d^` and `596755d`, the two sides of the CF-365 split rather than one
+revision, which the page says the table cannot reproduce; reading them needs
+`git ls-tree` against an old revision — which a shallow clone serves silently
+and wrongly, a trap `RULES.md` already lists.
+"""
+
+import pathlib
+import re
+from decimal import ROUND_HALF_UP, Decimal
+
+BRIEF = pathlib.Path(__file__).resolve().parents[2] / "docs" / "overnight"
+README = BRIEF / "README.md"
+
+# Which files each lap reads, from the reading protocol. Every lap reads
+# README.md itself — "this file's own row included, which is why there is one".
+# "The whole brief" is read off the directory, never listed here. A hardcoded
+# list unpins the one figure that is about *all* of them: a round added a tenth
+# file with a correct row and a correct README row, and the suite stayed green
+# while the page said 51k and the directory summed to 53k. The named laps below
+# are hardcoded on purpose — which files a lap reads is a fact about the reading
+# protocol, not about what happens to be in the directory.
+LAPS = {
+    "step-1, select only": ["README.md", "RULES.md", "REVIEW.md"],
+    "the whole brief": None,
+    "step-1, spawning a round": ["README.md", "RULES.md", "REVIEW.md", "BRIEFS.md"],
+    "step-2": ["README.md", "RULES.md", "FIX.md", "BRIEFS.md"],
+    "step-3": ["README.md", "RULES.md", "TICKETS.md"],
+}
+
+
+def _lap_files(lap):
+    """The files a lap reads; `None` means every brief file there is."""
+    named = LAPS[lap]
+    return sorted(p.name for p in BRIEF.glob("*.md")) if named is None else named
+
+# Whitespace-tolerant everywhere, and the tenth is optional. Three things a
+# perfectly good row does that a stricter pattern skips: writing a whole number
+# as `15k`, padding the cells as `|  2.1k  |` (what any markdown formatter
+# does), and writing a trailing zero as `2.10k`. A skipped row is not a quiet
+# miss — the table test reads it as *a file missing from the table* and tells
+# the reader to add rows that are already there.
+#
+# `_ROW` has been loosened in five separate commits and the two sentence
+# patterns in one each. Every one of those seven edits widened what counts as a
+# valid row or sentence; not one narrowed it. Writing "**A new pattern here is
+# whitespace-tolerant from the start**" above it, as `2204f84` did, was not
+# enough: that rebuilt version still forbade a space before `k`, forbade an
+# indent, and forbade anything after the closing pipe, so a single trailing
+# space made a row on screen read as a file missing from the table.
+#
+# So the rule is a check, not an intention: **for any pattern matching this
+# page, write the case that reformats it and confirm the pattern survives.**
+# Every one of the seven came from a reviewer running exactly that.
+_ROW = re.compile(
+    r"^\s*\|\s*\[`(?P<name>[^`]+\.md)`\]\([^)]*\)\s*\|"
+    r".*\|\s*(?P<stated>[0-9]+(?:\.[0-9]+)?)\s*k\s*\|\s*$",
+    re.MULTILINE,
+)
+
+# Pinned by its own sentence, never by sweeping for `\d+k`: the page carries
+# six historical figures it says are not recomputable, and `32k` appears twice.
+#
+# Every gap is `\s+`, built rather than written out, so re-wrapping the
+# paragraph cannot break it. An earlier version wrote the sentence as a literal
+# with `\s+` at only four of its 33 gaps — today's two line breaks plus the two
+# string-concatenation boundaries of the literal itself, leaving 29 plain
+# spaces — and a round that reported this was told it did not reproduce,
+# because the three transforms checked against it (as shipped, one line,
+# re-indented) all preserve literal spaces and so could not have disproved it.
+# Re-wrapping the same words at 64, 79 and 100 columns missed at every width.
+_LAPS_WORDS = (
+    r"A step-1 lap that only selects costs about (?P<select>\d+)k tokens of brief "
+    r"instead of (?P<all>\d+)k; one that also spawns a round, about (?P<spawn>\d+)k\. "
+    r"A step-2 lap is about (?P<step2>\d+)k, a step-3 lap about (?P<step3>\d+)k\."
+)
+_LAPS_SENTENCE = re.compile(r"\s+".join(_LAPS_WORDS.split(" ")))
+# Joined on `\\s+` for the same reason as the sentence above, and written the
+# same way so the two cannot drift apart again: this pattern kept its literal
+# spaces when that one was fixed, and re-wrapping its bullet at 60, 64 or 72
+# columns then reported the claim as missing from the page entirely.
+_CHEAPER_WORDS = r"only selects is ~(?P<k>\d+)k cheaper than one"
+_CHEAPER = re.compile(r"\s+".join(_CHEAPER_WORDS.split(" ")))
+
+
+def _size(name):
+    """Bytes of a brief file, with CRLF normalised to LF.
+
+    A name the table lists but the directory does not hold gets an assertion
+    rather than a `FileNotFoundError` traceback: the table test above reports
+    that case properly, and a raw traceback from here buries it.
+
+    `.gitattributes` pins `eol=lf` for `*.sh` and `.hooks/*` only, and its own
+    comment says this repo is worked on from Windows — so with
+    `core.autocrlf=true` these files check out fatter, and enough of the figures
+    move to redden the build. The figures describe the content, not the
+    checkout.
+
+    How many move is a property of today's file sizes, not of this rule, so it
+    is stated with the revision it was taken at rather than left to rot: at
+    `2204f84`, six of the nine rows changed tenth and two of the five laps
+    changed whole-k. It said *seven* rows in four consecutive commits, and was
+    true in the first two of them: `2932b85` grew `README.md` past 2.05k, which
+    falsified it, and two more commits carried it before anyone re-ran it — the
+    defect this whole file exists to catch, in the file that catches it.
+    """
+    path = BRIEF / name
+    assert path.exists(), (
+        f"{name} is named by this test or by README.md's table, and is not in "
+        "docs/overnight/. If the file was removed, drop its table row and take "
+        "it out of any lap in LAPS that names it (CF-371, #464)."
+    )
+    return len(path.read_bytes().replace(b"\r\n", b"\n"))
+
+
+def _tenths(size):
+    """`bytes/4` in thousands, to the nearest tenth.
+
+    Half-up, not Python's `round`, which is half-even. The two differ only at an
+    exact tie, so the example has to be one: a file of exactly 21000 bytes is
+    5.25k, where a human re-measuring writes 5.3 and `round(5.25, 1)` gives 5.2.
+    That is not hypothetical for long: at `d899f17`, `BRIEFS.md` was 20990 bytes,
+    ten below the tie, so the two rules were one small edit apart from
+    disagreeing. Dated because it is a fact about a file size rather than about
+    this function, and nothing here pins it.
+    """
+    return (Decimal(size) / 4000).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+
+
+def _whole(size):
+    """The same, to the nearest whole k — what the page's "about Nk" claims."""
+    return (Decimal(size) / 4000).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
+def test_the_table_lists_exactly_the_brief_files():
+    """No file missing a row, and no row for a file that is gone.
+
+    A new phase file with no row is invisible to a run planning its budget, and
+    every lap that reads it is understated by however large it is.
+    """
+    listed = {m.group("name") for m in _ROW.finditer(README.read_text(encoding="utf-8"))}
+    present = {p.name for p in BRIEF.glob("*.md")}
+    assert listed == present, (
+        f"docs/overnight/README.md's table lists {sorted(listed)} but the "
+        f"directory holds {sorted(present)}. A row is only read when its first "
+        "cell is a markdown link whose text is the file name in backticks and "
+        "its last cell is the token count — a row that reads fine on screen but "
+        "differs in shape is reported here as a missing file. Add the row (with "
+        "its token cost) or drop the stale one, and re-measure the five lap "
+        "figures and the difference stated below them — not the "
+        "across-the-split figures further down, which describe an older "
+        "revision. A file with no row is one no lap counts (CF-371, #464)."
+    )
+
+
+def test_every_row_states_the_size_the_file_actually_is():
+    wrong = []
+    for match in _ROW.finditer(README.read_text(encoding="utf-8")):
+        name, stated = match.group("name"), Decimal(match.group("stated"))
+        actual = _tenths(_size(name))
+        if stated != actual:
+            wrong.append(f"{name}: table says {stated}k, file is {actual}k ({_size(name)} bytes)")
+    assert not wrong, (
+        "docs/overnight/README.md's token table has drifted from the files it "
+        "describes:\n  " + "\n  ".join(wrong) + "\nRe-measure the table, the "
+        "five lap figures and the difference stated below them — not the "
+        "across-the-split figures further down, which describe an older "
+        "revision. This is the drift CF-275 had to re-take by hand once "
+        "already (CF-371, #464)."
+    )
+
+
+def test_the_five_lap_figures_match_the_files_each_lap_reads():
+    """The costs a run plans against, recomputed from the files.
+
+    These move on almost any brief edit, and that is the point rather than a
+    flaw: the page tells the next reader what a lap costs, so an edit that
+    changes the cost has to change the page. Editing README.md moves all five,
+    since every lap reads it.
+    """
+    text = README.read_text(encoding="utf-8")
+    stated = _LAPS_SENTENCE.search(text)
+    assert stated, (
+        "docs/overnight/README.md's lap-cost sentence no longer matches the "
+        "shape this test reads. It is pinned by its own wording on purpose — "
+        "the page carries historical across-the-split figures that must not be "
+        "recomputed. Update _LAPS_SENTENCE here if the wording changed "
+        "deliberately (CF-371, #464)."
+    )
+    keys = {"select": "step-1, select only", "all": "the whole brief",
+            "spawn": "step-1, spawning a round", "step2": "step-2", "step3": "step-3"}
+    wrong = []
+    for group, lap in keys.items():
+        total = sum(_size(name) for name in _lap_files(lap))
+        actual = _whole(total)
+        if Decimal(stated.group(group)) != actual:
+            wrong.append(f"{lap}: page says {stated.group(group)}k, files sum to {actual}k ({total} bytes)")
+    assert not wrong, (
+        "docs/overnight/README.md's lap costs no longer match the files those "
+        "laps read:\n  " + "\n  ".join(wrong) + "\nRe-measure them (CF-371, #464)."
+    )
+
+
+def test_the_spawning_lap_costs_what_the_two_lap_figures_differ_by():
+    """The one derived claim on the page, checked against what it derives from.
+
+    It is a claim about the *two lap figures* — the page says a step-1 lap that
+    only selects is some whole number of k cheaper than one that also spawns —
+    so it has to be checked against their difference, not against `BRIEFS.md`.
+    The value is deliberately not quoted here: the page's own bullet is the only
+    copy anything pins, and a second copy in this docstring would rot the moment
+    the difference moved. The difference and the file are not the same number:
+    the laps are rounded to whole k before the reader subtracts them, and
+    `BRIEFS.md` is rounded separately. A round grew that file to 22000 bytes and
+    the page then read 27k, 32k and "~6k cheaper" at once, all three passing,
+    because 5.5k rounds up on its own while 32 - 27 stays 5.
+    """
+    stated = _CHEAPER.search(README.read_text(encoding="utf-8"))
+    assert stated, "docs/overnight/README.md no longer states the select-vs-spawn difference (CF-371, #464)."
+    select = _whole(sum(_size(name) for name in _lap_files("step-1, select only")))
+    spawn = _whole(sum(_size(name) for name in _lap_files("step-1, spawning a round")))
+    assert Decimal(stated.group("k")) == spawn - select, (
+        f"docs/overnight/README.md says a select-only lap is ~{stated.group('k')}k cheaper "
+        f"than a spawning one. Recomputed from the files, those two laps are "
+        f"{select}k and {spawn}k, a difference of {spawn - select}k — which is what the "
+        f"page should say. Re-measure (CF-371, #464)."
+    )

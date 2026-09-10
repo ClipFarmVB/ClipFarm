@@ -208,8 +208,11 @@ def _origin_problems(origin: str) -> list[str]:
             "this as an Origin; retype the value rather than editing it"
         )
 
-    # Everything below parses the entry with backslashes REMOVED, and the
-    # backslash itself is reported from the raw entry by the check further down.
+    # The backslash is reported from the RAW entry, by the `if "\\" in origin:`
+    # check under the next paragraph. Everything that PARSES the entry after
+    # that parses it with backslashes removed — cleaned once, at `cleaned = ...`,
+    # rather than per-check. Checks that test the raw string instead say so
+    # where they do; `?` and `#` are the ones that still do.
     #
     # A previous version cleaned the value for the PORT checks only, via a
     # second `urlsplit`, and left every other check reading the raw parse. Three
@@ -225,9 +228,10 @@ def _origin_problems(origin: str) -> list[str]:
         # origin", with nothing telling the operator what to delete.
         #
         # Browsers treat `\\` as `/` (WHATWG URL), so `https://x.ca\\evil.com`
-        # is sent as Origin `https://x.ca` and the entry matches nothing.
-        # urlsplit does not agree — it leaves the backslash in the netloc, which
-        # is why nothing caught it before CF-235. No legitimate origin has one.
+        # is sent as Origin `https://x.ca` and the entry matches nothing — the
+        # same silent outage as the tab this function already catches. urlsplit
+        # does not agree — it leaves the backslash in the netloc, which is why
+        # nothing caught it before CF-235. No legitimate origin has one.
         invisible_problem.append(
             "contains a backslash — browsers read it as `/`, so this is sent as "
             "the part before it and matches no Origin header"
@@ -289,12 +293,6 @@ def _origin_problems(origin: str) -> list[str]:
     # — and the second was accepted, then handed to Starlette's exact-string
     # compare, where it matches nothing. Neither character can appear in an
     # Origin header at all, so testing the raw entry costs no precision.
-    # A backslash is included because browsers treat it as `/` (WHATWG URL), so
-    # `https://x.ca\\evil.com` is sent as Origin `https://x.ca` and the entry
-    # matches nothing — the same silent outage as the tab this function already
-    # catches. urlsplit does NOT agree with browsers here: it leaves the
-    # backslash in the netloc, so the entry was accepted. No legitimate origin
-    # contains one.
     if parts.path or "?" in origin or "#" in origin:
         problems.append(
             "an Origin is scheme://host[:port] with nothing after it; a trailing "
@@ -734,9 +732,38 @@ class Settings(BaseSettings):
     # play (far-court possessions, occlusions). Bridges a gap when enough of
     # the tracked ball's speed samples inside it are fast — in-play flight is
     # fast, between-rally ball handling is mostly slow.
-    condense_bridge_speed_pxps: float = 150.0   # a speed sample this fast counts as in-play
+    # CF-174: this is a REFERENCE value, in 360p pixel space. bridge_windows_by_motion
+    # multiplies it by frame_height / 360 at use, so the effective threshold on a
+    # 1080p upload is 450 px/s, not 150. Tune it against 360p footage, or divide
+    # what you observe by (frame_height / 360) before setting it — setting 150
+    # here from a 1080p observation applies 450 and the bridge stops firing.
+    condense_bridge_speed_pxps: float = 150.0   # px/s at 360p; scaled at use
     condense_bridge_fast_fraction: float = 0.35  # bridge when ≥ this fraction of samples are fast
     condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
+    # CF-174 kill switch. False restores `main`'s unscaled contact thresholds and
+    # `main`'s action labels — both, because the gate and the classifier have to
+    # agree about what a px/s means. It ships True; this exists because the
+    # scaling moves highlight selection on every non-360p upload and there is no
+    # ground truth at those resolutions to measure that against. MIN_RALLY_CONTACTS
+    # gates hard at 3, so a rally that drops from 3 contacts to 2 leaves highlights
+    # entirely, and 1080p is what the app uploads. Unlike the condense knobs above,
+    # the alternative to a setting here is a code deploy.
+    #
+    # A switch, not a knob: it takes the whole scaling out, and turning it off on a
+    # non-360p deployment restores a detector this PR argues is measurably wrong for
+    # that footage.
+    #
+    # It reaches BOTH halves of the pipeline CF-174 touched — find_contacts (and,
+    # through it, classify_contact_action) and the condense motion bridge. That is
+    # the point of it being one setting: off is `main`'s behaviour, which is the
+    # half with measured evidence behind it. Gating only the contacts would leave
+    # the bridge at 3x on a 1080p upload, i.e. a third combination nothing has ever
+    # scored — the worst thing for a lever whose whole job is incident response.
+    #
+    # It does not reach the >1440p clamp in ball._scale_for, which is already
+    # `main`'s behaviour there; see the asymmetry note in bridge_windows_by_motion
+    # for what the two halves do above that height while the switch is on.
+    ball_contact_scale_enabled: bool = True
     # Which keep-window builder the condense stage uses. A failure *inside* the
     # guarded builder falls back to "rules", so a feature mismatch degrades the
     # condense rather than failing the run. Note the fallback is within-builder
@@ -1102,7 +1129,31 @@ def _boot_error(exc: ValidationError) -> str:
     the module already had a helper for.
 
     Model-validator errors have an empty `loc` and already name their variable
-    in the message, so they are left alone.
+    in the message, so they get no name prefix from us.
+
+    What they do get is pydantic's own `Value error, `, which it puts in front
+    of the message of anything a validator raised as a `ValueError`. That lands
+    in the middle of a line whose whole job is to be read by whoever is staring
+    at a failed deploy, and it says nothing the operator can act on. Strip it.
+
+    Keyed on `type == "value_error"` rather than on the text, and applied with
+    `removeprefix`, so an error carrying no such prefix is untouched either way.
+    Every other pydantic error type keeps its message verbatim: a
+    `literal_error` reads `CONDENSE_MODE: Input should be 'rules' or 'guarded'`
+    and has no prefix to remove. An `assert` in a validator produces
+    `assertion_error` with `Assertion failed, ` instead, and is deliberately not
+    stripped — `config.py` has no such validator, and inventing a second case
+    for code that does not exist is how the pattern below would start to drift.
+
+    The empty remainder is guarded, and the guard is defensive rather than
+    load-bearing today: `raise ValueError("")` renders as exactly
+    `Value error, `, and stripping that would compose
+    `Configuration is not usable: ` with nothing after it — a boot failure that
+    names no problem. Nothing here produces it: this file's two model
+    validators raise from three sites, and all three pass non-empty text, so
+    the case is unreachable through any accepted setting. It is guarded anyway because the
+    cost is one condition and the failure is a boot message that says nothing;
+    the test for it constructs the error, since no env var can.
     """
     problems = []
     for error in exc.errors():
@@ -1115,6 +1166,10 @@ def _boot_error(exc: ValidationError) -> str:
             # Better the raw path than nothing.
             name = ".".join(str(part) for part in location)
         message = str(error["msg"])
+        if error["type"] == "value_error":
+            stripped = message.removeprefix("Value error, ")
+            if stripped:
+                message = stripped
         problems.append(f"{name}: {message}" if name else message)
     return "Configuration is not usable: " + "; ".join(problems)
 

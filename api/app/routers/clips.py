@@ -4,6 +4,7 @@ from typing import Annotated
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -140,7 +141,26 @@ async def list_clips(
     )
 
     if action_type:
-        types = [ActionType(t.strip()) for t in action_type.split(",") if t.strip()]
+        types = []
+        try:
+            for raw in action_type.split(","):
+                token = raw.strip()
+                if token:
+                    types.append(ActionType(token))
+        except ValueError as exc:
+            # FastAPI would have produced a 422 had the parameter been typed as
+            # the enum; it is a plain `str` so the comma-separated form works,
+            # which moves the validation here. Siblings in this router raise 400
+            # for their own body validation, but this one is a query-parameter
+            # failure and 422 is what the framework layer returns for those.
+            # Names the offending value, not the exception: `str(ValueError)`
+            # here is "'spke' is not a valid ActionType", which hands a client
+            # the internal class name for nothing.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid action_type '{token}'. Must be from: "
+                       f"{sorted(t.value for t in ActionType)}",
+            ) from exc
         if types:
             q = q.where(Clip.action_type.in_(types))
 
@@ -162,7 +182,10 @@ async def list_clips(
     result = await db.execute(q)
     clips = result.scalars().all()
 
-    # Attach player names
+    # No ownership filter here on purpose (CF-263): a viewer entitled to the
+    # clip is entitled to the name tagged on it, anonymous viewers of public
+    # clips included — publishing a clip publishes its attribution. The
+    # reasoning is in services/access.py; test_public_player_name.py pins it.
     player_ids = {c.player_id for c in clips if c.player_id}
     player_map: dict[uuid.UUID, str] = {}
     if player_ids:
@@ -356,7 +379,7 @@ async def delete_clips(
             try:
                 key = urlparse(url).path.lstrip("/")
                 if key:
-                    storage.delete_file(key)
+                    await run_in_threadpool(storage.delete_file, key)
             except Exception:
                 logger.warning("R2 delete failed for clip %s", clip.id, exc_info=True)
         await db.delete(clip)

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { FolderOpen, Plus, X, Check, Loader } from "lucide-react";
 import {
   getCollections,
@@ -166,7 +167,36 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
     }
   }
 
-  return (
+  // Portalled to document.body, like ClipModal — and it is not cosmetic
+  // symmetry. Rendered inline, this overlay is a descendant of the page's
+  // `.fade-up` wrapper, and `.fade-up` keeps `transform: translateY(0)`
+  // applied forever because its animation is `both`-filled. A transform that
+  // is not `none` makes an element a containing block for `position: fixed`
+  // descendants, so `inset-0` sized this to the *wrapper's padding box* rather
+  // than the viewport and centred the card thousands of pixels below the fold:
+  // near enough the document to look like it — 11508 against a 11620px
+  // document in the reduction below, the difference being the layout chrome —
+  // but the wrapper is what it resolved against. Mounted,
+  // visible, opacity 1, and unreachable, with the scroll lock already holding
+  // the page still. Measured on the deployed app at ovTop 76 / ovH 11304 /
+  // cardTop 5647 in a 608px viewport, stable across 60 frames (CF-347).
+  //
+  // Reproduced headless on a reduction of this layout — `.fade-up` verbatim
+  // from globals.css around a tall grid, the animation driven to `finished`
+  // so the retained fill is observed rather than assumed. Inline, ovTop 76 and
+  // ovH 11508; portalled, ovTop 0 and ovH = the viewport. Measured mid-run the
+  // same page reads ovTop 84, which is the `both` fill's *backwards* half at
+  // translateY(8px): 76 + 8, and a good way to mistake a faithful repro for a
+  // broken one. Setting the wrapper to `transform: none` makes the inline case
+  // identical to the portalled one, which is what pins the cause on the
+  // transform rather than on anything else in the page.
+  //
+  // The portal is the fix rather than editing the keyframe, because ending
+  // `fade-up` at `transform: none` would still leave the bug live for the
+  // 0.22s the animation is running — and because this way the overlay does not
+  // care what any ancestor does. `.fade-up` wraps most pages here, so an inline
+  // `fixed` child is a trap the next overlay would fall into too (CF-349).
+  return createPortal(
     <div
       ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
@@ -288,6 +318,7 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
