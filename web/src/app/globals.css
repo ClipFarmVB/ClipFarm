@@ -1,77 +1,8 @@
 @import "tailwindcss";
-
-@theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-
-  /*
-   * All color tokens reference CSS custom-properties so they can be
-   * overridden by the .dark class on <html>.
-   */
-
-  /* Background layers */
-  --color-background:    var(--cf-bg);
-  --color-surface:       var(--cf-surface);
-  --color-surface-high:  var(--cf-surface-high);
-  --color-surface-hover: var(--cf-surface-hover);
-
-  /* Borders */
-  --color-border:        var(--cf-border);
-  --color-border-strong: var(--cf-border-strong);
-
-  /* Text */
-  --color-foreground:    var(--cf-fg);
-  --color-muted:         var(--cf-muted);
-  --color-subtle:        var(--cf-subtle);
-
-  /* Accent */
-  --color-brand:         var(--cf-brand);
-  --color-brand-light:   var(--cf-brand-light);
-  --color-brand-dim:     var(--cf-brand-dim);
-}
-
-/* ── Light mode (default) — white / off-white / blue ───────────────── */
-:root {
-  --cf-bg:            #ffffff;
-  --cf-surface:       #f6f6f9;
-  --cf-surface-high:  #ededf2;
-  --cf-surface-hover: #e4e4eb;
-  --cf-border:        #e2e2ea;
-  --cf-border-strong: #ccccd8;
-
-  --cf-fg:            #111116;
-  --cf-muted:         #62627a;
-  --cf-subtle:        #9898b4;
-
-  --cf-brand:         #2563eb;
-  --cf-brand-light:   #3b82f6;
-  --cf-brand-dim:     rgba(37, 99, 235, 0.09);
-
-  --cf-dot:           rgba(0, 0, 0, 0.10);
-  --cf-scrollbar:     #d4d4e0;
-  --cf-scrollbar-hover: #b8b8cc;
-}
-
-/* ── Dark mode — charcoal / amber ──────────────────────────────────── */
-.dark {
-  --cf-bg:            #0c0c0e;
-  --cf-surface:       #111114;
-  --cf-surface-high:  #18181c;
-  --cf-surface-hover: #1e1e24;
-  --cf-border:        #222226;
-  --cf-border-strong: #333338;
-
-  --cf-fg:            #f0f0f2;
-  --cf-muted:         #6e6e7a;
-  --cf-subtle:        #44444e;
-
-  --cf-brand:         #f59e0b;
-  --cf-brand-light:   #fbbf24;
-  --cf-brand-dim:     rgba(245, 158, 11, 0.12);
-
-  --cf-dot:           rgba(255, 255, 255, 0.18);
-  --cf-scrollbar:     #2a2a2e;
-  --cf-scrollbar-hover: #3a3a40;
-}
+/* Colour and font tokens, rendered from packages/tokens so mobile reads the
+   same values. Tailwind v4 has no JS config to require the package from, so
+   the package emits this file — see tokens.generated.test.ts. */
+@import "./tokens.generated.css";
 
 body {
   background: var(--cf-bg);

@@ -143,7 +143,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
             className={cn(
               "absolute top-2 right-2 z-10 flex h-7 w-7 items-center justify-center rounded border transition-all duration-150",
               selected
-                ? "bg-brand border-brand text-[#0c0c0e]"
+                ? "bg-brand border-brand text-on-brand"
                 : "bg-black/40 border-white/30 text-transparent hover:border-white/60"
             )}
             aria-label={selected ? "Deselect" : "Select"}
