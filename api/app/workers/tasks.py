@@ -326,9 +326,32 @@ def _track_ball_modal(local_video: Path, r2_key: str, sample_every: int, on_prog
 
 
 def _ball_cache_key(video_md5: str, sample_every: int) -> str:
-    from ml.pipeline.ball import MODEL_ID
+    """Where a video's tracked positions live in R2.
+
+    Four components, and the fourth is the one that is easy to leave out.
+    The video, the model and the sample rate all obviously change the track;
+    so does every other tracking input, and none of those were represented —
+    so a change to how tracking works left every cached entry looking valid,
+    and the next run of an already-processed video replayed a track built by
+    the old code. On a tuning change that is a wrong answer nobody can see; on
+    a re-measure it is worse, because the numbers come back unchanged and read
+    as "no effect".
+
+    `ball.TRACKING_CACHE_VERSION` is that fourth component. Its own comment
+    says what counts as a reason to bump it, and a test fails if one of those
+    reasons moves and the version does not.
+
+    **Bumping it orphans every existing entry rather than overwriting one.**
+    That is the intent — the old tracks stay readable for a comparison — but it
+    means the next run of every video re-tracks, which on Modal is real money
+    and real minutes. Bump it because the track changed, not to be safe.
+    """
+    from ml.pipeline.ball import MODEL_ID, TRACKING_CACHE_VERSION
     model_slug = MODEL_ID.replace("/", "-")
-    return f"ball-cache/{video_md5}-{model_slug}-s{sample_every}.json"
+    return (
+        f"ball-cache/{video_md5}-{model_slug}"
+        f"-s{sample_every}-v{TRACKING_CACHE_VERSION}.json"
+    )
 
 
 def _track_ball_cached(
