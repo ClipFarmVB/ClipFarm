@@ -12,6 +12,7 @@ import {
   danger as dangerColors,
   fontSize,
   letterSpacingPx,
+  lineHeight,
   radius,
   spacing,
   type ThemeColors,
@@ -85,22 +86,29 @@ function variantColors(
   }
 }
 
-/** Padding and label size per size, mirroring web's px/py/text triples. */
+/**
+ * Padding and label size per size, mirroring web's px/py/text triples.
+ *
+ * `text` names a step on the shared type scale rather than a raw size, because
+ * the label's height is fontSize *and* lineHeight and they have to move
+ * together. Overriding only the size leaves the Text variant's line box behind
+ * — a 12px label in a 20px box, and an `sm` button 4px taller than web's.
+ */
 const SIZES: Record<
   ButtonSize,
-  { padding: ViewStyle; fontSize: number }
+  { padding: ViewStyle; text: keyof typeof fontSize }
 > = {
   sm: {
     padding: { paddingHorizontal: spacing.sm, paddingVertical: 6 },
-    fontSize: fontSize.xs,
+    text: "xs",
   },
   md: {
     padding: { paddingHorizontal: 14, paddingVertical: spacing.xs },
-    fontSize: fontSize.sm,
+    text: "sm",
   },
   lg: {
     padding: { paddingHorizontal: 20, paddingVertical: 10 },
-    fontSize: fontSize.sm,
+    text: "sm",
   },
 };
 
@@ -184,8 +192,9 @@ export function Button({
             style={[
               {
                 color: pressed ? palette.contentPressed : palette.content,
-                fontSize: metrics.fontSize,
-                letterSpacing: letterSpacingPx("tight", metrics.fontSize),
+                fontSize: fontSize[metrics.text],
+                lineHeight: lineHeight[metrics.text],
+                letterSpacing: letterSpacingPx("tight", fontSize[metrics.text]),
               },
               loading && styles.hiddenLabel,
             ]}
