@@ -1,0 +1,6 @@
+{
+  "name": "clipfarm-upload",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Expo module: background upload of a game video to R2."
+}

@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "workspaces": [
-    "web"
+    "web",
+    "mobile"
   ],
   "scripts": {
     "dev:web": "npm run dev --workspace=web",
+    "dev:mobile": "npm run start --workspace=mobile",
     "build:web": "npm run build --workspace=web",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
