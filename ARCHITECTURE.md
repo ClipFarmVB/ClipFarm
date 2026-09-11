@@ -68,9 +68,13 @@ local CPU pose. Each level catches and falls through.
   units make tuning portable across sources. Sampling is fps-aware too
   (`sample_every = round(fps / 3)` → ~3 detections/sec at any frame rate).
 - **Content-addressed ball cache on R2.** Tracking a 22-min video costs ~30 min on CPU
-  but depends only on (video bytes, model version, sample rate) — so positions are
-  cached at `ball-cache/{md5(video)}-{model}-s{rate}.json`. Re-uploads and pipeline
-  re-tuning hit the cache in seconds. Classic memoization keyed by content hash, not id.
+  but depends only on (video bytes, model version, sample rate, tracking version) — so
+  positions are cached at `ball-cache/{md5(video)}-{model}-s{rate}-v{version}.json`.
+  Re-uploads and pipeline re-tuning hit the cache in seconds. Classic memoization keyed
+  by content hash, not id. The trailing version is `ball.TRACKING_CACHE_VERSION` (CF-231):
+  the first three components cannot see a change to how tracking works, so without it a
+  tuning change replays tracks built by the old code. Bumping it orphans every entry —
+  nothing reclaims them — and the next run of every video re-tracks.
 - **Precision gate before expensive compute** (stage 2 before stage 3): scoring is
   cheap (audio + features already in hand), pose is not. The gate turns a 22-min VOD
   into ~5 min of clip candidates before the expensive model runs.

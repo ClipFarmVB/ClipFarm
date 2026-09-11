@@ -205,8 +205,11 @@ clean sweep — it buys dead time with live play on three of the four it
 condenses, and that trade is the thing to look at before touching its tunables:
 
 > **Measured at `42b582f`, after the NaN change**, from the five R2 ball caches
-> (`ball-cache/{md5}-volleyball-ball-tracking-0eo7r-3-s{N}.json`, `s10` except
-> test4's `s20`), two consecutive runs byte-identical. The control is what makes
+> (`ball-cache/{md5}-volleyball-ball-tracking-0eo7r-3-s{N}-v1.json`, `s10` except
+> test4's `s20`), two consecutive runs byte-identical. The `-v{N}` suffix is
+> `ball.TRACKING_CACHE_VERSION` (CF-231); these five were measured at `v1`, and a
+> bump re-keys them, so `--offline` misses and falls through to a real re-track
+> until the caches are rebuilt. The control is what makes
 > them trustworthy: `v0` (`mode=rules`) reproduces its documented figures
 > exactly on four of five fixtures, so a `v5` difference is the builder having
 > changed, not the environment. The fifth is test5, whose `rules` baseline is
