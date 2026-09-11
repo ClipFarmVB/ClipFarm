@@ -51,10 +51,20 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Run on all routes except Next.js internals, static files, and the Sentry
+  // Run on all routes except Next.js internals, static files, the Sentry
   // tunnel (/monitoring) — every browser error event POSTs there and must not
-  // trigger a Supabase auth check.
+  // trigger a Supabase auth check — and `/.well-known/*`.
+  //
+  // `.well-known` is excluded for the association files (CF-322). It is not
+  // fixing a live bug — `.well-known` matches no PROTECTED_PREFIXES entry, so
+  // this middleware falls through to a 200 for it today. It buys two things.
+  // It spares every association fetch a `supabase.auth.getUser()` round trip it
+  // has no use for. And it forecloses a failure that would be very hard to
+  // diagnose: Apple's fetcher does not follow redirects, so a later prefix
+  // added above that happened to cover `.well-known` would break iOS deep links
+  // with no error visible anywhere, since the fetch is made by the OS at
+  // install time rather than by anything we can watch.
   matcher: [
-    "/((?!_next/static|_next/image|favicon\\.ico|monitoring|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon\\.ico|monitoring|\\.well-known|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

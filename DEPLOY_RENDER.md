@@ -311,6 +311,54 @@ they weigh SPF/DKIM alignment differently.
 
 ---
 
+### 6. Deep-link association files (CF-322)
+
+Two files under `/.well-known/` on the **web** domain are what let a ClipFarm
+link open the app instead of the browser. `clipfarm-web` serves both from
+environment variables, and **each 404s until its own variables are set** — which
+is the correct state until the two developer accounts exist (CF-345, CF-346).
+Nothing else breaks while they are absent; the files are inert without an
+installed app.
+
+| variable | file | where the value comes from |
+|---|---|---|
+| `IOS_APP_ID` | `apple-app-site-association` | Apple Developer → Membership (Team ID), plus the bundle identifier from `mobile/app.json`. Format: `<TeamID>.<bundleIdentifier>` |
+| `ANDROID_PACKAGE_NAME` | `assetlinks.json` | the Android `applicationId` |
+| `ANDROID_SHA256_CERT_FINGERPRINTS` | `assetlinks.json` | Play Console → Test and release → App integrity. Comma-separated |
+
+Three things to get right, each of which fails silently rather than loudly:
+
+- **Use the Play App Signing key's fingerprint, not the upload key's.** Google
+  re-signs every build, so the key you sign with locally is the wrong one to
+  publish. This is the most common reason Android app links never fire. **Record
+  which key each value came from** next to it — CF-322 asks for that provenance,
+  and nothing in the fingerprint itself carries it.
+- **Serve them from the apex, not `www`.** Apple's fetcher does not follow
+  redirects, and §4 above redirects `www.clipfarm.ca/*` to the apex at the
+  Cloudflare edge. An association file requested through `www` is therefore a
+  301 that Apple simply discards. Whatever domain the app claims must be the one
+  that answers 200 directly.
+- **Assume a wrong file is sticky.** Apple's CDN caches the association file and
+  iOS re-reads it only on install and on app update, so publishing a bad value
+  once keeps deciding link behaviour long after it is fixed. That is why the
+  routes 404 on missing configuration instead of serving a placeholder.
+
+Both are read per request, so changing one is a **restart**, not a rebuild —
+unlike the `NEXT_PUBLIC_*` variables above, which are inlined at build time.
+
+Check them after a deploy:
+
+```bash
+curl -sSI https://clipfarm.ca/.well-known/apple-app-site-association   # 200, content-type: application/json
+curl -sSI https://clipfarm.ca/.well-known/assetlinks.json              # 200, content-type: application/json
+```
+
+Then run Apple's and Google's own validators, which is what the ticket's
+acceptance turns on — a 200 from `curl` says the route works, not that the
+identifiers inside it are right.
+
+---
+
 ## Verify the deploy
 1. `clipfarm-api` → open `/healthz` (shallow liveness — what Render's health
    check watches), expect `{"status":"ok"}`. Once CF-89 (#107) merges, also point
