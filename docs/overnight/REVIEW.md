@@ -991,7 +991,7 @@ means code has landed that no round has seen:
 ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
 SHA=$(gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]")
 COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
-LATEST=$(jq -r --arg re "$ROUNDS" '.[] | select(.body | test($re; "i")) | .body | split("\n")[0] | sub("\r$"; "")' <<<"$COMMENTS" | tail -1)
+LATEST=$(printf '%s' "$COMMENTS" | jq -r --arg re "$ROUNDS" '.[] | select(.body | test($re; "i")) | .body | split("\n")[0] | sub("\r$"; "")' | tail -1)
 MARKSHA=$(printf '%s' "$LATEST" | grep -oE '@ ?[0-9a-f]{7}' | head -1 | grep -oE '[0-9a-f]{7}')
 
 echo "head:   $SHA"
