@@ -20,24 +20,73 @@ because the cache holds RAW POSITIONS. The segmentation and contact constants
 run afterwards, on those positions, so folding them in would orphan every
 cached track for a change that cannot move one — which is not free: a bump
 means the next run of every video re-tracks, on Modal, for real money.
+
+**Values are not enough, so the CODE is fingerprinted too.** A first version of
+this hashed three constants and nothing else, which missed both cards it was
+written for. This repo's idiom for "scale a threshold" is to scale AT USE and
+leave the constant alone — `_scale_for` / `REFERENCE_FRAME_HEIGHT`, the CF-174
+precedent. A CF-229 written that way leaves `MAX_JUMP_PX = 300` untouched, and
+#238's downscale adds a new input that a hand-written tuple simply would not
+mention. Both would have shipped with every cached track silently stale.
+
+The source is normalized through `ast` before hashing, so a reformat or a
+comment edit is not a false bump; a changed expression is.
 """
+import ast
 import hashlib
+import inspect
+import textwrap
 
 import pytest
 
 from ml.pipeline import ball as B
 
-# The inputs `track_ball` reads, minus the two already in the key (MODEL_ID and
-# SAMPLE_EVERY). Adding a tracking input means adding it here.
-TRACK_SHAPING_CONSTANTS = ("MIN_CONF", "MAX_JUMP_PX", "MAX_MISS")
+# The inputs `track_ball` reads, minus MODEL_ID, which is in the key already.
+#
+# SAMPLE_EVERY is NOT in the key, despite an earlier comment here saying it was.
+# What the key holds is the `sample_every` ARGUMENT, which production computes
+# per video (`max(1, round(fps / 3.0))` in tasks.py and all three eval entry
+# points). The module constant survives in the production path as the
+# DENOMINATOR of `max_jump = MAX_JUMP_PX * (sample_every / SAMPLE_EVERY)`, so
+# moving it changes the emitted track while every key stays byte-identical.
+TRACK_SHAPING_CONSTANTS = ("MIN_CONF", "MAX_JUMP_PX", "MAX_MISS", "SAMPLE_EVERY")
+
+# The functions that turn a video into raw positions. An edit to any of them
+# changes the track whether or not a constant moved.
+TRACK_SHAPING_FUNCTIONS = ("track_ball", "_pick_active", "_detect_frame")
 
 # Recomputed and pasted in when the version is bumped. Not derived at import —
 # a fingerprint that follows the code it guards guards nothing.
-EXPECTED_FINGERPRINT = "4475fb945d957f21"
+EXPECTED_FINGERPRINT = "20ad7b49e2c0e364"
+
+
+def _normalized_source(func) -> str:
+    """A function's structure, with formatting, comments and docstring dropped.
+
+    `ast.dump` of the parsed tree: an expression change moves it, `black`
+    rewrapping a line or someone rewriting a comment does not. Without this the
+    guard would cry wolf on every reformat, and a guard that fires on no-ops
+    gets bumped past reflexively — which is exactly the habit it exists to stop.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                node.body = body[1:] or [ast.Pass()]
+    return ast.dump(tree)
 
 
 def fingerprint() -> str:
     joined = "|".join(f"{name}={getattr(B, name)!r}" for name in TRACK_SHAPING_CONSTANTS)
+    joined += "|" + "|".join(
+        _normalized_source(getattr(B, name)) for name in TRACK_SHAPING_FUNCTIONS
+    )
     return hashlib.sha256(joined.encode()).hexdigest()[:16]
 
 
@@ -99,13 +148,20 @@ def test_each_fingerprinted_constant_is_read_by_track_ball(name):
 
     A constant that stopped shaping the track would keep forcing re-tracks for
     nothing; one that started shaping it and was never added is the bug this
-    file exists for. Read from the source of `track_ball` and the helper it
-    delegates to.
-    """
-    import inspect
+    file exists for.
 
-    source = inspect.getsource(B.track_ball) + inspect.getsource(B._pick_active)
-    if name == "MIN_CONF":
-        # Applied in the detection helper track_ball calls per frame.
-        source += inspect.getsource(B._detect_frame)
-    assert name in source, f"{name} is fingerprinted but nothing in tracking reads it"
+    Resolved by walking the ast for `Name` nodes, not by searching the source
+    text. A substring scan reads comments and docstrings too, so replacing
+    `confidence=MIN_CONF` with `confidence=0.40  # MIN_CONF` left the constant
+    genuinely unread and this test still passing — against the one case its own
+    docstring names.
+    """
+    read = set()
+    for func_name in TRACK_SHAPING_FUNCTIONS:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(B, func_name))))
+        read |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    assert name in read, (
+        f"{name} is fingerprinted but no tracking function reads it — either it "
+        "stopped shaping the track (drop it, and bump the version) or it moved "
+        "somewhere TRACK_SHAPING_FUNCTIONS does not cover"
+    )

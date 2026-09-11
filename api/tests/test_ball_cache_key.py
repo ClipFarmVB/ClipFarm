@@ -53,21 +53,27 @@ def test_a_version_bump_changes_the_key():
     assert before != after, "a bumped version must not resolve to the same object"
 
 
-def test_the_key_still_separates_videos_models_and_sample_rates():
+def test_the_key_separates_videos_and_sample_rates_and_carries_the_model():
     # The three components that were already there. Adding the fourth must not
     # have collapsed any of them.
+    #
+    # The model leg is a containment check, not a separation one — MODEL_ID is
+    # a module constant, so there is no second value to key against without
+    # monkeypatching the import. Named accordingly rather than claiming a
+    # property it does not test.
     base = _ball_cache_key(MD5, 3)
     assert base != _ball_cache_key("f" * 32, 3), "different video"
     assert base != _ball_cache_key(MD5, 10), "different sample rate"
-    assert MODEL_ID.replace("/", "-") in base, "different model"
+    assert MODEL_ID.replace("/", "-") in base, "model slug present"
 
 
 def test_the_key_is_a_plain_r2_path_with_no_separator_collision():
-    """`v10` must not be reachable from `v1` plus a stray character.
+    """The key is one flat R2 path of the expected shape.
 
-    The components are joined with `-`, and a model slug is the one part that
-    could contain one. It is fenced by the `-s{n}-v{n}.json` tail, so this
-    asserts the shape rather than trusting it.
+    The components are joined with `-` and a model slug is the one part that
+    could itself contain one, so this pins the `-s{n}-v{n}.json` tail and the
+    single `.json`. It asserts SHAPE only — it does not construct a `v1`/`v10`
+    collision, which would need a second version value to key against.
     """
     key = _ball_cache_key(MD5, 3)
     assert key.startswith("ball-cache/")

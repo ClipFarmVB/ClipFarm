@@ -365,10 +365,15 @@ def _track_ball_cached(
     """
     Ball tracking with an R2-backed cache keyed by video content hash.
 
-    Tracking a 22-min video takes ~30 min on CPU; the positions only depend
-    on the video bytes, the model version, and the sample rate — so re-runs
-    of the same footage (re-uploads, pipeline tuning) load cached positions
-    in seconds instead. Cache failures fall through to normal tracking.
+    Tracking a 22-min video takes ~30 min on CPU; the positions depend on the
+    video bytes, the model version, the sample rate and TRACKING_CACHE_VERSION
+    — so re-runs of the same footage (re-uploads, pipeline tuning) load cached
+    positions in seconds instead. Cache failures fall through to normal
+    tracking.
+
+    The version is the component that is NOT derived from the inputs: the other
+    three cannot see a change to how tracking works, so it is bumped by hand
+    when one lands (CF-231). Nothing reclaims the orphaned generation.
 
     When Modal is configured, tracking itself runs on a GPU worker (CF-11)
     instead of locally on CPU; Modal failures fall back to local CPU tracking
