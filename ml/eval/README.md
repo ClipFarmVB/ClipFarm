@@ -331,12 +331,49 @@ test4); every other column is held out and is starred in the summary. test5 is
 the strongest of those — it was labeled after the variants were written, so it
 could not have shaped them even indirectly.
 
+## Is the tracker following the ball? (CF-229)
+
+CF-174 normalized the contact px/s thresholds by frame height and could not do
+the same for the segmentation ones. `ml/pipeline/ball.py` records why, and the
+reason is not a property of those constants: **roughly half of test4's samples
+sit at ~0 px/s, because the detector is locked onto something that is not the
+ball.** Scaling `SEG_MAX_SPEED_PXPS` merges those stationary detections into
+the ball's own segments, whose median then falls under the held/spare-ball
+filter, and the fixture collapses to zero contacts.
+
+So both segmentation constants are pinned by one upstream defect, and
+[#233](https://github.com/ClipFarmVB/ClipFarm/issues/233)'s acceptance is a
+number about it. `track_quality.py` prints that number:
+
+```bash
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.diagnose_detection --test test4 --dump results/test4_ball_track.json
+
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.track_quality test4
+```
+
+It reports the speed distribution in px/s and in frame-heights/s, the fraction
+of samples that are effectively stationary, and what the segmentation ceiling
+splits today against what a scaled one would split — so the trade is visible
+rather than described.
+
+**It cannot tell you about `MAX_JUMP_PX`.** That threshold picks among the
+detections a frame returned, during tracking, and a dump holds only the ones
+that won. Answering it needs a re-track. The tool says so in its own output,
+because the row above that line looks exactly like an answer.
+
+It is an instrument. It changes no threshold — the fix is #233's, and that card
+is assigned.
+
 ## Files
 ```
 metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
 harness.py             fixture load, model-clip acquisition, report, results append
 diagnose_detection.py  why a rally was missed: BLIND / SPARSE / GATED breakdown
 tune_contacts.py       sweep find_contacts tunables over a dumped ball track
+track_quality.py       is the tracker following the ball? the lock-on fraction
+                       CF-229's acceptance is written in (#233)
 deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187)
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 fixtures/              one JSON per test case (ground truth)
