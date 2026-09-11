@@ -61,13 +61,18 @@ LIVE_BALL_TIERS = frozenset("MCN")
 DEAD_TIERS = frozenset("BO")
 
 
+def _spans(raw: dict) -> list[dict]:
+    """The fixture's span list. `keep` is the legacy name the loader still reads."""
+    return raw.get("spans", raw.get("keep", []))
+
+
 def tier_semantics_violations(raw: dict) -> list[str]:
     """The rule itself, so the checks below and their self-tests share one copy.
 
     Returns a human-readable reason per violation; empty means the fixture's
     `keep_tiers` matches the live-ball/dead split above.
     """
-    spans = raw.get("spans", raw.get("keep", []))
+    spans = _spans(raw)
     present = {s.get("tier") for s in spans if s.get("tier") is not None}
     if not present:
         # Untagged fixtures list in-play spans only and are read permissively.
@@ -84,7 +89,31 @@ def tier_semantics_violations(raw: dict) -> list[str]:
         ]
 
     problems = []
-    for tier in sorted(present - KNOWN_TIERS):
+
+    # An untagged span in a TIERED fixture is the hole this rule had first.
+    # `load_deadtime_fixture` keeps a span with no tier unconditionally,
+    # whatever `keep_tiers` says — so a labeller who tags the rallies they cared
+    # about and leaves the breaks bare produces a fixture that passes every
+    # check below while scoring those breaks as live ball. Same harm as the
+    # trap, other direction: dead time under-counted, and a model that
+    # correctly cuts the break is scored as over-cutting real play.
+    #
+    # Partial tagging is never deliberate in this format — test1_deadtime.json
+    # tags all 132 — and it is the likely slip for a labeller moving from the
+    # untagged shape of test2-test5, which is exactly who CF-375 sends here.
+    untagged = sum(1 for s in spans if s.get("tier") is None)
+    if untagged:
+        problems.append(
+            f"{untagged} of {len(spans)} spans carry no tier while the fixture is "
+            "tiered; the loader keeps an untagged span as in-play no matter what "
+            "keep_tiers says, so a bare break would score as live ball. Tag every "
+            "span"
+        )
+
+    # Checked over the DECLARED set too, not just the tiers in use: a typo'd or
+    # mis-cased entry in keep_tiers that happens to match no span changes no
+    # score today, but it silently means something other than it reads.
+    for tier in sorted((present | set(declared)) - KNOWN_TIERS):
         problems.append(
             f"unknown tier {tier!r}: add it to KNOWN_TIERS and decide which side "
             "of the live-ball split it falls on"
@@ -513,9 +542,11 @@ class TestTierSemanticsAcrossDeadtimeFixtures:
             test_id for test_id in DEADTIME_IDS
             if any(
                 s.get("tier") is not None
-                for s in json.loads(
-                    (FIXTURES_DIR / f"{test_id}_deadtime.json").read_text(encoding="utf-8")
-                ).get("spans", [])
+                for s in _spans(
+                    json.loads(
+                        (FIXTURES_DIR / f"{test_id}_deadtime.json").read_text(encoding="utf-8")
+                    )
+                )
             )
         ]
         assert tiered, "no dead-time fixture carries tiers; the split is untested"
@@ -573,6 +604,36 @@ class TestTierSemanticsRule:
         rather than demanding a retrofit."""
         raw = {"keep": [{"start": "00:01", "end": "00:02"}]}
         assert tier_semantics_violations(raw) == []
+
+    def test_a_bare_span_in_a_tiered_fixture_is_rejected(self):
+        """The hole the cold round found: `load_deadtime_fixture` keeps an
+        untagged span as in-play regardless of `keep_tiers`, so a labeller who
+        tags the rallies and leaves the breaks bare gets a fixture that reads
+        clean and scores a BREAK as live ball."""
+        raw = self._fixture(["M", "C", "N"], "MCN")
+        raw["spans"].append({"start": "00:30", "end": "00:40", "note": "BREAK"})
+        problems = tier_semantics_violations(raw)
+        assert any("carry no tier" in p for p in problems), problems
+
+    def test_an_unknown_tier_declared_but_unused_is_rejected(self):
+        """A typo in `keep_tiers` that matches no span changes no score today,
+        but it does not mean what it reads."""
+        raw = self._fixture(["M", "C", "N", "Z"], "MCN")
+        problems = tier_semantics_violations(raw)
+        assert any("unknown tier 'Z'" in p for p in problems), problems
+
+    def test_the_legacy_keep_key_is_read_too(self):
+        """`load_deadtime_fixture` accepts `keep` as the original name for
+        `spans`. The rule has to read the same list the loader does, or a
+        tiered fixture written the old way is scored but never checked."""
+        raw = {"keep": [{"start": "00:00", "end": "00:10", "tier": "N"}],
+               "keep_tiers": ["M", "C"]}
+        problems = tier_semantics_violations(raw)
+        assert any("'N' is live ball" in p for p in problems), problems
+
+    def test_a_fully_tagged_fixture_is_still_clean(self):
+        """The untagged-span rule must not fire on the shape we actually ship."""
+        assert tier_semantics_violations(self._fixture(["M", "C", "N"], "MCNBO")) == []
 
     def test_a_tier_absent_from_the_spans_is_not_demanded(self):
         """A fixture whose labeling pass happened to produce no `N` spans is

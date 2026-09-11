@@ -83,10 +83,16 @@ So, for `test1`:
 | `O`  | outlier — camera knocked/adjusted, pause in play | no → dead |
 
 Only genuine stoppages (`B`, `O`) are dead. `ml/tests/test_eval_fixtures.py`
-enforces this for **every** dead-time fixture, not just `test1`: a fixture whose
-spans carry tiers must declare `keep_tiers`, must include every live-ball tier
-its spans use, and must not list `B` or `O`. So copying `["M", "C"]` across from
-a highlight fixture fails the suite rather than quietly inverting the metric.
+enforces this for every real dead-time fixture, not just `test1` (the `demo`
+file is the format example and has no video behind it, so it is excluded along
+with the other pinning checks). A fixture whose spans carry tiers must declare
+`keep_tiers`, must tag **every** span, must include every live-ball tier its
+spans use, and must not list `B` or `O`. So copying `["M", "C"]` across from a
+highlight fixture fails the suite rather than quietly inverting the metric.
+
+The tag-every-span rule matters because the loader keeps an untagged span as
+in-play whatever `keep_tiers` says — so tagging the rallies and leaving the
+breaks bare reads as clean and scores a break as live ball.
 
 On top of that, `test1` is checked against `test1.json` directly — every `N`
 span kept, and the `M`/`C` subset matching exactly — so the two fixtures can't
