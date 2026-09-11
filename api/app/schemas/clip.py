@@ -41,6 +41,35 @@ class ClipOut(BaseModel):
     effective_visibility: Visibility = Visibility.private
 
 
+class ClipPlaybackOut(BaseModel):
+    """A freshly minted playback URL for a clip the caller already holds.
+
+    Deliberately not a `ClipOut`: the caller has the row, and re-sending it
+    would invite two copies of the same clip disagreeing about a field the
+    refresh never looked at. Only what *expires* is here.
+
+    Shaped after `PostPlayback` (schemas/post.py), which resolves the same pair
+    of URLs for the feed. `start_time`/`end_time` are not repeated — the caller
+    is refreshing a clip it holds, so it has them — and neither is `proxy_url`:
+    when CF-48's per-game proxy lands, a proxy URL belongs here alongside the
+    file, and adding it then is additive.
+
+    `clip_url` is `str | None` rather than `str` because `_rewrite_urls` is
+    typed that way and returns the stored URL untouched when R2 is not
+    configured — the same reason `PostPlayback.clip_url` is optional.
+    """
+
+    clip_id: uuid.UUID
+    clip_url: str | None
+    thumbnail_url: str | None
+    # Both None when R2 is unconfigured: the URL served then is the stored
+    # public one, which has no signature and so no expiry. Reporting a
+    # made-up expiry there would have a client refresh a URL that never dies,
+    # and — worse — teach it that a non-null expiry means "signed".
+    expires_in: int | None
+    expires_at: datetime | None
+
+
 class ClipTagRequest(BaseModel):
     player_id: uuid.UUID
 
