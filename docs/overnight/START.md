@@ -369,6 +369,14 @@ one block. The first run discovered three gaps separately, mid-work.
   some environments have none of it. That is an expected case, not a blocker:
   see [What a non-`gh` tool must provide](REVIEW.md#what-a-non-gh-tool-must-provide),
   and name the tool you used in the report.
+- **`jq`, standalone** — `jq --version`. Separate from `gh --jq`, which is
+  built in and always present where `gh` is: the marker queries fetch a PR's
+  comments **once** and then filter the captured text several times, and only a
+  real `jq` binary can filter a variable. Without it every state read in
+  [`REVIEW.md`](REVIEW.md#reading-state-back-queries-labels-counts-and-windows)
+  fails, so it is worth failing here rather than mid-lap. Nothing in this brief
+  needed it before the fetch-once change, so an environment that ran a previous
+  night is not evidence it is installed.
 - **Docker** — `docker info`. If absent, the local stack and the eval harness
   cannot run at all.
 - **`gh` against this repo** — `gh api repos/ClipFarmVB/ClipFarm --jq .full_name`.

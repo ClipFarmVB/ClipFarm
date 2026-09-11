@@ -436,7 +436,8 @@ prefixes are written to the same stream and are deliberately *not* routed on:
   labelled PR is eligible again:
 
   ```
-  gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"^unsettled:\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1
+  COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
+  jq -r '.[] | select(.body | test("^unsettled:"; "i")) | .body | split("\n")[0] | sub("\r$"; "")' <<<"$COMMENTS" | tail -1
   ```
 
 **Routing is a prefix test on the first line, folded to lowercase.** The
@@ -572,11 +573,33 @@ review are uncounted.
 
 ##### Reading state back: queries, labels, counts and windows
 
+**Fetch the comment list once per PR per lap, then filter it as many times as
+you like.** Every query in this document that reads markers wants the same list,
+and a lap asks it six or seven questions — the latest marker, the round count,
+the `reopened:` timestamp, the clean-round count, the findings count. Each one
+used to be its own `--paginate` call, so a PR with fifty comments cost two
+requests per question and the same bytes came down six times. Across a
+twenty-PR queue that is a few hundred requests for a single selection lap, which
+is how a night runs out of API budget before it runs out of work.
+
+```
+COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
+```
+
+`$COMMENTS` holds one JSON array per page, so **filter it with standalone `jq`,
+not `gh --jq`** — the latter needs a request to attach to. `jq` is checked for
+at the start of the run alongside `gh`; nothing else in this brief needed it
+before, so a machine without it would otherwise fail mid-lap rather than at the
+capability check.
+
+Re-fetch when you move to a different PR, and when you have just posted a
+comment and need to read it back. Within one PR on one lap, once.
+
 Read the latest marker, and route on it:
 
 ```
 ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1
+jq -r --arg re "$ROUNDS" '.[] | select(.body | test($re; "i")) | .body | split("\n")[0] | sub("\r$"; "")' <<<"$COMMENTS" | tail -1
 ```
 
 Empty output means the PR has never had a round.
@@ -590,12 +613,17 @@ becomes invisible and a stale `cold: clean` settles a PR with open Criticals.
 The REST endpoint above paginates properly.
 
 **And note the shape of these commands: they stream and end in `tail`/`wc`,
-rather than building an array and taking `last` or `length`.** With
-`--paginate`, `--jq` runs *per page* — it prints one result per page, not one
-for the whole set, and `--slurp` cannot be combined with `--jq` to fix that.
-Array-and-`last` therefore yields a line per page, blanks included. Streaming
-the matches and taking the tail is correct across any number of pages. REST
-comments come back oldest-first, so `tail -1` is the newest.
+rather than building an array and taking `last` or `length`.** `--paginate`
+emits **one JSON array per page**, concatenated — so `$COMMENTS` is a stream of
+arrays, not a single array, and that is true whether a filter runs through
+`gh --jq` per request or through `jq` over the captured text afterwards. `.[]`
+iterates each array in turn and streams every match, which is what you want;
+`last` and `length` apply *per array*, so they yield a line per page, blanks
+included. (`--slurp` would merge them but cannot be combined with `--jq`;
+capturing first and running `jq -s` over `$COMMENTS` can, if you ever need the
+whole set as one array.) Streaming the matches and taking the tail is correct
+across any number of pages. REST comments come back oldest-first, so `tail -1`
+is the newest.
 
 Note also that REST spells the field `created_at`, not the `createdAt` that
 `gh pr view --json` returns — a filter carried over from the GraphQL form
@@ -642,7 +670,7 @@ It has its own pattern, and the same unset hazard as the others:
 
 ```
 SHA=$(gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]")
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"^cold: clean @ $SHA\"; \"i\")) | .id" | wc -l
+jq -r --arg sha "$SHA" '.[] | select(.body | test("^cold: clean @ " + $sha; "i")) | .id' <<<"$COMMENTS" | wc -l
 ```
 
 For a re-opened PR add the `select(.created_at > "$REOPENED")` clause, exactly
@@ -650,7 +678,7 @@ as the finding count below does — the same `REOPENED` value, read off the same
 `reopened:` marker:
 
 ```
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"^reopened:\"; \"i\")) | .created_at" | tail -1
+jq -r '.[] | select(.body | test("^reopened:"; "i")) | .created_at' <<<"$COMMENTS" | tail -1
 ```
 
 **"Never had a finding" spans the PR's whole life, not this run.** Every other
@@ -668,7 +696,7 @@ For a PR that has never been re-opened, ask over its whole life:
 
 ```
 FINDINGS='^(cold: findings|semi-cold:)'
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$FINDINGS\"; \"i\")) | .id" | wc -l
+jq -r --arg re "$FINDINGS" '.[] | select(.body | test($re; "i")) | .id' <<<"$COMMENTS" | wc -l
 ```
 
 **On a re-opened PR, count only from the re-open.** New commits nothing has
@@ -680,7 +708,7 @@ out — but the PR's latest `reopened:` marker:
 ```
 FINDINGS='^(cold: findings|semi-cold:)'
 REOPENED=<the `created_at` of the PR's latest `reopened:` marker, or empty if it has none>
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.created_at > \"$REOPENED\") | select(.body | test(\"$FINDINGS\"; \"i\")) | .id" | wc -l
+jq -r --arg from "$REOPENED" --arg re "$FINDINGS" '.[] | select(.created_at > $from) | select(.body | test($re; "i")) | .id' <<<"$COMMENTS" | wc -l
 ```
 
 Zero from the first form means nothing has ever been found on this PR; zero from
@@ -942,7 +970,8 @@ means code has landed that no round has seen:
 ```
 ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
 SHA=$(gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]")
-LATEST=$(gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"$ROUNDS\"; \"i\")) | .body | split(\"\n\")[0] | sub(\"\r$\"; \"\")" | tail -1)
+COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
+LATEST=$(jq -r --arg re "$ROUNDS" '.[] | select(.body | test($re; "i")) | .body | split("\n")[0] | sub("\r$"; "")' <<<"$COMMENTS" | tail -1)
 MARKSHA=$(printf '%s' "$LATEST" | grep -oE '@ ?[0-9a-f]{7}' | head -1 | grep -oE '[0-9a-f]{7}')
 
 echo "head:   $SHA"
