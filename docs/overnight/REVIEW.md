@@ -437,7 +437,7 @@ prefixes are written to the same stream and are deliberately *not* routed on:
 
   ```
   COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
-  jq -r '.[] | select(.body | test("^unsettled:"; "i")) | .body | split("\n")[0] | sub("\r$"; "")' <<<"$COMMENTS" | tail -1
+  printf '%s' "$COMMENTS" | jq -r '.[] | select(.body | test("^unsettled:"; "i")) | .body | split("\n")[0] | sub("\r$"; "")' | tail -1
   ```
 
 **Routing is a prefix test on the first line, folded to lowercase.** The
@@ -461,11 +461,13 @@ ceiling, the 40-round budget, the latest-round lookup. A pattern that also
 matched `reopened:` or `unsettled:` would charge those comments against the
 ceiling and route on them, and neither is a round.
 
-Every rule below that reads markers uses the same pattern. `gh`'s built-in
-`--jq` takes a filter string only — it has no `--arg` — so the pattern is
-interpolated by the shell and the filter's own quotes are escaped. Match it
-**case-insensitively** (`; "i"`), so that a reviewer opening with `Cold:` does
-not strand the PR:
+Every rule below that reads markers uses the same pattern, passed to `jq` with
+`--arg` rather than interpolated into the filter by the shell. (`gh`'s built-in
+`--jq` has no `--arg`, which is why these were escaped into double-quoted filter
+strings before CF-378 moved them to a real `jq` binary. `FIX.md` still has one
+interpolated `gh --jq` call against a different endpoint; this paragraph is
+about the marker reads below.) Match it **case-insensitively** (`; "i"`), so
+that a reviewer opening with `Cold:` does not strand the PR:
 
 ```
 ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
@@ -573,33 +575,47 @@ review are uncounted.
 
 ##### Reading state back: queries, labels, counts and windows
 
-**Fetch the comment list once per PR per lap, then filter it as many times as
-you like.** Every query in this document that reads markers wants the same list,
-and a lap asks it six or seven questions — the latest marker, the round count,
-the `reopened:` timestamp, the clean-round count, the findings count. Each one
-used to be its own `--paginate` call, so a PR with fifty comments cost two
-requests per question and the same bytes came down six times. Across a
-twenty-PR queue that is a few hundred requests for a single selection lap, which
-is how a night runs out of API budget before it runs out of work.
+**Fetch the comment list once, then filter it as many times as the block
+needs.** Every query in this document that reads markers wants the same list,
+and a block asks it two or three questions — the `reopened:` timestamp and then
+the count bounded by it, the clean-round count, the findings count. Each one
+used to be its own request for bytes the previous one had already downloaded.
 
 ```
 COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
 ```
 
-`$COMMENTS` holds one JSON array per page, so **filter it with standalone `jq`,
-not `gh --jq`** — the latter needs a request to attach to. `jq` is checked for
-at the start of the run alongside `gh`; nothing else in this brief needed it
-before, so a machine without it would otherwise fail mid-lap rather than at the
-capability check.
+**`$COMMENTS` is a single JSON array**, not a stream of them. `--paginate` sends
+`per_page=100` and, with no `--jq` or `--template` attached, `gh` stitches the
+pages into one array before you see it — measured on #438 with `gh 2.63.2`:
+one `GET …?per_page=100`, one top-level value, `length` 45. The longest thread
+in this repo is 45 comments, so today this is one page on every PR.
 
-Re-fetch when you move to a different PR, and when you have just posted a
-comment and need to read it back. Within one PR on one lap, once.
+That means `.[]`, `last`, `length`, `tail -1` and `wc -l` all behave the way
+they read. The per-page hazard described below is a property of
+`gh api --paginate --jq`, which runs the filter once per response — it is the
+reason the old form of these queries was shaped around `tail`/`wc`, and it does
+not apply to a captured array.
+
+**Filter it with standalone `jq`, not `gh --jq`** — the latter needs a request
+to attach to. `jq` is checked for at the start of the run alongside `gh`;
+nothing else in this brief needed it before, so a machine without it would
+otherwise fail mid-lap rather than at the capability check.
+
+**Each block below re-declares its own `COMMENTS`**, for the reason the
+[`ROUNDS` pattern is re-declared](#the-marker-pattern): a block is meant to run
+as it stands, and an agent landing mid-document copies one block rather than the
+section around it. Unset, the pipe feeds `jq` an empty string, which exits 0 with no output — so the latest-marker read looks like "never had a
+round" and every count comes back 0, silently. The saving is within a block,
+not across the document; re-fetch when you move to a different PR, and when you
+have just posted a comment and need to read it back.
 
 Read the latest marker, and route on it:
 
 ```
+COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
 ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
-jq -r --arg re "$ROUNDS" '.[] | select(.body | test($re; "i")) | .body | split("\n")[0] | sub("\r$"; "")' <<<"$COMMENTS" | tail -1
+printf '%s' "$COMMENTS" | jq -r --arg re "$ROUNDS" '.[] | select(.body | test($re; "i")) | .body | split("\n")[0] | sub("\r$"; "")' | tail -1
 ```
 
 Empty output means the PR has never had a round.
@@ -612,17 +628,17 @@ newest marker would simply fall outside the window: a late `cold: findings`
 becomes invisible and a stale `cold: clean` settles a PR with open Criticals.
 The REST endpoint above paginates properly.
 
-**And note the shape of these commands: they stream and end in `tail`/`wc`,
-rather than building an array and taking `last` or `length`.** `--paginate`
-emits **one JSON array per page**, concatenated — so `$COMMENTS` is a stream of
-arrays, not a single array, and that is true whether a filter runs through
-`gh --jq` per request or through `jq` over the captured text afterwards. `.[]`
-iterates each array in turn and streams every match, which is what you want;
-`last` and `length` apply *per array*, so they yield a line per page, blanks
-included. (`--slurp` would merge them but cannot be combined with `--jq`;
-capturing first and running `jq -s` over `$COMMENTS` can, if you ever need the
-whole set as one array.) Streaming the matches and taking the tail is correct
-across any number of pages. REST comments come back oldest-first, so `tail -1`
+**These commands stream and end in `tail`/`wc` rather than building an array
+and taking `last` or `length`, and that shape is now belt rather than braces.**
+It exists because `gh api --paginate --jq` runs the filter **once per response**
+and prints a result per page, blanks included, so `last` and `length` applied
+there answer about the final page rather than the set — and `--slurp` cannot be
+combined with `--jq` to fix it (`gh` refuses: *"the `--slurp` option is not
+supported with `--jq` or `--template`"*). Against a captured `$COMMENTS` none of
+that holds: it is one array, and `last`/`length` are correct — measured, 18
+markers on #438 either way. Streaming and taking the tail stays the house form
+because it is right under both, and because a query copied back into a
+`gh --jq` call keeps working. REST comments come back oldest-first, so `tail -1`
 is the newest.
 
 Note also that REST spells the field `created_at`, not the `createdAt` that
@@ -669,8 +685,9 @@ is not SHA-gated and does need the window.
 It has its own pattern, and the same unset hazard as the others:
 
 ```
+COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
 SHA=$(gh api repos/ClipFarmVB/ClipFarm/pulls/<n> --jq ".head.sha[0:7]")
-jq -r --arg sha "$SHA" '.[] | select(.body | test("^cold: clean @ " + $sha; "i")) | .id' <<<"$COMMENTS" | wc -l
+printf '%s' "$COMMENTS" | jq -r --arg sha "$SHA" '.[] | select(.body | test("^cold: clean @ " + $sha; "i")) | .id' | wc -l
 ```
 
 For a re-opened PR add the `select(.created_at > "$REOPENED")` clause, exactly
@@ -678,7 +695,8 @@ as the finding count below does — the same `REOPENED` value, read off the same
 `reopened:` marker:
 
 ```
-jq -r '.[] | select(.body | test("^reopened:"; "i")) | .created_at' <<<"$COMMENTS" | tail -1
+COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
+printf '%s' "$COMMENTS" | jq -r '.[] | select(.body | test("^reopened:"; "i")) | .created_at' | tail -1
 ```
 
 **"Never had a finding" spans the PR's whole life, not this run.** Every other
@@ -695,8 +713,9 @@ this document guards hardest against everywhere else.
 For a PR that has never been re-opened, ask over its whole life:
 
 ```
+COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
 FINDINGS='^(cold: findings|semi-cold:)'
-jq -r --arg re "$FINDINGS" '.[] | select(.body | test($re; "i")) | .id' <<<"$COMMENTS" | wc -l
+printf '%s' "$COMMENTS" | jq -r --arg re "$FINDINGS" '.[] | select(.body | test($re; "i")) | .id' | wc -l
 ```
 
 **On a re-opened PR, count only from the re-open.** New commits nothing has
@@ -706,9 +725,10 @@ window is **not** `SINCE` — the run start is the bound this section just ruled
 out — but the PR's latest `reopened:` marker:
 
 ```
+COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
 FINDINGS='^(cold: findings|semi-cold:)'
 REOPENED=<the `created_at` of the PR's latest `reopened:` marker, or empty if it has none>
-jq -r --arg from "$REOPENED" --arg re "$FINDINGS" '.[] | select(.created_at > $from) | select(.body | test($re; "i")) | .id' <<<"$COMMENTS" | wc -l
+printf '%s' "$COMMENTS" | jq -r --arg from "$REOPENED" --arg re "$FINDINGS" '.[] | select(.created_at > $from) | select(.body | test($re; "i")) | .id' | wc -l
 ```
 
 Zero from the first form means nothing has ever been found on this PR; zero from

@@ -465,9 +465,9 @@ ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]
 SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
 [ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
 COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
-REOPENED=$(jq -r '.[] | select(.body | test("^reopened:"; "i")) | .created_at' <<<"$COMMENTS" | tail -1)
+REOPENED=$(printf '%s' "$COMMENTS" | jq -r '.[] | select(.body | test("^reopened:"; "i")) | .created_at' | tail -1)
 FROM=$(printf '%s\n%s\n' "$SINCE" "$REOPENED" | sort | tail -1)
-jq -r --arg from "$FROM" --arg re "$ROUNDS" '.[] | select(.created_at > $from) | select(.body | test($re; "i")) | .id' <<<"$COMMENTS" | wc -l
+printf '%s' "$COMMENTS" | jq -r --arg from "$FROM" --arg re "$ROUNDS" '.[] | select(.created_at > $from) | select(.body | test($re; "i")) | .id' | wc -l
 ```
 
 `FROM` is the later of the two, which is what the rule above says and what
