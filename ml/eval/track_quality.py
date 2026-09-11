@@ -32,8 +32,19 @@ whoever holds it.
 while tracking, choosing among the detections the model returned for a frame. A
 dump holds only the positions that WON, never the candidates that lost — so no
 tool reading a dump can simulate a different `MAX_JUMP_PX`. Answering that one
-needs a re-track. Everything below is computed from the surviving track, which
-is what the segmentation constants actually see.
+needs a re-track.
+
+Worth being exact about what the threshold does, because it is weaker than
+"budget" suggests: when the nearest candidate exceeds it, `_pick_active` does
+not reject anything — it returns `detections[0]`, the highest-confidence one,
+which is appended unconditionally. So `MAX_JUMP_PX` never removes a position,
+and it only changes the outcome for a frame that returned two or more
+detections. A sample exceeding the budget therefore says nothing about what a
+different threshold would have done, even directionally. The px-per-sample row
+below is a distance histogram, not a proxy for the threshold.
+
+Everything below is computed from the surviving track, which is what the
+segmentation constants actually see.
 """
 import argparse
 import logging
@@ -76,9 +87,18 @@ def consecutive_speeds(track, max_gap: float = B.MAX_SAMPLE_GAP_SEC) -> list[Sam
 
 
 def fraction(samples: list[Sample], predicate) -> float:
+    """Share of samples satisfying `predicate`, which receives the whole Sample.
+
+    It takes the Sample rather than the speed on purpose. The first version
+    passed `s.pxps` alone, which put `dt` out of reach — and the px-per-sample
+    row below then reached for `MAX_SAMPLE_GAP_SEC` instead, which is the
+    maximum PERMITTED gap (1.0s), not the sample's own step (0.1s at the
+    shipped cadence). That inflated the row 10x and it read as a plausible
+    number rather than an error.
+    """
     if not samples:
         return 0.0
-    return sum(1 for s in samples if predicate(s.pxps)) / len(samples)
+    return sum(1 for s in samples if predicate(s)) / len(samples)
 
 
 def _row(label: str, value: float, *, note: str = "") -> str:
@@ -113,33 +133,33 @@ def report(track, frame_height: int) -> str:
         "THE LOCK-ON SIGNATURE  (CF-229's acceptance number)",
         _row(
             f"under {STATIONARY_PXPS:.0f} px/s",
-            fraction(samples, lambda v: v < STATIONARY_PXPS),
+            fraction(samples, lambda s: s.pxps < STATIONARY_PXPS),
             note="'materially below 50%' is the target",
         ),
         _row(
             f"under {B.SEG_MIN_MEDIAN_SPEED_PXPS:.0f} px/s",
-            fraction(samples, lambda v: v < B.SEG_MIN_MEDIAN_SPEED_PXPS),
+            fraction(samples, lambda s: s.pxps < B.SEG_MIN_MEDIAN_SPEED_PXPS),
             note="the held/spare-ball filter's own floor",
         ),
         "",
         "WHAT THE SEGMENTATION CEILING SPLITS",
         _row(
             f"over {B.SEG_MAX_SPEED_PXPS:.0f} px/s (shipped, unscaled)",
-            fraction(samples, lambda v: v > B.SEG_MAX_SPEED_PXPS),
+            fraction(samples, lambda s: s.pxps > B.SEG_MAX_SPEED_PXPS),
         ),
         _row(
             f"over {scaled_ceiling:.0f} px/s (if it scaled)",
-            fraction(samples, lambda v: v > scaled_ceiling),
+            fraction(samples, lambda s: s.pxps > scaled_ceiling),
         ),
         _row(
             f"over {B.MAX_JUMP_PX:.0f} px in one sample",
-            fraction(samples, lambda v: v * B.MAX_SAMPLE_GAP_SEC > B.MAX_JUMP_PX),
-            note="indicative only, see below",
+            fraction(samples, lambda s: s.pxps * s.dt > B.MAX_JUMP_PX),
+            note="a distance histogram, NOT the threshold — see below",
         ),
     ]
 
-    split_now = fraction(samples, lambda v: v > B.SEG_MAX_SPEED_PXPS)
-    split_scaled = fraction(samples, lambda v: v > scaled_ceiling)
+    split_now = fraction(samples, lambda s: s.pxps > B.SEG_MAX_SPEED_PXPS)
+    split_scaled = fraction(samples, lambda s: s.pxps > scaled_ceiling)
     out += [
         "",
         f"Scaling the ceiling would stop splitting {split_now - split_scaled:.1%} of "
@@ -151,11 +171,14 @@ def report(track, frame_height: int) -> str:
         "the held-ball filter and the fixture collapses to zero contacts. Both "
         "numbers, or neither.",
         "",
-        "The px-in-one-sample row is indicative and NOT a simulation of "
-        "MAX_JUMP_PX: that",
-        "threshold picks among detections during tracking, and a dump holds only "
-        "the ones that",
-        "won. Answering it needs a re-track.",
+        "The px-in-one-sample row is a distance histogram and NOT a simulation "
+        "of MAX_JUMP_PX.",
+        "That threshold picks among detections during tracking and a dump holds "
+        "only the ones",
+        "that won; it also never DROPS a position — over budget, _pick_active "
+        "falls back to the",
+        "highest-confidence detection and appends it anyway. Answering it needs "
+        "a re-track.",
     ]
     return "\n".join(out)
 
