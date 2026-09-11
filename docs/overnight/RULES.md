@@ -412,7 +412,8 @@ markers across every PR it touched:
 ```
 ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
 for n in $(gh pr list --state open --json number --jq '.[].number'); do
-  gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/$n/comments" --jq ".[] | select(.created_at > \"$SINCE\") | select(.body | test(\"$ROUNDS\"; \"i\")) | .id"
+  gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/$n/comments" \
+    | jq -r --arg since "$SINCE" --arg re "$ROUNDS" '.[] | select(.created_at > $since) | select(.body | test($re; "i")) | .id'
 done | wc -l
 ```
 
@@ -463,9 +464,10 @@ rounds this run" and hands the PR a fresh seven-round ceiling:
 ROUNDS='^(cold: (findings|clean)|semi-cold: (closes|does not close)) @ ?[0-9a-f]{7}'
 SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
 [ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
-REOPENED=$(gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.body | test(\"^reopened:\"; \"i\")) | .created_at" | tail -1)
+COMMENTS=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/<n>/comments")
+REOPENED=$(printf '%s' "$COMMENTS" | jq -r '.[] | select(.body | test("^reopened:"; "i")) | .created_at' | tail -1)
 FROM=$(printf '%s\n%s\n' "$SINCE" "$REOPENED" | sort | tail -1)
-gh api --paginate repos/ClipFarmVB/ClipFarm/issues/<n>/comments --jq ".[] | select(.created_at > \"$FROM\") | select(.body | test(\"$ROUNDS\"; \"i\")) | .id" | wc -l
+printf '%s' "$COMMENTS" | jq -r --arg from "$FROM" --arg re "$ROUNDS" '.[] | select(.created_at > $from) | select(.body | test($re; "i")) | .id' | wc -l
 ```
 
 `FROM` is the later of the two, which is what the rule above says and what
