@@ -40,9 +40,10 @@ class Clip(Base):
     # Phone-sized rendition, short side clamped to 720 (CF-321). NULL is a
     # normal, expected value and not an error state: a clip already at or under
     # the bound gets no second file, and a rendition that failed to encode
-    # leaves this NULL rather than failing the clip. A client that finds it
-    # NULL falls back to `clip_url`, which for those clips is the right answer
-    # anyway. Never assume this is populated.
+    # leaves this NULL rather than failing the clip, and every clip cut before
+    # CF-321 is NULL forever (CF-383, #499). A client that finds it NULL falls
+    # back to `clip_url`. Never assume this is populated — NULL is the common
+    # path, not an edge case.
     mobile_url: Mapped[str | None] = mapped_column(String(2048))
     labels: Mapped[list[str]] = mapped_column(
         ARRAY(String(50)), nullable=False, server_default="{}"

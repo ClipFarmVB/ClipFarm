@@ -75,10 +75,19 @@ def _needs_mobile_rendition(
     `min(w, h)` is the same whether the probe reports 1080x1920 or 1920x1080
     with a rotate flag, so this never has to interpret that metadata.
 
-    A clip already at or under the bound gets no second file. Re-encoding it at
-    the same resolution would cost storage and a generation loss to save
-    nothing, and NULL is a perfectly good answer — the client falls back to the
-    full-size URL, which for a clip this small is already the phone rendition.
+    A clip already at or under the bound gets no second file, and NULL is a
+    perfectly good answer — the client falls back to the full-size URL, which
+    for a clip this small is nearly the phone rendition already.
+
+    That skip is a judgement, not a free win, and the measurements on CF-321
+    (#371) are what make it one. Almost all of the saving comes from the
+    downscale: at 4K the rendition is 1.3% of the clip and costs +12% of the
+    cutting time, at 1080p 9.3% for +25%. On a source already at the bound
+    there is no downscale left, so the only lever is the higher crf — which
+    still halves the bytes, but costs +75% of the cutting time to do it and
+    spends visible quality on the smallest clip we serve. Ten times the saving
+    for half the cost is worth an encode; two times the saving for three times
+    the cost is not.
     """
     if width <= 0 or height <= 0:
         return False

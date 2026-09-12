@@ -189,8 +189,10 @@ def test_a_large_source_gets_a_rendition(monkeypatch, tmp_path):
 
 
 def test_a_source_already_under_the_bound_gets_no_second_file(monkeypatch, tmp_path):
-    """Re-encoding a 720p clip to 720p spends storage and a generation loss to
-    save nothing. NULL is the right answer, and the client falls back."""
+    """With no downscale left to do, the only saving available is the higher
+    crf — measured at ~2x the bytes for ~3x the cutting time (CF-321), against
+    10-77x for half to an eighth of the time when there is a downscale. NULL is
+    the right answer, and the client falls back."""
     fake = _install(monkeypatch, _FakeFFmpeg(1280, 720))
 
     results = clip_mod.generate_clips(str(tmp_path / "g.mp4"), DETECTIONS, tmp_path)

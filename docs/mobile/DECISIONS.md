@@ -237,8 +237,14 @@ between two cards that would otherwise have to land in order.
 **Consequences.** The rendition can never be better than the clip it came from,
 so a future change that lowers clip quality lowers this too, invisibly. It also
 means the mobile encode is strictly additive work at the end of each clip —
-which is what makes the measured `+22%` cutting-stage cost (recorded on #371)
-a clean number rather than an estimate. If the mezzanine-proxy epic later moves
+which is what makes the measured cutting-stage cost (on #371: +25% at 1080p,
++12% at 4K) a clean number rather than an estimate. Worth flagging for whoever
+picks up CF-239: once the cut becomes a stream copy on H.264 sources, this
+encode stops being a 12-25% surcharge and becomes essentially the whole of the
+cutting stage — still far cheaper than today in absolute terms, but it is the
+number that will dominate that card's measurements.
+
+If the mezzanine-proxy epic later moves
 transcoding out of this worker, this function is the piece that moves, and
 nothing about the cut has to move with it.
 
@@ -282,9 +288,18 @@ rather than merely unlikely, and `-2` on the free axis so the aspect ratio
 survives and the result is always even — `yuv420p` rejects odd dimensions
 outright, and that failure arrives as a dead encode rather than a bad picture.
 
-The skip is a separate call and worth stating on its own: re-encoding a 720p
-clip to 720p spends storage and a generation of quality to save no bandwidth at
-all. **NULL is therefore a value, not a gap.** The same NULL means "already
+The skip is a separate call and worth stating on its own, because measuring it
+changed what I believed. I expected a same-resolution rendition to save nothing;
+it halves the bytes (crf 26 against the clip's 23). What makes the skip right is
+not that the saving is zero but that the *ratio* collapses — the measurements on
+#371 put the downscaled cases at 1.3% of clip size for +12% cutting time (4K)
+and 9.3% for +25% (1080p), against 50% for +75% when there is no downscale left
+to do. Ten times the saving for half the cost is worth an encode; two times the
+saving for three times the cost is not, especially when the quality it spends
+comes off the smallest clip we serve. If that trade ever looks wrong, it is one
+comparison in one function, not a structural change.
+
+**NULL is therefore a value, not a gap.** The same NULL means "already
 small enough", "the encode failed" and "this clip predates the feature", and
 every one of those wants the client to do the same thing — play `clip_url`. A
 client that treats NULL as an error, or waits for the field to populate, is
