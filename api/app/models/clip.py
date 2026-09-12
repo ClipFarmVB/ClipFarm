@@ -37,6 +37,13 @@ class Clip(Base):
     end_time: Mapped[float] = mapped_column(Float, nullable=False)
     clip_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     thumbnail_url: Mapped[str | None] = mapped_column(String(2048))
+    # Phone-sized rendition, short side clamped to 720 (CF-321). NULL is a
+    # normal, expected value and not an error state: a clip already at or under
+    # the bound gets no second file, and a rendition that failed to encode
+    # leaves this NULL rather than failing the clip. A client that finds it
+    # NULL falls back to `clip_url`, which for those clips is the right answer
+    # anyway. Never assume this is populated.
+    mobile_url: Mapped[str | None] = mapped_column(String(2048))
     labels: Mapped[list[str]] = mapped_column(
         ARRAY(String(50)), nullable=False, server_default="{}"
     )

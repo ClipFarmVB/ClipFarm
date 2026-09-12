@@ -647,13 +647,16 @@ async def delete_game(game_id: uuid.UUID, user_id: UserId, db: DB):
     if not game or game.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Game not found")
 
-    # Collect all R2 keys to delete (clips + thumbnails + raw video)
+    # Collect all R2 keys to delete (clips + thumbnails + phone renditions +
+    # raw video). The retention sweep only ever lists the `raw/` prefix, so a
+    # clip object this loop misses is orphaned in R2 permanently — nothing else
+    # comes back for it.
     clips_result = await db.execute(select(Clip).where(Clip.game_id == game_id))
     clips = clips_result.scalars().all()
 
     r2_keys: list[str] = []
     for clip in clips:
-        for url in (clip.clip_url, clip.thumbnail_url):
+        for url in (clip.clip_url, clip.thumbnail_url, clip.mobile_url):
             if url:
                 r2_keys.append(urlparse(url).path.lstrip("/"))
     for url in (game.raw_video_url, game.condensed_video_url):

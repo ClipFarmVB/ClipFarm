@@ -253,6 +253,10 @@ def test_bulk_deleting_clips_does_not_delete_from_the_event_loop(monkeypatch):
         "id": uuid.uuid4(), "game_id": game.id,
         "clip_url": "https://example.invalid/clips/a.mp4",
         "thumbnail_url": None,
+        # Populated rather than None so the rendition's delete is one of the
+        # calls this test watches for the event loop (CF-321) — a stub that
+        # left it None would exercise the route's `continue` instead.
+        "mobile_url": "https://example.invalid/clips-mobile/a.mp4",
     })()
 
     class _Result:

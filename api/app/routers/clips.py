@@ -373,7 +373,10 @@ async def delete_clips(
     # Delete from R2 (best-effort) and DB
     deleted = 0
     for clip, _ in rows:
-        for url in (clip.clip_url, clip.thumbnail_url):
+        # The phone rendition is in this list for the same reason the thumbnail
+        # is: nothing sweeps the `clips-mobile/` prefix, so whatever this loop
+        # skips stays in R2 forever.
+        for url in (clip.clip_url, clip.thumbnail_url, clip.mobile_url):
             if not url:
                 continue
             try:
