@@ -17,9 +17,9 @@ not the ones it is not. Every rule lives in exactly one file.
 | file | when to read it | ~tokens |
 |---|---|---|
 | [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.1k |
-| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.4k |
+| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 5.6k |
 | [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 9.9k |
-| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.9k |
+| [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 15.7k |
 | [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.2k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
 | [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 2.9k |
@@ -55,8 +55,8 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap that only selects costs about 27k tokens of brief instead of 51k;
-one that also spawns a round, about 32k. A step-2 lap is about 23k, a step-3 lap
+A step-1 lap that only selects costs about 28k tokens of brief instead of 52k;
+one that also spawns a round, about 33k. A step-2 lap is about 23k, a step-3 lap
 about 15k. That is the whole point of the split.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
