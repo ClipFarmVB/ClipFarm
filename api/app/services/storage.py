@@ -487,6 +487,19 @@ def thumbnail_key(game_id: uuid.UUID, clip_id: uuid.UUID) -> str:
     return f"thumbs/{game_id}/{clip_id}.jpg"
 
 
+def mobile_clip_key(game_id: uuid.UUID, clip_id: uuid.UUID) -> str:
+    # Its own prefix rather than a suffix under `clips/` (CF-321), so the two
+    # renditions can be told apart by prefix alone. `list_objects` is
+    # prefix-based, and anything that ever needs to sweep, count or lifecycle
+    # one rendition and not the other would otherwise have to parse filenames.
+    #
+    # Deterministic per clip id, like `clip_key`: a recut overwrites in place
+    # instead of orphaning. That is also why a recut whose rendition fails to
+    # encode has to delete this object rather than leave it — see
+    # `sync_update_clip_url`.
+    return f"clips-mobile/{game_id}/{clip_id}.mp4"
+
+
 def condensed_key(game_id: uuid.UUID) -> str:
     # Deterministic per game so task retries overwrite instead of orphaning.
     return f"condensed/{game_id}.mp4"
