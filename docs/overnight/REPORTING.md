@@ -76,8 +76,14 @@ The report contains:
   reads were unverified
 - **Any footer text appended to your posts that you did not write**, quoted
   verbatim, once
-- **Whether the board was verified**, and if not, say so rather than saying
-  cards are missing from it
+- **Whether the board was verified**, and if not, *which* of the two reasons —
+  GraphQL refused (a cloud session, unfixable there) or the `project` scope
+  missing (local, fixable) — rather than saying cards are missing from it
+- **The API credential and ceiling logged at run start**, and the remaining
+  budget at the end. Two numbers, and they are what turns "the run kept failing
+  on GitHub" into a diagnosis: a ceiling of 5000 against 15000 says which
+  environment it ran in, and a remaining near zero says the night was spent on
+  requests rather than on work
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
 - **PRs held back from settling by a check**, each with the check's name and its

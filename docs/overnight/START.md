@@ -360,11 +360,42 @@ night's ticket list.
 Before relying on any capability, check it, and record the result in the log in
 one block. The first run discovered three gaps separately, mid-work.
 
+- **The API credential and its ceiling** — the first thing to check, because
+  every other check and every lap spends it, and a run that discovers the
+  ceiling by hitting it has already wasted the night. Log the identity and the
+  budget:
+
+  ```
+  gh api user --jq .login
+  gh api -i repos/ClipFarmVB/ClipFarm 2>&1 | grep -i '^x-ratelimit-\(limit\|remaining\)'
+  ```
+
+  **Read the headers, not `gh api rate_limit`.** In a Claude Code cloud session
+  that endpoint returns a canned answer — measured 2026-09-11: five real
+  requests left it reporting `used: 0, remaining: 15000` while the live headers
+  on the same requests moved `13` and `14987`. A run that logs the endpoint's
+  figure has recorded a number that cannot go down.
+
+  The ceiling tells you which environment you are in, which is worth more than
+  the number: **15000** is a GitHub App installation credential (cloud sessions
+  get one injected by the egress proxy; `X-OAuth-Scopes` comes back empty),
+  **5000** is an ordinary PAT or `gh auth login`. Limits are per credential, so
+  concurrent runs on one credential divide it — another reason [not to start a
+  second run while one is live](#what-it-may-push-to-and-what-follows-from-that).
 - **Projects v2** — `gh project item-list 1 --owner ClipFarmVB --format json`.
-  Needs the `project` token scope, which is often absent. This does **not** gate
-  any work, and it does **not** stop cards reaching the board — see below. It
-  only affects *editing* the board: without it you cannot remove the report
-  issue or change a field. Note that, and carry on.
+  Two different things stop this, and they want different answers in the report.
+
+  **In a cloud session it cannot work at all.** Projects v2 is GraphQL-only, and
+  GraphQL is refused outright there — *"GitHub GraphQL is not available from
+  Claude Code sessions; use the REST API"*, returned by the proxy rather than by
+  GitHub, so no credential and no scope changes it. Locally it is the `project`
+  token scope, which is often absent.
+
+  Neither gates any work, and neither stops cards reaching the board — see
+  below. Both only affect *editing* the board: without it you cannot remove the
+  report issue or change a field. Note which of the two you hit, and carry on.
+  Nothing in selection reads the board: work comes from the `overnight-ok`
+  label and the open-PR list, both REST.
 - **`gh` itself** — `gh --version`. Every command here is written in `gh` and
   some environments have none of it. That is an expected case, not a blocker:
   see [What a non-`gh` tool must provide](REVIEW.md#what-a-non-gh-tool-must-provide),
