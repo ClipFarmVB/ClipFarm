@@ -367,21 +367,37 @@ one block. The first run discovered three gaps separately, mid-work.
 
   ```
   gh api user --jq .login
-  gh api -i repos/ClipFarmVB/ClipFarm 2>&1 | grep -i '^x-ratelimit-\(limit\|remaining\)'
+  gh api -i repos/ClipFarmVB/ClipFarm 2>&1 \
+    | grep -i '^x-\(ratelimit-\(limit\|remaining\|resource\)\|oauth-scopes\)'
   ```
 
-  **Read the headers, not `gh api rate_limit`.** In a Claude Code cloud session
-  that endpoint returns a canned answer — measured 2026-09-11: five real
-  requests left it reporting `used: 0, remaining: 15000` while the live headers
-  on the same requests moved `13` and `14987`. A run that logs the endpoint's
-  figure has recorded a number that cannot go down.
+  **Read the headers, not `gh api rate_limit`.** That endpoint has been observed
+  reporting `used: 0` while the headers on the very same requests moved — in a
+  cloud session (five requests, headers `13` → `14987` remaining) and on an
+  ordinary 5000-limit token locally (three requests, headers `118` → `120`
+  used). Two environments, two credential types, same disagreement, so do not
+  reach for it in either and do not treat its silence as headroom. A run that
+  logs its figure has recorded a number that cannot go down.
 
-  The ceiling tells you which environment you are in, which is worth more than
-  the number: **15000** is a GitHub App installation credential (cloud sessions
-  get one injected by the egress proxy; `X-OAuth-Scopes` comes back empty),
-  **5000** is an ordinary PAT or `gh auth login`. Limits are per credential, so
-  concurrent runs on one credential divide it — another reason [not to start a
-  second run while one is live](#what-it-may-push-to-and-what-follows-from-that).
+  **`X-OAuth-Scopes` identifies the credential; the ceiling does not.** Empty
+  means an App installation token — what a cloud session's egress proxy injects
+  — and a populated list means a user token (PAT or `gh auth login`). The number
+  is corroboration at best: an App on a small org gets 5000 and an Enterprise
+  Cloud user token gets 15000, so reading the tier backwards from the limit is
+  wrong in both directions. Limits are per credential, so concurrent runs on one
+  divide it — another reason [not to start a second run while one is
+  live](#what-it-may-push-to-and-what-follows-from-that).
+
+  **What this check does not cover, stated because it is easy to over-read.**
+  `X-RateLimit-Resource` says which bucket the number describes, and for every
+  command in this brief it is `core`. GraphQL has its own budget, and secondary
+  limits (concurrency, points per minute) are reported by neither the headers
+  nor `rate_limit`. So a healthy `core` reading is not a healthy API: a run can
+  log 14000 remaining and still be refused on the next GraphQL call. Log the
+  resource next to the numbers so the reading cannot later be mistaken for a
+  statement about the whole API, and treat a GraphQL rate-limit refusal as its
+  own fact — see [the board check below](#first-establish-what-you-can-actually-do)
+  and the report bullet it feeds.
 - **Projects v2** — `gh project item-list 1 --owner ClipFarmVB --format json`.
   Two different things stop this, and they want different answers in the report.
 
@@ -390,6 +406,13 @@ one block. The first run discovered three gaps separately, mid-work.
   Claude Code sessions; use the REST API"*, returned by the proxy rather than by
   GitHub, so no credential and no scope changes it. Locally it is the `project`
   token scope, which is often absent.
+
+  **And a third cause that looks like neither: GraphQL refused as
+  rate-limited.** GraphQL's budget is separate from `core`, so this happens
+  while every number the check above logged still reads healthy. Read the error
+  rather than inferring from the numbers — a run that assumes the scope is
+  missing reports the wrong remedy to the wrong person, and the numbers in its
+  own report appear to contradict it.
 
   Neither gates any work, and neither stops cards reaching the board — see
   below. Both only affect *editing* the board: without it you cannot remove the
