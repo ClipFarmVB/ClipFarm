@@ -24,10 +24,11 @@ changes that break rally boundaries.
 - **Branch name:** `category/CF-##-short-description`. The category names the work —
   an area (`api`, `web`, `devops`, `eval`), an epic (`ball-detection`, `deadtime`,
   `mobile`), or the kind of change (`fix`, `docs`, `ci`, `chore`). **That list is
-  what is in use, not a closed set**, so a new epic adds to it; still, prefer a
-  category already in `git branch -r` over coining one. Three spellings in the
-  history not to copy: `dead-time` (it is `deadtime`), `misc` (say what the work
-  is), and `feat` (every branch is a feature — name the area or epic instead).
+  what is in use, not a closed set**, so a new epic adds to it; prefer one of those
+  over coining a category. Three spellings in the history not to copy: `dead-time`
+  (it is `deadtime`), `misc` (say what the work is), and `feat` — the leftover
+  case, since every branch that is not a fix, doc or chore is a feature, so it
+  sorts nothing.
 - **PR title:** `type(scope): CF-## description` for new work. Most recent PRs
   follow it, but not all — some older ones open with the card id instead
   (`CF-65a · …`), and the scope is sometimes omitted (`docs: …`). Match the
