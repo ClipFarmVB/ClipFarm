@@ -567,6 +567,30 @@ rather than a reviewer that found the error.
   production image.
 - CF numbers have drifted from issue numbers. Check the highest existing `CF-`
   number; do not infer it from the issue count.
+- **Editing any file under `docs/overnight/` invalidates `README.md`'s token
+  table, and nothing tells you at edit time.** The table states each file's size
+  to a tenth of a k and `README.md` states five lap figures derived from them;
+  `api/tests/test_overnight_brief.py` asserts both against the files on disk. A
+  paragraph added anywhere in the brief can move a row, and a paragraph added to
+  `REVIEW.md` or `RULES.md` can move a lap figure too. So after touching a brief
+  file:
+
+  ```
+  cd api && python -m pytest tests/test_overnight_brief.py
+  ```
+
+  **Re-measure rather than patching the row that failed.** The test names the
+  drifted rows, not the lap figures those rows feed, so a fix that edits only
+  what the assertion printed leaves the second test red — recompute all five and
+  state which are unchanged. Leave the across-the-split figures further down
+  alone; they describe an older revision and the test's own message says so.
+
+  **You will find out from a job called `API (ruff + mypy)`,** which is the part
+  that costs the time: that job also runs `pytest api/tests/`, so the failure
+  arrives under a name that sends you looking for a lint error that does not
+  exist. Read which *step* failed before reading the diff. This has now cost
+  three failures across two docs-only PRs (#492, #508), each caught by CI rather
+  than at the keyboard.
 - **A squash merge carries every commit message onto `main`**, so a `Closes #N`
   in a commit *body* is landed on the default branch and closes that issue —
   whatever the PR body says. **Measured here:** every squash sampled on `main`
