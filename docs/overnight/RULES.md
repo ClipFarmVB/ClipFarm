@@ -567,6 +567,36 @@ rather than a reviewer that found the error.
   production image.
 - CF numbers have drifted from issue numbers. Check the highest existing `CF-`
   number; do not infer it from the issue count.
+- **Editing any file under `docs/overnight/` invalidates `README.md`'s token
+  table, and nothing tells you at edit time.** The table states each file's size
+  to a tenth of a k and `README.md` states five lap figures derived from them;
+  `api/tests/test_overnight_brief.py` asserts both against the files on disk. A
+  paragraph added anywhere in the brief can move a row, and a paragraph added to
+  `REVIEW.md` or `RULES.md` can move a lap figure too. So after touching a brief
+  file:
+
+  ```
+  cd api && python -m pytest tests/test_overnight_brief.py
+  ```
+
+  **Re-measure rather than patching the row that failed.** These figures are
+  asserted by **three separate tests** — the rows, the five lap figures, and the
+  select-versus-spawn difference — and each names its own drift precisely, the
+  lap one printing `the whole brief: page says 52k, files sum to 53k`. So the
+  trap is not a silent failure, it is stopping after the first: fix the rows the
+  first test named, re-run, and the next is still red. Adding the paragraph you
+  are reading tripped all three in turn.
+  Recompute all five lap figures in the same pass and state which are unchanged.
+  Leave the across-the-split figures further down alone; they describe an older
+  revision and the test's own message says so.
+
+  **You will find out from a job called `API (ruff + mypy)`,** which is the part
+  that costs the time: that job also runs `pytest api/tests/`, so the failure
+  arrives under a name that sends you looking for a lint error that does not
+  exist. Read which *step* failed before reading the diff. This has now cost
+  **four** red runs across two docs-only PRs — three on #492 (`413bed0`,
+  `971236c`, `1e2d108`) and one on #508 (`4042367`) — each caught by CI rather
+  than at the keyboard.
 - **A squash merge carries every commit message onto `main`**, so a `Closes #N`
   in a commit *body* is landed on the default branch and closes that issue —
   whatever the PR body says. **Measured here:** every squash sampled on `main`
