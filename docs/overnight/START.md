@@ -396,8 +396,8 @@ one block. The first run discovered three gaps separately, mid-work.
   log 14000 remaining and still be refused on the next GraphQL call. Log the
   resource next to the numbers so the reading cannot later be mistaken for a
   statement about the whole API, and treat a GraphQL rate-limit refusal as its
-  own fact — see [the board check below](#first-establish-what-you-can-actually-do)
-  and the report bullet it feeds.
+  own fact — it is the third cause under **Projects v2**, the next check in this
+  list, and the report bullet that check feeds.
 - **Projects v2** — `gh project item-list 1 --owner ClipFarmVB --format json`.
   Two different things stop this, and they want different answers in the report.
 
@@ -414,10 +414,10 @@ one block. The first run discovered three gaps separately, mid-work.
   missing reports the wrong remedy to the wrong person, and the numbers in its
   own report appear to contradict it.
 
-  Neither gates any work, and neither stops cards reaching the board — see
-  below. Both only affect *editing* the board: without it you cannot remove the
-  report issue or change a field. Note which of the two you hit, and carry on.
-  Nothing in selection reads the board: work comes from the `overnight-ok`
+  None of the three gates any work, and none stops cards reaching the board —
+  see below. They only affect *editing* the board: without it you cannot remove
+  the report issue or change a field. Note which of the three you hit, and carry
+  on. Nothing in selection reads the board: work comes from the `overnight-ok`
   label and the open-PR list, both REST.
 - **`gh` itself** — `gh --version`. Every command here is written in `gh` and
   some environments have none of it. That is an expected case, not a blocker:

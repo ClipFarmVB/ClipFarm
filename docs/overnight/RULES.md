@@ -579,17 +579,23 @@ rather than a reviewer that found the error.
   cd api && python -m pytest tests/test_overnight_brief.py
   ```
 
-  **Re-measure rather than patching the row that failed.** The test names the
-  drifted rows, not the lap figures those rows feed, so a fix that edits only
-  what the assertion printed leaves the second test red — recompute all five and
-  state which are unchanged. Leave the across-the-split figures further down
-  alone; they describe an older revision and the test's own message says so.
+  **Re-measure rather than patching the row that failed.** These figures are
+  asserted by **three separate tests** — the rows, the five lap figures, and the
+  select-versus-spawn difference — and each names its own drift precisely, the
+  lap one printing `the whole brief: page says 52k, files sum to 53k`. So the
+  trap is not a silent failure, it is stopping after the first: fix the rows the
+  first test named, re-run, and the next is still red. Adding the paragraph you
+  are reading tripped all three in turn.
+  Recompute all five lap figures in the same pass and state which are unchanged.
+  Leave the across-the-split figures further down alone; they describe an older
+  revision and the test's own message says so.
 
   **You will find out from a job called `API (ruff + mypy)`,** which is the part
   that costs the time: that job also runs `pytest api/tests/`, so the failure
   arrives under a name that sends you looking for a lint error that does not
   exist. Read which *step* failed before reading the diff. This has now cost
-  three failures across two docs-only PRs (#492, #508), each caught by CI rather
+  **four** red runs across two docs-only PRs — three on #492 (`413bed0`,
+  `971236c`, `1e2d108`) and one on #508 (`4042367`) — each caught by CI rather
   than at the keyboard.
 - **A squash merge carries every commit message onto `main`**, so a `Closes #N`
   in a commit *body* is landed on the default branch and closes that issue —
