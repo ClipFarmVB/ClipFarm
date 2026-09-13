@@ -411,7 +411,8 @@ Postgres via SQLAlchemy (`api/app/models/`), RLS enabled on all tables.
 We work like a small company: **branches + PRs only, never commit to `main`.**
 
 - **Branch naming**: `category/CF-##-short-description` (lowercase-kebab category).
-  Categories in use: `devops`, `ball-detection`, `docs`. `CF-##` is the board card ID.
+  `CF-##` is the board card ID. The categories themselves are listed in `CLAUDE.md`
+  and only there, so the two files cannot drift apart.
 - **PRs**: use the template (`.github/pull_request_template.md`). One card ≈ one PR. Link
   `CF-##`. Squash on merge.
 - **CI** (`.github/workflows/ci.yml`) runs on every PR and is **required to pass** before
