@@ -29,15 +29,23 @@ might push a segment under the duration gate while it still has three contacts.
 
 It cannot, though the floor is tighter than the pads alone suggest. A rally
 spans ``min(video_duration, last + POST_PLAY_PAD) - max(0, first -
-PRE_RALLY_PAD)``, which has two regimes:
+PRE_RALLY_PAD)``. The clamp and the pre-roll split independently, so there are
+**four** cases rather than two:
 
-* the end is **not** clamped — the span is ``last + 2.5`` or, once ``first``
-  clears the pre-roll, ``(last - first) + 4.5``. At least 2.5s, and here the
-  pads really do dominate the contacts' own spread.
-* the end **is** clamped by the video's length — the span is
-  ``video_duration - first + 2.0``, which moves one-for-one with the first
-  contact and reaches **exactly 2.0s** when a rally's first contact lands on
-  the final frame.
+======================  ==============================  ======
+                        span                            floor
+======================  ==============================  ======
+unclamped, first <= 2   ``last + 2.5``                  2.5
+unclamped, first > 2    ``(last - first) + 4.5``        4.5
+clamped, first <= 2     ``video_duration`` (flat)       ``video_duration``
+clamped, first > 2      ``video_duration - first + 2``  **2.0**
+======================  ==============================  ======
+
+The last row is the one that matters: there the span moves one-for-one with the
+first contact and reaches **exactly 2.0s** when a rally's first contact lands on
+the final frame. The third row is flat in ``first`` — an earlier version of this
+paragraph gave the fourth row's formula for both, which overstates the span by
+``2 - first`` whenever the first contact is inside the pre-roll.
 
 So for contacts inside the video the floor is ``MIN_RALLY_DURATION`` itself,
 not something comfortably above it, and the gate's ``>=`` is what keeps that

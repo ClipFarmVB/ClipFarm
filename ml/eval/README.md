@@ -368,12 +368,19 @@ clip is too short.
 
 **Expect the duration channel to read zero, and read that as a result rather
 than as luck.** A rally spans `min(video_duration, last + POST_PLAY_PAD) −
-max(0, first − PRE_RALLY_PAD)`. Where the end is not clamped that is at least
-2.5s however few contacts survive, because the pads dominate the contact
-spread. Where the video's own length clamps the end it is
-`video_duration − first + 2.0`, which moves one-for-one with the first contact
-and bottoms out at **exactly 2.0s** — a rally whose first contact lands on the
-final frame. So for contacts inside the video the floor is
+max(0, first − PRE_RALLY_PAD)`. The clamp and the pre-roll split independently,
+giving four cases:
+
+| | span | floor |
+|---|---|---|
+| unclamped, `first ≤ 2` | `last + 2.5` | 2.5 |
+| unclamped, `first > 2` | `(last − first) + 4.5` | 4.5 |
+| clamped, `first ≤ 2` | `video_duration` (flat in `first`) | `video_duration` |
+| clamped, `first > 2` | `video_duration − first + 2` | **2.0** |
+
+Only the last row approaches the gate: there the span moves one-for-one with the
+first contact and bottoms out at exactly 2.0s, for a rally whose first contact
+lands on the final frame. So for contacts inside the video the floor is
 `MIN_RALLY_DURATION` itself and the gate's `>=` is what keeps that case.
 
 Measured over 300,000 random in-video triples at durations from 2s to 4000s:

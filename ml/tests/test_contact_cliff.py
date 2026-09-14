@@ -204,38 +204,63 @@ def test_a_rally_lasting_exactly_the_minimum_is_kept():
 
 
 def test_the_duration_gate_cannot_fire_on_a_video_longer_than_the_gate():
-    """The claim the module docstring and ml/eval/README.md both make, pinned.
+    """The claim the module docstring and ml/eval/README.md both make, pinned
+    against the production span rather than against a copy of its arithmetic.
 
-    A rally spans `min(duration, last + POST_PLAY_PAD) - max(0, first -
-    PRE_RALLY_PAD)`. Unclamped that is at least POST_PLAY_PAD; clamped it is
-    `duration - first + PRE_RALLY_PAD`, which bottoms out at exactly
-    PRE_RALLY_PAD when the first contact lands on the final frame. So with
-    PRE_RALLY_PAD >= MIN_RALLY_DURATION the gate cannot fire on any video at
-    least MIN_RALLY_DURATION long, and the duration channel of the ladder is
-    structurally zero on every fixture (300s-3660s).
+    `_make_rally` sets `start = max(0, first - PRE_RALLY_PAD)` and
+    `end = min(video_duration, last + POST_PLAY_PAD)`, which gives four cases,
+    not two — the clamp and the pre-roll split independently:
 
-    Written as a test because the prose version of it has been wrong twice: once
-    claiming the coupling was real, then claiming a floor of 2.5s when the true
-    floor is 2.0. Move a pad or either constant and this fails, which is the
-    signal to go and re-read both documents.
+      unclamped, first <= PRE   -> last + POST          floor POST  (2.5)
+      unclamped, first >  PRE   -> (last - first) + POST + PRE      (4.5)
+      clamped,   first <= PRE   -> video_duration       flat in first
+      clamped,   first >  PRE   -> video_duration - first + PRE     floor PRE
+
+    So the in-video floor is min(PRE_RALLY_PAD, POST_PLAY_PAD) -- 2.0, reached
+    when a rally's first contact lands on the final frame -- and the duration
+    gate cannot fire on any video at least MIN_RALLY_DURATION long. That is why
+    the ladder's duration channel is structurally zero on every fixture.
+
+    Three things this test has to do, each because an earlier version did not:
+
+    * **call `_make_rally`**, not a re-derivation of its formula. The first
+      version recomputed the span from the constants, so production could have
+      changed its clamp with this still green.
+    * **reach first == video_duration.** A fixed step from 0 never lands there,
+      and that is the only place the clamped floor is attained: shrinking
+      PRE_RALLY_PAD to 1.98 passed the sweep entirely.
+    * **be sensitive to POST_PLAY_PAD.** Asserting only the gate floor is not:
+      POST could drop to 2.1 with the suite green while every unclamped
+      statement in the prose went wrong. The unclamped floor is asserted too.
     """
+    def span(duration, first, last):
+        r = B._make_rally(contacts_at(first, last), duration, 1080)
+        return r["end"] - r["start"]
+
     step = 0.37  # nothing lands on a pad boundary by construction
     for duration in (B.MIN_RALLY_DURATION, 3.0, 300.0, 3660.0):
-        first = 0.0
-        while first <= duration:
+        firsts = [i * step for i in range(int(duration / step) + 1)]
+        firsts += [duration, duration - 1e-9, B.PRE_RALLY_PAD]  # the boundary itself
+        for first in firsts:
+            if not 0.0 <= first <= duration:
+                continue
             for last in (first, min(first + step, duration), duration):
-                span = (min(duration, last + B.POST_PLAY_PAD)
-                        - max(0.0, first - B.PRE_RALLY_PAD))
-                assert span >= B.MIN_RALLY_DURATION, (
-                    f"duration={duration} first={first} last={last} span={span}"
+                assert span(duration, first, last) >= B.MIN_RALLY_DURATION, (
+                    f"duration={duration} first={first} last={last}"
                 )
-            first += step
 
-    # And the floor is reached, not merely approached — so the gate's `>=` is
-    # load-bearing rather than incidental.
-    d = 300.0
-    exact = (min(d, d + B.POST_PLAY_PAD) - max(0.0, d - B.PRE_RALLY_PAD))
-    assert exact == B.MIN_RALLY_DURATION
+    # The clamped floor is REACHED, not merely approached, so the gate's `>=`
+    # is load-bearing. This is the assertion that catches a small PRE shrink.
+    assert span(300.0, 300.0, 300.0) == B.PRE_RALLY_PAD == B.MIN_RALLY_DURATION
+
+    # And the unclamped floor, attained with both contacts at zero. Asserted
+    # against the LITERAL the prose quotes, not against B.POST_PLAY_PAD: both
+    # sides of that comparison move together, so it held while POST dropped to
+    # 2.1 and every "2.5s" in the docs went wrong. The number here is the
+    # number in the docstring above and in ml/eval/README.md -- if this fails,
+    # a constant moved and both documents need re-reading.
+    assert span(3660.0, 0.0, 0.0) == 2.5
+    assert B.MIN_RALLY_DURATION == 2.0  # likewise: the gate the prose names
 
 
 def test_the_two_gates_are_counted_separately():
