@@ -101,25 +101,28 @@ export const FeedPost = memo(function FeedPost({
   useEffect(() => {
     const prev = seededFrom.current;
     const newPost = prev.id !== post.id;
-    // Compare against the last payload we seeded from, not against local state.
-    // Local state moves on an optimistic tap while the prop stands still, so
-    // comparing to it would re-seed on our own optimism and undo it; comparing
-    // to the previous prop fires only when the server actually says something
-    // new — which is the "refreshes a post in place" case, the one an id test
-    // alone misses.
-    const freshPayload =
-      prev.liked !== post.viewer_has_liked ||
-      prev.count !== post.like_count ||
-      prev.comments !== post.comment_count;
-    if (!newPost && !freshPayload) return;
+    // Each counter is re-seeded only when ITS OWN fields moved. Re-seeding both
+    // whenever any field moved is what makes this dangerous: a refresh that
+    // touches `comment_count` alone would carry the server's not-yet-updated
+    // like values back over an optimistic tap, flipping the heart under the
+    // reader's finger. Pinned by `a refresh that only moves the comment count
+    // leaves an in-flight like alone`.
+    const likeMoved =
+      prev.liked !== post.viewer_has_liked || prev.count !== post.like_count;
+    const commentsMoved = prev.comments !== post.comment_count;
+    // No blanket early return: the deps below ARE these four fields, so by the
+    // time this runs at least one of the three has moved. A `return` for the
+    // nothing-changed case would be unreachable, and a test written for it
+    // would pass whether or not the guard existed — which is exactly the trap
+    // the previous version of this file fell into.
     seededFrom.current = {
       id: post.id,
       liked: post.viewer_has_liked,
       count: post.like_count,
       comments: post.comment_count,
     };
-    setLike({ liked: post.viewer_has_liked, count: post.like_count });
-    setCommentCount(post.comment_count);
+    if (newPost || likeMoved) setLike({ liked: post.viewer_has_liked, count: post.like_count });
+    if (newPost || commentsMoved) setCommentCount(post.comment_count);
     // Only on a genuinely different post. A background refresh must not close
     // a sheet the reader has open or wipe a note they have not read yet.
     if (newPost) {

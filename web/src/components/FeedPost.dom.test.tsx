@@ -348,13 +348,21 @@ describe("liking a post", () => {
     expect(railCount("Comments")).toContain("4");
   });
 
-  it("does not undo an optimistic like when the prop has not changed", async () => {
-    // The other half of keying on the payload: a re-render with the SAME prop
-    // must not re-seed, or every optimistic tap would be reverted by the next
-    // parent render before the server answers.
+  it("a refresh that only moves the comment count leaves an in-flight like alone", async () => {
+    // The other half of keying on the payload, and the half that needs a test
+    // with teeth. A re-render carrying an IDENTICAL prop proves nothing: the
+    // effect's deps are the four payload fields, so React never re-runs it and
+    // the guard is never consulted — removing the guard outright leaves such a
+    // test green.
+    //
+    // This is the case that actually reaches the code: `comment_count` moves,
+    // so the effect runs, while `like_count` and `viewer_has_liked` still carry
+    // the pre-like values the server has not caught up with. Re-seeding the
+    // like from that payload would throw away the optimistic state mid-flight
+    // and flip the heart back under the reader's finger.
     let release: (v: { liked: boolean; like_count: number }) => void = () => {};
     likePost.mockReturnValue(new Promise((r) => (release = r)));
-    mount(makePost());
+    mount(makePost()); // like_count 3, comment_count 1, not liked
 
     await click(byLabel("Like")[0]);
     expect(railCount("Unlike")).toContain("4");
@@ -362,7 +370,7 @@ describe("liking a post", () => {
     await act(async () => {
       root.render(
         <FeedPost
-          post={makePost() as Post}
+          post={{ ...makePost(), comment_count: 5 } as Post}
           active={false}
           loaded={false}
           muted
@@ -371,8 +379,12 @@ describe("liking a post", () => {
       );
     });
 
+    expect(byLabel("Unlike")).toHaveLength(1); // still filled, not flipped back
     expect(railCount("Unlike")).toContain("4");
+    expect(railCount("Comments")).toContain("5"); // and the count that did move, moved
+
     await act(async () => release({ liked: true, like_count: 4 }));
+    expect(railCount("Unlike")).toContain("4");
   });
 
   it("sends one request for a double tap", async () => {
