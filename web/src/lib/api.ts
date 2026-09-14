@@ -198,14 +198,15 @@ export interface Clip {
   // False once the game's raw upload has passed its retention window (CF-194):
   // the clip still plays, but it can no longer be re-cut, so trimming is off.
   source_available?: boolean;
-  // The widest tier a post over this clip may take — the clip's own visibility
-  // or its game's, resolved server-side (CF-109). The composer greys out
-  // anything above it; without this the only way to learn the ceiling was to
-  // submit and read the 409, and since nothing can raise a clip's visibility
-  // yet that was a dead end rather than a step.
+  // The widest tier a post over this clip may take without widening the clip —
+  // the clip's own visibility or its game's, resolved server-side (CF-109).
+  // Above it, the composer asks for consent to raise the clip along with the
+  // post (CF-109b). Before CF-109b nothing could raise a clip's visibility, so
+  // CF-109 greyed those tiers out rather than let a submit end in the 409.
   //
   // Optional, and absent means `private`: a response from a path that hasn't
-  // been taught to resolve it offers less, never more.
+  // been taught to resolve it asks for consent it may not need, rather than
+  // widening footage whose tier it could not read.
   effective_visibility?: Visibility;
 }
 

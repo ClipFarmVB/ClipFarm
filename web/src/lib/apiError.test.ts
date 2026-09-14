@@ -65,8 +65,9 @@ describe("apiErrorMessage", () => {
     //
     // PostComposerModal did exactly that, so the 409 naming the clip's
     // visibility ceiling — the backstop for a clip that goes private between
-    // page load and click, the one case the composer's own ceiling check cannot cover —
-    // always reached the user as "Could not post". The 422 branch above made it
+    // page load and click, the one case the composer's own ceiling check
+    // cannot cover — always reached the user as "Could not post". The 422
+    // branch above made it
     // worse rather than better: a first decode that now succeeds is a second
     // decode that now fails.
     //

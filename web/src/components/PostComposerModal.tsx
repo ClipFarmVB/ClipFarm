@@ -16,8 +16,10 @@ const RANK: Record<Visibility, number> = { private: 0, followers: 1, public: 2 }
  *
  * The tier names are adjectives in one case and a noun in another, so
  * interpolating them directly produced "this clip is followers". Only the first
- * two can ever render — nothing is blocked when the ceiling is `public` — but
- * the third is here so the map stays total and a new tier is a compile error
+ * two can ever render — the phrase sits in the consent block, which appears
+ * only when the chosen tier is wider than the clip, and nothing is wider than
+ * `public` — but the third is here so the map stays total and a new tier is a
+ * compile error
  * rather than a sentence that reads wrong in production.
  */
 const CEILING_PHRASE: Record<Visibility, string> = {
@@ -130,8 +132,10 @@ export function PostComposerModal({
   onPosted?: () => void;
 }) {
   // Absent means private — the fail-closed direction, matching the schema's
-  // own default. A clip payload that predates this field asks for consent on
-  // every tier above "Only me", rather than treating the clip as already wide.
+  // own default. A clip payload that predates this field treats every tier
+  // above "Only me" as a raise that needs consent — and `public` stays disabled
+  // while the deployment has it off — rather than treating the clip as already
+  // wide.
   const ceiling: Visibility = clip.effective_visibility ?? "private";
 
   const [caption, setCaption] = useState("");
