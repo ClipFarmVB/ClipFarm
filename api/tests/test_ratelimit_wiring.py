@@ -422,3 +422,41 @@ def test_the_limiter_is_resolved_before_anything_a_refusal_should_not_pay_for():
         )
         checked += 1
     assert checked == len(THROTTLED)
+
+
+def test_a_backend_that_never_answers_does_not_hold_the_request(monkeypatch):
+    """The socket bounds are per OPERATION; this is the bound per REQUEST.
+
+    A server that answers every operation just inside the socket timeout still
+    stretches one `hit()` well past it -- connect, handshake and each read get
+    their own second, and a review round measured 6.31s cold against a
+    0.9s-per-reply server. What a caller waiting on a public read experiences is
+    the whole call, so the whole call is what `REQUEST_BUDGET_SECONDS` bounds.
+
+    Driven with a backend that simply never returns, which no socket timeout can
+    reach: the `MemoryBackend` path has no socket at all, and a custom `Backend`
+    implementation is free to block. The test's own `wait_for` is the safety
+    net -- without a bound in `_enforce` this fails as a timeout rather than
+    hanging the suite forever.
+    """
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(ratelimit, "REQUEST_BUDGET_SECONDS", 0.05)
+
+    class NeverAnswers:
+        async def hit(self, key, window_seconds):
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(ratelimit, "_backend", NeverAnswers())
+    limiter = ratelimit.rate_limit(ratelimit.POLICIES["profile"])
+
+    class Req:
+        client = type("C", (), {"host": "203.0.113.11"})()
+        headers = Headers({})
+
+    async def drive():
+        # Twenty times the budget: generous enough that a slow machine cannot
+        # fail this, tight enough that an unbounded `_enforce` cannot pass it.
+        return await asyncio.wait_for(limiter(Req()), timeout=1.0)
+
+    assert asyncio.run(drive()) is None

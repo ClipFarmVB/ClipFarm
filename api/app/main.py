@@ -41,9 +41,9 @@ async def lifespan(_app: FastAPI):
         # The socket bounds are not tuning: redis-py defaults both to None, and
         # an unbounded client turns a HANGING redis into a request that blocks
         # on the kernel's TCP retry bound. The limiter's fail-open branch only
-        # catches a raise, so without these there is nothing to catch. See
-        # `ratelimit.REDIS_SOCKET_TIMEOUT_SECONDS` for why the bound lives on
-        # the client rather than around the call.
+        # catches a raise, so without these there is nothing to catch. They
+        # bound one operation each; `ratelimit.REQUEST_BUDGET_SECONDS` bounds
+        # the whole call, and that comment says why both exist.
         client = aioredis.from_url(
             settings.redis_url,
             socket_timeout=ratelimit.REDIS_SOCKET_TIMEOUT_SECONDS,

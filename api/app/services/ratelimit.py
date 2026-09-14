@@ -50,9 +50,9 @@ not achievable — the honest answer is one pipelined round trip against a poole
 connection. A per-process in-memory counter would be zero and would also be
 wrong the moment there is more than one instance.
 
-**Fail open.** If the backend raises — including on the socket timeouts
-``REDIS_SOCKET_TIMEOUT_SECONDS`` sets, which is what makes a *hanging* backend
-raise at all — the request is allowed. CLAUDE.md's code
+**Fail open.** If the backend raises — including on either of the two bounds
+above ``_enforce``, which are what make a *hanging* backend raise at all — the
+request is allowed. CLAUDE.md's code
 posture — "reporting must never break processing" — applies with force here:
 what this protects is a cost and enumeration-rate concern, not an authorization
 boundary. ``services/access.py`` still decides who may read what and never
@@ -88,6 +88,7 @@ fine. Render's keyvalue is 7.x; DEPLOY.md says so for the VPS path.
 # object, and treats it as a required query parameter. Every throttled route
 # then answers 422 to every caller. `test_a_limiter_actually_refuses_over_the_wire`
 # is what catches it.
+import asyncio
 import ipaddress
 import logging
 import time
@@ -172,32 +173,45 @@ POLICIES: dict[str, Policy] = {
 }
 
 
-# The socket bounds on the Redis client, in seconds (main.py builds it).
-#
-# Not a tuning knob: without them a *hanging* backend defeats the fail-open
-# posture entirely. `_enforce` catches a raise, and redis-py's asyncio client
-# defaults both of these to None (verified against the installed 5.2.1:
+# Two bounds on how long a limiter check may take. Neither is a tuning knob:
+# without them a *hanging* backend defeats the fail-open posture entirely.
+# `_enforce` catches a raise, and redis-py's asyncio client defaults its socket
+# timeouts to None (verified against the installed 5.2.1:
 # `AbstractConnection.__init__`), so a blackholed connection never raises and
 # never returns. The request then blocks on the kernel's TCP retry bound rather
 # than on anything this module decided, and the module docstring's "if the
 # backend raises, the request is allowed" quietly does not cover the case that
-# matters most. `_check_redis` in main.py already bounds the same call against
-# the same service with its own `wait_for`.
+# matters most. `_check_redis` in main.py has always bounded the same call
+# against the same service with its own `wait_for`.
 #
-# The bound is set on the CLIENT rather than by wrapping the call in
-# `asyncio.wait_for`, which would look equivalent and is not: a `wait_for`
-# cancels the coroutine mid-command, and redis-py's `execute_command` does not
-# disconnect on `CancelledError` (it does on its own `TimeoutError`, through
-# `_disconnect_raise`), so the cancelled connection goes back to the pool with
-# an unread reply on it and the next caller reads somebody else's answer. A
-# wrong counter is a worse failure than a slow one. The library's own timeout
-# raises `redis.TimeoutError`, which is an `Exception`, so it lands in the
-# fail-open branch that was always there.
+# **They bound different things, which is why both are here.** The socket
+# timeout is per OPERATION — connect, handshake, each read — so a server that
+# answers every operation just inside the bound still stretches one `hit()` well
+# past it; a round measured 6.31s cold against a 0.9s-per-reply server. The
+# request budget bounds the whole call, which is the number a caller waiting on
+# a public read actually experiences.
 #
-# One second, not the two `_check_redis` uses: this is on every throttled read,
-# a healthy round trip is sub-millisecond in-region, and the cold-connect case
-# that could exceed it fails open and logs rather than failing closed.
+# *An earlier version of this comment argued the request budget was unsafe —
+# that cancelling mid-command would return a connection to the pool with an
+# unread reply on it. That was wrong, and a review round measured it wrong:
+# `Connection.read_response` ends in `except BaseException: await
+# self.disconnect(nowait=True); raise` (`redis/asyncio/connection.py`, comment
+# citing redis-py #1128), and `CancelledError` is a `BaseException`. The
+# cancelled connection is closed, not reused. 42 mid-flight cancellations
+# produced 43 fresh connections and no stale reply. The claim was made from
+# reading `execute_command` and not `read_response`.*
+#
+# Both timeouts raise something that is an `Exception` — `redis.TimeoutError`
+# and, on 3.11, `asyncio.TimeoutError is builtins.TimeoutError` — so both land
+# in the fail-open branch that was always there.
+#
+# One second per operation, not the two `_check_redis` uses: this is on every
+# throttled read and a healthy round trip is sub-millisecond in-region. Two for
+# the whole call, so a cold connect plus handshake plus command has room before
+# the budget fires. Either firing means the request is allowed and logged, never
+# refused.
 REDIS_SOCKET_TIMEOUT_SECONDS = 1.0
+REQUEST_BUDGET_SECONDS = 2.0
 
 # How often MemoryBackend drops expired windows. One window, so a sweep is
 # amortised over at least a window's worth of requests and the resident set is
@@ -450,7 +464,10 @@ class RateLimiter:
             return
         key = f"rl:{policy.name}:{identity(request, viewer_id, policy)}"
         try:
-            hit = await get_backend().hit(key, policy.window_seconds)
+            hit = await asyncio.wait_for(
+                get_backend().hit(key, policy.window_seconds),
+                timeout=REQUEST_BUDGET_SECONDS,
+            )
         except Exception as exc:  # noqa: BLE001 — fail open, see module docstring
             _warn_backend_down(exc)
             return

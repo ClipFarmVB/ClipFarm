@@ -227,7 +227,9 @@ def test_a_backend_outage_does_not_log_once_per_request(monkeypatch, caplog):
     # reporting. One line a minute is enough to see it.
     monkeypatch.setattr(ratelimit, "_backend", BoomBackend())
     monkeypatch.setattr(settings, "rate_limit_enabled", True)
-    monkeypatch.setattr(ratelimit, "_last_warned_at", 0.0)
+    # None, the module default -- 0.0 was this test seeding the very sentinel
+    # the module now avoids, which made the fix unobservable from here.
+    monkeypatch.setattr(ratelimit, "_last_warned_at", None)
     dep = rate_limit(TEST_POLICY)
     with caplog.at_level("WARNING", logger="app.services.ratelimit"):
         for _ in range(50):
@@ -611,3 +613,35 @@ def test_the_sweep_does_not_drop_a_window_that_is_still_counting():
     hit = asyncio.run(backend.hit("rl:slow:ip:203.0.113.1", 600))
     assert hit.hits == 2, "the 600s window was swept while it was still counting"
     assert "rl:fast:ip:203.0.113.2" not in backend._windows
+
+
+def test_the_first_backend_outage_logs_on_a_machine_that_just_booted(monkeypatch, caplog):
+    """`_last_warned_at`'s initial value has to mean "never", not "at 0.0".
+
+    `time.monotonic()`'s origin is arbitrary -- on Linux, boot -- so against a
+    0.0 sentinel the throttle arithmetic reads `now - 0.0`, and for the first
+    minute of uptime that is under the interval: the FIRST outage after a
+    restart logs nothing at all, which is exactly when someone is watching. It
+    is a real difference and an awkward one to see, because it lives in a
+    module-level initialiser that every other test has already run past.
+
+    So this loads a second, independent instance of the module from its own
+    file rather than reloading the shipped one -- the live module keeps its
+    state, and the initialiser is exercised as it would be at import on a fresh
+    process.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("ratelimit_fresh", ratelimit.__file__)
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+
+    # A machine five seconds into its uptime.
+    monkeypatch.setattr(fresh.time, "monotonic", lambda: 5.0)
+    with caplog.at_level("WARNING", logger="ratelimit_fresh"):
+        fresh._warn_backend_down(RuntimeError("redis is down"))
+
+    assert [r for r in caplog.records if "rate limit backend" in r.message], (
+        "the first outage on a just-booted machine logged nothing -- "
+        "`_last_warned_at` is starting at a time rather than at 'never'"
+    )
