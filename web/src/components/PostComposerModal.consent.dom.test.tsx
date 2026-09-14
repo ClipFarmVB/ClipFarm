@@ -204,6 +204,46 @@ describe("when the server refuses anyway", () => {
   });
 });
 
+describe("what the composer hands back", () => {
+  // The dialog behind the composer decides from this whether to show the undo
+  // the consent copy promises. A review round found it asserted only on the
+  // dialog's side: making the composer always report null (the original bug)
+  // or always report the chosen tier left every suite green.
+  it("reports the tier the clip was raised to", async () => {
+    const onPosted = vi.fn();
+    act(() => {
+      root.render(
+        <PostComposerModal clip={makeClip("private")} onClose={() => {}} onPosted={onPosted} />,
+      );
+    });
+    await click(tier("Followers"));
+    await tick();
+    await click(postButton());
+
+    expect(createPost).toHaveBeenCalledWith("clip-1", "", "followers", true);
+    expect(onPosted).toHaveBeenCalledTimes(1);
+    expect(onPosted).toHaveBeenCalledWith("followers");
+  });
+
+  it("reports null when the clip was not touched", async () => {
+    // Worse than the null bug if wrong: reporting a tier here would make the
+    // dialog rewrite a public clip as that tier and hide the undo while the
+    // clip stays public.
+    const onPosted = vi.fn();
+    act(() => {
+      root.render(
+        <PostComposerModal clip={makeClip("public")} onClose={() => {}} onPosted={onPosted} />,
+      );
+    });
+    await click(tier("Only me"));
+    await click(postButton());
+
+    expect(createPost).toHaveBeenCalledWith("clip-1", "", "private", false);
+    expect(onPosted).toHaveBeenCalledTimes(1);
+    expect(onPosted).toHaveBeenCalledWith(null);
+  });
+});
+
 describe("gaps a review round found", () => {
   it("asks for consent when the clip's tier is unreadable, not when it is not", async () => {
     // The component's own `?? "private"` fail-closed default. The unit test

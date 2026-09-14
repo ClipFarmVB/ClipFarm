@@ -141,12 +141,18 @@ describe("taking a clip back", () => {
   it("offers exactly one control here, and it narrows", async () => {
     // Stepping between the wider tiers is a choice rather than a retraction,
     // and the composer owns that direction with the consent it needs. A picker
-    // here would put an unconfirmed widening one mis-click from the undo.
+    // beside the undo would put an unconfirmed widening one mis-click from it.
     //
-    // Asserted over the RENDERED CONTROLS, not over the calls one known-good
-    // click produces. The first version did the latter and did not back its own
-    // claim: adding a literal "Make public" button beside the undo left it
-    // green, because nothing clicked it.
+    // Asserted over the RENDERED CONTROLS in the undo's own section, not over
+    // the calls one known-good click produces. The first version did the
+    // latter and did not back its own claim: adding a literal "Make public"
+    // button beside the undo left it green, because nothing clicked it.
+    //
+    // What this does NOT pin: a widening control elsewhere in this dialog,
+    // outside the undo's section. A review round showed one added a level up
+    // stays green here. Guarding the whole dialog would mean exercising every
+    // other control it holds (share, download, the composer), which this test
+    // does not attempt; its scope is the undo's section.
     setClipVisibility.mockResolvedValue(makeClip("private"));
     mount("public");
 
@@ -156,6 +162,8 @@ describe("taking a clip back", () => {
     expect(controls[0]).toBe(narrowButton());
 
     await click(narrowButton()!);
+    // Without this the loop below passes when nothing was called at all.
+    expect(setClipVisibility).toHaveBeenCalledTimes(1);
     for (const call of setClipVisibility.mock.calls) {
       expect(call[1]).toBe("private");
     }
@@ -166,6 +174,16 @@ describe("taking a clip back", () => {
     // public clip. The API is owner-gated and 404s, so the control could only
     // ever answer "Clip not found" over a clip they are watching.
     mount("public", () => {}, false);
+    expect(narrowButton()).toBeUndefined();
+  });
+
+  it("offers nothing when the caller does not say the viewer owns the clip", () => {
+    // The default is what keeps this off the collections page, which is
+    // cross-owner and passes no `ownsClip` at all. Every other test here passes
+    // the prop explicitly, so flipping the default to true left them all green.
+    act(() => {
+      root.render(<ClipModal clip={makeClip("public")} onClose={() => {}} />);
+    });
     expect(narrowButton()).toBeUndefined();
   });
 
