@@ -80,6 +80,7 @@ fine. Render's keyvalue is 7.x; DEPLOY.md says so for the VPS path.
 # is what catches it.
 import logging
 import time
+import ipaddress
 import uuid
 from dataclasses import dataclass
 from typing import Callable, NamedTuple, Protocol
@@ -286,6 +287,29 @@ def client_ip(request: Request) -> str:
     return parts[-hops]
 
 
+def _bucket(addr: str) -> str:
+    """The address, narrowed to what one party actually controls.
+
+    An IPv6 caller is routinely handed a /64 and often a /56 or /48, so keying
+    on the full address gives a single residential customer on the order of
+    10^19 fresh budgets — the per-address limit stops meaning anything, and the
+    walk-time figure the enumeration policies rest on holds only against IPv4.
+    Truncating to /64 is the narrowest prefix that is always one subscriber.
+
+    A v4 address is one host, so it is returned unchanged. Anything unparseable
+    — `unknown` from a missing peer, or a malformed header entry that survived
+    the split — is returned as-is: it is already a single bucket, and inventing
+    a parse for it would be inventing a key.
+    """
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return addr
+    if ip.version == 4:
+        return addr
+    return str(ipaddress.ip_network(f"{ip}/64", strict=False).network_address) + "/64"
+
+
 def identity(request: Request, viewer_id: uuid.UUID | None, policy: Policy) -> str:
     """Who is spending this budget.
 
@@ -294,7 +318,7 @@ def identity(request: Request, viewer_id: uuid.UUID | None, policy: Policy) -> s
     """
     if viewer_id is not None and not policy.by_address:
         return f"user:{viewer_id}"
-    return f"ip:{client_ip(request)}"
+    return f"ip:{_bucket(client_ip(request))}"
 
 
 class RateLimiter:
@@ -317,11 +341,7 @@ class RateLimiter:
     def __init__(self, policy: Policy) -> None:
         self.policy = policy
 
-    async def __call__(
-        self,
-        request: Request,
-        viewer_id: uuid.UUID | None = Depends(get_optional_user_id),
-    ) -> None:
+    async def _enforce(self, request: Request, viewer_id: uuid.UUID | None) -> None:
         policy = self.policy
         if not settings.rate_limit_enabled:
             return
@@ -338,6 +358,47 @@ class RateLimiter:
                 headers={"Retry-After": str(hit.reset_in)},
             )
 
+    async def __call__(self, request: Request) -> None:
+        # No auth dependency in this signature, deliberately. `identity` ignores
+        # `viewer_id` on a `by_address` policy, so resolving it would be work
+        # done to be discarded — and not free work:
+        #
+        #   * `get_optional_user_id` re-raises a JWKS failure, so a route that
+        #     depends on it answers 503 when auth is unwell. These are public
+        #     reads; a signed-out visitor was fine, but the web client attaches a
+        #     bearer whenever a session exists, so any signed-in visitor to a
+        #     profile page took that path.
+        #   * FastAPI resolves dependencies BEFORE the handler, so the JWT
+        #     verification and `_ensure_user_exists`'s INSERT-and-COMMIT ran
+        #     ahead of the counter. A refused request still cost a database
+        #     write, on the two routes whose whole purpose is bounding an
+        #     attacker's rate.
+        #
+        # `ViewerRateLimiter` below declares it, because a viewer-keyed policy
+        # cannot build its key without it.
+        await self._enforce(request, None)
+
+
+class ViewerRateLimiter(RateLimiter):
+    """A limiter for a policy keyed on the signed-in caller.
+
+    Separate class rather than a branch inside one, because FastAPI reads the
+    dependency graph off the signature: a single `__call__` cannot declare the
+    auth dependency for some policies and not others. `rate_limit` picks.
+    """
+
+    async def __call__(
+        self,
+        request: Request,
+        viewer_id: uuid.UUID | None = Depends(get_optional_user_id),
+    ) -> None:
+        await self._enforce(request, viewer_id)
+
 
 def rate_limit(policy: Policy) -> RateLimiter:
-    return RateLimiter(policy)
+    """The dependency for a policy — address-keyed or viewer-keyed.
+
+    The choice is the policy's, not the route's, so a policy that keys on the
+    address can never accidentally acquire an auth dependency it does not use.
+    """
+    return RateLimiter(policy) if policy.by_address else ViewerRateLimiter(policy)

@@ -11,6 +11,7 @@ separately against a stub client — those two tests pin *which commands it
 issues*, not that Redis honours them, and say so.
 """
 import asyncio
+import inspect
 import uuid
 
 import pytest
@@ -87,7 +88,12 @@ def call(dep, request, viewer_id=None):
     then REPORTED AS A PASS — the silent-skip failure this repo guards against
     elsewhere. test_clip_download.py drives its route the same way.
     """
-    return asyncio.run(dep(request, viewer_id))
+    if isinstance(dep, ratelimit.ViewerRateLimiter):
+        return asyncio.run(dep(request, viewer_id))
+    # An address-keyed limiter takes no viewer at all -- that is the point of
+    # the split, so the helper must not fabricate one.
+    assert viewer_id is None, "an address-keyed policy cannot be handed a viewer"
+    return asyncio.run(dep(request))
 
 
 # ── the budget ───────────────────────────────────────────────────────────────
@@ -420,11 +426,20 @@ def test_an_enumeration_policy_ignores_the_account(monkeypatch):
     dep = rate_limit(ratelimit.POLICIES["profile"])
     request = FakeRequest(peer="203.0.113.7")
 
-    call(dep, request, uuid.uuid4())
-    call(dep, request, uuid.uuid4())
-    # A third account, same address, no budget left.
+    # Stronger than ignoring the account: it cannot be handed one. An
+    # address-keyed policy gets a limiter whose `__call__` declares no auth
+    # dependency, so FastAPI never resolves the caller for these routes --
+    # which is what keeps a JWKS outage off a public read, and keeps a refused
+    # request from paying for a JWT verification and a DB commit first.
+    assert not isinstance(dep, ratelimit.ViewerRateLimiter)
+    assert "viewer_id" not in inspect.signature(dep.__call__).parameters
+
+    call(dep, request)
+    call(dep, request)
+    # A third request from the same address, whatever account it carries: no
+    # budget left, because the account was never part of the key.
     with pytest.raises(HTTPException) as exc:
-        call(dep, request, uuid.uuid4())
+        call(dep, request)
     assert exc.value.status_code == 429
 
 
@@ -468,3 +483,46 @@ def test_retry_after_is_never_zero_at_the_end_of_a_window():
     # anything not strictly positive falls through to the window.
     assert asyncio.run(RedisBackend(StubRedis(ttl=0)).hit("k", 60)).reset_in == 60
     assert asyncio.run(RedisBackend(StubRedis(ttl=1)).hit("k", 60)).reset_in == 1
+
+
+def test_an_ipv6_caller_cannot_walk_their_own_prefix_for_fresh_budgets(monkeypatch):
+    """A /64 is one subscriber, so it has to be one bucket.
+
+    IPv6 hands a single residential customer a /64 routinely and often a /56 or
+    /48. Keying on the full address gave that customer on the order of 10^19
+    fresh budgets -- the per-address limit would stop meaning anything, and the
+    walk-time figure the enumeration policies rest on holds only against IPv4.
+
+    Two addresses inside one /64 must share; two /64s must not.
+    """
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend(clock=FakeClock()))
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(settings, "rate_limit_profile_per_minute", 2)
+    dep = rate_limit(ratelimit.POLICIES["profile"])
+
+    call(dep, FakeRequest(peer="2001:db8::1"))
+    call(dep, FakeRequest(peer="2001:db8::2"))
+    # A third address in the same /64 -- a different host, the same subscriber.
+    with pytest.raises(HTTPException) as exc:
+        call(dep, FakeRequest(peer="2001:db8::dead:beef"))
+    assert exc.value.status_code == 429
+
+    # A different /64 is a different subscriber and keeps its own budget.
+    assert call(dep, FakeRequest(peer="2001:db8:0:1::1")) is None
+
+
+def test_an_ipv4_caller_is_still_keyed_on_the_host(monkeypatch):
+    """The narrowing must not collapse v4 hosts together -- one v4 address is
+    one host, and bucketing a /24 would throttle a whole office as one."""
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend(clock=FakeClock()))
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(settings, "rate_limit_profile_per_minute", 1)
+    dep = rate_limit(ratelimit.POLICIES["profile"])
+
+    call(dep, FakeRequest(peer="203.0.113.7"))
+    with pytest.raises(HTTPException):
+        call(dep, FakeRequest(peer="203.0.113.7"))
+    # The neighbour is a different bucket.
+    assert call(dep, FakeRequest(peer="203.0.113.8")) is None

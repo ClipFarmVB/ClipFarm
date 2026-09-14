@@ -12,6 +12,8 @@ walk: the point is that a reviewer does not have to notice.
 """
 import asyncio
 
+import inspect
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -268,3 +270,61 @@ def test_the_lifespan_installs_and_removes_the_redis_backend(monkeypatch):
 
     asyncio.run(drive())
     assert closed == [True]
+
+
+def test_an_address_keyed_route_resolves_no_auth_dependency():
+    """The property finding 3 was actually about, pinned at the route.
+
+    An earlier fix removed `viewer_id` from `get_profile`'s own signature, which
+    looked like it had removed the dependency -- but `RateLimiter.__call__` still
+    declared `Depends(get_optional_user_id)`, so it stayed in the resolved tree
+    for every route carrying a limiter. Two consequences, both measured on this
+    branch before the split:
+
+      * `get_optional_user_id` re-raises a JWKS failure, so these public reads
+        answered 503 when auth was unwell -- and the web client sends a bearer
+        whenever a session exists, so a signed-in visitor to a profile page took
+        that path.
+      * FastAPI resolves dependencies before the handler, so a JWT verification
+        and `_ensure_user_exists`'s INSERT-and-COMMIT ran ahead of the counter:
+        a refused request still cost a database write, on the two routes whose
+        purpose is bounding an attacker's rate.
+
+    Asserted against the resolved `route.dependant` rather than the source, so
+    reintroducing the dependency anywhere in the chain fails here.
+    """
+    from app.auth import get_optional_user_id
+
+    for (path, method), (name, _setting, _default) in THROTTLED.items():
+        route = _route_for(path, method)
+        limiters = _limiters_on(route)
+        if not limiters or not limiters[0].policy.by_address:
+            continue
+        # Only where the HANDLER does not want a viewer. `list_user_posts`
+        # declares one because it filters visibility by it, so auth is in its
+        # tree on its own account and always was; the defect was the limiter
+        # putting it there for a route that had no other use for it.
+        if "viewer_id" in inspect.signature(route.endpoint).parameters:
+            continue
+        assert get_optional_user_id not in _dependency_callables(route), (
+            f"{method} {path} carries the {name} policy, which keys on the "
+            "address and never reads the viewer -- resolving auth here buys a "
+            "503 on a public read and a DB commit before the counter"
+        )
+
+
+def test_a_viewer_keyed_route_does_resolve_auth():
+    """The other direction, so the test above cannot be satisfied by deleting
+    the dependency everywhere: a content policy keys on the signed-in caller and
+    genuinely needs it."""
+    from app.auth import get_optional_user_id
+
+    checked = 0
+    for (path, method), (_name, _setting, _default) in THROTTLED.items():
+        route = _route_for(path, method)
+        limiters = _limiters_on(route)
+        if not limiters or limiters[0].policy.by_address:
+            continue
+        assert get_optional_user_id in _dependency_callables(route)
+        checked += 1
+    assert checked, "no viewer-keyed route in the table -- the pair is vacuous"

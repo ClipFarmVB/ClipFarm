@@ -234,8 +234,8 @@ async def list_user_posts(
     paginated. This is scoped to a single handle.
 
     **Anonymous exposure A (CF-186, #189): handle-keyed and enumerable,
-    throttled.** 30/min per signed-in user, or per client address when there is
-    none — deliberately the same number as `GET /users/{handle}`. A walker
+    throttled.** 30/min **per client address**, signed in or not — deliberately
+    the same number as `GET /users/{handle}`. A walker
     hitting either door learns the same thing, so a different budget on one of
     them would only advertise which is cheaper. Per ADDRESS even when the
     caller is signed in, unlike the exposure-B routes: signup is self-serve, so
