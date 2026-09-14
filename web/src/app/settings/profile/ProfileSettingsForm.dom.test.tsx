@@ -161,4 +161,19 @@ describe("what the privacy switch says it does", () => {
     const note = container.querySelector(`#${described}`);
     expect(note?.textContent).toContain("This controls follows, not footage");
   });
+
+  it("does not make the correction the hardest line on the screen to read", async () => {
+    // It shipped in `text-subtle` -- 2.03:1 on the page background in the
+    // default dark theme -- while the reassuring line above it was
+    // `text-muted`. On a youth-sports product the sentence replacing a false
+    // safety claim should not be the one you struggle to read.
+    //
+    // Pinned because the fix was a class swap and nothing held it: reverting
+    // to `text-subtle` left the whole suite green.
+    await mount(true);
+    const described = switchButton().getAttribute("aria-describedby");
+    const note = container.querySelector(`#${described}`);
+    expect(note?.className).toContain("text-muted");
+    expect(note?.className).not.toContain("text-subtle");
+  });
 });

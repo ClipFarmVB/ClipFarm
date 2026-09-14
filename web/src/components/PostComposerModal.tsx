@@ -269,7 +269,18 @@ export function PostComposerModal({
           // who has just been told "private" is to go flip the Private/Public
           // switch in settings, which governs whether following needs approval
           // and nothing else — so they would find no change and no explanation.
-          <p className="mt-2 rounded-md border border-border bg-surface-high px-3 py-2 text-[11px] text-subtle">
+          // `text-muted`, not `text-subtle`, for the reason CF-109b moved the
+          // settings correction off it: on `bg-surface-high` in the default
+          // dark theme `text-subtle` measures 1.84:1, and this is the only
+          // surface telling a user that every post is Only me and that the
+          // settings switch is not the visibility control. A sentence carrying
+          // that had no business being the least readable text in the dialog.
+          //
+          // `text-muted` is 3.52:1 here — better by roughly double, and still
+          // under the 4.5:1 AA floor for text this size. Closing that gap needs
+          // a token change rather than a class swap, which is a design decision
+          // wider than this PR.
+          <p className="mt-2 rounded-md border border-border bg-surface-high px-3 py-2 text-[11px] text-muted">
             Raising a clip&apos;s visibility isn&apos;t built yet, so every post
             is Only me for now. The Private/Public switch in settings controls
             who can follow you, not who can see a clip.

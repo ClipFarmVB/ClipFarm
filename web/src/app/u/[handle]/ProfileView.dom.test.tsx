@@ -83,6 +83,19 @@ describe("a private account seen by a stranger", () => {
     expect(grid()).not.toBeNull();
   });
 
+  it("does not tell a stranger to follow, because following does not exist", async () => {
+    // There is no follows table and no follows router; `is_follower` returns
+    // False unconditionally until CF-110. This sentence was the only "Follow"
+    // call to action anywhere in web/src, so it pointed at nothing -- and it
+    // restated the model this card exists to correct, on the page above the
+    // grid. The settings screen in this same change says "isn't built yet";
+    // this is that standard applied to the second surface.
+    await render(true);
+    expect(host.textContent).not.toMatch(/Follow to see/i);
+    expect(host.textContent).toContain("following isn't built yet");
+    expect(host.textContent).toContain("not who can see its clips");
+  });
+
   it("says nothing about privacy for a public account", async () => {
     await render(false);
     expect(host.textContent).not.toContain("This account is private");

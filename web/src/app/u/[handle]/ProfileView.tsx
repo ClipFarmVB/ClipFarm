@@ -124,9 +124,19 @@ export function ProfileView({ handle }: { handle: string }) {
         // Nothing leaks by showing the grid: `getUserPosts` filters by
         // visibility in SQL for the asking viewer, so a stranger sees the
         // public posts and no others — today, none.
+        // And the notice itself has to be true. "Follow to see clips shared
+        // with followers" told a stranger to do something that does not exist:
+        // there is no follows table and no follows router, `is_follower`
+        // returns False unconditionally until CF-110, and that sentence was the
+        // only "Follow" call to action anywhere in `web/src`. It also restated
+        // the model this PR exists to correct, on the page directly above the
+        // grid — while the same commit told the settings screen to say
+        // "Following isn't built yet". One standard, both surfaces.
         <div className="mt-8 rounded-md border border-dashed border-border px-4 py-3 text-center">
           <p className="text-sm text-muted">
-            This account is private. Follow to see clips shared with followers.
+            This account is private. That controls who can follow it, not who
+            can see its clips &mdash; and following isn&apos;t built yet, so it
+            has no effect today. Anything shown below is public.
           </p>
         </div>
       )}

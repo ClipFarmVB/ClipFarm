@@ -86,6 +86,25 @@ describe("what the composer says about the greyed-out tiers", () => {
     expect(cardText()).not.toContain("controls what people can see");
   });
 
+  it("is not the least readable text in the dialog", () => {
+    // CF-109b moved the settings correction off `text-subtle` because a
+    // sentence replacing a false safety claim should not be the hardest one to
+    // read. The same argument applies here with more force: on
+    // `bg-surface-high` in the default dark theme `text-subtle` measures
+    // 1.84:1, and this is the only surface saying every post is Only me and
+    // that the settings switch is not the visibility control.
+    //
+    // `text-muted` is 3.52:1 -- still under the 4.5:1 AA floor, which needs a
+    // token change rather than a class swap, but roughly double.
+    mount("private");
+    const note = [...document.querySelectorAll('[role="dialog"] p')].find((el) =>
+      (el.textContent ?? "").includes("isn't built yet"),
+    );
+    expect(note).toBeDefined();
+    expect(note!.className).toContain("text-muted");
+    expect(note!.className).not.toContain("text-subtle");
+  });
+
   it("does not nag when the clip already supports every tier", () => {
     // A note about an unbuilt setter is noise on a clip that needs no setter.
     mount("public");
