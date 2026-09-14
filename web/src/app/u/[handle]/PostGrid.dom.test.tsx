@@ -91,6 +91,29 @@ describe("PostGrid viewer scoping", () => {
     expect(host.querySelectorAll("img").length).toBe(1);
   });
 
+  it("closes the player when the grid reloads for a different viewer", async () => {
+    // The player holds the whole Post. Left open across a sign-out, the
+    // spinner unmounted it and the refetch mounted it again — autoplaying the
+    // private post to a session that could no longer request it.
+    const priv = post("p-private", "private");
+    priv.playback.clip_url = "https://x.test/private.mp4";
+    getUserPosts.mockResolvedValueOnce([post("p-public", "public"), priv]);
+    await render(true);
+    await click(playButtons()[1]);
+    expect(dialog()?.querySelector("video")?.getAttribute("src")).toBe(
+      "https://x.test/private.mp4",
+    );
+
+    viewer = null;
+    getUserPosts.mockResolvedValueOnce([post("p-public", "public")]);
+    await render(false);
+
+    // The grid did reload for the new viewer, so the check below is not
+    // passing because nothing happened.
+    expect(host.querySelectorAll("img").length).toBe(1);
+    expect(dialog()).toBeNull();
+  });
+
   it("does not re-request when nothing about the viewer changed", async () => {
     getUserPosts.mockResolvedValue([post("p-public", "public")]);
     await render(true);
@@ -111,8 +134,8 @@ describe("PostGrid viewer scoping", () => {
 //
 // The grid rendered thumbnails and no player, on the argument that playback is
 // CF-112's feed. True, and it left a published clip watchable nowhere — the
-// profile is the only surface that shows posts, and your own posts are not in
-// your own feed, so this hit the author first.
+// profile is the only surface that shows posts, and there is no feed yet
+// (CF-111, #141, is open), so this hit the author as much as anyone.
 
 function tiles(): HTMLElement[] {
   return [...host.querySelectorAll("[data-comment-id], .group")] as HTMLElement[];
@@ -137,7 +160,8 @@ describe("playing a post from the grid", () => {
     await render(true);
 
     // A button, not an onClick on the tile: a grid of watchable things should
-    // have one tab stop per thing.
+    // have one play control per thing. (This renders your own profile, where
+    // Remove is a second tab stop on each tile.)
     expect(playButtons()).toHaveLength(2);
     expect(tiles().length).toBeGreaterThan(0);
   });
@@ -170,14 +194,22 @@ describe("playing a post from the grid", () => {
     expect(playButtons()[0].getAttribute("aria-label")).toContain("match point");
   });
 
-  it("says the visibility tier in words, not only as an icon", async () => {
+  it("says the visibility tier in words that fit any viewer", async () => {
     // The badge is `pointer-events-none` so the play target underneath stays
     // clickable, which also means the browser never renders its `title` — and
     // a `title` on a bare span was never a reliable accessible name anyway.
+    //
+    // It renders on every viewer's grid, so the words cannot be the author's:
+    // "Visible to your followers" read to a visitor names the visitor's own
+    // followers. Asserted for a visitor first, because that is where the
+    // author-worded version was wrong.
     getUserPosts.mockResolvedValue([post("p1", "followers")]);
     await render(false);
+    expect(host.textContent).toContain("Visible to followers");
+    expect(host.textContent).not.toContain("your followers");
 
-    expect(host.textContent).toContain("Visible to your followers");
+    await render(true);
+    expect(host.textContent).toContain("Visible to followers");
   });
 
   it("traps the keyboard in the player and closes on Escape", async () => {
@@ -195,6 +227,33 @@ describe("playing a post from the grid", () => {
       );
     });
     expect(dialog()).toBeNull();
+  });
+
+  it("stays open on the Escape that leaves the video's fullscreen", async () => {
+    // Leaving fullscreen fires Escape at the page as well as at the browser, so
+    // without the guard one press would exit fullscreen AND close the player.
+    // jsdom has no fullscreen, so `fullscreenElement` is stubbed on the
+    // document for this one press and removed again.
+    getUserPosts.mockResolvedValue([post("p1", "public")]);
+    await render(false);
+    await click(playButtons()[0]);
+    const video = dialog()?.querySelector("video");
+    expect(video).not.toBeNull();
+
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => video,
+    });
+    try {
+      await act(async () => {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+        );
+      });
+      expect(dialog()).not.toBeNull();
+    } finally {
+      delete (document as unknown as Record<string, unknown>).fullscreenElement;
+    }
   });
 
   it("closes again", async () => {
@@ -238,6 +297,13 @@ describe("playing a post from the grid", () => {
     );
     expect(remove).toBeDefined();
     expect(z(remove)).toBeGreaterThan(z(play));
+    // Visible wherever touch is possible. `group-hover` compiles inside
+    // `@media (hover: hover)`, which describes the primary input only, so a
+    // touch laptop or a 2-in-1 matches it and never shows the control to a
+    // finger. jsdom evaluates no media queries, so the classes are what can be
+    // pinned here.
+    expect(remove!.className).toContain("any-pointer-coarse:opacity-100");
+    expect(remove!.className).toContain("[@media(hover:none)]:opacity-100");
 
     // The caption is painted over the frame too and must not eat the tap.
     const caption = [...host.querySelectorAll("p")].find((el) =>

@@ -413,10 +413,17 @@ async def get_profile(handle: str, db: DB):
     walk returns display name, bio and avatar for real accounts on a
     youth-sports product.
 
-    30/min per signed-in user, or per client address when there is none. A
-    wordlist walk needs thousands of hits, so that puts a 10k-name list at
-    roughly five and a half hours per identity, while a human reading profiles
-    issues one call per profile and never approaches it. `GET /posts?username=`
+    30/min **per client address**, signed in or not — signup is self-serve, so
+    a per-account budget is one an attacker mints. `Policy.by_address`.
+
+    A wordlist walk needs thousands of hits, so that puts a 10k-name list at
+    roughly five and a half hours per address, while a human reading profiles
+    issues one call per profile and never approaches it. *Per address* means
+    per v4 host and per v6 /64, with an IPv4-mapped address counted as the v4
+    host it names: a /64 is one subscriber, and keying on the full v6 address
+    would have handed one customer on the order of 10^19 budgets, which is the
+    figure above divided by more than it survives. `services/ratelimit._bucket`
+    owns that rule and the mapped case in particular. `GET /posts?username=`
     carries the same number for the same reason.
 
     Refusals are 429 with `Retry-After`, not the 404 that leaks less. Against a

@@ -143,8 +143,8 @@ def test_render_states_the_public_posting_decision_rather_than_defaulting_to_it(
 
     What is asserted is that the blueprint says *something*: a literal `value:`,
     not `sync: false` and not absent. Left to the code default it would still
-    be off today, but the deployment that serves youth-sports footage to
-    signed-out strangers should say so on its face rather than inherit it, and
+    be off today, but whether owners may set youth-sports footage `public` is
+    a decision the blueprint should state on its face rather than inherit, and
     a `sync: false` is missing in exactly the case that matters — a fresh apply
     where nobody has filled the group in.
     """
@@ -157,7 +157,7 @@ def test_render_states_the_public_posting_decision_rather_than_defaulting_to_it(
     )
     assert entry is not None, (
         "render.yaml must state PUBLIC_POSTING_ENABLED on clipfarm-api — the flag "
-        "that decides whether this deployment serves footage to signed-out visitors"
+        "that decides whether owners may set a clip or a post to public"
     )
     assert entry.get("value") in {"true", "false"}, (
         "it must carry a literal value; `sync: false` is absent on a fresh apply"

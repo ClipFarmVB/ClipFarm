@@ -11,9 +11,9 @@ import { useFocusTrap } from "@/lib/useFocusTrap";
  *
  * `PostGrid` deliberately rendered thumbnails and no player, on the argument
  * that "the full playback experience is CF-112's feed". True, and it left a
- * gap the card names: the profile is the only surface that shows posts, so in
- * practice a published clip could not be watched anywhere — including by its
- * own author, since your own posts are not in your feed.
+ * gap the card names: the profile is the only surface that shows posts, and
+ * there is no feed yet (CF-111, #141, is open), so a published clip could not
+ * be watched anywhere — including by its own author.
  *
  * Small on purpose. This is not a second feed: no rail, no autoplay-on-scroll,
  * no prefetch. `PostOut.playback` already carries `clip_url`, so it needs no
@@ -24,11 +24,15 @@ import { useFocusTrap } from "@/lib/useFocusTrap";
  *
  * Portal, `z-[60]` overlay, click-outside on the overlay itself, and the shared
  * focus trap with Escape wired through `onEscape` — the same shape as
- * `PostComposerModal` and `CommentSheet`, and for the reasons those files give.
- * The card is the initial focus rather than the video: the player's own
- * controls live in a closed shadow root, so focusing it would put the user
- * somewhere Tab cannot reliably leave, and `ClipModal` lands on its card for
- * the same reason.
+ * `PostComposerModal`. The card is the initial focus rather than the video, as
+ * in `ClipModal`: the element receiving focus is the one carrying
+ * `role="dialog"` and the accessible name, so that is what is announced on
+ * open.
+ *
+ * Escape is ignored while something is fullscreen. Leaving the video's
+ * fullscreen fires Escape at the page as well as at the browser, so without the
+ * guard one press would exit fullscreen and also close the player — the guard
+ * `ClipModal` carries for the same reason.
  */
 export function PostPlayerModal({ post, onClose }: { post: Post; onClose: () => void }) {
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -36,7 +40,9 @@ export function PostPlayerModal({ post, onClose }: { post: Post; onClose: () => 
 
   useFocusTrap(cardRef, true, {
     initialFocus: () => cardRef.current,
-    onEscape: onClose,
+    onEscape: () => {
+      if (!document.fullscreenElement) onClose();
+    },
   });
 
   const pb = post.playback;

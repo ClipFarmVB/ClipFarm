@@ -144,8 +144,11 @@ services:
       #
       # What bounded the exposure through CF-108 and CF-109 was that **nothing
       # user-generated could be public** — no write path existed for a clip's or
-      # a game's visibility at all. CF-109b (#398) ends that, so the bound is
-      # now PUBLIC_POSTING_ENABLED below rather than the absence of a setter.
+      # a game's visibility at all. CF-109b (#398) ends that. What stands in its
+      # place is weaker: PUBLIC_POSTING_ENABLED below stops owners SETTING
+      # anything `public`, but it gates the write only, so it bounds the
+      # exposure only while it has never been on — turning it off does not hide
+      # what was published while it was.
       #
       # Games still cannot be widened by anything, deliberately: raising a game
       # publishes every clip in it. A clip overrides its game rather than being
@@ -159,7 +162,9 @@ services:
       # account exists; and it filters through apply_post_visibility with
       # viewer_id=None, which for an anonymous caller admits only public posts
       # over public clips — a set that was empty by construction until CF-109b
-      # (#398) and is now empty because PUBLIC_POSTING_ENABLED below is off.
+      # (#398), and is empty now only while PUBLIC_POSTING_ENABLED below has
+      # never been on: the flag stops new public rows, it does not hide ones
+      # already written.
       #
       # What was left is genuinely a load and enumeration-rate concern, and
       # that was CF-186 (#189) — now discharged. The six anonymous reads are
@@ -173,8 +178,10 @@ services:
       # The ordering this block used to demand has been served: rate limiting
       # (CF-186) landed first, and the clip-visibility write path (CF-109b)
       # followed. SOCIAL_ENABLED is reassessed here, as that ordering asked,
-      # and stays on — what it exposes is now bounded by
-      # PUBLIC_POSTING_ENABLED below rather than by the absence of a setter.
+      # and stays on. What it exposes is now limited by whether
+      # PUBLIC_POSTING_ENABLED below lets owners set anything `public`, rather
+      # than by the absence of a setter — a limit that holds only while the flag
+      # has never been on (see its own comment).
       #
       # Still a test rather than a hope, in narrowed form:
       # api/tests/test_visibility_write_paths_are_declared.py fails the day
@@ -184,16 +191,21 @@ services:
       # so the constraint lives where that PR will run into it.
       - key: SOCIAL_ENABLED
         value: "true"
-      # The `public` visibility tier (CF-109b, #398). OFF, and the ONE flag that
-      # decides whether this deployment serves youth-sports footage to
-      # signed-out strangers.
+      # The `public` visibility tier (CF-109b, #398). OFF. It decides whether an
+      # owner may SET a clip or a post to `public`, the tier that serves
+      # youth-sports footage to signed-out strangers. It gates the write, not
+      # the read: nothing on the read path consults it, so turning it back off
+      # withdraws nothing already public. Undoing a period with it on means
+      # narrowing the stored `public` clips and posts, not changing this line.
       #
-      # `followers` is unaffected and is the whole social product for a
-      # signed-in user: the home feed runs on it, and its audience was approved
-      # one by one, so it needs no moderation surface. `public` is the tier that
-      # wants terms of service (CF-75/CF-88, not on main) and a report and
-      # takedown path (CF-116, open). Both are built; this decides which the API
-      # accepts, so turning it on the day those land is this line and a deploy.
+      # `followers` is unaffected, but at this head it reaches nobody but the
+      # owner: access.is_follower() is False until the follow graph (CF-110,
+      # #140) lands, and the home feed (CF-111, #141) is open too. Its audience
+      # is approved one by one, so it needs no moderation surface. `public` is
+      # the tier that wants terms of service (CF-75/CF-88, not on main) and a
+      # report and takedown path (CF-116, open). Both are built; this decides
+      # which the API accepts, so turning it on the day those land is this line
+      # and a deploy.
       #
       # See api/app/services/publishing.py for the argument in full.
       - key: PUBLIC_POSTING_ENABLED
@@ -414,8 +426,8 @@ services:
         value: "true"
       # Must match PUBLIC_POSTING_ENABLED on clipfarm-api (CF-109b). This one
       # decides only what the composer OFFERS; the API refuses `public` with a
-      # 422 regardless, so the two disagreeing is a wrong-looking UI rather than
-      # an exposure. Inlined at build time, so flipping it needs a redeploy of
+      # 422 whenever its own flag is off, whatever this one says, so the two
+      # disagreeing is a wrong-looking UI rather than an exposure. Inlined at build time, so flipping it needs a redeploy of
       # web, not a restart — and the api half needs only a restart, which is why
       # they can drift.
       - key: NEXT_PUBLIC_PUBLIC_POSTING_ENABLED

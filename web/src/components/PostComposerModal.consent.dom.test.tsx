@@ -134,6 +134,9 @@ describe("posting wider than the clip", () => {
 
     const text = card().textContent ?? "";
     expect(text).toContain("this clip is private");
+    // The tier being agreed to, by name. Consent is given for a specific tier,
+    // so the words naming it are the part that has to be right.
+    expect(text).toContain("Posting to Followers");
     expect(text).toContain("will also change the clip itself");
     // The half a user would otherwise discover later: deleting the post does
     // not put the clip back.

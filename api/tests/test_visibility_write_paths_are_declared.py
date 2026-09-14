@@ -18,15 +18,16 @@ every clip in the game, and the suite would stay green.
 So the rule is now two rules:
 
 * **`Game.visibility`: written by nothing, anywhere.** Unchanged from before.
-* **`Clip.visibility`: written only in the files named below.** The tier is
-  gated on `PUBLIC_POSTING_ENABLED` in both of them (`services/publishing.py`);
-  a third path would reach `public` with the flag off and nothing would notice.
+* **`Clip.visibility`: written only in the functions named below.** The tier
+  is gated on `PUBLIC_POSTING_ENABLED` in both of them
+  (`services/publishing.py`); a third path would reach `public` with the flag
+  off and nothing would notice.
 * `Post.visibility` is the feature and was always exempt.
 
 `_DECLARED_CLIP_WRITERS` is the whole exemption. Adding to it is a real
 decision — the same one this file's predecessor existed to force — and the
-right way to make it is to add the file here, in a diff, alongside a test that
-the new path is gated.
+right way to make it is to add the (file, function) pair here, in a diff,
+alongside a test that the new path is gated.
 
 The scope is the whole `app/` package, not `routers/`, for the reason the
 original gave: CF-109 put the visibility ladder in `services/access.py`, so a
@@ -34,10 +35,35 @@ setter is *more* likely to be written as a service helper than as router-local
 code. A guard that misses the idiomatic home of the thing it guards is worse
 than none, because the green check is what stops anyone looking.
 
-**What it can and cannot see.** It reads the AST for attribute writes,
-`setattr`, and Core `update(...).values(visibility=...)`. Raw SQL in a string
-would still get past, which is visible in review in a way an ordinary
-`clip.visibility = ...` is not.
+**What it can and cannot see.** It reads the AST for attribute writes —
+including the ones bound inside a tuple or list target, which it missed until a
+round wrote `game.visibility, game.title = ...` and watched the suite stay
+green — for `setattr`, for Core `update(...).values(visibility=...)`, and for a
+row constructed wide (`Clip(visibility=...)`).
+
+Shapes known to get past are listed below. The list is not exhaustive — this
+paragraph has twice claimed coverage it did not have:
+
+* **Raw SQL in a string.** Visible in review in a way `clip.visibility = ...` is
+  not, which is the original argument and still holds.
+* **A splatted mapping** — `values(**payload)`, or a dict built elsewhere and
+  passed positionally. A literal positional dict is not special-cased either;
+  the entity check above is what would have to grow.
+* **Indirection through a variable**: `column = "visibility"` then
+  `setattr(obj, column, ...)`. *Narrowly* handled — a computed `setattr` name is
+  failed when the owner reads as a clip or a game, since undecidable is not the
+  same as safe there — but an owner the guard cannot name still slips.
+* **Binding forms other than assignment**: a `for` target
+  (`for game.visibility in xs:`) and a `with cm as game.visibility:` target.
+* **`obj.__setattr__("visibility", ...)`**, called as a method rather than
+  through `setattr`.
+* **A module-qualified constructor**, `models.Game(visibility=...)`.
+* **SQLAlchemy's ORM bulk update by primary key**:
+  `db.execute(update(Game), [{"id": gid, "visibility": ...}])`. The most
+  plausible of these in real code, because nothing about it looks unusual.
+
+A guard is not a proof. What it buys is that the *idiomatic* way to write this
+column fails loudly in the diff that introduces it.
 """
 import ast
 import pathlib
@@ -57,6 +83,12 @@ _COLUMN = "visibility"
 _POST_OWNERS = {"post", "posts", "Post"}
 
 _CLIP_OWNERS = {"clip", "clips", "Clip"}
+
+# Only used by the two checks that need to know whether an UNDECIDABLE write is
+# worth failing over: a computed `setattr` name, and a constructor keyword.
+# Everything else is decided by the attribute name alone, which is why the rest
+# of this file never asks what kind of thing it is looking at.
+_GAME_OWNERS = {"game", "games", "Game"}
 
 # THE ENTIRE EXEMPTION: (path relative to `app/`, enclosing function).
 #
@@ -80,6 +112,28 @@ def _owner_name(node: ast.AST) -> str:
     return ""
 
 
+def _assigned_names(target: ast.AST) -> list[ast.AST]:
+    """Every name a single assignment target binds.
+
+    `a.visibility = x` hands back one node; `a.visibility, a.title = x, y` hands
+    back two, and `[a.visibility, *rest] = xs` the same. Without this the tuple
+    form was invisible: the target is an `ast.Tuple`, not an `ast.Attribute`, so
+    the check below skipped it and never looked inside. A review round wrote the
+    game-rename exhibit as `game.visibility, game.title = "public", body.title`
+    and the suite stayed green -- the exact publish-every-clip-in-the-game
+    regression this file exists to make impossible, in the spelling a reviewer
+    is least likely to read twice.
+    """
+    if isinstance(target, (ast.Tuple, ast.List)):
+        out: list[ast.AST] = []
+        for elt in target.elts:
+            out += _assigned_names(elt)
+        return out
+    if isinstance(target, ast.Starred):
+        return _assigned_names(target.value)
+    return [target]
+
+
 def _attribute_writes(tree: ast.AST, *, clip_allowed: bool) -> list[tuple[int, str]]:
     """`<something>.visibility = ...` and `setattr(<something>, "visibility", …)`."""
     found: list[tuple[int, str]] = []
@@ -94,9 +148,10 @@ def _attribute_writes(tree: ast.AST, *, clip_allowed: bool) -> list[tuple[int, s
     targets: list[ast.AST] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
-            targets += node.targets
+            for target in node.targets:
+                targets += _assigned_names(target)
         elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
-            targets.append(node.target)
+            targets += _assigned_names(node.target)
 
     for t in targets:
         if not (isinstance(t, ast.Attribute) and t.attr == _COLUMN):
@@ -110,10 +165,42 @@ def _attribute_writes(tree: ast.AST, *, clip_allowed: bool) -> list[tuple[int, s
         if node.func.id != "setattr" or len(node.args) < 2:
             continue
         name = node.args[1]
+        owner = _owner_name(node.args[0])
         if isinstance(name, ast.Constant) and name.value == _COLUMN:
-            owner = _owner_name(node.args[0])
             judge(owner, node.lineno, f'setattr({owner}, "visibility", ...)')
+        elif owner in _CLIP_OWNERS | _GAME_OWNERS:
+            # A computed attribute name on something that looks like a clip or a
+            # game. The guard cannot read a variable, so it cannot prove this is
+            # not the write it forbids -- and `setattr(clip, column, value)` is
+            # both a natural refactor and a complete bypass. Undecidable fails.
+            # Narrowed to those owners on purpose: `routers/players.py` already
+            # does `setattr(player, k, v)` in a patch loop, which is none of this
+            # file's business, and a guard that fires there gets deleted.
+            judge(owner, node.lineno, f"setattr({owner}, <computed>, ...)")
 
+    return found
+
+
+def _constructor_writes(tree: ast.AST, *, clip_allowed: bool) -> list[tuple[int, str]]:
+    """`Clip(visibility=…)` / `Game(visibility=…)` — a row born wide.
+
+    Not reachable through an assignment or a `values()` call, so nothing above
+    sees it. Today nothing in `app/` passes the column to either constructor
+    (`routers/games.py` builds a Game without it, `workers/_sync_db.py` a Clip),
+    so this costs nothing and closes the shape where a widening path arrives as
+    a new row rather than an edit to one.
+    """
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        if node.func.id not in _CLIP_OWNERS | _GAME_OWNERS:
+            continue
+        if not any(kw.arg == _COLUMN for kw in node.keywords):
+            continue
+        if node.func.id in _CLIP_OWNERS and clip_allowed:
+            continue
+        found.append((node.lineno, f"{node.func.id}(visibility=...)"))
     return found
 
 
@@ -179,12 +266,15 @@ def offending_writes(rel: str, tree: ast.AST) -> list[tuple[int, str]]:
     # Scanned twice: once assuming a clip write is allowed, once not. The
     # difference is the set of clip writes, which are then judged by the
     # function they sit in.
-    strict = _attribute_writes(tree, clip_allowed=False) + _core_update_writes(
-        tree, clip_allowed=False
-    )
-    lenient = _attribute_writes(tree, clip_allowed=True) + _core_update_writes(
-        tree, clip_allowed=True
-    )
+    def scan(*, clip_allowed: bool) -> list[tuple[int, str]]:
+        return (
+            _attribute_writes(tree, clip_allowed=clip_allowed)
+            + _core_update_writes(tree, clip_allowed=clip_allowed)
+            + _constructor_writes(tree, clip_allowed=clip_allowed)
+        )
+
+    strict = scan(clip_allowed=False)
+    lenient = scan(clip_allowed=True)
     clip_writes = [w for w in strict if w not in lenient]
 
     # Game writes and anything unrecognised are banned outright.
@@ -215,8 +305,8 @@ def test_only_the_declared_functions_widen_a_clip_and_nothing_widens_a_game(path
         "files — because only they gate the tier on PUBLIC_POSTING_ENABLED "
         "(services/publishing.py). A third path would reach `public` with the "
         "flag off.\n"
-        "If this is a deliberate new write path, add the file to "
-        "_DECLARED_CLIP_WRITERS in the same PR, with a test that the new path "
+        "If this is a deliberate new write path, add its (file, function) pair "
+        "to _DECLARED_CLIP_WRITERS in the same PR, with a test that the new path "
         "is gated — so the decision is in a diff rather than in a silenced test."
     )
 
@@ -328,3 +418,82 @@ def test_the_exemption_is_per_function_not_per_file():
 def test_a_post_setting_its_own_tier_is_never_flagged():
     tree = ast.parse("def publish(post, body):\n    post.visibility = body.visibility\n")
     assert _attribute_writes(tree, clip_allowed=False) == []
+
+
+def test_a_write_bound_inside_a_tuple_target_is_still_a_write():
+    """The spelling that walked straight past this guard.
+
+    A review round wrote the game-rename exhibit as a two-name assignment and
+    the suite stayed green: `ast.Assign.targets` held one `ast.Tuple`, the check
+    asked whether that target was an `ast.Attribute`, and it is not. Renaming a
+    game would have published every clip in it, through a line no reviewer reads
+    twice because the eye goes to the title.
+
+    All three bindings are checked, not just the tuple: a list target and a
+    starred one are the same node shape wearing different brackets, and fixing
+    only the case the round happened to write is how the next spelling gets in.
+    """
+    for source in (
+        "def rename_game(game, body):\n"
+        "    game.visibility, game.title = 'public', body.title\n",
+        "def rename_game(game, body):\n"
+        "    [game.visibility, game.title] = ['public', body.title]\n",
+        "def rename_game(game, body):\n"
+        "    game.visibility, *rest = 'public', body.title\n",
+    ):
+        tree = ast.parse(source)
+        hits = offending_writes("routers/games.py", tree)
+        assert [h[1] for h in hits] == ["game.visibility = ..."], (
+            f"the guard missed a tuple-bound write: {source!r} -> {hits}"
+        )
+
+
+def test_a_computed_setattr_name_on_a_clip_or_game_is_undecidable_and_fails():
+    """`setattr(clip, column, value)` is a natural refactor and a total bypass.
+
+    The guard cannot read a variable, so it cannot prove this is not the write
+    it forbids. Undecidable fails -- but only where the owner reads as a clip or
+    a game, because `routers/players.py` already does `setattr(player, k, v)` in
+    an ordinary patch loop, and a guard that fires on that gets deleted, taking
+    the real protection with it. Both halves are asserted here; pinning only the
+    first is what would make the second regress silently.
+    """
+    flagged = offending_writes(
+        "routers/games.py",
+        ast.parse("def patch(game, column, value):\n    setattr(game, column, value)\n"),
+    )
+    assert [h[1] for h in flagged] == ["setattr(game, <computed>, ...)"]
+
+    ignored = offending_writes(
+        "routers/players.py",
+        ast.parse("def patch(player, k, v):\n    setattr(player, k, v)\n"),
+    )
+    assert ignored == [], f"the players patch loop must not be flagged: {ignored}"
+
+
+def test_a_row_constructed_wide_is_a_write_path_too():
+    """A widening path can arrive as a new row rather than an edit to one.
+
+    No assignment, no `values()` call, nothing for the other two checks to see.
+    Nothing in `app/` passes the column to either constructor today, so this
+    costs nothing now and closes the shape before it is used.
+    """
+    hits = offending_writes(
+        "workers/_sync_db.py",
+        ast.parse("def sync(row):\n    clip = Clip(id=row['id'], visibility='public')\n"),
+    )
+    assert [h[1] for h in hits] == ["Clip(visibility=...)"]
+
+    game = offending_writes(
+        "routers/games.py",
+        ast.parse("def create(body):\n    game = Game(title=body.title, visibility='public')\n"),
+    )
+    assert [h[1] for h in game] == ["Game(visibility=...)"]
+
+    # ...and the declared writer may still construct one, or the exemption
+    # would be narrower than the rule it implements.
+    allowed = offending_writes(
+        "routers/posts.py",
+        ast.parse("def create_post(body):\n    clip = Clip(visibility=body.visibility)\n"),
+    )
+    assert allowed == [], f"a declared clip writer may construct one: {allowed}"

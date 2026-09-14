@@ -173,9 +173,10 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
         clip_level = body.visibility
 
     if not access.at_most(body.visibility, clip_level):
-        # Refuse rather than silently widening the clip. Raising the clip's
-        # visibility exposes the whole game's footage and has to be a separate,
-        # deliberate act by the owner (CF-109: "never a silent side effect").
+        # Refuse rather than silently widening the clip. Widening it — this
+        # clip only, never its game — happens only when the owner asks for it,
+        # through `raise_clip_visibility` above or `PATCH /clips/{id}/visibility`
+        # (CF-109: "never a silent side effect").
         #
         # **This is a UX guarantee, not the security boundary.** There is a
         # window between this check and the INSERT in which the clip can go
@@ -259,8 +260,8 @@ async def list_user_posts(
     paginated. This is scoped to a single handle.
 
     **Anonymous exposure A (CF-186, #189): handle-keyed and enumerable,
-    throttled.** 30/min per signed-in user, or per client address when there is
-    none — deliberately the same number as `GET /users/{handle}`. A walker
+    throttled.** 30/min **per client address**, signed in or not — deliberately
+    the same number as `GET /users/{handle}`. A walker
     hitting either door learns the same thing, so a different budget on one of
     them would only advertise which is cheaper. Per ADDRESS even when the
     caller is signed in, unlike the exposure-B routes: signup is self-serve, so

@@ -256,9 +256,17 @@ async def update_clip_visibility(
     **The write path that did not exist.** Until this, no endpoint anywhere set
     `Clip.visibility` or `Game.visibility`, so every clip resolved to `private`
     and the composer could only ever offer "Only me" — a user could publish a
-    post, but only to themselves. `api/tests/test_no_visibility_write_path.py`
-    enforced that absence and is deleted by this change, which is where the
-    ordering decision it was protecting gets recorded.
+    post, but only to themselves. This makes the tier writable. Whether an
+    owner may *set* `public` is `PUBLIC_POSTING_ENABLED`'s call; `followers` is
+    accepted, but reaches nobody but the owner until the follow graph
+    (`access.is_follower`, CF-110) lands.
+
+    `api/tests/test_no_visibility_write_path.py` enforced the absence of a
+    write path and is deleted by this change, which is where the
+    ordering decision it was protecting gets recorded. **Deleted, not dropped**:
+    `api/tests/test_visibility_write_paths_are_declared.py` keeps the same
+    `app/`-wide scan and names this function as one of exactly two that may
+    write the column, so a third path fails in the diff that adds it.
 
     **The clip's own tier, never the game's.** Raising the game would publish
     every clip in it, which is precisely the silent side effect `create_post`'s
@@ -273,8 +281,8 @@ async def update_clip_visibility(
     change keeps working until it expires, which is the revocation window
     `/share` documents and not something this endpoint can close.
 
-    `public` additionally depends on `PUBLIC_POSTING_ENABLED`; see
-    `services/publishing.py` for why that tier is gated apart from `followers`.
+    See `services/publishing.py` for why `public` is gated apart from
+    `followers`.
     """
     # Ownership FIRST, then the tier. The other order answers a stranger with
     # "public posting is turned off on this deployment", which is a fact about
