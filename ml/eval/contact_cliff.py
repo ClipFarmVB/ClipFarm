@@ -21,13 +21,28 @@ two columns are identical by construction — that is CF-375 (#475)'s whole
 point, and running this on test1 to see "no cliff" would be reading the
 absence of the change as evidence about it.
 
-**Two gates, not one.** #476 names ``MIN_RALLY_CONTACTS``; ``MIN_RALLY_DURATION``
-(2.0s) is a second cliff immediately after it, and it is not independent — a
-rally that loses its *outermost* contacts also gets shorter, so tightening
-contact detection can push a segment under the duration gate while it still has
-three contacts. The ladder below separates the two, because a fix aimed at the
-count gate does nothing for a segment dying on duration and the totals alone
-cannot tell them apart.
+**Two gates — and the measurement says one of them cannot fire.** #476 names
+``MIN_RALLY_CONTACTS``; ``MIN_RALLY_DURATION`` (2.0s) sits immediately after it.
+The obvious worry is that the two are coupled: a rally that loses its
+*outermost* contacts gets shorter as well as thinner, so tightening detection
+might push a segment under the duration gate while it still has three contacts.
+
+It cannot, and the pads are why. A rally spans
+``min(video_duration, last + POST_PLAY_PAD) - max(0, first - PRE_RALLY_PAD)``,
+so with pads of 2.0s and 2.5s the span never falls below 2.5s however few
+contacts survive — the contacts' own spread barely enters it. The only way
+under 2.0s is for the video's *own length* to clamp the end, which for contacts
+inside the video means a video shorter than ``MIN_RALLY_DURATION`` itself.
+Checked by brute force over a grid of durations, first-contact times and
+spreads: every case that trips the gate has ``video_duration <= 1.99``. The
+fixtures run 300s to 3660s, so **the duration channel is identically zero on
+anything this tool can be pointed at.**
+
+That is a result, not a reason to drop the row. A demonstrated zero retires the
+hypothesis that part of the loss belongs to the duration gate, which is exactly
+what a measurement taken before choosing a fix is for — and it is a property of
+the constants, so it stops being true the moment someone changes a pad or the
+gate.
 
 This tool measures. It decides nothing and changes no threshold.
 """

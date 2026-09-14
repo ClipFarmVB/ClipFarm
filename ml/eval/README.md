@@ -362,13 +362,25 @@ Read it on a **1080p** fixture (test2/test4). On test1 the scale is exactly
 1.0, so the two columns are the same run and the report says so — that is the
 gap CF-375 (#475) exists to close, not evidence that there is no cliff.
 
-The ladder separates two gates, because a fix aimed at one does nothing for
-the other: `MIN_RALLY_CONTACTS` deletes segments with too few contacts, and
-`MIN_RALLY_DURATION` (2.0s) then deletes what is left if the clip is too
-short. Tightening contact detection can trip either — losing the *outermost*
-contacts shortens the rally as well as thinning it. The last line also counts
-the rallies sitting at exactly 3 contacts, which is the population one
-detection away from the same fate.
+The ladder separates two gates: `MIN_RALLY_CONTACTS` deletes segments with too
+few contacts, and `MIN_RALLY_DURATION` (2.0s) then deletes what is left if the
+clip is too short.
+
+**Expect the duration channel to read zero, and read that as a result rather
+than as luck.** A rally spans `min(video_duration, last + POST_PLAY_PAD) −
+max(0, first − PRE_RALLY_PAD)`, so with pads of 2.0s and 2.5s it never falls
+below 2.5s however few contacts survive — losing the outermost contacts
+shortens the *contact* spread, which the pads dominate. The only way under 2.0s
+is for the video's own length to clamp the end, which needs a video shorter
+than `MIN_RALLY_DURATION`; the fixtures run 300s to 3660s. So tightening
+contact detection cannot trip this gate, and a zero here is not "this fixture
+happened to miss it".
+
+That is worth having measured: it retires the possibility that some of the loss
+belongs to the duration gate, and it is a property of the constants, so it stops
+holding the moment a pad or the gate moves. The last line also counts the
+rallies sitting at exactly 3 contacts, which is the population one detection
+away from the count gate.
 
 It measures and decides nothing; the fix is the second deliverable on #476.
 

@@ -280,6 +280,10 @@ def test_the_report_accounts_for_every_lost_rally():
     assert "1 whose segment never formed" in text
     assert "0 to the count gate" in text
     assert "0 to the duration gate" in text
+    # And the net-movement note stays away when no channel is negative. Without
+    # this, loosening the guard to `<= 0` prints the caveat on nearly every real
+    # report and nothing complains.
+    assert "net movements between the two runs" not in text
 
 
 def test_the_two_gate_channels_are_not_interchangeable():
@@ -317,7 +321,7 @@ def test_a_negative_channel_says_it_is_a_net_movement():
     """
     on = ladder([1, 1, 1])
     off = ladder([3, 3])
-    text = report(on, off, 1080, 0.5)
+    text = report(on, off, 1080, 3.0)
 
     assert "-1 whose segment never formed" in text
     assert "net by channel" in text
