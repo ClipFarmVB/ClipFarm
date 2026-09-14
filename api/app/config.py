@@ -898,7 +898,9 @@ class Settings(BaseSettings):
     # Seven endpoints answer without a credential. Six are throttled per caller
     # (see services/ratelimit.py for the two exposures and the fail-open
     # posture); GET /clips/{id}/download is the seventh and requires auth
-    # instead. All limits are per minute, per signed-in user, or per client
+    # instead. All limits are per minute. The two enumerable routes key on the
+    # client address even for a signed-in caller (`Policy.by_address`); the rest
+    # key on the signed-in caller and fall back to the client
     # address when there is no user.
     #
     # A switch, not a knob: the alternative to `rate_limit_enabled` is a code

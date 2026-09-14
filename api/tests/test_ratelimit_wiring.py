@@ -1,8 +1,8 @@
 """Every anonymous read is actually covered (CF-186, #189).
 
 The limiters hang off each route decorator's ``dependencies=[...]``, which
-keeps all seven coroutine signatures byte-identical and leaves every direct
-call in this suite working — and makes the limiter completely invisible to
+keeps the six throttled coroutine signatures byte-identical and leaves every
+direct call in this suite working — and makes the limiter completely invisible to
 those calls. So this file is not optional: without it, deleting a
 ``dependencies=[...]`` line would break nothing that runs.
 
@@ -12,9 +12,12 @@ walk: the point is that a reviewer does not have to notice.
 """
 import asyncio
 
+import inspect
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers
 
 from app.auth import get_current_user_id
 from app.config import Settings, settings
@@ -251,12 +254,17 @@ def test_the_lifespan_installs_and_removes_the_redis_backend(monkeypatch):
     import app.main as main
 
     closed = []
+    built_with = {}
 
     class FakeRedis:
         async def aclose(self):
             closed.append(True)
 
-    monkeypatch.setattr(main.aioredis, "from_url", lambda url: FakeRedis())
+    def fake_from_url(url, **kwargs):
+        built_with.update(kwargs)
+        return FakeRedis()
+
+    monkeypatch.setattr(main.aioredis, "from_url", fake_from_url)
     monkeypatch.setattr(ratelimit, "_backend", MemoryBackend())
 
     async def drive():
@@ -268,3 +276,187 @@ def test_the_lifespan_installs_and_removes_the_redis_backend(monkeypatch):
 
     asyncio.run(drive())
     assert closed == [True]
+
+    # The socket bounds, asserted here because this is the only place the client
+    # is built. redis-py defaults both to None, and an unbounded client is what
+    # makes a *hanging* redis defeat the limiter's fail-open branch entirely:
+    # that branch catches a raise, and a blackholed connection never raises. The
+    # request then blocks on the kernel's TCP retry bound instead. Pinned as
+    # "is a bound set at all", not as the number, so tuning it stays free.
+    assert built_with.get("socket_timeout"), "no socket_timeout on the client"
+    assert built_with.get("socket_connect_timeout"), "no connect timeout"
+    assert built_with["socket_timeout"] == ratelimit.REDIS_SOCKET_TIMEOUT_SECONDS
+    assert (
+        built_with["socket_connect_timeout"] == ratelimit.REDIS_SOCKET_TIMEOUT_SECONDS
+    )
+
+
+def test_a_hanging_backend_is_a_raise_the_limiter_can_fail_open_on(monkeypatch):
+    """The half of fail-open that only works if something bounds the wait.
+
+    `_enforce` allows the request when the backend raises. A redis that has gone
+    away raises; a redis that accepts the connection and never answers does not,
+    and before the socket bounds the request sat there until the kernel gave up.
+    This asserts the consequence rather than the configuration: a
+    `redis.TimeoutError` -- which is what the socket bound produces, and which is
+    an ordinary Exception -- reaches the fail-open branch and the caller is let
+    through rather than 500ing.
+    """
+    import redis.exceptions
+
+    class HungBackend:
+        async def hit(self, key, window_seconds):
+            raise redis.exceptions.TimeoutError("Timeout reading from socket")
+
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(ratelimit, "_backend", HungBackend())
+    limiter = ratelimit.rate_limit(ratelimit.POLICIES["profile"])
+
+    class Req:
+        client = type("C", (), {"host": "203.0.113.9"})()
+        headers = Headers({})
+
+    assert asyncio.run(limiter(Req())) is None
+
+
+def test_an_address_keyed_route_resolves_no_auth_dependency():
+    """The property finding 3 was actually about, pinned at the route.
+
+    An earlier fix removed `viewer_id` from `get_profile`'s own signature, which
+    looked like it had removed the dependency -- but `RateLimiter.__call__` still
+    declared `Depends(get_optional_user_id)`, so it stayed in the resolved tree
+    for every route carrying a limiter. Two consequences, both measured on this
+    branch before the split:
+
+      * `get_optional_user_id` re-raises a JWKS failure, so these public reads
+        answered 503 when auth was unwell -- and the web client sends a bearer
+        whenever a session exists, so a signed-in visitor to a profile page took
+        that path.
+      * FastAPI resolves dependencies before the handler, so a JWT verification
+        and `_ensure_user_exists`'s INSERT-and-COMMIT ran ahead of the counter:
+        a refused request still cost a database write, on the two routes whose
+        purpose is bounding an attacker's rate.
+
+    Asserted against the resolved `route.dependant` rather than the source, so
+    reintroducing the dependency anywhere in the chain fails here.
+    """
+    from app.auth import get_optional_user_id
+
+    checked = 0
+    for (path, method), (name, _setting, _default) in THROTTLED.items():
+        route = _route_for(path, method)
+        limiters = _limiters_on(route)
+        if not limiters or not limiters[0].policy.by_address:
+            continue
+        # Only where the HANDLER does not want a viewer. `list_user_posts`
+        # declares one because it filters visibility by it, so auth is in its
+        # tree on its own account and always was; the defect was the limiter
+        # putting it there for a route that had no other use for it.
+        if "viewer_id" in inspect.signature(route.endpoint).parameters:
+            continue
+        assert get_optional_user_id not in _dependency_callables(route), (
+            f"{method} {path} carries the {name} policy, which keys on the "
+            "address and never reads the viewer -- resolving auth here buys a "
+            "503 on a public read and a DB commit before the counter"
+        )
+        checked += 1
+    # The clause above is an escape hatch as well as a carve-out: a handler that
+    # gains a `viewer_id` takes its route out of this test, and with one
+    # address-keyed route left standing that empties the loop entirely. Putting
+    # the whole defect back -- `viewer_id` on `get_profile` AND the dependency
+    # on `RateLimiter.__call__` -- left this passing with nothing asserted, and
+    # only the weaker source-shaped check in test_ratelimit.py went red.
+    assert checked, (
+        "every address-keyed route was skipped -- this test asserted nothing. "
+        "A handler that declares `viewer_id` leaves the route uncheckable here, "
+        "so the guarantee needs pinning some other way rather than silently"
+    )
+
+
+def test_a_viewer_keyed_route_does_resolve_auth():
+    """The other direction, so the test above cannot be satisfied by deleting
+    the dependency everywhere: a content policy keys on the signed-in caller and
+    genuinely needs it."""
+    from app.auth import get_optional_user_id
+
+    checked = 0
+    for (path, method), (_name, _setting, _default) in THROTTLED.items():
+        route = _route_for(path, method)
+        limiters = _limiters_on(route)
+        if not limiters or limiters[0].policy.by_address:
+            continue
+        assert get_optional_user_id in _dependency_callables(route)
+        checked += 1
+    assert checked, "no viewer-keyed route in the table -- the pair is vacuous"
+
+
+def test_the_limiter_is_resolved_before_anything_a_refusal_should_not_pay_for():
+    """A 429 must not have cost a JWT verification or a database write first.
+
+    That property is real -- measured at 12 requests against a 2/min budget,
+    `GET /posts` performs two commits, one per *allowed* request, and none for
+    the ten refusals -- but on `GET /posts` it does not come from the class
+    split: that route's handler declares `viewer_id` itself, so auth is in its
+    tree regardless. What saves it is ordering. FastAPI puts a decorator's
+    ``dependencies=[...]`` ahead of the handler's own parameters and
+    ``solve_dependencies`` awaits them in list order (fastapi 0.115.6,
+    ``dependencies/utils.py``), so the limiter's ``HTTPException`` propagates
+    before ``get_db`` or ``get_optional_user_id`` is ever called.
+
+    Nothing pinned that. Moving a limiter to a handler parameter -- the shape
+    the module docstring rejects for an unrelated reason -- would leave the
+    whole suite green and restore the full cost on every refused request. So
+    assert the position, not just the presence.
+    """
+    checked = 0
+    for (path, method), (name, _setting, _default) in THROTTLED.items():
+        route = _route_for(path, method)
+        deps = route.dependant.dependencies
+        at = [i for i, dep in enumerate(deps) if isinstance(dep.call, RateLimiter)]
+        assert at, f"{method} {path} resolves no limiter at all"
+        assert at[0] == 0, (
+            f"{method} {path} resolves "
+            f"{[getattr(d.call, '__name__', d.call) for d in deps[: at[0]]]} "
+            f"before its {name} limiter, so a refused request pays for them"
+        )
+        checked += 1
+    assert checked == len(THROTTLED)
+
+
+def test_a_backend_that_never_answers_does_not_hold_the_request(monkeypatch):
+    """The socket bounds are per OPERATION; this is the bound per REQUEST.
+
+    A server that answers every operation just inside the socket timeout still
+    stretches one `hit()` well past it -- connect, handshake and each read get
+    their own second, and a review round measured 6.31s cold against a
+    0.9s-per-reply server. What a caller waiting on a public read experiences is
+    the whole call, so the whole call is what `REQUEST_BUDGET_SECONDS` bounds.
+
+    Driven with a backend that simply never returns, which no socket timeout can
+    reach: the `MemoryBackend` path has no socket at all, and a custom `Backend`
+    implementation is free to block. The test's own `wait_for` is the safety
+    net -- without a bound in `_enforce` this fails as a timeout rather than
+    hanging the suite forever.
+    """
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(ratelimit, "REQUEST_BUDGET_SECONDS", 0.05)
+
+    class NeverAnswers:
+        async def hit(self, key, window_seconds):
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(ratelimit, "_backend", NeverAnswers())
+    limiter = ratelimit.rate_limit(ratelimit.POLICIES["profile"])
+
+    class Req:
+        client = type("C", (), {"host": "203.0.113.11"})()
+        headers = Headers({})
+
+    async def drive():
+        # Twenty times the budget: generous enough that a slow machine cannot
+        # fail this, tight enough that an unbounded `_enforce` cannot pass it.
+        return await asyncio.wait_for(limiter(Req()), timeout=1.0)
+
+    assert asyncio.run(drive()) is None

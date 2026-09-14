@@ -11,6 +11,7 @@ separately against a stub client — those two tests pin *which commands it
 issues*, not that Redis honours them, and say so.
 """
 import asyncio
+import inspect
 import uuid
 
 import pytest
@@ -87,7 +88,12 @@ def call(dep, request, viewer_id=None):
     then REPORTED AS A PASS — the silent-skip failure this repo guards against
     elsewhere. test_clip_download.py drives its route the same way.
     """
-    return asyncio.run(dep(request, viewer_id))
+    if isinstance(dep, ratelimit.ViewerRateLimiter):
+        return asyncio.run(dep(request, viewer_id))
+    # An address-keyed limiter takes no viewer at all -- that is the point of
+    # the split, so the helper must not fabricate one.
+    assert viewer_id is None, "an address-keyed policy cannot be handed a viewer"
+    return asyncio.run(dep(request))
 
 
 # ── the budget ───────────────────────────────────────────────────────────────
@@ -221,7 +227,9 @@ def test_a_backend_outage_does_not_log_once_per_request(monkeypatch, caplog):
     # reporting. One line a minute is enough to see it.
     monkeypatch.setattr(ratelimit, "_backend", BoomBackend())
     monkeypatch.setattr(settings, "rate_limit_enabled", True)
-    monkeypatch.setattr(ratelimit, "_last_warned_at", 0.0)
+    # None, the module default -- 0.0 was this test seeding the very sentinel
+    # the module now avoids, which made the fix unobservable from here.
+    monkeypatch.setattr(ratelimit, "_last_warned_at", None)
     dep = rate_limit(TEST_POLICY)
     with caplog.at_level("WARNING", logger="app.services.ratelimit"):
         for _ in range(50):
@@ -420,11 +428,20 @@ def test_an_enumeration_policy_ignores_the_account(monkeypatch):
     dep = rate_limit(ratelimit.POLICIES["profile"])
     request = FakeRequest(peer="203.0.113.7")
 
-    call(dep, request, uuid.uuid4())
-    call(dep, request, uuid.uuid4())
-    # A third account, same address, no budget left.
+    # Stronger than ignoring the account: it cannot be handed one. An
+    # address-keyed policy gets a limiter whose `__call__` declares no auth
+    # dependency, so FastAPI never resolves the caller for these routes --
+    # which is what keeps a JWKS outage off a public read, and keeps a refused
+    # request from paying for a JWT verification and a DB commit first.
+    assert not isinstance(dep, ratelimit.ViewerRateLimiter)
+    assert "viewer_id" not in inspect.signature(dep.__call__).parameters
+
+    call(dep, request)
+    call(dep, request)
+    # A third request from the same address, whatever account it carries: no
+    # budget left, because the account was never part of the key.
     with pytest.raises(HTTPException) as exc:
-        call(dep, request, uuid.uuid4())
+        call(dep, request)
     assert exc.value.status_code == 429
 
 
@@ -468,3 +485,163 @@ def test_retry_after_is_never_zero_at_the_end_of_a_window():
     # anything not strictly positive falls through to the window.
     assert asyncio.run(RedisBackend(StubRedis(ttl=0)).hit("k", 60)).reset_in == 60
     assert asyncio.run(RedisBackend(StubRedis(ttl=1)).hit("k", 60)).reset_in == 1
+
+
+def test_an_ipv6_caller_cannot_walk_their_own_prefix_for_fresh_budgets(monkeypatch):
+    """A /64 is one subscriber, so it has to be one bucket.
+
+    IPv6 hands a single residential customer a /64 routinely and often a /56 or
+    /48. Keying on the full address gave that customer on the order of 10^19
+    fresh budgets -- the per-address limit would stop meaning anything, and the
+    walk-time figure the enumeration policies rest on holds only against IPv4.
+
+    Two addresses inside one /64 must share; two /64s must not.
+    """
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend(clock=FakeClock()))
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(settings, "rate_limit_profile_per_minute", 2)
+    dep = rate_limit(ratelimit.POLICIES["profile"])
+
+    call(dep, FakeRequest(peer="2001:db8::1"))
+    call(dep, FakeRequest(peer="2001:db8::2"))
+    # A third address in the same /64 -- a different host, the same subscriber.
+    with pytest.raises(HTTPException) as exc:
+        call(dep, FakeRequest(peer="2001:db8::dead:beef"))
+    assert exc.value.status_code == 429
+
+    # A different /64 is a different subscriber and keeps its own budget.
+    assert call(dep, FakeRequest(peer="2001:db8:0:1::1")) is None
+
+
+def test_an_ipv4_caller_is_still_keyed_on_the_host(monkeypatch):
+    """The narrowing must not collapse v4 hosts together -- one v4 address is
+    one host, and bucketing a /24 would throttle a whole office as one."""
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend(clock=FakeClock()))
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(settings, "rate_limit_profile_per_minute", 1)
+    dep = rate_limit(ratelimit.POLICIES["profile"])
+
+    call(dep, FakeRequest(peer="203.0.113.7"))
+    with pytest.raises(HTTPException):
+        call(dep, FakeRequest(peer="203.0.113.7"))
+    # The neighbour is a different bucket.
+    assert call(dep, FakeRequest(peer="203.0.113.8")) is None
+
+
+def test_ipv4_mapped_callers_do_not_all_land_in_one_bucket(monkeypatch):
+    """`::ffff:a.b.c.d` is version 6 with an all-zero /64.
+
+    Narrowing it by prefix like any other v6 address files every mapped caller
+    on the internet -- and `::1` -- under the single key `ip:::/64`, so three
+    strangers spend each other's budget. That is worse than not narrowing at
+    all, and it is reachable: `client_ip` returns whatever an upstream proxy
+    wrote into X-Forwarded-For, and a dual-stack front end may write the mapped
+    spelling.
+
+    Two properties here, and the second is why this is not just a bug fix: the
+    mapped form and the plain form of one address are one caller, so they share
+    a bucket rather than getting one each.
+    """
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend(clock=FakeClock()))
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(settings, "rate_limit_profile_per_minute", 2)
+    dep = rate_limit(ratelimit.POLICIES["profile"])
+
+    call(dep, FakeRequest(peer="::ffff:203.0.113.7"))
+    call(dep, FakeRequest(peer="::ffff:8.8.8.8"))
+    # A third, unrelated mapped caller, and the v6 loopback. Both were refused
+    # when the prefix rule applied to mapped addresses.
+    assert call(dep, FakeRequest(peer="::ffff:198.51.100.1")) is None
+    assert call(dep, FakeRequest(peer="::1")) is None
+
+    # ...and the two spellings of one host are one bucket, not two. 203.0.113.7
+    # has spent one of its two above.
+    call(dep, FakeRequest(peer="203.0.113.7"))
+    with pytest.raises(HTTPException) as exc:
+        call(dep, FakeRequest(peer="::ffff:203.0.113.7"))
+    assert exc.value.status_code == 429
+
+
+def test_the_memory_backend_does_not_keep_every_window_it_has_ever_seen():
+    """The in-process fallback is a shipped path, so it needs Redis's bound too.
+
+    Redis gets it from the one-window TTL on every key, which is what lets the
+    module docstring say steady-state cardinality is distinct callers per minute
+    rather than anything cumulative. A plain dict has no TTL: without a sweep,
+    every bucket ever seen stays resident, and the cardinality driving that is
+    the attacker-controlled address space `_bucket` exists to bound. `main.py`'s
+    lifespan keeps this backend whenever `from_url` raises, which is a supported
+    degradation with its own test -- so "it is only the test seam" is not true.
+
+    Expired entries are already ignored on read, so this is about growth and not
+    about counting. Asserted on the resident set directly, because that is the
+    property: a count-based assertion would pass over an unbounded dict.
+    """
+    clock = FakeClock()
+    backend = MemoryBackend(clock=clock)
+
+    for n in range(5000):
+        asyncio.run(backend.hit(f"rl:profile:ip:198.51.100.{n}", 60))
+    assert len(backend._windows) == 5000
+
+    # Past every window, and past the sweep interval.
+    clock.advance(120)
+    asyncio.run(backend.hit("rl:profile:ip:203.0.113.1", 60))
+    assert len(backend._windows) == 1, (
+        f"{len(backend._windows)} windows still resident after all 5000 expired"
+    )
+
+
+def test_the_sweep_does_not_drop_a_window_that_is_still_counting():
+    """The sweep must not become a way to get a fresh budget by waiting.
+
+    A longer-windowed policy is the case to be careful about: sweeping on the
+    caller's window rather than each entry's own would evict a live counter
+    belonging to a policy whose window has not closed.
+    """
+    clock = FakeClock()
+    backend = MemoryBackend(clock=clock)
+
+    asyncio.run(backend.hit("rl:slow:ip:203.0.113.1", 600))
+    asyncio.run(backend.hit("rl:fast:ip:203.0.113.2", 60))
+
+    # Past the fast window and the sweep interval, inside the slow one.
+    clock.advance(120)
+    hit = asyncio.run(backend.hit("rl:slow:ip:203.0.113.1", 600))
+    assert hit.hits == 2, "the 600s window was swept while it was still counting"
+    assert "rl:fast:ip:203.0.113.2" not in backend._windows
+
+
+def test_the_first_backend_outage_logs_on_a_machine_that_just_booted(monkeypatch, caplog):
+    """`_last_warned_at`'s initial value has to mean "never", not "at 0.0".
+
+    `time.monotonic()`'s origin is arbitrary -- on Linux, boot -- so against a
+    0.0 sentinel the throttle arithmetic reads `now - 0.0`, and for the first
+    minute of uptime that is under the interval: the FIRST outage after a
+    restart logs nothing at all, which is exactly when someone is watching. It
+    is a real difference and an awkward one to see, because it lives in a
+    module-level initialiser that every other test has already run past.
+
+    So this loads a second, independent instance of the module from its own
+    file rather than reloading the shipped one -- the live module keeps its
+    state, and the initialiser is exercised as it would be at import on a fresh
+    process.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("ratelimit_fresh", ratelimit.__file__)
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+
+    # A machine five seconds into its uptime.
+    monkeypatch.setattr(fresh.time, "monotonic", lambda: 5.0)
+    with caplog.at_level("WARNING", logger="ratelimit_fresh"):
+        fresh._warn_backend_down(RuntimeError("redis is down"))
+
+    assert [r for r in caplog.records if "rate limit backend" in r.message], (
+        "the first outage on a just-booted machine logged nothing -- "
+        "`_last_warned_at` is starting at a time rather than at 'never'"
+    )
