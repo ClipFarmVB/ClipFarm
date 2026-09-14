@@ -12,9 +12,10 @@ import {
   VolumeX,
 } from "lucide-react";
 import type { Post } from "@/lib/api";
-import { getClipDownloadUrl, getClipShareUrl } from "@/lib/api";
+import { getClipDownloadUrl, getClipShareUrl, likePost, unlikePost } from "@/lib/api";
 import { startCrossOriginDownload } from "@/lib/download";
 import { cn } from "@/lib/utils";
+import { CommentSheet } from "@/components/CommentSheet";
 
 /** Dot colours match the landing page's action ticker. */
 const ACTION_DOT: Record<string, string> = {
@@ -68,7 +69,92 @@ export const FeedPost = memo(function FeedPost({
   // ref because it renders something.
   const [stalled, setStalled] = useState(false);
   const [shareState, setShareState] = useState<"idle" | "copied" | "failed">("idle");
+  // Per-card, seeded from the payload. The server's answer replaces the guess
+  // on every write — see `LikeState` in `lib/api.ts` for why both writes
+  // return one.
+  const [like, setLike] = useState({ liked: post.viewer_has_liked, count: post.like_count });
+  const [likeNote, setLikeNote] = useState<string | undefined>(undefined);
+  const likeBusy = useRef(false);
+  const [commentCount, setCommentCount] = useState(post.comment_count);
+  const [commentsOpen, setCommentsOpen] = useState(false);
+
+  // Re-seed when the server hands this card a payload different from the one it
+  // last seeded from — a different post, or the same post refreshed.
+  //
+  // `useState` only reads its argument on the first render, so without this the
+  // counts and the fill are frozen at whatever the first payload said. Today the
+  // feed keys cards by `post.id` and only appends pages, so neither case fires:
+  // a new id makes a new component, and nothing refetches. That is why this is
+  // cheap now and expensive later — the day the feed refetches page one, every
+  // visible card would otherwise keep rendering the old like count with nothing
+  // to report it.
+  //
+  // Keyed on the payload rather than on the id alone, because an id test is
+  // exactly what the refresh-in-place case slips past: same id, new numbers,
+  // early return, stale card.
+  const seededFrom = useRef({
+    id: post.id,
+    liked: post.viewer_has_liked,
+    count: post.like_count,
+    comments: post.comment_count,
+  });
+  useEffect(() => {
+    const prev = seededFrom.current;
+    const newPost = prev.id !== post.id;
+    // Each counter is re-seeded only when ITS OWN fields moved. Re-seeding both
+    // whenever any field moved is what makes this dangerous: a refresh that
+    // touches `comment_count` alone would carry the server's not-yet-updated
+    // like values back over an optimistic tap, flipping the heart under the
+    // reader's finger. Pinned by `a refresh that only moves the comment count
+    // leaves an in-flight like alone`.
+    const likeMoved =
+      prev.liked !== post.viewer_has_liked || prev.count !== post.like_count;
+    const commentsMoved = prev.comments !== post.comment_count;
+    // No blanket early return: the deps below ARE these four fields, so by the
+    // time this runs at least one of the three has moved. A `return` for the
+    // nothing-changed case would be unreachable, and a test written for it
+    // would pass whether or not the guard existed — which is exactly the trap
+    // the previous version of this file fell into.
+    seededFrom.current = {
+      id: post.id,
+      liked: post.viewer_has_liked,
+      count: post.like_count,
+      comments: post.comment_count,
+    };
+    if (newPost || likeMoved) setLike({ liked: post.viewer_has_liked, count: post.like_count });
+    if (newPost || commentsMoved) setCommentCount(post.comment_count);
+    // Only on a genuinely different post. A background refresh must not close
+    // a sheet the reader has open or wipe a note they have not read yet.
+    if (newPost) {
+      setLikeNote(undefined);
+      setCommentsOpen(false);
+    }
+  }, [post.id, post.viewer_has_liked, post.like_count, post.comment_count]);
   const { playback: pb } = post;
+
+  /**
+   * Optimistic, with rollback. The heart fills and the count moves on the tap;
+   * the server's `{liked, like_count}` then replaces both — which is what makes
+   * "counts match reality" something the user actually sees under concurrent
+   * likes — and a failure puts the previous state back with a brief note.
+   * Serialised with a ref, like `download`, so a double-tap is one request.
+   */
+  async function toggleLike() {
+    if (likeBusy.current) return;
+    likeBusy.current = true;
+    const prev = like;
+    setLike({ liked: !prev.liked, count: prev.count + (prev.liked ? -1 : 1) });
+    try {
+      const next = await (prev.liked ? unlikePost : likePost)(post.id);
+      setLike({ liked: next.liked, count: next.like_count });
+    } catch {
+      setLike(prev);
+      setLikeNote("Failed");
+      window.setTimeout(() => setLikeNote(undefined), 1500);
+    } finally {
+      likeBusy.current = false;
+    }
+  }
 
   // Prefer the per-game proxy and seek within it; fall back to the per-clip
   // file. CF-48 populates proxy_url and CF-51 is the player this borrows from —
@@ -315,22 +401,18 @@ export const FeedPost = memo(function FeedPost({
 
       {/* ── right: action rail ───────────────────────────────────────────── */}
       <div className="absolute bottom-8 right-2 z-20 flex flex-col items-center gap-4">
-        {/* Like and comment render with their real counts but do nothing until
-            CF-113 ships the writes. Showing them inert beats hiding them: the
-            counts are already in the payload, and a rail that changes shape
-            when engagement lands is a worse first impression than one that
-            fills in. */}
         <RailButton
-          icon={<Heart size={22} className={post.viewer_has_liked ? "fill-red-500 text-red-500" : ""} />}
-          count={post.like_count}
-          label="Likes — coming with CF-113"
-          disabled
+          icon={<Heart size={22} className={like.liked ? "fill-red-500 text-red-500" : ""} />}
+          count={like.count}
+          label={like.liked ? "Unlike" : "Like"}
+          note={likeNote}
+          onClick={() => void toggleLike()}
         />
         <RailButton
           icon={<MessageCircle size={22} />}
-          count={post.comment_count}
-          label="Comments — coming with CF-113"
-          disabled
+          count={commentCount}
+          label="Comments"
+          onClick={() => setCommentsOpen(true)}
         />
         <RailButton
           icon={<Share2 size={22} />}
@@ -360,6 +442,14 @@ export const FeedPost = memo(function FeedPost({
           {muted ? <VolumeX size={20} /> : <Volume2 size={20} />}
         </button>
       </div>
+
+      {commentsOpen && (
+        <CommentSheet
+          post={post}
+          onClose={() => setCommentsOpen(false)}
+          onCountChange={(delta) => setCommentCount((c) => Math.max(0, c + delta))}
+        />
+      )}
     </article>
   );
 });
