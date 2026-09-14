@@ -299,6 +299,35 @@ See [Mode](#mode). The mode decides whether ticket work happens at all; *which*
 tickets is governed by [Choosing work](#choosing-work) under Standing policy,
 not by the block below.
 
+**An operator can pass the mode with the run instead of editing this block.** A
+mode given in the starting instruction — `Mode: review-only` in the `/loop`
+prompt, which is what `.claude/skills/overnight/SKILL.md` sends — **overrides
+the block for that run**, and nothing is edited, committed or merged. The block
+remains the default, and is what a run that was passed nothing operates under.
+
+The point is that changing the mode used to cost a PR against this file. A mode
+is a property of one night, this file is shared state, and the two were coupled
+only by where the value happened to live.
+
+**Mode is the only value that may arrive that way.** `review scope` is
+deliberately not overridable from the prompt: `all` means reviewing other
+people's PRs unattended, which [Scope](#scope-whose-prs-get-reviewed) says takes
+a human setting it for that run, and a word typed into a starting instruction is
+not that. Mode is safe to pass precisely because it cannot widen who the run
+acts on — it only decides whether step 3 is reached.
+
+**Say which source the mode came from** — the passed instruction or this block —
+in the log on the first iteration and in the report, beside the mode itself.
+That is the same requirement as echoing the values and exists for the same
+reason: otherwise a run whose mode did not come from this file is invisible
+afterwards, and a later reader finds a block that disagrees with what happened
+and no way to tell which was wrong.
+
+A passed mode is subject to the same stop rule as a written one: **a value you
+do not recognise stops the run and asks**, whichever way it arrived. A passed
+mode that *contradicts* the block is not a conflict to stop on — the pass wins,
+per the paragraph above — but say both in the report.
+
 ### Scope for tonight
 
 Selection is governed by [Choosing work](#choosing-work) under Standing policy,

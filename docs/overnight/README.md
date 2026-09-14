@@ -3,11 +3,17 @@
 Instructions for an agent running `/loop` with nobody watching — overnight, or
 any stretch where questions cannot be answered.
 
-Start a run with:
+Start a run with `/overnight`, or by hand:
 
 ```
-/loop Read docs/overnight/README.md and follow the brief it indexes, per the reading protocol below. Re-read .claude/overnight-log.md first each iteration so you do not repeat work.
+/loop 10m Read docs/overnight/README.md and follow the brief it indexes, per the reading protocol below. Re-read .claude/overnight-log.md first each iteration so you do not repeat work. Mode: review-only.
 ```
+
+**Carry the `Mode:` clause.** It overrides `START.md` → *This run*, so a night's
+mode costs no commit — and a starting instruction that omits it falls back to
+whatever that block last said, silently. Use a fixed interval rather than
+self-pacing: it re-arms itself, where a self-paced loop stops for good the first
+time it forgets to.
 
 ## The files, and when to read each
 
@@ -16,8 +22,8 @@ not the ones it is not. Every rule lives in exactly one file.
 
 | file | when to read it | ~tokens |
 |---|---|---|
-| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.1k |
-| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 6.2k |
+| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.2k |
+| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 6.7k |
 | [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 10.3k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.9k |
 | [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.2k |
@@ -55,7 +61,7 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap that only selects costs about 27k tokens of brief instead of 54k;
+A step-1 lap that only selects costs about 27k tokens of brief instead of 55k;
 one that also spawns a round, about 33k. A step-2 lap is about 23k, a step-3 lap
 about 17k. That is the whole point of the split.
 
