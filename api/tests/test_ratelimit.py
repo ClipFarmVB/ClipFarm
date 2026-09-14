@@ -561,3 +561,53 @@ def test_ipv4_mapped_callers_do_not_all_land_in_one_bucket(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         call(dep, FakeRequest(peer="::ffff:203.0.113.7"))
     assert exc.value.status_code == 429
+
+
+def test_the_memory_backend_does_not_keep_every_window_it_has_ever_seen():
+    """The in-process fallback is a shipped path, so it needs Redis's bound too.
+
+    Redis gets it from the one-window TTL on every key, which is what lets the
+    module docstring say steady-state cardinality is distinct callers per minute
+    rather than anything cumulative. A plain dict has no TTL: without a sweep,
+    every bucket ever seen stays resident, and the cardinality driving that is
+    the attacker-controlled address space `_bucket` exists to bound. `main.py`'s
+    lifespan keeps this backend whenever `from_url` raises, which is a supported
+    degradation with its own test -- so "it is only the test seam" is not true.
+
+    Expired entries are already ignored on read, so this is about growth and not
+    about counting. Asserted on the resident set directly, because that is the
+    property: a count-based assertion would pass over an unbounded dict.
+    """
+    clock = FakeClock()
+    backend = MemoryBackend(clock=clock)
+
+    for n in range(5000):
+        asyncio.run(backend.hit(f"rl:profile:ip:198.51.100.{n}", 60))
+    assert len(backend._windows) == 5000
+
+    # Past every window, and past the sweep interval.
+    clock.advance(120)
+    asyncio.run(backend.hit("rl:profile:ip:203.0.113.1", 60))
+    assert len(backend._windows) == 1, (
+        f"{len(backend._windows)} windows still resident after all 5000 expired"
+    )
+
+
+def test_the_sweep_does_not_drop_a_window_that_is_still_counting():
+    """The sweep must not become a way to get a fresh budget by waiting.
+
+    A longer-windowed policy is the case to be careful about: sweeping on the
+    caller's window rather than each entry's own would evict a live counter
+    belonging to a policy whose window has not closed.
+    """
+    clock = FakeClock()
+    backend = MemoryBackend(clock=clock)
+
+    asyncio.run(backend.hit("rl:slow:ip:203.0.113.1", 600))
+    asyncio.run(backend.hit("rl:fast:ip:203.0.113.2", 60))
+
+    # Past the fast window and the sweep interval, inside the slow one.
+    clock.advance(120)
+    hit = asyncio.run(backend.hit("rl:slow:ip:203.0.113.1", 600))
+    assert hit.hits == 2, "the 600s window was swept while it was still counting"
+    assert "rl:fast:ip:203.0.113.2" not in backend._windows

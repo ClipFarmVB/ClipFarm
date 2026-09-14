@@ -12,18 +12,32 @@ That argument is sound today. What it was not, until this file, is *enforced*.
 It lived in a comment in `render.yaml` and a paragraph in `services/access.py`,
 and it stops being true the moment someone adds a visibility setter — which is
 a normal-looking feature PR, plausibly written by someone who never opens
-either file. `access.py`'s own docstring says as much: "that last sentence
-expires with CF-109". The failure mode is not a bug in the new endpoint; it is
-that shipping it silently converts the anonymous read routes from "always 404"
-into "serves real footage". Since CF-186 those routes are throttled per caller
-and `/clips/{id}/download` requires auth, so the sentence is narrower than it
-was — but throttled is not the same as safe, and the disclosure question this
-file guards is untouched by a rate limit.
+either file. `access.py`'s own docstring carries the same ordering and now
+names this file as what enforces it: "The moment the visibility setter lands
+(CF-109b, #398) these routes start serving real footage", and
+"`api/tests/test_no_visibility_write_path.py` is the guard that keeps the
+setter from arriving unnoticed, and it is #398's to delete."
 
-So the constraint is a test. It fails the day a write path appears, which is
-the day rate limiting stops being a parallel task and becomes a blocker — and
-it fails in the PR that adds it, in front of the person who can weigh that,
-rather than in production.
+*That quotation used to be "that last sentence expires with CF-109", which is a
+sentence CF-186 deleted from `access.py` when it rewrote the paragraph around
+it — leaving this file holding the only copy in the repository, presented as a
+quotation of a file that no longer said it. Worth the aside rather than a silent
+swap: the failure is not the deletion, it is that quoting a neighbouring file
+makes this docstring stale on somebody else's edit, and nothing checks it.*
+
+The failure mode is not a bug in the new endpoint; it is that shipping it
+silently converts the anonymous read routes from "always 404" into "serves real
+footage". Since CF-186 those routes are throttled per caller and
+`/clips/{id}/download` requires auth, so the sentence is narrower than it was —
+but throttled is not the same as safe, and the disclosure question this file
+guards is untouched by a rate limit.
+
+So the constraint is a test. It fails the day a write path appears — in the PR
+that adds it, in front of the person who can weigh that, rather than in
+production. It used to be the day rate limiting turned from a parallel task
+into a blocker; the limiter has landed, so what is left for that person to weigh
+is the disclosure question above and the numbers, which nobody can size against
+real public traffic until there is any.
 
 **Deleting this test is a legitimate thing to do.** It is not a claim that a
 visibility setter is wrong; it is a claim that landing one is a decision about

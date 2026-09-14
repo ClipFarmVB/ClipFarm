@@ -170,6 +170,12 @@ POLICIES: dict[str, Policy] = {
 }
 
 
+# How often MemoryBackend drops expired windows. One window, so a sweep is
+# amortised over at least a window's worth of requests and the resident set is
+# bounded by two windows of distinct callers rather than by uptime.
+_SWEEP_EVERY_SECONDS = 60.0
+
+
 class Backend(Protocol):
     async def hit(self, key: str, window_seconds: int) -> Hit: ...
 
@@ -186,21 +192,53 @@ class MemoryBackend:
     ``clock`` is injected for the same reason ``GameProgress`` takes one: the
     window arithmetic is the part worth testing, and it should not need a
     ``sleep``.
+
+    **Expired windows are swept**, because this is a shipped fallback and not
+    only a test seam. Redis gets the same bound from the one-window TTL on every
+    key, and the module docstring leans on that to say steady-state cardinality
+    is distinct callers per minute rather than anything cumulative. A plain dict
+    has no TTL, so without a sweep the same sentence is false for the in-process
+    path: every distinct bucket ever seen stays resident, and what drives that
+    cardinality is exactly the attacker-controlled address space ``_bucket``
+    exists to bound. Growth is the reason to sweep; nothing here is a
+    correctness fix, since an expired entry is already ignored on read.
+
+    The sweep runs at most once per ``_SWEEP_EVERY_SECONDS`` and costs one pass
+    over the dict, so the resident set is bounded by the distinct callers of one
+    window plus one sweep interval — not by the process's whole history. The
+    window length is stored per entry rather than assumed, because a policy is
+    free to carry its own and a sweep that used the caller's would drop live
+    counters belonging to a longer one.
     """
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
-        self._windows: dict[str, tuple[int, float]] = {}
+        self._windows: dict[str, tuple[int, float, int]] = {}
+        self._swept_at: float | None = None
 
     async def hit(self, key: str, window_seconds: int) -> Hit:
         now = self._clock()
-        count, started = self._windows.get(key, (0, now))
+        self._sweep(now)
+        count, started, _window = self._windows.get(key, (0, now, window_seconds))
         if now - started >= window_seconds:
             count, started = 0, now
         count += 1
-        self._windows[key] = (count, started)
+        self._windows[key] = (count, started, window_seconds)
         remaining = window_seconds - (now - started)
         return Hit(count, max(1, int(remaining) + 1))
+
+    def _sweep(self, now: float) -> None:
+        # `None` rather than 0.0 for "never swept": time.monotonic()'s origin is
+        # arbitrary, so a 0.0 sentinel means the first call either sweeps or
+        # does not depending on how long the machine has been up.
+        if self._swept_at is not None and now - self._swept_at < _SWEEP_EVERY_SECONDS:
+            return
+        self._swept_at = now
+        self._windows = {
+            key: entry
+            for key, entry in self._windows.items()
+            if now - entry[1] < entry[2]
+        }
 
 
 class RedisBackend:
@@ -364,8 +402,10 @@ class RateLimiter:
     would.
 
     ``dependencies=[...]`` rather than a parameter, in turn, because a new
-    parameter would change seven coroutine signatures and churn every direct
-    call site in the suite.
+    parameter would change all six throttled coroutine signatures and churn
+    every direct call site in the suite. (Six, not the seven anonymous reads
+    this card started from: ``download_clip`` is the seventh and its signature
+    *did* change here, since auth rather than a limiter is what it got.)
     """
 
     def __init__(self, policy: Policy) -> None:

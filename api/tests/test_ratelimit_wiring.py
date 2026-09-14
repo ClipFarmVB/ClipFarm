@@ -1,8 +1,8 @@
 """Every anonymous read is actually covered (CF-186, #189).
 
 The limiters hang off each route decorator's ``dependencies=[...]``, which
-keeps all seven coroutine signatures byte-identical and leaves every direct
-call in this suite working — and makes the limiter completely invisible to
+keeps the six throttled coroutine signatures byte-identical and leaves every
+direct call in this suite working — and makes the limiter completely invisible to
 those calls. So this file is not optional: without it, deleting a
 ``dependencies=[...]`` line would break nothing that runs.
 
