@@ -91,6 +91,29 @@ describe("PostGrid viewer scoping", () => {
     expect(host.querySelectorAll("img").length).toBe(1);
   });
 
+  it("closes the player when the grid reloads for a different viewer", async () => {
+    // The player holds the whole Post. Left open across a sign-out, the
+    // spinner unmounted it and the refetch mounted it again — autoplaying the
+    // private post to a session that could no longer request it.
+    const priv = post("p-private", "private");
+    priv.playback.clip_url = "https://x.test/private.mp4";
+    getUserPosts.mockResolvedValueOnce([post("p-public", "public"), priv]);
+    await render(true);
+    await click(playButtons()[1]);
+    expect(dialog()?.querySelector("video")?.getAttribute("src")).toBe(
+      "https://x.test/private.mp4",
+    );
+
+    viewer = null;
+    getUserPosts.mockResolvedValueOnce([post("p-public", "public")]);
+    await render(false);
+
+    // The grid did reload for the new viewer, so the check below is not
+    // passing because nothing happened.
+    expect(host.querySelectorAll("img").length).toBe(1);
+    expect(dialog()).toBeNull();
+  });
+
   it("does not re-request when nothing about the viewer changed", async () => {
     getUserPosts.mockResolvedValue([post("p-public", "public")]);
     await render(true);
@@ -274,10 +297,12 @@ describe("playing a post from the grid", () => {
     );
     expect(remove).toBeDefined();
     expect(z(remove)).toBeGreaterThan(z(play));
-    // Visible without hover. A touch screen never matches `group-hover` —
-    // Tailwind 4 compiles `hover` inside `@media (hover: hover)` — so without
-    // this the control that wins the tap is one the owner cannot see. jsdom
-    // evaluates no media queries, so the class is what can be pinned here.
+    // Visible wherever touch is possible. `group-hover` compiles inside
+    // `@media (hover: hover)`, which describes the primary input only, so a
+    // touch laptop or a 2-in-1 matches it and never shows the control to a
+    // finger. jsdom evaluates no media queries, so the classes are what can be
+    // pinned here.
+    expect(remove!.className).toContain("any-pointer-coarse:opacity-100");
     expect(remove!.className).toContain("[@media(hover:none)]:opacity-100");
 
     // The caption is painted over the frame too and must not eat the tap.

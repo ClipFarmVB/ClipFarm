@@ -75,6 +75,11 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
     let cancelled = false;
     setPosts(null);
     setError(null);
+    // The open player holds the whole Post, so it has to go with the grid it
+    // came from. Left set, the spinner below unmounts the modal and the refetch
+    // mounts it again — autoplaying a private post to the session that just
+    // signed out, or the previous profile's post over a new handle.
+    setPlaying(null);
     getUserPosts(handle, PAGE)
       .then((data) => {
         if (!cancelled) {
@@ -217,17 +222,21 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
               </span>
 
               {isSelf && (
-                // Shown without hover where there is none. The tile is now the
-                // thing you tap to watch and this sits above that target, so on
-                // a touch screen an invisible control would still take the tap
-                // and unpublish the post. `group-hover` never applies there:
-                // Tailwind 4 compiles `hover` inside `@media (hover: hover)`.
+                // Shown without hover wherever touch is possible. The tile is
+                // now the thing you tap to watch and this sits above that
+                // target, so an invisible control would still take a finger tap
+                // and unpublish the post. `group-hover` cannot be relied on:
+                // Tailwind 4 compiles `hover` inside `@media (hover: hover)`,
+                // which describes the PRIMARY input only, so a touch laptop, a
+                // 2-in-1 or an iPad with a trackpad matches it and never shows
+                // the control to a finger. `any-pointer-coarse` covers any
+                // touch input; `hover:none` stays for devices with no hover.
                 <button
                   onClick={() => remove(post.id)}
                   disabled={deleting === post.id}
                   title="Remove this post. The clip itself stays in your library."
                   aria-label="Remove this post"
-                  className="absolute right-1.5 top-1.5 z-10 rounded bg-black/60 p-1 text-white/80 opacity-0 transition-opacity hover:text-white focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 disabled:opacity-50"
+                  className="absolute right-1.5 top-1.5 z-10 rounded bg-black/60 p-1 text-white/80 opacity-0 transition-opacity hover:text-white focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 any-pointer-coarse:opacity-100 disabled:opacity-50"
                 >
                   {deleting === post.id ? (
                     <Loader2 className="h-3 w-3 animate-spin" />

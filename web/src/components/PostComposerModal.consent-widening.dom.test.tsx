@@ -106,11 +106,16 @@ describe("widening after consenting", () => {
     expect(tier("Everyone").disabled).toBe(false);
 
     await click(tier("Followers"));
+    expect(card().textContent).toContain("Posting to Followers");
     await tick();
     expect(postButton().disabled).toBe(false);
 
     await click(tier("Everyone"));
 
+    // The sentence being agreed to has to name the tier now selected, not the
+    // one the earlier tick was for.
+    expect(card().textContent).toContain("Posting to Everyone");
+    expect(card().textContent).not.toContain("Posting to Followers");
     expect(consentBox()!.checked).toBe(false);
     expect(postButton().disabled).toBe(true);
     await click(postButton());
