@@ -69,8 +69,10 @@ const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof L
  * naming a tier and leaving the user to guess — this is youth-sports footage,
  * so "Everyone" needs to read as "everyone".
  *
- * Posting never widens the clip itself — and the tiers a clip cannot support
- * are shown disabled, with the reason, rather than offered and then refused.
+ * Posting from this component never widens the clip itself — the API can when
+ * asked, but this component does not ask yet (below) — and the tiers a clip
+ * cannot support are shown disabled, with the reason, rather than offered and
+ * then refused.
  *
  * That is the half this was missing. For two releases nothing in the product
  * could raise a clip's visibility at all, and both a clip and its game default

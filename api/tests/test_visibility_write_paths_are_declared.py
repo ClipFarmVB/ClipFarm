@@ -18,15 +18,16 @@ every clip in the game, and the suite would stay green.
 So the rule is now two rules:
 
 * **`Game.visibility`: written by nothing, anywhere.** Unchanged from before.
-* **`Clip.visibility`: written only in the files named below.** The tier is
-  gated on `PUBLIC_POSTING_ENABLED` in both of them (`services/publishing.py`);
-  a third path would reach `public` with the flag off and nothing would notice.
+* **`Clip.visibility`: written only in the functions named below.** The tier
+  is gated on `PUBLIC_POSTING_ENABLED` in both of them
+  (`services/publishing.py`); a third path would reach `public` with the flag
+  off and nothing would notice.
 * `Post.visibility` is the feature and was always exempt.
 
 `_DECLARED_CLIP_WRITERS` is the whole exemption. Adding to it is a real
 decision — the same one this file's predecessor existed to force — and the
-right way to make it is to add the file here, in a diff, alongside a test that
-the new path is gated.
+right way to make it is to add the (file, function) pair here, in a diff,
+alongside a test that the new path is gated.
 
 The scope is the whole `app/` package, not `routers/`, for the reason the
 original gave: CF-109 put the visibility ladder in `services/access.py`, so a
@@ -40,8 +41,8 @@ round wrote `game.visibility, game.title = ...` and watched the suite stay
 green — for `setattr`, for Core `update(...).values(visibility=...)`, and for a
 row constructed wide (`Clip(visibility=...)`).
 
-Three shapes still get past, and they are listed rather than implied because
-the last version of this paragraph claimed coverage it did not have:
+Shapes known to get past are listed below. The list is not exhaustive — this
+paragraph has twice claimed coverage it did not have:
 
 * **Raw SQL in a string.** Visible in review in a way `clip.visibility = ...` is
   not, which is the original argument and still holds.
@@ -52,6 +53,14 @@ the last version of this paragraph claimed coverage it did not have:
   `setattr(obj, column, ...)`. *Narrowly* handled — a computed `setattr` name is
   failed when the owner reads as a clip or a game, since undecidable is not the
   same as safe there — but an owner the guard cannot name still slips.
+* **Binding forms other than assignment**: a `for` target
+  (`for game.visibility in xs:`) and a `with cm as game.visibility:` target.
+* **`obj.__setattr__("visibility", ...)`**, called as a method rather than
+  through `setattr`.
+* **A module-qualified constructor**, `models.Game(visibility=...)`.
+* **SQLAlchemy's ORM bulk update by primary key**:
+  `db.execute(update(Game), [{"id": gid, "visibility": ...}])`. The most
+  plausible of these in real code, because nothing about it looks unusual.
 
 A guard is not a proof. What it buys is that the *idiomatic* way to write this
 column fails loudly in the diff that introduces it.
@@ -296,8 +305,8 @@ def test_only_the_declared_functions_widen_a_clip_and_nothing_widens_a_game(path
         "files — because only they gate the tier on PUBLIC_POSTING_ENABLED "
         "(services/publishing.py). A third path would reach `public` with the "
         "flag off.\n"
-        "If this is a deliberate new write path, add the file to "
-        "_DECLARED_CLIP_WRITERS in the same PR, with a test that the new path "
+        "If this is a deliberate new write path, add its (file, function) pair "
+        "to _DECLARED_CLIP_WRITERS in the same PR, with a test that the new path "
         "is gated — so the decision is in a diff rather than in a silenced test."
     )
 

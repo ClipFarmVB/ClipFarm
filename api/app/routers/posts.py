@@ -173,9 +173,10 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
         clip_level = body.visibility
 
     if not access.at_most(body.visibility, clip_level):
-        # Refuse rather than silently widening the clip. Raising the clip's
-        # visibility exposes the whole game's footage and has to be a separate,
-        # deliberate act by the owner (CF-109: "never a silent side effect").
+        # Refuse rather than silently widening the clip. Widening it — this
+        # clip only, never its game — happens only when the owner asks for it,
+        # through `raise_clip_visibility` above or `PATCH /clips/{id}/visibility`
+        # (CF-109: "never a silent side effect").
         #
         # **This is a UX guarantee, not the security boundary.** There is a
         # window between this check and the INSERT in which the clip can go
