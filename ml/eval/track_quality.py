@@ -24,9 +24,14 @@ decides nothing; the card is assigned, and scaling the constants belongs to
 whoever holds it.
 
   docker compose --env-file .env.docker run --rm --no-deps eval \\
-      python -m ml.eval.diagnose_detection --test test4 --dump results/test4_ball_track.json
+      python -m ml.eval.diagnose_detection --test test4
   docker compose --env-file .env.docker run --rm --no-deps eval \\
       python -m ml.eval.track_quality test4
+
+No `--dump` on the first command, deliberately: its default is
+`ml/eval/results/test4_ball_track.json`, which is exactly where the second reads
+from. A relative `--dump` path resolves against the container's working
+directory (`/app/api`) instead, and the second command then cannot find it.
 
 **What it cannot tell you.** `MAX_JUMP_PX` is applied inside `_pick_active`
 while tracking, choosing among the detections the model returned for a frame. A
@@ -74,8 +79,12 @@ def consecutive_speeds(track, max_gap: float = B.MAX_SAMPLE_GAP_SEC) -> list[Sam
     """Speeds between consecutive samples, skipping detection gaps.
 
     Pairs spanning more than `max_gap` are dropped rather than counted as a
-    huge jump — the same rule `_segment_track` and `bridge_windows_by_motion`
-    apply, so this describes the track those two are looking at.
+    huge jump — the rule `_segment_track` applies (`MAX_SAMPLE_GAP_SEC`), so
+    this describes the track the segmenter is looking at.
+
+    Not quite the condense bridge's: `bridge_windows_by_motion` takes its own
+    `max_sample_spacing`, 1.5s by default and not overridden by any caller, so
+    a pair 1.0-1.5s apart counts there and is dropped here.
     """
     out: list[Sample] = []
     for a, b in zip(track.positions, track.positions[1:]):

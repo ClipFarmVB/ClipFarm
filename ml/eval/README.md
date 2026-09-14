@@ -347,11 +347,16 @@ number about it. `track_quality.py` prints that number:
 
 ```bash
 docker compose --env-file .env.docker run --rm --no-deps eval \
-  python -m ml.eval.diagnose_detection --test test4 --dump results/test4_ball_track.json
+  python -m ml.eval.diagnose_detection --test test4
 
 docker compose --env-file .env.docker run --rm --no-deps eval \
   python -m ml.eval.track_quality test4
 ```
+
+Leave `--dump` off the first command. Its default,
+`ml/eval/results/test4_ball_track.json`, is where `track_quality` reads; a
+relative `--dump` path resolves against the eval container's working directory
+(`/app/api`) and lands somewhere the second command never looks.
 
 It reports the speed distribution in px/s and in frame-heights/s, the fraction
 of samples that are effectively stationary, and what the segmentation ceiling

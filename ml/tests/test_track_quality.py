@@ -45,7 +45,10 @@ def test_the_speeds_are_the_ones_between_consecutive_samples():
 
 
 def test_a_detection_gap_contributes_no_sample_rather_than_a_huge_jump():
-    """The rule `_segment_track` and the condense bridge both apply.
+    """The rule `_segment_track` applies (`MAX_SAMPLE_GAP_SEC`).
+
+    Not the condense bridge's: `bridge_windows_by_motion` spaces samples up to
+    1.5s apart by default, so a pair 1.0-1.5s apart counts there and not here.
 
     Counting a pair that spans a dropout would put a fabricated teleport into
     every distribution this tool prints — and it is exactly the shape of the
@@ -151,13 +154,30 @@ def _max_jump_expression():
 def _eval_max_jump(expression: str, *, sample_every: int, frame_height: int) -> float:
     """Evaluate that expression against synthetic inputs.
 
-    Everything `track_ball` could legitimately reach for is in scope, so an
-    expression that starts reading a new constant evaluates rather than raising
-    NameError — the point is to catch a changed VALUE, not a changed spelling.
+    In scope: every module-level UPPERCASE name in `ball`, plus `sample_every`
+    and `frame_height`. So an expression that starts reading a new constant
+    evaluates — the point is to catch a changed VALUE, not a changed spelling.
+
+    Not in scope: any other local of `track_ball` (`fps`, `cap`, or a new
+    `frame_h`). CF-229's change has to introduce a frame-height local, and the
+    natural spelling is not guaranteed to be `frame_height`. That case must still
+    reach the message the change deserves rather than a bare NameError, so it is
+    caught here and turned into that message.
     """
     scope = {name: getattr(B, name) for name in dir(B) if name.isupper()}
     scope.update(sample_every=sample_every, frame_height=frame_height)
-    return float(eval(expression, {"__builtins__": {}}, scope))  # noqa: S307
+    try:
+        return float(eval(expression, {"__builtins__": {}}, scope))  # noqa: S307
+    except NameError as exc:
+        unevaluable = str(exc)
+    # Failed outside the `except`, so the report leads with this message rather
+    # than with the NameError chained underneath it.
+    pytest.fail(
+        f"track_ball's `max_jump = {expression}` reads a name this guard cannot "
+        f"evaluate ({unevaluable}). If that is CF-229's frame-height scaling, it "
+        "is welcome — update this test in the same PR, with the re-measured "
+        "dead-time numbers the card asks for and test1 unmoved."
+    )
 
 
 def test_the_jump_threshold_is_corrected_for_sampling_and_not_for_frame_height():
@@ -208,7 +228,7 @@ def test_the_jump_threshold_is_corrected_for_sampling_and_not_for_frame_height()
     )
 
 
-# ── The numbers, not the labels (cold round on #485) ──────────────────
+# ── The numbers, not the labels ──────────────────────────────────────────
 #
 # The tests above assert that `report()` prints the right headings and the right
 # prose. That left every printed VALUE unasserted: the median, p90 and fh/s
@@ -262,7 +282,8 @@ def test_a_purely_vertical_move_has_a_speed():
 def test_the_reported_median_and_p90_are_the_median_and_the_p90():
     # Deliberately SKEWED: an evenly spaced run has mean == median, so
     # `np.median` -> `np.mean` would survive it. Nine samples, eight of them
-    # 100 and one 9100: median 100, mean 1100, p90 ~3700.
+    # 100 and one 9100: median 100, mean 1100, p90 1900 (linear interpolation
+    # between the eighth and ninth sorted values).
     text = report(track(*([100.0] * 8 + [9100.0])), frame_height=1000)
 
     def value(label):
@@ -304,7 +325,7 @@ def test_the_lock_on_row_counts_samples_under_the_stationary_threshold():
 
 
 def test_the_px_per_sample_row_uses_the_samples_own_step_not_the_permitted_gap():
-    """The cold round's finding: `MAX_SAMPLE_GAP_SEC` is the maximum PERMITTED
+    """The bug 97b3b43 fixed: `MAX_SAMPLE_GAP_SEC` is the maximum PERMITTED
     gap (1.0s), not the step (0.1s at the shipped cadence). Using it inflated
     this row 10x.
 
@@ -329,3 +350,34 @@ def test_a_gap_at_exactly_the_limit_is_kept():
     assert len(kept) == 1
     dropped = consecutive_speeds(track(100.0, dt=B.MAX_SAMPLE_GAP_SEC * 1.01))
     assert dropped == []
+
+
+def test_the_delta_line_says_how_much_scaling_would_stop_splitting():
+    """The report's concluding trade, which nothing asserted.
+
+    Two of four samples at 2000 px/s: over the shipped ceiling and under the
+    scaled one at 1080p. So the shipped ceiling splits 50%, the scaled one 0%,
+    and scaling would stop splitting 50%. Computed the other way round (scaled
+    minus shipped) it prints -50.0%, and the suite stayed green.
+    """
+    scaled = B.SEG_MAX_SPEED_PXPS * (1080 / B.REFERENCE_FRAME_HEIGHT)
+    assert B.SEG_MAX_SPEED_PXPS < 2000.0 < scaled, (
+        "fixture no longer straddles the shipped and scaled ceilings"
+    )
+    text = report(track(2000.0, 2000.0, 100.0, 100.0), frame_height=1080)
+    line = next(ln for ln in text.splitlines() if "would stop splitting" in ln)
+    assert float(line.split("splitting ")[1].split("%")[0]) == pytest.approx(50.0), text
+
+
+def test_the_p90_frame_height_column_is_the_p90_not_the_median():
+    """The fh/s column of the p90 row, on a track where median and p90 differ.
+
+    `test_the_frame_height_column_divides_by_the_frame_height` uses three equal
+    speeds, where median and p90 coincide, so `np.percentile(fh, 90)` ->
+    `np.median(fh)` survived it and printed one row whose two columns disagreed
+    by 19x. Eight samples at 100 px/s and one at 9100, 1000px tall: the p90 is
+    1900 px/s, so 1.900 fh/s, where the median would print 0.100.
+    """
+    text = report(track(*([100.0] * 8 + [9100.0])), frame_height=1000)
+    row = next(ln for ln in text.splitlines() if ln.strip().startswith("p90"))
+    assert float(row.split("px/s")[1].split()[0]) == pytest.approx(1.9), text
