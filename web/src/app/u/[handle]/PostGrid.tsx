@@ -7,10 +7,16 @@ import { SOCIAL_ENABLED } from "@/lib/features";
 import { useMe } from "@/lib/useMe";
 import { PostPlayerModal } from "./PostPlayerModal";
 
-/** Read aloud in place of the icon; the icon alone conveyed the tier. */
+/**
+ * Read aloud in place of the icon; the icon alone conveyed the tier.
+ *
+ * Worded for anyone looking, not for the author: the badge renders on every
+ * viewer's grid, and "Visible to your followers" read to a visitor describes
+ * the visitor's followers rather than the author's.
+ */
 const VISIBILITY_LABEL: Record<Visibility, string> = {
-  private: "Only you can see this",
-  followers: "Visible to your followers",
+  private: "Only the author can see this",
+  followers: "Visible to followers",
   public: "Visible to everyone",
 };
 
@@ -37,9 +43,10 @@ const TIER_ICON: Record<Visibility, typeof Lock> = {
  * something on it.
  *
  * It did not play anything at all until CF-109b item 2 (#398), which was a gap
- * rather than a decision: the profile is the only surface that shows posts, so
- * a published clip could not be watched anywhere — including by its own author,
- * whose posts are not in their own feed. A tile now opens `PostPlayerModal`,
+ * rather than a decision: the profile is the only surface that shows posts, and
+ * there is no feed yet (CF-111, #141, is open), so a published clip could not
+ * be watched anywhere — including by its own author. A tile now opens
+ * `PostPlayerModal`,
  * which needs no API change because `PostOut.playback` already carries the URL.
  */
 /** Matches the API's own default. Requested explicitly so a full page is
@@ -210,12 +217,17 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
               </span>
 
               {isSelf && (
+                // Shown without hover where there is none. The tile is now the
+                // thing you tap to watch and this sits above that target, so on
+                // a touch screen an invisible control would still take the tap
+                // and unpublish the post. `group-hover` never applies there:
+                // Tailwind 4 compiles `hover` inside `@media (hover: hover)`.
                 <button
                   onClick={() => remove(post.id)}
                   disabled={deleting === post.id}
                   title="Remove this post. The clip itself stays in your library."
                   aria-label="Remove this post"
-                  className="absolute right-1.5 top-1.5 z-10 rounded bg-black/60 p-1 text-white/80 opacity-0 transition-opacity hover:text-white focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+                  className="absolute right-1.5 top-1.5 z-10 rounded bg-black/60 p-1 text-white/80 opacity-0 transition-opacity hover:text-white focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 disabled:opacity-50"
                 >
                   {deleting === post.id ? (
                     <Loader2 className="h-3 w-3 animate-spin" />

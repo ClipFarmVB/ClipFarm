@@ -109,8 +109,8 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
       if (e.key === "Escape") {
         // Leaving the player's fullscreen fires Escape at the page as well as
         // at the UA, so without this one press exits fullscreen AND closes the
-        // modal — the user asked for one of those. This is the only overlay
-        // with a <video>, which is why only this one needs the guard.
+        // modal — the user asked for one of those. `PostPlayerModal` holds a
+        // <video> too and carries the same guard.
         if (document.fullscreenElement) return;
         onClose();
         return;
