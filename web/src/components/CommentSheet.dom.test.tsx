@@ -21,8 +21,8 @@ const meRef = vi.hoisted(() => ({ current: null as Me | null }));
 
 vi.mock("@/lib/api", () => ({ getComments, createComment, deleteComment }));
 vi.mock("@/lib/useMe", () => ({ useMe: () => meRef.current }));
-// The sheet gates `useMe` on the session, matching every other caller. Neither
-// the session nor the feature flag is the subject here.
+// The sheet gates `useMe` on the session, the way `Sidebar` does (`ClipModal`
+// does not). Neither the session nor the feature flag is the subject here.
 vi.mock("@/contexts/AuthContext", () => ({
   useAuth: () => ({ user: { id: "session" }, loading: false }),
 }));
@@ -349,6 +349,54 @@ describe("the textarea's own submit path", () => {
     });
 
     expect(createComment).toHaveBeenCalledWith("post-1", "typed");
+  });
+
+  it("does not send on the Enter that confirms an IME candidate", async () => {
+    // Committing a candidate in a Japanese, Chinese or Korean IME fires a
+    // keydown with `key: "Enter"` and `isComposing: true`. Sending on it posts
+    // a half-composed comment and clears the box, so the text is gone and what
+    // did post is not what was meant.
+    //
+    // This component already depends on the distinction: `useFocusTrap` guards
+    // its Escape handler with the same check, so Escape was IME-safe here while
+    // Enter was not.
+    await mount();
+    await type("にほ");
+
+    await act(async () => {
+      textarea().dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          isComposing: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(createComment).not.toHaveBeenCalled();
+    expect(textarea().value).toBe("にほ");
+  });
+
+  it("posts once when two Enters land in the same tick", async () => {
+    // The existing re-entrancy test awaits between presses, so the re-render
+    // lands and it is `canSubmit`/`saving` that stops the second. This one
+    // dispatches both inside one `act`, before any re-render, which only the
+    // `submitBusy` ref can stop — the same distinction `remove` draws.
+    let release: (v: unknown) => void = () => {};
+    createComment.mockReturnValue(new Promise((r) => (release = r)));
+    await mount();
+    await type("typed");
+
+    await act(async () => {
+      const ev = () =>
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      textarea().dispatchEvent(ev());
+      textarea().dispatchEvent(ev());
+    });
+    await act(async () => release(makeComment("c9", OTHER, "typed")));
+
+    expect(createComment).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a newline on Shift+Enter instead of sending", async () => {

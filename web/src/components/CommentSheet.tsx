@@ -42,7 +42,9 @@ export function CommentSheet({
   onCountChange?: (delta: number) => void;
 }) {
   const { user, loading: authLoading } = useAuth();
-  // Gated like every other caller, not `true`. `useMe`'s own docstring says
+  // Gated on the session, the way `Sidebar` does it, not `true`. (Not every
+  // caller does — `ClipModal` passes a bare `SOCIAL_ENABLED` — so this is the
+  // careful form rather than the universal one.) `useMe`'s own docstring says
   // `enabled` is false while signed out precisely to avoid a guaranteed 401 —
   // and `fetchMe` caches only on success, so an unconditional `true` re-fires
   // that 401 on EVERY open of this sheet rather than once. The answer is the
@@ -64,6 +66,7 @@ export function CommentSheet({
   // worked, or decrements the card's count twice for one comment.
   const [deleting, setDeleting] = useState<string | null>(null);
   const deleteBusy = useRef(false);
+  const submitBusy = useRef(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -112,7 +115,10 @@ export function CommentSheet({
   const canSubmit = body.trim().length > 0 && !saving;
 
   async function submit() {
-    if (!canSubmit) return;
+    // Ref first, for the reason `remove` gives: `saving` is state, so two
+    // Enters in one tick both read it as false and both post.
+    if (submitBusy.current || !canSubmit) return;
+    submitBusy.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -123,6 +129,7 @@ export function CommentSheet({
     } catch (e) {
       setError(e instanceof Error && e.message ? e.message : "Could not post your comment.");
     } finally {
+      submitBusy.current = false;
       setSaving(false);
     }
   }
@@ -242,6 +249,14 @@ export function CommentSheet({
               // Enter sends; Shift+Enter keeps a newline, since a comment is
               // usually one line and a phone keyboard's return key is the
               // send button people reach for.
+              //
+              // Not the Enter that commits an IME candidate, though. That one
+              // arrives as `key: "Enter"` with `isComposing` set, and sending
+              // on it posts a half-composed comment and empties the box. The
+              // same check guards `useFocusTrap`'s Escape — which this sheet
+              // mounts — so without it Escape was IME-safe here and Enter was
+              // not.
+              if (e.nativeEvent.isComposing) return;
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 void submit();
