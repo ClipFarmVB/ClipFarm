@@ -19,14 +19,14 @@ All on the `users` table unless noted.
 
 | Column | Class | Notes |
 | --- | --- | --- |
-| `id` | operational | Internal UUID. Appears in no URL a stranger can guess their way to. |
+| `id` | operational | Internal UUID, and **not** an internal-only one: `ProfileOut` returns it, `GET /users/{handle}` is unauthenticated, and `avatar_url` is stored as `avatars/{user_id}`, so the UUID reaches anonymous callers both as a field and inside a URL. Unguessable, which is a different property from undisclosed. |
 | `email` | **identifier** | Unique, required. The only field that reaches a real person off-platform. |
 | `hashed_password` | **credential** | Nullable — null means SSO-only, so the account has no local password at all. |
 | `username` | **identifier** | Public handle. Lower-cased, unique by functional index. Doubles as how other users refer to them. |
 | `display_name` | profile | Chosen, optional. |
 | `bio` | profile | Chosen, optional, 280 chars. |
 | `avatar_url` | profile | Stored key; served presigned when R2 is configured. |
-| `is_private` | operational | Defaults **true**. The footage is youth sports, so nothing reaches a non-follower without a deliberate opt-in. |
+| `is_private` | operational | Defaults **true**, and governs **who may follow, not who may see**. `services/access.py` says so in bold and `test_account_privacy_does_not_clamp_post_visibility` pins it: a private account's `public` post is readable by a signed-out stranger. The column is stored and echoed; no access decision reads it. |
 | `created_at`, `username_changed_at`, `username_is_generated` | operational | Account lifecycle. `username_is_generated` marks a handle migration 010 derived from the email local part. |
 
 **One thing worth a lawyer's attention:** a generated handle is derived from the
@@ -39,22 +39,54 @@ database.
 
 The heavier personal data is not in `users` at all — it is **video of
 identifiable people, most of them minors**. Uploaded footage, generated clips
-and condensed renders live in R2, keyed by content hash. `players` and `teams`
-carry names attached to that footage. Nothing in this document should be read
-as suggesting the account columns are the sensitive part; they are the easy
-part.
+and condensed renders live in R2 under **identifier-derived keys**, not content
+hashes: `raw/{game_id}`, `clips/{game_id}/{clip_id}.mp4`,
+`condensed/{game_id}.mp4`, `avatars/{user_id}` (`services/storage.py`). That
+matters here because a content-addressed key is opaque and dedupes across users,
+while these embed row ids and do neither.
+
+`players` and `teams` carry names attached to that footage — `players.name`
+(required), `players.jersey_number`, `players.photo_url`. **Neither table has
+any deletion path.** `routers/players.py` exposes `GET`, `POST` and `PATCH` and
+no DELETE; nothing anywhere calls `db.delete()` on a `Player` or a `Team`; and
+deleting a game cascades its clips but sets `clips.player_id` to NULL, so the
+player row survives its last clip. `players` also carries **no foreign key to
+`users.id`** — only `team_id` — so it can never appear in the deletion table
+below, and the guard test cannot see it either. The one table holding what this
+document calls the sensitive part is outside both.
+
+Also user-typed and not tabulated above, because the table is scoped to `users`:
+`posts.caption`, `games.title`, `collections.name`. Named here rather than left
+to the reader to notice, since a scope boundary the document does not state
+reads as completeness.
+
+Nothing in this document should be read as suggesting the account columns are
+the sensitive part; they are the easy part.
 
 ---
 
 ## 2. Who can see it
 
 Visibility is `clip.visibility or game.visibility` (`api/app/services/
-access.py`) — a clip overrides its game, and the default is private. Public
-posting is additionally gated behind `PUBLIC_POSTING_ENABLED`, which is **off**,
-so the only sharing tier reachable today is `followers`.
+access.py`) — a clip overrides its game, and the default is private.
 
-That gate is the reason this inventory is not urgent-but-late: the exposure a
-privacy policy most needs to describe is currently closed in code.
+**The reachable tier today is `private`, and the reason is not a flag.** No
+router writes `Game.visibility` or `Clip.visibility` (`models/visibility.py`
+says so in capitals, and `test_no_visibility_write_path.py` pins it), so
+`widest_allowed` resolves to `private` for every row and `create_post` refuses
+anything wider. `followers` is unreachable for a second reason as well:
+`is_follower` returns `False` unconditionally until CF-110 lands, so
+followers-tier content is owner-only regardless.
+
+**That is a much weaker guarantee than a flag, and the difference is the point.**
+An earlier draft of this section said public posting was gated behind a
+`PUBLIC_POSTING_ENABLED` setting that was off. No such setting exists anywhere
+in the repository. The flag that does exist is `SOCIAL_ENABLED`, and
+`render.yaml` sets it to `"true"`, mounting `/users/*` and `/posts/*` in
+production. So the exposure a privacy policy most needs to describe is held shut
+by **the absence of one feature PR**, not by a switch somebody has to flip — and
+CF-109b is that PR, open now. Read this section as a countdown rather than a
+reassurance.
 
 ---
 
@@ -62,10 +94,13 @@ privacy policy most needs to describe is currently closed in code.
 
 **Account deletion is not implemented, and could not succeed today if it were.**
 
-Two independent reasons:
+Three independent reasons, and the third is the one an implementer is most
+likely to miss:
 
-1. **There is no endpoint.** No `users` router, no `DELETE /me`. Nothing in the
-   API removes a user row.
+1. **There is no endpoint.** There *is* a `users` router — `routers/profiles.py`
+   carries the `/users` prefix and serves `GET /me`, `PATCH /me`,
+   `POST /me/avatar` and `GET /{handle}` — but it has no DELETE route, and
+   nothing in the API removes a user row.
 2. **The schema refuses it.** Three tables reference `users.id` with no
    `ON DELETE` clause, which in PostgreSQL means `NO ACTION` — the delete is
    rejected while any referencing row exists:
@@ -87,6 +122,15 @@ partial delete leaving orphaned footage behind. But it means **a policy must not
 promise erasure on request until this is built.** That is the single most
 consequential line in this document.
 
+3. **The account does not live here.** `public.users` is a **mirror**.
+   `_ensure_user_exists` inserts `id` and `email` from the verified Supabase JWT
+   on the first authenticated request, and it runs on every request. So even
+   with the three blockers above resolved and a `DELETE /me` shipped, deleting
+   the local row erases nothing: the identity and the email remain in Supabase
+   `auth.users`, and the user's next request recreates the mirror. Erasure needs
+   a Supabase Auth admin delete as well — which is invisible to the table above
+   and to the guard test, because it is not in `Base.metadata`.
+
 There is a second-order question for the lawyer, not for the schema: `upload_events`
 is deliberately append-only, because it is what the minute quota is counted from
 and a refundable quota is an abuse vector. It cascades on user delete, so erasure
@@ -95,22 +139,45 @@ decision someone should make knowingly rather than discover.
 
 ### What erasure would need
 
-Not a proposal, just the shape of the work: a decision per table on whether
-rows are deleted or detached (`ON DELETE SET NULL`, as `upload_events.game_id`
-already does for games), the R2 objects behind a user's footage, and whether a
-deleted user's clips inside *other people's* collections survive. Collections
-are cross-owner, so that last one is a real question and not a detail.
+Not a proposal, just the shape of the work: a Supabase Auth delete alongside
+the local one, a decision per table on whether rows are deleted or detached
+(`ON DELETE SET NULL`, as `upload_events.game_id` already does for games), the
+R2 objects behind a user's footage, a deletion path for `players` and `teams`
+where none exists at all, and whether a deleted user's clips inside *other
+people's* collections survive. Collections are cross-owner, so that last one is
+a real question and not a detail.
+
+**An implementer who works only the table above will build an incomplete erasure
+and believe it is finished.** That is the failure this section exists to
+prevent, so it is stated rather than implied.
 
 ---
 
 ## 4. What this document does not cover
 
-- Retention periods. Nothing expires anything today; there is no scheduled
-  deletion of footage, clips or renders.
+- Retention periods, **except the one that already runs**, which belongs here
+  rather than in a "not covered" list: `_sweep_expired_raw_uploads` clears
+  `games.raw_video_url` and deletes the R2 objects under `raw/` for every game
+  past `raw_upload_retention_days` — **default 7** — at the end of every
+  successful `process_game`. There is no cron, but the deletion is automatic and
+  unconditional, so **source footage is destroyed after a week**. An earlier
+  draft of this section said nothing expires anything; a policy drafted from
+  that sentence would have promised the opposite of what the system does. Clips,
+  condensed renders and rows have no expiry.
+- **R2 objects orphaned by a game delete.** `delete_game` removes the row first
+  and then deletes the objects best-effort, swallowing per-key failures, and the
+  retention sweep only walks `raw/`. A failed delete leaves clip and condensed
+  objects with no row referencing them and nothing that will ever reclaim them —
+  footage outliving the user's deletion of it.
 - Third parties. Supabase (auth + database), Cloudflare R2 (object storage),
-  Modal and Roboflow (inference on uploaded frames) all process this data.
-  Enumerating the sub-processors is a separate pass, and it matters: frames of
-  identifiable minors are sent to inference providers.
+  Modal and Roboflow (inference on uploaded frames) and **Sentry** (errors and
+  performance from the api, the worker and the browser) all process this data.
+  Sentry is configured with `send_default_pii=False` and
+  `max_request_body_size="never"`, which limits what reaches it rather than
+  making it a non-processor. Enumerating the sub-processors is a separate pass,
+  and it matters: frames of identifiable minors are sent to inference providers.
+  Their own retention terms are contractual facts, not code facts, and are not
+  verified here.
 - Anything about lawfulness, consent, or what any jurisdiction requires. Those
   are the questions CF-75 and CF-88 exist to answer, and they are not
   engineering questions.

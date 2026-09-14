@@ -41,9 +41,18 @@ USER_COLUMN_CLASSES = {
 
 VALID_CLASSES = {"identifier", "credential", "profile", "operational"}
 
-# Every table referencing users.id, and what the SCHEMA does to its rows when
-# the user row is deleted. Read from the live metadata below, so this map is a
-# claim about the database rather than a note about it.
+# Every table referencing users.id, and what the ORM METADATA says happens to
+# its rows when the user row is deleted.
+#
+# Read from `Base.metadata` below -- the models, not the migrations, and the
+# distinction is load-bearing rather than pedantic. A migration that alters a
+# constraint without touching `api/app/models/` leaves this green while the
+# document's central claim goes false, and that is not hypothetical here:
+# migration 005 created `dead_time_runs` with an FK to `users.id` and no
+# `ondelete`, a table that blocked account deletion, with no model and so
+# invisible to this helper, until 008 dropped it again. `test_migration_chain.py`
+# reads `alembic/versions/` directly and is the shape this would need to close
+# the gap.
 #
 # None means no ON DELETE clause, which in PostgreSQL is NO ACTION: the delete
 # is REFUSED while any row here points at the user. That is the safe failure
@@ -146,12 +155,18 @@ def test_the_identifiers_and_the_credential_are_not_reclassified():
 
 
 def test_the_recorded_delete_behaviour_matches_the_schema():
-    """The map is a claim about the database, so a migration that changes a
+    """The map is a claim about the models, so a model change that flips a
     cascade must change it here too.
 
-    This is the half that would otherwise rot: `ondelete` lives in a migration,
-    nothing reads it back, and flipping one is a one-word diff that changes
-    whether a deletion is possible at all.
+    This is the half that would otherwise rot: flipping an `ondelete` is a
+    one-word diff that changes whether a deletion is possible at all.
+
+    Stated precisely, because the precise version is weaker than it sounds: what
+    this reads is `Base.metadata`. A migration that alters the constraint in the
+    database without touching the model is invisible here, so this pins the
+    models against the document and not the database against either. Closing
+    that gap means reading `alembic/versions/` as `test_migration_chain.py`
+    does.
     """
     problems = delete_behaviour_mismatches(_user_foreign_keys(), USER_REFERENCING_TABLES)
     assert not problems, (
