@@ -141,6 +141,12 @@ describe("posting wider than the clip", () => {
     // The half a user would otherwise discover later: deleting the post does
     // not put the clip back.
     expect(text).toContain("after this post is deleted");
+    // ...and where the undo is. This sentence was removed when the API allowed
+    // narrowing and no control did — a promise the user would go looking for
+    // and not find. The control exists now, so it names where: the clip on its
+    // game's page, which is the one surface that offers the undo (the
+    // cross-owner collections page does not).
+    expect(text).toContain("make it private again from the clip on its game's page");
   });
 
   it("sends the raise once acknowledged", async () => {
@@ -197,6 +203,46 @@ describe("when the server refuses anyway", () => {
     await click(postButton());
 
     expect(card().textContent).toContain("This clip is private, so it can only…");
+  });
+});
+
+describe("what the composer hands back", () => {
+  // The dialog behind the composer decides from this whether to show the undo
+  // the consent copy promises. A review round found it asserted only on the
+  // dialog's side: making the composer always report null (the original bug)
+  // or always report the chosen tier left every suite green.
+  it("reports the tier the clip was raised to", async () => {
+    const onPosted = vi.fn();
+    act(() => {
+      root.render(
+        <PostComposerModal clip={makeClip("private")} onClose={() => {}} onPosted={onPosted} />,
+      );
+    });
+    await click(tier("Followers"));
+    await tick();
+    await click(postButton());
+
+    expect(createPost).toHaveBeenCalledWith("clip-1", "", "followers", true);
+    expect(onPosted).toHaveBeenCalledTimes(1);
+    expect(onPosted).toHaveBeenCalledWith("followers");
+  });
+
+  it("reports null when the clip was not touched", async () => {
+    // Worse than the null bug if wrong: reporting a tier here would make the
+    // dialog rewrite a public clip as that tier and hide the undo while the
+    // clip stays public.
+    const onPosted = vi.fn();
+    act(() => {
+      root.render(
+        <PostComposerModal clip={makeClip("public")} onClose={() => {}} onPosted={onPosted} />,
+      );
+    });
+    await click(tier("Only me"));
+    await click(postButton());
+
+    expect(createPost).toHaveBeenCalledWith("clip-1", "", "private", false);
+    expect(onPosted).toHaveBeenCalledTimes(1);
+    expect(onPosted).toHaveBeenCalledWith(null);
   });
 });
 
