@@ -198,12 +198,12 @@ def test_the_jump_threshold_is_corrected_for_sampling_and_not_for_frame_height()
     Asserted on the VALUE the expression produces, not on the words in it. The
     first version of this test scraped the source line for the substrings
     "sample_every" and "frame_height", which let `MAX_JUMP_PX * sample_every`
-    through — 3x more permissive at the shipped cadence — because the substring
+    through — 3x more permissive at any `sample_every` — because the substring
     was still present, and let a frame-height scale through on an adjacent line.
     """
     expression = _max_jump_expression()
 
-    # At the shipped cadence the correction is a no-op, so the budget is the
+    # At track_ball's default cadence the correction is a no-op, so the budget is the
     # constant itself. This is the anchor: a factor that scales with
     # sample_every but has the wrong magnitude fails here.
     at_shipped = _eval_max_jump(expression, sample_every=B.SAMPLE_EVERY, frame_height=360)
@@ -326,11 +326,12 @@ def test_the_lock_on_row_counts_samples_under_the_stationary_threshold():
 
 def test_the_px_per_sample_row_uses_the_samples_own_step_not_the_permitted_gap():
     """The bug 97b3b43 fixed: `MAX_SAMPLE_GAP_SEC` is the maximum PERMITTED
-    gap (1.0s), not the step (0.1s at the shipped cadence). Using it inflated
-    this row 10x.
+    gap (1.0s), not the step. This fixture's step is 0.1s, `track_ball`'s
+    default cadence at 30 fps, where that inflated the row 10x; at the ~0.33s
+    real dumps are sampled at, it was ~3x.
 
-    At dt=0.1 a sample must exceed MAX_JUMP_PX/0.1 = 3000 px/s to have moved
-    MAX_JUMP_PX=300 pixels. 2999 has not; 3001 has.
+    At dt=0.1 and the default budget, a sample must exceed MAX_JUMP_PX/0.1 =
+    3000 px/s to have moved MAX_JUMP_PX=300 pixels. 2999 has not; 3001 has.
     """
     text = report(track(2999.0, 2999.0, 2999.0, 2999.0), frame_height=1000)
     assert f"over {B.MAX_JUMP_PX:.0f} px in one sample" in text
@@ -383,3 +384,66 @@ def test_the_p90_frame_height_column_is_the_p90_not_the_median():
     text = report(track(*([100.0] * 8 + [9100.0])), frame_height=1000)
     row = next(ln for ln in text.splitlines() if ln.strip().startswith("p90"))
     assert float(row.split("px/s")[1].split()[0]) == pytest.approx(1.9), text
+
+
+def test_the_px_per_sample_row_uses_the_budget_the_dump_was_tracked_with():
+    """Real dumps are not tracked at `SAMPLE_EVERY`.
+
+    Production and `diagnose_detection` sample every `round(fps / 3)` frames —
+    10 at 30 fps, a sample every 1/3s — where `track_ball`'s budget is
+    MAX_JUMP_PX * 10/3 = 1000px. Against the bare 300px, a track moving 333px
+    a sample, well inside what the tracker allowed, printed 100%. 999px a
+    sample is under the budget it was tracked with; 1001px is over.
+    """
+    dt = 1 / 3
+    assert B.MAX_JUMP_PX * (10 / B.SAMPLE_EVERY) == pytest.approx(1000.0), (
+        "fixture assumes MAX_JUMP_PX=300 and SAMPLE_EVERY=3"
+    )
+
+    text = report(track(*([999.0 / dt] * 4), dt=dt), frame_height=1080, sample_every=10)
+    assert "sample_every=10" in text, text
+    assert "over 1000 px in one sample" in text, text
+    assert row_percent(text, "px in one sample") == pytest.approx(0.0), text
+
+    text = report(track(*([1001.0 / dt] * 4), dt=dt), frame_height=1080, sample_every=10)
+    assert row_percent(text, "px in one sample") == pytest.approx(100.0), text
+
+
+def test_main_passes_on_the_sample_every_the_dump_records(monkeypatch, capsys):
+    """`load` does not return `sample_every`, so `main` reads it from the dump.
+
+    Dropped, `report` falls back to the default and the budget row is out by
+    10/3 on every real dump while still printing a plausible number.
+    """
+    import logging
+
+    import ml.eval.track_quality as tq
+
+    monkeypatch.setattr(tq, "load", lambda test_id: (track(100.0, 200.0), None, 1080, None))
+    monkeypatch.setattr(tq, "_dump_sample_every", lambda test_id: 10)
+    try:
+        tq.main(["test4"])
+    finally:
+        logging.disable(logging.NOTSET)  # main() disables INFO process-wide
+    out = capsys.readouterr().out
+    assert "sample_every=10" in out, out
+    assert "over 1000 px in one sample" in out, out
+
+
+def test_the_dumps_sample_every_is_read_from_the_dump_and_required(tmp_path, monkeypatch):
+    import json
+
+    import ml.eval.track_quality as tq
+
+    monkeypatch.setattr(tq, "RESULTS_DIR", tmp_path)
+    (tmp_path / "t9_ball_track.json").write_text(
+        json.dumps({"sample_every": 10, "frame_height": 1080}), encoding="utf-8"
+    )
+    assert tq._dump_sample_every("t9") == 10
+
+    # A dump without it fails loudly rather than being drawn at a guessed cadence.
+    (tmp_path / "old_ball_track.json").write_text(
+        json.dumps({"frame_height": 1080}), encoding="utf-8"
+    )
+    with pytest.raises(KeyError):
+        tq._dump_sample_every("old")

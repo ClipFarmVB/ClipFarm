@@ -48,15 +48,23 @@ detections. A sample exceeding the budget therefore says nothing about what a
 different threshold would have done, even directionally. The px-per-sample row
 below is a distance histogram, not a proxy for the threshold.
 
+It is drawn at the budget the dump was tracked with: `MAX_JUMP_PX` corrected
+for the dump's own `sample_every`, the way `track_ball` corrects it. The bare
+constant is the budget only at the default `SAMPLE_EVERY`, which no dump uses —
+production and `diagnose_detection` sample every `round(fps / 3)` frames, where
+the budget at 30 fps is 1000px.
+
 Everything below is computed from the surviving track, which is what the
 segmentation constants actually see.
 """
 import argparse
+import json
 import logging
 from dataclasses import dataclass
 
 import numpy as np
 
+from ml.eval.harness import RESULTS_DIR
 from ml.eval.tune_contacts import load
 from ml.pipeline import ball as B
 
@@ -101,9 +109,10 @@ def fraction(samples: list[Sample], predicate) -> float:
     It takes the Sample rather than the speed on purpose. The first version
     passed `s.pxps` alone, which put `dt` out of reach — and the px-per-sample
     row below then reached for `MAX_SAMPLE_GAP_SEC` instead, which is the
-    maximum PERMITTED gap (1.0s), not the sample's own step (0.1s at the
-    shipped cadence). That inflated the row 10x and it read as a plausible
-    number rather than an error.
+    maximum PERMITTED gap (1.0s), not the sample's own step. At 30 fps that
+    inflated the row ~3x at the one-look-every-~0.33s real dumps are sampled
+    at, and 10x at `track_ball`'s default 0.1s — and either way it read as a
+    plausible number rather than an error.
     """
     if not samples:
         return 0.0
@@ -116,10 +125,24 @@ def _row(label: str, value: float, *, note: str = "") -> str:
     return f"{line}   <- {note}" if note else line
 
 
-def report(track, frame_height: int) -> str:
+def jump_budget_px(sample_every: int) -> float:
+    """The jump budget `track_ball` tracked with at this `sample_every`.
+
+    The same correction as `max_jump` in `ball.track_ball`. It is not
+    `MAX_JUMP_PX` itself: that is the budget at `track_ball`'s default
+    `SAMPLE_EVERY`, and nothing that writes a dump uses the default. Production
+    and `diagnose_detection` both sample every `round(fps / 3)` frames — 10 at
+    30 fps, one look every ~0.33s — where the budget is 1000px, not 300.
+    """
+    return B.MAX_JUMP_PX * (sample_every / B.SAMPLE_EVERY)
+
+
+def report(track, frame_height: int, sample_every: int = B.SAMPLE_EVERY) -> str:
     samples = consecutive_speeds(track)
     if not samples:
         return "no usable consecutive samples in this dump"
+
+    budget = jump_budget_px(sample_every)
 
     speeds = np.array([s.pxps for s in samples])
     # frame-heights/s is the resolution-independent view, and the one the
@@ -130,7 +153,7 @@ def report(track, frame_height: int) -> str:
     scaled_ceiling = B.SEG_MAX_SPEED_PXPS * (frame_height / B.REFERENCE_FRAME_HEIGHT)
 
     out = [
-        f"frame_height={frame_height}  samples={len(samples)}  "
+        f"frame_height={frame_height}  sample_every={sample_every}  samples={len(samples)}  "
         f"positions={len(track.positions)}",
         "",
         "SPEED BETWEEN CONSECUTIVE SAMPLES",
@@ -161,8 +184,8 @@ def report(track, frame_height: int) -> str:
             fraction(samples, lambda s: s.pxps > scaled_ceiling),
         ),
         _row(
-            f"over {B.MAX_JUMP_PX:.0f} px in one sample",
-            fraction(samples, lambda s: s.pxps * s.dt > B.MAX_JUMP_PX),
+            f"over {budget:.0f} px in one sample",
+            fraction(samples, lambda s: s.pxps * s.dt > budget),
             note="a distance histogram, NOT the threshold — see below",
         ),
     ]
@@ -192,6 +215,17 @@ def report(track, frame_height: int) -> str:
     return "\n".join(out)
 
 
+def _dump_sample_every(test_id: str) -> int:
+    """The `sample_every` the dump was tracked with, read from the dump.
+
+    `load` does not return it, and guessing it puts the budget row out by the
+    ratio. `diagnose_detection` always writes it, so a dump without it fails
+    here rather than printing a budget for a cadence nobody tracked at.
+    """
+    path = RESULTS_DIR / f"{test_id}_ball_track.json"
+    return int(json.loads(path.read_text(encoding="utf-8"))["sample_every"])
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         description="Track-quality diagnostic for CF-229 (#233)."
@@ -202,7 +236,7 @@ def main(argv: list[str] | None = None) -> None:
 
     logging.disable(logging.INFO)
     track, _positions, frame_h, _fx = load(args.test_id)
-    print(report(track, frame_h))
+    print(report(track, frame_h, sample_every=_dump_sample_every(args.test_id)))
 
 
 if __name__ == "__main__":
