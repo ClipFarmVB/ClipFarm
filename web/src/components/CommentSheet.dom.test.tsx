@@ -412,6 +412,34 @@ describe("deleting is serialised too", () => {
     expect(onCountChange).toHaveBeenCalledTimes(1);
   });
 
+  it("sends one DELETE when both taps land in the same tick", async () => {
+    // This is the case `disabled` cannot cover, and the reason `remove` guards
+    // on a ref rather than on the `deleting` state. Both clicks are dispatched
+    // inside ONE `act`, so React has not re-rendered between them: the button
+    // still carries no `disabled` attribute, and a guard reading state would
+    // read the pre-update value twice and let both through. `deleteBusy`
+    // updates synchronously, so it holds here.
+    //
+    // The test above awaits between the clicks, which lets the re-render land —
+    // so it is `disabled` that it actually pins. The two are not redundant.
+    getComments.mockResolvedValue({ items: [makeComment("c1", OTHER)], next_cursor: null });
+    let release: () => void = () => {};
+    deleteComment.mockReturnValue(new Promise<void>((r) => (release = r)));
+    meRef.current = asMe(AUTHOR);
+    const onCountChange = vi.fn();
+    await mount(() => {}, onCountChange);
+
+    const button = deleteButtons()[0];
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => release());
+
+    expect(deleteComment).toHaveBeenCalledTimes(1);
+    expect(onCountChange).toHaveBeenCalledTimes(1);
+  });
+
   it("shows the delete controls again once the delete settles", async () => {
     // The guard is two belts — a busy ref in `remove` and `disabled` on the
     // button — so removing either alone still sends one DELETE and the test

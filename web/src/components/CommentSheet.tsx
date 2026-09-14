@@ -56,12 +56,14 @@ export function CommentSheet({
   const [error, setError] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [saving, setSaving] = useState(false);
-  // Serialises deletes, the way `saving` serialises posting and FeedPost's
-  // `likeBusy` serialises the like. Without it a double-tap on a 22px trash
-  // icon sends two DELETEs: the second either draws a "not found" banner for a
-  // deletion that worked, or — if both clear the pre-check — decrements the
-  // card's count twice for one comment.
+  // Which delete is in flight — drives `disabled` and the row's dimming. The
+  // serialising is `deleteBusy` below, not this: state does not update until a
+  // re-render, so a guard reading it cannot stop a second click in the same
+  // tick. Both matter — without either, a double-tap on a 22px trash icon sends
+  // two DELETEs, and the second draws a "not found" banner for a deletion that
+  // worked, or decrements the card's count twice for one comment.
   const [deleting, setDeleting] = useState<string | null>(null);
+  const deleteBusy = useRef(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -126,7 +128,14 @@ export function CommentSheet({
   }
 
   async function remove(comment: Comment) {
-    if (deleting) return;
+    // A ref, not the `deleting` state, the same way `FeedPost` serialises the
+    // like. Two clicks in one tick both read the *old* state — React has not
+    // re-rendered between them — so a `if (deleting) return` guard lets both
+    // through and only the re-rendered `disabled` attribute stops the second.
+    // The ref updates synchronously, so it holds in that tick too. `deleting`
+    // stays because it is what drives `disabled` and the spinner.
+    if (deleteBusy.current) return;
+    deleteBusy.current = true;
     setDeleting(comment.id);
     setError(null);
     try {
@@ -136,6 +145,7 @@ export function CommentSheet({
     } catch (e) {
       setError(e instanceof Error && e.message ? e.message : "Could not delete that comment.");
     } finally {
+      deleteBusy.current = false;
       setDeleting(null);
     }
   }

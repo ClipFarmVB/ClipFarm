@@ -324,6 +324,57 @@ describe("liking a post", () => {
     expect(railCount("Comments")).toContain("4");
   });
 
+  it("re-seeds when the same post comes back with new numbers", async () => {
+    // The refresh-in-place case, which an id comparison misses: same id, new
+    // payload, so a `seededFor.current === post.id` guard returns early and the
+    // card goes on rendering the old count. That is the scenario the effect was
+    // added for — the feed refetching page one — so it is the one worth pinning.
+    mount(makePost()); // like_count 3, comment_count 1, not liked
+    expect(railCount("Like")).toContain("3");
+
+    await act(async () => {
+      root.render(
+        <FeedPost
+          post={{ ...makePost(), like_count: 9, comment_count: 4, viewer_has_liked: true } as Post}
+          active={false}
+          loaded={false}
+          muted
+          onToggleSound={() => {}}
+        />,
+      );
+    });
+
+    expect(railCount("Unlike")).toContain("9");
+    expect(railCount("Comments")).toContain("4");
+  });
+
+  it("does not undo an optimistic like when the prop has not changed", async () => {
+    // The other half of keying on the payload: a re-render with the SAME prop
+    // must not re-seed, or every optimistic tap would be reverted by the next
+    // parent render before the server answers.
+    let release: (v: { liked: boolean; like_count: number }) => void = () => {};
+    likePost.mockReturnValue(new Promise((r) => (release = r)));
+    mount(makePost());
+
+    await click(byLabel("Like")[0]);
+    expect(railCount("Unlike")).toContain("4");
+
+    await act(async () => {
+      root.render(
+        <FeedPost
+          post={makePost() as Post}
+          active={false}
+          loaded={false}
+          muted
+          onToggleSound={() => {}}
+        />,
+      );
+    });
+
+    expect(railCount("Unlike")).toContain("4");
+    await act(async () => release({ liked: true, like_count: 4 }));
+  });
+
   it("sends one request for a double tap", async () => {
     let release: (v: { liked: boolean; like_count: number }) => void = () => {};
     likePost.mockReturnValue(new Promise((r) => (release = r)));

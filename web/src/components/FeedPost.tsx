@@ -78,23 +78,54 @@ export const FeedPost = memo(function FeedPost({
   const [commentCount, setCommentCount] = useState(post.comment_count);
   const [commentsOpen, setCommentsOpen] = useState(false);
 
-  // Re-seed when the card is handed a different post.
+  // Re-seed when the server hands this card a payload different from the one it
+  // last seeded from — a different post, or the same post refreshed.
   //
   // `useState` only reads its argument on the first render, so without this the
-  // counts and the fill are frozen at whatever the first payload said. The feed
-  // keys cards by `post.id` and only appends pages, so today a new id means a
-  // new component and this never fires — which is precisely why it is cheap to
-  // add and expensive to discover later: the day the feed refetches page one or
-  // refreshes a post in place, every visible card would keep rendering the old
-  // like count with no way to tell.
-  const seededFor = useRef(post.id);
+  // counts and the fill are frozen at whatever the first payload said. Today the
+  // feed keys cards by `post.id` and only appends pages, so neither case fires:
+  // a new id makes a new component, and nothing refetches. That is why this is
+  // cheap now and expensive later — the day the feed refetches page one, every
+  // visible card would otherwise keep rendering the old like count with nothing
+  // to report it.
+  //
+  // Keyed on the payload rather than on the id alone, because an id test is
+  // exactly what the refresh-in-place case slips past: same id, new numbers,
+  // early return, stale card.
+  const seededFrom = useRef({
+    id: post.id,
+    liked: post.viewer_has_liked,
+    count: post.like_count,
+    comments: post.comment_count,
+  });
   useEffect(() => {
-    if (seededFor.current === post.id) return;
-    seededFor.current = post.id;
+    const prev = seededFrom.current;
+    const newPost = prev.id !== post.id;
+    // Compare against the last payload we seeded from, not against local state.
+    // Local state moves on an optimistic tap while the prop stands still, so
+    // comparing to it would re-seed on our own optimism and undo it; comparing
+    // to the previous prop fires only when the server actually says something
+    // new — which is the "refreshes a post in place" case, the one an id test
+    // alone misses.
+    const freshPayload =
+      prev.liked !== post.viewer_has_liked ||
+      prev.count !== post.like_count ||
+      prev.comments !== post.comment_count;
+    if (!newPost && !freshPayload) return;
+    seededFrom.current = {
+      id: post.id,
+      liked: post.viewer_has_liked,
+      count: post.like_count,
+      comments: post.comment_count,
+    };
     setLike({ liked: post.viewer_has_liked, count: post.like_count });
     setCommentCount(post.comment_count);
-    setLikeNote(undefined);
-    setCommentsOpen(false);
+    // Only on a genuinely different post. A background refresh must not close
+    // a sheet the reader has open or wipe a note they have not read yet.
+    if (newPost) {
+      setLikeNote(undefined);
+      setCommentsOpen(false);
+    }
   }, [post.id, post.viewer_has_liked, post.like_count, post.comment_count]);
   const { playback: pb } = post;
 
