@@ -17,6 +17,7 @@ import inspect
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers
 
 from app.auth import get_current_user_id
 from app.config import Settings, settings
@@ -253,12 +254,17 @@ def test_the_lifespan_installs_and_removes_the_redis_backend(monkeypatch):
     import app.main as main
 
     closed = []
+    built_with = {}
 
     class FakeRedis:
         async def aclose(self):
             closed.append(True)
 
-    monkeypatch.setattr(main.aioredis, "from_url", lambda url: FakeRedis())
+    def fake_from_url(url, **kwargs):
+        built_with.update(kwargs)
+        return FakeRedis()
+
+    monkeypatch.setattr(main.aioredis, "from_url", fake_from_url)
     monkeypatch.setattr(ratelimit, "_backend", MemoryBackend())
 
     async def drive():
@@ -270,6 +276,48 @@ def test_the_lifespan_installs_and_removes_the_redis_backend(monkeypatch):
 
     asyncio.run(drive())
     assert closed == [True]
+
+    # The socket bounds, asserted here because this is the only place the client
+    # is built. redis-py defaults both to None, and an unbounded client is what
+    # makes a *hanging* redis defeat the limiter's fail-open branch entirely:
+    # that branch catches a raise, and a blackholed connection never raises. The
+    # request then blocks on the kernel's TCP retry bound instead. Pinned as
+    # "is a bound set at all", not as the number, so tuning it stays free.
+    assert built_with.get("socket_timeout"), "no socket_timeout on the client"
+    assert built_with.get("socket_connect_timeout"), "no connect timeout"
+    assert built_with["socket_timeout"] == ratelimit.REDIS_SOCKET_TIMEOUT_SECONDS
+    assert (
+        built_with["socket_connect_timeout"] == ratelimit.REDIS_SOCKET_TIMEOUT_SECONDS
+    )
+
+
+def test_a_hanging_backend_is_a_raise_the_limiter_can_fail_open_on(monkeypatch):
+    """The half of fail-open that only works if something bounds the wait.
+
+    `_enforce` allows the request when the backend raises. A redis that has gone
+    away raises; a redis that accepts the connection and never answers does not,
+    and before the socket bounds the request sat there until the kernel gave up.
+    This asserts the consequence rather than the configuration: a
+    `redis.TimeoutError` -- which is what the socket bound produces, and which is
+    an ordinary Exception -- reaches the fail-open branch and the caller is let
+    through rather than 500ing.
+    """
+    import redis.exceptions
+
+    class HungBackend:
+        async def hit(self, key, window_seconds):
+            raise redis.exceptions.TimeoutError("Timeout reading from socket")
+
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(ratelimit, "_backend", HungBackend())
+    limiter = ratelimit.rate_limit(ratelimit.POLICIES["profile"])
+
+    class Req:
+        client = type("C", (), {"host": "203.0.113.9"})()
+        headers = Headers({})
+
+    assert asyncio.run(limiter(Req())) is None
 
 
 def test_an_address_keyed_route_resolves_no_auth_dependency():

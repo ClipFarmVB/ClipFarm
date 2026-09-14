@@ -50,7 +50,9 @@ not achievable — the honest answer is one pipelined round trip against a poole
 connection. A per-process in-memory counter would be zero and would also be
 wrong the moment there is more than one instance.
 
-**Fail open.** If the backend raises, the request is allowed. CLAUDE.md's code
+**Fail open.** If the backend raises — including on the socket timeouts
+``REDIS_SOCKET_TIMEOUT_SECONDS`` sets, which is what makes a *hanging* backend
+raise at all — the request is allowed. CLAUDE.md's code
 posture — "reporting must never break processing" — applies with force here:
 what this protects is a cost and enumeration-rate concern, not an authorization
 boundary. ``services/access.py`` still decides who may read what and never
@@ -170,6 +172,33 @@ POLICIES: dict[str, Policy] = {
 }
 
 
+# The socket bounds on the Redis client, in seconds (main.py builds it).
+#
+# Not a tuning knob: without them a *hanging* backend defeats the fail-open
+# posture entirely. `_enforce` catches a raise, and redis-py's asyncio client
+# defaults both of these to None (verified against the installed 5.2.1:
+# `AbstractConnection.__init__`), so a blackholed connection never raises and
+# never returns. The request then blocks on the kernel's TCP retry bound rather
+# than on anything this module decided, and the module docstring's "if the
+# backend raises, the request is allowed" quietly does not cover the case that
+# matters most. `_check_redis` in main.py already bounds the same call against
+# the same service with its own `wait_for`.
+#
+# The bound is set on the CLIENT rather than by wrapping the call in
+# `asyncio.wait_for`, which would look equivalent and is not: a `wait_for`
+# cancels the coroutine mid-command, and redis-py's `execute_command` does not
+# disconnect on `CancelledError` (it does on its own `TimeoutError`, through
+# `_disconnect_raise`), so the cancelled connection goes back to the pool with
+# an unread reply on it and the next caller reads somebody else's answer. A
+# wrong counter is a worse failure than a slow one. The library's own timeout
+# raises `redis.TimeoutError`, which is an `Exception`, so it lands in the
+# fail-open branch that was always there.
+#
+# One second, not the two `_check_redis` uses: this is on every throttled read,
+# a healthy round trip is sub-millisecond in-region, and the cold-connect case
+# that could exceed it fails open and logs rather than failing closed.
+REDIS_SOCKET_TIMEOUT_SECONDS = 1.0
+
 # How often MemoryBackend drops expired windows. One window, so a sweep is
 # amortised over at least a window's worth of requests and the resident set is
 # bounded by two windows of distinct callers rather than by uptime.
@@ -287,13 +316,17 @@ def set_backend(backend: Backend) -> None:
 # GameProgress records about a failing progress writer. One line a minute is
 # enough to see it in the dashboard; 10k is what buries the cause.
 _WARN_EVERY_SECONDS = 60.0
-_last_warned_at = 0.0
+# `None` rather than 0.0, for the reason MemoryBackend's `_swept_at` gives:
+# time.monotonic()'s origin is arbitrary, so against a 0.0 sentinel the first
+# outage either logs or does not depending on how long the machine has been up.
+# Same file, same trap, and this copy predates the other.
+_last_warned_at: float | None = None
 
 
 def _warn_backend_down(exc: BaseException) -> None:
     global _last_warned_at
     now = time.monotonic()
-    if now - _last_warned_at < _WARN_EVERY_SECONDS:
+    if _last_warned_at is not None and now - _last_warned_at < _WARN_EVERY_SECONDS:
         return
     _last_warned_at = now
     logger.warning("rate limit backend unavailable, allowing requests: %r", exc)
