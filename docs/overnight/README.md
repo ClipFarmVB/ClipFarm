@@ -22,7 +22,7 @@ not the ones it is not. Every rule lives in exactly one file.
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.9k |
 | [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.2k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 4.2k |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 4.8k |
 | [`REPORTING.md`](./REPORTING.md) | the end of the run | 2.4k |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background — what a night costs, why the machinery is shaped this way | 2.7k |
 

@@ -202,18 +202,53 @@ report is the thing that reaches a human in the morning. The failure is a
 judgement call filed and not reported, which looks like progress and is a
 finding nobody was told about.
 
+#### The one read both of the next two sections need
+
+Checking for a duplicate and picking the card number are the same read, so take
+it once: **every issue in the repository, open and closed, paginated to
+exhaustion.** It is the only form that works in every environment this brief runs
+in, which is why it is here rather than a search.
+
+```
+curl -s "https://api.github.com/repos/ClipFarmVB/ClipFarm/issues\
+?state=all&per_page=100&page=<n>"
+```
+
+**Paginate until a page comes back empty.** Do not assume a page count — it grows
+with every issue filed, so a number written here would be wrong within the week,
+the same reason the gate block above records `0 skipped` rather than a passed
+total. A capped read returns a maximum that is silently too low, and the card you
+file then shares a number with one that already exists.
+
+**Three searches that look cheaper and are not.** Each fails differently, and two
+of the three fail *silently*, which is worse than the pagination cost:
+
+- `gh issue list --search` — `gh` routes issue listing through **GraphQL**, which
+  a cloud session refuses outright ([`START.md`](START.md#first-establish-what-you-can-actually-do)).
+  This one at least fails loudly.
+- `GET /search/issues` — works on a maintainer's machine, and is **refused from a
+  cloud session by the egress proxy**: *"This GitHub API path is not available:
+  sessions are bound to their configured repositories. Use repository-scoped
+  endpoints"* (measured 2026-09-14).
+- The MCP `search_issues` tool — returned `total_count: 0` for `retention` in the
+  same session, against a repository holding three cards with that word in the
+  title. **An empty result from a search is not evidence that nothing matches.**
+
+If you do have a working search, use it to narrow the list you already fetched —
+not in place of fetching it.
+
 #### First: is it already filed?
 
-The repository holds 320 cards. Filing a second copy of one is worse than not
-filing at all — it costs the triage it was meant to save, and the two drift.
+Filing a second copy of an existing card is worse than not filing at all: it
+costs the triage it was meant to save, and the two drift.
 
-```
-gh issue list --state open --search "<noun> in:title" --json number,title
-```
-
-Search on the noun the finding is *about*, not on your phrasing of it, and read
-the two or three nearest in subject rather than trusting an empty result: the
-existing card was titled by someone who had not seen your finding.
+Filter the read above on the noun the finding is *about*, not on your phrasing of
+it, and read the two or three nearest in subject rather than stopping at an exact
+miss — the existing card was titled by someone who had not seen your finding.
+**Filter open and closed together.** Restricting to open cards is the mistake
+that makes the second bullet below unreachable: `retention` matches CF-382
+(#498, open) and also CF-372 (#467) and CF-194 (#210), both closed, and it is the
+closed pair that tells you whether you are looking at a recurrence.
 
 - **An open card already covers it → comment on that card** with your new
   evidence. That is strictly better than filing a second and better than
@@ -225,22 +260,25 @@ existing card was titled by someone who had not seen your finding.
 #### Numbering
 
 Title `CF-<n> · <what it is>`, where `<n>` is one past the **highest numeric CF
-in the repository, open and closed.**
+in the repository, open and closed** — from the read above.
 
 - **Do not infer it from the issue number.** The two drifted long ago and the gap
   is now 121: CF-401 is issue #522 (measured 2026-09-14).
-- **Take the numeric part only.** Some cards carry a letter suffix — CF-65a
-  through CF-65f are #99–#104, one concern split into phases with a priority
-  each. `CF-65f` does not make the next card `CF-66`.
-- **The read has to paginate.** There are 520 issues and PRs here, six pages of
-  100. A capped read returns a maximum that is silently too low and two cards
-  then share a number — the same trap [REVIEW.md](REVIEW.md#step-1--which-prs-need-a-round)
-  describes for marker reads, with a worse outcome, because a colliding card
-  looks fine until someone greps for it.
-- **Derive it once per run and increment it yourself** for the rest of the night.
-  Re-deriving per card buys six pages of reads each time, and if you reach for
-  `--search` to make that cheaper you get an index that lags writes — which is
-  how a run collides with its own previous card.
+- **Take the numeric part only.** Some cards carry a letter suffix: CF-65a–CF-65f
+  are #99–#104, one concern split into phases with a priority each, and CF-65g
+  (#149) was added to the set long afterwards. `CF-65g` does not make the next
+  card `CF-66`, and the letters are not a closed set you can memorise.
+- **Re-derive before every card — do not work the number out once and count up.**
+  You are not the only one filing. This has already gone wrong three times:
+  **CF-252** is both #273 and #276, **CF-253** both #274 and #277, and **CF-379**
+  both #494 and #507 — the last of those being the card behind #508, so the
+  mechanism this brief documents has already collided on the brief's own work. A
+  clashing card looks fine until someone greps for it.
+- **Re-deriving is one page, not the whole set.** A card filed after your first
+  read is by construction a newer issue, so refresh with a single newest-first
+  page rather than paginating again:
+  `…/issues?state=all&sort=created&direction=desc&per_page=100`. Do not reach for
+  a search to make it cheaper — see the three above.
 
 If one finding is really several independent pieces of work, either file one card
 that says so or use the suffixed form. Either way **each card counts against the
