@@ -15,7 +15,9 @@ Until this card there was no write path for a clip's or a game's visibility at
 all, so nothing user-generated could be public — that sentence is what
 `render.yaml` cites for running the social surface with CF-116 (abuse and
 moderation) still open, and what `test_no_visibility_write_path.py` enforced
-until this card deleted it.
+until this card replaced it with `test_visibility_write_paths_are_declared.py`
+— same scan over `app/`, narrowed from "nobody may write this" to "only these
+two functions may".
 
 Those are not one exposure but two:
 

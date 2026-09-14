@@ -35,7 +35,10 @@ class Visibility(str, enum.Enum):
 # Until CF-109b, "nothing becomes newly visible" was true by construction — no
 # write path existed at all, and `api/tests/test_no_visibility_write_path.py`
 # enforced that. It is now true by policy instead, which is the weaker guarantee
-# and the reason the flag exists.
+# and the reason the flag exists. The structural half survives as
+# `api/tests/test_visibility_write_paths_are_declared.py`: the same scan over
+# `app/`, narrowed to the two functions CF-109b made legitimate, so "nothing
+# writes a game's visibility" is still checked rather than merely stated.
 #
 # What that leaves unverified: the ORM enum round-trip, the SQL filters against
 # real rows, and the anonymous HTTP paths. The 44-case matrix in

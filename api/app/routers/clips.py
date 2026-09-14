@@ -258,7 +258,10 @@ async def update_clip_visibility(
     and the composer could only ever offer "Only me" — a user could publish a
     post, but only to themselves. `api/tests/test_no_visibility_write_path.py`
     enforced that absence and is deleted by this change, which is where the
-    ordering decision it was protecting gets recorded.
+    ordering decision it was protecting gets recorded. **Deleted, not dropped**:
+    `api/tests/test_visibility_write_paths_are_declared.py` keeps the same
+    `app/`-wide scan and names this function as one of exactly two that may
+    write the column, so a third path fails in the diff that adds it.
 
     **The clip's own tier, never the game's.** Raising the game would publish
     every clip in it, which is precisely the silent side effect `create_post`'s

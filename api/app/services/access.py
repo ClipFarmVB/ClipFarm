@@ -79,8 +79,10 @@ load question alone.** For two releases nothing user-generated could be
 `public` — no write path existed and
 ``api/tests/test_no_visibility_write_path.py`` enforced that — so every
 anonymous read reached the database and 404'd. `PATCH /clips/{id}/visibility`
-and `POST /posts` with `raise_clip_visibility` end that, and the guard test is
-deleted in the same change.
+and `POST /posts` with `raise_clip_visibility` end that. That guard is replaced
+rather than simply deleted: ``test_visibility_write_paths_are_declared.py``
+keeps the same `app/`-wide scan and narrows the rule to those two functions, so
+a third write path still fails in the diff that adds it.
 
 Two things bound what actually became reachable. **`public` is off by default**
 behind ``PUBLIC_POSTING_ENABLED``, so a stock deployment still serves no
@@ -99,9 +101,14 @@ with a bare id lookup and no ownership filter, so whoever may read a clip there
 may read the name tagged on it. Of the two, ``GET /games/{game_id}/clips`` is
 the one that can carry a name to an *unauthenticated* caller, because it takes an
 optional viewer; ``GET /collections/{id}/clips`` requires auth, though it spans
-owners. **The collection one is live as of CF-109b**: a clip can now be set
-`public`, so a signed-in stranger reading it through
-``GET /collections/{id}/clips`` gets the tagged player's real name. That is the
+owners. **The collection one becomes live with CF-109b, where the flag is on**:
+a clip can now be set `public`, so a signed-in stranger reading it through
+``GET /collections/{id}/clips`` gets the tagged player's real name. Where it is
+off — which is every stock deployment — nothing reaches that state, because
+``_clips_predicate`` admits only `public` (never `followers`) and
+``services/publishing.py`` refuses `public` behind ``PUBLIC_POSTING_ENABLED``.
+Saying it plainly either way: the exposure is one flag away, not one merge
+away. That is the
 intended behaviour argued below, and it is worth saying plainly rather than
 leaving the reader with the old sentence, which said the case could not arise
 because nothing wrote a visibility.
