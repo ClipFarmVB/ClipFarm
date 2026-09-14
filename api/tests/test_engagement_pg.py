@@ -100,7 +100,8 @@ def world(pg_db, monkeypatch):
     def _post(key, tier):
         game = Game(id=uuid.uuid4(), owner_id=author.id, title="g", visibility=tier)
         clip = Clip(id=uuid.uuid4(), game_id=game.id, action_type=ActionType.spike,
-                    confidence=0.9, start_time=1.5, end_time=4.5, visibility=None)
+                    confidence=0.9, start_time=1.5, end_time=4.5,
+                    clip_url="https://pub.example.com/clips/c.mp4", visibility=None)
         post = Post(id=uuid.uuid4(), author_id=author.id, clip_id=clip.id,
                     caption="hi", visibility=tier)
         rows.extend([game, clip, post])
