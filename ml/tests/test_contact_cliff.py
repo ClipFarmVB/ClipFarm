@@ -203,6 +203,41 @@ def test_a_rally_lasting_exactly_the_minimum_is_kept():
     assert rallies[0]["end"] - rallies[0]["start"] == B.MIN_RALLY_DURATION
 
 
+def test_the_duration_gate_cannot_fire_on_a_video_longer_than_the_gate():
+    """The claim the module docstring and ml/eval/README.md both make, pinned.
+
+    A rally spans `min(duration, last + POST_PLAY_PAD) - max(0, first -
+    PRE_RALLY_PAD)`. Unclamped that is at least POST_PLAY_PAD; clamped it is
+    `duration - first + PRE_RALLY_PAD`, which bottoms out at exactly
+    PRE_RALLY_PAD when the first contact lands on the final frame. So with
+    PRE_RALLY_PAD >= MIN_RALLY_DURATION the gate cannot fire on any video at
+    least MIN_RALLY_DURATION long, and the duration channel of the ladder is
+    structurally zero on every fixture (300s-3660s).
+
+    Written as a test because the prose version of it has been wrong twice: once
+    claiming the coupling was real, then claiming a floor of 2.5s when the true
+    floor is 2.0. Move a pad or either constant and this fails, which is the
+    signal to go and re-read both documents.
+    """
+    step = 0.37  # nothing lands on a pad boundary by construction
+    for duration in (B.MIN_RALLY_DURATION, 3.0, 300.0, 3660.0):
+        first = 0.0
+        while first <= duration:
+            for last in (first, min(first + step, duration), duration):
+                span = (min(duration, last + B.POST_PLAY_PAD)
+                        - max(0.0, first - B.PRE_RALLY_PAD))
+                assert span >= B.MIN_RALLY_DURATION, (
+                    f"duration={duration} first={first} last={last} span={span}"
+                )
+            first += step
+
+    # And the floor is reached, not merely approached — so the gate's `>=` is
+    # load-bearing rather than incidental.
+    d = 300.0
+    exact = (min(d, d + B.POST_PLAY_PAD) - max(0.0, d - B.PRE_RALLY_PAD))
+    assert exact == B.MIN_RALLY_DURATION
+
+
 def test_the_two_gates_are_counted_separately():
     # Three contacts inside a one-second video: it clears the count gate and
     # then dies on MIN_RALLY_DURATION, because `end` is clamped to the video's

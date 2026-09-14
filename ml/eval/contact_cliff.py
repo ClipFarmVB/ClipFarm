@@ -27,16 +27,32 @@ The obvious worry is that the two are coupled: a rally that loses its
 *outermost* contacts gets shorter as well as thinner, so tightening detection
 might push a segment under the duration gate while it still has three contacts.
 
-It cannot, and the pads are why. A rally spans
-``min(video_duration, last + POST_PLAY_PAD) - max(0, first - PRE_RALLY_PAD)``,
-so with pads of 2.0s and 2.5s the span never falls below 2.5s however few
-contacts survive — the contacts' own spread barely enters it. The only way
-under 2.0s is for the video's *own length* to clamp the end, which for contacts
-inside the video means a video shorter than ``MIN_RALLY_DURATION`` itself.
-Checked by brute force over a grid of durations, first-contact times and
-spreads: every case that trips the gate has ``video_duration <= 1.99``. The
-fixtures run 300s to 3660s, so **the duration channel is identically zero on
-anything this tool can be pointed at.**
+It cannot, though the floor is tighter than the pads alone suggest. A rally
+spans ``min(video_duration, last + POST_PLAY_PAD) - max(0, first -
+PRE_RALLY_PAD)``, which has two regimes:
+
+* the end is **not** clamped — the span is ``last + 2.5`` or, once ``first``
+  clears the pre-roll, ``(last - first) + 4.5``. At least 2.5s, and here the
+  pads really do dominate the contacts' own spread.
+* the end **is** clamped by the video's length — the span is
+  ``video_duration - first + 2.0``, which moves one-for-one with the first
+  contact and reaches **exactly 2.0s** when a rally's first contact lands on
+  the final frame.
+
+So for contacts inside the video the floor is ``MIN_RALLY_DURATION`` itself,
+not something comfortably above it, and the gate's ``>=`` is what keeps that
+case — pinned by ``test_a_rally_lasting_exactly_the_minimum_is_kept``. Measured
+over 300,000 random in-video triples at durations from 2s to 4000s: minimum
+span 2.0, no case below the gate. Below a 2s video every case trips it, which
+is the only regime where this channel is non-zero and not one any fixture is in
+— they run 300s to 3660s.
+
+**So the duration channel reads zero on every fixture here, and that is a
+measured zero rather than an absence of data.** It is a property of the
+constants: move a pad or the gate and it stops holding. The one way to see a
+non-zero without changing them is to hand the tool a dumped track and a
+``video_duration`` the track does not belong to, since the two are read from
+different files with no cross-check.
 
 That is a result, not a reason to drop the row. A demonstrated zero retires the
 hypothesis that part of the loss belongs to the duration gate, which is exactly
