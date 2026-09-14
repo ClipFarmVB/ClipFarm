@@ -256,12 +256,13 @@ async def update_clip_visibility(
     **The write path that did not exist.** Until this, no endpoint anywhere set
     `Clip.visibility` or `Game.visibility`, so every clip resolved to `private`
     and the composer could only ever offer "Only me" — a user could publish a
-    post, but only to themselves. This makes the tier writable; who else can
-    then read the clip depends on `PUBLIC_POSTING_ENABLED` for `public`, and on
-    the follow graph (`access.is_follower`, CF-110) for `followers`, which
-    until then admits nobody but the owner.
-    `api/tests/test_no_visibility_write_path.py`
-    enforced that absence and is deleted by this change, which is where the
+    post, but only to themselves. This makes the tier writable. Whether an
+    owner may *set* `public` is `PUBLIC_POSTING_ENABLED`'s call; `followers` is
+    accepted, but reaches nobody but the owner until the follow graph
+    (`access.is_follower`, CF-110) lands.
+
+    `api/tests/test_no_visibility_write_path.py` enforced the absence of a
+    write path and is deleted by this change, which is where the
     ordering decision it was protecting gets recorded. **Deleted, not dropped**:
     `api/tests/test_visibility_write_paths_are_declared.py` keeps the same
     `app/`-wide scan and names this function as one of exactly two that may

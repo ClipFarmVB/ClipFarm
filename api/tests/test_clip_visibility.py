@@ -8,8 +8,9 @@ ever offer "Only me".
 It does not by itself end "a user can publish, but only to themselves". With
 `public` behind its flag, the only other tier is `followers`, and that reaches
 nobody but the owner until the follow graph lands (`access.is_follower`).
-`api/tests/test_no_visibility_write_path.py` enforced that absence and is
-deleted by the same change — this file is what replaces it, and the two
+
+`api/tests/test_no_visibility_write_path.py` enforced the absence of a write
+path and is deleted by the same change — this file is what replaces it, and the two
 questions it has to answer are the ones that file was protecting:
 
 1. **Only the clip moves, never the game.** Raising a game publishes every clip
