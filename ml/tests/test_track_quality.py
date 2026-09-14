@@ -47,7 +47,7 @@ def test_the_speeds_are_the_ones_between_consecutive_samples():
 def test_a_detection_gap_contributes_no_sample_rather_than_a_huge_jump():
     """The rule `_segment_track` applies (`MAX_SAMPLE_GAP_SEC`).
 
-    Not the condense bridge's: `bridge_windows_by_motion` spaces samples up to
+    Not the condense bridge's: `bridge_windows_by_motion` counts pairs up to
     1.5s apart by default, so a pair 1.0-1.5s apart counts there and not here.
 
     Counting a pair that spans a dropout would put a fabricated teleport into
@@ -355,16 +355,18 @@ def test_a_gap_at_exactly_the_limit_is_kept():
 def test_the_delta_line_says_how_much_scaling_would_stop_splitting():
     """The report's concluding trade, which nothing asserted.
 
-    Two of four samples at 2000 px/s: over the shipped ceiling and under the
-    scaled one at 1080p. So the shipped ceiling splits 50%, the scaled one 0%,
-    and scaling would stop splitting 50%. Computed the other way round (scaled
-    minus shipped) it prints -50.0%, and the suite stayed green.
+    At 1080p, one sample at 5000 px/s is over both ceilings, two at 2000 are
+    over the shipped one only, and one at 100 is under both. So the shipped
+    ceiling splits 75%, the scaled one 25%, and scaling would stop splitting
+    50%. Neither term is zero, so all three wrong versions print a different
+    number: scaled minus shipped prints -50.0%, the shipped fraction alone
+    75.0%, and the scaled fraction alone 25.0%.
     """
     scaled = B.SEG_MAX_SPEED_PXPS * (1080 / B.REFERENCE_FRAME_HEIGHT)
-    assert B.SEG_MAX_SPEED_PXPS < 2000.0 < scaled, (
-        "fixture no longer straddles the shipped and scaled ceilings"
+    assert B.SEG_MAX_SPEED_PXPS < 2000.0 < scaled < 5000.0, (
+        "fixture no longer puts samples between and above both ceilings"
     )
-    text = report(track(2000.0, 2000.0, 100.0, 100.0), frame_height=1080)
+    text = report(track(5000.0, 2000.0, 2000.0, 100.0), frame_height=1080)
     line = next(ln for ln in text.splitlines() if "would stop splitting" in ln)
     assert float(line.split("splitting ")[1].split("%")[0]) == pytest.approx(50.0), text
 
