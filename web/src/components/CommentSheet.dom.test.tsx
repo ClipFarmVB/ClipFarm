@@ -441,11 +441,13 @@ describe("deleting is serialised too", () => {
   });
 
   it("shows the delete controls again once the delete settles", async () => {
-    // The guard is two belts — a busy ref in `remove` and `disabled` on the
-    // button — so removing either alone still sends one DELETE and the test
-    // above cannot tell them apart. This is what makes the disabled state
-    // itself observable: a version that never re-enables leaves the sheet
-    // permanently unable to delete anything after the first attempt.
+    // The guard is two belts — the `deleteBusy` ref in `remove` and `disabled`
+    // on the button — and each of the two tests above pins one of them: the
+    // awaited double tap lets the re-render land, so it pins `disabled`, while
+    // the same-tick one runs before any re-render, so it pins the ref. This
+    // third one makes the disabled state observable in its own right: a version
+    // that never re-enables leaves the sheet permanently unable to delete
+    // anything after the first attempt, and both of the others would still pass.
     getComments.mockResolvedValue({
       items: [makeComment("c1", OTHER), makeComment("c2", OTHER)],
       next_cursor: null,

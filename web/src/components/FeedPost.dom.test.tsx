@@ -418,6 +418,33 @@ describe("the comment sheet", () => {
     expect(getComments).toHaveBeenCalledWith("post-1", null);
   });
 
+  it("stays open when the same post is refreshed underneath it", async () => {
+    // The judgement call in the re-seed effect: `setCommentsOpen(false)` and
+    // clearing the note are gated on a genuinely different post, not on any
+    // payload change. A background refresh closing the sheet would shut it
+    // under someone mid-read, which is a worse bug than the stale count the
+    // refresh exists to fix.
+    getComments.mockResolvedValue({ items: [], next_cursor: null });
+    mount(makePost());
+    await click(byLabel("Comments")[0]);
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    await act(async () => {
+      root.render(
+        <FeedPost
+          post={{ ...makePost(), like_count: 9, comment_count: 4 } as Post}
+          active={false}
+          loaded={false}
+          muted
+          onToggleSound={() => {}}
+        />,
+      );
+    });
+
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(railCount("Comments")).toContain("4"); // the count still re-seeded
+  });
+
   it("moves the rail count when a comment is posted inside the sheet", async () => {
     // The sheet reports a delta rather than the card refetching the post, so
     // the rail count is only right if the card applies it. Nothing else would
