@@ -50,9 +50,10 @@ below is a distance histogram, not a proxy for the threshold.
 
 It is drawn at the budget the dump was tracked with: `MAX_JUMP_PX` corrected
 for the dump's own `sample_every`, the way `track_ball` corrects it. The bare
-constant is the budget only at the default `SAMPLE_EVERY`, which no dump uses —
-production and `diagnose_detection` sample every `round(fps / 3)` frames, where
-the budget at 30 fps is 1000px.
+constant is the budget only at the default `SAMPLE_EVERY`, which almost no dump
+uses — production and `diagnose_detection` sample every `round(fps / 3)` frames,
+which is 3 only for a source of roughly 8-10 fps. The budget is 1000px at 30 fps
+and 2000px at 60.
 
 Everything below is computed from the surviving track, which is what the
 segmentation constants actually see.
@@ -130,9 +131,10 @@ def jump_budget_px(sample_every: int) -> float:
 
     The same correction as `max_jump` in `ball.track_ball`. It is not
     `MAX_JUMP_PX` itself: that is the budget at `track_ball`'s default
-    `SAMPLE_EVERY`, and nothing that writes a dump uses the default. Production
-    and `diagnose_detection` both sample every `round(fps / 3)` frames — 10 at
-    30 fps, one look every ~0.33s — where the budget is 1000px, not 300.
+    `SAMPLE_EVERY`, which a dump rarely uses. Production and
+    `diagnose_detection` both sample every `round(fps / 3)` frames — 10 at
+    30 fps, one look every ~0.33s, where the budget is 1000px, not 300 — and
+    that is 3 only for a source of roughly 8-10 fps.
     """
     return B.MAX_JUMP_PX * (sample_every / B.SAMPLE_EVERY)
 

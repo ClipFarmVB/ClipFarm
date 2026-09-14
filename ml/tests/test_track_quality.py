@@ -417,7 +417,8 @@ def test_main_passes_on_the_sample_every_the_dump_records(monkeypatch, capsys):
     """`load` does not return `sample_every`, so `main` reads it from the dump.
 
     Dropped, `report` falls back to the default and the budget row is out by
-    10/3 on every real dump while still printing a plausible number.
+    the dump's `sample_every / SAMPLE_EVERY` — 10/3 at 30 fps, 20/3 on test4's
+    60 fps source — while still printing a plausible number.
     """
     import logging
 
