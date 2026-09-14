@@ -32,9 +32,14 @@ vi.mock("@/components/PostComposerModal", () => ({
   }: {
     onPosted?: (raised: string | null) => void;
   }) => (
-    <button id="stub-posted" onClick={() => onPosted?.("public")}>
-      pretend we posted and widened
-    </button>
+    <>
+      <button id="stub-posted" onClick={() => onPosted?.("public")}>
+        pretend we posted and widened
+      </button>
+      <button id="stub-posted-untouched" onClick={() => onPosted?.(null)}>
+        pretend we posted without touching the clip
+      </button>
+    </>
   ),
 }));
 
@@ -110,8 +115,8 @@ describe("taking a clip back", () => {
   });
 
   it("offers nothing on a clip that is already private", () => {
-    // Which today is every clip, so this control renders only for someone who
-    // has actually published.
+    // Which is every clip nobody has posted wider, so this control renders
+    // only for someone who has actually published.
     mount("private");
     expect(narrowButton()).toBeUndefined();
   });
@@ -124,18 +129,31 @@ describe("taking a clip back", () => {
     expect(narrowButton()).toBeUndefined();
   });
 
-  it("narrows to private and hands the parent the row the API returned", async () => {
+  it("narrows to private and hands the parent its own row with the new tier", async () => {
     // The parent owns the grid behind this dialog; without the callback its
     // badge keeps showing the old tier until a refetch.
-    const updated = makeClip("private");
-    setClipVisibility.mockResolvedValue(updated);
+    //
+    // Its own row, not the PATCH echo. The echo carries no `player_name`, and
+    // with R2 a freshly presigned `clip_url`, so swapping it in dropped the
+    // tagged player from the header and restarted the video. The echo here is
+    // shaped like that on purpose, so a version that forwards it goes red.
+    const shown = { ...makeClip("public"), player_name: "Sam" } as Clip;
+    const echo = {
+      ...makeClip("private"),
+      player_name: null,
+      clip_url: "https://example.test/re-signed.mp4",
+    } as unknown as Clip;
+    setClipVisibility.mockResolvedValue(echo);
     const onUpdate = vi.fn();
-    mount("public", onUpdate);
+    act(() => {
+      root.render(<ClipModal clip={shown} onClose={() => {}} onUpdate={onUpdate} ownsClip />);
+    });
 
     await click(narrowButton()!);
 
     expect(setClipVisibility).toHaveBeenCalledWith("clip-1", "private");
-    expect(onUpdate).toHaveBeenCalledWith(updated);
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(onUpdate.mock.calls[0][0]).toEqual({ ...shown, effective_visibility: "private" });
   });
 
   it("offers exactly one control here, and it narrows", async () => {
@@ -201,6 +219,56 @@ describe("taking a clip back", () => {
     expect(setClipVisibility).toHaveBeenCalledTimes(1);
   });
 
+  it("does not show another clip's request as in flight", async () => {
+    // The in-flight flag used to be a bare boolean, so while a request was out
+    // for this clip the NEXT clip's button read "Making private…" and sat
+    // disabled until it settled — a hung request locked the undo on every clip
+    // the arrow keys reached.
+    const undo = () =>
+      [...document.querySelectorAll("button")].find((b) =>
+        /Make this clip private again|Making private/.test(b.textContent ?? ""),
+      ) as HTMLButtonElement | undefined;
+    let release: (c: Clip) => void = () => {};
+    setClipVisibility.mockReturnValue(new Promise<Clip>((r) => (release = r)));
+    mount("public");
+
+    await click(undo()!);
+    expect(undo()!.disabled).toBe(true); // the premise: this clip's request is out
+
+    await act(async () => {
+      root.render(
+        <ClipModal clip={{ ...makeClip("public"), id: "clip-2" } as Clip} onClose={() => {}} ownsClip />,
+      );
+    });
+    expect(undo()!.disabled).toBe(false);
+    expect(undo()!.textContent).toContain("Make this clip private again");
+
+    await act(async () => release(makeClip("private")));
+  });
+
+  it("puts the undo in a section of its own, not in the footer's row", () => {
+    // The footer is a single non-wrapping flex row; as an item in it the button
+    // and its two sentences were squeezed into whatever width was left. jsdom
+    // does no layout, so the structure is what can be pinned here.
+    mount("public");
+    const post = document.querySelector('[title="Post this clip"]') as HTMLElement;
+    expect(post).not.toBeNull();
+    expect(post.parentElement!.contains(narrowButton()!)).toBe(false);
+  });
+
+  it("leaves the row alone when posting did not touch the clip", async () => {
+    // A composer that reports null — a post at or under the clip's own tier —
+    // must hand the parent nothing. Forwarding `effective_visibility: null`
+    // would hide the undo on a clip that is still public.
+    const onUpdate = vi.fn();
+    mount("public", onUpdate);
+
+    await click(document.querySelector('[title="Post this clip"]') as HTMLButtonElement);
+    await click(document.getElementById("stub-posted-untouched")!);
+
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
   it("does not carry an error from one clip over to the next", async () => {
     // `composingFor` is keyed to the clip a few lines above for this exact
     // reason. Unkeyed, a failure on this clip stayed mounted under the next one
@@ -224,8 +292,8 @@ describe("taking a clip back", () => {
   });
 
   it("hands the widened clip back so the undo it promises can appear", async () => {
-    // The consent copy promises "you can make it private again from the clip".
-    // The composer widens it server-side and THIS dialog holds the copy that
+    // The consent copy promises "you can make it private again from the clip on
+    // its game's page". The composer widens it server-side and THIS dialog holds the copy that
     // decides whether the control renders — so without the hand-back the
     // promise is unreachable until a page reload, in exactly the flow that
     // makes it.
@@ -264,17 +332,22 @@ describe("taking a clip back", () => {
     // the same shape the composer's own suite uses for PUBLIC_POSTING_ENABLED.
     vi.resetModules();
     vi.doMock("@/lib/features", () => ({ SOCIAL_ENABLED: false }));
-    const { ClipModal: Gated } = await import("@/components/ClipModal");
+    // Undone in `finally`, so a failing assertion cannot leave the flag mocked
+    // off for every test after this one.
+    try {
+      const { ClipModal: Gated } = await import("@/components/ClipModal");
 
-    await act(async () => {
-      root.render(
-        <Gated clip={makeClip("public")} onClose={() => {}} ownsClip />,
-      );
-    });
+      await act(async () => {
+        root.render(
+          <Gated clip={makeClip("public")} onClose={() => {}} ownsClip />,
+        );
+      });
 
-    expect(narrowButton()).toBeUndefined();
-    vi.doUnmock("@/lib/features");
-    vi.resetModules();
+      expect(narrowButton()).toBeUndefined();
+    } finally {
+      vi.doUnmock("@/lib/features");
+      vi.resetModules();
+    }
   });
 
   it("surfaces a refusal instead of failing silently", async () => {

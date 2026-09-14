@@ -143,8 +143,10 @@ describe("posting wider than the clip", () => {
     expect(text).toContain("after this post is deleted");
     // ...and where the undo is. This sentence was removed when the API allowed
     // narrowing and no control did — a promise the user would go looking for
-    // and not find. The control exists now, so it names where.
-    expect(text).toContain("make it private again from the clip");
+    // and not find. The control exists now, so it names where: the clip on its
+    // game's page, which is the one surface that offers the undo (the
+    // cross-owner collections page does not).
+    expect(text).toContain("make it private again from the clip on its game's page");
   });
 
   it("sends the raise once acknowledged", async () => {
