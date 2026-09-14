@@ -10,8 +10,8 @@ It does not by itself end "a user can publish, but only to themselves". With
 nobody but the owner until the follow graph lands (`access.is_follower`).
 
 `api/tests/test_no_visibility_write_path.py` enforced the absence of a write
-path and is deleted by the same change — this file is what replaces it, and the two
-questions it has to answer are the ones that file was protecting:
+path and is deleted by the same change — this file is what replaces it, and
+the two questions it has to answer are the ones that file was protecting:
 
 1. **Only the clip moves, never the game.** Raising a game publishes every clip
    in it, which is the silent side effect the 409 exists to prevent.

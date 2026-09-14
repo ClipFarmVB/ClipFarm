@@ -281,8 +281,8 @@ async def update_clip_visibility(
     change keeps working until it expires, which is the revocation window
     `/share` documents and not something this endpoint can close.
 
-    `public` additionally depends on `PUBLIC_POSTING_ENABLED`; see
-    `services/publishing.py` for why that tier is gated apart from `followers`.
+    See `services/publishing.py` for why `public` is gated apart from
+    `followers`.
     """
     # Ownership FIRST, then the tier. The other order answers a stranger with
     # "public posting is turned off on this deployment", which is a fact about

@@ -144,8 +144,11 @@ services:
       #
       # What bounded the exposure through CF-108 and CF-109 was that **nothing
       # user-generated could be public** — no write path existed for a clip's or
-      # a game's visibility at all. CF-109b (#398) ends that, so the bound is
-      # now PUBLIC_POSTING_ENABLED below rather than the absence of a setter.
+      # a game's visibility at all. CF-109b (#398) ends that. What stands in its
+      # place is weaker: PUBLIC_POSTING_ENABLED below stops owners SETTING
+      # anything `public`, but it gates the write only, so it bounds the
+      # exposure only while it has never been on — turning it off does not hide
+      # what was published while it was.
       #
       # Games still cannot be widened by anything, deliberately: raising a game
       # publishes every clip in it. A clip overrides its game rather than being
@@ -175,8 +178,10 @@ services:
       # The ordering this block used to demand has been served: rate limiting
       # (CF-186) landed first, and the clip-visibility write path (CF-109b)
       # followed. SOCIAL_ENABLED is reassessed here, as that ordering asked,
-      # and stays on — what it exposes is now bounded by
-      # PUBLIC_POSTING_ENABLED below rather than by the absence of a setter.
+      # and stays on. What it exposes is now limited by whether
+      # PUBLIC_POSTING_ENABLED below lets owners set anything `public`, rather
+      # than by the absence of a setter — a limit that holds only while the flag
+      # has never been on (see its own comment).
       #
       # Still a test rather than a hope, in narrowed form:
       # api/tests/test_visibility_write_paths_are_declared.py fails the day
