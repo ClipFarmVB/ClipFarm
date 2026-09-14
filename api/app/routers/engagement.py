@@ -119,13 +119,13 @@ async def like_post(post_id: uuid.UUID, user_id: UserId, db: DB):
 
     # Already liked. Answer for the row that exists, and keep the transaction
     # clean — nothing was written.
-    count = (
+    existing = (
         await db.execute(select(Post.like_count).where(Post.id == post_id))
     ).scalar_one_or_none()
     await db.rollback()
-    if count is None:
+    if existing is None:
         raise HTTPException(status_code=404, detail="Post not found")
-    return LikeStateOut(liked=True, like_count=count)
+    return LikeStateOut(liked=True, like_count=existing)
 
 
 @router.delete("/posts/{post_id}/like", response_model=LikeStateOut)
@@ -284,11 +284,15 @@ async def create_comment(post_id: uuid.UUID, body: CommentCreate, user_id: UserI
         raise HTTPException(status_code=404, detail="Post not found") from None
     except HTTPException:
         # `_bump` raises 404 rather than IntegrityError when its RETURNING comes
-        # back empty, and an HTTPException is not caught above. Reaching here
-        # with the comment INSERT pending would leave the transaction dirty for
-        # whatever `get_db` does next. Arguably unreachable — the autoflush hits
-        # the foreign key first — but the module claims a clean transaction as
-        # an invariant, and this was the one path where it was implicit.
+        # back empty, and an HTTPException is not caught above, so it would
+        # leave here with the comment INSERT still pending. `get_db` closes the
+        # session immediately after, which does roll that back — this rolls back
+        # at the point of the raise instead of relying on that. Arguably
+        # unreachable either way: the autoflush hits the foreign key first.
+        #
+        # `like_post` reaches `_bump` under a `try` that catches only
+        # IntegrityError too, so this is not the only path of that shape — it is
+        # the one where a comment row is already pending when the raise happens.
         await db.rollback()
         raise
     await db.refresh(comment)
