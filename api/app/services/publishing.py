@@ -15,14 +15,18 @@ Until this card there was no write path for a clip's or a game's visibility at
 all, so nothing user-generated could be public — that sentence is what
 `render.yaml` cites for running the social surface with CF-116 (abuse and
 moderation) still open, and what `test_no_visibility_write_path.py` enforced
-until this card deleted it.
+until this card replaced it with `test_visibility_write_paths_are_declared.py`
+— same scan over `app/`, narrowed from "nobody may write this" to "only these
+two functions may".
 
 Those are not one exposure but two:
 
-* **`followers`** publishes to an audience the owner approved one by one. It
-  needs no moderation surface, because there is no unknown audience, and it is
-  the tier the home feed (CF-111) runs on — so it is the whole of the social
-  product as far as a signed-in user is concerned.
+* **`followers`** publishes to an audience the owner approves one by one, so it
+  needs no moderation surface: there is no unknown audience. **At this head
+  that audience is empty.** `access.is_follower()` is False for everyone until
+  CF-110 (#140) builds the follow graph, and the home feed that would read the
+  tier is CF-111 (#141); both are open. Until they land, a `followers` clip or
+  post is readable by its owner alone.
 * **`public`** publishes youth-sports footage to signed-out strangers and to
   anything that crawls a link. That is the tier that wants terms of service
   (CF-75/CF-88, not on main), a report path and a takedown path (CF-116, open),
@@ -30,6 +34,18 @@ Those are not one exposure but two:
   "serves real footage".
 
 So `followers` ships on, and `public` waits behind ``PUBLIC_POSTING_ENABLED``.
+Read the consequence plainly: with the flag off, every tier this API accepts is
+owner-only in practice until CF-110 and CF-111 land. This card builds the write
+path; it does not by itself let anyone publish to another person. Turning the
+flag on is what would.
+
+**The flag gates writes, not reads.** ``assert_tier_allowed`` below is called
+from the two write paths, and nothing else consults the setting. So it decides
+which tier an owner may *set*, and turning it off withdraws nothing that is
+already `public`: those clips and posts stay served until their stored
+visibility is narrowed, by each owner or by an operator updating the rows. A
+deployment that has ever had it on cannot un-publish by flipping it back.
+
 That is one environment variable, not a code change, so the day the terms and
 the moderation path land the flag is the whole of the deploy. Both tiers are
 implemented and both are tested; the flag decides which the API accepts.

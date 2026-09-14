@@ -79,12 +79,16 @@ load question alone.** For two releases nothing user-generated could be
 `public` — no write path existed and
 ``api/tests/test_no_visibility_write_path.py`` enforced that — so every
 anonymous read reached the database and 404'd. `PATCH /clips/{id}/visibility`
-and `POST /posts` with `raise_clip_visibility` end that, and the guard test is
-deleted in the same change.
+and `POST /posts` with `raise_clip_visibility` end that. That guard is replaced
+rather than simply deleted: ``test_visibility_write_paths_are_declared.py``
+keeps the same `app/`-wide scan and narrows the rule to those two functions, so
+a third write path still fails in the diff that adds it.
 
 Two things bound what actually became reachable. **`public` is off by default**
-behind ``PUBLIC_POSTING_ENABLED``, so a stock deployment still serves no
-anonymous footage — `services/publishing.py` argues why that tier waits on
+behind ``PUBLIC_POSTING_ENABLED``, so a deployment that has never turned it on
+serves no anonymous footage — the flag gates setting `public`, not reading it,
+so it does not withdraw rows written while it was on. `services/publishing.py`
+argues why that tier waits on
 CF-75/CF-88 (terms) and CF-116 (report and takedown) while `followers` does
 not. And the six anonymous reads are throttled per caller (CF-186), with
 ``/clips/{id}/download`` behind auth.
@@ -99,12 +103,16 @@ with a bare id lookup and no ownership filter, so whoever may read a clip there
 may read the name tagged on it. Of the two, ``GET /games/{game_id}/clips`` is
 the one that can carry a name to an *unauthenticated* caller, because it takes an
 optional viewer; ``GET /collections/{id}/clips`` requires auth, though it spans
-owners. **The collection one is live as of CF-109b**: a clip can now be set
-`public`, so a signed-in stranger reading it through
-``GET /collections/{id}/clips`` gets the tagged player's real name. That is the
-intended behaviour argued below, and it is worth saying plainly rather than
-leaving the reader with the old sentence, which said the case could not arise
-because nothing wrote a visibility.
+owners. **The collection one becomes live with CF-109b, on a deployment where
+the flag is or has ever been on**: a clip can then be set `public`, so a
+signed-in stranger reading it through ``GET /collections/{id}/clips`` gets the
+tagged player's real name. Where it has never been on, nothing reaches that
+state, because ``_clips_predicate`` admits only `public` (never `followers`)
+and ``services/publishing.py`` refuses to *set* `public` behind
+``PUBLIC_POSTING_ENABLED``. The flag gates the write and not the read, so
+turning it off later leaves every clip already `public` readable here: the
+exposure is one flag away, not one merge away. That is the intended behaviour
+argued below.
 
 The ANONYMOUS variant is still unreachable, and for a different reason than
 before: ``GET /games/{game_id}/clips`` is gated on the *game*, and
