@@ -90,8 +90,9 @@ const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof L
  * naming a tier and leaving the user to guess — this is youth-sports footage,
  * so "Everyone" needs to read as "everyone".
  *
- * Posting never widens the clip itself — and the tiers a clip cannot support
- * are shown disabled, with the reason, rather than offered and then refused.
+ * Posting can widen the clip, but never silently: a tier wider than the clip
+ * asks for consent first, and a tier the deployment has turned off is shown
+ * disabled with the reason, rather than offered and then refused.
  *
  * For two releases nothing in the product could raise a clip's visibility at
  * all, and both a clip and its game default to private, so for a real user
@@ -116,12 +117,8 @@ const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof L
  * The 409 is still handled and still surfaced as-is. It remains the backstop
  * for a clip narrowed between the page load and the click, which is exactly the
  * race the server-side check exists for, and the 422 is the backstop for the
- * two `PUBLIC_POSTING_ENABLED` flags disagreeing.
- *
- * `clip.effective_visibility` carries the ceiling the API derives. The 409 is
- * still handled and still surfaced as-is — it stays the backstop for a clip
- * that goes private between the page load and the click, which is exactly the
- * race the server-side check exists for.
+ * two `PUBLIC_POSTING_ENABLED` flags disagreeing. `clip.effective_visibility`
+ * carries the ceiling the API derives.
  */
 export function PostComposerModal({
   clip,
@@ -133,8 +130,8 @@ export function PostComposerModal({
   onPosted?: () => void;
 }) {
   // Absent means private — the fail-closed direction, matching the schema's
-  // own default. A clip payload that predates this field offers "Only me"
-  // rather than offering everything.
+  // own default. A clip payload that predates this field asks for consent on
+  // every tier above "Only me", rather than treating the clip as already wide.
   const ceiling: Visibility = clip.effective_visibility ?? "private";
 
   const [caption, setCaption] = useState("");
@@ -215,8 +212,9 @@ export function PostComposerModal({
       // Decoding it a second time here is what this used to do, and it undid
       // the first: `JSON.parse` of a plain sentence throws, so every failure
       // fell back to "Could not post". The 409 is the backstop for a clip that
-      // goes private between page load and click — the one case the greyed-out
-      // tiers cannot cover — and it was arriving with its reason stripped.
+      // goes private between page load and click — the one case the composer's
+      // own ceiling check cannot cover — and it was arriving with its reason
+      // stripped.
       // Ironically the 422 branch added to `apiErrorMessage` for this composer
       // widened the hole: making the first decode succeed is exactly what makes
       // the second one fail.

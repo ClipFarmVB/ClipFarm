@@ -137,7 +137,8 @@ describe("playing a post from the grid", () => {
     await render(true);
 
     // A button, not an onClick on the tile: a grid of watchable things should
-    // have one tab stop per thing.
+    // have one play control per thing. (This renders your own profile, where
+    // Remove is a second tab stop on each tile.)
     expect(playButtons()).toHaveLength(2);
     expect(tiles().length).toBeGreaterThan(0);
   });
