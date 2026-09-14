@@ -54,18 +54,28 @@ MAX_MISS     = 5          # max consecutive missed frames before track is reset
 # worse, because the numbers come back unchanged and read as "no effect".
 #
 # CF-231 (#238) names this as a prerequisite for downscaling the tracking
-# input, and CF-229 (#233) names the same one for scaling MAX_JUMP_PX. Whichever
-# lands first has to do it, so it is done here, once, ahead of both.
+# input, and says CF-229 (#233) has the same one for scaling MAX_JUMP_PX and
+# that whichever lands first should do it. So it is done here, once, ahead of
+# both.
 #
-# WHAT COUNTS AS SUCH A CHANGE: anything `track_ball` reads. MODEL_ID and
-# SAMPLE_EVERY are already in the key, so this covers the rest —
-# MIN_CONF, MAX_JUMP_PX, MAX_MISS — plus any new tracking input the function
-# grows, a downscale among them. It deliberately does NOT cover the
-# segmentation or contact constants: the cache holds raw positions and those
-# run afterwards, so folding them in would throw away every cached track for a
-# change that cannot move one.
+# WHAT COUNTS AS SUCH A CHANGE: anything that shapes the positions `track_ball`
+# emits. MODEL_ID is already in the key. SAMPLE_EVERY is NOT: the key holds the
+# per-video `sample_every` argument, and this constant survives as the
+# denominator of `max_jump`, so moving it changes every track under unchanged
+# keys. This therefore covers SAMPLE_EVERY, MIN_CONF, MAX_JUMP_PX, MAX_MISS, the
+# tracking code itself, and any new tracking input the function grows, a
+# downscale among them. It deliberately does NOT cover the segmentation or
+# contact constants: the cache holds raw positions and those run afterwards, so
+# folding them in would throw away every cached track for a change that cannot
+# move one.
 #
-# `test_ball_cache_version.py` fails if one of those constants moves and this
+# A bump ships with `modal deploy ml/modal_app.py` in the same release. When
+# Modal is configured the worker tracks there (`_track_ball_cached`), and that
+# image bundles `ml` when it is deployed — so a bump without the deploy writes a
+# track built by the OLD code under the NEW key, which is the stale track this
+# exists to prevent, under a key nothing will ever invalidate.
+#
+# `test_ball_cache_version.py` fails if a fingerprinted input moves and this
 # does not, so bumping it is a decision rather than something to remember.
 TRACKING_CACHE_VERSION = 1
 

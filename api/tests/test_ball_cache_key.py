@@ -5,7 +5,7 @@ sample rate. Anything else that changes what tracking produces was invisible to
 it, so the next run of an already-processed video replayed a track built by the
 old code — a wrong answer nobody can see on a tuning change, and worse on a
 re-measure, where unchanged numbers read as "no effect" rather than "it never
-ran". Both #238 and #233 name this as their prerequisite.
+ran". #238 names this as a prerequisite, and says CF-229 (#233) has the same one.
 
 `ml/tests/test_ball_cache_version.py` guards the other half: that the version
 moves when a track-shaping constant does. This guards that the version is in
