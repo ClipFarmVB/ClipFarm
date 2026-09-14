@@ -282,6 +282,48 @@ def test_the_report_accounts_for_every_lost_rally():
     assert "0 to the duration gate" in text
 
 
+def test_the_two_gate_channels_are_not_interchangeable():
+    """The fixture above has both gates at zero, so it holds the total but says
+    nothing about which gate is which: swapping the two assignments in `report`
+    leaves `0 to the count gate` / `0 to the duration gate` true either way, and
+    the whole suite stayed green through exactly that mutation.
+
+    This one separates them. `off`'s first segment clears both gates; `on`'s is
+    two contacts and dies at the count gate, while the trailing segment is
+    clamped by the video's length in both runs and so cancels out of the
+    duration channel. A swap now prints the 1 against the wrong gate — which is
+    the failure that would send a fix at the wrong threshold, the thing this
+    ladder exists to prevent.
+    """
+    on = ladder([2, 3], duration=3.0)
+    off = ladder([3, 3], duration=3.0)
+    text = report(on, off, 1080, 3.0)
+
+    assert "costs 1 rally" in text
+    assert "0 whose segment never formed" in text
+    assert "1 to the count gate" in text
+    assert "0 to the duration gate" in text
+
+
+def test_a_negative_channel_says_it_is_a_net_movement():
+    """The three channels are differences between the two runs, not tallies of
+    individual rallies, so one can run backwards: scaling that splits a segment
+    in two ADDS a segment while sending both halves to the count gate.
+
+    Reachable through this file's own helper, which is how it was found — a
+    reader otherwise meets `-1 whose segment never formed` in a report that
+    calls itself a breakdown of losses, with nothing to say what a negative
+    means. The numbers are right and the presentation was not.
+    """
+    on = ladder([1, 1, 1])
+    off = ladder([3, 3])
+    text = report(on, off, 1080, 0.5)
+
+    assert "-1 whose segment never formed" in text
+    assert "net by channel" in text
+    assert "net movements between the two runs" in text
+
+
 def test_a_360p_fixture_draws_no_conclusion_at_all():
     """The bottom line is the quotable one.
 

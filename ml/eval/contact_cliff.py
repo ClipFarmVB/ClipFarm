@@ -186,10 +186,23 @@ def report(on: Ladder, off: Ladder, frame_height: int, scale: float) -> str:
         by_count = on.deleted_by_count - off.deleted_by_count
         by_dur = on.deleted_by_duration - off.deleted_by_duration
         out.append(
-            f"Scaling costs {lost} {plural} on this fixture: {never_formed} whose "
-            f"segment never formed, {by_count} to the count gate, {by_dur} to the "
-            f"duration gate."
+            f"Scaling costs {lost} {plural} on this fixture, net by channel: "
+            f"{never_formed} whose segment never formed, {by_count} to the count "
+            f"gate, {by_dur} to the duration gate."
         )
+        if min(never_formed, by_count, by_dur) < 0:
+            # Say so rather than printing a negative count with no explanation.
+            # These are differences between the two runs, not tallies of
+            # individual rallies, so a channel can run backwards: scaling that
+            # splits one segment into two *adds* a segment while sending both
+            # halves to the count gate, and the segments channel then reads
+            # negative while the count channel absorbs the loss. The three
+            # still sum to the total, which is what the assert below holds.
+            out.append(
+                "    (A channel reads negative when scaling moved rallies out "
+                "of it rather than into it — a split segment, most often. "
+                "These are net movements between the two runs.)"
+            )
         assert never_formed + by_count + by_dur == lost, (
             "the three channels must account for every lost rally"
         )

@@ -345,8 +345,14 @@ positions side by side, off the same dumped track `tune_contacts` reads:
 # The dump first, if you do not have it already: the tool reads a dumped track
 # and never a video, and results/{test_id}_ball_track.json is gitignored, so a
 # fresh clone has none. `tune_contacts` needs the same file.
+#
+# No --dump flag: the default is already harness.RESULTS_DIR, which is where
+# tune_contacts.load reads from. A relative path here would resolve against
+# the image's WORKDIR (/app/api, from Dockerfile.api; the eval service sets no
+# working_dir), so `--dump results/...` writes to /app/api/results/ and the
+# next command dies with FileNotFoundError looking in /app/ml/eval/results/.
 docker compose --env-file .env.docker run --rm --no-deps eval \
-  python -m ml.eval.diagnose_detection --test test2 --dump results/test2_ball_track.json
+  python -m ml.eval.diagnose_detection --test test2
 
 docker compose --env-file .env.docker run --rm --no-deps eval \
   python -m ml.eval.contact_cliff test2
