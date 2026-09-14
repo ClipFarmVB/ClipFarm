@@ -526,3 +526,38 @@ def test_an_ipv4_caller_is_still_keyed_on_the_host(monkeypatch):
         call(dep, FakeRequest(peer="203.0.113.7"))
     # The neighbour is a different bucket.
     assert call(dep, FakeRequest(peer="203.0.113.8")) is None
+
+
+def test_ipv4_mapped_callers_do_not_all_land_in_one_bucket(monkeypatch):
+    """`::ffff:a.b.c.d` is version 6 with an all-zero /64.
+
+    Narrowing it by prefix like any other v6 address files every mapped caller
+    on the internet -- and `::1` -- under the single key `ip:::/64`, so three
+    strangers spend each other's budget. That is worse than not narrowing at
+    all, and it is reachable: `client_ip` returns whatever an upstream proxy
+    wrote into X-Forwarded-For, and a dual-stack front end may write the mapped
+    spelling.
+
+    Two properties here, and the second is why this is not just a bug fix: the
+    mapped form and the plain form of one address are one caller, so they share
+    a bucket rather than getting one each.
+    """
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend(clock=FakeClock()))
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(settings, "rate_limit_profile_per_minute", 2)
+    dep = rate_limit(ratelimit.POLICIES["profile"])
+
+    call(dep, FakeRequest(peer="::ffff:203.0.113.7"))
+    call(dep, FakeRequest(peer="::ffff:8.8.8.8"))
+    # A third, unrelated mapped caller, and the v6 loopback. Both were refused
+    # when the prefix rule applied to mapped addresses.
+    assert call(dep, FakeRequest(peer="::ffff:198.51.100.1")) is None
+    assert call(dep, FakeRequest(peer="::1")) is None
+
+    # ...and the two spellings of one host are one bucket, not two. 203.0.113.7
+    # has spent one of its two above.
+    call(dep, FakeRequest(peer="203.0.113.7"))
+    with pytest.raises(HTTPException) as exc:
+        call(dep, FakeRequest(peer="::ffff:203.0.113.7"))
+    assert exc.value.status_code == 429

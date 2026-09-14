@@ -295,6 +295,7 @@ def test_an_address_keyed_route_resolves_no_auth_dependency():
     """
     from app.auth import get_optional_user_id
 
+    checked = 0
     for (path, method), (name, _setting, _default) in THROTTLED.items():
         route = _route_for(path, method)
         limiters = _limiters_on(route)
@@ -311,6 +312,18 @@ def test_an_address_keyed_route_resolves_no_auth_dependency():
             "address and never reads the viewer -- resolving auth here buys a "
             "503 on a public read and a DB commit before the counter"
         )
+        checked += 1
+    # The clause above is an escape hatch as well as a carve-out: a handler that
+    # gains a `viewer_id` takes its route out of this test, and with one
+    # address-keyed route left standing that empties the loop entirely. Putting
+    # the whole defect back -- `viewer_id` on `get_profile` AND the dependency
+    # on `RateLimiter.__call__` -- left this passing with nothing asserted, and
+    # only the weaker source-shaped check in test_ratelimit.py went red.
+    assert checked, (
+        "every address-keyed route was skipped -- this test asserted nothing. "
+        "A handler that declares `viewer_id` leaves the route uncheckable here, "
+        "so the guarantee needs pinning some other way rather than silently"
+    )
 
 
 def test_a_viewer_keyed_route_does_resolve_auth():
@@ -328,3 +341,36 @@ def test_a_viewer_keyed_route_does_resolve_auth():
         assert get_optional_user_id in _dependency_callables(route)
         checked += 1
     assert checked, "no viewer-keyed route in the table -- the pair is vacuous"
+
+
+def test_the_limiter_is_resolved_before_anything_a_refusal_should_not_pay_for():
+    """A 429 must not have cost a JWT verification or a database write first.
+
+    That property is real -- measured at 12 requests against a 2/min budget,
+    `GET /posts` performs two commits, one per *allowed* request, and none for
+    the ten refusals -- but on `GET /posts` it does not come from the class
+    split: that route's handler declares `viewer_id` itself, so auth is in its
+    tree regardless. What saves it is ordering. FastAPI puts a decorator's
+    ``dependencies=[...]`` ahead of the handler's own parameters and
+    ``solve_dependencies`` awaits them in list order (fastapi 0.115.6,
+    ``dependencies/utils.py``), so the limiter's ``HTTPException`` propagates
+    before ``get_db`` or ``get_optional_user_id`` is ever called.
+
+    Nothing pinned that. Moving a limiter to a handler parameter -- the shape
+    the module docstring rejects for an unrelated reason -- would leave the
+    whole suite green and restore the full cost on every refused request. So
+    assert the position, not just the presence.
+    """
+    checked = 0
+    for (path, method), (name, _setting, _default) in THROTTLED.items():
+        route = _route_for(path, method)
+        deps = route.dependant.dependencies
+        at = [i for i, dep in enumerate(deps) if isinstance(dep.call, RateLimiter)]
+        assert at, f"{method} {path} resolves no limiter at all"
+        assert at[0] == 0, (
+            f"{method} {path} resolves "
+            f"{[getattr(d.call, '__name__', d.call) for d in deps[: at[0]]]} "
+            f"before its {name} limiter, so a refused request pays for them"
+        )
+        checked += 1
+    assert checked == len(THROTTLED)

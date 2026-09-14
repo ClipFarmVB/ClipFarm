@@ -23,12 +23,20 @@ and it is deliberately not relying on it.
 Not applied to writes. Those already require a credential and are bounded by
 the upload quota (``quota_max_games_per_window``).
 
-**Keyed on the viewer when there is one, on the IP only when there is not.**
-Two reasons. The game detail page polls ``GET /games/{id}`` every five seconds
-while a game is processing, from the authenticated owner — four tabs, or a
-household behind one NAT during a tournament, would otherwise eat a budget that
-exists to stop strangers. And an authenticated enumerator gets their own bucket
-and is bannable, which an IP is not.
+**Exposure B keys on the viewer when there is one; exposure A always keys on
+the address.** B prefers the viewer for two reasons. The game detail page polls
+``GET /games/{id}`` every five seconds while a game is processing, from the
+authenticated owner — four tabs, or a household behind one NAT during a
+tournament, would otherwise eat a budget that exists to stop strangers. And an
+authenticated enumerator gets their own bucket and is bannable, which an address
+is not.
+
+A gives both of those up, because signup here is self-serve: a per-account
+bucket is one an attacker can mint, which turns 30/min into 30N/min and the
+walk-time figure into a division. That is what ``Policy.by_address`` sets, and
+the two exposures differing is the whole point of splitting the card — see
+``Policy`` for the trade it makes. The address side is not the raw address
+either: it is the v4 host or the v6 /64, see ``_bucket``.
 
 **Fixed window, not sliding.** ``INCR`` plus ``EXPIRE ... NX`` is one round
 trip with no Lua and no sorted sets. The cost is that a caller can spend two
@@ -78,9 +86,9 @@ fine. Render's keyvalue is 7.x; DEPLOY.md says so for the VPS path.
 # object, and treats it as a required query parameter. Every throttled route
 # then answers 422 to every caller. `test_a_limiter_actually_refuses_over_the_wire`
 # is what catches it.
+import ipaddress
 import logging
 import time
-import ipaddress
 import uuid
 from dataclasses import dataclass
 from typing import Callable, NamedTuple, Protocol
@@ -294,7 +302,24 @@ def _bucket(addr: str) -> str:
     on the full address gives a single residential customer on the order of
     10^19 fresh budgets — the per-address limit stops meaning anything, and the
     walk-time figure the enumeration policies rest on holds only against IPv4.
-    Truncating to /64 is the narrowest prefix that is always one subscriber.
+    Truncating to /64 is the narrowest prefix providers are expected to hand out
+    whole. That is an allocation convention rather than a guarantee, and the one
+    case where it is plainly false is handled below rather than asserted away.
+
+    **An IPv4-mapped address is keyed as the IPv4 host it names.**
+    ``::ffff:a.b.c.d`` is version 6 and its /64 is all zeroes, so narrowing it
+    would file every mapped caller — and ``::1`` — under one key, and three
+    strangers would spend each other's budget. That is worse than not narrowing
+    at all, which is the direction this function exists to avoid. Mapping it
+    back to the v4 host also puts the two spellings of one caller in one bucket,
+    which is the right answer however the address reached us. Both uvicorn
+    invocations in this repo bind ``0.0.0.0``, so the peer is never the mapped
+    form; ``client_ip`` returns whatever an upstream proxy wrote into
+    ``X-Forwarded-For``, and a dual-stack front end may well write it.
+
+    ``::`` and the deprecated IPv4-compatible form ``::a.b.c.d`` still share the
+    zero /64. Neither is something a proxy writes, and unlike the mapped form
+    they carry no host to recover.
 
     A v4 address is one host, so it is returned unchanged. Anything unparseable
     — `unknown` from a missing peer, or a malformed header entry that survived
@@ -305,8 +330,13 @@ def _bucket(addr: str) -> str:
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return addr
-    if ip.version == 4:
+    # isinstance rather than `.version`, because `ipv4_mapped` exists only on
+    # the v6 class and mypy narrows on the type, not on the number.
+    if not isinstance(ip, ipaddress.IPv6Address):
         return addr
+    mapped = ip.ipv4_mapped
+    if mapped is not None:
+        return str(mapped)
     return str(ipaddress.ip_network(f"{ip}/64", strict=False).network_address) + "/64"
 
 
@@ -368,6 +398,15 @@ class RateLimiter:
         #     reads; a signed-out visitor was fine, but the web client attaches a
         #     bearer whenever a session exists, so any signed-in visitor to a
         #     profile page took that path.
+        #
+        #     That is narrower than "the profile page is immune now". The page
+        #     also fetches `GET /posts?username=`, whose handler declares
+        #     `viewer_id` itself to filter visibility — so auth is in that
+        #     route's tree on its own account, as it is on `main`, and the grid
+        #     still answers 503 with a bearer when auth is unwell. What this
+        #     removed is the limiter putting auth on a route that had no other
+        #     use for it, which is all of `GET /users/{handle}` and none of
+        #     `GET /posts`.
         #   * FastAPI resolves dependencies BEFORE the handler, so the JWT
         #     verification and `_ensure_user_exists`'s INSERT-and-COMMIT ran
         #     ahead of the counter. A refused request still cost a database
