@@ -9,8 +9,10 @@ currently produce them.
 
 The guard at the bottom is about `MAX_JUMP_PX`, which is a PIXEL constant
 corrected for the sampling interval and not for frame height. That is the same
-class of unit bug CF-174 fixed for the px/s constants, `ball.py` records it as a
-deliberate compromise rather than an oversight, and nothing enforced it — so
+class of unit bug CF-174 fixed for the px/s constants. `ball.py` never calls
+leaving it unscaled deliberate (its "known compromise" note covers the two
+segmentation constants, not this one); #233 records that scaling it was scoped
+out of CF-174. And nothing enforced it — so
 scaling it would have looked like an ordinary change. CF-229 names it as
 something to consider in the same pass; this makes that a decision with a diff.
 """
@@ -189,7 +191,9 @@ def test_the_jump_threshold_is_corrected_for_sampling_and_not_for_frame_height()
     jump covers ~3x more pixels at 1080p, so this admits a third of the
     physical distance there that it admits at 360p.
 
-    `ball.py` records that as a deliberate compromise and nothing enforced it.
+    `ball.py` never calls leaving it unscaled deliberate — its "known
+    compromise" note is about the two segmentation constants — and nothing
+    enforced it.
     CF-229 lists scaling it as something to consider in the same pass as
     SEG_MAX_SPEED_PXPS, and it is the tracking layer, upstream of everything —
     so it should change as a decision with a diff, not as an ordinary-looking
