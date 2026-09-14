@@ -206,8 +206,15 @@ def test_the_list_endpoint_does_not_filter_after_the_limit():
     """
     import inspect
 
+    # Pin the call, not the word. `list_user_posts` mentions
+    # `apply_post_visibility` only in a comment now that the statement lives in
+    # `user_posts_query`, so asserting the name against the router's source
+    # passes on the prose alone — deleting the real call left this whole suite
+    # green. Assert the router reaches the helper, and the helper holds the
+    # gate. Same shape as test_feed.py's `assert "feed_query" in ...`.
     src = inspect.getsource(posts_router.list_user_posts)
-    assert "apply_post_visibility" in src
+    assert "user_posts_query" in src
+    assert "apply_post_visibility" in inspect.getsource(posts_router.user_posts_query)
 
     from sqlalchemy import select
 
