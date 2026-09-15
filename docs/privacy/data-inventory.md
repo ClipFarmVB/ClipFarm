@@ -21,7 +21,7 @@ All on the `users` table unless noted.
 | --- | --- | --- |
 | `id` | operational | Internal UUID, and **not** an internal-only one: `ProfileOut` returns it, `GET /users/{handle}` is unauthenticated, and `avatar_url` is stored as `avatars/{user_id}`, so the UUID reaches anonymous callers both as a field and inside a URL. Unguessable, which is a different property from undisclosed. |
 | `email` | **identifier** | Unique, required. The only field that reaches a real person off-platform. |
-| `hashed_password` | **credential** | Nullable, and never read or written: sign-in is a Supabase JWT, and no code path sets this column. The model's `# null = SSO-only` comment describes a login path that does not exist. |
+| `hashed_password` | **credential** | Nullable, and never read or written. Sign-in goes through Supabase Auth, by email and password or by Google OAuth (`web/src/app/login/page.tsx`, `signup/page.tsx`), so credentials live in Supabase and no code path sets this column. Google sign-in also makes Google a source of the account's identity data. |
 | `username` | **identifier** | Public handle. Lower-cased, unique by functional index. Doubles as how other users refer to them. |
 | `display_name` | profile | Chosen, optional. |
 | `bio` | profile | Chosen, optional, 280 chars. |
@@ -165,19 +165,24 @@ prevent, so it is stated rather than implied.
 
 ## 4. What this document does not cover
 
-- Retention periods, **except the two sweeps that already run**, which belong
-  here rather than in a "not covered" list:
+- Retention periods, **except the two sweeps and the one storage rule that
+  already run**, which belong here rather than in a "not covered" list:
   - `_sweep_expired_raw_uploads` clears `games.raw_video_url` and deletes the R2
     objects under `raw/` for games in `ready` or `failed` created more than
     `raw_upload_retention_days` ago — **default 7**; `0` keeps footage forever.
     It runs at the end of any successful `process_game`, and there is no cron,
     so footage is **eligible for deletion after 7 days and deleted at the next
     successful processing run**, not on day 7. While the system is idle nothing
-    is deleted, and a failure is logged and swallowed.
+    is deleted, and a failure is logged and swallowed. A second pass then
+    deletes any object under `raw/` older than the cutoff that no row references.
   - `_sweep_abandoned_uploads` (`routers/games.py`) deletes a user's
     `uploading` game rows older than `abandoned_upload_hours` — **default 24**
-    — and their upload objects, when that user next starts an upload. It is
-    best-effort, and reaches only users who upload again.
+    — and their upload objects, when that user next starts an upload that
+    passes the quota check. It is best-effort, and reaches only users who upload
+    again.
+  - Outside the API, the R2 bucket's lifecycle rule aborts incomplete multipart
+    uploads after 7 days (`infra/README.md`). R2 creates that rule by default;
+    this document does not verify the live bucket.
 
   An earlier draft of this section said nothing expires anything, and a later
   one said footage is destroyed after exactly a week; a policy drafted from
