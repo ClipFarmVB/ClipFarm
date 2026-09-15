@@ -33,8 +33,10 @@ spans — the harness derives dead time as the complement.
   seconds. (`keep` is accepted as the older key name, for fixtures that list
   in-play spans only and carry no tiers.)
 - `keep_tiers` — which tiers count as **ball-in-play**. Everything else falls
-  through to dead time via the complement. Omit it, or omit a span's `tier`, and
-  the span counts as in-play — permissive beats silently dropping labeled data.
+  through to dead time via the complement. The loader is permissive: omit it, or
+  omit a span's `tier`, and the span counts as in-play. The suite is not — in a
+  fixture whose spans carry tiers, declare `keep_tiers` and tag every span (see
+  the trap below).
 - `video_duration_sec` — the full video length. **Required for correct numbers:**
   dead time is `[0, duration]` minus the in-play spans, so without it the
   dead-time total is wrong (it falls back to the last rally end and undercounts
@@ -83,12 +85,18 @@ So, for `test1`:
 | `O`  | outlier — camera knocked/adjusted, pause in play | no → dead |
 
 Only genuine stoppages (`B`, `O`) are dead. `ml/tests/test_eval_fixtures.py`
-enforces this for every real dead-time fixture, not just `test1` (the `demo`
-file is the format example and has no video behind it, so it is excluded along
-with the other pinning checks). A fixture whose spans carry tiers must declare
-`keep_tiers`, must tag **every** span, must include every live-ball tier its
-spans use, and must not list `B` or `O`. So copying `["M", "C"]` across from a
-highlight fixture fails the suite rather than quietly inverting the metric.
+enforces this for every dead-time fixture, `demo` included. A fixture whose
+spans carry tiers must declare `keep_tiers`, must tag **every** span, must
+include every live-ball tier its spans use, and must not list `B` or `O`. And
+`KNOWN_TIERS` must be exactly the live-ball and dead tiers, so a new letter has
+to be placed on one side.
+
+What that rule cannot see is the copied clip list itself: a highlight fixture's
+clips, tiers `M`/`C` only, pasted in as the spans with `keep_tiers: ["M", "C"]`
+has no `N` in it to miss. The suite catches that when the fixture has a
+highlight sibling (`{test_id}.json`) to compare against — a dead-time fixture
+whose every span is one of the sibling's clips fails. A copy with no sibling on
+disk is not detectable, so label from the raw video.
 
 The tag-every-span rule matters because the loader keeps an untagged span as
 in-play whatever `keep_tiers` says — so tagging the rallies and leaving the

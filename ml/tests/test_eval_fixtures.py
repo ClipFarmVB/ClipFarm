@@ -82,10 +82,15 @@ def tier_semantics_violations(raw: dict) -> list[str]:
 
     declared = raw.get("keep_tiers")
     if declared is None:
+        stoppages = sorted(present & DEAD_TIERS)
+        consequence = (
+            f" — including the {stoppages} spans, which are dead time"
+            if stoppages
+            else "; declare it, so the live-ball split is stated rather than implied"
+        )
         return [
             "spans carry tiers but `keep_tiers` is absent, so the loader keeps "
-            f"every one of {sorted(present)} as in-play — including any break "
-            "or outlier, which is dead time"
+            f"every one of {sorted(present)} as in-play{consequence}"
         ]
 
     problems = []
@@ -129,6 +134,26 @@ def tier_semantics_violations(raw: dict) -> list[str]:
             "fixture claims a break is live ball"
         )
     return problems
+
+
+def copied_clip_list(deadtime_raw: dict, highlight_raw: dict) -> bool:
+    """Whether a dead-time fixture's spans are its highlight sibling's clips.
+
+    `tier_semantics_violations` compares `keep_tiers` with the tiers present in
+    the file, so it cannot see the trap in its primary form: a highlight clip
+    list (tiers `M`/`C` only) pasted in as the spans, with `["M", "C"]` as
+    `keep_tiers`. Nothing in that file is inconsistent — the boring rallies it
+    should have labelled were never written — so the tier rule passes it. What
+    gives it away is the pairing: every span is one of the sibling's clips, and a
+    dead-time pass over the same video labels the rallies the highlight pass left
+    out.
+    """
+    def _times(items: list[dict]) -> set[tuple[float, float]]:
+        return {(parse_timestamp(s["start"]), parse_timestamp(s["end"])) for s in items}
+
+    spans = _times(_spans(deadtime_raw))
+    clips = _times(highlight_raw.get("clips", []))
+    return bool(spans) and spans <= clips
 
 
 class TestEveryDeadtimeFixture:
@@ -520,13 +545,17 @@ class TestTierSemanticsAcrossDeadtimeFixtures:
     highlight half of this file went wrong before HIGHLIGHT_IDS was discovered
     rather than named — see its comment.
 
-    It matters now because CF-375 (#475) asks for a new 1080p fixture, and its
-    own Notes warn that reusing a highlight fixture's tier set here "will
-    silently produce a wrong answer". Silently is the problem: the harness still
-    prints a number. This turns that prose warning into a failing test.
+    It matters now because CF-375 (#475) sends someone to label a new fixture.
+    #475's own Notes warn about the other direction — a dead-time fixture reused
+    as the highlight fixture — but the tier trap is the same either way, and a
+    new dead-time fixture is where this class catches it. The failure is silent
+    (the harness still prints a number), so README_deadtime.md's prose warning is
+    turned into a failing test here.
     """
 
-    @pytest.mark.parametrize("test_id", DEADTIME_IDS)
+    # `demo` included: this rule reads only the JSON, so the reason `demo` is
+    # excluded from the pinning checks (no video behind it) does not apply.
+    @pytest.mark.parametrize("test_id", DEADTIME_IDS + ["demo"])
     def test_keep_tiers_matches_the_live_ball_split(self, test_id):
         raw = json.loads((FIXTURES_DIR / f"{test_id}_deadtime.json").read_text(encoding="utf-8"))
         problems = tier_semantics_violations(raw)
@@ -550,6 +579,22 @@ class TestTierSemanticsAcrossDeadtimeFixtures:
             )
         ]
         assert tiered, "no dead-time fixture carries tiers; the split is untested"
+
+    @pytest.mark.parametrize("test_id", [t for t in DEADTIME_IDS if t in HIGHLIGHT_IDS])
+    def test_the_spans_are_not_a_copy_of_the_highlight_clip_list(self, test_id):
+        dead = json.loads((FIXTURES_DIR / f"{test_id}_deadtime.json").read_text(encoding="utf-8"))
+        high = json.loads((FIXTURES_DIR / f"{test_id}.json").read_text(encoding="utf-8"))
+        assert not copied_clip_list(dead, high), (
+            f"every span in {test_id}_deadtime.json is a clip from {test_id}.json: a "
+            "highlight clip list reused as the in-play set, which scores every boring "
+            "rally as dead time (README_deadtime.md, 'The trap')"
+        )
+
+    def test_at_least_one_dead_time_fixture_has_a_highlight_sibling(self):
+        """The copy check above runs once per pair, so with no pair it tests nothing."""
+        assert [t for t in DEADTIME_IDS if t in HIGHLIGHT_IDS], (
+            "no dead-time fixture has a highlight sibling; the copied-clip-list check is untested"
+        )
 
 
 class TestTierSemanticsRule:
@@ -582,8 +627,7 @@ class TestTierSemanticsRule:
         from the highlight fixture, which drops every boring rally into dead
         time."""
         problems = tier_semantics_violations(self._fixture(["M", "C"], "MCNBO"))
-        assert len(problems) == 1
-        assert "'N' is live ball" in problems[0]
+        assert any("'N' is live ball" in p for p in problems), problems
 
     def test_a_break_in_keep_tiers_is_rejected(self):
         problems = tier_semantics_violations(self._fixture(["M", "C", "N", "B"], "MCNB"))
@@ -591,8 +635,7 @@ class TestTierSemanticsRule:
 
     def test_tiered_spans_with_no_tier_set_are_rejected(self):
         problems = tier_semantics_violations(self._fixture(None, "MCNB"))
-        assert len(problems) == 1
-        assert "keep_tiers` is absent" in problems[0]
+        assert any("keep_tiers` is absent" in p for p in problems), problems
 
     def test_an_unknown_tier_is_rejected(self):
         problems = tier_semantics_violations(self._fixture(["M", "C", "N", "X"], "MCNX"))
@@ -631,11 +674,47 @@ class TestTierSemanticsRule:
         problems = tier_semantics_violations(raw)
         assert any("'N' is live ball" in p for p in problems), problems
 
-    def test_a_fully_tagged_fixture_is_still_clean(self):
-        """The untagged-span rule must not fire on the shape we actually ship."""
-        assert tier_semantics_violations(self._fixture(["M", "C", "N"], "MCNBO")) == []
+    def test_a_fully_tagged_fixture_with_no_stoppages_is_still_clean(self):
+        """The untagged-span rule must not fire when every span is tagged, even
+        with no break or outlier in the file — a shape the documented-split test
+        above, whose spans include `B` and `O`, does not exercise."""
+        assert tier_semantics_violations(self._fixture(["M", "C", "N"], "MCN")) == []
 
     def test_a_tier_absent_from_the_spans_is_not_demanded(self):
         """A fixture whose labeling pass happened to produce no `N` spans is
-        fine; the rule is about tiers present in the file, not a required set."""
+        fine; the rule is about tiers present in the file, not a required set.
+        The copied-clip-list form of that shape is caught separately, against the
+        fixture's highlight sibling."""
         assert tier_semantics_violations(self._fixture(["M", "C"], "MCB")) == []
+
+    def test_every_known_tier_is_on_exactly_one_side_of_the_split(self):
+        """A new letter must be placed as live ball or as dead time, not both or neither.
+
+        The unknown-tier message tells the author to add a tier to KNOWN_TIERS
+        "and decide which side of the live-ball split it falls on". Without this
+        only the first half was enforced: a letter added to KNOWN_TIERS alone was
+        accepted whether or not a fixture kept it.
+        """
+        assert LIVE_BALL_TIERS.isdisjoint(DEAD_TIERS), sorted(LIVE_BALL_TIERS & DEAD_TIERS)
+        assert KNOWN_TIERS == LIVE_BALL_TIERS | DEAD_TIERS, (
+            f"KNOWN_TIERS {sorted(KNOWN_TIERS)} must equal LIVE_BALL_TIERS | DEAD_TIERS "
+            f"{sorted(LIVE_BALL_TIERS | DEAD_TIERS)}"
+        )
+
+    def test_a_copied_clip_list_is_detected(self):
+        clips = [{"start": "00:10", "end": "00:20", "tier": "M"},
+                 {"start": "00:30", "end": "00:40", "tier": "C"}]
+        assert copied_clip_list({"spans": clips, "keep_tiers": ["M", "C"]}, {"clips": clips})
+
+    def test_a_copied_subset_of_the_clip_list_is_detected(self):
+        clips = [{"start": "00:10", "end": "00:20", "tier": "M"},
+                 {"start": "00:30", "end": "00:40", "tier": "C"}]
+        assert copied_clip_list({"spans": clips[:1]}, {"clips": clips})
+
+    def test_a_real_pass_with_rallies_the_highlights_omit_is_not_a_copy(self):
+        clips = [{"start": "00:10", "end": "00:20", "tier": "M"}]
+        spans = clips + [{"start": "01:00", "end": "01:05", "tier": "N"}]
+        assert not copied_clip_list({"spans": spans, "keep_tiers": ["M", "C", "N"]}, {"clips": clips})
+
+    def test_an_empty_span_list_is_not_a_copy(self):
+        assert not copied_clip_list({"spans": []}, {"clips": [{"start": "00:10", "end": "00:20"}]})

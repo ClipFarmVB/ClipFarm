@@ -157,7 +157,9 @@ A dead-time case is a **separate label pass** into
 [`fixtures/README_deadtime.md`](fixtures/README_deadtime.md). Do not reuse the
 highlight fixture's `clips` list.
 
-The trap worth stating here, because nothing errors when you hit it: `keep_tiers`
+The trap worth stating here, because the harness does not error when you hit it
+(the fixture tests catch it when the fixture is committed, except a copied clip
+list with no highlight sibling to compare against): `keep_tiers`
 selects which tiers count as **ball-in-play**, and that is a wider set than
 "highlight-worthy" — `M`/`C`/`N` are all live ball (a failed serve is still play
 the condense stage must keep), while only `B` (break) and `O` (camera outlier)
