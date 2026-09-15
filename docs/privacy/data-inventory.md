@@ -2,9 +2,9 @@
 
 **This is not a privacy policy, and it is not legal advice.** It is the
 engineering input to one: what personal data ClipFarm stores, where it lives,
-who can see it, and what happens to it when an account goes away. CF-75 and
-CF-88 need a lawyer; a lawyer needs this first, because a policy drafted
-against a guess describes a system that does not exist.
+who can see it, and what happens to it when an account goes away. CF-88
+needs a lawyer; a lawyer needs this first, because a policy drafted against
+a guess describes a system that does not exist.
 
 Everything below is read off the schema and the routers. `api/tests/
 test_personal_data_inventory.py` fails when a `users` column or a table
@@ -21,7 +21,7 @@ All on the `users` table unless noted.
 | --- | --- | --- |
 | `id` | operational | Internal UUID, and **not** an internal-only one: `ProfileOut` returns it, `GET /users/{handle}` is unauthenticated, and `avatar_url` is stored as `avatars/{user_id}`, so the UUID reaches anonymous callers both as a field and inside a URL. Unguessable, which is a different property from undisclosed. |
 | `email` | **identifier** | Unique, required. The only field that reaches a real person off-platform. |
-| `hashed_password` | **credential** | Nullable — null means SSO-only, so the account has no local password at all. |
+| `hashed_password` | **credential** | Nullable, and never read or written: sign-in is a Supabase JWT, and no code path sets this column. The model's `# null = SSO-only` comment describes a login path that does not exist. |
 | `username` | **identifier** | Public handle. Lower-cased, unique by functional index. Doubles as how other users refer to them. |
 | `display_name` | profile | Chosen, optional. |
 | `bio` | profile | Chosen, optional, 280 chars. |
@@ -31,19 +31,21 @@ All on the `users` table unless noted.
 
 **One thing worth a lawyer's attention:** a generated handle is derived from the
 email local part. For a user who never claimed one, their public identifier is a
-transformation of their email address. The frontend withholds a generated handle
-from post responses, but the derivation is still the origin of the value in the
-database.
+transformation of their email address. The API withholds a generated handle
+from post responses (`PostAuthor.from_author`), but the derivation is still the
+origin of the value in the database.
 
 ### Beyond the users table
 
 The heavier personal data is not in `users` at all — it is **video of
 identifiable people, most of them minors**. Uploaded footage, generated clips
 and condensed renders live in R2 under **identifier-derived keys**, not content
-hashes: `raw/{game_id}`, `clips/{game_id}/{clip_id}.mp4`,
-`condensed/{game_id}.mp4`, `avatars/{user_id}` (`services/storage.py`). That
-matters here because a content-addressed key is opaque and dedupes across users,
-while these embed row ids and do neither.
+hashes: `raw/{game_id}.{ext}` (`raw/{game_id}` when the upload has no
+extension), `clips/{game_id}/{clip_id}.mp4`, `thumbs/{game_id}/{clip_id}.jpg`
+(frames of the same footage), `condensed/{game_id}.mp4` and `avatars/{user_id}`
+(`services/storage.py`). That matters here because a content-addressed key
+dedupes across users, while these embed row ids and do not. The ids are random
+UUIDs, so the keys are unguessable, but each one names the row it belongs to.
 
 `players` and `teams` carry names attached to that footage — `players.name`
 (required), `players.jersey_number`, `players.photo_url`. **Neither table has
@@ -70,23 +72,31 @@ the sensitive part; they are the easy part.
 Visibility is `clip.visibility or game.visibility` (`api/app/services/
 access.py`) — a clip overrides its game, and the default is private.
 
-**The reachable tier today is `private`, and the reason is not a flag.** No
-router writes `Game.visibility` or `Clip.visibility` (`models/visibility.py`
-says so in capitals, and `test_no_visibility_write_path.py` pins it), so
-`widest_allowed` resolves to `private` for every row and `create_post` refuses
-anything wider. `followers` is unreachable for a second reason as well:
-`is_follower` returns `False` unconditionally until CF-110 lands, so
-followers-tier content is owner-only regardless.
+**On `main` today the reachable tier is `private`, and the reason is not a
+flag.** No router writes `Game.visibility` or `Clip.visibility`
+(`models/visibility.py` says so in capitals, and
+`test_no_visibility_write_path.py` pins it), so `widest_allowed` resolves to
+`private` for every row and `create_post` refuses anything wider. `followers`
+is unreachable for a second reason as well: `is_follower` returns `False`
+unconditionally until CF-110 lands, so followers-tier content is owner-only
+regardless.
 
-**That is a much weaker guarantee than a flag, and the difference is the point.**
-An earlier draft of this section said public posting was gated behind a
-`PUBLIC_POSTING_ENABLED` setting that was off. No such setting exists anywhere
-in the repository. The flag that does exist is `SOCIAL_ENABLED`, and
-`render.yaml` sets it to `"true"`, mounting `/users/*` and `/posts/*` in
-production. So the exposure a privacy policy most needs to describe is held shut
-by **the absence of one feature PR**, not by a switch somebody has to flip — and
-CF-109b is that PR, open now. Read this section as a countdown rather than a
-reassurance.
+The flag that does exist on `main` is `SOCIAL_ENABLED`, and `render.yaml` sets
+it to `"true"`, mounting `/users/*` and `/posts/*` in production. An earlier
+draft of this section said a `PUBLIC_POSTING_ENABLED` setting kept public
+posting off; on `main` no such setting exists.
+
+**That changes when #481 merges, and this section has to be re-read then.**
+CF-109b (#482) was merged into #481's branch, which is open against `main`. It
+adds `PATCH /clips/{clip_id}/visibility`, lets `create_post` raise a clip's
+tier through `raise_clip_visibility`, and replaces
+`test_no_visibility_write_path.py` with
+`test_visibility_write_paths_are_declared.py`. Owners can then set `followers`,
+which stays owner-only while `is_follower` returns `False`, and `public` only
+when a new `PUBLIC_POSTING_ENABLED` setting allows it. That setting defaults to
+off, #481's `render.yaml` sets it to `"false"`, and it gates the write only:
+turning it off after it has been on does not hide rows already made public.
+Read this section as a countdown rather than a reassurance.
 
 ---
 
@@ -98,9 +108,9 @@ Three independent reasons, and the third is the one an implementer is most
 likely to miss:
 
 1. **There is no endpoint.** There *is* a `users` router — `routers/profiles.py`
-   carries the `/users` prefix and serves `GET /me`, `PATCH /me`,
-   `POST /me/avatar` and `GET /{handle}` — but it has no DELETE route, and
-   nothing in the API removes a user row.
+   carries the `/users` prefix and serves `GET /me`, `GET /handle-available`,
+   `PATCH /me`, `POST /me/avatar` and `GET /{handle}` — but it has no DELETE
+   route, and nothing in the API removes a user row.
 2. **The schema refuses it.** Three tables reference `users.id` with no
    `ON DELETE` clause, which in PostgreSQL means `NO ACTION` — the delete is
    rejected while any referencing row exists:
@@ -155,15 +165,24 @@ prevent, so it is stated rather than implied.
 
 ## 4. What this document does not cover
 
-- Retention periods, **except the one that already runs**, which belongs here
-  rather than in a "not covered" list: `_sweep_expired_raw_uploads` clears
-  `games.raw_video_url` and deletes the R2 objects under `raw/` for every game
-  past `raw_upload_retention_days` — **default 7** — at the end of every
-  successful `process_game`. There is no cron, but the deletion is automatic and
-  unconditional, so **source footage is destroyed after a week**. An earlier
-  draft of this section said nothing expires anything; a policy drafted from
-  that sentence would have promised the opposite of what the system does. Clips,
-  condensed renders and rows have no expiry.
+- Retention periods, **except the two sweeps that already run**, which belong
+  here rather than in a "not covered" list:
+  - `_sweep_expired_raw_uploads` clears `games.raw_video_url` and deletes the R2
+    objects under `raw/` for games in `ready` or `failed` created more than
+    `raw_upload_retention_days` ago — **default 7**; `0` keeps footage forever.
+    It runs at the end of any successful `process_game`, and there is no cron,
+    so footage is **eligible for deletion after 7 days and deleted at the next
+    successful processing run**, not on day 7. While the system is idle nothing
+    is deleted, and a failure is logged and swallowed.
+  - `_sweep_abandoned_uploads` (`routers/games.py`) deletes a user's
+    `uploading` game rows older than `abandoned_upload_hours` — **default 24**
+    — and their upload objects, when that user next starts an upload. It is
+    best-effort, and reaches only users who upload again.
+
+  An earlier draft of this section said nothing expires anything, and a later
+  one said footage is destroyed after exactly a week; a policy drafted from
+  either would promise something the system does not do. Clips, thumbnails,
+  condensed renders and every other row have no expiry.
 - **R2 objects orphaned by a game delete.** `delete_game` removes the row first
   and then deletes the objects best-effort, swallowing per-key failures, and the
   retention sweep only walks `raw/`. A failed delete leaves clip and condensed
@@ -179,5 +198,5 @@ prevent, so it is stated rather than implied.
   Their own retention terms are contractual facts, not code facts, and are not
   verified here.
 - Anything about lawfulness, consent, or what any jurisdiction requires. Those
-  are the questions CF-75 and CF-88 exist to answer, and they are not
+  are the questions CF-88 exists to answer, and they are not
   engineering questions.

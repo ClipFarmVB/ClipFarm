@@ -1,4 +1,4 @@
-"""The personal-data inventory must match the schema (CF-75 / CF-88).
+"""The personal-data inventory must match the schema (CF-88).
 
 `docs/privacy/data-inventory.md` is the engineering input to a privacy policy:
 what personal data this system stores, and what happens to it when an account
