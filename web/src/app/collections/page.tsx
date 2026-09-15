@@ -121,7 +121,7 @@ function CollectionsContent() {
           <button
             onClick={handleCreate}
             disabled={createLoading || !newName.trim()}
-            className="shrink-0 rounded bg-brand px-3 py-2 text-[11px] font-semibold text-[#0c0c0e] disabled:opacity-40 hover:bg-brand/90 transition-colors"
+            className="shrink-0 rounded bg-brand px-3 py-2 text-[11px] font-semibold text-on-brand disabled:opacity-40 hover:bg-brand/90 transition-colors"
           >
             {createLoading ? "…" : "Create"}
           </button>
