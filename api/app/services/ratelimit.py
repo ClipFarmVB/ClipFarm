@@ -19,8 +19,9 @@ that nor this module bounds how often a clip is fetched: ``/share`` and the post
 reads presign the same object anonymously, and a presigned URL is fetched from
 R2 without touching the API. What these limits bound is calls to the API.
 
-Not applied to writes. Those already require a credential and are bounded by
-the upload quota (``quota_max_games_per_window``).
+Not applied to writes. Those already require a credential, and uploads are
+also bounded by the upload quota (``quota_max_games_per_window``); the other
+writes (``POST /posts``, the ``PATCH`` routes) have no limiter here.
 
 **Exposure B keys on the viewer when there is one; exposure A always keys on
 the address.** B prefers the viewer for two reasons. The game detail page polls

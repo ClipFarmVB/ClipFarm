@@ -32,7 +32,7 @@ from app.services.ratelimit import MemoryBackend, RateLimiter
 # defaults to). All three, because the name alone pins almost nothing: a policy
 # can carry the right name and read another route's setting, and every default
 # can be raised to 30000, with the name-only check still green. The README,
-# config.py and four route docstrings all state these numbers as decisions;
+# config.py and six route docstrings all state these numbers as decisions;
 # this table is what makes them true.
 THROTTLED = {
     ("/users/{handle}", "GET"): ("profile", "rate_limit_profile_per_minute", 30),
@@ -207,9 +207,9 @@ def test_the_download_route_requires_auth_instead_of_a_limiter():
 
 
 def test_write_routes_are_not_throttled():
-    # Writes already require a credential and are bounded by the upload quota.
-    # A limiter on them would be a second, weaker control with its own failure
-    # mode.
+    # Writes already require a credential, and uploads are also bounded by the
+    # upload quota; the other writes have no limiter here. A limiter on them
+    # would be a second, weaker control with its own failure mode.
     for path, method, route in _all_routes():
         if method in {"POST", "PATCH", "DELETE", "PUT"}:
             assert _policies_on(route) == [], f"{method} {path} should not be throttled"
@@ -440,6 +440,50 @@ def test_a_viewer_keyed_route_does_resolve_auth():
         assert get_optional_user_id in _dependency_callables(route)
         checked += 1
     assert checked, "no viewer-keyed route in the table -- the pair is vacuous"
+
+
+def test_a_viewer_keyed_limiter_takes_the_viewer_from_auth_not_the_request(monkeypatch):
+    """The viewer a content policy keys on must come from the credential.
+
+    `ViewerRateLimiter.__call__` declares `viewer_id` with
+    `Depends(get_optional_user_id)`. Drop that default and FastAPI reads
+    `viewer_id` from the query string instead, so `?viewer_id=<any uuid>` mints a
+    fresh bucket per request and every viewer-keyed route is unthrottled. The
+    route-level check above cannot see that: the handlers on those routes declare
+    `viewer_id` themselves, so auth stays in their trees either way. So this goes
+    over the wire, on a probe whose handler takes no parameters of its own.
+    """
+    import uuid
+
+    from fastapi import Depends
+
+    from app.auth import get_optional_user_id
+
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(settings, "rate_limit_share_per_minute", 2)
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend())
+
+    app = FastAPI()
+
+    @app.get(
+        "/probe",
+        dependencies=[Depends(ratelimit.rate_limit(ratelimit.POLICIES["share"]))],
+    )
+    async def probe():
+        return {"ok": True}
+
+    app.dependency_overrides[get_optional_user_id] = lambda: None
+
+    with TestClient(app) as client:
+        codes = [
+            client.get(f"/probe?viewer_id={uuid.uuid4()}").status_code
+            for _ in range(3)
+        ]
+    assert codes == [200, 200, 429], (
+        f"{codes}: a query-string viewer_id minted its own bucket, so the "
+        "viewer-keyed limiter is not taking the viewer from get_optional_user_id"
+    )
 
 
 def test_the_limiter_is_resolved_before_anything_a_refusal_should_not_pay_for():
