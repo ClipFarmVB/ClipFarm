@@ -7,7 +7,7 @@ those calls. So this file is not optional: without it, deleting a
 ``dependencies=[...]`` line would break nothing that runs.
 
 The table below is the guard. A new anonymous read added later without a
-limiter fails here, the same shape as test_no_visibility_write_path.py's AST
+limiter fails here, the same shape as test_visibility_write_paths_are_declared.py's AST
 walk: the point is that a reviewer does not have to notice.
 """
 import asyncio
