@@ -595,9 +595,9 @@ class TestTierSemanticsAcrossDeadtimeFixtures:
         dead = json.loads((FIXTURES_DIR / f"{test_id}_deadtime.json").read_text(encoding="utf-8"))
         high = json.loads((FIXTURES_DIR / f"{test_id}.json").read_text(encoding="utf-8"))
         assert not copied_clip_list(dead, high), (
-            f"every span in {test_id}_deadtime.json is a clip from {test_id}.json: a "
-            "highlight clip list reused as the in-play set, which scores every boring "
-            "rally as dead time (README_deadtime.md, 'The trap')"
+            f"every live-ball span in {test_id}_deadtime.json is a clip from "
+            f"{test_id}.json: a highlight clip list reused as the in-play set, which "
+            "scores every boring rally as dead time (README_deadtime.md, 'The trap')"
         )
 
     def test_at_least_one_dead_time_fixture_has_a_highlight_sibling(self):
@@ -633,9 +633,10 @@ class TestTierSemanticsRule:
         assert tier_semantics_violations(self._fixture(["M", "C", "N"], "MCNBO")) == []
 
     def test_a_highlight_tier_set_is_rejected(self):
-        """The exact mistake CF-375's Notes warn about: copying `["M", "C"]`
-        from the highlight fixture, which drops every boring rally into dead
-        time."""
+        """The tier trap in the direction this class guards: a dead-time
+        fixture given the highlight fixture's `["M", "C"]`, which drops every
+        boring rally into dead time. (#475's Notes warn about the reverse copy;
+        see the class docstring above.)"""
         problems = tier_semantics_violations(self._fixture(["M", "C"], "MCNBO"))
         assert any("'N' is live ball" in p for p in problems), problems
 
