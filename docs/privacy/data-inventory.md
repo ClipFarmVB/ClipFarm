@@ -26,20 +26,24 @@ All on the `users` table unless noted.
 | Column | Class | Notes |
 | --- | --- | --- |
 | `id` | operational | Internal UUID, and **not** an internal-only one: `ProfileOut` returns it, `GET /users/{handle}` is unauthenticated, and `avatar_url` is stored as `{R2 public URL}/avatars/{user_id}`, so the UUID reaches anonymous callers both as a field and inside a URL. Unguessable, which is a different property from undisclosed. |
-| `email` | **identifier** | Unique, required. The only field that reaches a real person off-platform. |
+| `email` | **identifier** | Unique, required. Copied from the Supabase token on the first authenticated request and never updated after (`_ensure_user_exists` inserts and does nothing on conflict), so an email changed in Supabase does not reach this column; a token with no email claim stores `{sub}@unknown`. The only field that reaches a real person off-platform. |
 | `hashed_password` | **credential** | Nullable, and never read or written. Sign-in goes through Supabase Auth, by email and password or by Google OAuth (`web/src/app/login/page.tsx`, `signup/page.tsx`), so credentials live in Supabase and no code path sets this column. Google sign-in also makes Google a source of the account's identity data. |
-| `username` | **identifier** | Public handle. Lower-cased, unique by functional index. Doubles as how other users refer to them. |
+| `username` | **identifier** | Handle. `NULL` until the user chooses one, except for accounts migration 010 gave a generated one. A chosen handle is public; a generated one is not served (below). Lower-cased, unique by functional index. Doubles as how other users refer to them. |
 | `display_name` | profile | Chosen, optional. |
 | `bio` | profile | Chosen, optional, 280 chars. |
 | `avatar_url` | profile | Stored as the object's public R2 URL; served presigned when R2 is configured. |
 | `is_private` | operational | Defaults **true**, and governs **who may follow, not who may see**. `services/access.py` says so in bold and `test_account_privacy_does_not_clamp_post_visibility` pins it: a private account's `public` post is readable by a signed-out stranger. The column is stored and echoed; no access decision reads it. |
 | `created_at`, `username_changed_at`, `username_is_generated` | operational | Account lifecycle. `username_is_generated` marks a handle migration 010 derived from the email local part. |
 
-**One thing worth a lawyer's attention:** a generated handle is derived from the
-email local part. For a user who never claimed one, their public identifier is a
-transformation of their email address. The API withholds a generated handle
-from post responses (`PostAuthor.from_author`), but the derivation is still the
-origin of the value in the database.
+**One thing worth a lawyer's attention:** accounts that already existed when
+migration 010 ran were given a handle derived from their email local part
+(`username_is_generated`). Accounts created since have no handle until they
+choose one, because `_ensure_user_exists` stores only `id` and `email`. A
+generated handle is not published: `GET /users/{handle}` returns 404 for it,
+and post responses null it (`PostAuthor.from_author`). It is still held, so
+`GET /users/handle-available` tells a signed-in caller that the name is not
+available, and the stored value is still a transformation of the email
+address.
 
 ### Beyond the users table
 
@@ -201,14 +205,20 @@ prevent, so it is stated rather than implied.
   footage outliving the user's deletion of it.
 - Third parties. Supabase (auth + database), Cloudflare R2 (object storage),
   Render (runs the api, the worker, the web app and the Redis key-value
-  store, per `render.yaml`),
-  **Modal** and **Sentry** (errors and performance from the api, the worker and
-  the browser) all process this data.
+  store, per `render.yaml`), **Google Fonts** (the root layout loads its
+  stylesheet from `fonts.googleapis.com` on every page, so each visitor's
+  browser contacts Google), **Modal** and **Sentry** (errors from the api, the
+  worker and the browser; performance tracing is off unless a sample rate is
+  set, since `sentry_traces_sample_rate` and the web's
+  `SENTRY_TRACES_SAMPLE_RATE` variables default to 0) all process this data.
   - **Modal receives whole videos.** For GPU ball tracking the worker hands
     Modal a one-hour presigned URL to the uploaded video, and
     `ml/modal_app.py` downloads the entire file; pose refinement presigns its
     own one-hour URL to the same video, which `ml/modal_pose.py` reads in
-    place, or downloads whole when the store cannot seek.
+    place, or downloads whole when the store cannot seek. The pose-first
+    scan, the fallback when ball tracking is unavailable, also sends Modal a
+    one-hour URL to the whole video (`_run_detection` in
+    `api/app/workers/tasks.py`).
   - **Roboflow receives no footage from this code.** It supplies the ball
     model's weights, fetched with `ROBOFLOW_API_KEY` by
     `inference.get_model`, and the model runs on Modal. The worker's local
