@@ -74,18 +74,21 @@ MAX_MISS     = 5          # max consecutive missed frames before track is reset
 # FIRST. When Modal is configured the worker tracks there
 # (`_track_ball_cached`), looking the function up by name at call time and
 # caching whatever comes back under its own key; that image bundles `ml` when
-# it is deployed. Release the
-# worker first and it writes a track built by the OLD code under the NEW key —
-# the stale track this exists to prevent, under a key nothing will ever
-# invalidate. Deploying Modal first keeps the mismatch on the OLD key, which the
-# worker release then orphans. The cost is the window between the two: until the
-# worker release, the old worker can process live games with NEW-code tracks.
+# it is deployed. Release the worker first and it writes a track built by the
+# OLD code under the NEW key — the stale track this exists to prevent, under a
+# key nothing will ever invalidate. Deploying Modal first keeps the mismatch on
+# the OLD key, which the worker release then orphans. The cost is the window
+# between the two: until the worker release, the old worker can process live
+# games with NEW-code tracks, and caches them under the OLD key — which a worker
+# rollback, or an eval run from a pre-bump checkout, would read afterwards.
 #
 # The same exposure exists before any release. `ml.eval.harness --offline` and
-# `diagnose_detection` build the key from the checkout's own `ml` but track on
-# the deployed Modal app, so running either from a branch that bumps this,
-# before its Modal deploy, caches an OLD-code track under the NEW key. Do not
-# run them with a bumped version until Modal carries the matching code.
+# `diagnose_detection` build the key from the checkout's own `ml`, and when
+# Modal is configured they track on the deployed Modal app — so running either
+# from a branch that bumps this, before its Modal deploy, caches an OLD-code
+# track under the NEW key. Until that deploy, run them with MODAL_TOKEN_ID and
+# MODAL_TOKEN_SECRET unset: a cache miss then falls to local tracking, which the
+# eval image cannot run, so it raises and caches nothing.
 #
 # `test_ball_cache_version.py` fails if a fingerprinted input moves and this
 # does not, so bumping it is a decision rather than something to remember.

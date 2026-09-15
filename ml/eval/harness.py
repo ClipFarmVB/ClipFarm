@@ -444,9 +444,10 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         audio = compute_audio_energy(str(local))
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
-        # Pass r2_key: without it the ball-cache lookup and the Modal GPU path are
-        # both skipped, so a mode meant to replay cached tracks would silently
-        # fall through to a ~30-minute local CPU re-track.
+        # Pass r2_key: the Modal path needs it (`_will_attempt_modal`). The cache
+        # lookup does not — it keys on the file's md5 and sample_every — but
+        # without r2_key a miss goes straight to local tracking, which the eval
+        # image has no ML runtime for, so it raises BallRuntimeUnavailable.
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
         # normalize: this mode reads every other production knob off `settings`
         # (the gate threshold below, the condense_* tunables on the deadtime
@@ -588,9 +589,8 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         _assert_declared_frame_height(fixture, frame_h, test_id, r2_key, "deadtime")
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
-        # Pass r2_key: both the ball-cache lookup and the Modal path need it, and
-        # without it this silently falls through to a ~30-minute local CPU
-        # re-track (see _run_offline).
+        # Pass r2_key for the Modal path, as in _run_offline above; the cache
+        # lookup itself keys on the file's md5 and sample_every.
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
         # Same reason as the highlight path: every condense knob below comes
         # from `settings`, so this one must too, or an offline row scores a

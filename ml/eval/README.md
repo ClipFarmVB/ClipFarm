@@ -89,8 +89,11 @@ it reads no thread setting — but it is a real subprocess, so measure with it i
 mind.
 
 ```bash
-# Offline: replay detection + scoring from the R2 ball-cache (a cache miss
-# re-tracks — every video, after a TRACKING_CACHE_VERSION bump).
+# Offline: replay detection + scoring from the R2 ball-cache. A cache miss
+# re-tracks on Modal when it is configured — every video, after a
+# TRACKING_CACHE_VERSION bump. On a branch that bumps the version, before its
+# `modal deploy`, add `-e MODAL_TOKEN_ID= -e MODAL_TOKEN_SECRET=` so a miss fails
+# instead of caching the deployed (old) code's track under the new key.
 docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
   eval python -m ml.eval.harness --test test1 --version my-change --offline
 
