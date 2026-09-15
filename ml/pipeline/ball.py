@@ -44,6 +44,57 @@ MAX_JUMP_PX  = 300        # max pixels a ball can move between sampled frames
                           # position are treated as a different object
 MAX_MISS     = 5          # max consecutive missed frames before track is reset
 
+# Bump this when a change alters the TRACK a given video produces.
+#
+# `_ball_cache_key` in the worker used to key cached tracks on the video's md5,
+# the model and sample_every, and nothing else — so a change to how tracking
+# works left every existing cache entry looking valid, and the next run of an
+# already-processed video silently replayed a track built by the OLD code. On a
+# tuning change that is a wrong answer nobody can see; on a re-measure it is
+# worse, because the numbers come back unchanged and read as "no effect". This
+# constant is now the key's fourth component, so bumping it changes every key.
+#
+# CF-231 (#238) names this as a prerequisite for downscaling the tracking
+# input, and says CF-229 (#233) has the same one for scaling MAX_JUMP_PX and
+# that whichever lands first should do it. So it is done here, once, ahead of
+# both.
+#
+# WHAT COUNTS AS SUCH A CHANGE: anything that shapes the positions `track_ball`
+# emits. MODEL_ID is already in the key. SAMPLE_EVERY is NOT: the key holds the
+# per-video `sample_every` argument, and this constant survives as the
+# denominator of `max_jump`, so moving it changes every track under unchanged
+# keys. This therefore covers SAMPLE_EVERY, MIN_CONF, MAX_JUMP_PX, MAX_MISS, the
+# tracking code `test_ball_cache_version.py` fingerprints, and any new tracking
+# input — a downscale among them — once it is added there. A helper `track_ball`
+# starts calling is not covered until it is. It deliberately does NOT cover the
+# segmentation or contact constants: the cache holds raw positions and those run
+# afterwards, so folding them in would throw away every cached track for a
+# change that cannot move one.
+#
+# A bump ships with `modal deploy ml/modal_app.py`, and the Modal deploy goes
+# FIRST. When Modal is configured the worker tracks there
+# (`_track_ball_cached`), looking the function up by name at call time and
+# caching whatever comes back under its own key; that image bundles `ml` when
+# it is deployed. Release the worker first and it writes a track built by the
+# OLD code under the NEW key — the stale track this exists to prevent, under a
+# key nothing will ever invalidate. Deploying Modal first keeps the mismatch on
+# the OLD key, which the worker release then orphans. The cost is the window
+# between the two: until the worker release, the old worker can process live
+# games with NEW-code tracks, and caches them under the OLD key — which a worker
+# rollback, or an eval run from a pre-bump checkout, would read afterwards.
+#
+# The same exposure exists before any release. `ml.eval.harness --offline` and
+# `diagnose_detection` build the key from the checkout's own `ml`, and when
+# Modal is configured they track on the deployed Modal app — so running either
+# from a branch that bumps this, before its Modal deploy, caches an OLD-code
+# track under the NEW key. Until that deploy, run them with MODAL_TOKEN_ID and
+# MODAL_TOKEN_SECRET unset: a cache miss then falls to local tracking, which the
+# eval image cannot run, so it raises and caches nothing.
+#
+# `test_ball_cache_version.py` fails if a fingerprinted input moves and this
+# does not, so bumping it is a decision rather than something to remember.
+TRACKING_CACHE_VERSION = 1
+
 # ── Track segmentation config ─────────────────────────────────────────────────
 # The raw track is a chimera: _pick_active hops between the game ball, spare
 # balls, and false detections (measured: 23% of consecutive positions jump

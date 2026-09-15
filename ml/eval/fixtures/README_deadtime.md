@@ -135,4 +135,8 @@ companion row so you can see what the mode changed: pre-bridge windows under
 `rules`, the whole rule-based path under `guarded`. Under `guarded` the
 run may print `ABSTAINED` — the ball track was too sparse to condense on, which
 is a real outcome and not a failed run. It needs the worker deps (R2, cv2, app
-config) and a ball-cache hit for the video.
+config), and a ball-cache entry for the video under the current
+`TRACKING_CACHE_VERSION` — or Modal to re-track it, which is safe only when the
+deployed Modal app matches your checkout. On a branch that bumps the version,
+before its `modal deploy`, run with `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` unset
+so a miss fails instead of caching the wrong track (see `ml/pipeline/ball.py`).
