@@ -8,10 +8,12 @@ re-reads drifts silently, and the drift is invisible until someone acts on it.
 
 So the inventory is not prose alone. Every column on `users` and every table
 that references it is classified here, and a new one fails this file until it
-is classified and the document updated. Deliberately narrow: it asserts that
-personal data is DESCRIBED, never that a particular design is right. Those are
-decisions for a human, and several of them are open (see the module docstring
-of the deletion test below).
+is classified here. This file does not read the document: its failure
+messages point at it, and updating it in the same PR is left to a human.
+Deliberately narrow: it asserts that personal data is DESCRIBED, never that a
+particular design is right. Those are decisions for a human, and several of
+them are open (see the docstring of
+`test_account_deletion_is_still_blocked_by_at_least_one_table` below).
 """
 import pytest
 

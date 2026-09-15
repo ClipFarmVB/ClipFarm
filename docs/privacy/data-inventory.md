@@ -9,7 +9,10 @@ a guess describes a system that does not exist.
 Everything below is read off the schema and the routers. `api/tests/
 test_personal_data_inventory.py` fails when a `users` column or a table
 referencing it appears, disappears, or changes its delete behaviour without
-this file being updated — so the document cannot drift from the code silently.
+the test's own copy of the inventory being updated. It does not read this
+file: its failure messages point here, and keeping this document in step is
+a human's job in the same PR. So §1's column list and §3's deletion table
+cannot drift from the models unnoticed; the prose around them can.
 
 ---
 
@@ -19,13 +22,13 @@ All on the `users` table unless noted.
 
 | Column | Class | Notes |
 | --- | --- | --- |
-| `id` | operational | Internal UUID, and **not** an internal-only one: `ProfileOut` returns it, `GET /users/{handle}` is unauthenticated, and `avatar_url` is stored as `avatars/{user_id}`, so the UUID reaches anonymous callers both as a field and inside a URL. Unguessable, which is a different property from undisclosed. |
+| `id` | operational | Internal UUID, and **not** an internal-only one: `ProfileOut` returns it, `GET /users/{handle}` is unauthenticated, and `avatar_url` is stored as `{R2 public URL}/avatars/{user_id}`, so the UUID reaches anonymous callers both as a field and inside a URL. Unguessable, which is a different property from undisclosed. |
 | `email` | **identifier** | Unique, required. The only field that reaches a real person off-platform. |
 | `hashed_password` | **credential** | Nullable, and never read or written. Sign-in goes through Supabase Auth, by email and password or by Google OAuth (`web/src/app/login/page.tsx`, `signup/page.tsx`), so credentials live in Supabase and no code path sets this column. Google sign-in also makes Google a source of the account's identity data. |
 | `username` | **identifier** | Public handle. Lower-cased, unique by functional index. Doubles as how other users refer to them. |
 | `display_name` | profile | Chosen, optional. |
 | `bio` | profile | Chosen, optional, 280 chars. |
-| `avatar_url` | profile | Stored key; served presigned when R2 is configured. |
+| `avatar_url` | profile | Stored as the object's public R2 URL; served presigned when R2 is configured. |
 | `is_private` | operational | Defaults **true**, and governs **who may follow, not who may see**. `services/access.py` says so in bold and `test_account_privacy_does_not_clamp_post_visibility` pins it: a private account's `public` post is readable by a signed-out stranger. The column is stored and echoed; no access decision reads it. |
 | `created_at`, `username_changed_at`, `username_is_generated` | operational | Account lifecycle. `username_is_generated` marks a handle migration 010 derived from the email local part. |
 
@@ -51,8 +54,8 @@ UUIDs, so the keys are unguessable, but each one names the row it belongs to.
 (required), `players.jersey_number`, `players.photo_url`. **Neither table has
 any deletion path.** `routers/players.py` exposes `GET`, `POST` and `PATCH` and
 no DELETE; nothing anywhere calls `db.delete()` on a `Player` or a `Team`; and
-deleting a game cascades its clips but sets `clips.player_id` to NULL, so the
-player row survives its last clip. `players` also carries **no foreign key to
+deleting a game deletes its clips but never a `players` row, so a player row
+survives its last clip. `players` also carries **no foreign key to
 `users.id`** — only `team_id` — so it can never appear in the deletion table
 below, and the guard test cannot see it either. The one table holding what this
 document calls the sensitive part is outside both.
@@ -194,12 +197,23 @@ prevent, so it is stated rather than implied.
   objects with no row referencing them and nothing that will ever reclaim them —
   footage outliving the user's deletion of it.
 - Third parties. Supabase (auth + database), Cloudflare R2 (object storage),
-  Modal and Roboflow (inference on uploaded frames) and **Sentry** (errors and
-  performance from the api, the worker and the browser) all process this data.
+  Render (runs the api, the worker and the web app, per `render.yaml`),
+  **Modal** and **Sentry** (errors and performance from the api, the worker and
+  the browser) all process this data.
+  - **Modal receives whole videos.** For GPU ball tracking the worker hands
+    Modal a one-hour presigned URL to the uploaded video, and
+    `ml/modal_app.py` downloads the entire file; pose refinement
+    (`ml/modal_pose.py`) reads the same URL in place, or downloads it whole
+    when the store cannot seek.
+  - **Roboflow receives no footage from this code.** It supplies the ball
+    model's weights, fetched with `ROBOFLOW_API_KEY` by
+    `inference.get_model`; the model runs on Modal, or in the worker as a
+    fallback. Whether the `inference` package reports usage to Roboflow is not
+    verified here.
   Sentry is configured with `send_default_pii=False` and
   `max_request_body_size="never"`, which limits what reaches it rather than
   making it a non-processor. Enumerating the sub-processors is a separate pass,
-  and it matters: frames of identifiable minors are sent to inference providers.
+  and it matters: whole videos of identifiable minors are sent to Modal.
   Their own retention terms are contractual facts, not code facts, and are not
   verified here.
 - Anything about lawfulness, consent, or what any jurisdiction requires. Those
