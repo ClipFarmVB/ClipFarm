@@ -125,8 +125,8 @@ def test_the_track_shaping_inputs_have_not_moved_without_a_version_bump():
         "If a given video now produces a DIFFERENT track, every cached one was "
         f"built by the old code: set ball.TRACKING_CACHE_VERSION = {version + 1} and "
         f"add `{version + 1}: \"{now}\"` to RECORDED_FINGERPRINTS and "
-        "PINNED_FINGERPRINTS, in the same PR, and ship it with "
-        "`modal deploy ml/modal_app.py` in the same release.\n"
+        "PINNED_FINGERPRINTS, in the same PR, and at release run "
+        "`modal deploy ml/modal_app.py` BEFORE deploying the worker.\n"
         "If the edit cannot change a track (a log line, progress reporting), "
         f"replace version {version}'s entry in both instead, and say why in the PR.\n"
         "Bumping orphans every cached track, so the next run of every video "
@@ -151,6 +151,11 @@ def test_a_recorded_fingerprint_is_not_rewritten_by_pasting_over_it():
     decision written down in two places rather than the one-line paste a
     failure message invites.
     """
+    assert set(PINNED_FINGERPRINTS) == set(RECORDED_FINGERPRINTS), (
+        f"RECORDED_FINGERPRINTS covers versions {sorted(RECORDED_FINGERPRINTS)} but "
+        f"PINNED_FINGERPRINTS covers {sorted(PINNED_FINGERPRINTS)}: a recorded version "
+        "without its pin can later be pasted over unseen"
+    )
     for version, pinned in PINNED_FINGERPRINTS.items():
         assert RECORDED_FINGERPRINTS.get(version) == pinned, (
             f"RECORDED_FINGERPRINTS[{version}] no longer matches its pin. If the track "

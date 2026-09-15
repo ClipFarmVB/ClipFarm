@@ -63,17 +63,21 @@ MAX_MISS     = 5          # max consecutive missed frames before track is reset
 # per-video `sample_every` argument, and this constant survives as the
 # denominator of `max_jump`, so moving it changes every track under unchanged
 # keys. This therefore covers SAMPLE_EVERY, MIN_CONF, MAX_JUMP_PX, MAX_MISS, the
-# tracking code itself, and any new tracking input the function grows, a
-# downscale among them. It deliberately does NOT cover the segmentation or
+# tracking code `test_ball_cache_version.py` fingerprints, and any new tracking
+# input — a downscale among them — once it is added there. A helper `track_ball`
+# starts calling is not covered until it is. It deliberately does NOT cover the segmentation or
 # contact constants: the cache holds raw positions and those run afterwards, so
 # folding them in would throw away every cached track for a change that cannot
 # move one.
 #
-# A bump ships with `modal deploy ml/modal_app.py` in the same release. When
-# Modal is configured the worker tracks there (`_track_ball_cached`), and that
-# image bundles `ml` when it is deployed — so a bump without the deploy writes a
-# track built by the OLD code under the NEW key, which is the stale track this
-# exists to prevent, under a key nothing will ever invalidate.
+# A bump ships with `modal deploy ml/modal_app.py`, and the Modal deploy goes
+# FIRST. When Modal is configured the worker tracks there (`_track_ball_cached`),
+# looking the function up by name at call time and caching whatever comes back
+# under its own key; that image bundles `ml` when it is deployed. Release the
+# worker first and it writes a track built by the OLD code under the NEW key —
+# the stale track this exists to prevent, under a key nothing will ever
+# invalidate. Deploying Modal first keeps the mismatch on the OLD key, which the
+# worker release then orphans.
 #
 # `test_ball_cache_version.py` fails if a fingerprinted input moves and this
 # does not, so bumping it is a decision rather than something to remember.

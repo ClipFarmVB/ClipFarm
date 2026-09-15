@@ -402,7 +402,9 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     """
     Re-run the detection + scoring stages against the fixture's source video,
     mirroring process_game_task stages 0-2. Ball positions load from the R2
-    cache (free unless model/sample-rate changed), so no re-tracking. Returns
+    cache when an entry exists for the video, model, sample rate and
+    TRACKING_CACHE_VERSION; a miss — every video, after a version bump —
+    re-tracks. Returns
     (pre_gate = all scored rallies, post_gate = those above the gate).
 
     Runs impure edges (R2, ffmpeg, cv2, app config) behind lazy imports — must
@@ -443,7 +445,7 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
         # Pass r2_key: without it the ball-cache lookup and the Modal GPU path are
-        # both skipped, so a mode documented as "no re-tracking" would silently
+        # both skipped, so a mode meant to replay cached tracks would silently
         # fall through to a ~30-minute local CPU re-track.
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
         # normalize: this mode reads every other production knob off `settings`
@@ -528,7 +530,8 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
     """
     Derive the condense keep-windows from the fixture's source video, mirroring
     process_game_task's stage-5 condense path (dead_time.py). Ball positions load
-    from the R2 cache (free unless model/sample-rate changed), so no re-tracking.
+    from the R2 cache when an entry exists for the video, model, sample rate and
+    TRACKING_CACHE_VERSION; a miss — every video, after a version bump — re-tracks.
 
     Follows `condense_mode`, so this scores the builder production actually runs
     rather than a fixed one — the whole point of the offline path is that its
@@ -610,7 +613,7 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         ]
 
         mode = settings.condense_mode
-        # Offline mode is the ball-cache path by design ("no re-tracking"). No
+        # Offline mode is the ball-cache path by design (it replays cached tracks). No
         # ball signal at all means the cache is empty; the production fallback
         # is a ~30-min pose-first CPU re-detect, which this mode deliberately
         # does not run. Fail loudly rather than score that as the model's output.

@@ -89,7 +89,8 @@ it reads no thread setting — but it is a real subprocess, so measure with it i
 mind.
 
 ```bash
-# Offline: replay detection + scoring from the R2 ball-cache (no re-tracking).
+# Offline: replay detection + scoring from the R2 ball-cache (a cache miss
+# re-tracks — every video, after a TRACKING_CACHE_VERSION bump).
 docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
   eval python -m ml.eval.harness --test test1 --version my-change --offline
 
