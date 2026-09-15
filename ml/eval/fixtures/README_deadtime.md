@@ -95,8 +95,10 @@ What that rule cannot see is the copied clip list itself: a highlight fixture's
 clips, tiers `M`/`C` only, pasted in as the spans with `keep_tiers: ["M", "C"]`
 has no `N` in it to miss. The suite catches that when the fixture has a
 highlight sibling (`{test_id}.json`) to compare against — a dead-time fixture
-whose every span is one of the sibling's clips fails. A copy with no sibling on
-disk is not detectable, so label from the raw video.
+whose live-ball spans (everything except `B`/`O`) are all clips from the sibling
+fails, whether or not its breaks are tagged. A copy with no sibling on disk, or
+one whose clip times were edited, is not detectable, so label from the raw
+video.
 
 The tag-every-span rule matters because the loader keeps an untagged span as
 in-play whatever `keep_tiers` says — so tagging the rallies and leaving the

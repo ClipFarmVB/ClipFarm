@@ -36,6 +36,12 @@ HIGHLIGHT_IDS = sorted(
     p.stem for p in FIXTURES_DIR.glob("*.json") if not p.stem.endswith("_deadtime")
 )
 
+# Dead-time fixtures with a highlight fixture for the same video, which the
+# copied-clip-list check compares against. One list feeds both that check and
+# its vacuity guard, so an empty list fails the guard rather than silently
+# collecting nothing.
+DEADTIME_WITH_HIGHLIGHT = [t for t in DEADTIME_IDS if t in HIGHLIGHT_IDS]
+
 # The labelling vocabulary, for fixtures that declare no `tier_legend` of their
 # own. Hardcoded deliberately: the alternative tried here was to fall back to
 # `ground_truth_tiers`, which rejects a clip tagged with an *excluded* tier —
@@ -137,23 +143,27 @@ def tier_semantics_violations(raw: dict) -> list[str]:
 
 
 def copied_clip_list(deadtime_raw: dict, highlight_raw: dict) -> bool:
-    """Whether a dead-time fixture's spans are its highlight sibling's clips.
+    """Whether a dead-time fixture's live-ball spans are its highlight sibling's clips.
 
     `tier_semantics_violations` compares `keep_tiers` with the tiers present in
     the file, so it cannot see the trap in its primary form: a highlight clip
     list (tiers `M`/`C` only) pasted in as the spans, with `["M", "C"]` as
     `keep_tiers`. Nothing in that file is inconsistent — the boring rallies it
     should have labelled were never written — so the tier rule passes it. What
-    gives it away is the pairing: every span is one of the sibling's clips, and a
-    dead-time pass over the same video labels the rallies the highlight pass left
-    out.
+    gives it away is the pairing: every live-ball span is one of the sibling's
+    clips, and a dead-time pass over the same video labels the rallies the
+    highlight pass left out.
+
+    Stoppage spans (`B`, `O`) are left out of the comparison. They are never
+    highlight clips, so counting them would let a copied list escape as soon as
+    its breaks are tagged too — the natural way to make this mistake.
     """
-    def _times(items: list[dict]) -> set[tuple[float, float]]:
+    def _times(items) -> set[tuple[float, float]]:
         return {(parse_timestamp(s["start"]), parse_timestamp(s["end"])) for s in items}
 
-    spans = _times(_spans(deadtime_raw))
+    live = _times(s for s in _spans(deadtime_raw) if s.get("tier") not in DEAD_TIERS)
     clips = _times(highlight_raw.get("clips", []))
-    return bool(spans) and spans <= clips
+    return bool(live) and live <= clips
 
 
 class TestEveryDeadtimeFixture:
@@ -580,7 +590,7 @@ class TestTierSemanticsAcrossDeadtimeFixtures:
         ]
         assert tiered, "no dead-time fixture carries tiers; the split is untested"
 
-    @pytest.mark.parametrize("test_id", [t for t in DEADTIME_IDS if t in HIGHLIGHT_IDS])
+    @pytest.mark.parametrize("test_id", DEADTIME_WITH_HIGHLIGHT)
     def test_the_spans_are_not_a_copy_of_the_highlight_clip_list(self, test_id):
         dead = json.loads((FIXTURES_DIR / f"{test_id}_deadtime.json").read_text(encoding="utf-8"))
         high = json.loads((FIXTURES_DIR / f"{test_id}.json").read_text(encoding="utf-8"))
@@ -592,7 +602,7 @@ class TestTierSemanticsAcrossDeadtimeFixtures:
 
     def test_at_least_one_dead_time_fixture_has_a_highlight_sibling(self):
         """The copy check above runs once per pair, so with no pair it tests nothing."""
-        assert [t for t in DEADTIME_IDS if t in HIGHLIGHT_IDS], (
+        assert DEADTIME_WITH_HIGHLIGHT, (
             "no dead-time fixture has a highlight sibling; the copied-clip-list check is untested"
         )
 
@@ -710,6 +720,18 @@ class TestTierSemanticsRule:
         clips = [{"start": "00:10", "end": "00:20", "tier": "M"},
                  {"start": "00:30", "end": "00:40", "tier": "C"}]
         assert copied_clip_list({"spans": clips[:1]}, {"clips": clips})
+
+    def test_a_copied_clip_list_with_its_stoppages_tagged_is_detected(self):
+        """The natural way to make the mistake: copy the clips, then tag the breaks.
+
+        A `B`/`O` span is never a highlight clip, so a comparison over every span
+        would stop matching the moment one is added.
+        """
+        clips = [{"start": "00:10", "end": "00:20", "tier": "M"},
+                 {"start": "00:30", "end": "00:40", "tier": "C"}]
+        spans = clips + [{"start": "05:00", "end": "08:00", "tier": "B"},
+                         {"start": "09:00", "end": "09:30", "tier": "O"}]
+        assert copied_clip_list({"spans": spans, "keep_tiers": ["M", "C"]}, {"clips": clips})
 
     def test_a_real_pass_with_rallies_the_highlights_omit_is_not_a_copy(self):
         clips = [{"start": "00:10", "end": "00:20", "tier": "M"}]
