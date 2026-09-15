@@ -331,12 +331,79 @@ test4); every other column is held out and is starred in the summary. test5 is
 the strongest of those — it was labeled after the variants were written, so it
 could not have shaped them even indirectly.
 
+## Measuring the MIN_RALLY_CONTACTS cliff (CF-376)
+
+CF-174 scaled the contact **speed** thresholds by `frame_height / 360` and left
+`MIN_RALLY_CONTACTS = 3` an absolute count. A rally that drops from 3 detected
+contacts to 2 is therefore not shortened — it is discarded whole, and
+production saw 34 clips become 11 on the same ball cache.
+
+`contact_cliff.py` prints the population that gate is deleting, both switch
+positions side by side, off the same dumped track `tune_contacts` reads:
+
+```bash
+# The dump first, if you do not have it already: the tool reads a dumped track
+# and never a video, and results/{test_id}_ball_track.json is gitignored, so a
+# fresh clone has none. `tune_contacts` needs the same file.
+#
+# No --dump flag: the default is already harness.RESULTS_DIR, which is where
+# tune_contacts.load reads from. A relative path here would resolve against
+# the image's WORKDIR (/app/api, from Dockerfile.api; the eval service sets no
+# working_dir), so `--dump results/...` writes to /app/api/results/ and the
+# next command dies with FileNotFoundError looking in /app/ml/eval/results/.
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.diagnose_detection --test test2
+
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.contact_cliff test2
+```
+
+Read it on a **1080p** fixture (test2/test4). On test1 the scale is exactly
+1.0, so the two columns are the same run and the report says so — that is the
+gap CF-375 (#475) exists to close, not evidence that there is no cliff.
+
+The ladder separates two gates: `MIN_RALLY_CONTACTS` deletes segments with too
+few contacts, and `MIN_RALLY_DURATION` (2.0s) then deletes what is left if the
+clip is too short.
+
+**Expect the duration channel to read zero, and read that as a result rather
+than as luck.** A rally spans `min(video_duration, last + POST_PLAY_PAD) −
+max(0, first − PRE_RALLY_PAD)`. The clamp and the pre-roll split independently,
+giving four cases:
+
+| | span | floor |
+|---|---|---|
+| unclamped, `first ≤ 2` | `last + 2.5` | 2.5 |
+| unclamped, `first > 2` | `(last − first) + 4.5` | 4.5 |
+| clamped, `first ≤ 2` | `video_duration` (flat in `first`) | `video_duration` |
+| clamped, `first > 2` | `video_duration − first + 2` | **2.0** |
+
+Only the last row approaches the gate: there the span moves one-for-one with the
+first contact and bottoms out at exactly 2.0s, for a rally whose first contact
+lands on the final frame. So for contacts inside the video the floor is
+`MIN_RALLY_DURATION` itself and the gate's `>=` is what keeps that case.
+
+Measured over 300,000 random in-video triples at durations from 2s to 4000s:
+minimum span 2.0, no case below the gate. Only a video shorter than 2s trips
+it, and the fixtures run 300s to 3660s. So tightening contact detection cannot
+trip this gate, and a zero here is not "this fixture happened to miss it".
+
+That is worth having measured: it retires the possibility that some of the loss
+belongs to the duration gate, and it is a property of the constants, so it stops
+holding the moment a pad or the gate moves. The last line also counts the
+rallies sitting at exactly 3 contacts, which is the population one detection
+away from the count gate.
+
+It measures and decides nothing; the fix is the second deliverable on #476.
+
 ## Files
 ```
 metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
 harness.py             fixture load, model-clip acquisition, report, results append
 diagnose_detection.py  why a rally was missed: BLIND / SPARSE / GATED breakdown
 tune_contacts.py       sweep find_contacts tunables over a dumped ball track
+contact_cliff.py       how many rallies MIN_RALLY_CONTACTS deletes under CF-174
+                       scaling, both switch positions (CF-376)
 deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187)
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 fixtures/              one JSON per test case (ground truth)

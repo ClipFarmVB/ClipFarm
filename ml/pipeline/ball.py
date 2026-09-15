@@ -989,26 +989,24 @@ def _make_rally(seg: list[dict], video_duration: float, frame_height: int = 0) -
     }
 
 
-def contacts_to_rallies(
-    contacts: list[dict],
-    video_duration: float,
-    frame_height: int,
-) -> list[dict]:
+def contact_segments(contacts: list[dict]) -> list[list[dict]]:
     """
-    Convert a contact list into rally clip boundaries.
+    Steps 1 and 2 of contacts_to_rallies: group contacts into candidate rally
+    segments, before either noise gate has been applied.
 
-    Algorithm:
-      1. Group contacts by time gap: a new segment starts when the gap to the
-         previous contact exceeds RALLY_GAP_SECONDS.
-      2. Segments longer than MAX_CLIP_DURATION are subdivided on their largest
-         internal gaps so each sub-clip stays under the cap.
-      3. Each segment becomes one clip:
-           rally_start = first_contact.time - PRE_RALLY_PAD  (>= 0)
-           rally_end   = last_contact.time  + POST_PLAY_PAD  (<= video_duration)
-      4. Clips shorter than MIN_RALLY_DURATION are discarded as noise.
+    Split out of contacts_to_rallies rather than copied (CF-376). The question
+    that card asks — how many rallies land in the 2-contact band that
+    MIN_RALLY_CONTACTS deletes — is a question about *these* lists, and it can
+    only be answered by the grouping production actually runs. A second copy in
+    ml/eval would answer it about a different pipeline, and would answer it
+    wrongly the first time either copy was tuned.
 
-    Returns list of dicts compatible with generate_clips():
-      {start, end, action, confidence, labels}
+    Grouping is by time gap (RALLY_GAP_SECONDS), then long groups are
+    subdivided on their largest internal gaps so each stays under
+    MAX_CLIP_DURATION. Neither gate below is applied here: the returned lists
+    include the 1- and 2-contact segments, which is the whole point.
+
+    Returns segments in no particular order; contacts_to_rallies sorts them.
     """
     if not contacts:
         return []
@@ -1052,6 +1050,35 @@ def contacts_to_rallies(
                     split_idx = i
             pending.append(seg[:split_idx])
             pending.append(seg[split_idx:])
+
+    return final_segments
+
+
+def contacts_to_rallies(
+    contacts: list[dict],
+    video_duration: float,
+    frame_height: int,
+) -> list[dict]:
+    """
+    Convert a contact list into rally clip boundaries.
+
+    Algorithm:
+      1. Group contacts by time gap: a new segment starts when the gap to the
+         previous contact exceeds RALLY_GAP_SECONDS.
+      2. Segments longer than MAX_CLIP_DURATION are subdivided on their largest
+         internal gaps so each sub-clip stays under the cap.
+      3. Each segment becomes one clip:
+           rally_start = first_contact.time - PRE_RALLY_PAD  (>= 0)
+           rally_end   = last_contact.time  + POST_PLAY_PAD  (<= video_duration)
+      4. Clips shorter than MIN_RALLY_DURATION are discarded as noise.
+
+    Returns list of dicts compatible with generate_clips():
+      {start, end, action, confidence, labels}
+    """
+    if not contacts:
+        return []
+
+    final_segments = contact_segments(contacts)
 
     # ── 3 & 4. Build rally windows, discard noise ─────────────────────────────
     rallies: list[dict] = []
