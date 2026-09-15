@@ -476,3 +476,19 @@ the backend on a VPS — an alternative, not the production path.
 - **Add an API endpoint** → `api/app/routers/` + wire in `api/app/main.py`.
 - **Change the frontend** → `web/` (⚠ read `web/AGENTS.md` first).
 - **Every configurable knob** → `api/app/config.py`.
+
+---
+
+## License
+
+ClipFarm is licensed **AGPL-3.0-or-later** — see [`LICENSE`](LICENSE).
+
+    Copyright (C) 2026 Nelson Kang
+
+AGPL is not a preference here, it is an inheritance: `ultralytics` (the pose
+model, `ml/modal_pose.py`) is AGPL-3.0, and §13 extends its source-offer
+obligation to users interacting with a hosted service over a network. A
+permissive license was therefore not ours to grant.
+
+[`docs/licensing.md`](docs/licensing.md) has the reasoning, the full dependency
+audit, and the exit path if ClipFarm ever needs a commercial posture.
