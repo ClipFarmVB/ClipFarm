@@ -8,8 +8,8 @@ re-reads drifts silently, and the drift is invisible until someone acts on it.
 
 So the inventory is not prose alone. Every column on `users` and every table
 that references it is classified here, and a new one fails this file until it
-is classified here. This file does not read the document: its failure
-messages point at it, and updating it in the same PR is left to a human.
+is classified here. This file does not read the document: two of its failure
+messages name it, and updating it in the same PR is left to a human.
 Deliberately narrow: it asserts that personal data is DESCRIBED, never that a
 particular design is right. Those are decisions for a human, and several of
 them are open (see the docstring of
@@ -166,7 +166,8 @@ def test_the_recorded_delete_behaviour_matches_the_schema():
     Stated precisely, because the precise version is weaker than it sounds: what
     this reads is `Base.metadata`. A migration that alters the constraint in the
     database without touching the model is invisible here, so this pins the
-    models against the document and not the database against either. Closing
+    models against this file's map: not the database, and not the document.
+    Closing
     that gap means reading `alembic/versions/` as `test_migration_chain.py`
     does.
     """
@@ -186,8 +187,9 @@ def test_account_deletion_is_still_blocked_by_at_least_one_table():
     either, so nothing exercises this yet.
 
     This is NOT asserting that the current design is correct; it is asserting
-    that the document is accurate. When erasure is implemented, this test fails
-    and the document gets rewritten alongside it — which is the point.
+    that the state the document describes still holds. When erasure is
+    implemented, this test fails, and its message asks for the document to be
+    rewritten alongside it — which is the point.
     """
     blocking = sorted(t for t, _, od in _user_foreign_keys() if od is None)
     assert blocking, (

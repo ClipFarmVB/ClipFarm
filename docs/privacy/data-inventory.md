@@ -9,10 +9,13 @@ a guess describes a system that does not exist.
 Everything below is read off the schema and the routers. `api/tests/
 test_personal_data_inventory.py` fails when a `users` column or a table
 referencing it appears, disappears, or changes its delete behaviour without
-the test's own copy of the inventory being updated. It does not read this
-file: its failure messages point here, and keeping this document in step is
-a human's job in the same PR. So §1's column list and §3's deletion table
-cannot drift from the models unnoticed; the prose around them can.
+the test's own copy of the inventory being updated. That copy is two dicts in
+the test: the `users` columns with their classes, and the tables referencing
+`users.id` with their delete behaviour. No test reads this file, so every
+part of it, §1's table and §3's table included, goes stale unnoticed when a
+change updates the models and the test's copy together. Two of the test's
+failure messages name this file; keeping it in step is a human's job in the
+same PR.
 
 ---
 
@@ -197,19 +200,21 @@ prevent, so it is stated rather than implied.
   objects with no row referencing them and nothing that will ever reclaim them —
   footage outliving the user's deletion of it.
 - Third parties. Supabase (auth + database), Cloudflare R2 (object storage),
-  Render (runs the api, the worker and the web app, per `render.yaml`),
+  Render (runs the api, the worker, the web app and the Redis key-value
+  store, per `render.yaml`),
   **Modal** and **Sentry** (errors and performance from the api, the worker and
   the browser) all process this data.
   - **Modal receives whole videos.** For GPU ball tracking the worker hands
     Modal a one-hour presigned URL to the uploaded video, and
-    `ml/modal_app.py` downloads the entire file; pose refinement
-    (`ml/modal_pose.py`) reads the same URL in place, or downloads it whole
-    when the store cannot seek.
+    `ml/modal_app.py` downloads the entire file; pose refinement presigns its
+    own one-hour URL to the same video, which `ml/modal_pose.py` reads in
+    place, or downloads whole when the store cannot seek.
   - **Roboflow receives no footage from this code.** It supplies the ball
     model's weights, fetched with `ROBOFLOW_API_KEY` by
-    `inference.get_model`; the model runs on Modal, or in the worker as a
-    fallback. Whether the `inference` package reports usage to Roboflow is not
-    verified here.
+    `inference.get_model`, and the model runs on Modal. The worker's local
+    fallback cannot run it in production: the worker image ships no
+    `inference` package (`Dockerfile.api`). Whether that package reports usage
+    to Roboflow is not verified here.
   Sentry is configured with `send_default_pii=False` and
   `max_request_body_size="never"`, which limits what reaches it rather than
   making it a non-processor. Enumerating the sub-processors is a separate pass,
