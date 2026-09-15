@@ -1,0 +1,28 @@
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Generated native projects (CF-315). `expo prebuild` regenerates both from
+# app.json and the config plugins, so they are build output, not source. The
+# custom upload modules (CF-323, CF-324) live in modules/clipfarm-upload/ and
+# are committed — these two paths are anchored with a leading slash so that
+# stays true.
+/ios
+/android
+
+# Native credentials — never commit
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist
+
+# Metro
+.metro-health-check*
+
+# TypeScript
+*.tsbuildinfo
