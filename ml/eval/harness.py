@@ -588,8 +588,9 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         _assert_declared_frame_height(fixture, frame_h, test_id, r2_key, "deadtime")
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
-        # Pass r2_key so the ball-cache lookup hits; without it this silently
-        # falls through to a ~30-minute local CPU re-track (see _run_offline).
+        # Pass r2_key: both the ball-cache lookup and the Modal path need it, and
+        # without it this silently falls through to a ~30-minute local CPU
+        # re-track (see _run_offline).
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
         # Same reason as the highlight path: every condense knob below comes
         # from `settings`, so this one must too, or an offline row scores a
@@ -613,8 +614,9 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         ]
 
         mode = settings.condense_mode
-        # Offline mode is the ball-cache path by design (it replays cached tracks). No
-        # ball signal at all means the cache is empty; the production fallback
+        # Offline mode is the ball-cache path by design (it replays cached
+        # tracks, and re-tracks on a miss). No ball signal at all means the track
+        # is empty, whether cached or re-tracked; the production fallback
         # is a ~30-min pose-first CPU re-detect, which this mode deliberately
         # does not run. Fail loudly rather than score that as the model's output.
         #

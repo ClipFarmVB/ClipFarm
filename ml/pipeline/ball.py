@@ -65,19 +65,27 @@ MAX_MISS     = 5          # max consecutive missed frames before track is reset
 # keys. This therefore covers SAMPLE_EVERY, MIN_CONF, MAX_JUMP_PX, MAX_MISS, the
 # tracking code `test_ball_cache_version.py` fingerprints, and any new tracking
 # input — a downscale among them — once it is added there. A helper `track_ball`
-# starts calling is not covered until it is. It deliberately does NOT cover the segmentation or
-# contact constants: the cache holds raw positions and those run afterwards, so
-# folding them in would throw away every cached track for a change that cannot
-# move one.
+# starts calling is not covered until it is. It deliberately does NOT cover the
+# segmentation or contact constants: the cache holds raw positions and those run
+# afterwards, so folding them in would throw away every cached track for a
+# change that cannot move one.
 #
 # A bump ships with `modal deploy ml/modal_app.py`, and the Modal deploy goes
-# FIRST. When Modal is configured the worker tracks there (`_track_ball_cached`),
-# looking the function up by name at call time and caching whatever comes back
-# under its own key; that image bundles `ml` when it is deployed. Release the
+# FIRST. When Modal is configured the worker tracks there
+# (`_track_ball_cached`), looking the function up by name at call time and
+# caching whatever comes back under its own key; that image bundles `ml` when
+# it is deployed. Release the
 # worker first and it writes a track built by the OLD code under the NEW key —
 # the stale track this exists to prevent, under a key nothing will ever
 # invalidate. Deploying Modal first keeps the mismatch on the OLD key, which the
-# worker release then orphans.
+# worker release then orphans. The cost is the window between the two: until the
+# worker release, the old worker can process live games with NEW-code tracks.
+#
+# The same exposure exists before any release. `ml.eval.harness --offline` and
+# `diagnose_detection` build the key from the checkout's own `ml` but track on
+# the deployed Modal app, so running either from a branch that bumps this,
+# before its Modal deploy, caches an OLD-code track under the NEW key. Do not
+# run them with a bumped version until Modal carries the matching code.
 #
 # `test_ball_cache_version.py` fails if a fingerprinted input moves and this
 # does not, so bumping it is a decision rather than something to remember.
