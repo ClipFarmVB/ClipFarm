@@ -162,7 +162,8 @@ writes `Clip` rows. Re-running a game clears its prior clips first (idempotent).
   *failure* (net serve on set point) or a *neighboring court* scores just as high. Ranking
   quality and multi-court false positives are known open problems (see backlog).
 - **The ball cache is content-addressed.** Re-uploading the same file is nearly free.
-  Changing the model or sample rate invalidates it automatically (it's in the key).
+  Changing the model or sample rate invalidates it automatically (both are in the key).
+  A change to how tracking works does not: it needs a `ball.TRACKING_CACHE_VERSION` bump.
 - **Model weights live on Modal, not here** (CF-164). The worker used to mount a
   `model_cache` volume so RF-DETR/YOLO weights survived a container recreate; now no
   weights are loaded in this image at all. Pose weights are baked into the
