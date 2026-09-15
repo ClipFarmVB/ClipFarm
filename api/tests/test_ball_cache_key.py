@@ -1,8 +1,9 @@
 """The ball cache key carries everything that shapes the track (CF-231, #238).
 
-Cached tracks live in R2 under a key built from the video, the model and the
-sample rate. Anything else that changes what tracking produces was invisible to
-it, so the next run of an already-processed video replayed a track built by the
+Cached tracks live in R2 under a key built from the video, the model, the sample
+rate and, since CF-231, the tracking version. Before that, anything that changed
+what tracking produces was invisible to the key, so the next run of an
+already-processed video replayed a track built by the
 old code — a wrong answer nobody can see on a tuning change, and worse on a
 re-measure, where unchanged numbers read as "no effect" rather than "it never
 ran". #238 names this as a prerequisite, and says CF-229 (#233) has the same one.

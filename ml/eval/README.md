@@ -233,8 +233,9 @@ than which builder is better.
 
 Those five cache keys predate CF-231. The key now ends in `-v{N}`
 (`ball.TRACKING_CACHE_VERSION`), so `_track_ball_cached` no longer finds any of
-them: a run that reaches it on those fixtures misses the cache and tracks again,
-until caches exist under the new key.
+them: a run that reaches it on those fixtures misses the cache, and re-tracks on
+Modal when it is configured or raises when it is not, until caches exist under
+the new key.
 
 > **Every figure above is stale on the 1080p fixtures as of CF-174 — both
 > columns, not just `rules`.** Two separate reasons, and the second one is easy

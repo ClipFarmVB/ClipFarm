@@ -1,9 +1,10 @@
 """Changing how tracking works must change the cache key (CF-231 #238, CF-229 #233).
 
-Cached ball tracks are keyed on the video's md5, the model and `sample_every`.
-Nothing else — so a change to any OTHER tracking input leaves every existing
-entry looking valid, and the next run of an already-processed video replays a
-track built by the old code.
+Cached ball tracks were keyed on the video's md5, the model and `sample_every`,
+and nothing else — so a change to any OTHER tracking input left every existing
+entry looking valid, and the next run of an already-processed video replayed a
+track built by the old code. `TRACKING_CACHE_VERSION` is now the key's fourth
+component.
 
 That failure is quiet in the worst way. On a tuning change it is a wrong answer
 nobody can see. On a *re-measure* it is worse: the numbers come back unchanged,

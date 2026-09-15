@@ -46,12 +46,13 @@ MAX_MISS     = 5          # max consecutive missed frames before track is reset
 
 # Bump this when a change alters the TRACK a given video produces.
 #
-# `_ball_cache_key` in the worker keys cached tracks on the video's md5, the
-# model, and sample_every. Nothing else — so a change to how tracking works
-# leaves every existing cache entry looking valid, and the next run of an
-# already-processed video silently replays a track built by the OLD code. On a
+# `_ball_cache_key` in the worker used to key cached tracks on the video's md5,
+# the model and sample_every, and nothing else — so a change to how tracking
+# works left every existing cache entry looking valid, and the next run of an
+# already-processed video silently replayed a track built by the OLD code. On a
 # tuning change that is a wrong answer nobody can see; on a re-measure it is
-# worse, because the numbers come back unchanged and read as "no effect".
+# worse, because the numbers come back unchanged and read as "no effect". This
+# constant is now the key's fourth component, so bumping it changes every key.
 #
 # CF-231 (#238) names this as a prerequisite for downscaling the tracking
 # input, and says CF-229 (#233) has the same one for scaling MAX_JUMP_PX and
