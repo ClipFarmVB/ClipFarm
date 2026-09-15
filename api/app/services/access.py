@@ -58,9 +58,9 @@ happened to define it first.
 
 **Unauthenticated surface.** Allowing anonymous reads means ``GET /games/{id}``,
 ``GET /games/{id}/clips`` and ``GET /clips/{id}/share`` reach the database
-without a credential, joining ``GET /users/{handle}`` from CF-107 and, with the
-social surface on, ``GET /posts/{id}`` and ``GET /posts?username=``. Six
-endpoints where there were none.
+without a credential, joined, with the social surface on, by
+``GET /users/{handle}`` from CF-107, ``GET /posts/{id}`` and
+``GET /posts?username=``. Six endpoints where there were none.
 
 **All six are throttled per caller since CF-186 (#189)** — see
 ``services/ratelimit.py`` for the two exposures, the numbers, and why the
