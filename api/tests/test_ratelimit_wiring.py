@@ -178,9 +178,9 @@ def test_every_throttled_read_stays_anonymous(path, method):
 def test_the_download_route_requires_auth_instead_of_a_limiter():
     """The seventh anonymous read, deliberately handled differently.
 
-    It is the only one that hands over the bytes, so a per-caller counter is
-    the wrong instrument — a distributed pull of a leaked link never trips one.
-    Auth is the control. Pinned here so "make the two share routes consistent"
+    It requires auth rather than a limiter. It presigns the same object /share
+    does, so this pins a decision about who may ask for the attachment URL, not
+    a bound on egress. Pinned here so "make the two share routes consistent"
     cannot quietly undo it.
     """
     import inspect
@@ -443,7 +443,9 @@ def test_a_viewer_keyed_route_does_resolve_auth():
 
 
 def test_the_limiter_is_resolved_before_anything_a_refusal_should_not_pay_for():
-    """A 429 must not have cost a JWT verification or a database write first.
+    """On an address-keyed route, a 429 must not have cost a JWT verification or
+    a database write first. (A viewer-keyed route resolves the viewer before it
+    counts, by design: that is what gives a signed-in caller their own bucket.)
 
     That property is real -- measured at 12 requests against a 2/min budget,
     `GET /posts` performs two commits, one per *allowed* request, and none for

@@ -67,12 +67,12 @@ endpoints where there were none.
 limiter fails open. Each route's own docstring says which exposure it belongs
 to and what was decided, which is that card's acceptance criterion.
 
-``GET /clips/{id}/download`` was the seventh and is no longer on this list: it
-is the only read that hands over the bytes rather than a row, and a distributed
-pull of a leaked link is an egress bill that a per-caller counter does nothing
-about. CF-186 put it behind authentication instead. **So it no longer shares
-/share's authorization**, which it did when both were written; do not re-merge
-them on the grounds that they are the same read.
+``GET /clips/{id}/download`` was the seventh and is no longer on this list:
+CF-186 put it behind authentication instead. It presigns the same object
+``/share`` does, under an attachment header, so this decides who may ask for
+that URL and does not bound what leaves the bucket — see ``routers/clips.py``.
+**So it no longer shares /share's authorization**, which it did when both were
+written; re-merging the two routes would quietly undo that decision.
 
 **The visibility setter has landed (CF-109b, #398), so this is no longer a
 load question alone.** For two releases nothing user-generated could be

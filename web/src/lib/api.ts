@@ -250,7 +250,7 @@ export function getClipShareUrl(clipId: string): Promise<{ url: string }> {
  * rather than window.location.
  *
  * REQUIRES A SIGNED-IN CALLER (CF-186). Unlike getClipShareUrl, which stays
- * anonymous, this endpoint hands over the bytes, so it is gated on a credential
+ * anonymous and presigns the same object, this endpoint is gated on a credential
  * rather than on a rate limit. Every caller today already sits behind auth —
  * ClipCard and ClipModal render only on /games/* and /collections/*, both
  * covered by middleware.ts — so nothing had to change for it. Do not wire it

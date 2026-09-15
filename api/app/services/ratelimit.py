@@ -14,11 +14,10 @@ be walked; the exposure is load and abuse of a leaked link. Throttled, loosely,
 because traffic on a deliberately public clip is the success case.
 
 ``GET /clips/{id}/download`` was the fifth route in exposure B and is **not
-here**: it mints an attachment URL for the whole clip, and a distributed pull of
-a leaked link is an unbounded egress bill that a per-IP limit does nothing
-about. It requires authentication instead — see ``routers/clips.py``. That is
-the one route where this module's fail-open posture would be least comfortable,
-and it is deliberately not relying on it.
+here**: it requires authentication instead — see ``routers/clips.py``. Neither
+that nor this module bounds how often a clip is fetched: ``/share`` and the post
+reads presign the same object anonymously, and a presigned URL is fetched from
+R2 without touching the API. What these limits bound is calls to the API.
 
 Not applied to writes. Those already require a credential and are bounded by
 the upload quota (``quota_max_games_per_window``).
