@@ -47,7 +47,7 @@ Celery worker  ──  process_game_task()  (api/app/workers/tasks.py)
     │
     ├─ 1. BALL TRACKING → rally windows            (ml/pipeline/ball.py)
     │     ├─ track_ball()  ← Modal GPU (T4) if configured, else local CPU
-    │     │                  R2-cached by video MD5 + model + sample rate
+    │     │                  R2-cached by video MD5 + model + sample rate + tracking version
     │     ├─ find_contacts()      ← ballistic-residual contact detection
     │     └─ contacts_to_rallies()← group contacts into clip windows
     │
@@ -129,8 +129,9 @@ prediction by more than a measured noise floor. Contacts are grouped into rally 
 by time gaps.
 
 - All velocities are **px/second**, so thresholds hold at any source frame rate.
-- Ball positions are cached to R2 keyed by `md5(video) + model + sample_rate`, so re-runs
-  (re-uploads, pipeline tuning) load in seconds instead of re-tracking (~28–42 min on CPU).
+- Ball positions are cached to R2 keyed by `md5(video)`, model, sample rate and
+  `ball.TRACKING_CACHE_VERSION`, so re-runs (re-uploads, tuning downstream of tracking) load in
+  seconds instead of re-tracking (~28–42 min on CPU). A version bump re-tracks every video.
 
 ### 2. Highlight scoring → gate (`ml/pipeline/score.py`, `audio.py`)
 Each rally gets a `highlight_score` (0–1) from **cheer** (crowd/bench reaction in the
