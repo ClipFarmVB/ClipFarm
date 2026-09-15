@@ -6,9 +6,12 @@ direct call in this suite working — and makes the limiter completely invisible
 those calls. So this file is not optional: without it, deleting a
 ``dependencies=[...]`` line would break nothing that runs.
 
-The table below is the guard. A new anonymous read added later without a
-limiter fails here, the same shape as test_visibility_write_paths_are_declared.py's AST
-walk: the point is that a reviewer does not have to notice.
+The table below pins each anonymous read to its policy, and
+test_no_anonymous_read_escapes_the_table walks every router module for GET
+routes that resolve no credential and requires each one to be in it. So a new
+anonymous read added later without a limiter fails here, the same shape as
+test_visibility_write_paths_are_declared.py's AST walk: the point is that a
+reviewer does not have to notice.
 """
 import asyncio
 
@@ -81,6 +84,34 @@ def _dependency_callables(route) -> set:
     return seen
 
 
+def _anonymous_reads() -> set:
+    """Every GET route, on every router module, that resolves no credential.
+
+    Discovered rather than listed: `app.routers` is walked module by module, so
+    a route on a router missing from ROUTERS, or on one main.py mounts only
+    behind a flag, is still found.
+    """
+    import importlib
+    import pkgutil
+
+    import app.routers as package
+
+    found = set()
+    for module_info in pkgutil.iter_modules(package.__path__):
+        module = importlib.import_module(f"app.routers.{module_info.name}")
+        router = getattr(module, "router", None)
+        if router is None:
+            continue
+        for route in router.routes:
+            if not hasattr(route, "dependant"):
+                continue
+            if "GET" not in getattr(route, "methods", set()):
+                continue
+            if get_current_user_id not in _dependency_callables(route):
+                found.add((route.path, "GET"))
+    return found
+
+
 def _route_for(path, method):
     for route_path, route_method, route in _all_routes():
         if (route_path, route_method) == (path, method):
@@ -105,6 +136,26 @@ def test_every_anonymous_read_carries_its_limiter(path, method, expected):
     # The default off the field itself rather than the live Settings, so a test
     # elsewhere that monkeypatched a limit cannot make this pass or fail.
     assert Settings.model_fields[setting].default == default
+
+
+def test_no_anonymous_read_escapes_the_table():
+    """What makes the table a guard rather than a list.
+
+    Every other test here walks THROTTLED, so on their own they never examine a
+    new anonymous read that nobody added to it: a review round added
+    `GET /clips/{clip_id}/probe` with an optional viewer and no limiter, and the
+    whole api suite stayed green. This discovers every GET route that resolves no
+    credential and requires it to be in the table, where the policy checks apply.
+    """
+    discovered = _anonymous_reads()
+    assert discovered, "the router walk found no anonymous GET route at all"
+    missing = discovered - set(THROTTLED)
+    assert not missing, (
+        f"anonymous reads with no entry in THROTTLED: {sorted(missing)}. Give each "
+        "a limiter and a row in the table, or require auth as /download does"
+    )
+    stale = set(THROTTLED) - discovered
+    assert not stale, f"THROTTLED lists routes that are not anonymous reads: {sorted(stale)}"
 
 
 @pytest.mark.parametrize(
