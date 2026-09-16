@@ -21,6 +21,7 @@ recorded row still applies is CF-309 (#359), not this file.
 Behavioural rather than a source scan: the guards in this suite were converted
 away from `inspect.getsource` substring checks in CF-174's own review rounds.
 """
+import re
 import sys
 
 import pytest
@@ -248,38 +249,108 @@ def test_each_reported_figure_comes_from_its_own_field(tmp_path, monkeypatch):
     assert "33.3% recall" in note, note
 
 
+# Every line `_row` produces, identified by its SHAPE rather than by its label.
+# `_row` is "%-34s %5d %5d %4d/%-3d %7.0fs %8.1f%% %8.1f%% %8.1f%%", so a results
+# row is a label followed by that exact run of columns — which no header, note or
+# section heading matches. The earlier version of this guard listed the four
+# label prefixes the table happened to use, and a hand-typed row under any other
+# name ("MAX_SAMPLE_GAP_SEC=", a leading space) was invisible to it: enumerating
+# today's spellings instead of constraining the class, which is the mistake this
+# whole file is about.
+_RESULTS_ROW = re.compile(
+    r"^(?P<label>.*?)\s+\d+\s+\d+\s+\d+/\d+\s+-?\d+s\s+"
+    r"-?[\d.]+%\s+-?[\d.]+%\s+-?[\d.]+%\s*$"
+)
+
+
+def _printed_rows(out: str) -> list[str]:
+    return [m.group("label").strip() for line in out.splitlines() if (m := _RESULTS_ROW.match(line))]
+
+
+def _expected_rows() -> list[str]:
+    """Every row the tables say the tuner should print, in order."""
+    rows = [T.BASELINE_LABEL]
+    rows += [f"{name}={v:g}" for name, values in T.SWEEPS.items() for v in values]
+    rows += [label for label, _ in T.COMBOS]
+    rows += [T.padding_label(*p) for p in T.PADDING]
+    return rows
+
+
 def test_every_printed_row_comes_from_the_sweep_tables(monkeypatch, capsys):
     """CF-309: the guard has to reach what the tool PRINTS, not what it holds.
 
     `test_tune_contacts_sweep.py` asserts properties of `SWEEPS` and `COMBOS` —
     no value repeats the shipping default, no combo duplicates another — and
-    none of that binds `_sweep`, which is free to ignore both. Re-typing the
-    old literal loop, `for v in (360.0, 240.0, 180.0, 120.0)`, reinstates the
-    exact baseline-duplicating row CF-309 is about and leaves ruff, mypy and
+    none of that binds `_sweep`, which is free to ignore both tables. Re-typing
+    the old literal loop, `for v in (360.0, 240.0, 180.0, 120.0)`, reinstates
+    the exact baseline-duplicating row CF-309 is about and leaves ruff, mypy and
     every one of those assertions green. Measured: it did.
 
-    So this compares the emitted labels against the tables, in both directions.
-    A row the tables do not explain fails, and a table entry with no row fails.
-    Behavioural, like the rest of this file.
+    Compared as a SET and a COUNT rather than a sequence, so the message can
+    name the difference; `test_the_rows_are_printed_in_the_tables_order` pins
+    the order separately.
     """
     out = _run(monkeypatch, [(1.0, 5.0), (8.0, 12.0)], capsys)
+    printed, expected = _printed_rows(out), _expected_rows()
 
-    # Column 1 of each results row. `_row` left-pads the label to 34, and the
-    # header, the note and the padding-sweep section are not results rows.
-    printed = [
-        line[:34].strip() for line in out.splitlines()
-        if line.startswith(("CONTACT_", "SEG_", "MIN_CONTACT_", "combo:"))
-    ]
-    expected = [f"{name}={v:g}" for name, values in T.SWEEPS.items() for v in values]
-    expected += [label for label, _ in T.COMBOS]
-
-    assert sorted(printed) == sorted(expected), (
+    assert set(printed) == set(expected), (
         f"rows the tables do not explain: {sorted(set(printed) - set(expected))}; "
         f"table entries with no row: {sorted(set(expected) - set(printed))}"
     )
-    # Sorted above so the message names the difference; this pins the count, so
-    # a row printed twice cannot pass by having the same set.
-    assert len(printed) == len(expected), f"{len(printed)} rows for {len(expected)} entries"
+    assert len(printed) == len(expected), (
+        f"{len(printed)} rows for {len(expected)} table entries — one is printed twice"
+    )
+
+
+def test_the_rows_are_printed_in_the_tables_order(monkeypatch, capsys):
+    """The order is the table's meaning, not its presentation: stage 2 sweeps
+    padding on top of the LAST combo, and the combos are written cumulatively."""
+    out = _run(monkeypatch, [(1.0, 5.0), (8.0, 12.0)], capsys)
+    assert _printed_rows(out) == _expected_rows()
+
+
+def test_each_row_scores_the_value_its_label_advertises(monkeypatch, capsys):
+    """The rung above the labels.
+
+    Comparing label text to the tables says the tuner prints the right NAMES.
+    It says nothing about what was scored under them:
+    `show(f"{name}={v:g}", score(**{name: 999.0}))` makes every row advertise a
+    value it did not use, and the set comparison above cannot see it — the more
+    so because the synthetic track finds no contacts, which makes every scored
+    row byte-identical.
+
+    So the ball constants are recorded as `find_contacts` sees them, once per
+    row, and compared against what the label claims. Independent of whether any
+    contact is found.
+    """
+    applied: list[dict] = []
+    real = B.find_contacts
+
+    def recording(track, **kw):
+        applied.append({k: getattr(B, k) for k in T.TUNABLES})
+        return real(track, **kw)
+
+    monkeypatch.setattr(B, "find_contacts", recording)
+    out = _run(monkeypatch, [(1.0, 5.0), (8.0, 12.0)], capsys)
+    printed = _printed_rows(out)
+    assert len(applied) == len(printed), (len(applied), len(printed))
+
+    defaults = {k: getattr(B, k) for k in T.TUNABLES}
+    for label, seen in zip(printed, applied):
+        if "=" in label and not label.startswith("combo"):
+            name, value = label.split("=", 1)
+            assert f"{seen[name]:g}" == value, (
+                f"row {label!r} was scored with {name}={seen[name]!r}"
+            )
+        elif label == T.BASELINE_LABEL:
+            moved = sorted(k for k in defaults if defaults[k] != seen[k])
+            assert seen == defaults, f"the baseline row moved {moved}"
+
+    for (label, overrides), seen in zip(
+        T.COMBOS, applied[len(printed) - len(T.PADDING) - len(T.COMBOS):]
+    ):
+        for name, value in overrides.items():
+            assert seen[name] == value, f"combo {label!r} did not apply {name}={value}"
 
 
 def test_the_padding_sweep_restores_COND_when_a_row_raises(monkeypatch, capsys):

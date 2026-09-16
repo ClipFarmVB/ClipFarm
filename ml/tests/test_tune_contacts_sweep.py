@@ -35,10 +35,13 @@ keep the last and the values therefore agree while the file reads as sweeping
 something it does not.
 
 And none of this reaches `_sweep`, which is free to ignore both tables and
-re-type a literal loop. That rung is
-`test_tune_contacts_fixture.test_every_printed_row_comes_from_the_sweep_tables`,
-which compares the labels the tuner actually prints against these tables in
-both directions.
+re-type a literal loop. That rung is three tests in
+`test_tune_contacts_fixture.py`: one compares every row the tuner prints
+against these tables in both directions, one pins the order, and one records
+the ball constants as `find_contacts` sees them and checks each row scored the
+value its label advertises. Rows are found by the SHAPE of `_row`'s output
+rather than by a list of label prefixes, because a prefix list is an
+enumeration of today's spellings — which is the mistake this file is about.
 """
 import ast
 import sys
@@ -199,6 +202,26 @@ def test_no_two_combos_are_the_same_run():
         clash = [prev for prev, o in seen if o == overrides]
         assert not clash, f"{label!r} scores exactly what {clash[0]!r} scores"
         seen.append((label, overrides))
+
+
+def test_the_combos_are_written_cumulatively():
+    """`_sweep` bases stage 2 on `COMBOS[-1]`, so "last" has to mean "fullest".
+
+    That was a comment and nothing else: reordering the two entries re-based the
+    padding sweep on a smaller combo, silently, and the whole suite stayed green
+    — a comment claiming a property nothing held, which is the defect this PR
+    has now produced four times. Each entry being a superset of the one before
+    it makes `[-1]` mean what the comment says.
+    """
+    previous: dict = {}
+    for label, overrides in _combos():
+        missing = {k: v for k, v in previous.items() if overrides.get(k) != v}
+        assert not missing, (
+            f"{label!r} drops {sorted(missing)} from the combo before it, so "
+            f"COMBOS[-1] is no longer the fullest and stage 2 sweeps padding "
+            f"on top of something narrower than the table reads"
+        )
+        previous = overrides
 
 
 @pytest.mark.parametrize("label,overrides", _combos(), ids=[c[0] for c in _combos()])

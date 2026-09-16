@@ -102,6 +102,24 @@ SWEEPS: dict[str, tuple[float | int, ...]] = {
 # call would run fine — but it also compares the literal it reads here against
 # what the module ends up bound to, and `ast.literal_eval` cannot evaluate a
 # call node. Writing the values out keeps the file readable as the table it is.
+# Stage 2's padding rows, hoisted for the same reason as the two tables above:
+# the guard compares every row the tuner prints against the tables, and a row
+# it cannot account for is the finding. These are `COND` overrides, not ball
+# constants, so they live apart from SWEEPS.
+PADDING: tuple[tuple[float, float, float], ...] = (
+    (5.0, 4.0, 5.0), (4.0, 3.0, 3.0), (3.0, 2.0, 3.0),
+    (3.0, 2.0, 2.0), (2.0, 1.5, 2.0), (2.0, 1.0, 1.0),
+)
+
+BASELINE_LABEL = "BASELINE (shipping defaults)"
+
+
+def padding_label(pb: float, pa: float, mg: float) -> str:
+    """The label for one padding row. Shared so the guard cannot spell it
+    differently from the tuner and call the difference a finding."""
+    return f"pad {pb:.0f}/{pa:.1f} merge {mg:.0f}"
+
+
 COMBOS: tuple[tuple[str, dict[str, float | int]], ...] = (
     ("combo: hit 120 + ratio 0.25",
      {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25}),
@@ -154,7 +172,9 @@ def _last_recorded_run(test_id: str) -> dict | None:
     So this no longer claims. It reports what was last recorded and what it was
     recorded against, and leaves the comparison to the reader. Making step 0 a
     trustworthy control again is CF-309 (#359), which is open and owns exactly
-    that; it wants the row re-recorded, not a matcher bolted on here.
+    that — and what it needs is the module docstring's answer, not a matcher
+    bolted on here. Not simply a re-recorded row either: see there for why a row
+    taken at app defaults would match step 0 less, not more.
     """
     path = RESULTS_DIR / f"{test_id}_deadtime.jsonl"
     if not path.exists():
@@ -256,7 +276,7 @@ def _sweep(test_id: str) -> None:
           f"  ({units})\n")
     print("%-34s %5s %5s %8s %8s %9s %9s %9s" % (
         "config", "cont", "win", "rally", "live-lost", "dead-rm", "recall", "condense"))
-    show("BASELINE (shipping defaults)", score())
+    show(BASELINE_LABEL, score())
     print(_baseline_note(test_id))
 
     # `%g` rather than a per-knob format, now that one table holds a mix of
@@ -307,10 +327,9 @@ def _sweep(test_id: str) -> None:
     global COND
     keep_cond = dict(COND)
     try:
-        for pb, pa, mg in ((5.0, 4.0, 5.0), (4.0, 3.0, 3.0), (3.0, 2.0, 3.0),
-                           (3.0, 2.0, 2.0), (2.0, 1.5, 2.0), (2.0, 1.0, 1.0)):
+        for pb, pa, mg in PADDING:
             COND = dict(keep_cond, pad_before=pb, pad_after=pa, merge_gap_seconds=mg)
-            show(f"pad {pb:.0f}/{pa:.1f} merge {mg:.0f}", score(**best))
+            show(padding_label(pb, pa, mg), score(**best))
     finally:
         # Restored on the failure path too: a raise inside the loop would
         # otherwise leave this module global on the last swept value. `score`
