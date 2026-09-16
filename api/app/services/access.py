@@ -58,21 +58,21 @@ happened to define it first.
 
 **Unauthenticated surface.** Allowing anonymous reads means ``GET /games/{id}``,
 ``GET /games/{id}/clips`` and ``GET /clips/{id}/share`` reach the database
-without a credential, joining ``GET /users/{handle}`` from CF-107 and, with the
-social surface on, ``GET /posts/{id}`` and ``GET /posts?username=``. Six
-endpoints where there were none.
+without a credential, joined, with the social surface on, by
+``GET /users/{handle}`` from CF-107, ``GET /posts/{id}`` and
+``GET /posts?username=``. Six endpoints where there were none.
 
 **All six are throttled per caller since CF-186 (#189)** — see
 ``services/ratelimit.py`` for the two exposures, the numbers, and why the
 limiter fails open. Each route's own docstring says which exposure it belongs
 to and what was decided, which is that card's acceptance criterion.
 
-``GET /clips/{id}/download`` was the seventh and is no longer on this list: it
-is the only read that hands over the bytes rather than a row, and a distributed
-pull of a leaked link is an egress bill that a per-caller counter does nothing
-about. CF-186 put it behind authentication instead. **So it no longer shares
-/share's authorization**, which it did when both were written; do not re-merge
-them on the grounds that they are the same read.
+``GET /clips/{id}/download`` was the seventh and is no longer on this list:
+CF-186 put it behind authentication instead. It presigns the same object
+``/share`` does, under an attachment header, so this decides who may ask for
+that URL and does not bound what leaves the bucket — see ``routers/clips.py``.
+**So it no longer shares /share's authorization**, which it did when both were
+written; re-merging the two routes would quietly undo that decision.
 
 **The visibility setter has landed (CF-109b, #398), so this is no longer a
 load question alone.** For two releases nothing user-generated could be

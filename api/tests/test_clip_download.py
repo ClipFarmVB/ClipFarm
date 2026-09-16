@@ -6,9 +6,10 @@ the house pattern here — because what matters is how it authorizes and that it
 threads a name through to the presigner, neither of which needs a database or
 R2.
 
-CF-186 (#189) moved this route behind authentication: it is the only read that
-hands over the bytes, so a per-caller limit is the wrong instrument and a
-credential is the control. It therefore no longer reuses /share's
+CF-186 (#189) moved this route behind authentication rather than a per-caller
+limit. It presigns the same object /share does, so that decides who may ask for
+the attachment URL rather than bounding egress. It therefore no longer reuses
+/share's
 authorization, and the `viewer_id` every test below passes is now a *required*
 signed-in caller rather than an optional one. That was a rename and not a
 rewrite — no test here ever passed None — which is itself the evidence that the

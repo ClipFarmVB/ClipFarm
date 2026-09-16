@@ -140,9 +140,11 @@ async def list_clips(
     **Anonymous exposure B (CF-186, #189): UUID-keyed content, throttled.**
     Takes a game id, so it cannot be walked; the exposure is load rather than
     enumeration. 60/min per signed-in user, or per client address when there
-    is none — deliberately the same number as `GET /games/{id}`, because the
-    detail page fetches both together and refetches this one on every filter
-    change. A tighter number here would make the page throttle itself.
+    is none — deliberately the same number as `GET /games/{id}`. The detail
+    page fetches this route once the game is ready and again each time its
+    filters settle. The filter sliders change on every step, so the page
+    debounces them (`useDebouncedValue`); without that, one drag could spend
+    this whole budget and the page would throttle itself.
     """
     # The game itself must be viewable, else 404 (indistinguishable from a
     # game that doesn't exist — see access.assert_can_view_game).
@@ -478,10 +480,10 @@ async def share_clip(
     on a deliberately public clip is the success case and not the attack. The
     limit is present to bound the presign cost, not to discourage sharing.
 
-    It stays anonymous, unlike its sibling `/download`. The two now differ in
-    authorization as well as in what they mint, which is deliberate: this one
-    plays inline and is meant to be passed around; that one hands over the
-    bytes.
+    It stays anonymous, unlike its sibling `/download`. The two presign the
+    same object and differ in authorization and in one response header: this
+    one plays inline and is meant to be passed around; that one carries
+    Content-Disposition: attachment and requires a signed-in caller.
     """
     # Read path (CF-108): anyone who may view the clip may mint a share link.
     clip, _game = await _get_viewable_clip(clip_id, viewer_id, db)
@@ -506,14 +508,15 @@ async def download_clip(
     together would mean one caller's query parameter deciding whether the other
     caller's link plays or downloads.
 
-    **Anonymous exposure B (CF-186, #189): THIS ROUTE REQUIRES AUTH.** It is
-    the only read that hands over the bytes rather than a row — a presigned
-    attachment URL for the whole clip — so the exposure is an egress bill, not
-    enumeration. A per-caller limit is the wrong instrument for that: a
-    distributed pull of one leaked link costs real money and never trips a
-    per-address counter. Requiring a credential is what actually bounds it, and
-    it costs nothing in the product, because every surface that offers a
-    download already sits behind the web app's auth (ClipCard and ClipModal
+    **Anonymous exposure B (CF-186, #189): THIS ROUTE REQUIRES AUTH.** That is
+    a decision about who may ask for the attachment URL, not a bound on what
+    leaves the bucket. `/share` and the post reads presign this same object for
+    any caller who may view the clip, and a presigned URL is fetched from R2
+    for its whole hour without touching the API, so neither a credential here
+    nor a per-caller limit anywhere bounds a distributed pull of a leaked link;
+    only visibility (who may mint one) and the expiry do. Requiring a
+    credential costs nothing in the product, because every surface that offers
+    a download already sits behind the web app's auth (ClipCard and ClipModal
     render only on /games/* and /collections/*, both gated).
 
     **So its authorization deliberately diverges from /share's**, which it used
@@ -522,11 +525,13 @@ async def download_clip(
     but now only for a viewer who is signed in. Do not re-merge the two routes
     on the grounds that they are "the same read".
 
-    Not rate limited on top of that. Auth is the control, and a limiter that
-    fails open (services/ratelimit.py) would add a failure mode without adding
-    a guarantee. The residual it leaves is a compromised or throwaway account
-    minting attachment URLs in bulk; that wants an egress quota rather than a
-    per-minute counter, and it is not what #189 asked for.
+    Not rate limited on top of that: a signed-in caller is outside the
+    anonymous surface #189 is about, and a limiter that fails open
+    (services/ratelimit.py) would add a failure mode without adding a
+    guarantee. Bounding how often a minted clip URL is fetched — from this
+    route, /share or the post reads alike — wants a quota or the stable,
+    visibility-checking URL routers/posts.py describes, and it is not what #189
+    asked for.
 
     Same 3600s expiry as /share, deliberately: that expiry is an open question
     flagged there, and answering it differently in two places would settle it by

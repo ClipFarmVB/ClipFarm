@@ -583,8 +583,14 @@ def test_the_memory_backend_does_not_keep_every_window_it_has_ever_seen():
     clock = FakeClock()
     backend = MemoryBackend(clock=clock)
 
-    for n in range(5000):
-        asyncio.run(backend.hit(f"rl:profile:ip:198.51.100.{n}", 60))
+    # One event loop for all 5000 hits. `asyncio.run` per call builds and tears
+    # down a loop each time, which on Windows made this single test 58s of the
+    # api suite and pushed time-bounded tests later in the run past their bounds.
+    async def fill():
+        for n in range(5000):
+            await backend.hit(f"rl:profile:ip:198.51.100.{n}", 60)
+
+    asyncio.run(fill())
     assert len(backend._windows) == 5000
 
     # Past every window, and past the sweep interval.

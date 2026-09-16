@@ -931,9 +931,10 @@ class Settings(BaseSettings):
     rate_limit_profile_per_minute: int = Field(default=30, ge=1)
     rate_limit_user_posts_per_minute: int = Field(default=30, ge=1)
     # Exposure B — UUID-keyed content. The game pair is sized by the detail
-    # page, which polls GET /games/{id} every 5s while processing (12/min per
-    # open tab) and refetches the clips alongside it on every filter change; a
-    # tighter number here would make the page throttle itself.
+    # page: it polls GET /games/{id} every 5s while processing (12/min per open
+    # tab), and fetches GET /games/{id}/clips once the game is ready and again
+    # each time its filters settle. The filters are debounced, so a slider
+    # drag costs one clips request rather than one per step.
     rate_limit_game_per_minute: int = Field(default=60, ge=1)
     rate_limit_games_clips_per_minute: int = Field(default=60, ge=1)
     # Loosest deliberately: #189 notes a per-IP limit over-throttles /share,

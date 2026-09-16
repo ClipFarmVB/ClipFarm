@@ -1,7 +1,9 @@
 """No test in this suite may be an `async def`, because one would pass without running.
 
 Found while writing CF-186's tests (#189). This suite installs no
-pytest-asyncio, no anyio, no trio plugin — check `requirements-dev.txt`. Given
+pytest-asyncio and no trio plugin, and configures no async mode — check
+`requirements-dev.txt`. anyio's plugin is importable, since anyio ships with
+starlette, but it runs only tests marked `@pytest.mark.anyio`. Given
 an `async def test_...`, pytest collects it, declines to run it, emits a
 `PytestUnhandledCoroutineWarning`, and reports the file GREEN. Fourteen tests
 of the new rate limiter were written that way and reported "5 passed, 14
