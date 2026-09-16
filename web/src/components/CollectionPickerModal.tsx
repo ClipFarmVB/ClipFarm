@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { FolderOpen, Plus, X, Check, Loader } from "lucide-react";
+import { AlertCircle, FolderOpen, Plus, X, Check, Loader } from "lucide-react";
 import {
   getCollections,
   createCollection,
@@ -42,6 +42,7 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [createLoading, setCreateLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const newNameRef = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -106,6 +107,10 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   useEffect(() => {
     getCollections()
       .then(setCollections)
+      // Without this the fetch rejects unhandled AND the empty-list branch
+      // below tells the user they have no collections — an affirmative claim
+      // about their account made from a network failure (CF-304).
+      .catch((e) => setError(e instanceof Error ? e.message : "Couldn't load your collections."))
       .finally(() => setLoading(false));
   }, []);
 
@@ -138,9 +143,15 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   async function handleAdd(collectionId: string) {
     if (saved.has(collectionId) || saving === collectionId) return;
     setSaving(collectionId);
+    setError(null);
     try {
       await addClipToCollection(collectionId, clipId);
       setSaved((prev) => new Set(prev).add(collectionId));
+    } catch (e) {
+      // The row un-spins either way; without this the clip silently is not in
+      // the collection. `handleCreate` deliberately does NOT catch around its
+      // own `await handleAdd(...)` — one message per failure, reported here.
+      setError(e instanceof Error ? e.message : "Couldn't add the clip.");
     } finally {
       setSaving(null);
     }
@@ -155,13 +166,22 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
     // entry points at once.
     if (createLoading) return;
     setCreateLoading(true);
+    setError(null);
     try {
       const col = await createCollection(name);
       setCollections((prev) => [col, ...prev]);
       setNewName("");
       setCreating(false);
-      // Immediately add clip to the newly created collection
+      // Immediately add clip to the newly created collection.
+      //
+      // Inside the try and AFTER the three lines above, both deliberately.
+      // `handleAdd` owns its own error, so a create-then-add failure reports
+      // once rather than twice; and clearing `creating`/`newName` before the
+      // await is what CF-227's Escape contract depends on (see the onEscape
+      // comment above) — a catch here must not reorder them.
       await handleAdd(col.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't create the collection.");
     } finally {
       setCreateLoading(false);
     }
@@ -245,7 +265,13 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
             </div>
           )}
 
-          {!loading && collections.length === 0 && !creating && (
+          {error && (
+            <div className="mx-4 my-3 flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
+              <AlertCircle size={13} className="shrink-0" /> {error}
+            </div>
+          )}
+
+          {!loading && !error && collections.length === 0 && !creating && (
             <p className="px-4 py-4 text-center text-[12px] text-subtle">
               No collections yet — create one below.
             </p>

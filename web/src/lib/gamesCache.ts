@@ -66,6 +66,17 @@ export function prefetchGames(): void {
       throw err;
     });
   _promise = p;
+  // Prefetch is fire-and-forget: `AuthContext` calls it and nothing awaits the
+  // result unless the user lands on /games. The rethrow above is load-bearing —
+  // `getInflightGames()` hands `p` to that page, which renders the message —
+  // but with nobody attached it was an unhandled rejection on every page load
+  // while the API was down (CF-304).
+  //
+  // `.catch` returns a NEW promise, so this marks the rejection handled without
+  // touching `p`, which keeps rejecting for anyone who does attach. Placing it
+  // at the source also covers `updateGamesCache` and `addGameToCache`, which
+  // drop `_promise` with a bare `= null` and had the same exposure.
+  p.catch(() => {});
 }
 
 /** Returns cached data if still fresh, otherwise null. */
@@ -94,12 +105,16 @@ export function getInflightGames(): Promise<Game[]> | null {
  * chain started for the previous account. The generation bump alone would not
  * cover that, because the bump only decides who may *write*.
  *
- * The orphaned chain is marked handled before the reference goes. After this
- * nothing awaits it — `getInflightGames()` returns null and the `_promise === p`
- * guards in `prefetchGames` no longer match — so its rethrow would surface as
- * an unhandled rejection on every sign-out with a warm prefetch, which the
- * browser Sentry SDK reports. Routine 401 noise is how a real signal gets
- * buried.
+ * The orphaned chain no longer needs marking handled here: `prefetchGames`
+ * does it at the source now (CF-304), which covers this path and the two
+ * bare `_promise = null` writes below that never had it. The `.catch(() => {})`
+ * that used to sit on this line is gone rather than kept as defence in depth,
+ * because a second marker would read as though the first were insufficient.
+ * What it defended against is unchanged and still true: after this nothing
+ * awaits the chain — `getInflightGames()` returns null and the `_promise === p`
+ * guards no longer match — so an unmarked rethrow surfaces as an unhandled
+ * rejection on every sign-out with a warm prefetch, which the browser Sentry
+ * SDK reports. Routine 401 noise is how a real signal gets buried.
  *
  * **This cannot defend against a fetch issued while the old token is still
  * valid.** `attempt()` re-reads the generation and re-requests, and that retry
@@ -109,7 +124,6 @@ export function getInflightGames(): Promise<Game[]> | null {
  */
 export function clearGamesCache(): void {
   _generation++;
-  if (_promise) _promise.catch(() => {});
   _promise = null;
   _data = null;
   _fetchedAt = 0;

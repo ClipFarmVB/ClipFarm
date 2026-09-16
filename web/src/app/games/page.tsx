@@ -59,8 +59,12 @@ function GamesContent() {
         updateGamesCache(next);
         return next;
       });
-    } catch {
-      // silently revert — title stays as original in state since we didn't optimistically update
+    } catch (e) {
+      // The comment said "silently revert" and then admitted in the same
+      // breath that there is nothing to revert. So the rename simply failed
+      // and said nothing (CF-304's class, one file over). `alert`, matching
+      // `handleDelete` below.
+      alert(e instanceof Error ? e.message : "Could not rename the game.");
     }
   }
 

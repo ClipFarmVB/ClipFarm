@@ -69,6 +69,33 @@ function grid() {
   return host.querySelector("[data-grid]");
 }
 
+describe("a failed load (CF-304)", () => {
+  it("does not tell the visitor the handle is free", async () => {
+    // This branch used to render "No one is using @alice" for ANY failure, so
+    // a 500 or a dropped connection asserted the availability of a handle that
+    // may well be taken. Asserting the absence of the claim is the point;
+    // asserting the replacement copy is secondary.
+    getProfile.mockRejectedValue(new Error("API error 500: upstream"));
+    await act(async () => {
+      root.render(<ProfileView handle="alice" />);
+    });
+
+    expect(host.textContent).not.toContain("No one is using");
+    expect(host.textContent).toContain("Couldn't load this profile");
+  });
+
+  it("still says the handle is free when the profile is genuinely absent", async () => {
+    // The other direction, so the fix cannot be "delete the affirmative copy".
+    // A resolved-but-empty answer is a real not-found and may say so.
+    getProfile.mockResolvedValue(null);
+    await act(async () => {
+      root.render(<ProfileView handle="alice" />);
+    });
+
+    expect(host.textContent).toContain("No one is using @alice");
+  });
+});
+
 describe("a private account seen by a stranger", () => {
   it("still renders the grid, because the account flag does not gate content", async () => {
     // Nothing leaks: `getUserPosts` filters by visibility in SQL for the asking

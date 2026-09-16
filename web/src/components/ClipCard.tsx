@@ -21,6 +21,7 @@ interface ClipCardProps {
 
 export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSelect, onSave }: ClipCardProps) {
   const [tagging, setTagging] = useState(false);
+  const [tagLoading, setTagLoading] = useState(false);
   const [labeling, setLabeling] = useState(false);
   const [trimming, setTrimming] = useState(false);
   const [localPlayerName, setLocalPlayerName] = useState(clip.player_name);
@@ -62,9 +63,25 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
   }
 
   async function handleTag(playerId: string) {
-    setTagging(false);
-    const updated = await tagClip(clip.id, playerId);
-    setLocalPlayerName(updated.player_name);
+    if (tagLoading) return;
+    setTagLoading(true);
+    try {
+      const updated = await tagClip(clip.id, playerId);
+      setLocalPlayerName(updated.player_name);
+      // The channel `handleToggleLabel` and `handleTrim` already use, and both
+      // call sites already pass. Without it the parent's `clips[]` keeps the
+      // stale `player_name`, so ClipModal for the same clip shows no player
+      // (CF-304). `tagClip` returns the whole Clip, so this is the same
+      // one-liner as its siblings — not a second channel for the same thing.
+      onUpdate?.(updated);
+    } catch (e) {
+      // `alert`, matching `handleDownload` above and every other mutation in
+      // this component. Previously the select closed and the failure vanished.
+      alert(e instanceof Error ? e.message : "Could not tag this clip.");
+    } finally {
+      setTagLoading(false);
+      setTagging(false);
+    }
   }
 
   async function handleToggleLabel(label: string) {
@@ -278,7 +295,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
                 <option value="" disabled>Player…</option>
                 {players.map((p) => (
                   <option key={p.id} value={p.id}>
-                    #{p.jersey_number} {p.name}
+                    {p.jersey_number != null ? `#${p.jersey_number} ` : ""}{p.name}
                   </option>
                 ))}
               </select>

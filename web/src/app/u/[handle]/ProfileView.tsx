@@ -54,7 +54,31 @@ export function ProfileView({ handle }: { handle: string }) {
 
   if (loading) return <div className="text-sm text-muted">Loading…</div>;
 
-  if (error || !profile) {
+  // A failure and a genuine absence are different answers and only one of them
+  // may claim the handle is free. This branch used to render "No one is using
+  // @handle" for BOTH, so a 500 or a dropped connection asserted the
+  // availability of a handle that may well be taken (CF-304).
+  //
+  // It says "couldn't tell" rather than distinguishing a 404 from a 500,
+  // because it CANNOT: `throwApiError` throws a plain Error and
+  // `apiErrorMessage` discards the status whenever the body carries `detail`,
+  // which FastAPI always sets. Giving the client an error type that carries a
+  // status is a change to every caller's error shape — carded, not smuggled in
+  // here. Not asserting something false needs neither.
+  if (error) {
+    return (
+      <div className="flex flex-col items-center py-16 text-center">
+        <AlertCircle className="h-8 w-8 text-muted" />
+        <h1 className="mt-3 text-lg font-medium">Couldn&apos;t load this profile</h1>
+        <p className="mt-1 text-sm text-muted">{error}</p>
+        <Link href="/games" className="mt-4">
+          <Button variant="secondary" size="sm">Back to library</Button>
+        </Link>
+      </div>
+    );
+  }
+
+  if (!profile) {
     return (
       <div className="flex flex-col items-center py-16 text-center">
         <AlertCircle className="h-8 w-8 text-muted" />
