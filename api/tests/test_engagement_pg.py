@@ -174,11 +174,14 @@ def test_an_unlike_that_removes_nothing_reports_the_count_as_of_now(world, monke
     from app.services import post_read
 
     async_url, ids = world
-    pid, stranger = ids["public"], ids["follower"]
+    # Named for who it is. This bound `ids["follower"]` to a local called
+    # `stranger` while `ids["stranger"]` exists and is a different user, so the
+    # name said one thing and the fixture another.
+    pid, actor = ids["public"], ids["follower"]
 
-    # The stranger has never liked this post, so the delete will remove nothing.
+    # The follower has never liked this post, so the delete will remove nothing.
     assert _scalar(async_url, "SELECT count(*) FROM post_likes WHERE post_id = :p "
-                              "AND user_id = :u", p=pid, u=stranger) == 0
+                              "AND user_id = :u", p=pid, u=actor) == 0
     before = _scalar(async_url, "SELECT like_count FROM posts WHERE id = :p", p=pid)
 
     real = post_read.load_for_read
@@ -193,7 +196,7 @@ def test_an_unlike_that_removes_nothing_reports_the_count_as_of_now(world, monke
         return loaded
 
     monkeypatch.setattr(post_read, "load_for_read", moving)
-    out = _run(async_url, lambda db: r.unlike_post(pid, stranger, db))
+    out = _run(async_url, lambda db: r.unlike_post(pid, actor, db))
 
     assert out.liked is False
     assert out.like_count == before + 7, (

@@ -80,8 +80,17 @@ def test_the_engagement_tables_reach_the_metadata():
 
 
 def test_migration_020_names_every_object_the_models_declare():
-    """What 020 adds appears in 020, with the same DEFINITION — not merely the
-    same name.
+    """What 020 adds appears in 020, with its definition and not merely its name
+    — for the four (table, kind) pairs below, and as far as the checks below
+    reach.
+
+    **The definition checking is not total, and the headline used to say it
+    was.** Index expressions are checked for MEMBERSHIP, not order: reordering
+    a composite index to `(created_at, post_id)` leaves both terms in the
+    statement and this test green, while Postgres treats it as a different
+    index. Constraint TEXT is compared exactly, and index partial-ness is
+    compared, so those two are definitional. Replacing the whole approach with
+    a structural comparison against `Base.metadata` is CF-418 (#550).
 
     **What it covers is exactly what `declared` enumerates, and nothing else:**
     indexes on `post_likes` and `post_comments`, `ck_*` on `post_comments`, and
