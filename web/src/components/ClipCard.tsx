@@ -293,20 +293,29 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
 
             {/* Player tag */}
             {tagging ? (
-              /* `disabled` is paired with `handleTag`'s `if (tagLoading) return`,
-                 the way every sibling mutation here pairs its guard with one
-                 (download, label, both trim controls). Without it the select
-                 stays mounted, focused and enabled through the PATCH —
-                 `setTagging(false)` is in the `finally` — so a second choice is
-                 accepted by the UI and then dropped by the guard with nothing
-                 said. That is the silent failure this change exists to remove,
-                 reintroduced one layer up. */
+              /* `disabled` pairs with `handleTag`'s `if (tagLoading) return`, so
+                 a second choice cannot be made and then dropped in silence —
+                 the failure this change exists to remove, reintroduced one
+                 layer up. `handleDownload` and `handleToggleLabel` pair their
+                 guards the same way; `handleTrim` has no re-entry guard at all
+                 and relies on `disabled={trimLoading}` alone.
+
+                 **The `onBlur` has to know about `tagLoading`, or `disabled`
+                 does nothing in a real browser.** Disabling the focused element
+                 runs the HTML focus fixup rule, which fires blur — and this
+                 handler would then unmount the select before the disabled state
+                 was ever painted. The user-visible defect would still be closed,
+                 by the unmount rather than by the lock, and every sentence
+                 around here claiming a lock would be false. jsdom does not
+                 implement that rule, so a test cannot catch it; a round did. */
               <select
                 autoFocus
                 disabled={tagLoading}
                 aria-busy={tagLoading}
                 className="min-h-8 rounded border border-border bg-surface-high px-2 py-1 text-[10px] text-foreground focus:outline-none disabled:opacity-50"
-                onBlur={() => setTagging(false)}
+                onBlur={() => {
+                  if (!tagLoading) setTagging(false);
+                }}
                 onChange={(e) => handleTag(e.target.value)}
                 defaultValue=""
               >

@@ -126,9 +126,31 @@ describe("tagging a player (CF-304)", () => {
 
     expect(select.disabled).toBe(true);
 
+    // **And the lock has to survive a blur.** In a browser, disabling the
+    // focused element runs the HTML focus fixup rule and fires blur; this
+    // select's `onBlur` closes the dropdown, so without a `tagLoading` check
+    // there the control unmounts before `disabled` is ever painted. The
+    // user-visible defect would still be closed — by the unmount — but every
+    // sentence here claiming a lock would be false.
+    //
+    // jsdom implements no focus fixup, so this dispatches the event directly.
+    // That tests the handler, which is the part this repo owns; it does not
+    // and cannot test that a browser fires it.
+    //
+    // `focusout`, not `blur`. React's `onBlur` is delegated and listens for
+    // the bubbling `focusout`; a non-bubbling `blur` never reaches it, so the
+    // first version of this assertion passed against the unfixed component —
+    // caught by reverting the guard and finding the suite still green.
+    await act(async () => {
+      select.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(host.querySelector("select")).not.toBeNull();
+
     await act(async () => {
       resolve({ ...clip, player_id: "p2", player_name: "Bob" });
     });
+    // And it closes once the write is done.
+    expect(host.querySelector("select")).toBeNull();
   });
 
   it("surfaces a failed tag, and does not tell the parent the write happened", async () => {

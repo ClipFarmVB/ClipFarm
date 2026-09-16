@@ -31,8 +31,21 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
  * reached `console.error`; the error paths fixed in CF-304 put them in an
  * `alert()` and on the profile page, where a kilobyte of markup is an
  * unreadable wall and the status line at the front scrolls out of reach.
- * So a body that is not JSON is cut, and one that opens as markup is dropped
- * entirely: it has nothing in it for the person reading.
+ * So a body that is not JSON is cut by `errorFallback` below, and one that
+ * opens as markup is dropped entirely: it has nothing in it for the person
+ * reading.
+ */
+async function throwApiError(res: Response): Promise<never> {
+  const text = await res.text();
+  throw new Error(apiErrorMessage(text, errorFallback(res.status, text)));
+}
+
+/**
+ * The bounded fallback `throwApiError` uses when the body is not our JSON.
+ *
+ * Markup is dropped rather than cut: a proxy's HTML page has nothing in it for
+ * a reader, and the one useful token is the status. Anything else is truncated
+ * and visibly marked, so a wall of text cannot push the status out of view.
  */
 const _MAX_FALLBACK_BODY = 200;
 
@@ -42,11 +55,6 @@ function errorFallback(status: number, text: string): string {
   return body.length > _MAX_FALLBACK_BODY
     ? `API error ${status}: ${body.slice(0, _MAX_FALLBACK_BODY)}…`
     : `API error ${status}: ${body}`;
-}
-
-async function throwApiError(res: Response): Promise<never> {
-  const text = await res.text();
-  throw new Error(apiErrorMessage(text, errorFallback(res.status, text)));
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

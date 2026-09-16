@@ -30,12 +30,14 @@ describe("the profile route", () => {
 
   it("gives two handles two different keys", async () => {
     // States the property the remount actually needs — two handles, two keys —
-    // rather than one sample value.
+    // rather than one sample value, and it IS load-bearing.
     //
-    // It is not load-bearing, and saying it was would have been this PR's
-    // fifth false comment in four rounds. Both mutations tried (no key, and a
-    // constant key) turn the test above red as well, because it compares
-    // against "bob" rather than merely checking a key exists.
+    // An earlier version of this comment said the opposite, on the strength of
+    // two mutations: no key, and `key="profile"`. Both turned the test above
+    // red, so the conclusion was that this one adds nothing. The mutation set
+    // was the problem: `"profile"` is not `"bob"`, so the first test failed on
+    // the sample value rather than on the constancy. `key="bob"` is the input
+    // that separates them, and under it only THIS test goes red.
     const a = await ProfilePage({ params: Promise.resolve({ handle: "alice" }) });
     const b = await ProfilePage({ params: Promise.resolve({ handle: "bob" }) });
 
