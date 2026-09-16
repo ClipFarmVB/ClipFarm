@@ -62,8 +62,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 - **Maximum 6 new PRs** and **7 new cards** per run.
 - **A `Co-Authored-By` trailer and a session link on a COMMIT are fine** — the
   maintainer settled this on 2026-09-16, and this bullet said the opposite until
-  then. Keep them off PR bodies, reviews, comments and issues, where they are
-  noise in the merge record rather than provenance in the history.
+  then. Keep them off PR bodies, reviews, comments and issues.
 
   The rule this replaces read "never exempt" and had a run flag its own commits
   as violations. Recorded rather than quietly reversed, because the previous
@@ -610,8 +609,8 @@ running every index found that `ix.columns` does not contain a keyset index's
 `text()` terms.
 
 Five corollaries. Two cost a round, two were caught mid-fix by the author, and
-the fifth cost five — the cheap catches and the expensive ones have different
-lessons in them:
+the last is still costing them — the cheap catches and the expensive ones have
+different lessons in them:
 
 - **A test that derives its expected value from the thing under test cannot see
   that thing change.** A fill table spelling its expectation as
@@ -640,28 +639,29 @@ lessons in them:
 
 - **Pin the consumer, not the table it reads.** A guard that asserts properties
   of a data structure does not constrain the code that consumes it, and the
-  distance between those two is where the defect lives. Two rounds went on the
-  table — the value literal, then the way it is *bound*, since `+=` and
+  distance between those two is where the defect lives. It went on the table
+  first — the value literal, then the way it is *bound*, since `+=` and
   `.update()` survived a fix aimed at a second `NAME = ...` — before anyone
   noticed the consumer could ignore the table entirely and re-type the literal.
-  Three more rounds followed it out: the spellings of the labels it printed,
-  everything the rows moved that their labels did not name, and finally the
-  difference between the globals and what was actually passed.
+  Then it followed the consumer out: the spellings of the labels it printed,
+  everything the rows moved that their labels did not name, the difference
+  between the globals and what was actually passed.
 
   The tell is a guard and its subject living in different artifacts. Ask what
   the consumer is free to do that the table cannot see, and assert *that* —
   record what the code actually did and compare it against what the table says
   it should have done, rather than checking the table is well-formed. **And when
   a guard needs a third tightening, the finding is its shape, not its
-  tightness.** That judgement ended three PRs in one run; none of the rounds
-  spent getting there had found a defect in shipped behaviour.
+  tightness.** That judgement ended two PRs in one run. Nearly every finding on
+  the way there was in the guard or the prose about it — but not all of them, so
+  the rounds are not wasted, only mis-aimed.
 
-**This section broke its own rule in four consecutive review rounds**, each time
-inside the paragraph fixing the previous instance. If a document written
-specifically to state the rule cannot state it without breaking it, the instinct
-is not one anybody outgrows by knowing about it — which is the argument for a
-mechanical check over a resolution, and for keeping prose like this short enough
-that it has few places to be wrong.
+Every review round this section has had found it breaking its own rule, inside
+the paragraph fixing the previous instance. If a document written specifically
+to state the rule cannot state it without breaking it, the instinct is not one
+anybody outgrows by knowing about it — which is the argument for a mechanical
+check over a resolution, and for keeping prose like this short enough that it
+has few places to be wrong.
 
 **The load-bearing half is the prose, not the testing.** In every instance above
 the mutation was run and the result read correctly; what went wrong was the
