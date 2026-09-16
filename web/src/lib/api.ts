@@ -198,14 +198,15 @@ export interface Clip {
   // False once the game's raw upload has passed its retention window (CF-194):
   // the clip still plays, but it can no longer be re-cut, so trimming is off.
   source_available?: boolean;
-  // The widest tier a post over this clip may take — the clip's own visibility
-  // or its game's, resolved server-side (CF-109). The composer greys out
-  // anything above it; without this the only way to learn the ceiling was to
-  // submit and read the 409, and since nothing can raise a clip's visibility
-  // yet that was a dead end rather than a step.
+  // The widest tier a post over this clip may take without widening the clip —
+  // the clip's own visibility or its game's, resolved server-side (CF-109).
+  // Above it, the composer asks for consent to raise the clip along with the
+  // post (CF-109b). Before CF-109b nothing could raise a clip's visibility, so
+  // CF-109 greyed those tiers out rather than let a submit end in the 409.
   //
   // Optional, and absent means `private`: a response from a path that hasn't
-  // been taught to resolve it offers less, never more.
+  // been taught to resolve it asks for consent it may not need, rather than
+  // widening footage whose tier it could not read.
   effective_visibility?: Visibility;
 }
 
@@ -248,6 +249,14 @@ export function getClipShareUrl(clipId: string): Promise<{ url: string }> {
  * origin. So the caller points the browser at this URL and lets the header do
  * the work — through lib/download.ts, which explains why that is a hidden frame
  * rather than window.location.
+ *
+ * REQUIRES A SIGNED-IN CALLER (CF-186). Unlike getClipShareUrl, which stays
+ * anonymous and presigns the same object, this endpoint is gated on a credential
+ * rather than on a rate limit. Every caller today already sits behind auth —
+ * ClipCard and ClipModal render only on /games/* and /collections/*, both
+ * covered by middleware.ts — so nothing had to change for it. Do not wire it
+ * into an anonymous surface: the feed and a public profile would get a 401 at
+ * runtime, not a 404.
  */
 export function getClipDownloadUrl(clipId: string): Promise<{ url: string }> {
   return request<{ url: string }>(`/clips/${clipId}/download`);
@@ -439,10 +448,44 @@ export function createPost(
   clipId: string,
   caption: string,
   visibility: Visibility,
+  /**
+   * Widen the CLIP to match, in the same transaction, when it is narrower than
+   * the post (CF-109b).
+   *
+   * Opt-in and defaulted off, because it is the one argument here that changes
+   * something other than the post being created: it makes the underlying
+   * footage readable by whoever the post is addressed to. Sent as a flag on
+   * this request rather than a separate PATCH first, so a post that fails to
+   * insert cannot leave the clip widened behind it.
+   */
+  raiseClipVisibility = false,
 ): Promise<Post> {
   return request<Post>("/posts", {
     method: "POST",
-    body: JSON.stringify({ clip_id: clipId, caption, visibility }),
+    body: JSON.stringify({
+      clip_id: clipId,
+      caption,
+      visibility,
+      raise_clip_visibility: raiseClipVisibility,
+    }),
+  });
+}
+
+/**
+ * Set who may read a clip (CF-109b). Owner only.
+ *
+ * The clip's OWN tier, which overrides its game's rather than being bounded by
+ * it — a public clip inside a private game is a supported state on the API
+ * side. Both directions: narrowing is how a user takes something back, and
+ * deleting a post does not do it.
+ */
+export function setClipVisibility(
+  clipId: string,
+  visibility: Visibility,
+): Promise<Clip> {
+  return request<Clip>(`/clips/${clipId}/visibility`, {
+    method: "PATCH",
+    body: JSON.stringify({ visibility }),
   });
 }
 
