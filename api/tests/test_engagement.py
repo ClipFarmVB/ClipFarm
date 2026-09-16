@@ -80,8 +80,18 @@ def test_the_engagement_tables_reach_the_metadata():
 
 
 def test_migration_020_names_every_object_the_models_declare():
-    """Every named index and constraint on the three tables appears in the
-    migration, and with the same DEFINITION — not merely the same name.
+    """What 020 adds appears in 020, with the same DEFINITION — not merely the
+    same name.
+
+    **Indexes on two tables, CHECK constraints on three.** The docstring used to
+    say "every named index and constraint on the three tables", and that was
+    false in one direction: `declared` never reads `Post.__table__.indexes`, so
+    the three indexes `posts` carries — `ix_posts_author_created`,
+    `ix_posts_clip_id`, `ix_posts_created_at_id` — are outside this test
+    entirely. That is correct scoping, since CF-109's migrations add them and
+    020 does not, but it is not what the sentence claimed. An index added to
+    `posts` by a later migration would be invisible here, and the docstring
+    would have said otherwise.
 
     Names alone were the whole guard twice, and it was porous both times. A
     constraint whose text drifted kept its name; so does an index built on the
@@ -319,11 +329,26 @@ def test_an_unlike_is_gated_on_the_delete_and_floors_the_decrement(monkeypatch):
     sql = _sql(_updates(db)[0]).lower()
     assert "greatest(posts.like_count + -1, 0)" in sql, "floored in SQL, not caught by the CHECK"
 
-    # Nothing to delete → nothing to decrement; the count is reported as is.
-    db = _Session([_Result(rowcount=0)])
+    # Nothing to delete → nothing to decrement, and the count is RE-READ rather
+    # than reported from the ORM row the gate loaded. The two values are made to
+    # differ on purpose: this half used to assert `like_count == 1`, which is
+    # `post.like_count` — the pre-delete value — and a fresh read and a stale one
+    # are indistinguishable whenever they happen to agree. They agree in every
+    # single-threaded call, which is why the stale read survived six rounds.
+    db = _Session([_Result(rowcount=0), _Result(scalar=9)])
     out = asyncio.run(r.unlike_post(post.id, VIEWER, db))
-    assert (out.liked, out.like_count) == (False, 1)
+    assert (out.liked, out.like_count) == (False, 9), (
+        "the count must come from the SELECT after the delete, not from "
+        "post.like_count read before it"
+    )
     assert _updates(db) == []
+
+    # And the post vanishing between the gate and that read is a 404, the same
+    # answer `like_post`'s already-liked path gives for the same race.
+    db = _Session([_Result(rowcount=0), _Result(scalar=None)])
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(r.unlike_post(post.id, VIEWER, db))
+    assert caught.value.status_code == 404
 
 
 def test_a_comment_delete_is_a_conditional_update(monkeypatch):

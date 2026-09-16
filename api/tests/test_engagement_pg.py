@@ -156,6 +156,54 @@ def _scalar(async_url, sql, **params):
         sync.dispose()
 
 
+def test_an_unlike_that_removes_nothing_reports_the_count_as_of_now(world, monkeypatch):
+    """CF-113: the no-op unlike answered with the count as of the GATE.
+
+    `unlike_post` read `post.like_count` off the ORM row before the delete and,
+    when the delete removed nothing, returned that. The handler answers 200 with
+    a count rather than 204 precisely so the client can reconcile on it, so a
+    stale number is worse than none.
+
+    Invisible to the idempotency test above, which unlikes twice at a count of
+    0: stale and fresh are both 0 there, so no assertion could tell them apart.
+    This makes them differ — the count moves out-of-band, in a committed
+    transaction of its own, between the gate and the delete — which is the same
+    window a concurrent like occupies in production.
+    """
+    from app.routers import engagement as r
+    from app.services import post_read
+
+    async_url, ids = world
+    pid, stranger = ids["public"], ids["follower"]
+
+    # The stranger has never liked this post, so the delete will remove nothing.
+    assert _scalar(async_url, "SELECT count(*) FROM post_likes WHERE post_id = :p "
+                              "AND user_id = :u", p=pid, u=stranger) == 0
+    before = _scalar(async_url, "SELECT like_count FROM posts WHERE id = :p", p=pid)
+
+    real = post_read.load_for_read
+
+    async def moving(post_id, user_id, db):
+        loaded = await real(post_id, user_id, db)
+        # Committed by a separate connection, after the gate and before the
+        # delete — exactly where a concurrent like lands.
+        _scalar(async_url,
+                "UPDATE posts SET like_count = like_count + 7 WHERE id = :p "
+                "RETURNING like_count", p=pid)
+        return loaded
+
+    monkeypatch.setattr(post_read, "load_for_read", moving)
+    out = _run(async_url, lambda db: r.unlike_post(pid, stranger, db))
+
+    assert out.liked is False
+    assert out.like_count == before + 7, (
+        f"reported {out.like_count}; the row says {before + 7}. The count was "
+        f"read before the delete and never refreshed."
+    )
+    assert _scalar(async_url, "SELECT like_count FROM posts WHERE id = :p", p=pid) == before + 7, \
+        "the no-op unlike must not have written anything"
+
+
 # ── liking twice yields one like ─────────────────────────────────────────────
 
 

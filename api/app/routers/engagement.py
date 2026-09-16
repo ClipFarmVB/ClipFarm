@@ -159,16 +159,31 @@ async def unlike_post(post_id: uuid.UUID, user_id: UserId, db: DB):
     access to is stranded; that is CF-116's reconciliation, recorded here.
     """
     post, _clip, _author = await post_read.load_for_read(post_id, user_id, db)
-    post_id = post.id
-    current = post.like_count
+    post_id = post.id  # a plain local; nothing below reads the ORM row
 
     removed = await db.execute(
         delete(PostLike).where(PostLike.post_id == post_id, PostLike.user_id == user_id)
     )
     if removed.rowcount == 1:
         current = await _bump(db, post_id, Post.like_count, -1)
-    await db.commit()
-    return LikeStateOut(liked=False, like_count=current)
+        await db.commit()
+        return LikeStateOut(liked=False, like_count=current)
+
+    # Not liked. Answer for the row that exists, and keep the transaction clean
+    # — nothing was written. `like_post`'s already-liked path does exactly this
+    # and this one did not: it returned `post.like_count` read from the ORM row
+    # BEFORE the delete, so an unlike that removed nothing reported the count as
+    # of the gate rather than as of now. The client is told to reconcile on this
+    # number (that is why the handler answers 200 with a count rather than 204),
+    # so a stale one is worse than none — and the two handlers reading the same
+    # state two different ways is how it stayed invisible.
+    existing = (
+        await db.execute(select(Post.like_count).where(Post.id == post_id))
+    ).scalar_one_or_none()
+    await db.rollback()
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return LikeStateOut(liked=False, like_count=existing)
 
 
 # ── comments ─────────────────────────────────────────────────────────────────
