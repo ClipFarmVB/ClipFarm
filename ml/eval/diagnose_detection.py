@@ -65,8 +65,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--test", default="test1", help="fixture id (default test1)")
     ap.add_argument("--dump", type=Path, default=None,
-                    help="write positions+contacts JSON here "
-                         "(default results/{test}_ball_track.json)")
+                    help="write positions+contacts JSON here. Default is "
+                         "ml/eval/results/{test}_ball_track.json, which is "
+                         "where tune_contacts and contact_cliff read from; a "
+                         "RELATIVE path here resolves against the image's "
+                         "WORKDIR (/app/api) and they will not find it")
     args = ap.parse_args()
 
     import tempfile
