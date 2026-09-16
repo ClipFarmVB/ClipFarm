@@ -143,17 +143,27 @@ def compute_features(
         raise ValueError(f"frame_height must be positive, got {frame_height}")
 
     # `confidence` is optional in this dict shape and EVERY producer in this
-    # repository currently omits it — ml/eval/deadtime_variants.py,
-    # ml/eval/harness.py, ml/eval/diagnose_detection.py and
-    # api/app/workers/tasks.py all build {"time", "x", "y"} from a BallPosition
-    # that HAS the field. So mean_conf_3s and max_conf_3s are constant 0.0 on
-    # real input, which is also their empty-window fill: "no confidence
-    # supplied" and "no samples at all" are indistinguishable in the matrix.
+    # repository currently omits it. FIVE sites, not the four this comment
+    # listed until a round counted them, and they are not all the same shape:
+    #
+    #   api/app/workers/tasks.py:1180      build {"time","x","y"} from a
+    #   ml/eval/harness.py:613             BallPosition that HAS the field
+    #   ml/eval/diagnose_detection.py:168
+    #
+    #   ml/eval/deadtime_variants.py:83    re-serialize a dict that already
+    #   ml/eval/tune_contacts.py:80        lost it upstream
+    #
+    # So mean_conf_3s and max_conf_3s are constant 0.0 on real input, which is
+    # also their empty-window fill: "no confidence supplied" and "no samples at
+    # all" are indistinguishable in the matrix.
     #
     # Two of thirteen columns training as constants is worth a line in the log
     # rather than a silent zero, because FEATURE_VERSION is frozen here and the
-    # trainer (CF-393) reads whatever this produces. Forwarding the field is a
-    # one-line change in four callers, but tasks.py is out of this card's scope.
+    # trainer (CF-393) reads whatever this produces. Forwarding it is one line
+    # in the three that hold a BallPosition; the other two only carry what the
+    # dump they read already has, so diagnose_detection's dump format decides
+    # tune_contacts. That is CF-420 (#544), and tasks.py is out of this card's
+    # scope either way.
     if positions and not any("confidence" in p for p in positions):
         logger.warning(
             "no ball-track sample carries 'confidence' — mean_conf_3s and "
