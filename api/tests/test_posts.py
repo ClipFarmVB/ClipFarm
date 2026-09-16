@@ -429,8 +429,8 @@ def test_every_clip_response_resolves_its_derived_fields():
     )
 
 
-def test_sign_avatar_returns_none_for_an_author_with_no_avatar():
-    """The uncached arm of `post_view.sign_avatar`, which nothing else covers.
+def test_sign_avatar_handles_both_arms_of_its_guard():
+    """Both arms of `post_view.sign_avatar`'s guard, which nothing else covers.
 
     CF-113 made this function public so `engagement._render_comment` could stop
     re-implementing it inline. The refactor is equivalence by inspection — the
@@ -440,9 +440,24 @@ def test_sign_avatar_returns_none_for_an_author_with_no_avatar():
     no avatar and no page cache is passed, so a bogus value there would reach
     the client as an `avatar_url`.
 
-    Both halves of the condition, since either alone routes here.
+    **Both halves of the condition, and the first version of this test covered
+    only one of them while saying it covered both.** Every case it asserted
+    passed `url=None`, so narrowing the guard to `if url is None:` left the
+    suite green — and under that narrowing a cached lookup of an absent key
+    returns `None` from `cache[url]`... while an UNCACHED call with a real url
+    falls to `url not in cache` against a `None` cache and raises `TypeError`.
+    `create_comment` passes no cache, so that is a 500 on
+    `POST /posts/{id}/comments` for any commenter who has an avatar.
+
+    So the third case is the load-bearing one: a real url with no cache.
     """
     from app.services import post_view
 
     assert post_view.sign_avatar(None, r2_ready=True, cache=None) is None
     assert post_view.sign_avatar(None, r2_ready=True, cache={}) is None
+    # r2_ready=False so this asks nothing of storage and returns the url
+    # unsigned; what is under test is that the uncached arm is reached at all.
+    assert (
+        post_view.sign_avatar("https://pub.r2.dev/avatars/a.png", r2_ready=False, cache=None)
+        is not None
+    )
