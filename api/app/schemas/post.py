@@ -94,9 +94,12 @@ class PostOut(BaseModel):
     created_at: datetime
     author: PostAuthor
     playback: PostPlayback
-    # Always False until CF-113 adds likes. Shipped now so the response shape
-    # doesn't change under the client when it does, and so the feed can fill it
-    # with one query for the whole page rather than one per card.
+    # Filled for real as of CF-113. The default is the anonymous answer — a
+    # reader with no session has not liked anything — not a placeholder, which
+    # is what it was until this change and what this comment said for one round
+    # after it stopped being true. The field was shipped ahead of the feature so
+    # the response shape would not move under the client, and so the feed could
+    # fill it with one query for the whole page rather than one per card.
     viewer_has_liked: bool = False
 
 

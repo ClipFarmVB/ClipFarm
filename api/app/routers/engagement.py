@@ -67,7 +67,7 @@ from app.models.post_like import PostLike
 from app.models.user import User
 from app.schemas.engagement import CommentCreate, CommentOut, CommentPage, LikeStateOut
 from app.schemas.post import PostAuthor
-from app.services import cursors, post_read, post_view, profiles, storage
+from app.services import cursors, post_read, post_view, storage
 from app.services.ratelimit import POLICIES, rate_limit
 
 logger = logging.getLogger(__name__)
@@ -230,15 +230,12 @@ def _render_comment(
     # and dropping it would make `comment_count` disagree with the visible
     # list on every post such an account commented on.
     rendered = PostAuthor.from_author(author)
-    url = rendered.avatar_url
-    if url is not None and avatar_cache is not None:
-        if url not in avatar_cache:
-            avatar_cache[url] = profiles.presign_avatar(
-                url, r2_ready=r2_ready, failures=failures
-            )
-        signed = avatar_cache[url]
-    else:
-        signed = profiles.presign_avatar(url, r2_ready=r2_ready, failures=failures)
+    signed = post_view.sign_avatar(
+        rendered.avatar_url,
+        r2_ready=r2_ready,
+        cache=avatar_cache,
+        failures=failures,
+    )
     return CommentOut(
         id=comment.id,
         post_id=comment.post_id,

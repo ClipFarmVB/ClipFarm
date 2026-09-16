@@ -427,3 +427,22 @@ def test_every_clip_response_resolves_its_derived_fields():
         "_clip_out, because every other field on it is derived from the game "
         "and an echo will forget one"
     )
+
+
+def test_sign_avatar_returns_none_for_an_author_with_no_avatar():
+    """The uncached arm of `post_view.sign_avatar`, which nothing else covers.
+
+    CF-113 made this function public so `engagement._render_comment` could stop
+    re-implementing it inline. The refactor is equivalence by inspection — the
+    two bodies were identical — and a mutation proved the suite could not tell:
+    making the `url is None or cache is None` arm return a constant left all
+    1288 tests green. A comment renders through that arm whenever its author has
+    no avatar and no page cache is passed, so a bogus value there would reach
+    the client as an `avatar_url`.
+
+    Both halves of the condition, since either alone routes here.
+    """
+    from app.services import post_view
+
+    assert post_view.sign_avatar(None, r2_ready=True, cache=None) is None
+    assert post_view.sign_avatar(None, r2_ready=True, cache={}) is None

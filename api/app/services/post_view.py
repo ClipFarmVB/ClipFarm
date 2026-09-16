@@ -130,7 +130,7 @@ def _presign(stored_url: str | None, failures: list[str] | None = None) -> str |
         return stored_url
 
 
-def _avatar(
+def sign_avatar(
     url: str | None,
     *,
     r2_ready: bool,
@@ -138,6 +138,10 @@ def _avatar(
     failures: list[str] | None = None,
 ) -> str | None:
     """Sign an avatar at most once per page.
+
+    Public, and named rather than `_avatar`, because `engagement._render_comment`
+    needs exactly this and had re-implemented it inline — the duplicate-copy
+    risk this module's own docstring records, arrived at from the other side.
 
     `failures` is threaded through for the same reason `_playback` takes it:
     the hoist that reached the clip URLs had not reached the avatar, so a
@@ -200,7 +204,7 @@ def serialize(
             # doing the same; `PostAuthor` is not a `ProfileOut`, so it could
             # not simply be handed to that function.
             update={
-                "avatar_url": _avatar(
+                "avatar_url": sign_avatar(
                     rendered.avatar_url,
                     r2_ready=r2_ready,
                     cache=avatar_cache,

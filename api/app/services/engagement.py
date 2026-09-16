@@ -40,7 +40,10 @@ def viewer_liked_column(viewer_id: uuid.UUID | None) -> ColumnElement[bool]:
 async def viewer_has_liked(
     db: AsyncSession, viewer_id: uuid.UUID | None, post_id: uuid.UUID
 ) -> bool:
-    """The single-object form, for `get_post`: one point lookup on the PK."""
+    """The single-object form: one point lookup on the PK.
+
+    Used by `get_post` and by `update_post`, which returns the same shape.
+    """
     if viewer_id is None:
         return False
     row = await db.execute(

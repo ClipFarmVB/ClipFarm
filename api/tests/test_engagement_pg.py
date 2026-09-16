@@ -264,7 +264,6 @@ def test_liking_twice_yields_one_like_and_one_increment(world):
     )
     assert edited.viewer_has_liked is True, "the edit dropped the author's own like"
     assert edited.caption == "edited"
-    assert edited.caption == "edited"
 
 
 def test_concurrent_likes_leave_the_counter_equal_to_the_rows(world):
