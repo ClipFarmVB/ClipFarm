@@ -83,15 +83,24 @@ def test_migration_020_names_every_object_the_models_declare():
     """What 020 adds appears in 020, with the same DEFINITION — not merely the
     same name.
 
-    **Indexes on two tables, CHECK constraints on three.** The docstring used to
-    say "every named index and constraint on the three tables", and that was
-    false in one direction: `declared` never reads `Post.__table__.indexes`, so
-    the three indexes `posts` carries — `ix_posts_author_created`,
-    `ix_posts_clip_id`, `ix_posts_created_at_id` — are outside this test
-    entirely. That is correct scoping, since CF-109's migrations add them and
-    020 does not, but it is not what the sentence claimed. An index added to
-    `posts` by a later migration would be invisible here, and the docstring
-    would have said otherwise.
+    **What it covers is exactly what `declared` enumerates, and nothing else:**
+    indexes on `post_likes` and `post_comments`, `ck_*` on `post_comments`, and
+    `ck_posts_*` on `posts`. Four hand-picked (table, kind) pairs.
+
+    So it does NOT cover: indexes on `posts` (the three `ix_posts_*` CF-109's
+    migrations add — correct scoping, since 020 adds none, but worth saying);
+    CHECK constraints on `post_likes` (none today); or a CHECK on `posts` whose
+    name does not start `ck_posts_`. Each of those could be added by a later
+    migration and drift with this test green.
+
+    This sentence has been wrong twice. It first said "every named index and
+    constraint on the three tables"; the correction said "indexes on two tables,
+    CHECK constraints on three" — also false, because `declared` scans
+    `post_likes` for indexes and never for constraints. Written as the
+    enumeration rather than as a count, because a count of tables is the thing
+    that keeps being wrong: the guard is a hand-listed set, and the honest
+    description of a hand-listed set is the list. Replacing it with a structural
+    comparison against `Base.metadata` is CF-418 (#550).
 
     Names alone were the whole guard twice, and it was porous both times. A
     constraint whose text drifted kept its name; so does an index built on the
@@ -342,6 +351,12 @@ def test_an_unlike_is_gated_on_the_delete_and_floors_the_decrement(monkeypatch):
         "post.like_count read before it"
     )
     assert _updates(db) == []
+    # Its sibling `test_a_like_moves_the_counter_only_when_the_insert_landed`
+    # pins this and this one did not: turning the no-op path's `rollback()` into
+    # `commit()` left the whole engagement suite green. Nothing is written on
+    # that path today, so it is harmless — but "harmless today" is how the
+    # stale read above survived six rounds.
+    assert (db.rolled_back, db.committed) == (1, 0)
 
     # And the post vanishing between the gate and that read is a 404, the same
     # answer `like_post`'s already-liked path gives for the same race.
