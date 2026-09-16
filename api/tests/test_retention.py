@@ -103,15 +103,23 @@ def _install(monkeypatch, fakes, retention_days=RETENTION_DAYS):
     monkeypatch.setattr(storage, "delete_files", fakes.delete_files)
 
 
-def test_expired_upload_is_released_then_reclaimed(monkeypatch):
+def test_expired_upload_is_released_then_reclaimed(monkeypatch, caplog):
     r = _row()
     fakes = _Fakes(expired=[(r["id"], r["url"])], objects=[r["obj"]], referenced=[r["key"]])
     _install(monkeypatch, fakes)
 
-    tasks._sweep_expired_raw_uploads()
+    with caplog.at_level(logging.INFO, logger="app.workers.tasks"):
+        tasks._sweep_expired_raw_uploads()
 
     assert fakes.cleared == [r["id"]]
     assert fakes.deleted == [r["key"]]
+    # 1 stale, 0 failed. The reclaimed count is asserted here as well as in the
+    # 3/1 case below because the two fixtures separate what neither can alone:
+    # at 3/1 any expression worth 2 survives, and `len(stale) - 1` is one of
+    # them — but here it is 0, and would ship "reclaimed 0 object(s)" on every
+    # clean sweep. The comment there used to say closing this needed a fixture
+    # that did not exist; it did exist, and it is this one.
+    assert "reclaimed 1 object(s)" in caplog.text, caplog.text
 
 
 def test_row_is_released_before_the_object_is_deleted(monkeypatch):
@@ -233,17 +241,89 @@ def test_a_failed_release_leaves_its_object_alone(monkeypatch):
     assert fakes.deleted == []
 
 
-def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch):
+def test_undeletable_objects_are_left_for_the_next_sweep(monkeypatch, caplog):
     """delete_files reports failures instead of raising — they stay unreferenced
-    and past the cutoff, so the next sweep finds them again."""
+    and past the cutoff, so the next sweep finds them again.
+
+    The sweep keeps no bookkeeping for a failed key: `failed` is used twice and
+    discarded, and the object is picked up next time only because it is still
+    unreferenced and past the cutoff. So "still eligible" is a property of the
+    bucket, not stored state, and the two log lines are the whole observable
+    effect of the report — which is what this asserts.
+
+    The version this replaces called the sweep and asserted nothing but a
+    trailing `# must not raise`, so dropping the failure report on the floor
+    kept it green and the behaviour in its own title was uncovered (CF-308,
+    #358).
+    """
     from app.services import storage
 
-    rows = [_row("a"), _row("b")]
+    # Three stale, one failure: reclaimed is 2 and failed is 1, so the assertion
+    # below can tell `len(stale) - len(failed)` from `len(failed)` and from
+    # `len(stale)`. With two objects all three are 1 and the reclaimed count
+    # pins nothing — mutating it to `len(failed)` left this test green.
+    #
+    # What it cannot tell apart is *any* expression that evaluates to 2 over this
+    # fixture — measured: a literal `2`, `len(stale) - 1`, `len(failed) + 1` and
+    # `released + 2` all survive. The bound is the value, not the syntax; an
+    # earlier version of this comment said "a constant", which is narrower than
+    # the truth and would have let the next reader trust more than it gives.
+    #
+    # The warning count above has the same property: at 3/1 both `len(failed)`
+    # and `len(stale) - 2` are 1, so that assertion pins the value and not the
+    # expression either.
+    #
+    # The reclaimed count's survivors ARE separated, one test up:
+    # `test_expired_upload_is_released_then_reclaimed` sweeps 1 stale /
+    # 0 failed, where `len(stale) - 1` is 0 and a literal 2 is wrong, so both
+    # now fail there. This test keeps the 3/1 shape because that is what tells
+    # `len(stale) - len(failed)` from `len(failed)` and `len(stale)`.
+    #
+    # What survives is not a list, and two versions of this comment tried to
+    # make it one and were wrong both times. The bound is the value: *any*
+    # expression equal to 1 at 1/0 and 2 at 3/1 passes both fixtures —
+    # `len(failed) + 1` is the one a real edit might plausibly produce, but
+    # `len(stale) // 2 + 1` does too, and review found it by trying. Likewise
+    # the warning count at 3/1: anything equal to 1 (`len(stale) - 2`, a
+    # literal, `released + 1`). The fixtures pin the two counts to their
+    # values and separate the expressions a real edit would reach for
+    # (`len(failed)`, `len(stale)`, `released`, the neighbours by one); they
+    # do not, and cannot, exclude every arithmetic coincidence. Disclosed as
+    # that, rather than as a count that the next mutation run makes wrong.
+    rows = [_row("a"), _row("b"), _row("c")]
     fakes = _Fakes(objects=[r["obj"] for r in rows])
     _install(monkeypatch, fakes)
     monkeypatch.setattr(storage, "delete_files", lambda keys: ["raw/a.mp4"])
 
-    tasks._sweep_expired_raw_uploads()  # must not raise
+    # INFO, not WARNING: the reclaimed count below is only logged at INFO.
+    with caplog.at_level(logging.INFO, logger="app.workers.tasks"):
+        tasks._sweep_expired_raw_uploads()  # must not raise
+
+    # Anchored on the message prefix: the bare substring "1 object(s)" is also a
+    # substring of "11 object(s)", so `len(failed) + 10` satisfied it.
+    # Severity, not just text: the capture above is widened to INFO so the
+    # reclaimed count is visible, which means a `logger.warning` demoted to
+    # `logger.info` would still satisfy a plain `in caplog.text`. Anything
+    # alerting on WARN would lose the "objects left behind" signal silently.
+    # `>=`, not `==`: the message below says an alert on WARN would not fire,
+    # and escalating to ERROR does not have that effect. `getMessage()` rather
+    # than `.message`, which only exists because a handler formatted the record.
+    assert any(r.levelno >= logging.WARNING and "could not be deleted" in r.getMessage()
+               for r in caplog.records), (
+        "the failed delete was reported below WARNING. The count is right, so a "
+        "text-only assertion passes, but an alert on WARN never fires "
+        "(CF-308, #358)."
+    )
+    assert "retention: 1 object(s) could not be deleted" in caplog.text, (
+        "the sweep did not report the failed delete. Three objects were stale "
+        "and one failed, so the warning is the only signal that anything was "
+        "left behind (CF-308, #358)."
+    )
+    assert "reclaimed 2 object(s)" in caplog.text, (
+        "the sweep counted a failed delete as reclaimed. `len(stale) - len(failed)` "
+        "is what keeps that count honest; without it the log says three objects "
+        "were freed when one is still in the bucket (CF-308, #358)."
+    )
 
 
 _ON_STORAGE = {"list_objects", "delete_files"}

@@ -49,6 +49,7 @@ from app.models.user import User
 from app.schemas.engagement import CommentCreate, CommentOut, CommentPage, LikeStateOut
 from app.schemas.post import PostAuthor
 from app.services import cursors, post_read, post_view, profiles, storage
+from app.services.ratelimit import POLICIES, rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +214,9 @@ def _render_comment(
     )
 
 
-@router.get("/posts/{post_id}/comments", response_model=CommentPage)
+@router.get("/posts/{post_id}/comments", response_model=CommentPage,
+    dependencies=[Depends(rate_limit(POLICIES["post"]))],
+)
 async def list_comments(
     post_id: uuid.UUID,
     db: DB,
