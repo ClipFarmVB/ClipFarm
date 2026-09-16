@@ -189,10 +189,17 @@ class TestFills:
         conf only.
         """
         # Alternating step lengths, so max and mean genuinely differ. Both must
-        # stay BELIEVABLE: 200px in 0.5s is 1.11 fh/s at 360p, which is exactly
-        # MAX_PLAUSIBLE_SPEED_FH, so every fast sample became NaN and was masked
-        # — mean and max then collapsed to the same value and the test asserted
-        # nothing. 150px/0.5s = 0.83 fh/s is fast and believable.
+        # stay BELIEVABLE: 200px in 0.5s at 360p is 400/360 = 1.1111 fh/s,
+        # which is ABOVE MAX_PLAUSIBLE_SPEED_FH (1.11), so every fast sample
+        # became NaN and was masked — mean and max then collapsed to the same
+        # value and the test asserted nothing. 150px/0.5s = 0.83 fh/s is fast
+        # and believable.
+        #
+        # This comment said "exactly MAX_PLAUSIBLE_SPEED_FH", and both halves of
+        # that were wrong: 1.1111 is not 1.11, and the mask is `v <= max_speed`,
+        # so a sample sitting EXACTLY on the ceiling is KEPT. Only strictly
+        # above is unjudged. A near-miss described as an equality, in the
+        # comment explaining why the fixture was degenerate.
         times = [t / 2 for t in range(0, 9)]
         pos = [{"time": t, "x": 0.0, "y": 180.0, "confidence": 0.9} for t in times]
         for i in range(1, len(pos)):
@@ -348,9 +355,18 @@ class TestEveryFill:
     ):
         """The fill must be AT the dead end, not merely near it.
 
-        Pinning the value alone does not say which way it points — this asserts
-        that no real track produces a value further toward 'dead' than the fill,
-        which is what makes 'votes dead' a property rather than a comment.
+        Pinning the value alone does not say which way it points; this asserts
+        that no real track produces a value further toward 'dead' than the fill.
+
+        **The `"dead"` label itself is NOT checked, and this docstring used to
+        claim it was** — "which is what makes 'votes dead' a property rather
+        than a comment". It is the parametrize SELECTOR: retag a column and it
+        simply leaves the list, the remaining cases pass, and the suite is green
+        with one fewer assertion than it had. A test whose subject can be
+        removed by editing the table it reads is not pinning that table.
+        Replacing this scaffolding with a golden-output pin over all thirteen
+        columns is CF-419 (#551); until then the label is a comment, said here
+        rather than claimed otherwise.
         """
         busy = compute_features(
             track([t / 2 for t in range(0, 21)], y=90.0, step=60.0),
