@@ -24,9 +24,17 @@ that bit `_adjust_counts` needed two counter rows in one transaction.
 locals before any statement that can fail — the expiry `follows.py` learned
 about the hard way.
 
-**Unthrottled.** Comment creation and the anonymous comment list are the two
-surfaces this adds; comment spam is the CF-116 vector, recorded here as
-`access.py` records the follow one.
+**Throttling is split, and the halves differ on purpose.** The anonymous
+comment LIST carries the `post` limiter (CF-186), matched to `/posts/{id}`
+because it reads the same UUID-keyed object: a post id cannot be walked, so it
+is a load bound rather than an anti-enumeration one.
+
+Comment CREATION, and the like and unlike writes, are **not** rate limited.
+Every one of them requires a credential, so they sit outside the anonymous
+surface #189 bounded, and a limiter that fails open (`services/ratelimit.py`)
+would add a failure mode without adding a guarantee. What actually bounds abuse
+here is a quota or moderation, not a per-minute counter: comment spam is the
+CF-116 vector, recorded here as `access.py` records the follow one.
 """
 import logging
 import uuid
