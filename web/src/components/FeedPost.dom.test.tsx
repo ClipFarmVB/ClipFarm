@@ -274,9 +274,15 @@ describe("liking a post", () => {
 
     await click(byLabel("Like")[0]);
 
-    expect(byLabel("Like")).toHaveLength(1);
-    expect(railCount("Like")).toContain("3");
-    expect(railCount("Like")).toContain("Failed");
+    // The label carries the failure, not just the visible note. `setLike(prev)`
+    // restores the previous state, so a label of plain "Like" here is the exact
+    // string it had before the tap — a screen-reader user would be told nothing
+    // and would believe the like landed. Asserted on the label because that is
+    // what assistive tech reads; the note beside it is the sighted half.
+    expect(byLabel("Like failed")).toHaveLength(1);
+    expect(byLabel("Like")).toHaveLength(0);
+    expect(railCount("Like failed")).toContain("3");
+    expect(railCount("Like failed")).toContain("Failed");
   });
 
   it("unlikes when the viewer has already liked it, emptying before the server answers", async () => {
@@ -400,6 +406,28 @@ describe("liking a post", () => {
 
     expect(likePost).toHaveBeenCalledTimes(1);
     expect(unlikePost).not.toHaveBeenCalled();
+  });
+
+  it("still works on the second tap, once the first has finished", async () => {
+    // The release half of the busy lock. Every other test here does exactly ONE
+    // complete cycle, and a one-cycle test cannot tell a lock that releases
+    // from one that never does — deleting `likeBusy.current = false` in the
+    // `finally` left all 314 tests green. The user-visible failure is that the
+    // heart works once per mount and is then permanently dead: still rendered
+    // enabled, taps do nothing, no error.
+    let release: (v: { liked: boolean; like_count: number }) => void = () => {};
+    likePost.mockReturnValue(new Promise((r) => (release = r)));
+    mount(makePost());
+
+    await click(byLabel("Like")[0]);
+    await act(async () => release({ liked: true, like_count: 4 }));
+
+    // First cycle is complete, so the lock must be free for the unlike.
+    unlikePost.mockResolvedValue({ liked: false, like_count: 3 });
+    await click(byLabel("Unlike")[0]);
+
+    expect(unlikePost).toHaveBeenCalledTimes(1);
+    expect(railCount("Like")).toContain("3");
   });
 });
 

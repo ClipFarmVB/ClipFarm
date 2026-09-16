@@ -110,11 +110,13 @@ export const FeedPost = memo(function FeedPost({
     const likeMoved =
       prev.liked !== post.viewer_has_liked || prev.count !== post.like_count;
     const commentsMoved = prev.comments !== post.comment_count;
-    // No blanket early return: the deps below ARE these four fields, so by the
-    // time this runs at least one of the three has moved. A `return` for the
-    // nothing-changed case would be unreachable, and a test written for it
-    // would pass whether or not the guard existed — which is exactly the trap
-    // the previous version of this file fell into.
+    // No blanket early return. On every run AFTER the first, the deps below are
+    // these four fields, so at least one of the three has moved. The mount run
+    // is the exception — React runs an effect once regardless of its deps, and
+    // `seededFrom.current` was initialised from these same props, so all three
+    // flags are false exactly then. That run is harmless (each branch below is
+    // guarded and no setState fires), which is why there is still no early
+    // return; it is not, as this comment previously claimed, unreachable.
     seededFrom.current = {
       id: post.id,
       liked: post.viewer_has_liked,
@@ -404,7 +406,9 @@ export const FeedPost = memo(function FeedPost({
         <RailButton
           icon={<Heart size={22} className={like.liked ? "fill-red-500 text-red-500" : ""} />}
           count={like.count}
-          label={like.liked ? "Unlike" : "Like"}
+          label={
+            likeNote ? `${like.liked ? "Unlike" : "Like"} failed` : like.liked ? "Unlike" : "Like"
+          }
           note={likeNote}
           onClick={() => void toggleLike()}
         />

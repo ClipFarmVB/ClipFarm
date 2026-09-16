@@ -511,6 +511,47 @@ describe("deleting is serialised too", () => {
     await act(async () => release());
     expect(deleteButtons().some((b) => !b.disabled)).toBe(true);
   });
+
+  it("deletes a second comment once the first delete has finished", async () => {
+    // The RELEASE half of `deleteBusy`, which the three tests above do not
+    // reach. They pin `disabled` — driven by React state — and the ref's
+    // acquire. Nothing pins `deleteBusy.current = false` in the `finally`:
+    // deleting that line leaves all 25 of them green, because every one does a
+    // single complete cycle. The user-visible failure is that the sheet deletes
+    // exactly one comment per mount and every later trash icon is inert.
+    getComments.mockResolvedValue({
+      items: [makeComment("c1", OTHER), makeComment("c2", OTHER)],
+      next_cursor: null,
+    });
+    deleteComment.mockResolvedValue(undefined);
+    meRef.current = asMe(AUTHOR);
+    await mount();
+
+    await click(deleteButtons()[0]);
+    expect(deleteComment).toHaveBeenCalledTimes(1);
+
+    // First cycle complete, so the lock must be free for the second.
+    await click(deleteButtons()[0]);
+    expect(deleteComment).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends a second comment once the first has finished", async () => {
+    // The release half of `submitBusy`, for the same reason and with the same
+    // consequence: the composer posts once per mount and then silently stops.
+    getComments.mockResolvedValue({ items: [], next_cursor: null });
+    createComment.mockResolvedValue(makeComment("c1", AUTHOR, "first"));
+    meRef.current = asMe(AUTHOR);
+    await mount();
+
+    await type("first");
+    await click(postButton());
+    expect(createComment).toHaveBeenCalledTimes(1);
+
+    createComment.mockResolvedValue(makeComment("c2", AUTHOR, "second"));
+    await type("second");
+    await click(postButton());
+    expect(createComment).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("being handed a different post", () => {
