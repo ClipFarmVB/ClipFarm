@@ -34,8 +34,15 @@ TUNE_PY = Path(__file__).resolve().parents[2] / "ml" / "eval" / "tune_contacts.p
 
 
 def _literal(name: str):
-    """The module-level literal assigned to `name`, without importing."""
+    """The module-level literal assigned to `name`, without importing.
+
+    The LAST assignment wins, because that is the one Python leaves bound. An
+    earlier version returned the first, so a second `SWEEPS = ...` further down
+    the file left the tests asserting about a table the tuner does not use —
+    the tests and the module disagreeing while both looked green.
+    """
     tree = ast.parse(TUNE_PY.read_text(encoding="utf-8"))
+    found = None
     for node in tree.body:
         targets = (
             [node.target] if isinstance(node, ast.AnnAssign)
@@ -44,8 +51,22 @@ def _literal(name: str):
         )
         for t in targets:
             if isinstance(t, ast.Name) and t.id == name and node.value is not None:
-                return ast.literal_eval(node.value)
-    raise AssertionError(f"{name} not found as a module-level literal in {TUNE_PY.name}")
+                found = node.value
+    if found is None:
+        raise AssertionError(
+            f"{name} not found as a module-level literal in {TUNE_PY.name}")
+    try:
+        return ast.literal_eval(found)
+    except ValueError as exc:
+        # Otherwise this surfaces as `malformed node or string on line N` from
+        # inside ast, collection aborts, and all of this file's tests vanish
+        # without either the name or the file being mentioned.
+        raise AssertionError(
+            f"{TUNE_PY.name}: `{name}` is not a literal ({exc}). The tables are "
+            f"read with ast.literal_eval rather than imported, so a computed "
+            f"value — `60 * 4`, a `dict(...)` call — cannot be parsed. Write "
+            f"the value out."
+        ) from exc
 
 
 SWEEPS = _literal("SWEEPS")
@@ -74,6 +95,40 @@ def test_no_swept_value_repeats_the_shipping_default(name):
         f"row re-scores BASELINE under another name. Drop the value — the "
         f"baseline row already reports it."
     )
+
+
+@pytest.mark.parametrize("name", sorted(SWEEPS))
+def test_no_knob_is_swept_twice_at_the_same_value(name):
+    """A repeated value prints the same row twice, which is this file's whole
+    subject arriving from the other direction: the duplicate that started CF-309
+    was a value equal to the *default*, but a value equal to its *neighbour* is
+    the same table with the same hidden repeat in it."""
+    values = SWEEPS[name]
+    dupes = sorted({v for v in values if list(values).count(v) > 1})
+    assert not dupes, f"{name} sweeps {dupes} more than once in {values}"
+
+
+@pytest.mark.parametrize("name", sorted(SWEEPS))
+def test_no_knob_has_an_empty_sweep(name):
+    """`set(SWEEPS)` being pinned does not stop a knob's tuple being emptied,
+    and an empty tuple stops the knob being explored while every other check
+    stays green — the same observable outcome as deleting the key, which the
+    pinned set does catch."""
+    assert SWEEPS[name], f"{name} is in SWEEPS but sweeps nothing"
+
+
+def test_no_two_combos_are_the_same_run():
+    """Identical override sets print identical rows under different labels, and
+    identical labels make two different rows indistinguishable in the table.
+    Both are the defect this file exists for, one level up from the sweeps."""
+    combos = _combos()
+    labels = [label for label, _ in combos]
+    assert len(set(labels)) == len(labels), f"duplicate combo labels in {labels}"
+    seen: list[tuple[str, dict]] = []
+    for label, overrides in combos:
+        clash = [prev for prev, o in seen if o == overrides]
+        assert not clash, f"{label!r} scores exactly what {clash[0]!r} scores"
+        seen.append((label, overrides))
 
 
 @pytest.mark.parametrize("label,overrides", _combos(), ids=[c[0] for c in _combos()])

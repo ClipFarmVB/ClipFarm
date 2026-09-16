@@ -252,8 +252,12 @@ def _sweep(test_id: str) -> None:
 
     # `%g` rather than a per-knob format, now that one table holds a mix of
     # floats and ints. Checked against the formats it replaces rather than
-    # assumed: `%g` reproduces all sixteen old labels exactly, both the
-    # `%.0f` knobs and the bare `{v}` ones.
+    # assumed: there were seventeen single-knob labels before this change and
+    # sixteen survive it, and `%g` reproduces all seventeen byte-for-byte —
+    # including the deleted `=240` row — across both the `%.0f` knobs and the
+    # bare `{v}` ones. Sixteen is the count of rows that remain, not of labels
+    # checked; saying "sixteen old labels" would be a count taken from the
+    # wrong set.
     for name in ("CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_RESIDUAL_RATIO",
                  "CONTACT_HIT_SPEED_PXPS"):
         for v in SWEEPS[name]:
@@ -273,10 +277,13 @@ def _sweep(test_id: str) -> None:
     # Stage 2: recovering the condense ratio. Better contact recall pushes the
     # run up against the padding ceiling (pad 5/4 + merge 5 absorbs every dead
     # gap <= 14s), so re-sweep padding on top of the best contact settings.
-    # The last combo, read rather than copied. This was a fourth hand-written
+    # The last combo, read rather than re-typed. This was a fourth hand-written
     # duplicate of the same override set, and a copy is how the no-op
     # `CONTACT_RESIDUAL_MIN_PXPS=240` pin came to survive in four places.
-    best = COMBOS[-1][1]
+    # Copied on the way out all the same: `COMBOS[-1][1]` is a module-level
+    # dict, and handing it to a function by reference where the old code built
+    # a fresh one is a class of bug for the sake of nothing.
+    best = dict(COMBOS[-1][1])
     print("\n-- padding sweep, on top of the full best contact combo --")
     global COND
     keep_cond = dict(COND)

@@ -83,13 +83,19 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
     record — the card's failing case is `0:32` typed where `0:23` was meant, and
     that costs nothing to detect and never has a legitimate form.
 
-    Ordering and disjointness are checked over the **scored** clips only. An
-    excluded-tier annotation legitimately may overlap a scored one: the loader
-    is documented to keep a `B`/`O` clip in the file while dropping it from
-    scoring, so a camera-outlier span covering a stretch that contains a rally
-    is valid labelling. Asserting disjointness over the raw list would reject
-    it. Over the scored list there is no such case — those spans are what the
-    metric sums, and an overlap there double-counts.
+    Ordering and disjointness are checked over the **scored** clips only, and
+    this half is a judgement call rather than a documented rule — said plainly,
+    because the reasoning is the argument for it. What the repo does establish
+    is that the loader keeps an excluded-tier clip in the file while dropping it
+    from scoring (`test_excluded_tiers_are_dropped`, and `load_fixture`'s own
+    comment, "stays in the file for the labelling record"). Nothing in
+    `ml/eval/README.md` says whether such a clip may *overlap* a scored one, and
+    `test1.json` carries no `B` or `O` clip to settle it either way. Allowing it
+    is the reading that cannot block valid labelling: a camera-outlier span
+    covering a stretch that contains a rally is an ordinary thing to annotate,
+    and a guard that rejected it would be discovered by whoever writes the
+    second highlight fixture. Over the scored list there is no such doubt —
+    those spans are what the metric sums, and an overlap there double-counts.
 
     The split is not visible in today's only fixture, where all 41 clips score
     and both lists are identical, so it is pinned by constructed cases in
@@ -107,8 +113,25 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
         problems.append(
             "no `video_duration_sec`, so nothing anchors the over-run check")
 
-    for clip in raw.get("clips", []):
+    clips = raw.get("clips", [])
+    if not clips:
+        # The dead-time twin asserts `fx.keep` for the same reason: a fixture
+        # with no clips passes every check below vacuously, and a check that
+        # cannot fail on an empty fixture is the failure the parametrized
+        # version exists to prevent.
+        problems.append("no clips at all")
+
+    for clip in clips:
+        missing = [k for k in ("start", "end") if k not in clip]
+        if missing:
+            # Reported rather than raised: a bare KeyError from inside a
+            # well-formedness check reads like a broken test, not a broken
+            # fixture, and it stops the remaining clips being looked at.
+            problems.append(f"clip {clip!r} has no {' or '.join(missing)}")
+            continue
         start, end = parse_timestamp(clip["start"]), parse_timestamp(clip["end"])
+        if start < 0:
+            problems.append(f"clip {clip['start']}-{clip['end']} starts before zero")
         if end <= start:
             problems.append(
                 f"clip {clip['start']}-{clip['end']} is not a positive span")
@@ -645,11 +668,12 @@ class TestHighlightWellFormedness:
         read different lists.
 
         An `O` (outlier) annotation covering a stretch that contains a scored
-        rally is valid labelling — `test_excluded_tiers_are_dropped` pins that
-        the loader keeps such a clip in the file and out of scoring, and
-        `ml/eval/README.md` documents it. Checking disjointness over the raw
-        list would reject the documented shape, so it is checked over the
-        scored spans, where an overlap really does double-count.
+        rally is treated as valid labelling. That is a judgement, not a cited
+        rule: `test_excluded_tiers_are_dropped` pins only that such a clip is
+        kept in the file and out of scoring, and no README says whether it may
+        overlap. Checking disjointness over the raw list would forbid the
+        shape, so it is checked over the scored spans, where an overlap really
+        does double-count.
         """
         raw = self._raw([{"start": "00:10", "end": "00:20", "tier": "M"},
                          {"start": "00:15", "end": "00:50", "tier": "O"},
@@ -664,6 +688,27 @@ class TestHighlightWellFormedness:
                          {"start": "00:50", "end": "00:15", "tier": "O"}])
         problems = highlight_wellformedness_violations(raw, self._scored(raw, {"M"}))
         assert any("not a positive span" in p for p in problems), problems
+
+    def test_a_fixture_with_no_clips_is_reported(self):
+        """Otherwise every rule above passes vacuously on it, which is what the
+        parametrized check exists to stop."""
+        raw = self._raw([])
+        problems = highlight_wellformedness_violations(raw, [])
+        assert any("no clips at all" in p for p in problems), problems
+
+    def test_a_clip_missing_a_timestamp_is_reported_not_raised(self):
+        """A bare `KeyError` here reads like a broken test rather than a broken
+        fixture, and it stops the remaining clips being looked at."""
+        raw = self._raw([{"start": "00:10"}, {"start": "00:50", "end": "00:20"}])
+        problems = highlight_wellformedness_violations(raw, [])
+        assert any("has no end" in p for p in problems), problems
+        # The clip after the malformed one is still checked.
+        assert any("not a positive span" in p for p in problems), problems
+
+    def test_a_negative_timestamp_is_reported(self):
+        raw = self._raw([{"start": "-5", "end": "00:20"}])
+        problems = highlight_wellformedness_violations(raw, self._scored(raw))
+        assert any("starts before zero" in p for p in problems), problems
 
     def test_the_real_fixture_exercises_the_scored_path_at_all(self):
         """A control. If `test1` ever stopped scoring anything, the
