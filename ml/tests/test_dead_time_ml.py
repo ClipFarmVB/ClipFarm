@@ -56,8 +56,11 @@ class TestContract:
         copy this test exists for; `active_windows_guarded(anchor_speed=...)`,
         which passes it down; `condense_guard_anchor_speed` in
         api/app/config.py, which is what production actually sends; and a
-        hardcoded `speed=0.30` in ml/eval/deadtime_variants.py:169. This pin
-        reaches exactly one of them.
+        hardcoded `speed=0.30` in ml/eval/deadtime_variants.py:169.
+
+        This pin reaches exactly one of the five — `motion_anchor_windows`'
+        default — by comparing this module's copy against it. The other three
+        are unpinned.
 
         `motion_anchor_windows`' default is the same quantity — the per-sample
         "this is fast" bar — and nothing but this test stops the two drifting.

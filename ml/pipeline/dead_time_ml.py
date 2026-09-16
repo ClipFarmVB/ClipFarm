@@ -152,17 +152,20 @@ def compute_features(
     # listed until a round counted them, and they are not all the same shape:
     #
     #   api/app/workers/tasks.py:1180      build {"time","x","y"} from a
-    #   ml/eval/harness.py:613             BallPosition that HAS the field
-    #   ml/eval/diagnose_detection.py:168
+    #   ml/eval/harness.py:613             source that HAS the field, so
+    #   ml/eval/diagnose_detection.py:168  forwarding is one line each
     #   ml/eval/deadtime_variants.py:83
     #
     #   ml/eval/tune_contacts.py:80        re-serializes a dict that already
     #                                      lost it upstream
     #
-    # deadtime_variants was on the wrong side of that split until a round
-    # checked it: it does `BallPosition(**p)` at :77 on the same dicts it
-    # strips at :83, and `BallPosition.confidence` has no default, so those
-    # dicts must already carry the field or the construction would raise.
+    # The first three hold a `BallPosition`; deadtime_variants holds the dict
+    # that one was built FROM, which is the same thing for this purpose and is
+    # why the label says "source" rather than naming the type. It was on the
+    # wrong side of this split until a round checked it: it does
+    # `BallPosition(**p)` at :77 on the same dicts it strips at :83, and
+    # `BallPosition.confidence` has no default, so those dicts must already
+    # carry the field or the construction would raise.
     #
     # So mean_conf_3s and max_conf_3s are constant 0.0 on real input, which is
     # also their empty-window fill: "no confidence supplied" and "no samples at
