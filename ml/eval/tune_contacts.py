@@ -66,6 +66,41 @@ TUNABLES = (
     "SEG_MIN_MEDIAN_SPEED_PXPS", "SEG_MAX_SPEED_PXPS", "MAX_SAMPLE_GAP_SEC",
 )
 
+# The swept values per knob, and the combined rows, as data rather than as
+# literals inside main(). Hoisted for CF-309: a value equal to the shipping
+# default re-scores the baseline under another name, and `test_tune_contacts_sweep.py`
+# can only assert that if it can read the values.
+#
+# This drifts silently and has: the tuple below held 240.0 from the days when
+# `ball.CONTACT_RESIDUAL_MIN_PXPS` was 480, and CF-103 moving the default to
+# 240 turned that row into a second copy of the baseline without touching this
+# file. The test now fails instead of the table quietly repeating itself.
+SWEEPS: dict[str, tuple[float | int, ...]] = {
+    "CONTACT_RESIDUAL_MIN_PXPS": (360.0, 180.0, 120.0),
+    "CONTACT_RESIDUAL_RATIO": (0.35, 0.25, 0.15),
+    "CONTACT_HIT_SPEED_PXPS": (180.0, 120.0, 90.0),
+    "SEG_MIN_POSITIONS": (3, 2),
+    "SEG_MIN_MEDIAN_SPEED_PXPS": (40.0, 20.0, 0.0),
+    "MIN_CONTACT_SPACING": (0.4, 0.3),
+}
+
+# The combined rows, each a full override set. `CONTACT_RESIDUAL_MIN_PXPS=240`
+# used to be pinned in every one of these; it is the shipping default now, so
+# `score()` applied it as a no-op and "combo: resid 240 + hit 120" was an
+# alias for the CONTACT_HIT_SPEED_PXPS=120 row already printed above it. Both
+# the pin and that row are gone — the remaining two are genuine combinations.
+#
+# Dict *literals*, not `dict(...)` calls: the test reads this table with
+# `ast.literal_eval` rather than importing the module, and a call node is not
+# a literal.
+COMBOS: tuple[tuple[str, dict[str, float | int]], ...] = (
+    ("combo: hit 120 + ratio 0.25",
+     {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25}),
+    ("combo: + seg 3/40",
+     {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25,
+      "SEG_MIN_POSITIONS": 3, "SEG_MIN_MEDIAN_SPEED_PXPS": 40.0}),
+)
+
 
 def load(test_id: str = DEFAULT_FIXTURE):
     d = json.loads((RESULTS_DIR / f"{test_id}_ball_track.json").read_text(encoding="utf-8"))
@@ -215,40 +250,33 @@ def _sweep(test_id: str) -> None:
     show("BASELINE (shipping defaults)", score())
     print(_baseline_note(test_id))
 
-    for v in (360.0, 240.0, 180.0, 120.0):
-        show(f"CONTACT_RESIDUAL_MIN_PXPS={v:.0f}", score(CONTACT_RESIDUAL_MIN_PXPS=v))
+    # `%g` rather than a per-knob format, now that one table holds a mix of
+    # floats and ints. Checked against the formats it replaces rather than
+    # assumed: `%g` reproduces all sixteen old labels exactly, both the
+    # `%.0f` knobs and the bare `{v}` ones.
+    for name in ("CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_RESIDUAL_RATIO",
+                 "CONTACT_HIT_SPEED_PXPS"):
+        for v in SWEEPS[name]:
+            show(f"{name}={v:g}", score(**{name: v}))
+        print()
+    for name in ("SEG_MIN_POSITIONS", "SEG_MIN_MEDIAN_SPEED_PXPS"):
+        for v in SWEEPS[name]:
+            show(f"{name}={v:g}", score(**{name: v}))
     print()
-    for v in (0.35, 0.25, 0.15):
-        show(f"CONTACT_RESIDUAL_RATIO={v}", score(CONTACT_RESIDUAL_RATIO=v))
-    print()
-    for v in (180.0, 120.0, 90.0):
-        show(f"CONTACT_HIT_SPEED_PXPS={v:.0f}", score(CONTACT_HIT_SPEED_PXPS=v))
-    print()
-    for v in (3, 2):
-        show(f"SEG_MIN_POSITIONS={v}", score(SEG_MIN_POSITIONS=v))
-    for v in (40.0, 20.0, 0.0):
-        show(f"SEG_MIN_MEDIAN_SPEED_PXPS={v:.0f}", score(SEG_MIN_MEDIAN_SPEED_PXPS=v))
-    print()
-    for v in (0.4, 0.3):
-        show(f"MIN_CONTACT_SPACING={v}", score(MIN_CONTACT_SPACING=v))
+    for v in SWEEPS["MIN_CONTACT_SPACING"]:
+        show(f"MIN_CONTACT_SPACING={v:g}", score(MIN_CONTACT_SPACING=v))
     print()
     # Most promising single knobs, combined.
-    show("combo: resid 240 + hit 120",
-         score(CONTACT_RESIDUAL_MIN_PXPS=240.0, CONTACT_HIT_SPEED_PXPS=120.0))
-    show("combo: + ratio 0.25",
-         score(CONTACT_RESIDUAL_MIN_PXPS=240.0, CONTACT_HIT_SPEED_PXPS=120.0,
-               CONTACT_RESIDUAL_RATIO=0.25))
-    show("combo: + seg 3/40",
-         score(CONTACT_RESIDUAL_MIN_PXPS=240.0, CONTACT_HIT_SPEED_PXPS=120.0,
-               CONTACT_RESIDUAL_RATIO=0.25, SEG_MIN_POSITIONS=3,
-               SEG_MIN_MEDIAN_SPEED_PXPS=40.0))
+    for label, overrides in COMBOS:
+        show(label, score(**overrides))
 
     # Stage 2: recovering the condense ratio. Better contact recall pushes the
     # run up against the padding ceiling (pad 5/4 + merge 5 absorbs every dead
     # gap <= 14s), so re-sweep padding on top of the best contact settings.
-    best = dict(CONTACT_RESIDUAL_MIN_PXPS=240.0, CONTACT_HIT_SPEED_PXPS=120.0,
-                CONTACT_RESIDUAL_RATIO=0.25, SEG_MIN_POSITIONS=3,
-                SEG_MIN_MEDIAN_SPEED_PXPS=40.0)
+    # The last combo, read rather than copied. This was a fourth hand-written
+    # duplicate of the same override set, and a copy is how the no-op
+    # `CONTACT_RESIDUAL_MIN_PXPS=240` pin came to survive in four places.
+    best = COMBOS[-1][1]
     print("\n-- padding sweep, on top of the full best contact combo --")
     global COND
     keep_cond = dict(COND)

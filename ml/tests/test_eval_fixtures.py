@@ -72,6 +72,66 @@ def _spans(raw: dict) -> list[dict]:
     return raw.get("spans", raw.get("keep", []))
 
 
+def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, float]]) -> list[str]:
+    """Well-formedness for a HIGHLIGHT fixture. Empty means nothing to report.
+
+    Two lists, deliberately, because the two rules have different strengths.
+
+    `end > start` and "inside `video_duration_sec`" are checked over **every
+    labelled clip**, scored or not. A reversed or over-running span is a typo
+    whatever tier carries it, and it stays in the file as part of the labelling
+    record — the card's failing case is `0:32` typed where `0:23` was meant, and
+    that costs nothing to detect and never has a legitimate form.
+
+    Ordering and disjointness are checked over the **scored** clips only. An
+    excluded-tier annotation legitimately may overlap a scored one: the loader
+    is documented to keep a `B`/`O` clip in the file while dropping it from
+    scoring, so a camera-outlier span covering a stretch that contains a rally
+    is valid labelling. Asserting disjointness over the raw list would reject
+    it. Over the scored list there is no such case — those spans are what the
+    metric sums, and an overlap there double-counts.
+
+    The split is not visible in today's only fixture, where all 41 clips score
+    and both lists are identical, so it is pinned by constructed cases in
+    `TestHighlightWellFormedness` rather than by the fixture.
+    """
+    problems = []
+
+    duration = raw.get("video_duration_sec")
+    if duration is None:
+        # Not a skip. `load_fixture` types this `float | None` and the
+        # highlight format does not require it, which is exactly why an absent
+        # key has to be loud: it would silently disarm the over-run check while
+        # every other assertion still passed, and the dead-time twin indexes
+        # the key directly rather than tolerating its absence.
+        problems.append(
+            "no `video_duration_sec`, so nothing anchors the over-run check")
+
+    for clip in raw.get("clips", []):
+        start, end = parse_timestamp(clip["start"]), parse_timestamp(clip["end"])
+        if end <= start:
+            problems.append(
+                f"clip {clip['start']}-{clip['end']} is not a positive span")
+        if duration is not None and end > duration:
+            problems.append(
+                f"clip {clip['start']}-{clip['end']} ends past the declared "
+                f"{duration}s video")
+
+    # One message for both shapes, because the loader preserves file order and
+    # `start < prev_end` is the same defect either way: a clip listed out of
+    # order and a clip genuinely overlapping its predecessor both mean the
+    # scored spans are not a partition of the labelled play.
+    prev_end = None
+    for start, end in scored:
+        if prev_end is not None and start < prev_end:
+            problems.append(
+                f"scored clip at {start} starts before the previous one ended "
+                f"({prev_end}) — out of order, or overlapping")
+        prev_end = end if prev_end is None else max(prev_end, end)
+
+    return problems
+
+
 def tier_semantics_violations(raw: dict) -> list[str]:
     """The rule itself, so the checks below and their self-tests share one copy.
 
@@ -463,6 +523,27 @@ class TestGroundTruthTierFilter:
             f"{sorted(scored)} excludes every clip it ships"
         )
 
+    @pytest.mark.parametrize("test_id", HIGHLIGHT_IDS)
+    def test_every_highlight_fixture_is_well_formed(self, test_id):
+        """CF-309: `load_fixture` validates nothing, and the harness is quiet
+        about it.
+
+        `metrics.union()` drops a span with `end <= start` and `evaluate()`
+        still counts it in the human total, so a reversed clip scores as a
+        clip the model can never hit — permanently, with plausible-looking
+        recall numbers and nothing to catch it. A span past
+        `video_duration_sec` is clamped silently for the same shape of harm.
+        `ml/eval/README.md` advertises that adding a case "needs no code
+        change", which makes a hand-typed `0:32` for `0:23` the likely way in.
+
+        The dead-time fixtures have carried these checks since CF-174
+        (`TestEveryDeadtimeFixture`); the highlight loader is a different
+        function reading a different shape, and it never acquired them.
+        """
+        fx = load_fixture(test_id)
+        problems = highlight_wellformedness_violations(fx.raw, fx.clips)
+        assert not problems, f"{test_id}.json: " + "; ".join(problems)
+
     def test_test1_still_scores_every_clip_it_ships(self):
         """The shrink the checks above cannot see.
 
@@ -489,6 +570,105 @@ class TestGroundTruthTierFilter:
             f"ground_truth_tiers, so a shortfall means a clip was re-tiered "
             f"out of scoring or ground_truth_tiers was narrowed."
         )
+
+
+class TestHighlightWellFormedness:
+    """Self-tests for the rule above, because the fixture cannot exercise it.
+
+    `test1.json` is the only highlight fixture, all 41 of its clips score, and
+    it is clean on every axis — so the parametrized check passes without ever
+    distinguishing the raw list from the scored one, and a revert that swapped
+    them would stay green. These construct the cases the fixture does not
+    supply, in both directions: what must fail, and what must be allowed to
+    pass.
+    """
+
+    @staticmethod
+    def _raw(clips, duration=600.0):
+        return {"test_id": "t", "video_duration_sec": duration, "clips": clips}
+
+    @staticmethod
+    def _scored(raw, tiers=None):
+        """The spans `load_fixture` would score, without touching the disk."""
+        return [
+            (parse_timestamp(c["start"]), parse_timestamp(c["end"]))
+            for c in raw["clips"]
+            if tiers is None or c.get("tier") is None or c["tier"] in tiers
+        ]
+
+    def test_a_clean_fixture_reports_nothing(self):
+        raw = self._raw([{"start": "00:10", "end": "00:20"},
+                         {"start": "00:30", "end": "00:40"}])
+        assert highlight_wellformedness_violations(raw, self._scored(raw)) == []
+
+    def test_a_reversed_span_is_caught(self):
+        """The card's failing case: `0:32` typed where `0:23` was meant."""
+        raw = self._raw([{"start": "00:32", "end": "00:23"}])
+        problems = highlight_wellformedness_violations(raw, self._scored(raw))
+        assert any("not a positive span" in p for p in problems), problems
+
+    def test_a_zero_length_span_is_caught(self):
+        raw = self._raw([{"start": "00:20", "end": "00:20"}])
+        assert highlight_wellformedness_violations(raw, self._scored(raw))
+
+    def test_a_span_past_the_declared_duration_is_caught(self):
+        raw = self._raw([{"start": "09:50", "end": "10:30"}], duration=600.0)
+        problems = highlight_wellformedness_violations(raw, self._scored(raw))
+        assert any("ends past the declared" in p for p in problems), problems
+
+    def test_a_span_ending_exactly_at_the_duration_is_fine(self):
+        """The boundary belongs inside. A clip running to the final frame is
+        ordinary, and `metrics` clamps at the duration rather than past it."""
+        raw = self._raw([{"start": "09:50", "end": "10:00"}], duration=600.0)
+        assert highlight_wellformedness_violations(raw, self._scored(raw)) == []
+
+    def test_a_missing_duration_is_reported_rather_than_skipped(self):
+        """It is optional in the format, which is why its absence has to be
+        loud: the over-run check silently stops existing otherwise."""
+        raw = {"test_id": "t", "clips": [{"start": "00:10", "end": "00:20"}]}
+        problems = highlight_wellformedness_violations(raw, self._scored(raw))
+        assert any("video_duration_sec" in p for p in problems), problems
+
+    def test_overlapping_scored_clips_are_caught(self):
+        raw = self._raw([{"start": "00:10", "end": "00:30"},
+                         {"start": "00:20", "end": "00:40"}])
+        problems = highlight_wellformedness_violations(raw, self._scored(raw))
+        assert any("out of order, or overlapping" in p for p in problems), problems
+
+    def test_clips_listed_out_of_order_are_caught(self):
+        raw = self._raw([{"start": "00:30", "end": "00:40"},
+                         {"start": "00:10", "end": "00:20"}])
+        assert highlight_wellformedness_violations(raw, self._scored(raw))
+
+    def test_an_excluded_tier_clip_may_overlap_a_scored_one(self):
+        """The case that decides raw-vs-scored, and the reason the two rules
+        read different lists.
+
+        An `O` (outlier) annotation covering a stretch that contains a scored
+        rally is valid labelling — `test_excluded_tiers_are_dropped` pins that
+        the loader keeps such a clip in the file and out of scoring, and
+        `ml/eval/README.md` documents it. Checking disjointness over the raw
+        list would reject the documented shape, so it is checked over the
+        scored spans, where an overlap really does double-count.
+        """
+        raw = self._raw([{"start": "00:10", "end": "00:20", "tier": "M"},
+                         {"start": "00:15", "end": "00:50", "tier": "O"},
+                         {"start": "00:30", "end": "00:40", "tier": "M"}])
+        assert highlight_wellformedness_violations(raw, self._scored(raw, {"M"})) == []
+
+    def test_but_an_excluded_tier_clip_is_still_checked_for_a_typo(self):
+        """The other half of that split. Dropping it from scoring does not make
+        a reversed timestamp acceptable — it stays in the labelling record, and
+        the record is what a later pass reads."""
+        raw = self._raw([{"start": "00:10", "end": "00:20", "tier": "M"},
+                         {"start": "00:50", "end": "00:15", "tier": "O"}])
+        problems = highlight_wellformedness_violations(raw, self._scored(raw, {"M"}))
+        assert any("not a positive span" in p for p in problems), problems
+
+    def test_the_real_fixture_exercises_the_scored_path_at_all(self):
+        """A control. If `test1` ever stopped scoring anything, the
+        parametrized check above would pass vacuously on the ordering half."""
+        assert len(load_fixture("test1").clips) > 1
 
 
 class TestTheFrameHeightGuardSeparatesItsTwoCauses:
