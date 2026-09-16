@@ -47,7 +47,7 @@ Celery worker  ──  process_game_task()  (api/app/workers/tasks.py)
     │
     ├─ 1. BALL TRACKING → rally windows            (ml/pipeline/ball.py)
     │     ├─ track_ball()  ← Modal GPU (T4) if configured, else local CPU
-    │     │                  R2-cached by video MD5 + model + sample rate
+    │     │                  R2-cached by video MD5 + model + sample rate + tracking version
     │     ├─ find_contacts()      ← ballistic-residual contact detection
     │     └─ contacts_to_rallies()← group contacts into clip windows
     │
@@ -129,8 +129,9 @@ prediction by more than a measured noise floor. Contacts are grouped into rally 
 by time gaps.
 
 - All velocities are **px/second**, so thresholds hold at any source frame rate.
-- Ball positions are cached to R2 keyed by `md5(video) + model + sample_rate`, so re-runs
-  (re-uploads, pipeline tuning) load in seconds instead of re-tracking (~28–42 min on CPU).
+- Ball positions are cached to R2 keyed by `md5(video)`, model, sample rate and
+  `ball.TRACKING_CACHE_VERSION`, so re-runs (re-uploads, tuning downstream of tracking) load in
+  seconds instead of re-tracking (~28–42 min on CPU). A version bump re-tracks every video.
 
 ### 2. Highlight scoring → gate (`ml/pipeline/score.py`, `audio.py`)
 Each rally gets a `highlight_score` (0–1) from **cheer** (crowd/bench reaction in the
@@ -161,7 +162,8 @@ writes `Clip` rows. Re-running a game clears its prior clips first (idempotent).
   *failure* (net serve on set point) or a *neighboring court* scores just as high. Ranking
   quality and multi-court false positives are known open problems (see backlog).
 - **The ball cache is content-addressed.** Re-uploading the same file is nearly free.
-  Changing the model or sample rate invalidates it automatically (it's in the key).
+  Changing the model or sample rate invalidates it automatically (both are in the key).
+  A change to how tracking works does not: it needs a `ball.TRACKING_CACHE_VERSION` bump.
 - **Model weights live on Modal, not here** (CF-164). The worker used to mount a
   `model_cache` volume so RF-DETR/YOLO weights survived a container recreate; now no
   weights are loaded in this image at all. Pose weights are baked into the
@@ -480,3 +482,19 @@ the backend on a VPS — an alternative, not the production path.
 - **Add an API endpoint** → `api/app/routers/` + wire in `api/app/main.py`.
 - **Change the frontend** → `web/` (⚠ read `web/AGENTS.md` first).
 - **Every configurable knob** → `api/app/config.py`.
+
+---
+
+## License
+
+ClipFarm is licensed **AGPL-3.0-or-later** — see [`LICENSE`](LICENSE).
+
+    Copyright (C) 2026 Nelson Kang
+
+AGPL is not a preference here, it is an inheritance: `ultralytics` (the pose
+model, `ml/modal_pose.py`) is AGPL-3.0, and §13 extends its source-offer
+obligation to users interacting with a hosted service over a network. A
+permissive license was therefore not ours to grant.
+
+[`docs/licensing.md`](docs/licensing.md) has the reasoning, the full dependency
+audit, and the exit path if ClipFarm ever needs a commercial posture.

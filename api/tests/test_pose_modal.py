@@ -2064,6 +2064,12 @@ def fake_ball(monkeypatch, tmp_path):
         raise BallRuntimeUnavailable("no local ball runtime")
 
     ball.MODEL_ID = "volleyball/3"
+    # `_ball_cache_key` reads this too (CF-231). The value is arbitrary here —
+    # these tests assert how a tracking failure propagates, never the key — but
+    # the name has to exist, because the key is built before the fallback runs
+    # and a missing attribute would surface as an ImportError instead of the
+    # BallRuntimeUnavailable these tests are about.
+    ball.TRACKING_CACHE_VERSION = 1
     ball.BallRuntimeUnavailable = BallRuntimeUnavailable
     ball.BallPosition = BallPosition
     ball.TrackedBall = TrackedBall
