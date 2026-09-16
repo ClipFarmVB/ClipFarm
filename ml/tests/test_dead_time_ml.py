@@ -48,7 +48,12 @@ class TestContract:
         assert len(set(FEATURE_NAMES)) == 13, "a duplicated column name"
 
     def test_the_fast_bar_is_the_anchors_bar(self):
-        """The third copy of 0.30, pinned to the one it was taken from.
+        """One of five copies of 0.30, pinned to the one that defines it.
+
+        The others: `active_windows_guarded(anchor_speed=...)`, which passes it
+        down; `condense_guard_anchor_speed` in api/app/config.py, which is what
+        production actually sends; and a hardcoded `speed=0.30` in
+        ml/eval/deadtime_variants.py:169. This pin reaches exactly one of them.
 
         `motion_anchor_windows`' default is the same quantity — the per-sample
         "this is fast" bar — and nothing but this test stops the two drifting.
@@ -409,9 +414,63 @@ class TestNaNConventions:
     def test_the_speed_magnitudes_mask_it_instead(self):
         """The other convention, on the columns that need it: an unjudgeable
         magnitude cannot be averaged, so it is excluded rather than counted.
-        Both columns therefore report the believable samples exactly."""
-        f = compute_features(self._mixed(), [], 10.0, H)
-        _, speeds = dt.speed_samples(self._mixed(), H)
+
+        Asserted on a ROW WHOSE WINDOW CONTAINS THE NaN, not on the column max.
+        The max is bit-identical under both conventions — rows at the ends have
+        NaN-free ±3s windows and supply it — so the previous version of this
+        test passed with the mean using the counted denominator, which reads
+        ~18% low on six of ten rows. `.max()` over a column is almost always
+        the wrong reduction for a windowed property: it finds the row the
+        mutation did not touch.
+        """
+        pos = self._mixed()
+        f = compute_features(pos, [], 10.0, H)
+        sp_times, speeds = dt.speed_samples(pos, H)
         believable = speeds[np.isfinite(speeds)]
-        assert f[:, col("mean_speed_3s")].max() == pytest.approx(believable.max(), rel=0.2)
+
+        # Row 5's ±3s window straddles the bad hop at t=5.0.
+        row = 5
+        lo, hi = row + 0.5 - 3.0, row + 0.5 + 3.0
+        inside = (sp_times >= lo) & (sp_times < hi)
+        assert np.isnan(speeds[inside]).any(), "row 5's window no longer holds the NaN"
+        expected = speeds[inside][np.isfinite(speeds[inside])].mean()
+
+        assert f[row, col("mean_speed_3s")] == pytest.approx(expected), (
+            "mean_speed_3s is not the mean of the BELIEVABLE samples in its "
+            "window — a counted denominator would divide by one more"
+        )
+        assert f[row, col("max_speed_3s")] == pytest.approx(
+            speeds[inside][np.isfinite(speeds[inside])].max()
+        )
+        # And the column as a whole still reports the believable maximum.
         assert f[:, col("max_speed_3s")].max() == pytest.approx(believable.max())
+
+    def test_y_std_is_positive_when_the_ball_actually_moves_vertically(self):
+        """`y_std_5s` had no positive-value coverage at all.
+
+        Flipping the variance to `mean_y**2 - mean_y2` lets the `np.maximum(...,
+        0)` clamp drive the column to a constant 0.0 on every input, and the
+        whole suite passed: the only other fixtures touching it use a
+        constant-y track (std 0 either way) and the two fill rows expect 0. One
+        of thirteen features would have become a dead constant that CF-393
+        trains on.
+        """
+        oscillating = [
+            {"time": t / 2, "x": 0.0, "y": 60.0 if (t // 2) % 2 else 300.0,
+             "confidence": 0.9}
+            for t in range(0, 21)
+        ]
+        f = compute_features(oscillating, [], 10.0, H)
+        spread = f[:, col("y_std_5s")]
+        # The derived value, not a threshold. y alternates 60 and 300 of 360, so
+        # a window holding equal counts has std (0.8333-0.1667)/2 = 0.3333 and
+        # VARIANCE 0.1111 — pinning the number distinguishes the two, where
+        # `> 0.1` accepts either and lets the sqrt be dropped.
+        assert spread.max() == pytest.approx(0.3333, abs=1e-3), (
+            "y_std_5s is not the standard deviation — 0.1111 means the sqrt is gone"
+        )
+
+        # And a ball that genuinely does not move vertically still reads ~0, so
+        # the assertion above is measuring spread rather than merely non-zero.
+        flat = compute_features(track([t / 2 for t in range(0, 21)], y=180.0), [], 10.0, H)
+        assert flat[:, col("y_std_5s")].max() == pytest.approx(0.0, abs=1e-12)
