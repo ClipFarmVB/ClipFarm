@@ -1,6 +1,6 @@
 ---
 name: prompt-writing
-description: Principles for writing prompts, instructions, and any text that guides AI agent behavior — focused on outcomes, examples, strategies, and negative rules. ALWAYS use when writing such prompts, intructions, any text you think will be used in guiding AI agent behavior (especially skills).
+description: Principles for writing prompts, instructions, and any text that guides AI agent behavior — focused on outcomes, examples, strategies, and negative rules. ALWAYS use when writing such prompts, instructions, any text you think will be used in guiding AI agent behavior (especially skills).
 ---
 
 
@@ -135,7 +135,9 @@ For each addition, ask:
 
 If the right placement isn't clear from context, ask the user. The cost of asking is small; the cost of an over-emphasized niche or an under-emphasized critical claim is large — it changes what readers walk away with.
 
-Weight is one half of landing an addition well; reading as part of the doc around it is the other — the addition takes on the doc's vocabulary and framing, and supersedes rather than sits beside what it makes stale. See `~/.claude/CLAUDE.md` §"Write for the Artifact, Not the Workflow".
+Weight is one half of landing an addition well; reading as part of the doc around it is the other — the addition takes on the doc's vocabulary and framing, and supersedes rather than sits beside what it makes stale. (The original cited a `~/.claude/CLAUDE.md` section here. A cloud session
+clones fresh and has no home-directory config, so the pointer is dropped rather
+than left to dead-end — see this repo's `CLAUDE.md` for what it does carry.)
 
 ### 5. Use Negative Rules to Steer Away from Pitfalls
 

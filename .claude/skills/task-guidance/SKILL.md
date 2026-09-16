@@ -3,6 +3,23 @@ name: task-guidance
 description: How to give effective task instructions, delegate work, and provide feedback to AI agents working on specific problems. ALWAYS USE when delegating work, for example to subagents
 ---
 
+> **In this repo, `docs/overnight/BRIEFS.md` wins for a cold review round.**
+>
+> This skill says to give an agent more context than you think it needs, and a
+> complete understanding of why it is solving what you asked. That is right for
+> most delegation and wrong for one kind: `BRIEFS.md` says a **cold** round gets
+> the PR number and *"no plan, no reasoning, no summary of what was built, no
+> earlier findings … Re-deriving that context is what a subagent normally costs
+> you; here that cost is the point."* The overnight loop spawns a reviewer every
+> lap, so this skill's "always use when delegating" trigger fires precisely
+> there. Follow `BRIEFS.md` on what a cold round may be told; follow this file
+> on how to say it.
+>
+> Added here rather than in `BRIEFS.md` because that file already owns the rule
+> — `docs/overnight/README.md` says every rule lives in exactly one file, and
+> this is a pointer to it, not a second copy.
+
+
 
 # Task Guidance for AI Agents
 
@@ -139,7 +156,7 @@ backfillCallsFromCloseCrm, backfillSmsFromCloseCrm, and backfillEmailFromCloseCr
 
 Five examples, each showing how source and target map to the name. The agent can now name a new backfill job (say, backfillCallsFromOrum) without being told explicitly.
 
-The distinction from [prescriptive examples](~/.claude/skills/prompt-writing/SKILL.md#2-use-examples-to-illustrate): prescriptive examples enumerate specific cases ("for API calls, check the token; for files, check permissions"). Generative examples show a pattern through cases so the agent can produce new ones.
+The distinction from [prescriptive examples](../prompt-writing/SKILL.md#2-use-examples-to-illustrate): prescriptive examples enumerate specific cases ("for API calls, check the token; for files, check permissions"). Generative examples show a pattern through cases so the agent can produce new ones.
 
 ### Offer a Starting Point, Anchored to the Goal
 
