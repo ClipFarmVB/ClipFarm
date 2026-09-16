@@ -13,8 +13,15 @@ import { Button } from "@/components/ui/Button";
 import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type Player, type ActionType, type ClipFilters } from "@/lib/api";
 import { estimateEtaSeconds, formatEta, pushSample, type ProgressSample } from "@/lib/eta";
 import { cn } from "@/lib/utils";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];
+
+// How long the filters must be still before the clips are refetched. The
+// sliders change on every step of a drag, and GET /games/{id}/clips is rate
+// limited per caller (CF-186), so fetching per step could spend the whole
+// budget in one gesture.
+const CLIP_FILTER_DEBOUNCE_MS = 300;
 
 function fmtDuration(seconds: number): string {
   const s = Math.round(seconds);
@@ -57,6 +64,9 @@ export default function GamePage() {
   const [error, setError] = useState<string | null>(null);
   const [activeClipIndex, setActiveClipIndex] = useState<number | null>(null);
   const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0, min_score: 0, sort: "time" });
+  // What the clips fetch reads. The controls update `filters` at once so the
+  // numbers track the drag; the request waits for them to settle.
+  const settledFilters = useDebouncedValue(filters, CLIP_FILTER_DEBOUNCE_MS);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
@@ -150,11 +160,11 @@ export default function GamePage() {
   // Fetch clips when game is ready
   useEffect(() => {
     if (!game || game.status !== "ready") return;
-    Promise.all([getClips(id, filters), getPlayers()])
+    Promise.all([getClips(id, settledFilters), getPlayers()])
       .then(([c, p]) => { setClips(c); setPlayers(p); })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [game, id, filters]);
+  }, [game, id, settledFilters]);
 
   const toggleActionFilter = useCallback((action: ActionType) => {
     setFilters((f) => {

@@ -1,11 +1,12 @@
 /**
  * CF-109: the composer may not offer a tier the clip cannot support.
  *
- * The review finding this covers: with no write path for a clip's or a game's
- * visibility anywhere in the product, and both defaulting to private, two of
- * the composer's three options could only ever end in a 409 whose suggested
- * remedy did not exist. The gate is what turns that dead end into a limit the
- * user can read.
+ * The review finding this covers: before CF-109b there was no write path for a
+ * clip's or a game's visibility anywhere in the product, and both default to
+ * private, so two of the composer's three options could only ever end in a 409
+ * whose suggested remedy did not exist. The API now has that write path, but
+ * this component does not send it yet, so the gate is still what turns that
+ * dead end into a limit the user can read.
  *
  * Asserted as a table against the same matrix `test_posts.py` uses for
  * `access.at_most`, because the two orderings have to agree — and the UI copy
