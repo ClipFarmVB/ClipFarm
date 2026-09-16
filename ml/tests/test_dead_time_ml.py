@@ -358,15 +358,27 @@ class TestEveryFill:
         Pinning the value alone does not say which way it points; this asserts
         that no real track produces a value further toward 'dead' than the fill.
 
-        **The `"dead"` label itself is NOT checked, and this docstring used to
-        claim it was** — "which is what makes 'votes dead' a property rather
-        than a comment". It is the parametrize SELECTOR: retag a column and it
-        simply leaves the list, the remaining cases pass, and the suite is green
-        with one fewer assertion than it had. A test whose subject can be
-        removed by editing the table it reads is not pinning that table.
-        Replacing this scaffolding with a golden-output pin over all thirteen
-        columns is CF-419 (#551); until then the label is a comment, said here
-        rather than claimed otherwise.
+        **The `"dead"` label is a ONE-WAY RATCHET, and both previous versions of
+        this paragraph got it wrong in opposite directions.** The first claimed
+        the label was "a property rather than a comment"; the correction said it
+        was "a comment". Measured, both directions:
+
+            mean_conf_3s  "dead" -> "play"   402 passed — one fewer assertion,
+                                             suite green, nobody notices
+            mean_y_5s  "neutral" -> "dead"   1 failed — `column.min() >= value`
+                                             on a high-ball track, 0.25 < 0.5
+
+        So ADDING a wrong `dead` tag fails; REMOVING a right one is free, because
+        the label is this test's parametrize selector and an untagged column
+        simply leaves the list. A guard that cannot lose a case it already has
+        is not the same as one that cannot be emptied.
+
+        The table's other two columns are not soft: `test_the_table_covers_every
+        _column_in_order` pins the names against `FEATURE_NAMES`, and the value
+        is what this test asserts. Only `vote` is. Replacing the scaffolding with
+        a golden-output pin over all thirteen columns is CF-419 (#551), which
+        needs no prose about its own strength — which is the argument for it,
+        given that this paragraph has now been wrong twice.
         """
         busy = compute_features(
             track([t / 2 for t in range(0, 21)], y=90.0, step=60.0),
