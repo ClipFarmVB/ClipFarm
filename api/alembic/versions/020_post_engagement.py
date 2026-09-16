@@ -125,6 +125,13 @@ def upgrade() -> None:
         "ON post_comments (post_id, created_at DESC, id DESC) "
         "WHERE deleted_at IS NULL"
     )
+    # The RI cascade from `posts` deletes EVERY comment, soft-deleted ones
+    # included, so it cannot use the partial index above — measured, not
+    # assumed: with only that index a cascade-shaped
+    # `DELETE FROM ONLY post_comments WHERE post_id = $1` plans a Seq Scan, and
+    # with this one it plans an Index Scan. Line 87 states the rule for
+    # `post_likes`; this is the FK it skipped.
+    op.create_index("ix_post_comments_post_id", "post_comments", ["post_id"])
     op.create_index("ix_post_comments_author_id", "post_comments", ["author_id"])
 
     op.create_check_constraint(

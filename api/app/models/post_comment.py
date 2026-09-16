@@ -61,5 +61,9 @@ class PostComment(Base):
             postgresql_where=text("deleted_at IS NULL"),
         ),
         # The cascade from `users` walks this direction.
+        # Plain, not the partial one above: the cascade from `posts` must reach
+        # soft-deleted rows, so it cannot use an index predicated on
+        # `deleted_at IS NULL`.
+        Index("ix_post_comments_post_id", "post_id"),
         Index("ix_post_comments_author_id", "author_id"),
     )

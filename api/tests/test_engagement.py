@@ -60,7 +60,11 @@ def test_the_engagement_tables_reach_the_metadata():
     assert {i.name for i in PostLike.__table__.indexes} == {"ix_post_likes_user_id"}
 
     comment_indexes = {i.name: i for i in PostComment.__table__.indexes}
-    assert set(comment_indexes) == {"ix_post_comments_post_created", "ix_post_comments_author_id"}
+    assert set(comment_indexes) == {
+        "ix_post_comments_post_created",
+        "ix_post_comments_post_id",
+        "ix_post_comments_author_id",
+    }
     partial = comment_indexes["ix_post_comments_post_created"]
     assert isinstance(partial, Index)
     assert str(partial.dialect_options["postgresql"]["where"]) == "deleted_at IS NULL"
@@ -84,6 +88,7 @@ def test_migration_020_names_every_object_the_models_declare():
     wanted = {
         "ix_post_likes_user_id",
         "ix_post_comments_post_created",
+        "ix_post_comments_post_id",
         "ix_post_comments_author_id",
         "ck_post_comments_body_length",
         "ck_posts_like_count_non_negative",
@@ -110,7 +115,13 @@ def test_migration_020_names_every_object_the_models_declare():
             if not (c.name and c.name.startswith("ck_")) or c.name not in wanted:
                 continue
             text = str(c.sqltext)
-            assert text in src, (
+            # Quoted, not bare: `text in src` is a SUBSTRING test, so a model
+            # constraint that is a PREFIX of the migration's passes. Truncating
+            # `BETWEEN 1 AND 500` to `BETWEEN 1 AND 50` left this green — a model
+            # enforcing 50 against a database enforcing 500, which is exactly the
+            # disagreement this guard exists to catch. 020 writes every
+            # constraint as a quoted literal, so the closing quote anchors it.
+            assert f'"{text}"' in src, (
                 f"{c.name} is declared as {text!r} on the model but that text does "
                 f"not appear in migration 020. The migration is what the database "
                 f"actually enforces — change both, or the two silently disagree."
