@@ -102,6 +102,15 @@ SWEEPS: dict[str, tuple[float | int, ...]] = {
 # call would run fine — but it also compares the literal it reads here against
 # what the module ends up bound to, and `ast.literal_eval` cannot evaluate a
 # call node. Writing the values out keeps the file readable as the table it is.
+COMBOS: tuple[tuple[str, dict[str, float | int]], ...] = (
+    ("combo: hit 120 + ratio 0.25",
+     {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25}),
+    ("combo: + seg 3/40",
+     {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25,
+      "SEG_MIN_POSITIONS": 3, "SEG_MIN_MEDIAN_SPEED_PXPS": 40.0}),
+)
+
+
 # Stage 2's padding rows, hoisted for the same reason as the two tables above:
 # the guard compares every row the tuner prints against the tables, and a row
 # it cannot account for is the finding. These are `COND` overrides, not ball
@@ -118,15 +127,6 @@ def padding_label(pb: float, pa: float, mg: float) -> str:
     """The label for one padding row. Shared so the guard cannot spell it
     differently from the tuner and call the difference a finding."""
     return f"pad {pb:.0f}/{pa:.1f} merge {mg:.0f}"
-
-
-COMBOS: tuple[tuple[str, dict[str, float | int]], ...] = (
-    ("combo: hit 120 + ratio 0.25",
-     {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25}),
-    ("combo: + seg 3/40",
-     {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25,
-      "SEG_MIN_POSITIONS": 3, "SEG_MIN_MEDIAN_SPEED_PXPS": 40.0}),
-)
 
 
 def load(test_id: str = DEFAULT_FIXTURE):

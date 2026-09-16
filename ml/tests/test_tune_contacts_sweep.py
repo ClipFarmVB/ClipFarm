@@ -213,6 +213,12 @@ def test_the_combos_are_written_cumulatively():
     has now produced four times. Each entry being a superset of the one before
     it makes `[-1]` mean what the comment says.
     """
+    # Stronger than `best` strictly needs, which is only "COMBOS[-1] is a
+    # superset of every entry". The chain form buys transitivity for free and
+    # reads as what the labels already say ("combo: + seg 3/40" is an
+    # increment), at the cost of forbidding a genuinely independent combo
+    # exploring a different corner. If one is ever wanted, weaken this to the
+    # `[-1]`-only form rather than deleting it — the consumer is what matters.
     previous: dict = {}
     for label, overrides in _combos():
         missing = {k: v for k, v in previous.items() if overrides.get(k) != v}
