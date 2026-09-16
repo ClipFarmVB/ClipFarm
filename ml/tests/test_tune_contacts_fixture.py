@@ -250,19 +250,19 @@ def test_each_reported_figure_comes_from_its_own_field(tmp_path, monkeypatch):
 
 
 # Every line `_row` produces, identified by its SHAPE rather than by its label.
-# The live-seconds column is `\S+` rather than `-?\d+s`: pinning its exact
-# spelling made the regex an enumeration of today's format, and a hand-rolled
-# `print()` one character off — `%7.0f` for `%7.0fs` — was a row in the table
-# that no test could see. The rally field `N/M` and the three percent columns
-# are what actually distinguish a results line from the header, the note and
-# the section headings; measured against all four.
-# `_row` is "%-34s %5d %5d %4d/%-3d %7.0fs %8.1f%% %8.1f%% %8.1f%%", so a results
-# row is a label followed by that exact run of columns — which no header, note or
-# section heading matches. The earlier version of this guard listed the four
-# label prefixes the table happened to use, and a hand-typed row under any other
-# name ("MAX_SAMPLE_GAP_SEC=", a leading space) was invisible to it: enumerating
-# today's spellings instead of constraining the class, which is the mistake this
-# whole file is about.
+#
+# The earlier version listed the four label prefixes the table happened to use,
+# and a hand-typed row under any other name ("MAX_SAMPLE_GAP_SEC=", a leading
+# space) was invisible to it. The version after that spelled `_row`'s format
+# exactly, and a hand-rolled `print()` one character off — `%7.0f` for `%7.0fs`
+# — was a row in the table that nothing could see. Both were enumerations of
+# today's spellings, which is the mistake this whole file is about.
+#
+# So the live-seconds column is `\S+`, deliberately unpinned. What distinguishes
+# a results line is the rally field `N/M` and the three percent columns, and
+# that was measured rather than assumed: against the four non-row lines the
+# tuner emits — the `fixture frame_height=…` scale line, the column header, the
+# recorded-run note, and the `-- padding sweep …` heading.
 _RESULTS_ROW = re.compile(
     r"^(?P<label>.*?)\s+\d+\s+\d+\s+\d+/\d+\s+\S+\s+"
     r"-?[\d.]+%\s+-?[\d.]+%\s+-?[\d.]+%\s*$"

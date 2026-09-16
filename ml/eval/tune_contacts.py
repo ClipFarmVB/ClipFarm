@@ -320,8 +320,11 @@ def _sweep(test_id: str) -> None:
     #
     # `[-1]` is positional and load-bearing: stage 2 sweeps padding on top of
     # the FULLEST combo, which is the last one because the table is written
-    # cumulatively. Reordering COMBOS re-bases stage 2 silently, so the order
-    # is part of the table's meaning rather than its presentation.
+    # cumulatively, so the order is part of the table's meaning rather than its
+    # presentation. It re-based stage 2 SILENTLY until
+    # `test_the_combos_are_written_cumulatively` was added; the word is struck
+    # here because the property is now enforced, and a comment that keeps
+    # describing the world before its own fix is this PR's most repeated defect.
     best = dict(COMBOS[-1][1])
     print("\n-- padding sweep, on top of the full best contact combo --")
     global COND

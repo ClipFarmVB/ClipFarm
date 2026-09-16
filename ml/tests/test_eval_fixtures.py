@@ -190,6 +190,19 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
                 f"clip {clip['start']}-{clip['end']} ends past the declared "
                 f"{duration}s video")
 
+    if clips and not scored:
+        # The twin of "no clips at all", one list over — and the list that
+        # matters more, since `evaluate()` sums the SCORED spans. A fixture
+        # whose `ground_truth_tiers` excludes every clip it ships loads fine,
+        # scores nothing, and makes every ordering check below vacuous while
+        # this function returns clean. `test_test1_still_scores_every_clip_it
+        # _ships` hides it today by pinning 41 for test1 alone; `HIGHLIGHT_IDS`
+        # is a glob precisely because a second fixture is expected, and that one
+        # would inherit the ordering checks in name and not in substance.
+        problems.append(
+            f"{len(clips)} clips and none of them score, so nothing below "
+            f"checks anything")
+
     # One message for both shapes, because the loader preserves file order and
     # `start < prev_end` is the same defect either way: a clip listed out of
     # order and a clip genuinely overlapping its predecessor both mean the
@@ -754,6 +767,20 @@ class TestHighlightWellFormedness:
         assert any("has no end" in p for p in problems), problems
         # The clip after the malformed one is still checked.
         assert any("not a positive span" in p for p in problems), problems
+
+    def test_a_fixture_that_scores_none_of_its_clips_is_reported(self):
+        """The twin of the empty-clips rule, on the list the metric sums.
+
+        A fixture whose `ground_truth_tiers` excludes everything it ships loads
+        fine and scores nothing; every ordering assertion is then vacuous and
+        the helper returns clean. Caught here rather than by
+        `test_test1_still_scores_every_clip_it_ships`, which pins 41 for `test1`
+        and says nothing about the second fixture the glob exists to admit.
+        """
+        raw = self._raw([{"start": "00:10", "end": "00:20", "tier": "O"},
+                         {"start": "00:30", "end": "00:40", "tier": "B"}])
+        problems = highlight_wellformedness_violations(raw, self._scored(raw, {"M"}))
+        assert any("none of them score" in p for p in problems), problems
 
     def test_a_negative_timestamp_is_reported(self):
         raw = self._raw([{"start": "-5", "end": "00:20"}])

@@ -35,13 +35,14 @@ keep the last and the values therefore agree while the file reads as sweeping
 something it does not.
 
 And none of this reaches `_sweep`, which is free to ignore both tables and
-re-type a literal loop. That rung is three tests in
+re-type a literal loop. That rung is four tests in
 `test_tune_contacts_fixture.py`: one compares every row the tuner prints
-against these tables in both directions, one pins the order, and one records
-the ball constants as `find_contacts` sees them and checks each row scored the
-value its label advertises. Rows are found by the SHAPE of `_row`'s output
-rather than by a list of label prefixes, because a prefix list is an
-enumeration of today's spellings — which is the mistake this file is about.
+against these tables in both directions, one pins the order, one requires every
+results line to have come from `_row`, and one records the ball constants AND
+`COND` as the scoring call sees them and checks each row scored exactly what its
+label advertises. Rows are found by the SHAPE of `_row`'s output rather than by
+a list of label prefixes, because a prefix list is an enumeration of today's
+spellings — which is the mistake this file is about.
 """
 import ast
 import sys
