@@ -16,8 +16,9 @@ or the reverse:
   broken images behind a 200;
 * one unsigned-able row took the whole page down with a 500.
 
-And `viewer_has_liked` is the one CF-113 is about to fill in exactly one of the
-two, leaving the other quietly returning a wrong value forever.
+And `viewer_has_liked` was the one that would have been filled in exactly one
+of the two, leaving the other quietly returning a wrong value forever. CF-113
+is this change; the list above is what the split copies had already cost.
 """
 import logging
 
@@ -177,9 +178,14 @@ def serialize(
 
     `viewer_has_liked` is a parameter rather than a hardcoded literal so that
     CF-113 could fill it from one query for the whole page through a single
-    call site. CF-113 is this change, so the default is now the anonymous
-    answer rather than a placeholder: a reader with no session has not liked
-    anything, and `feed.py` and `routers/posts.py` pass the real value.
+    call site. CF-113 is this change, so it is no longer a placeholder.
+
+    The default is not the anonymous answer — `schemas/post.py` says the same
+    thing beside the field, and an earlier version of this paragraph said the
+    opposite. Every read path passes an explicit value, including `False` for a
+    reader with no session; `create_post` is the only caller that takes the
+    default, where it is right because a post cannot have been liked at the
+    moment it is created.
 
     `avatar_cache` is per page, keyed by the stored URL. A profile grid is many
     posts by *one* author, so without it a 50-post page signed the same string
