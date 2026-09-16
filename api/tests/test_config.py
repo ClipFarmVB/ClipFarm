@@ -132,6 +132,70 @@ def test_blank_credential_counts_as_missing(clean_env):
     assert "R2_SECRET_ACCESS_KEY" in str(exc.value)
 
 
+def test_render_states_the_public_posting_decision_rather_than_defaulting_to_it():
+    """PUBLIC_POSTING_ENABLED must be set explicitly, either way.
+
+    Deliberately NOT asserted to be `false`. Turning it on is a decision the
+    operator makes when terms of service (CF-75/CF-88) and a report and
+    takedown path (CF-116) are in place, and a test that pinned the value would
+    make that a code change instead of a deploy change — which is the opposite
+    of why it is a flag.
+
+    What is asserted is that the blueprint says *something*: a literal `value:`,
+    not `sync: false` and not absent. Left to the code default it would still
+    be off today, but whether owners may set youth-sports footage `public` is
+    a decision the blueprint should state on its face rather than inherit, and
+    a `sync: false` is missing in exactly the case that matters — a fresh apply
+    where nobody has filled the group in.
+    """
+    yaml = pytest.importorskip("yaml")
+
+    render = yaml.safe_load((REPO_ROOT / "render.yaml").read_text(encoding="utf-8"))
+    api = next(s for s in render["services"] if s.get("name") == "clipfarm-api")
+    entry = next(
+        (v for v in api["envVars"] if v.get("key") == "PUBLIC_POSTING_ENABLED"), None
+    )
+    assert entry is not None, (
+        "render.yaml must state PUBLIC_POSTING_ENABLED on clipfarm-api — the flag "
+        "that decides whether owners may set a clip or a post to public"
+    )
+    assert entry.get("value") in {"true", "false"}, (
+        "it must carry a literal value; `sync: false` is absent on a fresh apply"
+    )
+
+
+def test_render_sets_the_proxy_hop_count_the_limiter_depends_on():
+    """Without this, per-caller limiting silently does not work in production.
+
+    uvicorn rewrites `request.client` from X-Forwarded-For only when the peer
+    is in --forwarded-allow-ips (default 127.0.0.1), and
+    scripts/render-start-api.sh passes no override — so on Render every request
+    presents the platform router's address. Left at the default of 0, the
+    limiter puts the whole internet in one bucket and throttles every reader
+    together: strictly worse than no limiter, and green in every local test.
+
+    A literal `value:`, not `sync: false`, for the same reason ENVIRONMENT is
+    pinned above — a value nobody has filled in is exactly the case this
+    guards.
+    """
+    yaml = pytest.importorskip("yaml")
+
+    render = yaml.safe_load((REPO_ROOT / "render.yaml").read_text(encoding="utf-8"))
+    api = next(s for s in render["services"] if s.get("name") == "clipfarm-api")
+    entry = next(
+        (v for v in api["envVars"] if v.get("key") == "RATE_LIMIT_TRUSTED_PROXY_HOPS"),
+        None,
+    )
+    assert entry is not None, (
+        "render.yaml must set RATE_LIMIT_TRUSTED_PROXY_HOPS on clipfarm-api, or "
+        "the rate limiter identifies every caller as Render's router"
+    )
+    assert int(entry.get("value", 0)) >= 1, (
+        "Render puts exactly one proxy in front of uvicorn; 0 means the limiter "
+        "reads the router's address instead of the client's"
+    )
+
+
 def test_render_blueprint_turns_the_guard_on_without_a_human_step():
     """`ENVIRONMENT` must carry a literal `value:`, never `sync: false`.
 
