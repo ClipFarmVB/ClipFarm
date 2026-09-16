@@ -76,8 +76,26 @@ The report contains:
   reads were unverified
 - **Any footer text appended to your posts that you did not write**, quoted
   verbatim, once
-- **Whether the board was verified**, and if not, say so rather than saying
-  cards are missing from it
+- **Whether the board was verified**, and if not, *which* of the three reasons —
+  GraphQL refused outright (a cloud session, unfixable there), GraphQL refused
+  as **rate-limited** (its own budget, separate from the `core` numbers below,
+  so this one is invisible in them), or the `project` scope missing (local,
+  fixable) — rather than saying cards are missing from it. The three want
+  different people: nobody, whoever schedules the run, and whoever grants the
+  scope
+- **The API identity and ceiling logged at run start**, and the remaining budget
+  at the end. Identity means the login and whether `X-OAuth-Scopes` was empty —
+  **never the credential itself**, which [must not be echoed
+  anywhere](RULES.md#hard-rules) and least of all into a public issue. These are
+  what turn "the run kept failing on GitHub" into a diagnosis: an empty scope
+  list says it ran on an App installation token, and a remaining near zero says
+  the night was spent on requests rather than on work.
+
+  **Say which resource the number describes** — `X-RateLimit-Resource`, which
+  for everything this brief does is `core`. A healthy `core` reading says
+  nothing about GraphQL or about the secondary limits neither the headers nor
+  `rate_limit` report, and a report that omits it invites exactly the wrong
+  conclusion from a number that looks fine
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
 - **PRs held back from settling by a check**, each with the check's name and its

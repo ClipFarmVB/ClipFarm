@@ -6,9 +6,12 @@ direct call in this suite working — and makes the limiter completely invisible
 those calls. So this file is not optional: without it, deleting a
 ``dependencies=[...]`` line would break nothing that runs.
 
-The table below is the guard. A new anonymous read added later without a
-limiter fails here, the same shape as test_visibility_write_paths_are_declared.py's AST
-walk: the point is that a reviewer does not have to notice.
+The table below pins each anonymous read to its policy, and
+test_no_anonymous_read_escapes_the_table walks every router module for GET
+routes that resolve no credential and requires each one to be in it. So a new
+anonymous read added later without a limiter fails here, the same shape as
+test_visibility_write_paths_are_declared.py's AST walk: the point is that a
+reviewer does not have to notice.
 """
 import asyncio
 
@@ -29,7 +32,7 @@ from app.services.ratelimit import MemoryBackend, RateLimiter
 # defaults to). All three, because the name alone pins almost nothing: a policy
 # can carry the right name and read another route's setting, and every default
 # can be raised to 30000, with the name-only check still green. The README,
-# config.py and four route docstrings all state these numbers as decisions;
+# config.py and six route docstrings all state these numbers as decisions;
 # this table is what makes them true.
 THROTTLED = {
     ("/users/{handle}", "GET"): ("profile", "rate_limit_profile_per_minute", 30),
@@ -81,6 +84,34 @@ def _dependency_callables(route) -> set:
     return seen
 
 
+def _anonymous_reads() -> set:
+    """Every GET route, on every router module, that resolves no credential.
+
+    Discovered rather than listed: `app.routers` is walked module by module, so
+    a route on a router missing from ROUTERS, or on one main.py mounts only
+    behind a flag, is still found.
+    """
+    import importlib
+    import pkgutil
+
+    import app.routers as package
+
+    found = set()
+    for module_info in pkgutil.iter_modules(package.__path__):
+        module = importlib.import_module(f"app.routers.{module_info.name}")
+        router = getattr(module, "router", None)
+        if router is None:
+            continue
+        for route in router.routes:
+            if not hasattr(route, "dependant"):
+                continue
+            if "GET" not in getattr(route, "methods", set()):
+                continue
+            if get_current_user_id not in _dependency_callables(route):
+                found.add((route.path, "GET"))
+    return found
+
+
 def _route_for(path, method):
     for route_path, route_method, route in _all_routes():
         if (route_path, route_method) == (path, method):
@@ -107,6 +138,26 @@ def test_every_anonymous_read_carries_its_limiter(path, method, expected):
     assert Settings.model_fields[setting].default == default
 
 
+def test_no_anonymous_read_escapes_the_table():
+    """What makes the table a guard rather than a list.
+
+    Every other test here walks THROTTLED, so on their own they never examine a
+    new anonymous read that nobody added to it: a review round added
+    `GET /clips/{clip_id}/probe` with an optional viewer and no limiter, and the
+    whole api suite stayed green. This discovers every GET route that resolves no
+    credential and requires it to be in the table, where the policy checks apply.
+    """
+    discovered = _anonymous_reads()
+    assert discovered, "the router walk found no anonymous GET route at all"
+    missing = discovered - set(THROTTLED)
+    assert not missing, (
+        f"anonymous reads with no entry in THROTTLED: {sorted(missing)}. Give each "
+        "a limiter and a row in the table, or require auth as /download does"
+    )
+    stale = set(THROTTLED) - discovered
+    assert not stale, f"THROTTLED lists routes that are not anonymous reads: {sorted(stale)}"
+
+
 @pytest.mark.parametrize(
     "path,method", [(p, m) for (p, m) in THROTTLED], ids=lambda v: str(v)
 )
@@ -127,9 +178,9 @@ def test_every_throttled_read_stays_anonymous(path, method):
 def test_the_download_route_requires_auth_instead_of_a_limiter():
     """The seventh anonymous read, deliberately handled differently.
 
-    It is the only one that hands over the bytes, so a per-caller counter is
-    the wrong instrument — a distributed pull of a leaked link never trips one.
-    Auth is the control. Pinned here so "make the two share routes consistent"
+    It requires auth rather than a limiter. It presigns the same object /share
+    does, so this pins a decision about who may ask for the attachment URL, not
+    a bound on egress. Pinned here so "make the two share routes consistent"
     cannot quietly undo it.
     """
     import inspect
@@ -156,9 +207,9 @@ def test_the_download_route_requires_auth_instead_of_a_limiter():
 
 
 def test_write_routes_are_not_throttled():
-    # Writes already require a credential and are bounded by the upload quota.
-    # A limiter on them would be a second, weaker control with its own failure
-    # mode.
+    # Writes already require a credential, and uploads are also bounded by the
+    # upload quota; the other writes have no limiter here. A limiter on them
+    # would be a second, weaker control with its own failure mode.
     for path, method, route in _all_routes():
         if method in {"POST", "PATCH", "DELETE", "PUT"}:
             assert _policies_on(route) == [], f"{method} {path} should not be throttled"
@@ -391,8 +442,54 @@ def test_a_viewer_keyed_route_does_resolve_auth():
     assert checked, "no viewer-keyed route in the table -- the pair is vacuous"
 
 
+def test_a_viewer_keyed_limiter_takes_the_viewer_from_auth_not_the_request(monkeypatch):
+    """The viewer a content policy keys on must come from the credential.
+
+    `ViewerRateLimiter.__call__` declares `viewer_id` with
+    `Depends(get_optional_user_id)`. Drop that default and FastAPI reads
+    `viewer_id` from the query string instead, so `?viewer_id=<any uuid>` mints a
+    fresh bucket per request and every viewer-keyed route is unthrottled. The
+    route-level check above cannot see that: the handlers on those routes declare
+    `viewer_id` themselves, so auth stays in their trees either way. So this goes
+    over the wire, on a probe whose handler takes no parameters of its own.
+    """
+    import uuid
+
+    from fastapi import Depends
+
+    from app.auth import get_optional_user_id
+
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(settings, "rate_limit_share_per_minute", 2)
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend())
+
+    app = FastAPI()
+
+    @app.get(
+        "/probe",
+        dependencies=[Depends(ratelimit.rate_limit(ratelimit.POLICIES["share"]))],
+    )
+    async def probe():
+        return {"ok": True}
+
+    app.dependency_overrides[get_optional_user_id] = lambda: None
+
+    with TestClient(app) as client:
+        codes = [
+            client.get(f"/probe?viewer_id={uuid.uuid4()}").status_code
+            for _ in range(3)
+        ]
+    assert codes == [200, 200, 429], (
+        f"{codes}: a query-string viewer_id minted its own bucket, so the "
+        "viewer-keyed limiter is not taking the viewer from get_optional_user_id"
+    )
+
+
 def test_the_limiter_is_resolved_before_anything_a_refusal_should_not_pay_for():
-    """A 429 must not have cost a JWT verification or a database write first.
+    """On an address-keyed route, a 429 must not have cost a JWT verification or
+    a database write first. (A viewer-keyed route resolves the viewer before it
+    counts, by design: that is what gives a signed-in caller their own bucket.)
 
     That property is real -- measured at 12 requests against a 2/min budget,
     `GET /posts` performs two commits, one per *allowed* request, and none for

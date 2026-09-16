@@ -47,7 +47,7 @@ Celery worker  ──  process_game_task()  (api/app/workers/tasks.py)
     │
     ├─ 1. BALL TRACKING → rally windows            (ml/pipeline/ball.py)
     │     ├─ track_ball()  ← Modal GPU (T4) if configured, else local CPU
-    │     │                  R2-cached by video MD5 + model + sample rate
+    │     │                  R2-cached by video MD5 + model + sample rate + tracking version
     │     ├─ find_contacts()      ← ballistic-residual contact detection
     │     └─ contacts_to_rallies()← group contacts into clip windows
     │
@@ -129,8 +129,9 @@ prediction by more than a measured noise floor. Contacts are grouped into rally 
 by time gaps.
 
 - All velocities are **px/second**, so thresholds hold at any source frame rate.
-- Ball positions are cached to R2 keyed by `md5(video) + model + sample_rate`, so re-runs
-  (re-uploads, pipeline tuning) load in seconds instead of re-tracking (~28–42 min on CPU).
+- Ball positions are cached to R2 keyed by `md5(video)`, model, sample rate and
+  `ball.TRACKING_CACHE_VERSION`, so re-runs (re-uploads, tuning downstream of tracking) load in
+  seconds instead of re-tracking (~28–42 min on CPU). A version bump re-tracks every video.
 
 ### 2. Highlight scoring → gate (`ml/pipeline/score.py`, `audio.py`)
 Each rally gets a `highlight_score` (0–1) from **cheer** (crowd/bench reaction in the
@@ -161,7 +162,8 @@ writes `Clip` rows. Re-running a game clears its prior clips first (idempotent).
   *failure* (net serve on set point) or a *neighboring court* scores just as high. Ranking
   quality and multi-court false positives are known open problems (see backlog).
 - **The ball cache is content-addressed.** Re-uploading the same file is nearly free.
-  Changing the model or sample rate invalidates it automatically (it's in the key).
+  Changing the model or sample rate invalidates it automatically (both are in the key).
+  A change to how tracking works does not: it needs a `ball.TRACKING_CACHE_VERSION` bump.
 - **Model weights live on Modal, not here** (CF-164). The worker used to mount a
   `model_cache` volume so RF-DETR/YOLO weights survived a container recreate; now no
   weights are loaded in this image at all. Pose weights are baked into the
@@ -352,7 +354,7 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `public_posting_enabled` | `false` | Whether an owner may **set** a clip or a post to `public` (CF-109b). It gates the write, not the read: no read consults it, so turning it off withdraws nothing already public — undoing that means narrowing the stored `public` clips and posts. Off by default, and a product decision rather than a stub: `public` puts youth-sports footage in front of signed-out strangers and anything that crawls a link, which is what wants terms of service (CF-75/CF-88) and a report and takedown path (CF-116). `followers` needs no moderation surface, because its audience is approved one by one, but until the follow graph (CF-110) and home feed (CF-111) land it reaches nobody but the owner — so with this off, every tier the API accepts is owner-only in practice. Independent of `social_enabled`: `PATCH /clips/{id}/visibility` is on the clips router, which is mounted either way. Both tiers are built and tested — this decides which the API accepts. `api/app/services/publishing.py` carries the argument. |
 | `rate_limit_enabled` | `true` | Per-caller limits on the six anonymous read endpoints (CF-186). A switch, not a knob: the alternative during an incident is a code deploy. Fails **open** — if Redis is unreachable the request is allowed, because this bounds cost and enumeration rate, not access; `services/access.py` decides who may read what and never consults Redis. "Unreachable" covers a Redis that hangs as well as one that refuses: the client carries a one-second socket timeout, so the hang becomes a raise the limiter can fail open on rather than a request blocked until the kernel gives up. |
 | `rate_limit_trusted_proxy_hops` | `0` | **Set this to the number of reverse proxies in front of the api, or per-caller limiting silently does not work.** uvicorn only rewrites `request.client` from `X-Forwarded-For` when the peer is in `--forwarded-allow-ips` (default `127.0.0.1`), so behind any proxy every caller looks like the proxy and shares one bucket. `0` is right for a direct `uvicorn`/`docker compose` run; Render sets `1` (`render.yaml`); a VPS with Caddy or nginx in front wants `1` too. |
-| `rate_limit_*_per_minute` | 30 / 60 / 120 | Per route group. The two enumerable routes (`/users/{handle}`, `/posts?username=`) key on the **client address even for a signed-in caller** — signup is self-serve, so a per-account bucket is one an attacker mints; the others key on the signed-in caller and fall back to the address. An address is a v4 host or a v6 /64 (an IPv4-mapped address counts as the v4 host it names, since its /64 is all zeroes and would otherwise bucket every mapped caller together). 30 for the handle-keyed routes (`/users/{handle}`, `/posts?username=`), which are the enumerable ones; 60 for `/games/{id}` and its clips, sized so the detail page's 5-second poll cannot throttle itself; 120 for `/clips/{id}/share` and `/posts/{id}`, where traffic is the success case. `/clips/{id}/download` is not in this table — it requires auth instead. |
+| `rate_limit_*_per_minute` | 30 / 60 / 120 | Per route group. The two enumerable routes (`/users/{handle}`, `/posts?username=`) key on the **client address even for a signed-in caller** — signup is self-serve, so a per-account bucket is one an attacker mints; the others key on the signed-in caller and fall back to the address. An address is a v4 host or a v6 /64 (an IPv4-mapped address counts as the v4 host it names, since its /64 is all zeroes and would otherwise bucket every mapped caller together). 30 for the handle-keyed routes (`/users/{handle}`, `/posts?username=`), which are the enumerable ones; 60 for `/games/{id}` and its clips, sized for the detail page: its 5-second poll of the game, and one clips request each time its debounced filters settle; 120 for `/clips/{id}/share` and `/posts/{id}`, where traffic is the success case. `/clips/{id}/download` is not in this table — it requires auth instead. |
 | `modal_token_id` / `modal_token_secret` | "" | Enables the Modal GPU path for ball tracking *and* pose. |
 | `allow_stub_detections` | `false` | Lets the pose-first fallback return **fabricated** clips when no pose runtime is available. Development only — the worker persists what it returns. Kept separate from `debug` on purpose, so a shared dev flag can't grant it. |
 | `max_upload_bytes` | 8 GB | Upload size cap. Served to the web app by `GET /games/upload-config` so the advertised limit can't drift from the enforced one. |
@@ -480,3 +482,19 @@ the backend on a VPS — an alternative, not the production path.
 - **Add an API endpoint** → `api/app/routers/` + wire in `api/app/main.py`.
 - **Change the frontend** → `web/` (⚠ read `web/AGENTS.md` first).
 - **Every configurable knob** → `api/app/config.py`.
+
+---
+
+## License
+
+ClipFarm is licensed **AGPL-3.0-or-later** — see [`LICENSE`](LICENSE).
+
+    Copyright (C) 2026 Nelson Kang
+
+AGPL is not a preference here, it is an inheritance: `ultralytics` (the pose
+model, `ml/modal_pose.py`) is AGPL-3.0, and §13 extends its source-offer
+obligation to users interacting with a hosted service over a network. A
+permissive license was therefore not ours to grant.
+
+[`docs/licensing.md`](docs/licensing.md) has the reasoning, the full dependency
+audit, and the exit path if ClipFarm ever needs a commercial posture.
