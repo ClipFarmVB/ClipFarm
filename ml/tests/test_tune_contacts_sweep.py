@@ -8,15 +8,26 @@ what changing the knob does.
 
 It drifts from the other end, which is why it needs a test rather than care:
 the sweep held `CONTACT_RESIDUAL_MIN_PXPS=240` from when `ball.py` shipped 480,
-and CF-103 moving the default to 240 turned that row into a duplicate without
-touching `tune_contacts.py` at all. Nothing said so; the tuner kept printing a
-table with a hidden repeat in it for the whole of that time.
+and CF-103 (`55c6b21`) moving the default to 240 turned that row into a
+duplicate without touching `tune_contacts.py` at all. Nothing said so; the
+tuner kept printing a table with a hidden repeat in it for the whole of that
+time.
 
-`ball` is imported for the defaults — it reaches cv2 only lazily, so numpy is
-enough, exactly as `test_ball_scaling.py` records. The sweep tables are *parsed*
-rather than imported, following `test_eval_condense_settings.py`: importing
-`tune_contacts` pulls in `ml.eval.harness` and `ml.eval.metrics` as well, and
-this check needs four literals, not a working eval stack.
+**The tables are IMPORTED, not parsed.** An earlier version read them out of
+the source with `ast.literal_eval`, following `test_eval_condense_settings.py`.
+That was wrong here, and wrong in the way this file is about: it asserted
+properties of the file's *literals* while the tuner runs the file's
+*bindings*, so `SWEEPS.update(...)`, `SWEEPS[k] = ...` or `COMBOS += ...`
+anywhere below the literal left every assertion green about a table the tuner
+does not use — reintroducing the duplicate row this file exists to forbid.
+Fixing the one spelling a round happened to name (a second `SWEEPS = ...`) left
+its neighbours, which is the same mistake one level down.
+
+Importing is safe here and the precedent is not: `ml.pipeline.ball` reaches cv2
+only lazily (`test_ball_scaling.py` records this), `ml.eval.harness` and
+`ml.eval.metrics` are stdlib plus numpy, and `ci.yml` installs numpy before
+`pytest ml/tests/`. The parse survives for exactly one job — checking that the
+source reads as what Python binds — where the two disagreeing is the finding.
 """
 import ast
 import sys
@@ -28,18 +39,21 @@ pytest.importorskip("numpy", reason="ml/pipeline/ball.py does its maths in numpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from ml.eval import tune_contacts as TC  # noqa: E402
 from ml.pipeline import ball as B  # noqa: E402
 
 TUNE_PY = Path(__file__).resolve().parents[2] / "ml" / "eval" / "tune_contacts.py"
 
+SWEEPS = TC.SWEEPS
+COMBOS = TC.COMBOS
+TUNABLES = TC.TUNABLES
+
 
 def _literal(name: str):
-    """The module-level literal assigned to `name`, without importing.
+    """The module-level literal assigned to `name`, read from the source.
 
-    The LAST assignment wins, because that is the one Python leaves bound. An
-    earlier version returned the first, so a second `SWEEPS = ...` further down
-    the file left the tests asserting about a table the tuner does not use —
-    the tests and the module disagreeing while both looked green.
+    Used only by `test_the_source_reads_as_what_python_binds`. The LAST
+    assignment wins, because that is the one Python leaves bound.
     """
     tree = ast.parse(TUNE_PY.read_text(encoding="utf-8"))
     found = None
@@ -58,25 +72,63 @@ def _literal(name: str):
     try:
         return ast.literal_eval(found)
     except ValueError as exc:
-        # Otherwise this surfaces as `malformed node or string on line N` from
-        # inside ast, collection aborts, and all of this file's tests vanish
-        # without either the name or the file being mentioned.
         raise AssertionError(
-            f"{TUNE_PY.name}: `{name}` is not a literal ({exc}). The tables are "
-            f"read with ast.literal_eval rather than imported, so a computed "
-            f"value — `60 * 4`, a `dict(...)` call — cannot be parsed. Write "
-            f"the value out."
+            f"{TUNE_PY.name}: `{name}` is not a literal ({exc}). The table is "
+            f"meant to read as a table — write the value out rather than "
+            f"computing it."
         ) from exc
 
 
-SWEEPS = _literal("SWEEPS")
-COMBOS = _literal("COMBOS")
-TUNABLES = _literal("TUNABLES")
+def _duplicate_literal_keys(name: str) -> list[str]:
+    """Keys written twice in `name`'s dict literal.
+
+    Python keeps the last and so does `literal_eval`, so this cannot be found by
+    comparing values — the runtime table is correct while the source reads as
+    sweeping something it does not.
+    """
+    tree = ast.parse(TUNE_PY.read_text(encoding="utf-8"))
+    for node in tree.body:
+        targets = (
+            [node.target] if isinstance(node, ast.AnnAssign)
+            else node.targets if isinstance(node, ast.Assign)
+            else []
+        )
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id == name and isinstance(node.value, ast.Dict):
+                keys = [k.value for k in node.value.keys if isinstance(k, ast.Constant)]
+                return sorted({k for k in keys if keys.count(k) > 1})
+    return []
 
 
 def _combos():
     """`COMBOS` as (label, overrides), tolerating the tuple-of-pairs shape."""
     return [(label, dict(overrides)) for label, overrides in COMBOS]
+
+
+@pytest.mark.parametrize("name", ["SWEEPS", "COMBOS", "TUNABLES"])
+def test_the_source_reads_as_what_python_binds(name):
+    """The one job the parse still has, and the reason the rest of this file
+    imports instead.
+
+    Every assertion below reads the IMPORTED table, so it is always true of what
+    the tuner runs. That leaves one gap in the other direction: a module-level
+    rebinding — `+=`, `SWEEPS[k] = ...`, `.update(...)` — makes the literal a
+    reader sees and the table the tuner uses two different things, and nothing
+    that looks only at one of them can tell. Compared rather than trusted.
+    """
+    assert _literal(name) == getattr(TC, name), (
+        f"{name}'s literal in {TUNE_PY.name} is not what the module ends up "
+        f"bound to — something rebinds it below the table. Whichever is right, "
+        f"a reader of the file and the tuner currently disagree."
+    )
+
+
+@pytest.mark.parametrize("name", ["SWEEPS"])
+def test_no_key_is_written_twice_in_the_table(name):
+    """Python keeps the last, so the values agree and only the source lies:
+    the file reads as sweeping a knob at values it does not sweep."""
+    dupes = _duplicate_literal_keys(name)
+    assert not dupes, f"{name} lists {dupes} more than once; only the last counts"
 
 
 def test_the_tables_were_actually_found():
@@ -122,8 +174,13 @@ def test_no_two_combos_are_the_same_run():
     identical labels make two different rows indistinguishable in the table.
     Both are the defect this file exists for, one level up from the sweeps."""
     combos = _combos()
-    labels = [label for label, _ in combos]
-    assert len(set(labels)) == len(labels), f"duplicate combo labels in {labels}"
+    # Normalised, because the table is read by eye: "combo: X" and "Combo:  X"
+    # are one row to anyone looking at it, and two to `set()`.
+    labels = [" ".join(label.split()).casefold() for label, _ in combos]
+    assert len(set(labels)) == len(labels), (
+        f"combo labels collide once whitespace and case are normalised: "
+        f"{[label for label, _ in combos]}"
+    )
     seen: list[tuple[str, dict]] = []
     for label, overrides in combos:
         clash = [prev for prev, o in seen if o == overrides]

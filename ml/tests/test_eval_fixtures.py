@@ -104,7 +104,12 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
     problems = []
 
     duration = raw.get("video_duration_sec")
-    if duration is None:
+    if duration is not None and not isinstance(duration, (int, float)):
+        problems.append(
+            f"`video_duration_sec` is {duration!r}, which no clip can be "
+            f"compared against")
+        duration = None
+    elif duration is None:
         # Not a skip. `load_fixture` types this `float | None` and the
         # highlight format does not require it, which is exactly why an absent
         # key has to be loud: it would silently disarm the over-run check while
@@ -114,6 +119,11 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
             "no `video_duration_sec`, so nothing anchors the over-run check")
 
     clips = raw.get("clips", [])
+    if not isinstance(clips, list):
+        # Otherwise a dict iterates as its keys and a string as its characters,
+        # and every one of them reports "has no start or end" — a true message
+        # about the wrong thing.
+        return problems + [f"`clips` is {type(clips).__name__}, not a list"]
     if not clips:
         # The dead-time twin asserts `fx.keep` for the same reason: a fixture
         # with no clips passes every check below vacuously, and a check that
@@ -122,6 +132,11 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
         problems.append("no clips at all")
 
     for clip in clips:
+        if not isinstance(clip, dict):
+            # A bare string in the list would otherwise substring-test for
+            # "start" and then raise on the subscript.
+            problems.append(f"clip {clip!r} is {type(clip).__name__}, not an object")
+            continue
         missing = [k for k in ("start", "end") if k not in clip]
         if missing:
             # Reported rather than raised: a bare KeyError from inside a
@@ -129,7 +144,19 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
             # fixture, and it stops the remaining clips being looked at.
             problems.append(f"clip {clip!r} has no {' or '.join(missing)}")
             continue
-        start, end = parse_timestamp(clip["start"]), parse_timestamp(clip["end"])
+        try:
+            start = parse_timestamp(clip["start"])
+            end = parse_timestamp(clip["end"])
+        except (ValueError, TypeError) as exc:
+            # A PRESENT but unparseable timestamp has the same consequences as
+            # an absent one, and is the likelier typo: `0O:23` with a letter O,
+            # a `null` left by a labelling tool, `1:2:3:4`. Fixing the missing
+            # key and leaving this raising would be closing the spelling and
+            # not the class.
+            problems.append(
+                f"clip {clip['start']!r}-{clip['end']!r} has an unreadable "
+                f"timestamp ({exc})")
+            continue
         if start < 0:
             problems.append(f"clip {clip['start']}-{clip['end']} starts before zero")
         if end <= start:
@@ -709,6 +736,52 @@ class TestHighlightWellFormedness:
         raw = self._raw([{"start": "-5", "end": "00:20"}])
         problems = highlight_wellformedness_violations(raw, self._scored(raw))
         assert any("starts before zero" in p for p in problems), problems
+
+    def test_an_unreadable_timestamp_is_reported_not_raised(self):
+        """The neighbour of the missing key, and the likelier typo: `0O:23`
+        with a letter O is exactly the hand-authoring slip the card describes,
+        and `parse_timestamp` raises on it from inside the check."""
+        raw = self._raw([{"start": "0O:23", "end": "00:40"},
+                         {"start": "00:50", "end": "00:20"}])
+        problems = highlight_wellformedness_violations(raw, [])
+        assert any("unreadable timestamp" in p for p in problems), problems
+        # The clip after it is still checked.
+        assert any("not a positive span" in p for p in problems), problems
+
+    @pytest.mark.parametrize("bad", [None, ["00:10"], "1:2:3:4", "0O:23", ""])
+    def test_every_unreadable_timestamp_shape_is_reported(self, bad):
+        """The class, not the spelling: a `null` left by a labelling tool, a
+        list, one colon too many, a letter O for a zero, an empty string.
+
+        A bare NUMBER is deliberately absent from this list — `parse_timestamp`
+        reads `12` as twelve seconds, which is the documented single-part form,
+        so it is well-formed rather than unreadable. Found by putting it here
+        and watching the test fail.
+        """
+        raw = self._raw([{"start": bad, "end": "00:40"}])
+        assert highlight_wellformedness_violations(raw, [])
+
+    def test_a_clips_key_that_is_not_a_list_is_reported_as_that(self):
+        """A dict iterates as its keys and a string as its characters, so
+        without this every entry reports "has no start or end" — true messages
+        about entirely the wrong thing."""
+        raw = self._raw([])
+        raw["clips"] = {"start": "00:10", "end": "00:20"}
+        problems = highlight_wellformedness_violations(raw, [])
+        assert any("not a list" in p for p in problems), problems
+
+    def test_a_clip_that_is_not_an_object_is_reported(self):
+        raw = self._raw(["00:10-00:20"])
+        problems = highlight_wellformedness_violations(raw, [])
+        assert any("not an object" in p for p in problems), problems
+
+    def test_a_non_numeric_duration_is_reported_and_disarms_only_itself(self):
+        """Comparing a float to a string raises; reporting it keeps the other
+        three rules running over the same fixture."""
+        raw = self._raw([{"start": "00:50", "end": "00:20"}], duration="10:00")
+        problems = highlight_wellformedness_violations(raw, [])
+        assert any("no clip can be compared against" in p for p in problems), problems
+        assert any("not a positive span" in p for p in problems), problems
 
     def test_the_real_fixture_exercises_the_scored_path_at_all(self):
         """A control. If `test1` ever stopped scoring anything, the
