@@ -573,35 +573,46 @@ single caught mutation into a statement about the guard, with no plural in
 sight. The reliable question is not "is there a plural" but **"is this sentence
 wider than the run behind it".**
 
-Six instances, across two PRs in the run of 2026-09-16, each found by a review
-round running the **neighbour** of the mutation the commit had run:
+**Seven claims, across six commits and two PRs** in the run of 2026-09-16,
+each found by a review round running the **neighbour** of the mutation the
+commit had run. Counted by CLAIM rather than by commit, because `adddc9e` made
+two and the round that found the second called it "the seventh instance" while
+the run's own tallies elsewhere said five and six — three numbers over one set
+of evidence, which is what happens when the unit is left implicit:
 
 | commit | claimed | what one neighbouring mutation showed |
 | --- | --- | --- |
 | `ef67146` | "that exact mutation is caught" | true of the named one; a *prefix* of the constraint text passed |
 | `ead16e0` | "the migration, the model, and both index assertions" | both assertions compared only the name |
-| `abd0ae8` | "all three mutations now fail" | the parsed chunk carried the *next* statement's comment, which supplied both checks |
+| `abd0ae8` | "All three mutations now fail" | the parsed chunk carried the *next* statement's comment, which supplied both checks |
 | `adddc9e` | "mutate every member of the class" | 2 of 8 members mutated; reordering never tried |
+| `adddc9e` | "`id DESC` could be dropped … It reads `ix.expressions` now" | `post_id DESC` supplies the substring `id DESC`, so the term can still go |
 | `7aae60e` | "max_\* reduced to a copy of the mean" | caught for `max_conf_3s` only; `max_speed_3s` shipped green |
 | `e52ed47` | "both NaN conventions" | the magnitude half asserted `.max()`, which is identical under both |
 
-Row 4's gap is the one exception to "read it in the commit": `adddc9e`'s own
+Rows 4 and 5 are the one exception to "read it in the commit": `adddc9e`'s own
 message records nine mutations across four indexes and reads as coverage, and
-the 2-of-8 count is in the review comment that settled the PR, not in the tree.
+both gaps are in the cold round that reviewed it — which did **not** settle the
+PR. #477 is still open and labelled `unsettled`. Saying "the comment that
+settled the PR" would be the same defect one layer out: a claim about a source,
+stated more strongly than the source supports.
 
-The sixth was written while fixing the fifth, in a commit whose subject names
-the very thing it got wrong. `abd0ae8` is in the table twice over — it also
+The last was written while fixing the one before it, in a commit whose subject
+names the very thing it got wrong. `abd0ae8` earns its row twice over — it also
 "listed as closed" a hole whose named mutation still passed — and it sits
 between two other instances by the same author within ninety minutes, which is
 the strongest evidence here that noticing the pattern does not stop it.
 
-**So: to claim a class is covered, run the class.** All thirteen fills, not the
-two that already happened to be enforced; both columns separately, not one mutation that
-changes both at once. It is usually a loop, and it usually finds something —
-running all thirteen found a fill nobody had questioned, and running every index
-found that `ix.columns` does not contain a keyset index's `text()` terms.
+**So: to claim a class is covered, run the class.** All thirteen fills, not
+the two that already happened to be enforced; both columns separately, not
+one mutation that changes both at once. It is usually a loop, and it usually
+finds something — running all thirteen found a fill nobody had questioned, and
+running every index found that `ix.columns` does not contain a keyset index's
+`text()` terms.
 
-Four corollaries, each of which cost a round here:
+Four corollaries. Two cost a round; the other two were caught mid-fix by the
+author, which is worth saying rather than rounding up — the cheap catches and
+the expensive ones have different lessons in them:
 
 - **A test that derives its expected value from the thing under test cannot see
   that thing change.** A fill table spelling its expectation as
@@ -631,11 +642,13 @@ Four corollaries, each of which cost a round here:
 **The load-bearing half is the prose, not the testing.** In every instance above
 the mutation was run and the result read correctly; what went wrong was the
 sentence written about it afterwards, generalising one result into a family.
-That is the same failure as
-[composing a claim before reading the result](#measure-what-you-publish) — a
-claim reaching further than the run that backs it — and no rule about *how* to
-run mutations reaches it. **If a sentence says "the class", the run has to have
-been over the class.**
+That is a *sibling* of
+[composing a claim before reading the result](#measure-what-you-publish), not
+the same failure: there the claim is written ahead of the run, here it is
+written after a run that was read correctly and then widened. Both are claims
+reaching further than their evidence, which is why they live together — and no
+rule about *how* to run mutations reaches either. **If a sentence says "the
+class", the run has to have been over the class.**
 
 ### Repo traps that have already cost time
 
