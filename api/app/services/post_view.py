@@ -154,7 +154,7 @@ def _avatar(
 def serialize(
     post: Post,
     clip: Clip,
-    author: object,
+    author: User,
     *,
     r2_ready: bool,
     viewer_has_liked: bool = False,
@@ -163,15 +163,19 @@ def serialize(
 ) -> PostOut:
     """One post, rendered.
 
-    `author` is typed loosely because `PostAuthor.from_author` takes a Protocol
-    rather than `User` — a concrete import would run the model-layer cycle the
-    other way. `from_author`, never `model_validate`: the classmethod is what
-    withholds a handle its owner never chose.
+    `author` is a `User`. It was `object` with a `type: ignore` on the call,
+    justified by an import cycle that does not apply here: `_Author` is a
+    Protocol so that `schemas/post.py` need not import the model layer, but
+    this module already imports `User` at module scope, and every caller passes
+    one (`routers/posts.py` annotates it `User`). `from_author`, never
+    `model_validate`: the classmethod is what withholds a handle its owner
+    never chose.
 
-    `viewer_has_liked` defaults False until CF-113. It is a parameter rather
-    than a hardcoded literal so that when CF-113 resolves it with one query for
-    the whole page, there is one call site to thread it through instead of two
-    that have to be found.
+    `viewer_has_liked` is a parameter rather than a hardcoded literal so that
+    CF-113 could fill it from one query for the whole page through a single
+    call site. CF-113 is this change, so the default is now the anonymous
+    answer rather than a placeholder: a reader with no session has not liked
+    anything, and `feed.py` and `routers/posts.py` pass the real value.
 
     `avatar_cache` is per page, keyed by the stored URL. A profile grid is many
     posts by *one* author, so without it a 50-post page signed the same string
@@ -179,7 +183,7 @@ def serialize(
     version whenever an account owns several posts on a page. Optional so a
     single-post caller passes nothing.
     """
-    rendered = PostAuthor.from_author(author)  # type: ignore[arg-type]
+    rendered = PostAuthor.from_author(author)
     return PostOut(
         id=post.id,
         clip_id=post.clip_id,
