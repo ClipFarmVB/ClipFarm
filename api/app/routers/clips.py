@@ -1,5 +1,6 @@
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 from urllib.parse import urlparse
 
@@ -19,6 +20,7 @@ from app.schemas.clip import (
     ClipDeleteRequest,
     ClipLabelsRequest,
     ClipOut,
+    ClipPlaybackOut,
     ClipTagRequest,
     ClipTrimRequest,
 )
@@ -72,14 +74,30 @@ async def _get_owned_clip(
     return clip, game
 
 
+#: How long a minted playback URL stays valid. Named rather than repeated
+#: because CF-319 makes it part of the response — a client that is told the
+#: expiry can refresh before the player dies instead of after — and a number
+#: reported from one place and minted in another drifts apart silently.
+#:
+#: Scoped to *playback* on purpose. `share_clip` and `download_clip` keep their
+#: own literals: /share's expiry is the open question CF-320 exists to settle,
+#: and folding all three into one constant would let that decision change
+#: playback by accident. Same value today, different reasons for it.
+PLAYBACK_URL_TTL_SECONDS = 3600
+
+
 def _rewrite_urls(clip: Clip) -> dict[str, str | None]:
     """Return public R2 URLs directly (bucket has public dev URL enabled).
     Fall back to presigned URLs if R2 credentials are configured."""
     if storage.r2_configured():
         return {
-            "clip_url": storage.presign_from_stored_url(clip.clip_url, expires_in=3600),
+            "clip_url": storage.presign_from_stored_url(
+                clip.clip_url, expires_in=PLAYBACK_URL_TTL_SECONDS
+            ),
             "thumbnail_url": (
-                storage.presign_from_stored_url(clip.thumbnail_url, expires_in=3600)
+                storage.presign_from_stored_url(
+                    clip.thumbnail_url, expires_in=PLAYBACK_URL_TTL_SECONDS
+                )
                 if clip.thumbnail_url
                 else None
             ),
@@ -387,6 +405,60 @@ async def delete_clips(
 
     await db.commit()
     return {"deleted": deleted}
+
+
+@router.get("/clips/{clip_id}/playback", response_model=ClipPlaybackOut)
+async def refresh_clip_playback(
+    clip_id: uuid.UUID,
+    db: DB,
+    viewer_id: ViewerId = None,
+):
+    """Mint a fresh playback URL for a clip the caller already holds (CF-319).
+
+    **Why this exists.** Every URL this api hands a player is presigned for
+    `PLAYBACK_URL_TTL_SECONDS`. On the web that is invisible — the page is
+    reloaded long before it matters. On a phone it is not: an app backgrounded
+    for two hours comes back to a player whose URL 403s, and without this the
+    only recovery is refetching the whole list to get the same rows back with
+    new signatures on them.
+
+    **Authorization is `/share`'s, via the same helper**, which is what the card
+    asks for: a refresh is a read, and a second access-control implementation
+    beside `_get_viewable_clip` is exactly the thing that drifts. The viewer may
+    be signed out for the same reason `/share` allows it — a public clip's URL
+    is meant to be passed around, and the documented asymmetry in
+    services/access.py (a public clip inside a private game is reachable by
+    direct link) applies here unchanged. Nothing here widens what a viewer may
+    see; it re-mints a URL for a clip they may already read this second.
+
+    **The expiry is in the response, not just in this docstring.** That is the
+    half of the card that makes it useful: a client that knows the TTL refreshes
+    on a timer and never shows a dead player, where a client that must discover
+    expiry by failing shows one every time. `expires_at` is computed here rather
+    than parsed back out of the signature, so treat it as approximate — it is
+    this process's clock at mint time, and R2 signs against its own. Refresh
+    with a margin rather than at the boundary.
+    """
+    clip, _game = await _get_viewable_clip(clip_id, viewer_id, db)
+
+    # Read once for the expiry; _rewrite_urls owns the URL branch itself. When
+    # R2 is unconfigured the stored public URL is served verbatim and carries
+    # no signature to expire — see ClipPlaybackOut on why that is reported as
+    # None rather than as PLAYBACK_URL_TTL_SECONDS.
+    signed = storage.r2_configured()
+    urls = _rewrite_urls(clip)
+
+    return ClipPlaybackOut(
+        clip_id=clip.id,
+        clip_url=urls["clip_url"],
+        thumbnail_url=urls["thumbnail_url"],
+        expires_in=PLAYBACK_URL_TTL_SECONDS if signed else None,
+        expires_at=(
+            datetime.now(timezone.utc) + timedelta(seconds=PLAYBACK_URL_TTL_SECONDS)
+            if signed
+            else None
+        ),
+    )
 
 
 @router.get("/clips/{clip_id}/share")
