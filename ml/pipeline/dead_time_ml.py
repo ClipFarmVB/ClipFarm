@@ -11,7 +11,7 @@ weights file itself, and window building are separate cards (CF-393, CF-394) —
 so there is deliberately no `predict_in_play` and no `active_windows_from_ml`
 here yet, and nothing imports `ml.pipeline.intervals`.
 
-Ported from the CF-173 branch and changed in three ways to match current main:
+Ported from the CF-173 branch and changed in two ways to match current main:
 
 1. **Speeds come from `dead_time.speed_samples()`**, which returns NaN for a
    displacement above `MAX_PLAUSIBLE_SPEED_FH` rather than dropping it — the
@@ -26,8 +26,10 @@ Ported from the CF-173 branch and changed in three ways to match current main:
    `fast_fraction_5s` therefore reads materially higher on the same track than
    it did on that branch. That is intended, and it is why FEATURE_VERSION moves.
 
-3. **Pixel quantities are divided by frame height**, so a 360p cache and a 1080p
-   upload share one feature space.
+Unchanged from CF-173, and listed because it is easy to assume otherwise:
+pixel quantities are divided by frame height, so a 360p cache and a 1080p upload
+share one feature space. That was already true on the branch — its own
+`FEATURE_VERSION = 2` note records it as the v2 change.
 
 **The two NaN conventions on main, and which one each column uses.** They differ
 and the choice matters:
@@ -99,12 +101,17 @@ FEATURE_VERSION = 3
 
 # The per-sample "this is fast" bar, in frame-heights/s.
 #
-# A THIRD copy of 0.30. It is also `motion_anchor_windows(speed=...)`'s default
-# in dead_time.py and `condense_guard_anchor_speed` in api/app/config.py — the
-# latter unreachable from here, since ml/pipeline must not import app.config.
-# `test_dead_time_ml.py` pins this against the live default so the two inside
-# `ml/` cannot drift apart silently; nothing pins it against the config one, in
-# the same way nothing pinned the other two to each other before this.
+# A FOURTH copy of 0.30, and the count matters because each one is a place it
+# can drift. The others: `motion_anchor_windows(speed=...)`'s default, which
+# actually applies it; `active_windows_guarded(anchor_speed=...)`, which passes
+# it down; and `condense_guard_anchor_speed` in api/app/config.py, which is what
+# PRODUCTION passes (tasks.py), and which is unreachable from here since
+# ml/pipeline must not import app.config.
+#
+# So the test below pins this to `motion_anchor_windows`' default — the one that
+# defines the quantity — and NOT to the value production actually runs with. If
+# an operator moves the config setting, this stays put and nothing notices. That
+# is a real limit of the pin, not a claim about it.
 #
 # NOT `gate_speed` (0.25): that is a median over ±1.5s used to judge a contact's
 # credibility, a different quantity that dead_time.py's own comments warn
@@ -134,6 +141,25 @@ def compute_features(
     """
     if frame_height <= 0:
         raise ValueError(f"frame_height must be positive, got {frame_height}")
+
+    # `confidence` is optional in this dict shape and EVERY producer in this
+    # repository currently omits it — ml/eval/deadtime_variants.py,
+    # ml/eval/harness.py, ml/eval/diagnose_detection.py and
+    # api/app/workers/tasks.py all build {"time", "x", "y"} from a BallPosition
+    # that HAS the field. So mean_conf_3s and max_conf_3s are constant 0.0 on
+    # real input, which is also their empty-window fill: "no confidence
+    # supplied" and "no samples at all" are indistinguishable in the matrix.
+    #
+    # Two of thirteen columns training as constants is worth a line in the log
+    # rather than a silent zero, because FEATURE_VERSION is frozen here and the
+    # trainer (CF-393) reads whatever this produces. Forwarding the field is a
+    # one-line change in four callers, but tasks.py is out of this card's scope.
+    if positions and not any("confidence" in p for p in positions):
+        logger.warning(
+            "no ball-track sample carries 'confidence' — mean_conf_3s and "
+            "max_conf_3s will be constant 0.0, indistinguishable from an "
+            "unsampled second. Producers drop the field; see CF-392."
+        )
     n = max(1, int(math.ceil(duration)))
     centers = np.arange(n, dtype=np.float64) + 0.5
 

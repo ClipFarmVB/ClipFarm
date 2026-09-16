@@ -170,13 +170,49 @@ class TestFills:
         assert (f[:, col("since_contact")] == CONTACT_GAP_CAP).all()
         assert (f[:, col("until_contact")] == CONTACT_GAP_CAP).all()
 
-    def test_max_columns_exceed_their_means_when_the_window_varies(self):
-        """max_* are real reductions, not copies of the mean."""
+    def test_max_conf_is_a_real_reduction_not_a_copy_of_the_mean(self):
         pos = track([0.5, 1.0, 1.5], conf=0.2)
         pos[1]["confidence"] = 0.95
         f = compute_features(pos, [], 3.0, H)
         assert f[1, col("max_conf_3s")] > f[1, col("mean_conf_3s")]
         assert f[1, col("max_conf_3s")] == pytest.approx(0.95)
+
+    def test_max_speed_is_a_real_reduction_not_a_copy_of_the_mean(self):
+        """The other half, which the plural-named version of this test never
+        touched: `feats[:, 12] = mean_speed_3s` shipped green, while the commit
+        message claimed the max-vs-mean revert was caught. It was caught for
+        conf only.
+        """
+        # Alternating step lengths, so max and mean genuinely differ. Both must
+        # stay BELIEVABLE: 200px in 0.5s is 1.11 fh/s at 360p, which is exactly
+        # MAX_PLAUSIBLE_SPEED_FH, so every fast sample became NaN and was masked
+        # — mean and max then collapsed to the same value and the test asserted
+        # nothing. 150px/0.5s = 0.83 fh/s is fast and believable.
+        times = [t / 2 for t in range(0, 9)]
+        pos = [{"time": t, "x": 0.0, "y": 180.0, "confidence": 0.9} for t in times]
+        for i in range(1, len(pos)):
+            pos[i]["x"] = pos[i - 1]["x"] + (150.0 if i % 2 else 20.0)
+        _, speeds = dt.speed_samples(pos, H)
+        assert np.isfinite(speeds).all(), "fixture went over the ceiling again"
+        f = compute_features(pos, [], 5.0, H)
+        assert f[2, col("max_speed_3s")] > f[2, col("mean_speed_3s")]
+
+    def test_the_missing_confidence_field_is_reported(self, caplog):
+        """Every producer in this repo builds {"time","x","y"} and drops the
+        `confidence` the tracker supplies, so both conf columns are constant
+        0.0 on real input — and 0.0 is also their empty-window fill, making
+        "not supplied" indistinguishable from "no samples". A silent constant
+        column is what the trainer would learn from."""
+        with caplog.at_level("WARNING"):
+            compute_features(
+                [{"time": 1.0, "x": 0.0, "y": 180.0}], [], 3.0, H
+            )
+        assert "confidence" in caplog.text
+
+    def test_no_warning_when_confidence_is_supplied(self, caplog):
+        with caplog.at_level("WARNING"):
+            compute_features(track([1.0]), [], 3.0, H)
+        assert "confidence" not in caplog.text
 
 
 class TestWeightsContract:
@@ -246,3 +282,136 @@ class TestGuards:
         small = compute_features(track([0.5, 1.0, 1.5], y=90.0, step=36.0), [], 3.0, 360)
         large = compute_features(track([0.5, 1.0, 1.5], y=270.0, step=108.0), [], 3.0, 1080)
         np.testing.assert_allclose(small, large)
+
+
+# Every column's fill, and which way it votes. The table is the contract: a
+# change to any fill fails here, not just the two a round happened to mutate.
+#
+# "dead" means the fill sits at the end of the column's range that argues
+# AGAINST in-play; "neutral" means it commits to neither. Nothing may vote
+# "play" — a second with no evidence must never be the strongest in-play signal
+# in the matrix, which is the defect this table exists to make unshippable.
+EXPECTED_FILLS = [
+    ("track_rate_2s",      0.0,             "dead"),     # no samples
+    ("track_coverage_10s", 0.0,             "dead"),     # no covered bins
+    ("mean_speed_3s",      0.0,             "dead"),     # no motion
+    ("fast_fraction_5s",   0.0,             "dead"),     # nothing fast
+    ("contacts_5s",        0.0,             "dead"),     # no contacts
+    ("contacts_15s",       0.0,             "dead"),
+    ("since_contact",      60.0,            "dead"),     # saturated = long ago
+    ("until_contact",      60.0,            "dead"),
+    ("mean_conf_3s",       0.0,             "dead"),     # nothing detected
+    ("y_std_5s",           0.0,             "dead"),     # no spread
+    ("mean_y_5s",          EMPTY_MEAN_Y,    "neutral"),  # frame centre; see below
+    ("max_conf_3s",        0.0,             "dead"),
+    ("max_speed_3s",       0.0,             "dead"),
+]
+
+
+class TestEveryFill:
+    def test_the_table_covers_every_column_in_order(self):
+        assert [name for name, _, _ in EXPECTED_FILLS] == FEATURE_NAMES
+
+    def test_the_fills_are_literals_not_the_constants_they_pin(self):
+        """Why 60.0 is written out above rather than CONTACT_GAP_CAP.
+
+        Spelling the expectation as the symbol makes it follow the code: halving
+        CONTACT_GAP_CAP moved both sides and the whole suite stayed green. The
+        literal is the point — it is an independent record of what the value is
+        supposed to be.
+        """
+        assert CONTACT_GAP_CAP == 60.0
+        assert EMPTY_MEAN_Y == 0.5
+
+    @pytest.mark.parametrize("name,value,vote", EXPECTED_FILLS, ids=[f[0] for f in EXPECTED_FILLS])
+    def test_an_evidence_free_second_takes_the_documented_fill(self, name, value, vote):
+        """All 13, not a sample of them.
+
+        A previous version pinned two fills and the commit message described the
+        result as covering the class; `mean_conf_3s`'s fill could be inverted to
+        1.0 and `CONTACT_GAP_CAP` halved with the whole suite green.
+        """
+        f = compute_features([], [], 4.0, H)
+        assert (f[:, col(name)] == value).all(), f"{name} no longer fills at {value}"
+
+    @pytest.mark.parametrize(
+        "name,value,vote", [t for t in EXPECTED_FILLS if t[2] == "dead"],
+        ids=[t[0] for t in EXPECTED_FILLS if t[2] == "dead"],
+    )
+    def test_a_dead_voting_fill_is_not_beaten_by_real_evidence_in_the_dead_direction(
+        self, name, value, vote
+    ):
+        """The fill must be AT the dead end, not merely near it.
+
+        Pinning the value alone does not say which way it points — this asserts
+        that no real track produces a value further toward 'dead' than the fill,
+        which is what makes 'votes dead' a property rather than a comment.
+        """
+        busy = compute_features(
+            track([t / 2 for t in range(0, 21)], y=90.0, step=60.0),
+            [{"time": 5.0}], 10.0, H,
+        )
+        column = busy[:, col(name)]
+        if name in ("since_contact", "until_contact"):
+            assert column.max() <= value, f"{name} exceeds its saturated fill"
+        else:
+            assert column.min() >= value, f"{name} goes below its fill on real data"
+
+    def test_the_neutral_fill_is_bracketed_by_real_evidence_on_both_sides(self):
+        """`mean_y_5s` is the one column whose signal is inverted — smaller y is
+        higher in frame, so more in-play. Its fill must sit BETWEEN a real high
+        ball and a real low one, or it is voting rather than abstaining."""
+        high = compute_features(track([1.0, 1.5, 2.0], y=30.0), [], 4.0, H)
+        low = compute_features(track([1.0, 1.5, 2.0], y=330.0), [], 4.0, H)
+        assert high[1, col("mean_y_5s")] < EMPTY_MEAN_Y < low[1, col("mean_y_5s")]
+
+
+class TestNaNConventions:
+    """The PR's most-argued decision, which nothing pinned.
+
+    `dead_time.py` has two conventions for an over-ceiling (NaN) speed sample.
+    `motion_anchor_windows` counts it in the fast-fraction DENOMINATOR, so it
+    votes not-fast; `speed_gate_contacts` masks it out entirely. This module
+    uses the anchor's for `fast_fraction_5s` and the masked one for the speed
+    MAGNITUDE columns, and the difference is only visible on a MIXED window —
+    an all-NaN window gives 0.0 either way, which is why the existing
+    all-over-ceiling test cannot separate them.
+    """
+
+    @staticmethod
+    def _mixed():
+        # 20 samples at a believable 0.56 fh/s, with one unbelievable hop.
+        pos = track([t / 2 for t in range(0, 21)], x=0.0, y=180.0, step=100.0)
+        pos[10]["x"] = 99999.0
+        return pos
+
+    def test_the_fixture_really_is_mixed(self):
+        _, speeds = dt.speed_samples(self._mixed(), H)
+        assert np.isnan(speeds).any(), "no NaN — the conventions cannot differ here"
+        assert np.isfinite(speeds).any(), "all NaN — the conventions agree here"
+
+    def test_fast_fraction_counts_the_unbelievable_sample_as_not_fast(self):
+        """The anchor's convention. Under the masked convention the NaN would
+        leave the denominator and the fraction would rise to 1.0; under this one
+        it stays in, so the fraction is strictly below 1.0 while every
+        believable sample in the window is fast."""
+        f = compute_features(self._mixed(), [], 10.0, H)
+        frac = f[:, col("fast_fraction_5s")]
+        _, speeds = dt.speed_samples(self._mixed(), H)
+        believable = speeds[np.isfinite(speeds)]
+        assert (believable >= FAST_SPEED_FH).all(), "fixture's real samples are not all fast"
+        assert frac.max() < 1.0, (
+            "fast_fraction_5s reached 1.0, so the NaN left the denominator — that "
+            "is speed_gate_contacts' convention, not motion_anchor_windows'"
+        )
+        assert frac.max() > 0.0
+
+    def test_the_speed_magnitudes_mask_it_instead(self):
+        """The other convention, on the columns that need it: an unjudgeable
+        magnitude cannot be averaged, so it is excluded rather than counted.
+        Both columns therefore report the believable samples exactly."""
+        f = compute_features(self._mixed(), [], 10.0, H)
+        _, speeds = dt.speed_samples(self._mixed(), H)
+        believable = speeds[np.isfinite(speeds)]
+        assert f[:, col("mean_speed_3s")].max() == pytest.approx(believable.max(), rel=0.2)
+        assert f[:, col("max_speed_3s")].max() == pytest.approx(believable.max())
