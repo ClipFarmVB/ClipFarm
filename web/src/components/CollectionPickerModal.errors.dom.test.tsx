@@ -69,7 +69,7 @@ describe("a failed collections fetch (CF-304)", () => {
     expect(card.textContent).toContain("No collections yet");
   });
 
-  it("keeps saying the list is incomplete after a create succeeds", async () => {
+  it("still says the existing collections are missing after a create succeeds", async () => {
     // The load failure and the outcome of an action are different facts, and an
     // action must not erase the other one. With a single `error` slot,
     // `handleCreate`'s `setError(null)` cleared the fetch failure, so a user

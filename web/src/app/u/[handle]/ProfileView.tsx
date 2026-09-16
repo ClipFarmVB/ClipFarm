@@ -48,9 +48,13 @@ export function ProfileView({ handle }: { handle: string }) {
         if (!cancelled) setProfile(data);
       })
       .catch((e) => {
-        // `instanceof` like every other catch this PR touched: a rejection that
-        // is not an Error makes `e.message` undefined, and the failure branch
-        // then renders an empty reason under a heading that promises one.
+        // `instanceof` like every other catch this PR touched. The case that
+        // matters is `null`, where `e.message` THROWS — inside this catch, so
+        // the chain rejects with nothing left to handle it. A non-Error that is
+        // merely not `null` is harmless: `e.message` is undefined and the
+        // paragraph below is `{error ?? "Please try again."}`, which renders
+        // the fallback. An earlier version of this comment named that harmless
+        // case as the reason and left the throwing one out.
         if (!cancelled) {
           setError(e instanceof Error ? e.message : "Please try again.");
         }
