@@ -60,20 +60,22 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 - **You are never the reviewer.** Every PR still gets reviewed — by a subagent
   spawned per step 1, whether or not this session wrote the diff.
 - **Maximum 6 new PRs** and **7 new cards** per run.
-- **No attribution stamps that you write.** Do not add "Generated with Claude
-  Code", a `Co-Authored-By` trailer, a session link, or any similar footer to
-  commits, PR bodies, reviews, comments, or issues. Local settings suppress
-  these but a sandbox does not inherit them, so this is on you.
-  **The two named above are never exempt**: both are emitted client-side and
-  both are suppressible, so an agent finding one on its own output has a setting
-  to fix, not an exception to claim.
+- **A `Co-Authored-By` trailer and a session link on a COMMIT are fine** — the
+  maintainer settled this on 2026-09-16, and this bullet said the opposite until
+  then. Keep them off PR bodies, reviews, comments and issues, where they are
+  noise in the merge record rather than provenance in the history.
 
-  The exemption is for footer text you cannot prevent — identify it by
-  reproducing it, not by reasoning about where it came from: post once, read the
-  result back, and if text you did not write is present, quote it verbatim in
-  the report and carry on. Never hand-edit a comment to strip it. "It must be
-  server-side" is not a test the run can perform, and it is exactly the reasoning
-  that would let a stray `Co-Authored-By` through.
+  The rule this replaces read "never exempt" and had a run flag its own commits
+  as violations. Recorded rather than quietly reversed, because the previous
+  wording was strong enough that a reader who remembers it needs to know it was
+  overturned by the person whose repo it is, not worked around.
+
+  **Footer text you cannot prevent is still identified by REPRODUCING it**, not
+  by reasoning about where it came from: post once, read the result back, and if
+  text you did not write is present, quote it verbatim in the report and carry
+  on. Never hand-edit a comment to strip it. "It must be server-side" is not a
+  test a run can perform. That half of the old rule stands, because it is about
+  evidence rather than about which stamps are wanted.
 - If a command fails because of usage limits, **stop the loop** — do not retry.
 - If nothing in scope is actionable, **stop the loop**. A run that reviews two
   PRs and opens nothing is a fine outcome.
