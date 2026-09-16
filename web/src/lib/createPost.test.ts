@@ -93,10 +93,10 @@ describe("createPost and the clip it may widen", () => {
 });
 
 describe("setClipVisibility", () => {
-  // No UI calls this yet — narrowing a clip is a control this card did not
-  // build. It ships with the endpoint rather than after it, and it is pinned
-  // so it cannot rot into a helper that PATCHes the wrong shape the first time
-  // something does call it.
+  // The clip dialog's "make it private again" control calls this (CF-109b's
+  // narrowing undo). It shipped with the endpoint, before that control
+  // existed, and it is pinned so it cannot rot into a helper that PATCHes the
+  // wrong shape.
   it("PATCHes the clip's own visibility", async () => {
     const fetchMock = captureRequest();
 
