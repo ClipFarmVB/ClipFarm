@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { Check, Globe, Lock, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { createPost, type Clip, type Visibility } from "@/lib/api";
+import { PUBLIC_POSTING_ENABLED } from "@/lib/features";
 import { useFocusTrap } from "@/lib/useFocusTrap";
 import { cn } from "@/lib/utils";
 
@@ -15,9 +16,10 @@ const RANK: Record<Visibility, number> = { private: 0, followers: 1, public: 2 }
  *
  * The tier names are adjectives in one case and a noun in another, so
  * interpolating them directly produced "this clip is followers". Only the first
- * two can ever render — nothing is blocked when the ceiling is `public` — but
- * the third is here so the map stays total and a new tier is a compile error
- * rather than a sentence that reads wrong in production.
+ * two can ever render — the phrase sits in the consent block, which appears
+ * only when the chosen tier is wider than the clip, and nothing is wider than
+ * `public` — but the third is here so the map stays total and a new tier is a
+ * compile error rather than a sentence that reads wrong in production.
  */
 const CEILING_PHRASE: Record<Visibility, string> = {
   private: "this clip is private",
@@ -26,19 +28,39 @@ const CEILING_PHRASE: Record<Visibility, string> = {
 };
 
 /**
- * Whether `tier` is wider than this clip allows, and so must be offered
- * disabled rather than offered and refused.
+ * Whether posting at `tier` would also have to widen the clip.
  *
- * Exported so it can be asserted: this is the rule that decides whether a user
- * meets a limit they can understand or a 409 they cannot act on, and it mirrors
- * `access.at_most` on the API — the two orderings of the same three values have
- * to agree, and a UI copy that drifts wide is the one that fails on submit.
+ * Was `tierBlocked`, and the rename is the change CF-109b makes: this used to
+ * decide what to grey out, because nothing could raise a clip's visibility and
+ * the wider tiers were simply unreachable. Now they are reachable, so the same
+ * arithmetic decides what needs the user's consent instead. Keeping the old
+ * name would have left every reader thinking these tiers are still refused.
  *
- * An absent ceiling resolves to `private`, matching `ClipOut`'s own default:
- * a payload that predates the field offers less, never more.
+ * Exported so it can be asserted: it mirrors `access.at_most` on the API, the
+ * two orderings of the same three values have to agree, and a UI copy that
+ * drifts wide is the one that fails on submit.
+ *
+ * An absent ceiling resolves to `private`, matching `ClipOut`'s own default: a
+ * payload that predates the field asks for consent it may not need, rather than
+ * silently widening footage it could not read the tier of.
  */
-export function tierBlocked(tier: Visibility, ceiling: Visibility | undefined): boolean {
+export function tierNeedsRaise(
+  tier: Visibility,
+  ceiling: Visibility | undefined,
+): boolean {
   return RANK[tier] > RANK[ceiling ?? "private"];
+}
+
+/**
+ * Whether this deployment offers `tier` at all.
+ *
+ * Only `public`, and only while `PUBLIC_POSTING_ENABLED` is off. Unlike the
+ * ceiling this is not something the user can act on from here — no consent
+ * makes it available — so it stays a disabled option with a reason, which is
+ * what the ceiling used to be.
+ */
+export function tierUnavailable(tier: Visibility): boolean {
+  return tier === "public" && !PUBLIC_POSTING_ENABLED;
 }
 
 const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof Lock }[] = [
@@ -69,28 +91,35 @@ const OPTIONS: { value: Visibility; label: string; blurb: string; icon: typeof L
  * naming a tier and leaving the user to guess — this is youth-sports footage,
  * so "Everyone" needs to read as "everyone".
  *
- * Posting from this component never widens the clip itself — the API can when
- * asked, but this component does not ask yet (below) — and the tiers a clip
- * cannot support are shown disabled, with the reason, rather than offered and
- * then refused.
+ * Posting can widen the clip, but never silently: a tier wider than the clip
+ * asks for consent first, and a tier the deployment has turned off is shown
+ * disabled with the reason, rather than offered and then refused.
  *
- * That is the half this was missing. For two releases nothing in the product
- * could raise a clip's visibility at all, and both a clip and its game default
- * to private, so for a real user "Followers" and "Everyone" both ended in a 409
- * telling them to go do something that does not exist. An unreachable option
- * that explains why is a limit; one that fails on submit is a dead end.
+ * For two releases nothing in the product could raise a clip's visibility at
+ * all, and both a clip and its game default to private, so for a real user
+ * "Followers" and "Everyone" both ended in a 409 telling them to go do
+ * something that does not exist. CF-109 greyed those tiers out instead, on the
+ * argument that an unreachable option explaining why is a limit while one that
+ * fails on submit is a dead end.
  *
- * CF-109b (#398) built the write path — `PATCH /clips/{id}/visibility`, and
- * `raise_clip_visibility` on the create request. THIS COMPONENT DOES NOT USE IT
- * YET: offering the raise with an explicit confirmation is the web half of that
- * card and lands next, on top of the API branch. Until then the greyed-out
- * tiers are still correct for anyone who has not set the clip's visibility
- * some other way, which is everyone.
+ * CF-109b (#398) built the write path, so they are reachable now and this
+ * offers them. Two rules, deliberately kept apart:
  *
- * `clip.effective_visibility` carries the ceiling the API derives. The 409 is
- * still handled and still surfaced as-is — it stays the backstop for a clip
- * that goes private between the page load and the click, which is exactly the
- * race the server-side check exists for.
+ * - **Wider than the clip** is no longer a refusal, it is a request for
+ *   consent. Picking the tier is not enough: widening the clip changes what
+ *   people can see of the FOOTAGE, which outlives the post and is not undone by
+ *   deleting it, so the checkbox says exactly that and Post stays disabled
+ *   until it is ticked. `create_post` takes the raise as a flag on the same
+ *   request, so a post that fails to insert cannot leave the clip widened.
+ * - **`public` while the deployment has it off** is still a refusal, because no
+ *   consent from here makes it available. It stays a disabled option with a
+ *   reason — what the ceiling used to be.
+ *
+ * The 409 is still handled and still surfaced as-is. It remains the backstop
+ * for a clip narrowed between the page load and the click, which is exactly the
+ * race the server-side check exists for, and the 422 is the backstop for the
+ * two `PUBLIC_POSTING_ENABLED` flags disagreeing. `clip.effective_visibility`
+ * carries the ceiling the API derives.
  */
 export function PostComposerModal({
   clip,
@@ -102,12 +131,30 @@ export function PostComposerModal({
   onPosted?: () => void;
 }) {
   // Absent means private — the fail-closed direction, matching the schema's
-  // own default. A clip payload that predates this field offers "Only me"
-  // rather than offering everything.
+  // own default. A clip payload that predates this field treats every tier
+  // above "Only me" as a raise that needs consent — and `public` stays disabled
+  // while the deployment has it off — rather than treating the clip as already
+  // wide.
   const ceiling: Visibility = clip.effective_visibility ?? "private";
 
   const [caption, setCaption] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("private");
+  // Consent to widen the clip along with the post (CF-109b). Reset by
+  // `choose` on every tier change, deliberately: a tick that survived a change
+  // of mind would be consent to something the user was no longer looking at.
+  const [raiseConsent, setRaiseConsent] = useState(false);
+
+  const needsRaise = tierNeedsRaise(visibility, ceiling);
+  const selectedLabel =
+    OPTIONS.find((o) => o.value === visibility)?.label ?? visibility;
+
+  function choose(tier: Visibility) {
+    setVisibility(tier);
+    // Consent belongs to the tier it was given for. Carrying a tick from
+    // "Followers" over to "Everyone" would widen the clip further than the
+    // user agreed to, without asking again.
+    setRaiseConsent(false);
+  }
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -155,7 +202,7 @@ export function PostComposerModal({
     setSaving(true);
     setError(null);
     try {
-      await createPost(clip.id, caption, visibility);
+      await createPost(clip.id, caption, visibility, needsRaise);
       setDone(true);
       onPosted?.();
       closeTimer.current = setTimeout(onClose, 900);
@@ -168,8 +215,9 @@ export function PostComposerModal({
       // Decoding it a second time here is what this used to do, and it undid
       // the first: `JSON.parse` of a plain sentence throws, so every failure
       // fell back to "Could not post". The 409 is the backstop for a clip that
-      // goes private between page load and click — the one case the greyed-out
-      // tiers cannot cover — and it was arriving with its reason stripped.
+      // goes private between page load and click — the one case the composer's
+      // own ceiling check cannot cover — and it was arriving with its reason
+      // stripped.
       // Ironically the 422 branch added to `apiErrorMessage` for this composer
       // widened the hole: making the first decode succeed is exactly what makes
       // the second one fail.
@@ -225,14 +273,17 @@ export function PostComposerModal({
 
         <div className="mt-4 space-y-1.5">
           {OPTIONS.map(({ value, label, blurb, icon: Icon }) => {
-            const blocked = tierBlocked(value, ceiling);
+            // Only the deployment flag disables an option now. A tier above
+            // the clip's ceiling is offered and asks for consent below, which
+            // is the whole of CF-109b item 1 on this side.
+            const blocked = tierUnavailable(value);
             return (
               <button
                 key={value}
                 type="button"
                 disabled={blocked}
                 aria-describedby={blocked ? `vis-${value}-why` : undefined}
-                onClick={() => setVisibility(value)}
+                onClick={() => choose(value)}
                 className={cn(
                   "flex w-full items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors",
                   blocked
@@ -253,8 +304,8 @@ export function PostComposerModal({
                   <span className="block text-[11px] text-muted">
                     {blocked ? (
                       <span id={`vis-${value}-why`}>
-                        Not available — {CEILING_PHRASE[ceiling]}, and a post
-                        can&apos;t show more of the footage than the clip does.
+                        Not available on this app yet. You can share with your
+                        followers instead.
                       </span>
                     ) : (
                       blurb
@@ -266,38 +317,42 @@ export function PostComposerModal({
           })}
         </div>
 
-        {ceiling === "private" && (
-          // Every wider tier is greyed out and each says why, but the reason
-          // reads as a property of *this* clip — as though another clip might
-          // offer more. None does: no endpoint anywhere writes a clip's or a
-          // game's visibility, so `private` is the ceiling on everything, for
-          // everyone. CF-109b item 1 (#398) is the setter that changes it, and
-          // that PR is what deletes these three lines.
-          //
-          // The second sentence is CF-109b item 3. The obvious move for a user
-          // who has just been told "private" is to go flip the Private/Public
-          // switch in settings, which governs whether following needs approval
-          // and nothing else — so they would find no change and no explanation.
-          // `text-muted`, not `text-subtle`, for the reason CF-109b moved the
-          // settings correction off it: on `bg-surface-high` in the default
-          // dark theme `text-subtle` measures 1.84:1, and this is the only
-          // surface telling a user that every post is Only me and that the
-          // settings switch is not the visibility control. A sentence carrying
-          // that had no business being the least readable text in the dialog.
-          //
-          // `text-muted` is 3.52:1 here — better by roughly double, and still
-          // under the 4.5:1 AA floor for text this size. Closing that gap needs
-          // a token change rather than a class swap, which is a design decision
-          // wider than this PR.
-          <p className="mt-2 rounded-md border border-border bg-surface-high px-3 py-2 text-[11px] text-muted">
-            Raising a clip&apos;s visibility isn&apos;t built yet, so every post
-            is Only me for now. The Private/Public switch in settings controls
-            who can follow you, not who can see a clip.
-          </p>
+        {needsRaise && (
+          // The explicit confirmation CF-109 named as the alternative it was
+          // not taking, and CF-109b built. Selecting the tier is not on its own
+          // consent to widen the footage behind it: this changes what people
+          // can see of the CLIP, which outlives the post and is not undone by
+          // deleting it. So it says exactly what changes, and the button stays
+          // disabled until it is ticked.
+          <label
+            id="raise-consent"
+            className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200/90"
+          >
+            <input
+              type="checkbox"
+              checked={raiseConsent}
+              onChange={(e) => setRaiseConsent(e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-amber-400"
+            />
+            <span>
+              {CEILING_PHRASE[ceiling]}. Posting to{" "}
+              <strong className="font-semibold">{selectedLabel}</strong> will
+              also change the clip itself, so it stays visible to them after
+              this post is deleted.
+            </span>
+          </label>
         )}
 
         {error && (
-          <p className="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+          // Announced. The 409 and the 422 are this component's whole backstop
+          // — a clip narrowed between page load and click, and the two
+          // PUBLIC_POSTING_ENABLED flags disagreeing — and focus stays on the
+          // Post button, so without a live region they are invisible to a
+          // screen-reader user.
+          <p
+            role="alert"
+            className="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400"
+          >
             {error}
           </p>
         )}
@@ -306,10 +361,21 @@ export function PostComposerModal({
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button size="sm" onClick={submit} disabled={saving || done}>
+          <Button
+            size="sm"
+            onClick={submit}
+            disabled={saving || done || (needsRaise && !raiseConsent)}
+            // Points at the consent block when that is what is holding it,
+            // the same way a blocked tier points at its own reason. A disabled
+            // button is out of the tab order and explains nothing on its own,
+            // so without this a screen-reader user meets a Post they cannot
+            // reach and no statement of why.
+            aria-describedby={needsRaise && !raiseConsent ? "raise-consent" : undefined}
+          >
             {done ? (
               <>
-                <Check className="h-3.5 w-3.5" /> Posted
+                <Check className="h-3.5 w-3.5" />{" "}
+                <span role="status">Posted</span>
               </>
             ) : (
               "Post"

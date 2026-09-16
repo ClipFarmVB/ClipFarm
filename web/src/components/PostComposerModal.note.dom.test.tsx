@@ -1,14 +1,23 @@
 // @vitest-environment jsdom
 //
-// CF-109b item 3 (#398): the composer's half of the signposting.
+// The composer must never tell a user that the Private/Public switch in
+// settings controls who can see a clip. It does not: `users.is_private`
+// governs whether following needs approval and nothing else, which
+// `services/access.py` argues at length and
+// `test_account_privacy_does_not_clamp_post_visibility` pins.
 //
-// The settings copy is pinned in `ProfileSettingsForm.dom.test.tsx`, and the
-// argument there applies here with more force: this note exists to stop a user
-// going to the privacy switch expecting it to unlock the greyed-out tiers, and
-// a revert of it to the *same false claim* the card is about would otherwise be
-// invisible. Reverting the note entirely, and inverting it to "the
-// Private/Public switch in settings controls who can see a clip", both left the
-// suite green before this file.
+// This file arrived with CF-109b item 3 (#480) as the guard on the note that
+// said so -- the one that told a user raising a clip was not built yet. #398
+// built the setter and this PR spends it: the composer now offers the raise
+// behind an explicit confirmation instead of explaining that it cannot. The
+// note is gone, and with it the three tests that pinned its copy and its
+// contrast class -- #480's own comment on those lines named this PR as what
+// would delete them. `PostComposerModal.consent.dom.test.tsx` covers what
+// replaced it.
+//
+// What outlives the note is the claim it existed to keep out of the dialog.
+// Both regressions #480 checked red -- restoring the false sentence, and
+// relocating it -- still fail here.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -59,55 +68,13 @@ function cardText(): string {
   ).replace(/\s+/g, " ");
 }
 
-describe("what the composer says about the greyed-out tiers", () => {
-  it("says raising a clip is not built, rather than implying another clip might allow it", () => {
-    // Each disabled tier's own reason reads as a property of THIS clip. None
-    // does: no endpoint writes a clip's or a game's visibility, so `private` is
-    // the ceiling on everything, for everyone.
-    mount("private");
-    expect(cardText()).toContain("Raising a clip's visibility isn't built yet");
-    expect(cardText()).toContain("every post is Only me for now");
-  });
-
-  it("sends the user away from the privacy switch, not towards it", () => {
-    // The whole point of item 3. The obvious move after being told "private" is
-    // to go flip Private/Public in settings, which governs follow approval and
-    // nothing else — so they would find no change and no explanation.
-    mount("private");
-    expect(cardText()).toContain(
-      "The Private/Public switch in settings controls who can follow you, not who can see a clip",
-    );
-  });
-
+describe("what the composer says about a clip it cannot post as-is", () => {
   it("never states the inverse, which is the claim this card exists to delete", () => {
     // The exact shape of the regression: the same false sentence, relocated.
+    // `private` is the ceiling that puts the widening path on screen, so it is
+    // the render where a well-meant explanation is most likely to reappear.
     mount("private");
     expect(cardText()).not.toContain("settings controls who can see a clip.");
     expect(cardText()).not.toContain("controls what people can see");
-  });
-
-  it("is not the least readable text in the dialog", () => {
-    // CF-109b moved the settings correction off `text-subtle` because a
-    // sentence replacing a false safety claim should not be the hardest one to
-    // read. The same argument applies here with more force: on
-    // `bg-surface-high` in the default dark theme `text-subtle` measures
-    // 1.84:1, and this is the only surface saying every post is Only me and
-    // that the settings switch is not the visibility control.
-    //
-    // `text-muted` is 3.52:1 -- still under the 4.5:1 AA floor, which needs a
-    // token change rather than a class swap, but roughly double.
-    mount("private");
-    const note = [...document.querySelectorAll('[role="dialog"] p')].find((el) =>
-      (el.textContent ?? "").includes("isn't built yet"),
-    );
-    expect(note).toBeDefined();
-    expect(note!.className).toContain("text-muted");
-    expect(note!.className).not.toContain("text-subtle");
-  });
-
-  it("does not nag when the clip already supports every tier", () => {
-    // A note about an unbuilt setter is noise on a clip that needs no setter.
-    mount("public");
-    expect(cardText()).not.toContain("isn't built yet");
   });
 });
