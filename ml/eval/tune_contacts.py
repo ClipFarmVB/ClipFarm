@@ -10,7 +10,15 @@ Step 0 prints the sweep's own baseline row, and beneath it the last recorded
 run for that fixture with the tag and commit it came from. That is context, not
 a pass/fail check: nothing here verifies the recorded run describes the
 configuration you are on. Restoring step 0 to a trustworthy control is CF-309
-(#359) — it needs the row re-recorded, which needs the R2 ball caches.
+(#359), and it needs more than a fresh row. The newest recorded run is the
+`rules` figure (ml/eval/README.md's CF-187 table: 56.2% dead, 176s live), its
+`app.config` snapshot carries no `condense_mode` at all, and this tool replays
+`active_windows_from_contacts` + `bridge_windows_by_motion` — the `rules` path
+— while `condense_mode` has shipped `guarded` since CF-187. So a row
+re-recorded at app defaults would match step 0 LESS, not more. Either this tool
+scores the shipping builder (CF-416, #547), or "shipping defaults" here means
+the tuner's and the table says so. Re-recording also needs the R2 ball caches
+(#511).
 
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts test2
@@ -66,6 +74,60 @@ TUNABLES = (
     "SEG_MIN_MEDIAN_SPEED_PXPS", "SEG_MAX_SPEED_PXPS", "MAX_SAMPLE_GAP_SEC",
 )
 
+# The swept values per knob, and the combined rows, as data rather than as
+# literals inside main(). Hoisted for CF-309: a value equal to the shipping
+# default re-scores the baseline under another name, and `test_tune_contacts_sweep.py`
+# can only assert that if it can read the values.
+#
+# This drifts silently and has: the tuple below held 240.0 from the days when
+# `ball.CONTACT_RESIDUAL_MIN_PXPS` was 480, and CF-103 moving the default to
+# 240 turned that row into a second copy of the baseline without touching this
+# file. The test now fails instead of the table quietly repeating itself.
+SWEEPS: dict[str, tuple[float | int, ...]] = {
+    "CONTACT_RESIDUAL_MIN_PXPS": (360.0, 180.0, 120.0),
+    "CONTACT_RESIDUAL_RATIO": (0.35, 0.25, 0.15),
+    "CONTACT_HIT_SPEED_PXPS": (180.0, 120.0, 90.0),
+    "SEG_MIN_POSITIONS": (3, 2),
+    "SEG_MIN_MEDIAN_SPEED_PXPS": (40.0, 20.0, 0.0),
+    "MIN_CONTACT_SPACING": (0.4, 0.3),
+}
+
+# The combined rows, each a full override set. `CONTACT_RESIDUAL_MIN_PXPS=240`
+# used to be pinned in every one of these; it is the shipping default now, so
+# `score()` applied it as a no-op and "combo: resid 240 + hit 120" was an
+# alias for the CONTACT_HIT_SPEED_PXPS=120 row already printed above it. Both
+# the pin and that row are gone — the remaining two are genuine combinations.
+#
+# Dict *literals*, not `dict(...)` calls. The test imports these tables, so a
+# call would run fine — but it also compares the literal it reads here against
+# what the module ends up bound to, and `ast.literal_eval` cannot evaluate a
+# call node. Writing the values out keeps the file readable as the table it is.
+COMBOS: tuple[tuple[str, dict[str, float | int]], ...] = (
+    ("combo: hit 120 + ratio 0.25",
+     {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25}),
+    ("combo: + seg 3/40",
+     {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25,
+      "SEG_MIN_POSITIONS": 3, "SEG_MIN_MEDIAN_SPEED_PXPS": 40.0}),
+)
+
+
+# Stage 2's padding rows, hoisted for the same reason as the two tables above:
+# the guard compares every row the tuner prints against the tables, and a row
+# it cannot account for is the finding. These are `COND` overrides, not ball
+# constants, so they live apart from SWEEPS.
+PADDING: tuple[tuple[float, float, float], ...] = (
+    (5.0, 4.0, 5.0), (4.0, 3.0, 3.0), (3.0, 2.0, 3.0),
+    (3.0, 2.0, 2.0), (2.0, 1.5, 2.0), (2.0, 1.0, 1.0),
+)
+
+BASELINE_LABEL = "BASELINE (shipping defaults)"
+
+
+def padding_label(pb: float, pa: float, mg: float) -> str:
+    """The label for one padding row. Shared so the guard cannot spell it
+    differently from the tuner and call the difference a finding."""
+    return f"pad {pb:.0f}/{pa:.1f} merge {mg:.0f}"
+
 
 def load(test_id: str = DEFAULT_FIXTURE):
     d = json.loads((RESULTS_DIR / f"{test_id}_ball_track.json").read_text(encoding="utf-8"))
@@ -110,7 +172,9 @@ def _last_recorded_run(test_id: str) -> dict | None:
     So this no longer claims. It reports what was last recorded and what it was
     recorded against, and leaves the comparison to the reader. Making step 0 a
     trustworthy control again is CF-309 (#359), which is open and owns exactly
-    that; it wants the row re-recorded, not a matcher bolted on here.
+    that — and what it needs is the module docstring's answer, not a matcher
+    bolted on here. Not simply a re-recorded row either: see there for why a row
+    taken at app defaults would match step 0 less, not more.
     """
     path = RESULTS_DIR / f"{test_id}_deadtime.jsonl"
     if not path.exists():
@@ -212,51 +276,63 @@ def _sweep(test_id: str) -> None:
           f"  ({units})\n")
     print("%-34s %5s %5s %8s %8s %9s %9s %9s" % (
         "config", "cont", "win", "rally", "live-lost", "dead-rm", "recall", "condense"))
-    show("BASELINE (shipping defaults)", score())
+    show(BASELINE_LABEL, score())
     print(_baseline_note(test_id))
 
-    for v in (360.0, 240.0, 180.0, 120.0):
-        show(f"CONTACT_RESIDUAL_MIN_PXPS={v:.0f}", score(CONTACT_RESIDUAL_MIN_PXPS=v))
+    # `%g` rather than a per-knob format, now that one table holds a mix of
+    # floats and ints. Checked against the formats it replaces rather than
+    # assumed: there were seventeen single-knob labels before this change and
+    # sixteen survive it, and `%g` reproduces all seventeen byte-for-byte —
+    # including the deleted `=240` row — across both the `%.0f` knobs and the
+    # bare `{v}` ones. Sixteen is the count of rows that remain, not of labels
+    # checked; saying "sixteen old labels" would be a count taken from the
+    # wrong set.
+    #
+    # Byte-exact for these values, not label-stable in general: `%g` truncates
+    # to six significant digits and switches to scientific notation at 1e6, so
+    # a future swept 0.1234567 would print a label that no longer identifies
+    # the value it scored.
+    for name in ("CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_RESIDUAL_RATIO",
+                 "CONTACT_HIT_SPEED_PXPS"):
+        for v in SWEEPS[name]:
+            show(f"{name}={v:g}", score(**{name: v}))
+        print()
+    for name in ("SEG_MIN_POSITIONS", "SEG_MIN_MEDIAN_SPEED_PXPS"):
+        for v in SWEEPS[name]:
+            show(f"{name}={v:g}", score(**{name: v}))
     print()
-    for v in (0.35, 0.25, 0.15):
-        show(f"CONTACT_RESIDUAL_RATIO={v}", score(CONTACT_RESIDUAL_RATIO=v))
-    print()
-    for v in (180.0, 120.0, 90.0):
-        show(f"CONTACT_HIT_SPEED_PXPS={v:.0f}", score(CONTACT_HIT_SPEED_PXPS=v))
-    print()
-    for v in (3, 2):
-        show(f"SEG_MIN_POSITIONS={v}", score(SEG_MIN_POSITIONS=v))
-    for v in (40.0, 20.0, 0.0):
-        show(f"SEG_MIN_MEDIAN_SPEED_PXPS={v:.0f}", score(SEG_MIN_MEDIAN_SPEED_PXPS=v))
-    print()
-    for v in (0.4, 0.3):
-        show(f"MIN_CONTACT_SPACING={v}", score(MIN_CONTACT_SPACING=v))
+    for v in SWEEPS["MIN_CONTACT_SPACING"]:
+        show(f"MIN_CONTACT_SPACING={v:g}", score(MIN_CONTACT_SPACING=v))
     print()
     # Most promising single knobs, combined.
-    show("combo: resid 240 + hit 120",
-         score(CONTACT_RESIDUAL_MIN_PXPS=240.0, CONTACT_HIT_SPEED_PXPS=120.0))
-    show("combo: + ratio 0.25",
-         score(CONTACT_RESIDUAL_MIN_PXPS=240.0, CONTACT_HIT_SPEED_PXPS=120.0,
-               CONTACT_RESIDUAL_RATIO=0.25))
-    show("combo: + seg 3/40",
-         score(CONTACT_RESIDUAL_MIN_PXPS=240.0, CONTACT_HIT_SPEED_PXPS=120.0,
-               CONTACT_RESIDUAL_RATIO=0.25, SEG_MIN_POSITIONS=3,
-               SEG_MIN_MEDIAN_SPEED_PXPS=40.0))
+    for label, overrides in COMBOS:
+        show(label, score(**overrides))
 
     # Stage 2: recovering the condense ratio. Better contact recall pushes the
     # run up against the padding ceiling (pad 5/4 + merge 5 absorbs every dead
     # gap <= 14s), so re-sweep padding on top of the best contact settings.
-    best = dict(CONTACT_RESIDUAL_MIN_PXPS=240.0, CONTACT_HIT_SPEED_PXPS=120.0,
-                CONTACT_RESIDUAL_RATIO=0.25, SEG_MIN_POSITIONS=3,
-                SEG_MIN_MEDIAN_SPEED_PXPS=40.0)
+    # The last combo, read rather than re-typed. This was a fourth hand-written
+    # duplicate of the same override set, and a copy is how the no-op
+    # `CONTACT_RESIDUAL_MIN_PXPS=240` pin came to survive in four places.
+    # Copied on the way out all the same: `COMBOS[-1][1]` is a module-level
+    # dict, and handing it to a function by reference where the old code built
+    # a fresh one is a class of bug for the sake of nothing.
+    #
+    # `[-1]` is positional and load-bearing: stage 2 sweeps padding on top of
+    # the FULLEST combo, which is the last one because the table is written
+    # cumulatively, so the order is part of the table's meaning rather than its
+    # presentation. It re-based stage 2 SILENTLY until
+    # `test_the_combos_are_written_cumulatively` was added; the word is struck
+    # here because the property is now enforced, and a comment that keeps
+    # describing the world before its own fix is this PR's most repeated defect.
+    best = dict(COMBOS[-1][1])
     print("\n-- padding sweep, on top of the full best contact combo --")
     global COND
     keep_cond = dict(COND)
     try:
-        for pb, pa, mg in ((5.0, 4.0, 5.0), (4.0, 3.0, 3.0), (3.0, 2.0, 3.0),
-                           (3.0, 2.0, 2.0), (2.0, 1.5, 2.0), (2.0, 1.0, 1.0)):
+        for pb, pa, mg in PADDING:
             COND = dict(keep_cond, pad_before=pb, pad_after=pa, merge_gap_seconds=mg)
-            show(f"pad {pb:.0f}/{pa:.1f} merge {mg:.0f}", score(**best))
+            show(padding_label(pb, pa, mg), score(**best))
     finally:
         # Restored on the failure path too: a raise inside the loop would
         # otherwise leave this module global on the last swept value. `score`

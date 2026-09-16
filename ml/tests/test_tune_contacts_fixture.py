@@ -21,6 +21,7 @@ recorded row still applies is CF-309 (#359), not this file.
 Behavioural rather than a source scan: the guards in this suite were converted
 away from `inspect.getsource` substring checks in CF-174's own review rounds.
 """
+import re
 import sys
 
 import pytest
@@ -246,6 +247,172 @@ def test_each_reported_figure_comes_from_its_own_field(tmp_path, monkeypatch):
     assert "111s live-lost" in note, note
     assert "22.2% dead-rm" in note, note     # percentages, not fractions
     assert "33.3% recall" in note, note
+
+
+# Every line `_row` produces, identified by its SHAPE rather than by its label.
+#
+# The earlier version listed the four label prefixes the table happened to use,
+# and a hand-typed row under any other name ("MAX_SAMPLE_GAP_SEC=", a leading
+# space) was invisible to it. The version after that spelled `_row`'s format
+# exactly, and a hand-rolled `print()` one character off — `%7.0f` for `%7.0fs`
+# — was a row in the table that nothing could see. Both were enumerations of
+# today's spellings, which is the mistake this whole file is about.
+#
+# So the live-seconds column is `\S+`, deliberately unpinned. What distinguishes
+# a results line is the rally field `N/M` and the three percent columns, and
+# that was measured rather than assumed: against the four non-row lines the
+# tuner emits — the `fixture frame_height=…` scale line, the column header, the
+# recorded-run note, and the `-- padding sweep …` heading.
+_RESULTS_ROW = re.compile(
+    r"^(?P<label>.*?)\s+\d+\s+\d+\s+\d+/\d+\s+\S+\s+"
+    r"-?[\d.]+%\s+-?[\d.]+%\s+-?[\d.]+%\s*$"
+)
+
+
+def _printed_rows(out: str) -> list[str]:
+    return [m.group("label").strip() for line in out.splitlines() if (m := _RESULTS_ROW.match(line))]
+
+
+def _expected_rows() -> list[str]:
+    """Every row the tables say the tuner should print, in order."""
+    return [label for label, _, _ in _expected_state()]
+
+
+def _expected_state() -> list[tuple[str, dict, dict]]:
+    """(label, ball constants, COND) for every row, derived from the tables.
+
+    The whole state, not the one knob a label names. `score()` sets every
+    TUNABLE on each call and the padding sweep rebinds `COND`, so what a row was
+    actually scored under is those two dicts together — and a row that quietly
+    moves something its label does not mention is exactly the "table with a
+    hidden lie in it" this suite exists to forbid.
+    """
+    ball = {k: getattr(B, k) for k in T.TUNABLES}
+    cond = dict(T.COND)
+    rows = [(T.BASELINE_LABEL, ball, cond)]
+    rows += [
+        (f"{name}={v:g}", {**ball, name: v}, cond)
+        for name, values in T.SWEEPS.items() for v in values
+    ]
+    rows += [(label, {**ball, **overrides}, cond) for label, overrides in T.COMBOS]
+    # Stage 2 sweeps padding ON TOP OF the best combo — `COMBOS[-1]`, which
+    # `test_the_combos_are_written_cumulatively` makes the fullest. Derived from
+    # the table rather than repeated, so `best = COMBOS[0]` is a difference the
+    # comparison sees.
+    best = {**ball, **T.COMBOS[-1][1]}
+    rows += [
+        (T.padding_label(pb, pa, mg), best,
+         dict(cond, pad_before=pb, pad_after=pa, merge_gap_seconds=mg))
+        for pb, pa, mg in T.PADDING
+    ]
+    return rows
+
+
+def test_every_printed_row_comes_from_the_sweep_tables(monkeypatch, capsys):
+    """CF-309: the guard has to reach what the tool PRINTS, not what it holds.
+
+    `test_tune_contacts_sweep.py` asserts properties of `SWEEPS` and `COMBOS` —
+    no value repeats the shipping default, no combo duplicates another — and
+    none of that binds `_sweep`, which is free to ignore both tables. Re-typing
+    the old literal loop, `for v in (360.0, 240.0, 180.0, 120.0)`, reinstates
+    the exact baseline-duplicating row CF-309 is about and leaves ruff, mypy and
+    every one of those assertions green. Measured: it did.
+
+    Compared as a SET and a COUNT rather than a sequence, so the message can
+    name the difference; `test_the_rows_are_printed_in_the_tables_order` pins
+    the order separately.
+    """
+    out = _run(monkeypatch, [(1.0, 5.0), (8.0, 12.0)], capsys)
+    printed, expected = _printed_rows(out), _expected_rows()
+
+    assert set(printed) == set(expected), (
+        f"rows the tables do not explain: {sorted(set(printed) - set(expected))}; "
+        f"table entries with no row: {sorted(set(expected) - set(printed))}"
+    )
+    assert len(printed) == len(expected), (
+        f"{len(printed)} rows for {len(expected)} table entries — one is printed twice"
+    )
+
+
+def test_every_results_line_went_through_row(monkeypatch, capsys):
+    """`_RESULTS_ROW` recognises rows by the SHAPE of `_row`'s output, which is
+    one enumeration further out: it spells today's column format rather than
+    constraining the act of printing a row.
+
+    A hand-rolled `print()` that reuses an existing result dict through a
+    near-copy of that format — one column separator different — is a row in the
+    table and invisible to the regex, and it scores nothing extra so the call
+    count does not see it either. CF-309's originating defect was a hand-typed
+    LOOP in `_sweep`; a hand-typed PRINT is the same defect with a different
+    verb.
+
+    So every results line must be one `_row` produced. Compared as a multiset:
+    a line printed twice from one `_row` call fails too.
+    """
+    produced: list[str] = []
+    real = T._row
+
+    def recording(label, r, total_rallies):
+        line = real(label, r, total_rallies)
+        produced.append(line)
+        return line
+
+    monkeypatch.setattr(T, "_row", recording)
+    out = _run(monkeypatch, [(1.0, 5.0), (8.0, 12.0)], capsys)
+
+    printed = [line for line in out.splitlines() if _RESULTS_ROW.match(line)]
+    assert sorted(printed) == sorted(produced), (
+        f"results lines `_row` did not produce: "
+        f"{sorted(set(printed) - set(produced))}; "
+        f"`_row` output that was not printed: {sorted(set(produced) - set(printed))}"
+    )
+
+
+def test_the_rows_are_printed_in_the_tables_order(monkeypatch, capsys):
+    """Presentation, pinned so the state comparison below can zip the printed
+    rows against the table rather than parsing each label back into knobs."""
+    out = _run(monkeypatch, [(1.0, 5.0), (8.0, 12.0)], capsys)
+    assert _printed_rows(out) == _expected_rows()
+
+
+def test_each_row_scores_exactly_what_its_label_advertises(monkeypatch, capsys):
+    """The rung above the labels, and the whole state rather than one knob.
+
+    Comparing label text to the tables says the tuner prints the right NAMES.
+    An earlier version of this test then checked, for a row labelled `NAME=v`,
+    only that `NAME` was `v` — so nine rows could clamp `SEG_MAX_SPEED_PXPS` to
+    1.0 on the side and read as a clean single-knob sweep, the padding rows
+    could advertise `merge 3` while scoring merge 5, and stage 2 could sweep on
+    top of `COMBOS[0]` instead of the best combo. All three were measured
+    passing.
+
+    So both dicts `score()` and the padding sweep can move — every TUNABLE and
+    every `COND` key — are recorded per row and compared whole. A row that moves
+    anything its label does not name now fails, which is what "scores what its
+    label advertises" was always supposed to mean.
+    """
+    applied: list[tuple[dict, dict]] = []
+    real = B.find_contacts
+
+    def recording(track, **kw):
+        applied.append(({k: getattr(B, k) for k in T.TUNABLES}, dict(T.COND)))
+        return real(track, **kw)
+
+    monkeypatch.setattr(B, "find_contacts", recording)
+    expected = _expected_state()
+    out = _run(monkeypatch, [(1.0, 5.0), (8.0, 12.0)], capsys)
+
+    assert _printed_rows(out) == [label for label, _, _ in expected]
+    assert len(applied) == len(expected), (
+        f"{len(applied)} scoring calls for {len(expected)} rows"
+    )
+    for (label, want_ball, want_cond), (got_ball, got_cond) in zip(expected, applied):
+        ball_moved = {k: (want_ball[k], got_ball[k])
+                      for k in want_ball if want_ball[k] != got_ball[k]}
+        cond_moved = {k: (want_cond[k], got_cond[k])
+                      for k in want_cond if want_cond[k] != got_cond[k]}
+        assert not ball_moved, f"row {label!r} scored with {ball_moved} (want, got)"
+        assert not cond_moved, f"row {label!r} scored under COND {cond_moved} (want, got)"
 
 
 def test_the_padding_sweep_restores_COND_when_a_row_raises(monkeypatch, capsys):
