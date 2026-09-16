@@ -14,7 +14,8 @@ from app.models.game import Game
 from app.models.post import Post
 from app.models.user import User
 from app.schemas.post import PostCreate, PostOut, PostUpdate
-from app.services import access, follow_graph, post_view, profiles, storage
+from app.services import access, follow_graph, post_view, profiles, publishing, storage
+from app.services.ratelimit import POLICIES, rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -136,11 +137,30 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
     if clip is None or game is None or game.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Clip not found")
 
+    # The post's own tier, whether or not the clip has to move for it: a public
+    # post over an already-public clip is still public posting.
+    publishing.assert_tier_allowed(body.visibility)
+
     clip_level = access.widest_allowed(clip, game)
+    if not access.at_most(body.visibility, clip_level) and body.raise_clip_visibility:
+        # The caller asked for the clip to come with it (CF-109b, #398). Set on
+        # the ORM object and committed alongside the INSERT below, so a post
+        # that fails to insert cannot leave the footage widened behind it —
+        # which a separate PATCH-then-POST could.
+        #
+        # To exactly the post's tier, never wider. `followers` on the post
+        # means `followers` on the clip; there is no path here that reaches
+        # `public` unless that is what was asked for and the deployment allows
+        # it. And the CLIP, never the game — raising the game publishes every
+        # clip in it, the silent side effect the 409 below exists to prevent.
+        clip.visibility = body.visibility
+        clip_level = body.visibility
+
     if not access.at_most(body.visibility, clip_level):
-        # Refuse rather than silently widening the clip. Raising the clip's
-        # visibility exposes the whole game's footage and has to be a separate,
-        # deliberate act by the owner (CF-109: "never a silent side effect").
+        # Refuse rather than silently widening the clip. Widening it — this
+        # clip only, never its game — happens only when the owner asks for it,
+        # through `raise_clip_visibility` above or `PATCH /clips/{id}/visibility`
+        # (CF-109: "never a silent side effect").
         #
         # **This is a UX guarantee, not the security boundary.** There is a
         # window between this check and the INSERT in which the clip can go
@@ -151,18 +171,25 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
         # it. Anything that denormalizes `posts.visibility` into a feed query or
         # a cache — rather than joining the clip — breaks that property.
         #
-        # The message names the ceiling but no longer prescribes a remedy: no
-        # write path for a clip's or a game's visibility exists yet, so telling
-        # the user to "change the clip's visibility first" pointed at something
-        # the product cannot do. `ClipOut.effective_visibility` carries the same
-        # ceiling to clients so the composer can grey out what it cannot offer
+        # The message names a remedy again, because since CF-109b there is
+        # one: `raise_clip_visibility`, or the standalone
+        # `PATCH /clips/{id}/visibility`. It said nothing for a release
+        # because no write path existed and pointing at one would have sent the
+        # user somewhere the product could not go.
+        #
+        # This branch is still reached, and is still the security-relevant one:
+        # a caller who did not ask to widen the clip gets refused rather than
+        # silently widening it. `ClipOut.effective_visibility` carries the same
+        # ceiling to clients so the composer can offer the raise up front
         # instead of letting the user find it here.
         raise HTTPException(
             status_code=409,
             detail=(
                 f"This clip is {clip_level.value}, so it can only be posted to "
                 f"{clip_level.value}. A {body.visibility.value} post would show "
-                f"more of the footage than the clip itself does."
+                f"more of the footage than the clip itself does. Set the clip to "
+                f"{body.visibility.value} first, or post with "
+                f"raise_clip_visibility."
             ),
         )
 
@@ -182,13 +209,29 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
     return _serialize(post, clip, author)
 
 
-@router.get("/{post_id}", response_model=PostOut)
+@router.get(
+    "/{post_id}",
+    response_model=PostOut,
+    dependencies=[Depends(rate_limit(POLICIES["post"]))],
+)
 async def get_post(post_id: uuid.UUID, db: DB, viewer_id: ViewerId = None):
+    """One post, gated by its own tier and the clip beneath it.
+
+    **Anonymous exposure B (CF-186, #189): UUID-keyed content, throttled.**
+    120/min per signed-in user, or per client address when there is none.
+    Matched to `/clips/{id}/share` rather than to the game routes: a post id
+    cannot be walked, so this is a load bound and not an anti-enumeration one,
+    and a post is the object a public link points at.
+    """
     post, clip, author = await _load_for_read(post_id, viewer_id, db)
     return _serialize(post, clip, author)
 
 
-@router.get("", response_model=list[PostOut])
+@router.get(
+    "",
+    response_model=list[PostOut],
+    dependencies=[Depends(rate_limit(POLICIES["user_posts"]))],
+)
 async def list_user_posts(
     db: DB,
     username: str,
@@ -199,6 +242,14 @@ async def list_user_posts(
 
     Not a feed: the feed (CF-111) spans everyone you follow and is cursor
     paginated. This is scoped to a single handle.
+
+    **Anonymous exposure A (CF-186, #189): handle-keyed and enumerable,
+    throttled.** 30/min **per client address**, signed in or not — deliberately
+    the same number as `GET /users/{handle}`. A walker
+    hitting either door learns the same thing, so a different budget on one of
+    them would only advertise which is cheaper. Per ADDRESS even when the
+    caller is signed in, unlike the exposure-B routes: signup is self-serve, so
+    a per-account budget is one an attacker mints. `Policy.by_address`.
 
     Capped rather than paged, deliberately for now — a profile grid shows the
     recent ones and the card scopes it there. When it does need paging it wants

@@ -44,6 +44,57 @@ MAX_JUMP_PX  = 300        # max pixels a ball can move between sampled frames
                           # position are treated as a different object
 MAX_MISS     = 5          # max consecutive missed frames before track is reset
 
+# Bump this when a change alters the TRACK a given video produces.
+#
+# `_ball_cache_key` in the worker used to key cached tracks on the video's md5,
+# the model and sample_every, and nothing else — so a change to how tracking
+# works left every existing cache entry looking valid, and the next run of an
+# already-processed video silently replayed a track built by the OLD code. On a
+# tuning change that is a wrong answer nobody can see; on a re-measure it is
+# worse, because the numbers come back unchanged and read as "no effect". This
+# constant is now the key's fourth component, so bumping it changes every key.
+#
+# CF-231 (#238) names this as a prerequisite for downscaling the tracking
+# input, and says CF-229 (#233) has the same one for scaling MAX_JUMP_PX and
+# that whichever lands first should do it. So it is done here, once, ahead of
+# both.
+#
+# WHAT COUNTS AS SUCH A CHANGE: anything that shapes the positions `track_ball`
+# emits. MODEL_ID is already in the key. SAMPLE_EVERY is NOT: the key holds the
+# per-video `sample_every` argument, and this constant survives as the
+# denominator of `max_jump`, so moving it changes every track under unchanged
+# keys. This therefore covers SAMPLE_EVERY, MIN_CONF, MAX_JUMP_PX, MAX_MISS, the
+# tracking code `test_ball_cache_version.py` fingerprints, and any new tracking
+# input — a downscale among them — once it is added there. A helper `track_ball`
+# starts calling is not covered until it is. It deliberately does NOT cover the
+# segmentation or contact constants: the cache holds raw positions and those run
+# afterwards, so folding them in would throw away every cached track for a
+# change that cannot move one.
+#
+# A bump ships with `modal deploy ml/modal_app.py`, and the Modal deploy goes
+# FIRST. When Modal is configured the worker tracks there
+# (`_track_ball_cached`), looking the function up by name at call time and
+# caching whatever comes back under its own key; that image bundles `ml` when
+# it is deployed. Release the worker first and it writes a track built by the
+# OLD code under the NEW key — the stale track this exists to prevent, under a
+# key nothing will ever invalidate. Deploying Modal first keeps the mismatch on
+# the OLD key, which the worker release then orphans. The cost is the window
+# between the two: until the worker release, the old worker can process live
+# games with NEW-code tracks, and caches them under the OLD key — which a worker
+# rollback, or an eval run from a pre-bump checkout, would read afterwards.
+#
+# The same exposure exists before any release. `ml.eval.harness --offline` and
+# `diagnose_detection` build the key from the checkout's own `ml`, and when
+# Modal is configured they track on the deployed Modal app — so running either
+# from a branch that bumps this, before its Modal deploy, caches an OLD-code
+# track under the NEW key. Until that deploy, run them with MODAL_TOKEN_ID and
+# MODAL_TOKEN_SECRET unset: a cache miss then falls to local tracking, which the
+# eval image cannot run, so it raises and caches nothing.
+#
+# `test_ball_cache_version.py` fails if a fingerprinted input moves and this
+# does not, so bumping it is a decision rather than something to remember.
+TRACKING_CACHE_VERSION = 1
+
 # ── Track segmentation config ─────────────────────────────────────────────────
 # The raw track is a chimera: _pick_active hops between the game ball, spare
 # balls, and false detections (measured: 23% of consecutive positions jump
@@ -989,26 +1040,24 @@ def _make_rally(seg: list[dict], video_duration: float, frame_height: int = 0) -
     }
 
 
-def contacts_to_rallies(
-    contacts: list[dict],
-    video_duration: float,
-    frame_height: int,
-) -> list[dict]:
+def contact_segments(contacts: list[dict]) -> list[list[dict]]:
     """
-    Convert a contact list into rally clip boundaries.
+    Steps 1 and 2 of contacts_to_rallies: group contacts into candidate rally
+    segments, before either noise gate has been applied.
 
-    Algorithm:
-      1. Group contacts by time gap: a new segment starts when the gap to the
-         previous contact exceeds RALLY_GAP_SECONDS.
-      2. Segments longer than MAX_CLIP_DURATION are subdivided on their largest
-         internal gaps so each sub-clip stays under the cap.
-      3. Each segment becomes one clip:
-           rally_start = first_contact.time - PRE_RALLY_PAD  (>= 0)
-           rally_end   = last_contact.time  + POST_PLAY_PAD  (<= video_duration)
-      4. Clips shorter than MIN_RALLY_DURATION are discarded as noise.
+    Split out of contacts_to_rallies rather than copied (CF-376). The question
+    that card asks — how many rallies land in the 2-contact band that
+    MIN_RALLY_CONTACTS deletes — is a question about *these* lists, and it can
+    only be answered by the grouping production actually runs. A second copy in
+    ml/eval would answer it about a different pipeline, and would answer it
+    wrongly the first time either copy was tuned.
 
-    Returns list of dicts compatible with generate_clips():
-      {start, end, action, confidence, labels}
+    Grouping is by time gap (RALLY_GAP_SECONDS), then long groups are
+    subdivided on their largest internal gaps so each stays under
+    MAX_CLIP_DURATION. Neither gate below is applied here: the returned lists
+    include the 1- and 2-contact segments, which is the whole point.
+
+    Returns segments in no particular order; contacts_to_rallies sorts them.
     """
     if not contacts:
         return []
@@ -1052,6 +1101,35 @@ def contacts_to_rallies(
                     split_idx = i
             pending.append(seg[:split_idx])
             pending.append(seg[split_idx:])
+
+    return final_segments
+
+
+def contacts_to_rallies(
+    contacts: list[dict],
+    video_duration: float,
+    frame_height: int,
+) -> list[dict]:
+    """
+    Convert a contact list into rally clip boundaries.
+
+    Algorithm:
+      1. Group contacts by time gap: a new segment starts when the gap to the
+         previous contact exceeds RALLY_GAP_SECONDS.
+      2. Segments longer than MAX_CLIP_DURATION are subdivided on their largest
+         internal gaps so each sub-clip stays under the cap.
+      3. Each segment becomes one clip:
+           rally_start = first_contact.time - PRE_RALLY_PAD  (>= 0)
+           rally_end   = last_contact.time  + POST_PLAY_PAD  (<= video_duration)
+      4. Clips shorter than MIN_RALLY_DURATION are discarded as noise.
+
+    Returns list of dicts compatible with generate_clips():
+      {start, end, action, confidence, labels}
+    """
+    if not contacts:
+        return []
+
+    final_segments = contact_segments(contacts)
 
     # ── 3 & 4. Build rally windows, discard noise ─────────────────────────────
     rallies: list[dict] = []

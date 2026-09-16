@@ -879,6 +879,78 @@ class Settings(BaseSettings):
     r2_bucket_name: str = "clipfarm"
     r2_public_url: str = ""
 
+    # Whether an owner may set a clip or a post to `public` (CF-109b, #398).
+    #
+    # OFF by default, and that is a product decision rather than a stub — see
+    # services/publishing.py for the argument in full. Short version: `public`
+    # puts youth-sports footage in front of signed-out strangers and anything
+    # that crawls a link, which is what wants terms of service (CF-75/CF-88)
+    # and a report and takedown path (CF-116). `followers` needs no moderation
+    # surface, because its audience is approved one by one — but until the
+    # follow graph (CF-110) lands it reaches nobody but the owner, so with this
+    # off every accepted tier is owner-only in practice. Both tiers are built
+    # and tested; this decides which the API accepts.
+    #
+    # A write gate only: no read consults it, so turning it off withdraws
+    # nothing already `public`.
+    #
+    # Turning it on is one environment variable, so the day those land there is
+    # no code change to make.
+    public_posting_enabled: bool = False
+
+    # ── Anonymous read limits (CF-186, #189) ─────────────────────────────────
+    # Seven endpoints answer without a credential. Six are throttled per caller
+    # (see services/ratelimit.py for the two exposures and the fail-open
+    # posture); GET /clips/{id}/download is the seventh and requires auth
+    # instead. All limits are per minute. The two enumerable routes key on the
+    # client address even for a signed-in caller (`Policy.by_address`); the rest
+    # key on the signed-in caller and fall back to the client
+    # address when there is no user.
+    #
+    # A switch, not a knob: the alternative to `rate_limit_enabled` is a code
+    # deploy while the incident is happening.
+    rate_limit_enabled: bool = True
+    # THE NUMBER OF REVERSE PROXIES IN FRONT OF THIS PROCESS, and the setting
+    # most likely to be wrong, because it is silent in both directions.
+    #
+    # uvicorn's own --forwarded-allow-ips defaults to 127.0.0.1 and
+    # scripts/render-start-api.sh passes nothing, so on Render `request.client`
+    # is the platform router for every request on Earth. Left at 0 there, the
+    # whole internet shares one bucket and the limiter throttles every reader
+    # at once — strictly worse than no limiter, and green in every local test.
+    # Set too high, a caller picks their own bucket by sending their own
+    # X-Forwarded-For.
+    #
+    # 0 is right for a direct-to-uvicorn run (docker compose, local dev). Render
+    # sets 1 in render.yaml; any VPS with Caddy or nginx in front wants 1 too
+    # (DEPLOY.md).
+    rate_limit_trusted_proxy_hops: int = Field(default=0, ge=0)
+    # Exposure A — handle-keyed enumeration. A wordlist walk needs thousands of
+    # hits, so 30/min puts a 10k-name list at ~5.5h per identity while a human
+    # reading profiles issues one call per profile.
+    rate_limit_profile_per_minute: int = Field(default=30, ge=1)
+    rate_limit_user_posts_per_minute: int = Field(default=30, ge=1)
+    # The follower/following lists (CF-110). Its own knob rather than riding on
+    # `profile`: the follow graph is a distinct scraping target from the profile
+    # card, and an operator throttling graph enumeration should not have to
+    # tighten ordinary profile reads to do it. Same default and same by_address
+    # treatment, because it is the same anonymous, handle-keyed surface.
+    rate_limit_follows_per_minute: int = Field(default=30, ge=1)
+    # Exposure B — UUID-keyed content. The game pair is sized by the detail
+    # page: it polls GET /games/{id} every 5s while processing (12/min per open
+    # tab), and fetches GET /games/{id}/clips once the game is ready and again
+    # each time its filters settle. The filters are debounced, so a slider
+    # drag costs one clips request rather than one per step.
+    rate_limit_game_per_minute: int = Field(default=60, ge=1)
+    rate_limit_games_clips_per_minute: int = Field(default=60, ge=1)
+    # Loosest deliberately: #189 notes a per-IP limit over-throttles /share,
+    # where traffic on a deliberately public clip is the success case. Present
+    # to bound the presign cost, not to discourage sharing. /posts/{id} is
+    # matched to it — also UUID-keyed, so also a load bound rather than an
+    # anti-enumeration one.
+    rate_limit_share_per_minute: int = Field(default=120, ge=1)
+    rate_limit_post_per_minute: int = Field(default=120, ge=1)
+
     # Redis / Celery
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"

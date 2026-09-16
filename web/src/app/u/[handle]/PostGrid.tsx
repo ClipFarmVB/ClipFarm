@@ -5,6 +5,20 @@ import { Globe, Loader2, Lock, Trash2, Users } from "lucide-react";
 import { deletePost, getUserPosts, type Post, type Visibility } from "@/lib/api";
 import { SOCIAL_ENABLED } from "@/lib/features";
 import { useMe } from "@/lib/useMe";
+import { PostPlayerModal } from "./PostPlayerModal";
+
+/**
+ * Read aloud in place of the icon; the icon alone conveyed the tier.
+ *
+ * Worded for anyone looking, not for the author: the badge renders on every
+ * viewer's grid, and "Visible to your followers" read to a visitor describes
+ * the visitor's followers rather than the author's.
+ */
+const VISIBILITY_LABEL: Record<Visibility, string> = {
+  private: "Only the author can see this",
+  followers: "Visible to followers",
+  public: "Visible to everyone",
+};
 
 const TIER_ICON: Record<Visibility, typeof Lock> = {
   private: Lock,
@@ -23,9 +37,17 @@ const TIER_ICON: Record<Visibility, typeof Lock> = {
  * is the half of the card's acceptance line — "deleting the clip or the post
  * removes it from all surfaces" — that was actually missing.
  *
- * Deliberately a grid of thumbnails rather than a player: the full playback
- * experience is CF-112's feed. This is the owner's inventory and the visitor's
- * proof the profile has something on it.
+ * Deliberately a grid of thumbnails rather than a feed: the full playback
+ * experience — autoplay on scroll, the action rail, prefetch — is CF-112's.
+ * This is the owner's inventory and the visitor's proof the profile has
+ * something on it.
+ *
+ * It did not play anything at all until CF-109b item 2 (#398), which was a gap
+ * rather than a decision: the profile is the only surface that shows posts, and
+ * there is no feed yet (CF-111, #141, is open), so a published clip could not
+ * be watched anywhere — including by its own author. A tile now opens
+ * `PostPlayerModal`,
+ * which needs no API change because `PostOut.playback` already carries the URL.
  */
 /** Matches the API's own default. Requested explicitly so a full page is
  *  detectable rather than a number the client has to assume. */
@@ -42,6 +64,7 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
   // this is the only surface that can unpublish them. The count changes; what
   // the server said does not.
   const [wasFullPage, setWasFullPage] = useState(false);
+  const [playing, setPlaying] = useState<Post | null>(null);
   // Null when signed out. PostGrid subscribes rather than taking a prop:
   // `isSelf` above is a different question (is this MY profile) and is false
   // for a stranger both signed in and signed out, so it cannot stand in for
@@ -52,6 +75,11 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
     let cancelled = false;
     setPosts(null);
     setError(null);
+    // The open player holds the whole Post, so it has to go with the grid it
+    // came from. Left set, the spinner below unmounts the modal and the refetch
+    // mounts it again — autoplaying a private post to the session that just
+    // signed out, or the previous profile's post over a new handle.
+    setPlaying(null);
     getUserPosts(handle, PAGE)
       .then((data) => {
         if (!cancelled) {
@@ -167,20 +195,48 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
                 </div>
               )}
 
-              <span
-                className="absolute left-1.5 top-1.5 rounded bg-black/60 p-1 text-white/80"
-                title={post.visibility}
-              >
-                <Tier className="h-3 w-3" />
+              {/* The play affordance covers the frame, and sits BELOW the
+                  tier badge and the delete button in the stacking order so
+                  those stay clickable. A button rather than an onClick on the
+                  tile div, so it is reachable by keyboard: one tab stop per
+                  post for a visitor, and two on your own profile, where Remove
+                  is the second. */}
+              <button
+                type="button"
+                onClick={() => setPlaying(post)}
+                aria-label={post.caption ? `Play: ${post.caption}` : "Play this post"}
+                className="absolute inset-0 z-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand"
+              />
+
+              {/* `pointer-events-none` keeps the play target underneath
+                  clickable, and it also means this element is never a hit
+                  target — so `:hover` never applies and the browser never
+                  renders a `title`. The tooltip that used to name the tier is
+                  gone for good; the tier now rides in text instead, which is
+                  also the first time it has been available to a screen reader
+                  (a `title` on a bare span is not a reliable accessible name).
+                  Icon hidden from the tree so the two are not read twice. */}
+              <span className="pointer-events-none absolute left-1.5 top-1.5 z-10 rounded bg-black/60 p-1 text-white/80">
+                <Tier className="h-3 w-3" aria-hidden="true" />
+                <span className="sr-only">{VISIBILITY_LABEL[post.visibility]}</span>
               </span>
 
               {isSelf && (
+                // Shown without hover wherever touch is possible. The tile is
+                // now the thing you tap to watch and this sits above that
+                // target, so an invisible control would still take a finger tap
+                // and unpublish the post. `group-hover` cannot be relied on:
+                // Tailwind 4 compiles `hover` inside `@media (hover: hover)`,
+                // which describes the PRIMARY input only, so a touch laptop, a
+                // 2-in-1 or an iPad with a trackpad matches it and never shows
+                // the control to a finger. `any-pointer-coarse` covers any
+                // touch input; `hover:none` stays for devices with no hover.
                 <button
                   onClick={() => remove(post.id)}
                   disabled={deleting === post.id}
                   title="Remove this post. The clip itself stays in your library."
                   aria-label="Remove this post"
-                  className="absolute right-1.5 top-1.5 rounded bg-black/60 p-1 text-white/80 opacity-0 transition-opacity hover:text-white focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+                  className="absolute right-1.5 top-1.5 z-10 rounded bg-black/60 p-1 text-white/80 opacity-0 transition-opacity hover:text-white focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 any-pointer-coarse:opacity-100 disabled:opacity-50"
                 >
                   {deleting === post.id ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
@@ -191,7 +247,7 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
               )}
 
               {post.caption && (
-                <p className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 text-[11px] text-white/90">
+                <p className="pointer-events-none absolute inset-x-0 bottom-0 z-10 truncate bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 text-[11px] text-white/90">
                   {post.caption}
                 </p>
               )}
@@ -208,6 +264,9 @@ export function PostGrid({ handle, isSelf }: { handle: string; isSelf: boolean }
           Showing the {PAGE} most recent posts.
           {isSelf ? " Older ones aren't listed here yet." : ""}
         </p>
+      )}
+      {playing && (
+        <PostPlayerModal post={playing} onClose={() => setPlaying(null)} />
       )}
     </div>
   );
