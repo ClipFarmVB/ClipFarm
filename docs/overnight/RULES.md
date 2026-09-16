@@ -69,6 +69,12 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
   wording was strong enough that a reader who remembers it needs to know it was
   overturned by the person whose repo it is, not worked around.
 
+  **The prohibition on the other four surfaces still has a mechanism**, which
+  the reversal nearly deleted along with the rest: these stamps are emitted
+  client-side and are suppressible, and a sandbox does not inherit the local
+  settings that suppress them. So a stamp on a PR body, a review, a comment or
+  an issue is something the run added and can leave out.
+
   **Footer text you cannot prevent is still identified by REPRODUCING it**, not
   by reasoning about where it came from: post once, read the result back, and if
   text you did not write is present, quote it verbatim in the report and carry
@@ -589,11 +595,6 @@ round running the **neighbour** of the mutation the commit had run:
 | `7aae60e` | "max_\* reduced to a copy of the mean" | caught for `max_conf_3s` only; `max_speed_3s` shipped green |
 | `e52ed47` | "both NaN conventions" | the magnitude half asserted `.max()`, which is identical under both |
 
-Rows 4 and 5 are the one exception to "read it in the commit": `adddc9e`'s own
-message records nine mutations across four indexes and reads as coverage, and
-both gaps are in the cold round `cold: findings @ adddc9e`, which returned
-findings rather than a settle. #477 was parked with an
-`unsettled: needs a decision @ adddc9e` **comment** and is open.
 
 The last was written while fixing the one before it, in a commit whose subject
 names the very thing it got wrong. `abd0ae8` earns its row twice over — it also
@@ -639,29 +640,16 @@ different lessons in them:
 
 - **Pin the consumer, not the table it reads.** A guard that asserts properties
   of a data structure does not constrain the code that consumes it, and the
-  distance between those two is where the defect lives. It went on the table
-  first — the value literal, then the way it is *bound*, since `+=` and
-  `.update()` survived a fix aimed at a second `NAME = ...` — before anyone
-  noticed the consumer could ignore the table entirely and re-type the literal.
-  Then it followed the consumer out: the spellings of the labels it printed,
-  everything the rows moved that their labels did not name, the difference
-  between the globals and what was actually passed.
+  distance between the two is where the defect lives: a consumer can ignore the
+  table and re-type the literal. The tell is a guard and its subject living in
+  different artifacts. Ask what the consumer is free to do that the table cannot
+  see, and assert *that* — record what the code did and compare it against what
+  the table says it should have done. **And when a guard needs a third
+  tightening, the finding is its shape, not its tightness.**
 
-  The tell is a guard and its subject living in different artifacts. Ask what
-  the consumer is free to do that the table cannot see, and assert *that* —
-  record what the code actually did and compare it against what the table says
-  it should have done, rather than checking the table is well-formed. **And when
-  a guard needs a third tightening, the finding is its shape, not its
-  tightness.** That judgement ended two PRs in one run. Nearly every finding on
-  the way there was in the guard or the prose about it — but not all of them, so
-  the rounds are not wasted, only mis-aimed.
-
-Every review round this section has had found it breaking its own rule, inside
-the paragraph fixing the previous instance. If a document written specifically
-to state the rule cannot state it without breaking it, the instinct is not one
-anybody outgrows by knowing about it — which is the argument for a mechanical
-check over a resolution, and for keeping prose like this short enough that it
-has few places to be wrong.
+This section has itself broken this rule while stating it, more than once and
+inside the paragraph fixing the instance before. Keep prose like this short: it
+is read on every lap, and every sentence is a place to be wrong.
 
 **The load-bearing half is the prose, not the testing.** In every instance above
 the mutation was run and the result read correctly; what went wrong was the
