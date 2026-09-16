@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { FolderOpen, Plus, X, Check, Loader } from "lucide-react";
+import { AlertCircle, FolderOpen, Plus, X, Check, Loader } from "lucide-react";
 import {
   getCollections,
   createCollection,
@@ -42,6 +42,13 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [createLoading, setCreateLoading] = useState(false);
+  // Two error slots, not one. `error` is the outcome of something the user
+  // just did and is cleared when they try again; `loadError` is a standing fact
+  // about the list they are looking at and survives every action, because a
+  // successful create after a failed load otherwise leaves them reading a
+  // one-item list as if it were their whole account (CF-304).
+  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const newNameRef = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -106,6 +113,12 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   useEffect(() => {
     getCollections()
       .then(setCollections)
+      // Without this the fetch rejects unhandled AND the empty-list branch
+      // below tells the user they have no collections — an affirmative claim
+      // about their account made from a network failure (CF-304).
+      // The card below supplies "Couldn't load your collections."; this is the
+      // reason that follows it, so the fallback must not repeat the heading.
+      .catch((e) => setLoadError(e instanceof Error ? e.message : "Please try again."))
       .finally(() => setLoading(false));
   }, []);
 
@@ -138,9 +151,20 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   async function handleAdd(collectionId: string) {
     if (saved.has(collectionId) || saving === collectionId) return;
     setSaving(collectionId);
+    setError(null);
     try {
       await addClipToCollection(collectionId, clipId);
       setSaved((prev) => new Set(prev).add(collectionId));
+    } catch (e) {
+      // The row un-spins either way; without this the clip silently is not in
+      // the collection.
+      //
+      // Reported here and NOT rethrown, which is what keeps a create-then-add
+      // failure to one message. `handleCreate` does await this inside its own
+      // try, so its catch would wrap it — swallowing here rather than at the
+      // call site is what makes the two paths report once, and the comment on
+      // that await says the same thing from the other end.
+      setError(e instanceof Error ? e.message : "Couldn't add the clip.");
     } finally {
       setSaving(null);
     }
@@ -155,13 +179,22 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
     // entry points at once.
     if (createLoading) return;
     setCreateLoading(true);
+    setError(null);
     try {
       const col = await createCollection(name);
       setCollections((prev) => [col, ...prev]);
       setNewName("");
       setCreating(false);
-      // Immediately add clip to the newly created collection
+      // Immediately add clip to the newly created collection.
+      //
+      // Inside the try and AFTER the three lines above, both deliberately.
+      // `handleAdd` owns its own error, so a create-then-add failure reports
+      // once rather than twice; and clearing `creating`/`newName` before the
+      // await is what CF-227's Escape contract depends on (see the onEscape
+      // comment above) — a catch here must not reorder them.
       await handleAdd(col.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't create the collection.");
     } finally {
       setCreateLoading(false);
     }
@@ -245,7 +278,32 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
             </div>
           )}
 
-          {!loading && collections.length === 0 && !creating && (
+          {/* Labelled, because the two cards are otherwise identical and can
+              carry the same sentence — one about the list, one about what the
+              user just did. Without the prefix a failed create reads as the
+              list failing again.
+
+              "Your existing collections are not shown" rather than "anything
+              below may be incomplete": the fetch failed, so nothing below came
+              from it, and the only row that can appear afterwards is one the
+              user just created. */}
+          {loadError && (
+            <div className="mx-4 my-3 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              <span>
+                <span className="font-medium">Couldn&apos;t load your collections.</span>{" "}
+                {loadError} Your existing collections are not shown.
+              </span>
+            </div>
+          )}
+
+          {error && (
+            <div className="mx-4 my-3 flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
+              <AlertCircle size={13} className="shrink-0" /> {error}
+            </div>
+          )}
+
+          {!loading && !loadError && collections.length === 0 && !creating && (
             <p className="px-4 py-4 text-center text-[12px] text-subtle">
               No collections yet — create one below.
             </p>

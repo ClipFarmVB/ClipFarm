@@ -43,10 +43,21 @@ function LoginForm() {
 
   async function handleGoogleLogin() {
     const supabase = createClient();
-    await supabase.auth.signInWithOAuth({
+    setError(null);
+    // The returned `{ error }` was discarded, so a misconfigured provider
+    // failed with no UI at all — while `handleLogin` twelve lines above does
+    // exactly this with the same setter (CF-304).
+    const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: `${window.location.origin}/auth/callback` },
     });
+    if (error) setError(error.message);
+    // `nextPath` is deliberately NOT threaded here. `/auth/callback` hardcodes
+    // its destination and documents why — a caller-supplied one is an
+    // open-redirect surface, and Supabase glob-matches `redirectTo` in full
+    // against its allowlist, so a query string can be rejected by a dashboard
+    // setting no PR controls. Sending `next` without changing the callback
+    // would be a no-op that reads like a fix. Carded instead.
   }
 
   return (
