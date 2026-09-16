@@ -70,6 +70,9 @@ USER_REFERENCING_TABLES = {
     "corrections": "CASCADE",
     # Two FKs, both CASCADE: the edge is deleted from either end (CF-110).
     "follows": "CASCADE",
+    # Likes and comments (CF-113) go with the account that made them.
+    "post_likes": "CASCADE",
+    "post_comments": "CASCADE",
     "games": None,
     "posts": "CASCADE",
     "teams": None,

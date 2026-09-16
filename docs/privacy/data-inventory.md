@@ -141,6 +141,8 @@ likely to miss:
 | `posts` | `CASCADE` | Removed with the account |
 | `corrections` | `CASCADE` | Removed with the account |
 | `follows` | `CASCADE` (both ends) | Removed with the account |
+| `post_likes` | `CASCADE` | Removed with the account |
+| `post_comments` | `CASCADE` | Removed with the account — **comment text is user-authored content**, so erasure deletes it rather than anonymising it |
 | `upload_events` | `CASCADE` | Removed with the account |
 
 Any user who has uploaded a game, made a team, or built a collection — that is,
