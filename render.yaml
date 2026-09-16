@@ -393,3 +393,25 @@ services:
         sync: false
       - key: SENTRY_AUTH_TOKEN
         sync: false
+      # Deep-link association files (CF-322), served at /.well-known/. Not
+      # NEXT_PUBLIC_*: they are read per request by the route handlers, so
+      # changing one is a restart rather than a rebuild, and nothing about them
+      # belongs in the browser bundle.
+      #
+      # Each file 404s until its own variables are set, which is the state this
+      # repo is in until the two developer accounts exist (CF-345, CF-346).
+      # Leave them unset rather than guessing — a wrong value is worse than
+      # nothing here, because Apple's CDN caches the file and iOS re-reads it
+      # only on install and app update.
+      - key: IOS_APP_ID               # <TeamID>.<bundleIdentifier>, from Apple Developer → Membership
+        sync: false
+      - key: ANDROID_PACKAGE_NAME     # must match applicationId in the Android build
+        sync: false
+      # Comma-separated. Must be the PLAY APP SIGNING key's fingerprint (Play
+      # Console → Test and release → App integrity), NOT the upload key's —
+      # Google re-signs every build, so the key you sign with locally is the
+      # wrong one to publish. Record which key each value came from when you
+      # set it; that provenance note is an acceptance criterion of CF-322 and
+      # there is no way to recover it from the value itself.
+      - key: ANDROID_SHA256_CERT_FINGERPRINTS
+        sync: false
