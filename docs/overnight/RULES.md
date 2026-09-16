@@ -573,12 +573,16 @@ single caught mutation into a statement about the guard, with no plural in
 sight. The reliable question is not "is there a plural" but **"is this sentence
 wider than the run behind it".**
 
-**Seven claims, across six commits and two PRs** in the run of 2026-09-16,
-each found by a review round running the **neighbour** of the mutation the
-commit had run. Counted by CLAIM rather than by commit, because `adddc9e` made
-two and the round that found the second called it "the seventh instance" while
-the run's own tallies elsewhere said five and six — three numbers over one set
-of evidence, which is what happens when the unit is left implicit:
+**There is no count here, and that is the third correction.** The run of
+2026-09-16 produced this at least a dozen times across three PRs. It was written
+first as five, then six, then seven, and each round found the next number low —
+the last time by six, across a PR the same author had opened an hour earlier,
+whose own commit message says "the eighth instance". The tally was **stale by
+construction**: it pinned a figure to a run that was still generating instances
+while the figure was being written. Three rounds each fixed the number; none
+fixed the thing that made it go stale. So: no number, and seven representative
+cases, each found by a review round running the **neighbour** of the mutation
+the commit had run.
 
 | commit | claimed | what one neighbouring mutation showed |
 | --- | --- | --- |
@@ -592,10 +596,16 @@ of evidence, which is what happens when the unit is left implicit:
 
 Rows 4 and 5 are the one exception to "read it in the commit": `adddc9e`'s own
 message records nine mutations across four indexes and reads as coverage, and
-both gaps are in the cold round that reviewed it — which did **not** settle the
-PR. #477 is still open and labelled `unsettled`. Saying "the comment that
-settled the PR" would be the same defect one layer out: a claim about a source,
-stated more strongly than the source supports.
+both gaps are in the cold round `cold: findings @ adddc9e`, which returned
+findings rather than a settle. #477 was parked with an
+`unsettled: needs a decision @ adddc9e` **comment** and is open.
+
+That sentence has been wrong twice. It first said "the comment that settled the
+PR", which the PR never received; the correction said "labelled `unsettled`",
+which is also false — #477 carries no labels at all, and
+[`REVIEW.md`](REVIEW.md) is explicit that the label is bare and the reason lives
+in the comment. Two attempts at one sentence about where a claim came from, both
+wider than the source, inside the paragraph that exists to say so.
 
 The last was written while fixing the one before it, in a commit whose subject
 names the very thing it got wrong. `abd0ae8` earns its row twice over — it also
@@ -631,13 +641,30 @@ the expensive ones have different lessons in them:
   column maximum was identical under both NaN conventions, because the rows at
   either end had clean windows and supplied it.
 - **A fixture can be accidentally degenerate, and then the assertion compares two
-  identical values.** One put every "fast" sample at exactly the plausibility
+  identical values.** One put every "fast" sample just past the plausibility
   ceiling, so all were masked as NaN and mean collapsed onto max; another used a
   constant-y track to check a *spread* column. This is [`BRIEFS.md`'s rule that
   the inputs have to be able to disprove the
   claim](BRIEFS.md#the-cold-reviewers-brief) reaching the fixture rather than
   the assertion — the rule lives there; what is new here is that a fixture you
   wrote yourself is a place it hides.
+
+  The first of those read "at *exactly* the ceiling" here until the maintainer
+  checked it: the value is 1.1111 against a ceiling of 1.11, and the mask keeps
+  a sample sitting exactly on the ceiling. A near-miss written as an equality,
+  in the sentence about a fixture that was wrong by a near-miss — and it had
+  already travelled from the test comment into a commit message into this file
+  before anyone read the number.
+
+**The best evidence for this rule is what happened to this section.** Three
+review rounds, and each found the section breaking its own rule inside the
+paragraph fixing the previous instance of it: a count lower than the evidence, a
+correction for a wider-than-source claim that was itself wider than its source,
+and a supporting figure ("two recent PRs carry no footer") that was low by a
+factor of three and a half. If a document written specifically to state this
+rule cannot state it without breaking it, the instinct it names is not one
+anybody outgrows by knowing about it. That is the argument for a mechanical
+check over a resolution.
 
 **The load-bearing half is the prose, not the testing.** In every instance above
 the mutation was run and the result read correctly; what went wrong was the
