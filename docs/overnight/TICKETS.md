@@ -173,7 +173,12 @@ beats a half-finished 2000-line PR.
 ### Filing cards for out-of-scope findings
 
 You will notice real problems that do not belong in the work at hand. File those
-rather than fixing them inline or letting them evaporate.
+rather than fixing them inline or letting them evaporate. A night that files two
+cards a maintainer would have written is worth more than one that closes two easy
+tickets, and this is the only path by which a run adds work rather than consuming
+it — so it gets the same discipline as a PR.
+
+#### What is worth a card
 
 **File** for: a bug, a security issue, a stale comment that would mislead the next
 reader, missing coverage on something that matters, a premise no longer true, or
@@ -182,12 +187,139 @@ work a review surfaced that is bigger than that PR.
 **Do not file** for: vague code smells, style preferences, or anything fixable
 inline in under a minute.
 
-- Title `CF-<n> · <what it is>`. Get `<n>` from the **highest existing CF number**
-  across all issues — it has drifted from the issue numbers, so do not infer it.
-- Match the house style of existing cards: what, why it matters, evidence with
-  file and line references, options where there is a real choice, acceptance.
-  CF-224 (#224) and CF-239 (#242) are good models.
-- Labels from the existing set, including a priority.
+**A card is a by-product of work you were already doing.** Do not open files
+looking for things to file. A hunt is unbounded, it competes with the priority
+order for the night's budget, and what it turns up is exactly the vague-smell
+card the line above rejects — you find what is easy to see rather than what
+matters. The findings worth filing arrive on their own: out of a review, out of a
+gate failure, out of a file you had to read to implement something else.
+
+**A decision can be a card, but it is never only a card.** CF-399 (#520, *Decide
+whether learned becomes the condense default*) is the house form, so do not
+suppress one — but write it with the options and who decides, and **also put it
+in the report's decisions bullet**. A card is a queue nobody reads tonight; the
+report is the thing that reaches a human in the morning. The failure is a
+judgement call filed and not reported, which looks like progress and is a
+finding nobody was told about.
+
+#### The one read both of the next two sections need
+
+Checking for a duplicate and picking the card number are the same read, so take
+it once: **every issue in the repository, open and closed, paginated to
+exhaustion.** It is the only form that works in every environment this brief runs
+in, which is why it is here rather than a search.
+
+```
+curl -s "https://api.github.com/repos/ClipFarmVB/ClipFarm/issues\
+?state=all&per_page=100&page=<n>"
+```
+
+**Paginate until a page comes back empty.** Do not assume a page count — it grows
+with every issue filed, so a number written here would be wrong within the week,
+the same reason the gate block above records `0 skipped` rather than a passed
+total. A capped read returns a maximum that is silently too low, and the card you
+file then shares a number with one that already exists.
+
+**Three searches that look cheaper and are not.** Each fails differently, and two
+of the three fail *silently*, which is worse than the pagination cost:
+
+- `gh issue list --search` — `gh` routes issue listing through **GraphQL**, which
+  a cloud session refuses outright ([`START.md`](START.md#first-establish-what-you-can-actually-do)).
+  This one at least fails loudly.
+- `GET /search/issues` — works on a maintainer's machine, and is **refused from a
+  cloud session by the egress proxy**: *"This GitHub API path is not available:
+  sessions are bound to their configured repositories. Use repository-scoped
+  endpoints"* (measured 2026-09-14).
+- The MCP `search_issues` tool — returned `total_count: 0` for `retention` in the
+  same session, against a repository holding three cards with that word in the
+  title. **An empty result from a search is not evidence that nothing matches.**
+
+If you do have a working search, use it to narrow the list you already fetched —
+not in place of fetching it.
+
+#### First: is it already filed?
+
+Filing a second copy of an existing card is worse than not filing at all: it
+costs the triage it was meant to save, and the two drift.
+
+Filter the read above on the noun the finding is *about*, not on your phrasing of
+it, and read the two or three nearest in subject rather than stopping at an exact
+miss — the existing card was titled by someone who had not seen your finding.
+**Filter open and closed together.** Restricting to open cards is the mistake
+that makes the second bullet below unreachable: `retention` matches CF-382
+(#498, open) and also CF-372 (#467) and CF-194 (#210), both closed, and it is the
+closed pair that tells you whether you are looking at a recurrence.
+
+- **An open card already covers it → comment on that card** with your new
+  evidence. That is strictly better than filing a second and better than
+  skipping: a recurrence is information the original card does not have.
+- **A closed card covers it and the problem is back → file, and link it**, saying
+  it is a recurrence. "This regressed" and "this is new" want different
+  responses, and only the card can carry the difference.
+
+#### Numbering
+
+Title `CF-<n> · <what it is>`, where `<n>` is one past the **highest numeric CF
+in the repository, open and closed** — from the read above.
+
+- **Do not infer it from the issue number.** The two drifted long ago and the gap
+  is now 121: CF-401 is issue #522 (measured 2026-09-14).
+- **Take the numeric part only.** Some cards carry a letter suffix: CF-65a–CF-65f
+  are #99–#104, one concern split into phases with a priority each, and CF-65g
+  (#149) was added to the set long afterwards. `CF-65g` does not make the next
+  card `CF-66`, and the letters are not a closed set you can memorise.
+- **Re-derive before every card — do not work the number out once and count up.**
+  You are not the only one filing. This has already gone wrong three times:
+  **CF-252** is both #273 and #276, **CF-253** both #274 and #277, and **CF-379**
+  both #494 and #507 — the last of those being the card behind #508, so the
+  mechanism this brief documents has already collided on the brief's own work. A
+  clashing card looks fine until someone greps for it.
+- **Re-deriving is one page, not the whole set.** A card filed after your first
+  read is by construction a newer issue, so refresh with a single newest-first
+  page rather than paginating again:
+  `…/issues?state=all&sort=created&direction=desc&per_page=100`. Do not reach for
+  a search to make it cheaper — see the three above.
+
+If one finding is really several independent pieces of work, either file one card
+that says so or use the suffixed form. Either way **each card counts against the
+cap below**; splitting is not a way around it.
+
+#### What the card has to contain
+
+Match the house style: what, why it matters, evidence with file and line
+references, options where there is a real choice, acceptance. CF-224 (#224) and
+CF-239 (#242) are good models.
+
+**The bar is whether someone who was not on this run can act on it without asking
+you anything.** Name the files and quote the lines; a card that says a module is
+confusing has moved the work rather than recorded it.
+
+**The evidence has to come from a read made for the card** — [the same rule as
+everywhere else](RULES.md#evidence-and-the-higher-bar-for-rejecting-a-finding),
+and it bites hardest here, because the card outlives the run. The log is
+truncated at dawn, so a line number you half-remembered has nothing left behind
+it to be checked against by the time anyone opens the card.
+
+**Acceptance is not the optional one.** Say what has to be true for the card to
+close. Without it a card cannot be given to a later run at all: `overnight-ok`
+means well-specified, and a card with no closing condition is by definition not.
+
+**Say where it came from** — the PR or review that surfaced it. And the other
+direction matters more: **if a review declined to fix something because you filed
+a card, that review must name the card.** [`FIX.md`](FIX.md) routes every nit
+found after the freeze to a card, so this is the common case, not an edge one;
+without the link the finding evaporates and the reviewer reads as having dropped
+it.
+
+#### Labels, the board, the cap
+
+- Labels from the existing set, including a priority — `P0`, `P1`, `P2` or `P3`.
+- **Never put `overnight-ok` on a card you filed.** That label means a human
+  judged the ticket safe to implement unattended — it is
+  [the selection gate](START.md#choosing-work), and a run that sets it on its own
+  card has handed itself work nobody vetted. If you think a card deserves it,
+  argue for it in the report, which is the same move the gate already requires
+  for an existing issue.
 - **Do not try to add the card to the `ClipFarm Backlog` project — a project
   workflow adds new issues automatically, with `Status: Todo`.** Verified: every
   card the first unattended run filed reached the board this way, without the
@@ -200,6 +332,10 @@ inline in under a minute.
   reported that, and it has been wrong each time. If you want to check rather
   than assume, `gh project item-list` reads with `project` scope; if you do not
   have it, say the board was unverified rather than saying the cards are off it.
+- **At the 7-card cap, the findings do not stop — the filing does.** Write the
+  rest into the report, one line each, rather than dropping them or filing an
+  eighth. The cap exists to keep a night from burying triage, not to make
+  findings disappear, and the report is the copy that survives the log.
 - Open the body with: `Filed unattended during an overnight run — needs triage.`
 
 ### When a command is not available

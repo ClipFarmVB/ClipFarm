@@ -89,7 +89,11 @@ it reads no thread setting — but it is a real subprocess, so measure with it i
 mind.
 
 ```bash
-# Offline: replay detection + scoring from the R2 ball-cache (no re-tracking).
+# Offline: replay detection + scoring from the R2 ball-cache. A cache miss
+# re-tracks on Modal when it is configured — every video, after a
+# TRACKING_CACHE_VERSION bump. On a branch that bumps the version, before its
+# `modal deploy`, add `-e MODAL_TOKEN_ID= -e MODAL_TOKEN_SECRET=` so a miss fails
+# instead of caching the deployed (old) code's track under the new key.
 docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
   eval python -m ml.eval.harness --test test1 --version my-change --offline
 
@@ -157,7 +161,10 @@ A dead-time case is a **separate label pass** into
 [`fixtures/README_deadtime.md`](fixtures/README_deadtime.md). Do not reuse the
 highlight fixture's `clips` list.
 
-The trap worth stating here, because nothing errors when you hit it: `keep_tiers`
+The trap worth stating here, because the harness does not error when you hit it
+(the fixture tests catch it when the fixture is committed, unless it is a copied
+clip list with no highlight sibling to compare against, or with its clip times
+edited): `keep_tiers`
 selects which tiers count as **ball-in-play**, and that is a wider set than
 "highlight-worthy" — `M`/`C`/`N` are all live ball (a failed serve is still play
 the condense stage must keep), while only `B` (break) and `O` (camera outlier)
@@ -226,6 +233,12 @@ condenses, and that trade is the thing to look at before touching its tunables:
 `visualize_deadtime.py`. test1 is a different labeler on 360p-space footage and
 test3 is a game the ball tracker cannot follow, so both measure something other
 than which builder is better.
+
+Those five cache keys predate CF-231. The key now ends in `-v{N}`
+(`ball.TRACKING_CACHE_VERSION`), so `_track_ball_cached` no longer finds any of
+them: a run that reaches it on those fixtures misses the cache, and re-tracks on
+Modal when it is configured or raises when it is not, until caches exist under
+the new key.
 
 > **Every figure above is stale on the 1080p fixtures as of CF-174 — both
 > columns, not just `rules`.** Two separate reasons, and the second one is easy
@@ -331,6 +344,46 @@ test4); every other column is held out and is starred in the summary. test5 is
 the strongest of those — it was labeled after the variants were written, so it
 could not have shaped them even indirectly.
 
+## Is the tracker following the ball? (CF-229)
+
+CF-174 normalized the contact px/s thresholds by frame height and could not do
+the same for the segmentation ones. `ml/pipeline/ball.py` records why, and the
+reason is not a property of those constants: **roughly half of test4's samples
+sit at ~0 px/s, because the detector is locked onto something that is not the
+ball.** Scaling `SEG_MAX_SPEED_PXPS` merges those stationary detections into
+the ball's own segments, whose median then falls under the held/spare-ball
+filter, and the fixture collapses to zero contacts.
+
+So both segmentation constants are pinned by one upstream defect, and
+[#233](https://github.com/ClipFarmVB/ClipFarm/issues/233)'s acceptance is a
+number about it. `track_quality.py` prints that number:
+
+```bash
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.diagnose_detection --test test4
+
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.track_quality test4
+```
+
+Leave `--dump` off the first command. Its default,
+`ml/eval/results/test4_ball_track.json`, is where `track_quality` reads; a
+relative `--dump` path resolves against the eval container's working directory
+(`/app/api`) and lands somewhere the second command never looks.
+
+It reports the speed distribution in px/s and in frame-heights/s, the fraction
+of samples that are effectively stationary, and what the segmentation ceiling
+splits today against what a scaled one would split — so the trade is visible
+rather than described.
+
+**It cannot tell you about `MAX_JUMP_PX`.** That threshold picks among the
+detections a frame returned, during tracking, and a dump holds only the ones
+that won. Answering it needs a re-track. The tool says so in its own output,
+because the row above that line looks exactly like an answer.
+
+It is an instrument. It changes no threshold — the fix is #233's, and that card
+is assigned.
+
 ## Measuring the MIN_RALLY_CONTACTS cliff (CF-376)
 
 CF-174 scaled the contact **speed** thresholds by `frame_height / 360` and left
@@ -402,6 +455,8 @@ metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
 harness.py             fixture load, model-clip acquisition, report, results append
 diagnose_detection.py  why a rally was missed: BLIND / SPARSE / GATED breakdown
 tune_contacts.py       sweep find_contacts tunables over a dumped ball track
+track_quality.py       is the tracker following the ball? the lock-on fraction
+                       CF-229's acceptance is written in (#233)
 contact_cliff.py       how many rallies MIN_RALLY_CONTACTS deletes under CF-174
                        scaling, both switch positions (CF-376)
 deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187)
