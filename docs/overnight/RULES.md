@@ -558,7 +558,6 @@ forty-two seconds after the commit. That is the encouraging half: the check is
 cheap enough to run on yourself, and twice it was the run's own re-reading
 rather than a reviewer that found the error.
 
-
 #### A mutation result licenses a claim about that mutation, not about its class
 
 **"Revert-checked" and "that mutation is caught" are measurements of exactly
@@ -566,26 +565,38 @@ what was run.** Writing them as coverage of a *kind* of defect — the guard, th
 fills, both columns, the class — is the same defect as publishing a number you
 did not measure, and it is the one this run produced most.
 
-The tell is a plural in a claim backed by a singular run: *both* index
-assertions, *max_\** , *every* member, *both* NaN conventions. Each was written
-after running one member and finding it caught.
+The usual tell is a plural in a claim backed by a singular run: *both* index
+assertions, *all three* mutations, *max_\**, *every* member, *both* NaN
+conventions. Each was written after running one member and finding it caught.
+But the tell is not always a plural — the first instance below generalised a
+single caught mutation into a statement about the guard, with no plural in
+sight. The reliable question is not "is there a plural" but **"is this sentence
+wider than the run behind it".**
 
-Five instances, across two PRs in the run of 2026-09-16, each found by a review
+Six instances, across two PRs in the run of 2026-09-16, each found by a review
 round running the **neighbour** of the mutation the commit had run:
 
 | commit | claimed | what one neighbouring mutation showed |
 | --- | --- | --- |
 | `ef67146` | "that exact mutation is caught" | true of the named one; a *prefix* of the constraint text passed |
 | `ead16e0` | "the migration, the model, and both index assertions" | both assertions compared only the name |
+| `abd0ae8` | "all three mutations now fail" | the parsed chunk carried the *next* statement's comment, which supplied both checks |
 | `adddc9e` | "mutate every member of the class" | 2 of 8 members mutated; reordering never tried |
-| `7aae60e` | "max_\* reduced to a copy of the mean" | caught for `max_conf` only; `max_speed` shipped green |
+| `7aae60e` | "max_\* reduced to a copy of the mean" | caught for `max_conf_3s` only; `max_speed_3s` shipped green |
 | `e52ed47` | "both NaN conventions" | the magnitude half asserted `.max()`, which is identical under both |
 
-The fifth was written while fixing the fourth, in a commit whose subject names
-the very thing it got wrong.
+Row 4's gap is the one exception to "read it in the commit": `adddc9e`'s own
+message records nine mutations across four indexes and reads as coverage, and
+the 2-of-8 count is in the review comment that settled the PR, not in the tree.
+
+The sixth was written while fixing the fifth, in a commit whose subject names
+the very thing it got wrong. `abd0ae8` is in the table twice over — it also
+"listed as closed" a hole whose named mutation still passed — and it sits
+between two other instances by the same author within ninety minutes, which is
+the strongest evidence here that noticing the pattern does not stop it.
 
 **So: to claim a class is covered, run the class.** All thirteen fills, not the
-two a round happened to name; both columns separately, not one mutation that
+two that already happened to be enforced; both columns separately, not one mutation that
 changes both at once. It is usually a loop, and it usually finds something —
 running all thirteen found a fill nobody had questioned, and running every index
 found that `ix.columns` does not contain a keyset index's `text()` terms.
@@ -596,10 +607,14 @@ Four corollaries, each of which cost a round here:
   that thing change.** A fill table spelling its expectation as
   `CONTACT_GAP_CAP` moved with the constant when it was halved, and passed.
   Write the literal; it is the independent record of what the value should be.
-- **Pin the derived number, not a threshold.** `assert spread.max() > 0.1`
-  accepts a whole family of wrong answers — it let a dropped `sqrt` through,
-  turning a standard deviation into a variance. The computed value distinguishes
-  them.
+- **Pin the derived number, not a threshold.** A column with no positive-value
+  coverage at all invites `assert spread.max() > 0.1` as the fix, and that
+  accepts a whole family of wrong answers: a dropped `sqrt` turns a standard
+  deviation into a variance and clears the bar just as easily. Pin the computed
+  value — `== approx(0.3333)` — which distinguishes them. Stated as the weaker
+  fix *rejected*, because that is what happened; no such assertion ever shipped
+  here, and writing it as history would be this same rule broken inside the
+  paragraph that states it.
 - **`.max()` over a column is almost always the wrong reduction for a windowed
   property.** It finds the row the mutation did not touch: an assertion on the
   column maximum was identical under both NaN conventions, because the rows at
@@ -607,8 +622,11 @@ Four corollaries, each of which cost a round here:
 - **A fixture can be accidentally degenerate, and then the assertion compares two
   identical values.** One put every "fast" sample at exactly the plausibility
   ceiling, so all were masked as NaN and mean collapsed onto max; another used a
-  constant-y track to check a *spread* column. Assert the fixture has the
-  property the test needs before asserting anything about the output.
+  constant-y track to check a *spread* column. This is [`BRIEFS.md`'s rule that
+  the inputs have to be able to disprove the
+  claim](BRIEFS.md#the-cold-reviewers-brief) reaching the fixture rather than
+  the assertion — the rule lives there; what is new here is that a fixture you
+  wrote yourself is a place it hides.
 
 **The load-bearing half is the prose, not the testing.** In every instance above
 the mutation was run and the result read correctly; what went wrong was the
