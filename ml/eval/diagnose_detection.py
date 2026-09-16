@@ -26,6 +26,11 @@ carries production's 1-CPU limit since CF-241:
 
   docker compose --env-file .env.docker run --rm --no-deps eval \
     python -m ml.eval.diagnose_detection --test test1
+
+On a branch that bumps `ball.TRACKING_CACHE_VERSION`, before its `modal deploy`,
+add `-e MODAL_TOKEN_ID= -e MODAL_TOKEN_SECRET=` (see the comment beside that
+constant): with Modal configured, a cache miss would store the deployed code's
+track under the new key.
 """
 from __future__ import annotations
 
@@ -60,8 +65,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--test", default="test1", help="fixture id (default test1)")
     ap.add_argument("--dump", type=Path, default=None,
-                    help="write positions+contacts JSON here "
-                         "(default results/{test}_ball_track.json)")
+                    help="write positions+contacts JSON here. Default is "
+                         "ml/eval/results/{test}_ball_track.json, which is "
+                         "where tune_contacts and contact_cliff read from; a "
+                         "RELATIVE path here resolves against the image's "
+                         "WORKDIR (/app/api) and they will not find it")
     args = ap.parse_args()
 
     import tempfile

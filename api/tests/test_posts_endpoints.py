@@ -31,6 +31,7 @@ pytest.importorskip("boto3")
 
 from fastapi import HTTPException  # noqa: E402
 
+from app.config import settings  # noqa: E402
 from app.models.clip import ActionType  # noqa: E402
 from app.models.visibility import Visibility  # noqa: E402
 from app.routers import posts as posts_router  # noqa: E402
@@ -135,8 +136,25 @@ def _post(author, clip, visibility=Visibility.public):
 # -- create ------------------------------------------------------------------
 
 
-def test_creating_a_public_post_over_a_private_clip_is_refused():
-    """The rule the card carries, through the endpoint rather than beside it."""
+@pytest.fixture
+def public_posting(monkeypatch):
+    """Turn on the `public` tier for one test (CF-109b).
+
+    It ships off — see services/publishing.py for why that tier is gated apart
+    from `followers` — so a test about anything else that happens to publish
+    publicly would otherwise be refused by the flag and quietly stop covering
+    what it was written for.
+    """
+    monkeypatch.setattr(settings, "public_posting_enabled", True)
+
+
+def test_creating_a_public_post_over_a_private_clip_is_refused(public_posting):
+    """The rule the card carries, through the endpoint rather than beside it.
+
+    `public_posting` because CF-109b gates the `public` tier behind a
+    deployment flag that is off by default, and that check runs first — without
+    it this would be refused for the wrong reason and stop testing the ceiling.
+    """
     author = User()
     game = Game(author.id, Visibility.private)
     clip = Clip(game)  # NULL visibility: inherits private
@@ -154,10 +172,19 @@ def test_creating_a_public_post_over_a_private_clip_is_refused():
     assert not db.added, "nothing may be written when the check refuses"
 
 
-def test_the_409_names_the_ceiling_and_prescribes_nothing_impossible():
-    """No write path for a clip's or a game's visibility exists yet, so the old
-    message's "change the clip's visibility first" named a remedy the product
-    does not have. It states the constraint instead."""
+def test_the_409_names_the_ceiling_and_the_remedy_that_now_exists(public_posting):
+    """The message went quiet for a release and can speak again.
+
+    CF-109 removed "change the clip's visibility first" because no write path
+    for a clip's or a game's visibility existed, so it named a remedy the
+    product did not have. CF-109b built one, so the message names it: raise the
+    clip, or post with `raise_clip_visibility`.
+
+    `public_posting`, and the status asserted, because without the flag on this
+    request is refused a step EARLIER — and that refusal happens to contain the
+    word "followers" too, so every assertion below would still pass while
+    testing the wrong branch entirely.
+    """
     author = User()
     game = Game(author.id, Visibility.followers)
     clip = Clip(game)
@@ -169,8 +196,9 @@ def test_the_409_names_the_ceiling_and_prescribes_nothing_impossible():
                 PostCreate(clip_id=clip.id, visibility=Visibility.public), author.id, db
             )
         )
+    assert exc.value.status_code == 409, "the ceiling branch, not the flag branch"
     assert "followers" in exc.value.detail, "the ceiling has to be in the message"
-    assert "Change the clip" not in exc.value.detail
+    assert "raise_clip_visibility" in exc.value.detail
 
 
 def test_a_post_at_or_below_the_clips_tier_is_created():
@@ -230,7 +258,7 @@ def test_posting_someone_elses_clip_is_404_not_403():
     assert not db.added
 
 
-def test_a_generated_handle_never_reaches_the_create_response():
+def test_a_generated_handle_never_reaches_the_create_response(public_posting):
     """The oracle, checked where a client actually sees it. Three separate
     paths have now had to withhold this, which is why it is pinned at the
     endpoint and not only at the schema."""

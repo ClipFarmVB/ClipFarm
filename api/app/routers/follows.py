@@ -23,6 +23,7 @@ from app.schemas.follow import (
 )
 from app.schemas.profile import ProfileOut
 from app.services import profiles
+from app.services.ratelimit import POLICIES, rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -383,7 +384,9 @@ def _assert_lists_visible(target: User, viewer_id: uuid.UUID | None) -> None:
         raise HTTPException(status_code=404, detail="Profile not found")
 
 
-@router.get("/users/{handle}/followers", response_model=FollowPage)
+@router.get("/users/{handle}/followers", response_model=FollowPage,
+    dependencies=[Depends(rate_limit(POLICIES["follows"]))],
+)
 async def list_followers(
     handle: str,
     db: DB,
@@ -404,7 +407,9 @@ async def list_followers(
     )
 
 
-@router.get("/users/{handle}/following", response_model=FollowPage)
+@router.get("/users/{handle}/following", response_model=FollowPage,
+    dependencies=[Depends(rate_limit(POLICIES["follows"]))],
+)
 async def list_following(
     handle: str,
     db: DB,
