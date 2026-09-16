@@ -144,6 +144,13 @@ export const FeedPost = memo(function FeedPost({
   async function toggleLike() {
     if (likeBusy.current) return;
     likeBusy.current = true;
+    // Clear the previous attempt's note before starting. It is otherwise
+    // cleared only by a 1500ms timer, so a retry inside that window succeeds
+    // while "Failed" is still rendered and `aria-label` still says so — a
+    // screen-reader user is told the like failed when it landed. Folding the
+    // failure into the label is what makes this reach assistive tech at all,
+    // so it is the tail of that change rather than a separate bug.
+    setLikeNote(undefined);
     const prev = like;
     setLike({ liked: !prev.liked, count: prev.count + (prev.liked ? -1 : 1) });
     try {

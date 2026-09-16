@@ -552,6 +552,28 @@ describe("deleting is serialised too", () => {
     await click(postButton());
     expect(createComment).toHaveBeenCalledTimes(2);
   });
+  it("keeps a draft typed while the previous comment was still saving", async () => {
+    // `setBody("")` ran unconditionally once the response landed, and the
+    // textarea is deliberately never disabled (a disabled one loses focus and
+    // the caret), so anything typed during the flight was destroyed. The
+    // existing "composer clears after posting" assertion is satisfied by the
+    // clobbering version too, because it types nothing in the meantime.
+    getComments.mockResolvedValue({ items: [], next_cursor: null });
+    let release: (v: Comment) => void = () => {};
+    createComment.mockReturnValue(new Promise<Comment>((r) => (release = r)));
+    meRef.current = asMe(AUTHOR);
+    await mount();
+
+    await type("first");
+    await click(postButton());
+
+    // Still in flight — the user starts the next one.
+    await type("second draft");
+    await act(async () => release(makeComment("c1", AUTHOR, "first")));
+
+    expect(textarea().value).toBe("second draft");
+  });
+
 });
 
 describe("being handed a different post", () => {

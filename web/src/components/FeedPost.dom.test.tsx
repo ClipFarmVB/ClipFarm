@@ -429,6 +429,26 @@ describe("liking a post", () => {
     expect(unlikePost).toHaveBeenCalledTimes(1);
     expect(railCount("Like")).toContain("3");
   });
+  it("stops saying Failed once a retry succeeds", async () => {
+    // The note is cleared by a 1500ms timer, so a retry inside that window used
+    // to succeed with "Failed" still rendered AND `aria-label` still reading
+    // "Unlike failed" — a screen-reader user told the like failed when it
+    // landed. Asserted on the label because that is the half assistive tech
+    // reads, and the half the failure was folded into.
+    likePost.mockRejectedValueOnce(new Error("network"));
+    mount(makePost());
+
+    await click(byLabel("Like")[0]);
+    expect(byLabel("Like failed")).toHaveLength(1);
+
+    likePost.mockResolvedValueOnce({ liked: true, like_count: 4 });
+    await click(byLabel("Like failed")[0]);
+
+    expect(byLabel("Like failed")).toHaveLength(0);
+    expect(byLabel("Unlike failed")).toHaveLength(0);
+    expect(railCount("Unlike")).not.toContain("Failed");
+  });
+
 });
 
 describe("the comment sheet", () => {
@@ -472,6 +492,33 @@ describe("the comment sheet", () => {
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
     expect(railCount("Comments")).toContain("4"); // the count still re-seeded
   });
+  it("closes when a genuinely different post arrives", async () => {
+    // The other half of the test above, and the half nothing asserted:
+    // emptying the whole `if (newPost) { setLikeNote(undefined);
+    // setCommentsOpen(false); }` body left the suite green, because only the
+    // "stays open on a refresh" case was covered. A recycled card that kept
+    // the previous post's sheet open would show one post's comments under
+    // another's video.
+    getComments.mockResolvedValue({ items: [], next_cursor: null });
+    mount(makePost());
+    await click(byLabel("Comments")[0]);
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    await act(async () => {
+      root.render(
+        <FeedPost
+          post={{ ...makePost(), id: "post-2" } as Post}
+          active={false}
+          loaded={false}
+          muted
+          onToggleSound={() => {}}
+        />,
+      );
+    });
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
 
   it("moves the rail count when a comment is posted inside the sheet", async () => {
     // The sheet reports a delta rather than the card refetching the post, so

@@ -122,9 +122,14 @@ export function CommentSheet({
     setSaving(true);
     setError(null);
     try {
+      const sent = body;
       const made = await createComment(post.id, body.trim());
       setItems((prev) => [made, ...(prev ?? [])]);
-      setBody("");
+      // Only clear what was actually sent. The textarea stays enabled during
+      // the request on purpose — a disabled one loses focus and the caret —
+      // so anything typed while it was in flight is a NEW draft, and an
+      // unconditional setBody("") threw it away on every slow request.
+      setBody((current) => (current === sent ? "" : current));
       onCountChange?.(+1);
     } catch (e) {
       setError(e instanceof Error && e.message ? e.message : "Could not post your comment.");
