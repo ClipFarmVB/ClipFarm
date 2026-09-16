@@ -179,23 +179,29 @@ def test_liking_twice_yields_one_like_and_one_increment(world):
     other = _run(async_url, lambda db: posts_router.get_post(pid, db, ids["stranger"]))
     assert other.viewer_has_liked is False
 
-    # `update_post` does the same lookup and was pinned by nothing: replacing
-    # its `viewer_has_liked` call with a constant `False` left the entire suite
-    # green, here and locally. Its own comment invokes `post_view`'s "a wrong
-    # value forever" warning, which is the thing this asserts is not happening —
-    # an author who liked their own post must not see the heart empty after an
-    # edit. Asserted here rather than locally because the lookup needs a real
-    # database; the `get_post` sibling above is covered the same way.
-    edited = _run(
-        async_url,
-        lambda db: posts_router.update_post(pid, PostUpdate(caption="edited"), who, db),
-    )
-    assert edited.viewer_has_liked is True, "the edit dropped the author's own like"
-
     gone = _run(async_url, lambda db: r.unlike_post(pid, who, db))
     again = _run(async_url, lambda db: r.unlike_post(pid, who, db))
     assert (gone.liked, gone.like_count) == (False, 0)
     assert (again.liked, again.like_count) == (False, 0), "floored, and idempotent"
+
+    # `update_post` does the same lookup and was pinned by nothing: replacing
+    # its `viewer_has_liked` call with a constant `False` left the whole suite
+    # green. Its own comment invokes `post_view`'s "a wrong value forever"
+    # warning, and this is the case that warning is about — an author who liked
+    # their own post must not see the heart empty after editing the caption.
+    #
+    # The author, not `who`: `update_post` 404s for anyone but the author, and
+    # `who` is the follower. Last in the test, not beside the `get_post`
+    # assertions above, because this like moves `like_count` and the unlike
+    # assertions immediately above pin it at 0.
+    mine = ids["author"]
+    _run(async_url, lambda db: r.like_post(pid, mine, db))
+    edited = _run(
+        async_url,
+        lambda db: posts_router.update_post(pid, PostUpdate(caption="edited"), mine, db),
+    )
+    assert edited.viewer_has_liked is True, "the edit dropped the author's own like"
+    assert edited.caption == "edited"
 
 
 def test_concurrent_likes_leave_the_counter_equal_to_the_rows(world):
