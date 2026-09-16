@@ -620,9 +620,9 @@ finds something — running all thirteen found a fill nobody had questioned, and
 running every index found that `ix.columns` does not contain a keyset index's
 `text()` terms.
 
-Four corollaries. Two cost a round; the other two were caught mid-fix by the
-author, which is worth saying rather than rounding up — the cheap catches and
-the expensive ones have different lessons in them:
+Five corollaries. Two cost a round, two were caught mid-fix by the author, and
+the fifth cost five — the cheap catches and the expensive ones have different
+lessons in them:
 
 - **A test that derives its expected value from the thing under test cannot see
   that thing change.** A fill table spelling its expectation as
@@ -655,6 +655,24 @@ the expensive ones have different lessons in them:
   in the sentence about a fixture that was wrong by a near-miss — and it had
   already travelled from the test comment into a commit message into this file
   before anyone read the number.
+- **Pin the consumer, not the table it reads.** A guard that asserts properties
+  of a data structure does not constrain the code that consumes it, and the
+  distance between those two is where the defect lives. This one cost five
+  rounds on a single PR, each fixing the exact thing the last round named and
+  leaving its neighbour: the value literal, then the way the table is *bound*
+  (`+=` and `.update()` survived a fix aimed at a second `NAME = ...`), then the
+  fact that the consumer could ignore the table entirely and re-type the
+  literal, then the spellings of the labels it printed, then everything the rows
+  moved that their labels did not mention. Five rungs of one ladder, and the
+  guard was green at every rung.
+
+  The tell is a guard and its subject living in different artifacts. Ask what
+  the consumer is free to do that the table cannot see, and assert *that* —
+  usually by recording what the code actually did and comparing it against what
+  the table says it should have done, rather than by checking the table is
+  well-formed. The same shape one level up ends a review: five rounds of
+  tightening one guard is the signal to replace the approach, which is what the
+  maintainer decided on both PRs this rule came from.
 
 **The best evidence for this rule is what happened to this section.** Three
 review rounds, and each found the section breaking its own rule inside the
