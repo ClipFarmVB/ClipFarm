@@ -201,6 +201,14 @@ def test_liking_twice_yields_one_like_and_one_increment(world):
         lambda db: posts_router.update_post(pid, PostUpdate(caption="edited"), mine, db),
     )
     assert edited.viewer_has_liked is True, "the edit dropped the author's own like"
+
+    # Both directions, since one alone passes against a constant. The stranger
+    # never liked it, so their edit-shaped read must come back False — asserted
+    # through `get_post` because `update_post` is author-only by design.
+    seen_by_stranger = _run(
+        async_url, lambda db: posts_router.get_post(pid, db, ids["stranger"])
+    )
+    assert seen_by_stranger.viewer_has_liked is False
     assert edited.caption == "edited"
 
 

@@ -80,8 +80,17 @@ def test_the_engagement_tables_reach_the_metadata():
 
 
 def test_migration_020_names_every_object_the_models_declare():
-    """The cheap guard against a fourth drift: every named index and
-    constraint on the three tables appears, by name, in the migration text."""
+    """Every named index and constraint on the three tables appears in the
+    migration, and with the same DEFINITION — not merely the same name.
+
+    Names alone were the whole guard twice, and it was porous both times. A
+    constraint whose text drifted kept its name; so does an index built on the
+    wrong column. Rebuilding `ix_post_comments_post_id` on `["author_id"]`, name
+    unchanged, left all 1286 green while restoring the Seq Scan cascade the
+    index was added to remove. Nothing in the suite executes 020 — the `*_pg`
+    tests use `create_all` — so the migration text is the only evidence there
+    is that the database gets what the models describe.
+    """
     from pathlib import Path
 
     src = (Path(__file__).parent.parent / "alembic" / "versions" / "020_post_engagement.py").read_text()
@@ -103,6 +112,38 @@ def test_migration_020_names_every_object_the_models_declare():
     assert declared == wanted
     for name in wanted:
         assert name in src, f"{name} is declared on a model and absent from 020"
+
+    # Indexes: the COLUMNS and the partial predicate, not just the name.
+    #
+    # The obvious version of this is a substring test over the statement, and it
+    # does not work: `ix_post_comments_post_id` CONTAINS "post_id", so rebuilding
+    # it on `author_id` still satisfies `"post_id" in stmt` via its own name. The
+    # index name is stripped before the columns are looked for, for that reason.
+    for table in (PostLike.__table__, PostComment.__table__):
+        for ix in table.indexes:
+            if ix.name not in wanted:
+                continue
+            stmt = next((st for st in src.split("op.") if ix.name in st), None)
+            assert stmt, f"{ix.name} appears in 020 but not in a statement"
+            body = stmt.replace(ix.name, "")
+            for col in ix.columns:
+                assert col.name in body, (
+                    f"{ix.name} is declared on the model over "
+                    f"{[c.name for c in ix.columns]} but 020's statement for it does "
+                    f"not mention {col.name!r}. An index with the right name on the "
+                    "wrong column is exactly the drift this catches."
+                )
+            # Partial-ness has to match too. `ix_post_comments_post_id` exists
+            # precisely BECAUSE it is not partial — the cascade must reach
+            # soft-deleted rows — so a migration that adds a WHERE to it is the
+            # defect, restoring the Seq Scan while every name still agrees.
+            model_partial = ix.dialect_kwargs.get("postgresql_where") is not None
+            migration_partial = "where" in body.lower()
+            assert model_partial == migration_partial, (
+                f"{ix.name}: the model declares it "
+                f"{'partial' if model_partial else 'full'} and 020 builds it "
+                f"{'partial' if migration_partial else 'full'}."
+            )
 
     # Names are not enough, and `post_comment.py` claims more than names: it
     # says "Same name and text as migration 020". Nothing enforced the text, so

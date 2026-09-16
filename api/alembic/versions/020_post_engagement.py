@@ -146,6 +146,7 @@ def downgrade() -> None:
     op.execute("ALTER TABLE posts DROP CONSTRAINT IF EXISTS ck_posts_comment_count_non_negative")
     op.execute("ALTER TABLE posts DROP CONSTRAINT IF EXISTS ck_posts_like_count_non_negative")
     op.execute("DROP INDEX IF EXISTS ix_post_comments_author_id")
+    op.execute("DROP INDEX IF EXISTS ix_post_comments_post_id")
     op.execute("DROP INDEX IF EXISTS ix_post_comments_post_created")
     op.execute("DROP TABLE IF EXISTS post_comments")
     op.execute("DROP INDEX IF EXISTS ix_post_likes_user_id")
