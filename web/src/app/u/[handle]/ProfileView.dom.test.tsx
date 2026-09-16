@@ -97,6 +97,32 @@ describe("a failed load (CF-304)", () => {
     expect(host.textContent).not.toContain("No one is using");
   });
 
+  it("does not throw inside its own catch when the rejection is not an Error", async () => {
+    // Asserting the rendered text would NOT catch this: `setError(undefined)`
+    // still renders "Please try again.", because the paragraph is
+    // `{error ?? …}`. The first version of this test did exactly that and
+    // passed against the unguarded code.
+    //
+    // The difference a `null` rejection makes is that `e.message` throws
+    // *inside* the catch, so the chain rejects with nobody left to handle it.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      getProfile.mockRejectedValue(null);
+      await act(async () => {
+        root.render(<ProfileView handle="alice" />);
+      });
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+
+    expect(unhandled).toEqual([]);
+    expect(host.textContent).toContain("Please try again.");
+  });
+
   it("distinguishes the two failures by what it shows, not by asserting either", async () => {
     // States the contract directly: the two failures must not render the same
     // text.

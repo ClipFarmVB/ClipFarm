@@ -281,13 +281,18 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
           {/* Labelled, because the two cards are otherwise identical and can
               carry the same sentence — one about the list, one about what the
               user just did. Without the prefix a failed create reads as the
-              list failing again. */}
+              list failing again.
+
+              "Your existing collections are not shown" rather than "anything
+              below may be incomplete": the fetch failed, so nothing below came
+              from it, and the only row that can appear afterwards is one the
+              user just created. */}
           {loadError && (
             <div className="mx-4 my-3 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
               <AlertCircle size={13} className="mt-0.5 shrink-0" />
               <span>
                 <span className="font-medium">Couldn&apos;t load your collections.</span>{" "}
-                {loadError} Anything below may be incomplete.
+                {loadError} Your existing collections are not shown.
               </span>
             </div>
           )}

@@ -48,7 +48,12 @@ export function ProfileView({ handle }: { handle: string }) {
         if (!cancelled) setProfile(data);
       })
       .catch((e) => {
-        if (!cancelled) setError(e.message);
+        // `instanceof` like every other catch this PR touched: a rejection that
+        // is not an Error makes `e.message` undefined, and the failure branch
+        // then renders an empty reason under a heading that promises one.
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Please try again.");
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
