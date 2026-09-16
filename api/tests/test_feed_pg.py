@@ -125,7 +125,7 @@ def world(pg_db, monkeypatch):
         game = Game(id=uuid.uuid4(), owner_id=author.id, title="g", visibility=tier)
         clip = Clip(
             id=uuid.uuid4(), game_id=game.id, action_type=ActionType.spike,
-            confidence=0.9, start_time=1.5, end_time=4.5,
+            confidence=0.9, start_time=1.5, end_time=4.5, highlight_score=0.73,
             clip_url="https://pub.example.com/clips/c.mp4",
             thumbnail_url="https://pub.example.com/thumbs/c.jpg",
             visibility=None,
@@ -243,6 +243,11 @@ def test_playback_carries_the_clip_window(world):
     assert (card.playback.start_time, card.playback.end_time) == (1.5, 4.5)
     assert card.playback.clip_url == "https://pub.example.com/clips/c.mp4"
     assert card.viewer_has_liked is False
+    # The two overlay fields CF-112 added. `test_feed.py` checks they are on
+    # the schema, which a `highlight_score` defaulting to None satisfies with
+    # the mapping deleted — every badge silently gone and the suite green. A
+    # real clip with a real score is the only thing that pins the mapping.
+    assert (card.playback.action_type, card.playback.highlight_score) == ("spike", 0.73)
 
 
 def test_urls_are_presigned_when_r2_is_configured(world, monkeypatch):
