@@ -86,7 +86,7 @@ def test_migration_020_names_every_object_the_models_declare():
     Names alone were the whole guard twice, and it was porous both times. A
     constraint whose text drifted kept its name; so does an index built on the
     wrong column. Rebuilding `ix_post_comments_post_id` on `["author_id"]`, name
-    unchanged, left all 1286 green while restoring the Seq Scan cascade the
+    unchanged, left the whole suite green while restoring the Seq Scan cascade the
     index was added to remove. Nothing in the suite executes 020 — the `*_pg`
     tests use `create_all` — so the migration text is the only evidence there
     is that the database gets what the models describe.
@@ -125,13 +125,31 @@ def test_migration_020_names_every_object_the_models_declare():
                 continue
             stmt = next((st for st in src.split("op.") if ix.name in st), None)
             assert stmt, f"{ix.name} appears in 020 but not in a statement"
-            body = stmt.replace(ix.name, "")
-            for col in ix.columns:
-                assert col.name in body, (
+            # Strip COMMENTS before looking at anything. Splitting on "op."
+            # leaves each chunk carrying the comment block that introduces the
+            # NEXT statement, and those comments discuss columns and predicates:
+            # the block added above `ix_post_comments_post_id` quotes
+            # `DELETE FROM ONLY post_comments WHERE post_id = $1`, which fed both
+            # checks below for the PRECEDING index and made them vacuous for it.
+            # Then strip the index's own name, since a name like
+            # `ix_post_comments_post_id` contains the column name it is built on.
+            code = "\n".join(
+                ln.split("#")[0] for ln in stmt.splitlines()
+            )
+            body = code.replace(ix.name, "")
+            # `ix.expressions`, not `ix.columns`: a keyset index declares its
+            # ordering as `text("created_at DESC")`, which is a TextClause and
+            # never appears in `.columns`. Checking only columns let the `id
+            # DESC` term be dropped from the migration with the guard green —
+            # found by mutating EVERY index rather than the one this check was
+            # written against.
+            for expr in ix.expressions:
+                term = getattr(expr, "name", None) or str(expr)
+                assert term in body, (
                     f"{ix.name} is declared on the model over "
-                    f"{[c.name for c in ix.columns]} but 020's statement for it does "
-                    f"not mention {col.name!r}. An index with the right name on the "
-                    "wrong column is exactly the drift this catches."
+                    f"{[getattr(e, 'name', None) or str(e) for e in ix.expressions]} "
+                    f"but 020's statement for it does not mention {term!r}. An index "
+                    "with the right name on the wrong columns is the drift this catches."
                 )
             # Partial-ness has to match too. `ix_post_comments_post_id` exists
             # precisely BECAUSE it is not partial — the cascade must reach

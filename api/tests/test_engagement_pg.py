@@ -195,20 +195,24 @@ def test_liking_twice_yields_one_like_and_one_increment(world):
     # assertions above, because this like moves `like_count` and the unlike
     # assertions immediately above pin it at 0.
     mine = ids["author"]
+    # BOTH directions, through `update_post` itself. An earlier version asserted
+    # the False direction through `get_post` — a DIFFERENT handler — and said so
+    # in its own comment, so `update_post`'s lookup still passed against a
+    # constant `True`. The edit below happens BEFORE the author likes anything,
+    # which is how the False direction is reachable on an author-only endpoint.
+    before = _run(
+        async_url,
+        lambda db: posts_router.update_post(pid, PostUpdate(caption="before"), mine, db),
+    )
+    assert before.viewer_has_liked is False, "nobody has liked it yet"
+
     _run(async_url, lambda db: r.like_post(pid, mine, db))
     edited = _run(
         async_url,
         lambda db: posts_router.update_post(pid, PostUpdate(caption="edited"), mine, db),
     )
     assert edited.viewer_has_liked is True, "the edit dropped the author's own like"
-
-    # Both directions, since one alone passes against a constant. The stranger
-    # never liked it, so their edit-shaped read must come back False — asserted
-    # through `get_post` because `update_post` is author-only by design.
-    seen_by_stranger = _run(
-        async_url, lambda db: posts_router.get_post(pid, db, ids["stranger"])
-    )
-    assert seen_by_stranger.viewer_has_liked is False
+    assert edited.caption == "edited"
     assert edited.caption == "edited"
 
 
