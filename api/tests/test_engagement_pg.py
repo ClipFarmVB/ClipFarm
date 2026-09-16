@@ -162,6 +162,7 @@ def _scalar(async_url, sql, **params):
 def test_liking_twice_yields_one_like_and_one_increment(world):
     from app.routers import engagement as r
     from app.routers import posts as posts_router
+    from app.schemas.post import PostUpdate
 
     async_url, ids = world
     pid, who = ids["public"], ids["follower"]
@@ -177,6 +178,19 @@ def test_liking_twice_yields_one_like_and_one_increment(world):
     assert seen.viewer_has_liked is True and seen.like_count == 1
     other = _run(async_url, lambda db: posts_router.get_post(pid, db, ids["stranger"]))
     assert other.viewer_has_liked is False
+
+    # `update_post` does the same lookup and was pinned by nothing: replacing
+    # its `viewer_has_liked` call with a constant `False` left the entire suite
+    # green, here and locally. Its own comment invokes `post_view`'s "a wrong
+    # value forever" warning, which is the thing this asserts is not happening —
+    # an author who liked their own post must not see the heart empty after an
+    # edit. Asserted here rather than locally because the lookup needs a real
+    # database; the `get_post` sibling above is covered the same way.
+    edited = _run(
+        async_url,
+        lambda db: posts_router.update_post(pid, PostUpdate(caption="edited"), who, db),
+    )
+    assert edited.viewer_has_liked is True, "the edit dropped the author's own like"
 
     gone = _run(async_url, lambda db: r.unlike_post(pid, who, db))
     again = _run(async_url, lambda db: r.unlike_post(pid, who, db))

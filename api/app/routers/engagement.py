@@ -29,12 +29,23 @@ comment LIST carries the `post` limiter (CF-186), matched to `/posts/{id}`
 because it reads the same UUID-keyed object: a post id cannot be walked, so it
 is a load bound rather than an anti-enumeration one.
 
-Comment CREATION, and the like and unlike writes, are **not** rate limited.
-Every one of them requires a credential, so they sit outside the anonymous
-surface #189 bounded, and a limiter that fails open (`services/ratelimit.py`)
-would add a failure mode without adding a guarantee. What actually bounds abuse
-here is a quota or moderation, not a per-minute counter: comment spam is the
-CF-116 vector, recorded here as `access.py` records the follow one.
+The four credentialed writes are **not** rate limited: comment creation,
+comment deletion, and the like and unlike. Every one requires a credential, so
+they sit outside the anonymous surface #189 bounded, and a limiter that fails
+open (`services/ratelimit.py`) would add a failure mode without adding a
+guarantee. What actually bounds abuse here is a quota or moderation, not a
+per-minute counter: comment spam is the CF-116 vector, recorded here as
+`access.py` records the follow one.
+
+**The list shares a counter with `/posts/{id}`, and that is a real cost, not a
+detail.** `RateLimiter` keys on the policy NAME (`ratelimit.py:466`,
+`rl:{policy.name}:{identity}`), so reusing `post` here means the two routes
+spend one bucket. A post-detail view issues both, so the effective allowance for
+either is nearer 60/min than the nominal 120. That is judged acceptable —
+they are one user action and the bound is on load, not on enumeration — but it
+is a decision rather than a consequence nobody noticed: giving the list its own
+policy would separate the buckets at the price of a second knob governing the
+same action. `Policy`'s own docstring warns about exactly this shape.
 """
 import logging
 import uuid

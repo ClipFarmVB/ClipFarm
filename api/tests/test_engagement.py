@@ -99,6 +99,23 @@ def test_migration_020_names_every_object_the_models_declare():
     for name in wanted:
         assert name in src, f"{name} is declared on a model and absent from 020"
 
+    # Names are not enough, and `post_comment.py` claims more than names: it
+    # says "Same name and text as migration 020". Nothing enforced the text, so
+    # rewriting the model's CHECK to `char_length(body) <= 500` — same name,
+    # blank-comment floor gone — left this green while the model and the
+    # database disagreed about what a valid comment is. The model is not what
+    # enforces the constraint; 020 is. So compare the text too.
+    for table in (PostLike.__table__, PostComment.__table__, Post.__table__):
+        for c in table.constraints:
+            if not (c.name and c.name.startswith("ck_")) or c.name not in wanted:
+                continue
+            text = str(c.sqltext)
+            assert text in src, (
+                f"{c.name} is declared as {text!r} on the model but that text does "
+                f"not appear in migration 020. The migration is what the database "
+                f"actually enforces — change both, or the two silently disagree."
+            )
+
 
 # ── the shared gate ──────────────────────────────────────────────────────────
 
