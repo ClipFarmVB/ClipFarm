@@ -217,8 +217,8 @@ class TestFills:
         assert f[2, col("max_speed_3s")] > f[2, col("mean_speed_3s")]
 
     def test_the_missing_confidence_field_is_reported(self, caplog):
-        """Every producer in this repo builds {"time","x","y"} and drops the
-        `confidence` the tracker supplies, so both conf columns are constant
+        """Every producer in this repo builds {"time","x","y"} without
+        `confidence`, so both conf columns are constant
         0.0 on real input — and 0.0 is also their empty-window fill, making
         "not supplied" indistinguishable from "no samples". A silent constant
         column is what the trainer would learn from."""
