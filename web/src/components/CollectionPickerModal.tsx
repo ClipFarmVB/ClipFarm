@@ -157,8 +157,13 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
       setSaved((prev) => new Set(prev).add(collectionId));
     } catch (e) {
       // The row un-spins either way; without this the clip silently is not in
-      // the collection. `handleCreate` deliberately does NOT catch around its
-      // own `await handleAdd(...)` — one message per failure, reported here.
+      // the collection.
+      //
+      // Reported here and NOT rethrown, which is what keeps a create-then-add
+      // failure to one message. `handleCreate` does await this inside its own
+      // try, so its catch would wrap it — swallowing here rather than at the
+      // call site is what makes the two paths report once, and the comment on
+      // that await says the same thing from the other end.
       setError(e instanceof Error ? e.message : "Couldn't add the clip.");
     } finally {
       setSaving(null);

@@ -110,6 +110,27 @@ describe("tagging a player (CF-304)", () => {
     expect(onUpdate).toHaveBeenCalledWith(tagged);
   });
 
+  it("locks the select while the write is in flight, rather than dropping a second choice", async () => {
+    // The guard in `handleTag` returns early on a second call, so without a
+    // `disabled` on the control the UI accepts a change it then discards
+    // silently — the defect this card exists to remove, one layer up.
+    let resolve!: (c: Clip) => void;
+    tagClip.mockReturnValue(new Promise<Clip>((r) => { resolve = r; }));
+    await render();
+
+    const select = await openTagSelect();
+    await act(async () => {
+      select.value = "p2";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(select.disabled).toBe(true);
+
+    await act(async () => {
+      resolve({ ...clip, player_id: "p2", player_name: "Bob" });
+    });
+  });
+
   it("surfaces a failed tag, and does not tell the parent the write happened", async () => {
     // Named for what it pins. It does NOT pin that the dropdown stays open —
     // `setTagging(false)` is in the `finally`, so the select still closes on a

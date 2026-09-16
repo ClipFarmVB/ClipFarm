@@ -293,9 +293,19 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
 
             {/* Player tag */}
             {tagging ? (
+              /* `disabled` is paired with `handleTag`'s `if (tagLoading) return`,
+                 the way every sibling mutation here pairs its guard with one
+                 (download, label, both trim controls). Without it the select
+                 stays mounted, focused and enabled through the PATCH —
+                 `setTagging(false)` is in the `finally` — so a second choice is
+                 accepted by the UI and then dropped by the guard with nothing
+                 said. That is the silent failure this change exists to remove,
+                 reintroduced one layer up. */
               <select
                 autoFocus
-                className="min-h-8 rounded border border-border bg-surface-high px-2 py-1 text-[10px] text-foreground focus:outline-none"
+                disabled={tagLoading}
+                aria-busy={tagLoading}
+                className="min-h-8 rounded border border-border bg-surface-high px-2 py-1 text-[10px] text-foreground focus:outline-none disabled:opacity-50"
                 onBlur={() => setTagging(false)}
                 onChange={(e) => handleTag(e.target.value)}
                 defaultValue=""

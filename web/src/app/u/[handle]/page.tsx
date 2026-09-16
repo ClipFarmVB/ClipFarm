@@ -19,5 +19,12 @@ export default async function ProfilePage({
 
   // Next 16: route params are a Promise.
   const { handle } = await params;
-  return <ProfileView handle={handle} />;
+  // Keyed on the handle so a client navigation between two profiles REMOUNTS
+  // rather than reusing the instance. Without it the effect re-runs but the
+  // state does not reset, so a failed `/u/alcie` left `error` truthy and
+  // `/u/bob` rendered the failure branch carrying alice's message — and
+  // because that branch is `error || !profile`, the successful fetch could
+  // not clear it. Resetting inside the effect is the other way to fix it and
+  // is what `react-hooks/set-state-in-effect` exists to refuse (CF-304).
+  return <ProfileView key={handle} handle={handle} />;
 }

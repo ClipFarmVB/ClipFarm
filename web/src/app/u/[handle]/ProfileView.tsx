@@ -37,6 +37,12 @@ export function ProfileView({ handle }: { handle: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    // No resets here on purpose. This effect re-runs on a handle change, and
+    // the state it would have to clear is `profile`, `error` and `loading` —
+    // but `react-hooks/set-state-in-effect` rejects that, and rightly: the
+    // real problem is that one instance was outliving the handle it was
+    // fetched for. `page.tsx` gives this component `key={handle}`, so a client
+    // navigation remounts it and there is no stale state to clear.
     getProfile(handle)
       .then((data) => {
         if (!cancelled) setProfile(data);
