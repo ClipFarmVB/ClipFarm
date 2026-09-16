@@ -126,12 +126,16 @@ describe("tagging a player (CF-304)", () => {
 
     expect(select.disabled).toBe(true);
 
-    // **And the lock has to survive a blur.** In a browser, disabling the
-    // focused element runs the HTML focus fixup rule and fires blur; this
-    // select's `onBlur` closes the dropdown, so without a `tagLoading` check
-    // there the control unmounts before `disabled` is ever painted. The
-    // user-visible defect would still be closed — by the unmount — but every
-    // sentence here claiming a lock would be false.
+    // **And the lock has to survive a blur**, because the element is focused
+    // (`autoFocus`) when it becomes disabled and the HTML focus fixup rule can
+    // blur it for that reason alone. Without a `tagLoading` check in `onBlur`,
+    // such a blur closes the dropdown.
+    //
+    // This pins the handler, not the browser. Whether a browser dispatches
+    // that blur late enough for React to hear it is unestablished — see the
+    // comment on the `<select>` — so the assertion below is about what this
+    // component does when a `focusout` reaches it, which is the part the repo
+    // owns.
     //
     // jsdom implements no focus fixup, so this dispatches the event directly.
     // That tests the handler, which is the part this repo owns; it does not

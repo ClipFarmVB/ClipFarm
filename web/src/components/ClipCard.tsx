@@ -300,14 +300,34 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
                  guards the same way; `handleTrim` has no re-entry guard at all
                  and relies on `disabled={trimLoading}` alone.
 
-                 **The `onBlur` has to know about `tagLoading`, or `disabled`
-                 does nothing in a real browser.** Disabling the focused element
-                 runs the HTML focus fixup rule, which fires blur — and this
-                 handler would then unmount the select before the disabled state
-                 was ever painted. The user-visible defect would still be closed,
-                 by the unmount rather than by the lock, and every sentence
-                 around here claiming a lock would be false. jsdom does not
-                 implement that rule, so a test cannot catch it; a round did. */
+                 The `onBlur` checks `tagLoading` because this element is
+                 focused (`autoFocus`) at the moment it becomes disabled, and
+                 the HTML focus fixup rule can blur it for that reason alone.
+                 An unguarded handler would then close the dropdown on a blur
+                 the user did not perform.
+
+                 **What is not established is whether that actually happens, and
+                 an earlier version of this comment asserted it did.** Two
+                 things are measured: jsdom implements no focus fixup at all, so
+                 no test here can reach the question; and React disables its
+                 event system for the commit's mutation phase, so a fixup blur
+                 dispatched synchronously with the `disabled` write would not
+                 reach this handler even in principle. Whether a browser instead
+                 defers that blur to a later task — where React is listening
+                 again — is the part nobody here has run a browser to answer.
+
+                 So the guard is kept for being correct under both answers
+                 rather than for a behaviour anyone has seen. Under the
+                 deferred answer it is what keeps the disabled state visible;
+                 under the synchronous one it changes nothing.
+
+                 It does mean blur cannot close this while a write is in
+                 flight. `handleTag`'s `finally` closes it on either outcome, so
+                 the only way to be stuck is a request that never settles —
+                 which would equally leave `handleDownload` spinning and the
+                 label and trim controls disabled. That exposure is the file's,
+                 not this guard's, and a timeout for one control would be the
+                 odd one out. */
               <select
                 autoFocus
                 disabled={tagLoading}

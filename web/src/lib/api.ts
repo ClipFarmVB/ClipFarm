@@ -40,6 +40,8 @@ async function throwApiError(res: Response): Promise<never> {
   throw new Error(apiErrorMessage(text, errorFallback(res.status, text)));
 }
 
+const _MAX_FALLBACK_BODY = 200;
+
 /**
  * The bounded fallback `throwApiError` uses when the body is not our JSON.
  *
@@ -47,8 +49,6 @@ async function throwApiError(res: Response): Promise<never> {
  * a reader, and the one useful token is the status. Anything else is truncated
  * and visibly marked, so a wall of text cannot push the status out of view.
  */
-const _MAX_FALLBACK_BODY = 200;
-
 function errorFallback(status: number, text: string): string {
   const body = text.trim();
   if (!body || body.startsWith("<")) return `API error ${status}`;
