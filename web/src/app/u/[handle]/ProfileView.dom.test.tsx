@@ -98,9 +98,16 @@ describe("a failed load (CF-304)", () => {
   });
 
   it("distinguishes the two failures by what it shows, not by asserting either", async () => {
-    // The discriminating assertion: the two cases must not render the same
-    // text. Without this, a fix that collapsed both into one fixed message
-    // would pass everything above.
+    // States the contract directly: the two failures must not render the same
+    // text.
+    //
+    // **It is not load-bearing, and the sentence that said it was is gone.**
+    // That sentence claimed a fix collapsing both into one fixed message would
+    // pass everything above it. Running that mutation says otherwise — the
+    // preceding test fails too, because it asserts the server's own words. So
+    // this is a second, more direct way to fail on the same regression, kept
+    // because the regression it names is one this PR already shipped once, and
+    // an assertion that says what it means is worth a duplicate here.
     await renderFailure("Profile not found");
     const notFound = host.textContent;
     act(() => root.unmount());

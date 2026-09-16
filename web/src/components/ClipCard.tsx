@@ -77,8 +77,9 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
     } catch (e) {
       // `alert`, matching `handleDownload` above. Previously the select closed
       // and the failure vanished (CF-304). The two mutations below were the
-      // same defect in a quieter form and are fixed in the same change, so the
-      // component now has one answer to a failed write rather than three.
+      // same defect in a quieter form — one silent, one console-only — and are
+      // fixed in the same change, so all three handlers now answer a failed
+      // write the same way.
       alert(e instanceof Error ? e.message : "Could not tag this clip.");
     } finally {
       setTagLoading(false);

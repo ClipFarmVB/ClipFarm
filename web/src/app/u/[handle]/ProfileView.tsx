@@ -59,10 +59,17 @@ export function ProfileView({ handle }: { handle: string }) {
   // worse by pretending it could.**
   //
   // `getProfile` is `Promise<Profile>` through `request()`, and a missing
-  // handle is a 404 (`profiles.py:448`), so it REJECTS. There is no
-  // resolved-null case: an `if (!profile)` branch below an `if (error)` one is
-  // dead code, and splitting them sent the COMMON failure — a mistyped handle —
-  // to the copy written for a server fault.
+  // handle is a 404 (`profiles.py:448`, and `:170` in `_by_handle`), so it
+  // REJECTS. A separate `if (!profile)` branch below an `if (error)` one
+  // therefore cannot be the not-found case, and splitting them sent the COMMON
+  // failure — a mistyped handle — to the copy written for a server fault.
+  //
+  // `!profile` stays in this condition rather than getting its own arm.
+  // `request()` does have one resolved-undefined path — a 204, or any response
+  // with `content-length: 0` (`api.ts:76`) — which this endpoint does not
+  // produce but which the types do not rule out, and TypeScript needs the
+  // narrowing regardless. It shares the arm because the copy below is right for
+  // it too: a profile that arrived empty is not evidence the handle is free.
   //
   // What this must not do is what it used to: render "No one is using @handle"
   // for any failure, so that a 500 or a dropped connection asserted the

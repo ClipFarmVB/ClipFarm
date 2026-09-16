@@ -116,9 +116,9 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
       // Without this the fetch rejects unhandled AND the empty-list branch
       // below tells the user they have no collections — an affirmative claim
       // about their account made from a network failure (CF-304).
-      .catch((e) =>
-        setLoadError(e instanceof Error ? e.message : "Couldn't load your collections."),
-      )
+      // The card below supplies "Couldn't load your collections."; this is the
+      // reason that follows it, so the fallback must not repeat the heading.
+      .catch((e) => setLoadError(e instanceof Error ? e.message : "Please try again."))
       .finally(() => setLoading(false));
   }, []);
 
@@ -273,9 +273,17 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
             </div>
           )}
 
+          {/* Labelled, because the two cards are otherwise identical and can
+              carry the same sentence — one about the list, one about what the
+              user just did. Without the prefix a failed create reads as the
+              list failing again. */}
           {loadError && (
-            <div className="mx-4 my-3 flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
-              <AlertCircle size={13} className="shrink-0" /> {loadError}
+            <div className="mx-4 my-3 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              <span>
+                <span className="font-medium">Couldn&apos;t load your collections.</span>{" "}
+                {loadError} Anything below may be incomplete.
+              </span>
             </div>
           )}
 
