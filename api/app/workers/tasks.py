@@ -447,18 +447,37 @@ def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start:
             logger.info("Downloading source video for recut of clip %s", clip_id)
             s3.download_file(r2_key, local_video)
 
-            clip_path, thumb_path = recut_single(
+            clip_path, thumb_path, mobile_path = recut_single(
                 str(local_video), start, end, tmp,
                 threads=app_settings.ffmpeg_threads,
+                mobile_short_side=app_settings.mobile_short_side,
             )
 
-            # Upload new clip + thumbnail
+            # Upload new clip + thumbnail + phone rendition
             clip_url = s3.upload_file(clip_path, s3.clip_key(gid, cid), "video/mp4")
             thumb_url = None
             if thumb_path:
                 thumb_url = s3.upload_file(thumb_path, s3.thumbnail_key(gid, cid), "image/jpeg")
 
-            sync_update_clip_url(cid, clip_url, thumb_url)
+            mobile_key = s3.mobile_clip_key(gid, cid)
+            mobile_url = None
+            if mobile_path:
+                mobile_url = s3.upload_file(mobile_path, mobile_key, "video/mp4")
+            else:
+                # No new rendition, so nothing overwrote the one from the
+                # previous cut — and its key is deterministic, so it is still
+                # there holding the old boundaries. Drop it: mobile clients fall
+                # back to the full-size clip, which is the trim the user asked
+                # for. Purging must not break the recut, hence the guard.
+                try:
+                    s3.delete_file(mobile_key)
+                except Exception:
+                    logger.warning(
+                        "Could not purge stale phone rendition for clip %s", clip_id,
+                        exc_info=True,
+                    )
+
+            sync_update_clip_url(cid, clip_url, thumb_url, mobile_url=mobile_url)
             logger.info("Recut complete for clip %s", clip_id)
     except Exception as exc:
         logger.exception("Recut failed for clip %s", clip_id)
@@ -1243,6 +1262,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                 str(local_video), detections, tmp,
                 on_progress=lambda f: progress.update(f * 0.7),
                 threads=app_settings.ffmpeg_threads,
+                mobile_short_side=app_settings.mobile_short_side,
             )
 
             # ── 3. Upload clips and thumbnails, save to DB ────────────────
@@ -1261,6 +1281,13 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         s3.thumbnail_key(gid, clip_id),
                         "image/jpeg",
                     )
+                mobile_url = None
+                if cd.get("mobile_path"):
+                    mobile_url = s3.upload_file(
+                        cd["mobile_path"],
+                        s3.mobile_clip_key(gid, clip_id),
+                        "video/mp4",
+                    )
                 rows.append({
                     "id": clip_id,
                     "game_id": gid,
@@ -1271,6 +1298,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     "end_time": cd["end"],
                     "clip_url": clip_url,
                     "thumbnail_url": thumb_url,
+                    "mobile_url": mobile_url,
                     "labels": cd.get("labels", []),
                 })
                 progress.update(0.7 + 0.3 * (upload_idx + 1) / len(clips_data))
@@ -1284,7 +1312,11 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     "Game %s deleted during processing — discarding %d clips", game_id, len(rows)
                 )
                 for row in rows:
-                    for url in (row.get("clip_url"), row.get("thumbnail_url")):
+                    for url in (
+                        row.get("clip_url"),
+                        row.get("thumbnail_url"),
+                        row.get("mobile_url"),
+                    ):
                         if url:
                             try:
                                 s3.delete_file(urlparse(url).path.lstrip("/"))

@@ -234,10 +234,18 @@ def sync_clear_condensed_result(game_id) -> str | None:
         return previous
 
 
+class _Unset:
+    """Sentinel: "the caller did not supply this", distinct from "set it NULL"."""
+
+
+_UNSET = _Unset()
+
+
 def sync_update_clip_url(
     clip_id: uuid.UUID,
     clip_url: str,
     thumbnail_url: str | None = None,
+    mobile_url: str | None | _Unset = _UNSET,
 ):
     with Session(_engine) as s:
         clip = s.get(Clip, clip_id)
@@ -246,6 +254,15 @@ def sync_update_clip_url(
         clip.clip_url = clip_url
         if thumbnail_url is not None:
             clip.thumbnail_url = thumbnail_url
+        # Deliberately NOT the `is not None` guard the thumbnail uses (CF-321).
+        # A recut whose phone rendition failed must *clear* the column: the
+        # rendition key is deterministic per clip, so the old object is still
+        # sitting there holding the pre-trim boundaries, and leaving the row
+        # pointed at it would serve mobile clients the cut the user just
+        # changed. NULL sends them to the full-size clip, which is correct.
+        # Passing nothing at all still leaves the column alone.
+        if not isinstance(mobile_url, _Unset):
+            clip.mobile_url = mobile_url
         s.commit()
 
 
@@ -262,6 +279,7 @@ def sync_save_clips(rows: list[dict]):
                 end_time=row["end_time"],
                 clip_url=row["clip_url"],
                 thumbnail_url=row.get("thumbnail_url"),
+                mobile_url=row.get("mobile_url"),
                 labels=row.get("labels", []),
             )
             s.add(clip)
@@ -270,8 +288,9 @@ def sync_save_clips(rows: list[dict]):
 
 def sync_delete_game_clips(game_id: uuid.UUID) -> list[str]:
     """
-    Delete every Clip row for a game and return the R2 URLs (clip + thumbnail)
-    that were referenced, so the caller can purge storage too.
+    Delete every Clip row for a game and return the R2 URLs (clip, thumbnail
+    and phone rendition) that were referenced, so the caller can purge storage
+    too.
 
     Makes process_game idempotent: a redelivered or re-enqueued task refreshes
     the game's clips instead of appending a duplicate set. Clip ids are fresh
@@ -285,6 +304,8 @@ def sync_delete_game_clips(game_id: uuid.UUID) -> list[str]:
                 urls.append(clip.clip_url)
             if clip.thumbnail_url:
                 urls.append(clip.thumbnail_url)
+            if clip.mobile_url:
+                urls.append(clip.mobile_url)
             s.delete(clip)
         s.commit()
     return urls
