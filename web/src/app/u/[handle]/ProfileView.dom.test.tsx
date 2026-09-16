@@ -70,29 +70,47 @@ function grid() {
 }
 
 describe("a failed load (CF-304)", () => {
-  it("does not tell the visitor the handle is free", async () => {
-    // This branch used to render "No one is using @alice" for ANY failure, so
-    // a 500 or a dropped connection asserted the availability of a handle that
-    // may well be taken. Asserting the absence of the claim is the point;
-    // asserting the replacement copy is secondary.
-    getProfile.mockRejectedValue(new Error("API error 500: upstream"));
+  async function renderFailure(message: string) {
+    getProfile.mockRejectedValue(new Error(message));
     await act(async () => {
       root.render(<ProfileView handle="alice" />);
     });
+  }
+
+  it("does not tell the visitor the handle is free", async () => {
+    // This branch rendered "No one is using @alice" for ANY failure, so a 500
+    // or a dropped connection asserted the availability of a handle that may
+    // well be taken.
+    await renderFailure("Internal Server Error");
 
     expect(host.textContent).not.toContain("No one is using");
-    expect(host.textContent).toContain("Couldn't load this profile");
   });
 
-  it("still says the handle is free when the profile is genuinely absent", async () => {
-    // The other direction, so the fix cannot be "delete the affirmative copy".
-    // A resolved-but-empty answer is a real not-found and may say so.
-    getProfile.mockResolvedValue(null);
-    await act(async () => {
-      root.render(<ProfileView handle="alice" />);
-    });
+  it("shows the server's own answer for a handle that does not exist", async () => {
+    // The common failure, and the one an earlier version of this fix REGRESSED
+    // by sending it to copy written for a server fault. `getProfile` is
+    // `Promise<Profile>` and a missing handle is a 404, so it rejects with the
+    // API's `detail` — there is no resolved-null case to branch on.
+    await renderFailure("Profile not found");
 
-    expect(host.textContent).toContain("No one is using @alice");
+    expect(host.textContent).toContain("Profile not found");
+    expect(host.textContent).not.toContain("No one is using");
+  });
+
+  it("distinguishes the two failures by what it shows, not by asserting either", async () => {
+    // The discriminating assertion: the two cases must not render the same
+    // text. Without this, a fix that collapsed both into one fixed message
+    // would pass everything above.
+    await renderFailure("Profile not found");
+    const notFound = host.textContent;
+    act(() => root.unmount());
+    host.remove();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await renderFailure("Internal Server Error");
+
+    expect(host.textContent).not.toBe(notFound);
   });
 });
 

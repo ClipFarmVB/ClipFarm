@@ -69,6 +69,52 @@ describe("a failed collections fetch (CF-304)", () => {
     expect(card.textContent).toContain("No collections yet");
   });
 
+  it("keeps saying the list is incomplete after a create succeeds", async () => {
+    // The load failure and the outcome of an action are different facts, and an
+    // action must not erase the other one. With a single `error` slot,
+    // `handleCreate`'s `setError(null)` cleared the fetch failure, so a user
+    // whose list failed to load and who then made a collection was left reading
+    // a one-item list with nothing saying the rest was missing — the same
+    // "empty account" lie the fetch `.catch` exists to prevent, arrived at a
+    // different way.
+    getCollections.mockRejectedValue(new Error("Failed to fetch"));
+    createCollection.mockResolvedValue({ id: "c9", name: "Dunks", clip_count: 0 });
+    addClipToCollection.mockResolvedValue({});
+    const card = await mount();
+
+    const newBtn = [...card.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("New collection"),
+    );
+    if (!newBtn) throw new Error("no create affordance");
+    await act(async () => {
+      newBtn.click();
+    });
+    const input = card.querySelector("input");
+    if (!input) throw new Error("no name field");
+    // Through the prototype setter: React's value tracker treats a direct
+    // `input.value = ...` followed by an event as a no-op change, so the
+    // component never sees the name. Same reason as
+    // PostComposerModal.consent.dom.test.tsx's checkbox helper.
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(input, "Dunks");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const addBtn = [...card.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "Add",
+    );
+    if (!addBtn) throw new Error("no add button");
+    await act(async () => {
+      addBtn.click();
+    });
+
+    expect(createCollection).toHaveBeenCalledWith("Dunks");
+    expect(card.textContent).toContain("Failed to fetch");
+  });
+
   it("does not leave the fetch rejecting unhandled", async () => {
     const unhandled: unknown[] = [];
     const onUnhandled = (e: unknown) => unhandled.push(e);

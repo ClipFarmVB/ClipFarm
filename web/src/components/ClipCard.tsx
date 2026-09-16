@@ -75,8 +75,10 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
       // one-liner as its siblings — not a second channel for the same thing.
       onUpdate?.(updated);
     } catch (e) {
-      // `alert`, matching `handleDownload` above and every other mutation in
-      // this component. Previously the select closed and the failure vanished.
+      // `alert`, matching `handleDownload` above. Previously the select closed
+      // and the failure vanished (CF-304). The two mutations below were the
+      // same defect in a quieter form and are fixed in the same change, so the
+      // component now has one answer to a failed write rather than three.
       alert(e instanceof Error ? e.message : "Could not tag this clip.");
     } finally {
       setTagLoading(false);
@@ -111,8 +113,11 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
       setLocalConfidence(updated.confidence);
       onUpdate?.(updated);
     } catch (err) {
-      console.error("Label update failed:", err);
+      // The rollback below is visible; the REASON was not. A label that snaps
+      // back with nothing said reads as the UI refusing the edit rather than
+      // the write failing, so the user retries the same click (CF-304).
       setLocalLabels(prev);
+      alert(err instanceof Error ? err.message : "Could not update the labels.");
     } finally {
       setLabelLoading(false);
     }
@@ -126,7 +131,9 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
       setLocalEnd(updated.end_time);
       onUpdate?.(updated);
     } catch (err) {
-      console.error("Trim failed:", err);
+      // Nothing was shown at all here: the clip kept its old bounds and the
+      // only record of the failure was the devtools console (CF-304).
+      alert(err instanceof Error ? err.message : "Could not trim this clip.");
     } finally {
       setTrimLoading(false);
     }

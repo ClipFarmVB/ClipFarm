@@ -24,10 +24,29 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
  * are exactly the ones that drifted: an over-quota video upload reported a
  * clean sentence while the 2 MB avatar cap still showed
  * `API error 413: {"detail":"..."}`.
+ *
+ * **The fallback is bounded, and that started mattering with CF-304.** When
+ * the body is not our JSON — a proxy or CDN 502, which is an HTML page — the
+ * fallback carries the whole body. That was tolerable while these strings
+ * reached `console.error`; the error paths fixed in CF-304 put them in an
+ * `alert()` and on the profile page, where a kilobyte of markup is an
+ * unreadable wall and the status line at the front scrolls out of reach.
+ * So a body that is not JSON is cut, and one that opens as markup is dropped
+ * entirely: it has nothing in it for the person reading.
  */
+const _MAX_FALLBACK_BODY = 200;
+
+function errorFallback(status: number, text: string): string {
+  const body = text.trim();
+  if (!body || body.startsWith("<")) return `API error ${status}`;
+  return body.length > _MAX_FALLBACK_BODY
+    ? `API error ${status}: ${body.slice(0, _MAX_FALLBACK_BODY)}…`
+    : `API error ${status}: ${body}`;
+}
+
 async function throwApiError(res: Response): Promise<never> {
   const text = await res.text();
-  throw new Error(apiErrorMessage(text, `API error ${res.status}: ${text}`));
+  throw new Error(apiErrorMessage(text, errorFallback(res.status, text)));
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

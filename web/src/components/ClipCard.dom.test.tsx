@@ -21,10 +21,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const tagClip = vi.hoisted(() => vi.fn());
+const updateClipLabels = vi.hoisted(() => vi.fn());
+const trimClip = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({
   tagClip,
-  updateClipLabels: vi.fn(),
-  trimClip: vi.fn(),
+  updateClipLabels,
+  trimClip,
   getClipDownloadUrl: vi.fn(),
 }));
 
@@ -108,7 +110,11 @@ describe("tagging a player (CF-304)", () => {
     expect(onUpdate).toHaveBeenCalledWith(tagged);
   });
 
-  it("surfaces a failure instead of closing the dropdown on it", async () => {
+  it("surfaces a failed tag, and does not tell the parent the write happened", async () => {
+    // Named for what it pins. It does NOT pin that the dropdown stays open —
+    // `setTagging(false)` is in the `finally`, so the select still closes on a
+    // failure; what changed is that the reason now goes somewhere instead of
+    // vanishing with it.
     tagClip.mockRejectedValue(new Error("Clip is no longer available"));
     const alert = vi.fn();
     vi.stubGlobal("alert", alert);
@@ -123,6 +129,62 @@ describe("tagging a player (CF-304)", () => {
 
     expect(alert).toHaveBeenCalledWith("Clip is no longer available");
     expect(onUpdate).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("the two mutations that failed into the console (CF-304)", () => {
+  // `handleTag` was the loud one, so it was the one the card named. These two
+  // were the same defect quieter: a rolled-back label reads as the UI refusing
+  // the edit, and a failed trim showed nothing at all. Both wrote to
+  // `console.error`, which is not a place a user looks.
+  async function openPanel(name: string) {
+    const btn = [...host.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === name,
+    );
+    if (!btn) throw new Error(`no ${name} button`);
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  it("tells the user why a label snapped back", async () => {
+    updateClipLabels.mockRejectedValue(new Error("Clip is no longer available"));
+    const alert = vi.fn();
+    vi.stubGlobal("alert", alert);
+    await render();
+
+    await openPanel("Label");
+    const option = [...host.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "spike",
+    );
+    if (!option) throw new Error("no spike label");
+    await act(async () => {
+      option.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(updateClipLabels).toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith("Clip is no longer available");
+    vi.unstubAllGlobals();
+  });
+
+  it("says a trim failed rather than silently keeping the old bounds", async () => {
+    trimClip.mockRejectedValue(new Error("Source video expired"));
+    const alert = vi.fn();
+    vi.stubGlobal("alert", alert);
+    await render();
+
+    await openPanel("Trim");
+    const minus = [...host.querySelectorAll("button")].find(
+      (b) => b.textContent?.includes("2s"),
+    );
+    if (!minus) throw new Error("no trim control");
+    await act(async () => {
+      minus.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(trimClip).toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith("Source video expired");
     vi.unstubAllGlobals();
   });
 });

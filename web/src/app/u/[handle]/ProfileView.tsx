@@ -54,38 +54,32 @@ export function ProfileView({ handle }: { handle: string }) {
 
   if (loading) return <div className="text-sm text-muted">Loading…</div>;
 
-  // A failure and a genuine absence are different answers and only one of them
-  // may claim the handle is free. This branch used to render "No one is using
-  // @handle" for BOTH, so a 500 or a dropped connection asserted the
+  // **A failure and a genuine absence are the same branch here, because the
+  // client cannot tell them apart — and the first attempt at this made things
+  // worse by pretending it could.**
+  //
+  // `getProfile` is `Promise<Profile>` through `request()`, and a missing
+  // handle is a 404 (`profiles.py:448`), so it REJECTS. There is no
+  // resolved-null case: an `if (!profile)` branch below an `if (error)` one is
+  // dead code, and splitting them sent the COMMON failure — a mistyped handle —
+  // to the copy written for a server fault.
+  //
+  // What this must not do is what it used to: render "No one is using @handle"
+  // for any failure, so that a 500 or a dropped connection asserted the
   // availability of a handle that may well be taken (CF-304).
   //
-  // It says "couldn't tell" rather than distinguishing a 404 from a 500,
-  // because it CANNOT: `throwApiError` throws a plain Error and
-  // `apiErrorMessage` discards the status whenever the body carries `detail`,
-  // which FastAPI always sets. Giving the client an error type that carries a
-  // status is a change to every caller's error shape — carded, not smuggled in
-  // here. Not asserting something false needs neither.
-  if (error) {
+  // So it asserts nothing about the handle and shows the server's own words.
+  // `apiErrorMessage` returns `detail` verbatim, which is "Profile not found"
+  // for the 404 — accurate for the common case without the client having to
+  // infer a status it is never given. Distinguishing properly needs an error
+  // type that carries one, which is a change to every caller's error shape:
+  // CF-423 (#556), not smuggled in here.
+  if (error || !profile) {
     return (
       <div className="flex flex-col items-center py-16 text-center">
         <AlertCircle className="h-8 w-8 text-muted" />
-        <h1 className="mt-3 text-lg font-medium">Couldn&apos;t load this profile</h1>
-        <p className="mt-1 text-sm text-muted">{error}</p>
-        <Link href="/games" className="mt-4">
-          <Button variant="secondary" size="sm">Back to library</Button>
-        </Link>
-      </div>
-    );
-  }
-
-  if (!profile) {
-    return (
-      <div className="flex flex-col items-center py-16 text-center">
-        <AlertCircle className="h-8 w-8 text-muted" />
-        <h1 className="mt-3 text-lg font-medium">Profile not found</h1>
-        <p className="mt-1 text-sm text-muted">
-          No one is using @{handle}.
-        </p>
+        <h1 className="mt-3 text-lg font-medium">Couldn&apos;t load @{handle}</h1>
+        <p className="mt-1 text-sm text-muted">{error ?? "Please try again."}</p>
         <Link href="/games" className="mt-4">
           <Button variant="secondary" size="sm">Back to library</Button>
         </Link>
