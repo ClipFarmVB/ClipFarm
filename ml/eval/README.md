@@ -89,7 +89,11 @@ it reads no thread setting — but it is a real subprocess, so measure with it i
 mind.
 
 ```bash
-# Offline: replay detection + scoring from the R2 ball-cache (no re-tracking).
+# Offline: replay detection + scoring from the R2 ball-cache. A cache miss
+# re-tracks on Modal when it is configured — every video, after a
+# TRACKING_CACHE_VERSION bump. On a branch that bumps the version, before its
+# `modal deploy`, add `-e MODAL_TOKEN_ID= -e MODAL_TOKEN_SECRET=` so a miss fails
+# instead of caching the deployed (old) code's track under the new key.
 docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
   eval python -m ml.eval.harness --test test1 --version my-change --offline
 
@@ -229,6 +233,12 @@ condenses, and that trade is the thing to look at before touching its tunables:
 `visualize_deadtime.py`. test1 is a different labeler on 360p-space footage and
 test3 is a game the ball tracker cannot follow, so both measure something other
 than which builder is better.
+
+Those five cache keys predate CF-231. The key now ends in `-v{N}`
+(`ball.TRACKING_CACHE_VERSION`), so `_track_ball_cached` no longer finds any of
+them: a run that reaches it on those fixtures misses the cache, and re-tracks on
+Modal when it is configured or raises when it is not, until caches exist under
+the new key.
 
 > **Every figure above is stale on the 1080p fixtures as of CF-174 — both
 > columns, not just `rules`.** Two separate reasons, and the second one is easy
