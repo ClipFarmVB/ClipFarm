@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "ClipFarm",
+    "slug": "clipfarm",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "clipfarm",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.clipfarm.app",
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.clipfarm.app"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "./modules/clipfarm-upload/app.plugin.js"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "tsconfigPaths": true
+    }
+  }
+}
