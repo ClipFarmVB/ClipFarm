@@ -3,6 +3,22 @@ name: prompt-writing
 description: Principles for writing prompts, instructions, and any text that guides AI agent behavior — focused on outcomes, examples, strategies, and negative rules. ALWAYS use when writing such prompts, instructions, any text you think will be used in guiding AI agent behavior (especially skills).
 ---
 
+> **In this repo there is nobody to ask.**
+>
+> This file's description fires on any text that guides an agent — "especially
+> skills" — which is most of what the overnight loop edits, and
+> `docs/overnight/README.md` defines that run as an agent with "nobody watching
+> — overnight, or any stretch where questions cannot be answered". So "if the
+> right placement isn't clear from context, ask the user" and "if the user
+> explicitly signals weight" have no counterpart on those laps: the cost of
+> asking is not small, it is the lap. Decide, write the decision and its
+> reasoning where the next reader will meet it, and carry on — or file a card.
+> `START.md` names the one condition that may stop a run, and an unclear
+> placement is not it.
+>
+> Everything else here applies unchanged.
+
+
 
 # Prompt Writing for AI Agents
 

@@ -3,17 +3,35 @@ name: task-guidance
 description: How to give effective task instructions, delegate work, and provide feedback to AI agents working on specific problems. ALWAYS USE when delegating work, for example to subagents
 ---
 
-> **In this repo, `docs/overnight/BRIEFS.md` wins for a cold review round.**
+> **In this repo, `docs/overnight/BRIEFS.md` wins for a review round of either
+> kind, and there is nobody to ask.**
 >
-> This skill says to give an agent more context than you think it needs, and a
-> complete understanding of why it is solving what you asked. That is right for
-> most delegation and wrong for one kind: `BRIEFS.md` says a **cold** round gets
-> the PR number and *"no plan, no reasoning, no summary of what was built, no
-> earlier findings … Re-deriving that context is what a subagent normally costs
-> you; here that cost is the point."* The overnight loop spawns a reviewer every
-> lap, so this skill's "always use when delegating" trigger fires precisely
-> there. Follow `BRIEFS.md` on what a cold round may be told; follow this file
-> on how to say it.
+> Two carve-outs, because this file is loaded on every delegation and the
+> overnight loop delegates every lap.
+>
+> **There is no user.** `docs/overnight/README.md` defines the run as an agent
+> with "nobody watching — overnight, or any stretch where questions cannot be
+> answered". So "raise it to me before running with it", the review gate
+> ("wait for my go-ahead"), and anything else that waits on a person do not
+> apply: the brief's own answer is to decide, record the decision and its
+> reasoning, and carry on — or to file a card. `START.md` names the single
+> case that may stop a run, and it is not this.
+>
+> **A review round is briefed by `BRIEFS.md`, not by this file's context
+> advice — and that covers the semi-cold round too, not only the cold one.**
+> A cold round is given the PR number and nothing about how the diff came to
+> be; a semi-cold round is given the finding, the commits since, and nothing
+> further. So three moves below are out of scope there, however good they are
+> elsewhere: giving a summary alongside a pointer rather than the bare
+> reference; offering a starting point, because "a concrete proposal transfers
+> your thinking" is exactly what a cold round exists to prevent; and giving
+> more context than you think necessary. Follow `BRIEFS.md` on WHAT a round is
+> told; follow this file on HOW to say it.
+>
+> The rule being overridden is `BRIEFS.md`'s: a **cold** round gets the PR
+> number and *"no plan, no reasoning, no summary of what was built, no earlier
+> findings … Re-deriving that context is what a subagent normally costs you;
+> here that cost is the point."*
 >
 > Added here rather than in `BRIEFS.md` because that file already owns the rule
 > — `docs/overnight/README.md` says every rule lives in exactly one file, and
