@@ -44,9 +44,9 @@ GAME_MATRIX = [
     (OWNER,     Visibility.followers, True),
     (OWNER,     Visibility.public,    True),
     (FOLLOWER,  Visibility.private,   False),
-    # False until CF-110 builds the follow graph — is_follower() is stubbed to
-    # False so `followers` content stays owner-only rather than leaking.
-    (FOLLOWER,  Visibility.followers, False),
+    # True as of CF-110. The matrix passes viewer_follows_owner only for this
+    # viewer — see _follows(), which is what the predicate actually consumes.
+    (FOLLOWER,  Visibility.followers, True),
     (FOLLOWER,  Visibility.public,    True),
     (STRANGER,  Visibility.private,   False),
     (STRANGER,  Visibility.followers, False),
@@ -57,9 +57,20 @@ GAME_MATRIX = [
 ]
 
 
+def _follows(viewer) -> bool:
+    """The follow edge the router resolves before calling the predicate.
+
+    Only FOLLOWER has an accepted edge to OWNER; a stranger and an anonymous
+    visitor never do, and the owner doesn't follow themselves.
+    """
+    return viewer is FOLLOWER
+
+
 @pytest.mark.parametrize("viewer,level,expected", GAME_MATRIX)
 def test_game_visibility_matrix(viewer, level, expected):
-    assert access.can_view_game(viewer, _Game(level)) is expected
+    assert access.can_view_game(
+        viewer, _Game(level), viewer_follows_owner=_follows(viewer)
+    ) is expected
 
 
 @pytest.mark.parametrize("viewer,level,expected", GAME_MATRIX)
@@ -67,7 +78,9 @@ def test_clip_inherits_its_games_visibility(viewer, level, expected):
     """clip.visibility is NULL for every clip the pipeline produces, so this is
     the path that actually runs in production."""
     game = _Game(level)
-    assert access.can_view_clip(viewer, _Clip(game), game) is expected
+    assert access.can_view_clip(
+        viewer, _Clip(game), game, viewer_follows_owner=_follows(viewer)
+    ) is expected
 
 
 @pytest.mark.parametrize("viewer,level,expected", GAME_MATRIX)
@@ -75,7 +88,12 @@ def test_clip_override_beats_the_games_level(viewer, level, expected):
     """A per-clip value wins over the game's — here the game is private and the
     clip carries the tier under test."""
     game = _Game(Visibility.private)
-    assert access.can_view_clip(viewer, _Clip(game, visibility=level), game) is expected
+    assert access.can_view_clip(
+        viewer,
+        _Clip(game, visibility=level),
+        game,
+        viewer_follows_owner=_follows(viewer),
+    ) is expected
 
 
 def test_private_clip_inside_a_public_game_stays_private():
@@ -134,17 +152,45 @@ def test_clip_filter_resolves_inherited_visibility():
     assert "games.visibility" in sql
 
 
-def test_clip_filter_never_leaks_followers_tier_before_cf110():
-    """The predicate must not contain a clause that admits `followers` while
-    is_follower() is still stubbed False — the two would disagree."""
-    for viewer in (OWNER, STRANGER, ANONYMOUS):
-        assert "'followers'" not in _clip_sql(viewer)
+def test_signed_in_clip_filter_resolves_followers_in_sql():
+    """CF-110: a signed-in viewer's query resolves the `followers` tier with an
+    EXISTS against `follows`, rather than pulling rows into Python.
+
+    This is the inverted form of `test_clip_filter_never_leaks_followers_tier_
+    before_cf110`, which asserted the clause was *absent* while `is_follower`
+    was stubbed. It failed the moment the stub went, which is what it was for.
+    """
+    for viewer in (OWNER, STRANGER):
+        sql = _clip_sql(viewer).lower()
+        assert "'followers'" in sql
+        assert "exists" in sql and "follows" in sql
+        assert "'accepted'" in sql, "a pending request must not grant access"
+        assert "'pending'" not in sql
 
 
-def test_follower_stub_is_closed():
-    """Documents the seam CF-110 opens. If this starts failing, the matrix rows
-    marked False for FOLLOWER need revisiting in the same change."""
-    assert access.is_follower(FOLLOWER, OWNER) is False
+def test_anonymous_clip_filter_has_no_followers_clause():
+    """A signed-out visitor can't follow anyone, so the subquery would only add
+    an always-false EXISTS to every anonymous read."""
+    assert "'followers'" not in _clip_sql(ANONYMOUS)
+    assert "exists" not in _clip_sql(ANONYMOUS).lower()
+
+
+def test_the_follower_seam_is_now_implemented():
+    """CF-108 left `is_follower()` stubbed False and asserted the stub was
+    closed, so that implementing it would fail here and force the matrix and the
+    SQL filters to be revisited in the same change. CF-110 did exactly that.
+
+    Kept, inverted, as the record that the seam worked — and as a guard that the
+    resolution can't quietly regress to a hardcoded answer.
+    """
+    import inspect
+
+    assert not hasattr(access, "is_follower"), "the stub should be gone, not re-added"
+    assert hasattr(access, "accepted_follow_exists"), "the SQL half must exist"
+
+    sig = inspect.signature(access.can_view_game)
+    assert "viewer_follows_owner" in sig.parameters
+    assert sig.parameters["viewer_follows_owner"].default is False, "must fail closed"
 
 
 def test_clip_visibility_always_joins_the_game():
@@ -266,3 +312,40 @@ def test_optional_auth_still_surfaces_a_real_failure():
         assert exc.value.status_code == 503
     finally:
         auth.get_current_user_id = original
+
+
+def test_the_follow_flag_defaults_closed():
+    """A caller that forgets to resolve the edge must grant LESS access, not
+    more — the whole reason the parameter defaults to False."""
+    game = _Game(Visibility.followers)
+    assert access.can_view_game(FOLLOWER, game) is False
+    assert access.can_view_game(FOLLOWER, game, viewer_follows_owner=True) is True
+
+
+def test_a_pending_request_is_not_a_follower():
+    """Resolved upstream by follow_graph (accepted-only), pinned here: the
+    predicate must never treat "requested" as "following"."""
+    game = _Game(Visibility.followers)
+    assert access.can_view_game(FOLLOWER, game, viewer_follows_owner=False) is False
+
+
+def test_the_follows_exists_is_scoped_to_both_ends_of_the_edge():
+    """Guards against a subquery that matches any accepted follow anywhere
+    rather than this viewer following this owner."""
+    from app.models.game import Game as GameModel
+
+    sql = str(
+        access.accepted_follow_exists(FOLLOWER, GameModel.owner_id).compile(
+            compile_kwargs={"literal_binds": True}
+        )
+    ).lower()
+    assert "follower_id" in sql, "must pin the viewer end"
+    assert "followee_id" in sql, "must pin the owner end"
+    assert "games.owner_id" in sql, "the owner end must correlate to the game"
+
+
+def test_the_clip_filter_emits_one_follow_subquery_not_two():
+    """Review finding: the clip-level and inherited `followers` branches differ
+    only in which column carries the tier, so one EXISTS covers both. Two was
+    correct but paid for the same subquery twice on every signed-in read."""
+    assert _clip_sql(STRANGER).lower().count("exists") == 1

@@ -33,6 +33,7 @@ All on the `users` table unless noted.
 | `bio` | profile | Chosen, optional, 280 chars. |
 | `avatar_url` | profile | Stored as the object's public R2 URL; served presigned when R2 is configured. |
 | `is_private` | operational | Defaults **true**, and governs **who may follow, not who may see**. `services/access.py` says so in bold and `test_account_privacy_does_not_clamp_post_visibility` pins it: a private account's `public` post is readable by a signed-out stranger. The column is stored and echoed; no access decision reads it. |
+| `follower_count`, `following_count` | operational | Denormalized counts of the `follows` edges. Publicly rendered, but derived — erasing the edges erases them. |
 | `created_at`, `username_changed_at`, `username_is_generated` | operational | Account lifecycle. `username_is_generated` marks a handle migration 010 derived from the email local part. |
 
 **One thing worth a lawyer's attention:** accounts that already existed when
@@ -46,6 +47,13 @@ available, and the stored value is still a transformation of the email
 address.
 
 ### Beyond the users table
+
+**The social graph** (`follows`, CF-110) records who follows whom, with a
+status, and both its foreign keys cascade — so deleting an account removes the
+edges at both ends rather than leaving dangling halves. Worth naming separately
+because a follow edge is personal data about *two* people, and the other party
+never consented to its deletion any more than to its creation. Nothing here
+decides that; it is listed so someone can.
 
 The heavier personal data is not in `users` at all — it is **video of
 identifiable people, most of them minors**. Uploaded footage, generated clips
@@ -132,6 +140,7 @@ likely to miss:
 | `collections` | *(none)* | **Blocks deletion** |
 | `posts` | `CASCADE` | Removed with the account |
 | `corrections` | `CASCADE` | Removed with the account |
+| `follows` | `CASCADE` (both ends) | Removed with the account |
 | `upload_events` | `CASCADE` | Removed with the account |
 
 Any user who has uploaded a game, made a team, or built a collection — that is,

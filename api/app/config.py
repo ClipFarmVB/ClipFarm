@@ -930,6 +930,12 @@ class Settings(BaseSettings):
     # reading profiles issues one call per profile.
     rate_limit_profile_per_minute: int = Field(default=30, ge=1)
     rate_limit_user_posts_per_minute: int = Field(default=30, ge=1)
+    # The follower/following lists (CF-110). Its own knob rather than riding on
+    # `profile`: the follow graph is a distinct scraping target from the profile
+    # card, and an operator throttling graph enumeration should not have to
+    # tighten ordinary profile reads to do it. Same default and same by_address
+    # treatment, because it is the same anonymous, handle-keyed surface.
+    rate_limit_follows_per_minute: int = Field(default=30, ge=1)
     # Exposure B — UUID-keyed content. The game pair is sized by the detail
     # page: it polls GET /games/{id} every 5s while processing (12/min per open
     # tab), and fetches GET /games/{id}/clips once the game is ready and again

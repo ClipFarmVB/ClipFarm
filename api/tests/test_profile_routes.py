@@ -28,6 +28,7 @@ pytest.importorskip("fastapi")
 from fastapi import HTTPException  # noqa: E402
 
 from app.routers import profiles  # noqa: E402
+from app.services import profiles as profile_service  # noqa: E402
 from app.services import storage  # noqa: E402
 from app.schemas.profile import MeOut, ProfileOut, ProfileUpdate  # noqa: E402
 
@@ -138,6 +139,11 @@ def test_public_profile_fields_are_an_explicit_allowlist():
         "avatar_url",
         "is_private",
         "created_at",
+        # CF-110. Added deliberately: the counters are public, the follower
+        # *list* is not. This test firing is what made that a decision rather
+        # than a field that drifted into every public lookup.
+        "follower_count",
+        "following_count",
     }
 
 
@@ -307,7 +313,7 @@ def test_serialize_presigns_the_avatar(monkeypatch):
     )
     user = _FakeUser(username="matt", avatar_url="https://pub.r2.dev/avatars/abc")
 
-    out = profiles._serialize(user, MeOut)
+    out = profile_service.serialize(user, MeOut)
 
     assert out.avatar_url == "https://signed/https://pub.r2.dev/avatars/abc"
 
@@ -322,14 +328,14 @@ def test_serialize_survives_a_signing_failure(monkeypatch):
     monkeypatch.setattr(storage, "presign_from_stored_url", _boom)
     user = _FakeUser(username="matt", avatar_url="https://pub.r2.dev/avatars/abc")
 
-    out = profiles._serialize(user, MeOut)
+    out = profile_service.serialize(user, MeOut)
 
     assert out.username == "matt"
 
 
 def test_serialize_leaves_a_missing_avatar_alone(monkeypatch):
     monkeypatch.setattr(storage, "r2_configured", lambda: True)
-    out = profiles._serialize(_FakeUser(avatar_url=None), MeOut)
+    out = profile_service.serialize(_FakeUser(avatar_url=None), MeOut)
     assert out.avatar_url is None
 
 
