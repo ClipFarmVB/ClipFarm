@@ -10,7 +10,15 @@ Step 0 prints the sweep's own baseline row, and beneath it the last recorded
 run for that fixture with the tag and commit it came from. That is context, not
 a pass/fail check: nothing here verifies the recorded run describes the
 configuration you are on. Restoring step 0 to a trustworthy control is CF-309
-(#359) — it needs the row re-recorded, which needs the R2 ball caches.
+(#359), and it needs more than a fresh row. The newest recorded run is the
+`rules` figure (ml/eval/README.md's CF-187 table: 56.2% dead, 176s live), its
+`app.config` snapshot carries no `condense_mode` at all, and this tool replays
+`active_windows_from_contacts` + `bridge_windows_by_motion` — the `rules` path
+— while `condense_mode` has shipped `guarded` since CF-187. So a row
+re-recorded at app defaults would match step 0 LESS, not more. Either this tool
+scores the shipping builder (CF-416, #547), or "shipping defaults" here means
+the tuner's and the table says so. Re-recording also needs the R2 ball caches
+(#511).
 
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts test2
@@ -90,9 +98,10 @@ SWEEPS: dict[str, tuple[float | int, ...]] = {
 # alias for the CONTACT_HIT_SPEED_PXPS=120 row already printed above it. Both
 # the pin and that row are gone — the remaining two are genuine combinations.
 #
-# Dict *literals*, not `dict(...)` calls: the test reads this table with
-# `ast.literal_eval` rather than importing the module, and a call node is not
-# a literal.
+# Dict *literals*, not `dict(...)` calls. The test imports these tables, so a
+# call would run fine — but it also compares the literal it reads here against
+# what the module ends up bound to, and `ast.literal_eval` cannot evaluate a
+# call node. Writing the values out keeps the file readable as the table it is.
 COMBOS: tuple[tuple[str, dict[str, float | int]], ...] = (
     ("combo: hit 120 + ratio 0.25",
      {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25}),
@@ -258,6 +267,11 @@ def _sweep(test_id: str) -> None:
     # bare `{v}` ones. Sixteen is the count of rows that remain, not of labels
     # checked; saying "sixteen old labels" would be a count taken from the
     # wrong set.
+    #
+    # Byte-exact for these values, not label-stable in general: `%g` truncates
+    # to six significant digits and switches to scientific notation at 1e6, so
+    # a future swept 0.1234567 would print a label that no longer identifies
+    # the value it scored.
     for name in ("CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_RESIDUAL_RATIO",
                  "CONTACT_HIT_SPEED_PXPS"):
         for v in SWEEPS[name]:
@@ -283,6 +297,11 @@ def _sweep(test_id: str) -> None:
     # Copied on the way out all the same: `COMBOS[-1][1]` is a module-level
     # dict, and handing it to a function by reference where the old code built
     # a fresh one is a class of bug for the sake of nothing.
+    #
+    # `[-1]` is positional and load-bearing: stage 2 sweeps padding on top of
+    # the FULLEST combo, which is the last one because the table is written
+    # cumulatively. Reordering COMBOS re-bases stage 2 silently, so the order
+    # is part of the table's meaning rather than its presentation.
     best = dict(COMBOS[-1][1])
     print("\n-- padding sweep, on top of the full best contact combo --")
     global COND

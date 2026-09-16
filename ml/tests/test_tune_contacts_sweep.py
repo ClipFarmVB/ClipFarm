@@ -26,8 +26,19 @@ its neighbours, which is the same mistake one level down.
 Importing is safe here and the precedent is not: `ml.pipeline.ball` reaches cv2
 only lazily (`test_ball_scaling.py` records this), `ml.eval.harness` and
 `ml.eval.metrics` are stdlib plus numpy, and `ci.yml` installs numpy before
-`pytest ml/tests/`. The parse survives for exactly one job — checking that the
-source reads as what Python binds — where the two disagreeing is the finding.
+`pytest ml/tests/`.
+
+The parse survives for two jobs, both about the SOURCE rather than the values:
+checking that it reads as what Python binds, and catching a key written twice
+in the table — which equality cannot find, since Python and `literal_eval` both
+keep the last and the values therefore agree while the file reads as sweeping
+something it does not.
+
+And none of this reaches `_sweep`, which is free to ignore both tables and
+re-type a literal loop. That rung is
+`test_tune_contacts_fixture.test_every_printed_row_comes_from_the_sweep_tables`,
+which compares the labels the tuner actually prints against these tables in
+both directions.
 """
 import ast
 import sys
@@ -132,10 +143,12 @@ def test_no_key_is_written_twice_in_the_table(name):
 
 
 def test_the_tables_were_actually_found():
-    """A parse that silently matched nothing would make every test below
-    vacuous — the same guard the fixture suites carry, for the same reason."""
-    assert SWEEPS, "no SWEEPS table parsed"
-    assert _combos(), "no COMBOS table parsed"
+    """An empty table would make every test below vacuous — the same guard the
+    fixture suites carry, for the same reason. Cheap now that the tables are
+    imported rather than parsed, and kept because "vacuously green" is the
+    failure mode, not "parsed wrongly"."""
+    assert SWEEPS, "SWEEPS is empty"
+    assert _combos(), "COMBOS is empty"
     assert len(TUNABLES) >= 6, TUNABLES
 
 

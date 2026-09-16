@@ -248,6 +248,40 @@ def test_each_reported_figure_comes_from_its_own_field(tmp_path, monkeypatch):
     assert "33.3% recall" in note, note
 
 
+def test_every_printed_row_comes_from_the_sweep_tables(monkeypatch, capsys):
+    """CF-309: the guard has to reach what the tool PRINTS, not what it holds.
+
+    `test_tune_contacts_sweep.py` asserts properties of `SWEEPS` and `COMBOS` —
+    no value repeats the shipping default, no combo duplicates another — and
+    none of that binds `_sweep`, which is free to ignore both. Re-typing the
+    old literal loop, `for v in (360.0, 240.0, 180.0, 120.0)`, reinstates the
+    exact baseline-duplicating row CF-309 is about and leaves ruff, mypy and
+    every one of those assertions green. Measured: it did.
+
+    So this compares the emitted labels against the tables, in both directions.
+    A row the tables do not explain fails, and a table entry with no row fails.
+    Behavioural, like the rest of this file.
+    """
+    out = _run(monkeypatch, [(1.0, 5.0), (8.0, 12.0)], capsys)
+
+    # Column 1 of each results row. `_row` left-pads the label to 34, and the
+    # header, the note and the padding-sweep section are not results rows.
+    printed = [
+        line[:34].strip() for line in out.splitlines()
+        if line.startswith(("CONTACT_", "SEG_", "MIN_CONTACT_", "combo:"))
+    ]
+    expected = [f"{name}={v:g}" for name, values in T.SWEEPS.items() for v in values]
+    expected += [label for label, _ in T.COMBOS]
+
+    assert sorted(printed) == sorted(expected), (
+        f"rows the tables do not explain: {sorted(set(printed) - set(expected))}; "
+        f"table entries with no row: {sorted(set(expected) - set(printed))}"
+    )
+    # Sorted above so the message names the difference; this pins the count, so
+    # a row printed twice cannot pass by having the same set.
+    assert len(printed) == len(expected), f"{len(printed)} rows for {len(expected)} entries"
+
+
 def test_the_padding_sweep_restores_COND_when_a_row_raises(monkeypatch, capsys):
     """`COND` is a module global the padding sweep rebinds per row. Restoring it
     only after the loop leaves it on the last swept value when a row raises —

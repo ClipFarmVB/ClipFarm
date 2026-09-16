@@ -7,6 +7,7 @@ every score the harness reports — a malformed span or a drifted tier set would
 show up as a plausible-looking number rather than an error.
 """
 import json
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -101,10 +102,24 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
     and both lists are identical, so it is pinned by constructed cases in
     `TestHighlightWellFormedness` rather than by the fixture.
     """
+    if not isinstance(raw, dict):
+        return [f"the fixture is {type(raw).__name__}, not an object"]
+
     problems = []
 
     duration = raw.get("video_duration_sec")
-    if duration is not None and not isinstance(duration, (int, float)):
+    # `bool` before `(int, float)`, because `isinstance(True, int)` is True and
+    # `True` would survive as the number 1, reporting every clip as over-running
+    # "the declared Trues video". And `math.isfinite`, because `json.loads`
+    # accepts a bare `NaN` and `isinstance(nan, float)` is True — every
+    # comparison against NaN is False, so a NaN duration would exempt every clip
+    # from the over-run rule and report nothing at all. That is word for word
+    # the silent disarming the absent-key branch below exists to make loud.
+    if duration is not None and (
+        isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or not math.isfinite(duration)
+    ):
         problems.append(
             f"`video_duration_sec` is {duration!r}, which no clip can be "
             f"compared against")
@@ -144,6 +159,10 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
             # fixture, and it stops the remaining clips being looked at.
             problems.append(f"clip {clip!r} has no {' or '.join(missing)}")
             continue
+        if any(isinstance(clip[k], bool) for k in ("start", "end")):
+            # `parse_timestamp(True)` is 1.0 and scores silently.
+            problems.append(f"clip {clip['start']!r}-{clip['end']!r} is a boolean")
+            continue
         try:
             start = parse_timestamp(clip["start"])
             end = parse_timestamp(clip["end"])
@@ -156,6 +175,10 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
             problems.append(
                 f"clip {clip['start']!r}-{clip['end']!r} has an unreadable "
                 f"timestamp ({exc})")
+            continue
+        if not (math.isfinite(start) and math.isfinite(end)):
+            problems.append(
+                f"clip {clip['start']!r}-{clip['end']!r} is not a finite time")
             continue
         if start < 0:
             problems.append(f"clip {clip['start']}-{clip['end']} starts before zero")
@@ -759,7 +782,8 @@ class TestHighlightWellFormedness:
         and watching the test fail.
         """
         raw = self._raw([{"start": bad, "end": "00:40"}])
-        assert highlight_wellformedness_violations(raw, [])
+        problems = highlight_wellformedness_violations(raw, [])
+        assert any("unreadable timestamp" in p for p in problems), problems
 
     def test_a_clips_key_that_is_not_a_list_is_reported_as_that(self):
         """A dict iterates as its keys and a string as its characters, so
@@ -776,12 +800,43 @@ class TestHighlightWellFormedness:
         assert any("not an object" in p for p in problems), problems
 
     def test_a_non_numeric_duration_is_reported_and_disarms_only_itself(self):
-        """Comparing a float to a string raises; reporting it keeps the other
-        three rules running over the same fixture."""
+        """Comparing a float to a string raises; reporting it keeps the
+        positive-span rule running over the same fixture, which is asserted
+        below rather than only claimed."""
         raw = self._raw([{"start": "00:50", "end": "00:20"}], duration="10:00")
         problems = highlight_wellformedness_violations(raw, [])
         assert any("no clip can be compared against" in p for p in problems), problems
         assert any("not a positive span" in p for p in problems), problems
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), True, False, "10:00"])
+    def test_a_duration_no_clip_can_be_compared_against_is_reported(self, bad):
+        """NaN is the one that matters. `json.loads` accepts a bare `NaN`,
+        `isinstance(nan, float)` is True, and every comparison against it is
+        False — so a NaN duration would exempt every clip from the over-run rule
+        and report nothing, which is exactly the silent disarming the
+        absent-key branch exists to make loud. `True` is the same shape:
+        `isinstance(True, int)` is True, so it survives as the number 1."""
+        raw = self._raw([{"start": "00:10", "end": "00:20"}], duration=bad)
+        problems = highlight_wellformedness_violations(raw, [])
+        assert any("no clip can be compared against" in p for p in problems), problems
+
+    def test_a_nan_timestamp_is_reported(self):
+        """`nan < 0` is False, `end <= nan` is False, `end > duration` is False
+        — a NaN span passes every rule by making each comparison False."""
+        raw = self._raw([{"start": float("nan"), "end": "00:20"}])
+        problems = highlight_wellformedness_violations(raw, [])
+        assert any("not a finite time" in p for p in problems), problems
+
+    def test_a_boolean_timestamp_is_reported(self):
+        """`parse_timestamp(True)` is 1.0 and would score silently."""
+        raw = self._raw([{"start": True, "end": "00:20"}])
+        problems = highlight_wellformedness_violations(raw, [])
+        assert any("is a boolean" in p for p in problems), problems
+
+    def test_a_fixture_that_is_not_an_object_is_reported(self):
+        """The shape the four checks above removed, one level up."""
+        problems = highlight_wellformedness_violations(["00:10"], [])
+        assert any("not an object" in p for p in problems), problems
 
     def test_the_real_fixture_exercises_the_scored_path_at_all(self):
         """A control. If `test1` ever stopped scoring anything, the
