@@ -101,12 +101,17 @@ FEATURE_VERSION = 3
 
 # The per-sample "this is fast" bar, in frame-heights/s.
 #
-# A FOURTH copy of 0.30, and the count matters because each one is a place it
+# A FIFTH copy of 0.30, and the count matters because each one is a place it
 # can drift. The others: `motion_anchor_windows(speed=...)`'s default, which
 # actually applies it; `active_windows_guarded(anchor_speed=...)`, which passes
-# it down; and `condense_guard_anchor_speed` in api/app/config.py, which is what
+# it down; `condense_guard_anchor_speed` in api/app/config.py, which is what
 # PRODUCTION passes (tasks.py), and which is unreachable from here since
-# ml/pipeline must not import app.config.
+# ml/pipeline must not import app.config; and a hardcoded `speed=0.30` in
+# ml/eval/deadtime_variants.py:169.
+#
+# This said FOURTH and omitted that last one, while
+# `test_dead_time_ml.py`'s own docstring said five and listed it — the two
+# files disagreeing inside the sentence that argues the count matters.
 #
 # So the test below pins this to `motion_anchor_windows`' default — the one that
 # defines the quantity — and NOT to the value production actually runs with. If
@@ -149,9 +154,15 @@ def compute_features(
     #   api/app/workers/tasks.py:1180      build {"time","x","y"} from a
     #   ml/eval/harness.py:613             BallPosition that HAS the field
     #   ml/eval/diagnose_detection.py:168
+    #   ml/eval/deadtime_variants.py:83
     #
-    #   ml/eval/deadtime_variants.py:83    re-serialize a dict that already
-    #   ml/eval/tune_contacts.py:80        lost it upstream
+    #   ml/eval/tune_contacts.py:80        re-serializes a dict that already
+    #                                      lost it upstream
+    #
+    # deadtime_variants was on the wrong side of that split until a round
+    # checked it: it does `BallPosition(**p)` at :77 on the same dicts it
+    # strips at :83, and `BallPosition.confidence` has no default, so those
+    # dicts must already carry the field or the construction would raise.
     #
     # So mean_conf_3s and max_conf_3s are constant 0.0 on real input, which is
     # also their empty-window fill: "no confidence supplied" and "no samples at
@@ -160,10 +171,9 @@ def compute_features(
     # Two of thirteen columns training as constants is worth a line in the log
     # rather than a silent zero, because FEATURE_VERSION is frozen here and the
     # trainer (CF-393) reads whatever this produces. Forwarding it is one line
-    # in the three that hold a BallPosition; the other two only carry what the
-    # dump they read already has, so diagnose_detection's dump format decides
-    # tune_contacts. That is CF-420 (#544), and tasks.py is out of this card's
-    # scope either way.
+    # in the four above; tune_contacts only carries what the dump it reads
+    # already has, so diagnose_detection's dump format decides it. That is
+    # CF-420 (#544), and tasks.py is out of this card's scope either way.
     if positions and not any("confidence" in p for p in positions):
         logger.warning(
             "no ball-track sample carries 'confidence' — mean_conf_3s and "

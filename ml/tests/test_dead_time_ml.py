@@ -50,10 +50,14 @@ class TestContract:
     def test_the_fast_bar_is_the_anchors_bar(self):
         """One of five copies of 0.30, pinned to the one that defines it.
 
-        The others: `active_windows_guarded(anchor_speed=...)`, which passes it
-        down; `condense_guard_anchor_speed` in api/app/config.py, which is what
-        production actually sends; and a hardcoded `speed=0.30` in
-        ml/eval/deadtime_variants.py:169. This pin reaches exactly one of them.
+        The five, so the two files carrying this count say the same list:
+        `motion_anchor_windows(speed=...)`'s default, which defines it and is
+        what this pins; `FAST_SPEED_FH` in ml/pipeline/dead_time_ml.py, the
+        copy this test exists for; `active_windows_guarded(anchor_speed=...)`,
+        which passes it down; `condense_guard_anchor_speed` in
+        api/app/config.py, which is what production actually sends; and a
+        hardcoded `speed=0.30` in ml/eval/deadtime_variants.py:169. This pin
+        reaches exactly one of them.
 
         `motion_anchor_windows`' default is the same quantity — the per-sample
         "this is fast" bar — and nothing but this test stops the two drifting.
