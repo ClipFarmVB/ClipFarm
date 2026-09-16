@@ -24,7 +24,7 @@ not the ones it is not. Every rule lives in exactly one file.
 |---|---|---|
 | [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.2k |
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 6.7k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 12.6k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 12.2k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 14.9k |
 | [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.2k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
@@ -61,9 +61,9 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap that only selects costs about 30k tokens of brief instead of 57k;
-one that also spawns a round, about 35k. A step-2 lap is about 26k, a step-3 lap
-about 20k. That is the whole point of the split.
+A step-1 lap that only selects costs about 29k tokens of brief instead of 57k;
+one that also spawns a round, about 35k. A step-2 lap is about 25k, a step-3 lap
+about 19k. That is the whole point of the split.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
@@ -95,7 +95,7 @@ Two comparisons follow, answering different questions, so each says what it is
 measured on — which is the thing this page gets wrong when it gets anything
 wrong:
 
-- **On today's files.** A step-1 lap that only selects is ~5k cheaper than one
+- **On today's files.** A step-1 lap that only selects is ~6k cheaper than one
   that also spawns: exactly `BRIEFS.md`, which only the spawning lap reads.
 - **Across the CF-365 split**, at `596755d^` and `596755d`. A *spawning*
   step-1 lap went 26.70k to 28.05k, having gained a file. A select-only lap

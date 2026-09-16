@@ -573,16 +573,10 @@ single caught mutation into a statement about the guard, with no plural in
 sight. The reliable question is not "is there a plural" but **"is this sentence
 wider than the run behind it".**
 
-**There is no count here, and that is the third correction.** The run of
-2026-09-16 produced this at least a dozen times across three PRs. It was written
-first as five, then six, then seven, and each round found the next number low —
-the last time by six, across a PR the same author had opened an hour earlier,
-whose own commit message says "the eighth instance". The tally was **stale by
-construction**: it pinned a figure to a run that was still generating instances
-while the figure was being written. Three rounds each fixed the number; none
-fixed the thing that made it go stale. So: no number, and seven representative
-cases, each found by a review round running the **neighbour** of the mutation
-the commit had run.
+**No count, deliberately.** A tally here was written three times and found low
+three times, because the run that produced these was still producing them while
+the tally was being written. Seven representative cases, each found by a review
+round running the **neighbour** of the mutation the commit had run:
 
 | commit | claimed | what one neighbouring mutation showed |
 | --- | --- | --- |
@@ -599,13 +593,6 @@ message records nine mutations across four indexes and reads as coverage, and
 both gaps are in the cold round `cold: findings @ adddc9e`, which returned
 findings rather than a settle. #477 was parked with an
 `unsettled: needs a decision @ adddc9e` **comment** and is open.
-
-That sentence has been wrong twice. It first said "the comment that settled the
-PR", which the PR never received; the correction said "labelled `unsettled`",
-which is also false — #477 carries no labels at all, and
-[`REVIEW.md`](REVIEW.md) is explicit that the label is bare and the reason lives
-in the comment. Two attempts at one sentence about where a claim came from, both
-wider than the source, inside the paragraph that exists to say so.
 
 The last was written while fixing the one before it, in a commit whose subject
 names the very thing it got wrong. `abd0ae8` earns its row twice over — it also
@@ -649,40 +636,30 @@ lessons in them:
   the assertion — the rule lives there; what is new here is that a fixture you
   wrote yourself is a place it hides.
 
-  The first of those read "at *exactly* the ceiling" here until the maintainer
-  checked it: the value is 1.1111 against a ceiling of 1.11, and the mask keeps
-  a sample sitting exactly on the ceiling. A near-miss written as an equality,
-  in the sentence about a fixture that was wrong by a near-miss — and it had
-  already travelled from the test comment into a commit message into this file
-  before anyone read the number.
 - **Pin the consumer, not the table it reads.** A guard that asserts properties
   of a data structure does not constrain the code that consumes it, and the
-  distance between those two is where the defect lives. This one cost five
-  rounds on a single PR, each fixing the exact thing the last round named and
-  leaving its neighbour: the value literal, then the way the table is *bound*
-  (`+=` and `.update()` survived a fix aimed at a second `NAME = ...`), then the
-  fact that the consumer could ignore the table entirely and re-type the
-  literal, then the spellings of the labels it printed, then everything the rows
-  moved that their labels did not mention. Five rungs of one ladder, and the
-  guard was green at every rung.
+  distance between those two is where the defect lives. Two rounds went on the
+  table — the value literal, then the way it is *bound*, since `+=` and
+  `.update()` survived a fix aimed at a second `NAME = ...` — before anyone
+  noticed the consumer could ignore the table entirely and re-type the literal.
+  Three more rounds followed it out: the spellings of the labels it printed,
+  everything the rows moved that their labels did not name, and finally the
+  difference between the globals and what was actually passed.
 
   The tell is a guard and its subject living in different artifacts. Ask what
   the consumer is free to do that the table cannot see, and assert *that* —
-  usually by recording what the code actually did and comparing it against what
-  the table says it should have done, rather than by checking the table is
-  well-formed. The same shape one level up ends a review: five rounds of
-  tightening one guard is the signal to replace the approach, which is what the
-  maintainer decided on both PRs this rule came from.
+  record what the code actually did and compare it against what the table says
+  it should have done, rather than checking the table is well-formed. **And when
+  a guard needs a third tightening, the finding is its shape, not its
+  tightness.** That judgement ended three PRs in one run; none of the rounds
+  spent getting there had found a defect in shipped behaviour.
 
-**The best evidence for this rule is what happened to this section.** Three
-review rounds, and each found the section breaking its own rule inside the
-paragraph fixing the previous instance of it: a count lower than the evidence, a
-correction for a wider-than-source claim that was itself wider than its source,
-and a supporting figure ("two recent PRs carry no footer") that was low by a
-factor of three and a half. If a document written specifically to state this
-rule cannot state it without breaking it, the instinct it names is not one
-anybody outgrows by knowing about it. That is the argument for a mechanical
-check over a resolution.
+**This section broke its own rule in four consecutive review rounds**, each time
+inside the paragraph fixing the previous instance. If a document written
+specifically to state the rule cannot state it without breaking it, the instinct
+is not one anybody outgrows by knowing about it — which is the argument for a
+mechanical check over a resolution, and for keeping prose like this short enough
+that it has few places to be wrong.
 
 **The load-bearing half is the prose, not the testing.** In every instance above
 the mutation was run and the result read correctly; what went wrong was the
