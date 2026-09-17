@@ -510,3 +510,96 @@ class TestNaNConventions:
         # the assertion above is measuring spread rather than merely non-zero.
         flat = compute_features(track([t / 2 for t in range(0, 21)], y=180.0), [], 10.0, H)
         assert flat[:, col("y_std_5s")].max() == pytest.approx(0.0, abs=1e-12)
+
+
+class TestProducersForwardConfidence:
+    """Every producer of the position-dict shape must carry `confidence`.
+
+    This is a source-level guard on purpose. The columns it protects fail
+    SILENTLY: `compute_features` reads `p.get("confidence", 0.0)`, and 0.0 is
+    also mean_conf_3s' and max_conf_3s' documented empty-window fill — so a
+    producer that stops forwarding the field produces a matrix that is finite,
+    plausible, and constant on two of thirteen columns. Nothing raises, no
+    shape changes, and the trainer (CF-393) would fit those coefficients
+    against a dead column. That is the CF-420 defect exactly, and it survived
+    until a review round went looking at the producers.
+
+    Parsed rather than grepped, per CF-279: a regex over these lines loses to
+    reformatting, and all five sites are already spelled differently from one
+    another.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+    PRODUCERS = (
+        "api/app/workers/tasks.py",
+        "ml/eval/harness.py",
+        "ml/eval/diagnose_detection.py",
+        "ml/eval/deadtime_variants.py",
+        "ml/eval/tune_contacts.py",
+    )
+
+    @staticmethod
+    def _key_sets(path):
+        """Every literal listing of position-dict keys in the file.
+
+        Two spellings, because the producers genuinely use both: a dict literal
+        (`{"time": ..., "x": ...}`) in four of them, and a key tuple driving a
+        comprehension (`{k: p[k] for k in ("time", ...) if k in p}`) in
+        tune_contacts, which forwards only what its dump holds.
+        """
+        import ast
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        out = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                keys = {k.value for k in node.keys
+                        if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+            elif isinstance(node, ast.Tuple):
+                keys = {e.value for e in node.elts
+                        if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+            else:
+                continue
+            if {"time", "x", "y"} <= keys:
+                out.append(keys)
+        return out
+
+    @pytest.mark.parametrize("rel", PRODUCERS)
+    def test_the_position_dict_carries_confidence(self, rel):
+        path = self.ROOT / rel
+        assert path.exists(), f"{rel} moved — this guard now protects nothing"
+        key_sets = self._key_sets(path)
+        assert key_sets, (
+            f"{rel} no longer builds a dict listing time/x/y. Either it stopped "
+            "producing position dicts — in which case drop it from PRODUCERS — "
+            "or it now builds them dynamically, which this guard cannot see."
+        )
+        for keys in key_sets:
+            assert "confidence" in keys, (
+                f"{rel} builds a position dict without 'confidence'. Two of the "
+                "thirteen columns would go constant at 0.0, which is also their "
+                "empty-window fill, so nothing would fail loudly. See CF-420."
+            )
+
+
+class TestConfidenceColumnsReadTheField:
+    def test_the_columns_track_the_supplied_values(self):
+        """Non-zero coverage for both columns.
+
+        Round 2 on #543 found `p.get("confidence", 0.0)` mutating to `1.0` with
+        the suite still green: every fixture either supplied confidence or did
+        not look at these columns, so no test distinguished the default from a
+        measured value.
+        """
+        pos = track([0.5, 1.0, 1.5], conf=0.2)
+        pos[1]["confidence"] = 0.8
+        f = compute_features(pos, [], 3.0, H)
+        assert f[1, col("mean_conf_3s")] == pytest.approx((0.2 + 0.8 + 0.2) / 3)
+        assert f[1, col("max_conf_3s")] == pytest.approx(0.8)
+
+    def test_a_sample_without_the_field_falls_to_the_documented_fill(self):
+        """The half the mutation lived in: the default only shows when the key
+        is absent, so it needs a fixture where it is. 0.0, not 1.0 — a missing
+        measurement must not read as maximum confidence."""
+        f = compute_features([{"time": 1.0, "x": 0.0, "y": 180.0}], [], 3.0, H)
+        assert f[1, col("mean_conf_3s")] == 0.0
+        assert f[1, col("max_conf_3s")] == 0.0
