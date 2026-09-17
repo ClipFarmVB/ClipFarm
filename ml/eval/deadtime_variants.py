@@ -80,7 +80,10 @@ def load_game(test_id: str) -> Game:
         video_file=fx.raw.get("source_video_file", f"{test_id}.mp4"),
         duration=fx.duration,
         frame_height=frame_h,
-        positions=[{"time": p["time"], "x": p["x"], "y": p["y"]} for p in positions],
+        positions=[
+            {"time": p["time"], "x": p["x"], "y": p["y"], "confidence": p["confidence"]}
+            for p in positions
+        ],
         contacts=find_contacts(tracker, frame_height=frame_h, normalize=NORMALIZE),
         human_keep=sorted(fx.keep),
         raw=fx.raw,

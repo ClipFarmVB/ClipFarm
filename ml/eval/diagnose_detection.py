@@ -165,7 +165,10 @@ def main() -> None:
         "fps": fps,
         "sample_every": sample_every,
         "frame_height": frame_h,
-        "positions": [{"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions],
+        "positions": [
+            {"time": p.time, "x": p.x, "y": p.y, "confidence": p.confidence}
+            for p in tracker.positions
+        ],
         "contacts": [{"time": float(c["time"])} for c in contacts],
     }, indent=1) + "\n", encoding="utf-8")
     print(f"\nDumped track -> {dump}  (iterate on find_contacts locally from this)")

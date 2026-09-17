@@ -610,7 +610,8 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         )
         # Mirrors what process_game_task keeps for the condense stage.
         positions = [
-            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+            {"time": p.time, "x": p.x, "y": p.y, "confidence": p.confidence}
+            for p in tracker.positions
         ]
 
         mode = settings.condense_mode
