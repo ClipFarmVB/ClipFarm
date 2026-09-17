@@ -97,7 +97,14 @@ FEATURE_NAMES = [
 # v2 -> v3: three columns added (mean_y_5s, max_conf_3s, max_speed_3s), speeds
 # now sourced from dead_time.speed_samples with NaN masking, and the fast bar
 # moved from 150/360 to the anchor's 0.30. load_weights rejects another version.
-FEATURE_VERSION = 3
+#
+# v3 -> v4 (CF-420): no column added or removed — two of them changed MEANING.
+# Under v3 every producer dropped `confidence`, so mean_conf_3s and max_conf_3s
+# were constant 0.0 on real input; they now carry the tracker's own value. A
+# model fitted on v3 learned those two columns as constants, so its coefficients
+# for them say nothing about v4 input — which is what the version exists to
+# catch. Nothing had trained on v3 when this landed, so the bump cost nothing.
+FEATURE_VERSION = 4
 
 # The per-sample "this is fast" bar, in frame-heights/s.
 #
@@ -147,41 +154,29 @@ def compute_features(
     if frame_height <= 0:
         raise ValueError(f"frame_height must be positive, got {frame_height}")
 
-    # `confidence` is optional in this dict shape and EVERY producer in this
-    # repository currently omits it. FIVE sites, not the four this comment
-    # listed until a round counted them, and they are not all the same shape:
+    # `confidence` is optional in this dict shape, and until CF-420 every
+    # producer in the repository dropped it — so mean_conf_3s and max_conf_3s
+    # were constant 0.0 on real input. All five forward it now:
     #
-    #   api/app/workers/tasks.py:1180      build {"time","x","y"} from a
-    #   ml/eval/harness.py:613             source that HAS the field, so
-    #   ml/eval/diagnose_detection.py:168  forwarding is one line each
-    #   ml/eval/deadtime_variants.py:83
+    #   api/app/workers/tasks.py         ml/eval/harness.py
+    #   ml/eval/diagnose_detection.py    ml/eval/deadtime_variants.py
+    #   ml/eval/tune_contacts.py         (as far as the dump it reads carries it)
     #
-    #   ml/eval/tune_contacts.py:80        re-serializes a dict that already
-    #                                      lost it upstream
+    # TestProducersForwardConfidence in ml/tests/test_dead_time_ml.py parses all
+    # five and fails if one stops, because the loss is silent here: 0.0 is also
+    # these columns' documented empty-window fill, so "not supplied" and "no
+    # samples in this window" are indistinguishable once inside the matrix.
     #
-    # The first three hold a `BallPosition`; deadtime_variants holds the dict
-    # that one was built FROM, which is the same thing for this purpose and is
-    # why the label says "source" rather than naming the type. It was on the
-    # wrong side of this split until a round checked it: it does
-    # `BallPosition(**p)` at :77 on the same dicts it strips at :83, and
-    # `BallPosition.confidence` has no default, so those dicts must already
-    # carry the field or the construction would raise.
-    #
-    # So mean_conf_3s and max_conf_3s are constant 0.0 on real input, which is
-    # also their empty-window fill: "no confidence supplied" and "no samples at
-    # all" are indistinguishable in the matrix.
-    #
-    # Two of thirteen columns training as constants is worth a line in the log
-    # rather than a silent zero, because FEATURE_VERSION is frozen here and the
-    # trainer (CF-393) reads whatever this produces. Forwarding it is one line
-    # in the four above; tune_contacts only carries what the dump it reads
-    # already has, so diagnose_detection's dump format decides it. That is
-    # CF-420 (#544), and tasks.py is out of this card's scope either way.
+    # The warning below therefore no longer describes the normal state. It now
+    # means a producer regressed, or the track came from a dump written before
+    # CF-420 — tune_contacts reads one of those and omits the key rather than
+    # inventing a value, so this fires as the signal to regenerate it.
     if positions and not any("confidence" in p for p in positions):
         logger.warning(
             "no ball-track sample carries 'confidence' — mean_conf_3s and "
             "max_conf_3s will be constant 0.0, indistinguishable from an "
-            "unsampled second. Producers drop the field; see CF-392."
+            "unsampled second. Every producer forwards it since CF-420, so "
+            "this is a regressed producer or a track dump predating it."
         )
     n = max(1, int(math.ceil(duration)))
     centers = np.arange(n, dtype=np.float64) + 0.5

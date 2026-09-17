@@ -1177,7 +1177,8 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     # Kept for the condense stage's motion bridge (CF-46).
                     if condense:
                         ball_positions = [
-                            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+                            {"time": p.time, "x": p.x, "y": p.y, "confidence": p.confidence}
+                    for p in tracker.positions
                         ]
                     logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
                 except Exception as err:
