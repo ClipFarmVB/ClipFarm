@@ -42,9 +42,9 @@ def track(times, *, x=0.0, y=180.0, conf=0.9, step=0.0):
 
 
 class TestContract:
-    def test_thirteen_columns_at_version_three(self):
+    def test_thirteen_columns_at_version_four(self):
         assert len(FEATURE_NAMES) == 13
-        assert FEATURE_VERSION == 3
+        assert FEATURE_VERSION == 4
         assert len(set(FEATURE_NAMES)) == 13, "a duplicated column name"
 
     def test_the_fast_bar_is_the_anchors_bar(self):
@@ -217,11 +217,12 @@ class TestFills:
         assert f[2, col("max_speed_3s")] > f[2, col("mean_speed_3s")]
 
     def test_the_missing_confidence_field_is_reported(self, caplog):
-        """Every producer in this repo builds {"time","x","y"} without
-        `confidence`, so both conf columns are constant
-        0.0 on real input — and 0.0 is also their empty-window fill, making
-        "not supplied" indistinguishable from "no samples". A silent constant
-        column is what the trainer would learn from."""
+        """Since CF-420 every producer forwards `confidence`, so this warning
+        no longer describes the normal state — it means a producer regressed,
+        or the track came from a dump written before CF-420. It still has to
+        fire, because 0.0 is also these columns' empty-window fill: without it,
+        "not supplied" and "no samples" are indistinguishable in the matrix and
+        the trainer would silently learn a constant column."""
         with caplog.at_level("WARNING"):
             compute_features(
                 [{"time": 1.0, "x": 0.0, "y": 180.0}], [], 3.0, H
