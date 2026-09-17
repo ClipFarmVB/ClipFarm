@@ -2,12 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, ChevronLeft, ChevronRight, Link2, Download, Send } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Link2, Download, Lock, Send } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { PostComposerModal } from "@/components/PostComposerModal";
 import { SOCIAL_ENABLED } from "@/lib/features";
 import { needsHandle, useMe } from "@/lib/useMe";
-import { type Clip, getClipDownloadUrl, getClipShareUrl } from "@/lib/api";
+import { type Clip, getClipDownloadUrl, getClipShareUrl, setClipVisibility } from "@/lib/api";
 import { startCrossOriginDownload } from "@/lib/download";
 import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 import { useFocusTrap } from "@/lib/useFocusTrap";
@@ -17,9 +17,29 @@ interface ClipModalProps {
   onClose: () => void;
   onPrev?: () => void;
   onNext?: () => void;
+  /** Same shape as `ClipCard`'s: hand the parent the row the API returned, so
+   *  nothing behind this dialog keeps rendering the old tier — the composer's
+   *  ceiling and the undo control below both read it. */
+  onUpdate?: (clip: Clip) => void;
+  /** Whether the viewer owns this clip, and so may change its visibility.
+   *
+   *  Defaults to FALSE. `Clip` carries no owner, so this cannot be derived
+   *  here, and the retraction control below is owner-only on the API side —
+   *  offering it to anyone else is a button that can only answer "Clip not
+   *  found" over a clip they are looking at. The collections surface is
+   *  deliberately cross-owner (`list_collection_clips` spans owners), so it
+   *  passes nothing and the control stays hidden there. */
+  ownsClip?: boolean;
 }
 
-export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
+export function ClipModal({
+  clip,
+  onClose,
+  onPrev,
+  onNext,
+  onUpdate,
+  ownsClip = false,
+}: ClipModalProps) {
   const videoRef  = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -79,6 +99,18 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
   // different visibility. Syncing that with an effect would be a cascading
   // render; this needs no effect at all.
   const [composingFor, setComposingFor] = useState<string | null>(null);
+  // Keyed to the clip for the same reason as the error below: while a request
+  // is out for clip A, clip B's button must not read "Making private…" and sit
+  // disabled.
+  const [narrowingFor, setNarrowingFor] = useState<string | null>(null);
+  const narrowing = narrowingFor === clip.id;
+  // Keyed to the clip, the way `composingFor` is and for the same reason: an
+  // error belongs to the clip it happened on. Left unkeyed, a failure on clip A
+  // stayed mounted under clip B once the arrow keys moved on, claiming a
+  // failure that was not B's.
+  const [narrowErrorFor, setNarrowErrorFor] =
+    useState<{ id: string; message: string } | null>(null);
+  const narrowError = narrowErrorFor?.id === clip.id ? narrowErrorFor.message : null;
   const composing = composingFor === clip.id;
 
   // Posting needs a claimed handle. `PostAuthor` withholds a *generated* one —
@@ -109,8 +141,8 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
       if (e.key === "Escape") {
         // Leaving the player's fullscreen fires Escape at the page as well as
         // at the UA, so without this one press exits fullscreen AND closes the
-        // modal — the user asked for one of those. This is the only overlay
-        // with a <video>, which is why only this one needs the guard.
+        // modal — the user asked for one of those. `PostPlayerModal` holds a
+        // <video> too and carries the same guard.
         if (document.fullscreenElement) return;
         onClose();
         return;
@@ -315,9 +347,101 @@ export function ClipModal({ clip, onClose, onPrev, onNext }: ClipModalProps) {
             <span>Esc close · Tab cycles controls</span>
           </div>
         </div>
+
+        {/* Taking it back (CF-109b).
+
+            The composer can widen a clip, with a confirmation, and until this
+            nothing could narrow one — so publishing was a one-way door. On
+            youth-sports footage that is the wrong shape: deleting the post
+            does not narrow the clip, so the only undo was deleting the
+            footage.
+
+            One button, not a picker. "Make private" is the undo, it is
+            unambiguous, and it needs no confirmation because it can only ever
+            show a clip to fewer people. Stepping *between* the wider tiers is
+            a choice rather than a retraction, and the composer already owns
+            that direction with the consent the widening needs. Offering both
+            here would put an unconfirmed widening one mis-click away from the
+            retraction control.
+
+            Hidden when the clip is already private — which is every clip
+            nobody has posted wider — so this renders only for someone who has
+            actually published, which is who it is for.
+
+            A section of its own below the footer, not an item in the footer's
+            row: that row is a single non-wrapping flex line, and the button and
+            its two sentences were squeezed into whatever width it had left. */}
+        {SOCIAL_ENABLED &&
+          ownsClip &&
+          clip.effective_visibility &&
+          clip.effective_visibility !== "private" && (
+          <div className="shrink-0 border-t border-border px-3 py-3 sm:px-4">
+            <button
+              type="button"
+              disabled={narrowing}
+              onClick={async () => {
+                // The clip this click is for. The dialog can move on to another
+                // clip while the request is out, so the in-flight flag, the
+                // error and the update are all bound to this one rather than to
+                // whatever `clip` is when the request settles.
+                const target = clip;
+                setNarrowingFor(target.id);
+                setNarrowErrorFor(null);
+                try {
+                  const updated = await setClipVisibility(target.id, "private");
+                  // The new tier on the row the page already has, not the PATCH
+                  // echo: that response carries no `player_name`, and with R2 a
+                  // freshly presigned `clip_url`, so swapping it in dropped the
+                  // tagged player from the header and restarted the video.
+                  onUpdate?.({
+                    ...target,
+                    effective_visibility: updated.effective_visibility ?? "private",
+                  });
+                } catch (e) {
+                  // Already decoded by `throwApiError`; decoding again would
+                  // undo the first, the way the composer's used to.
+                  setNarrowErrorFor({
+                    id: target.id,
+                    message:
+                      e instanceof Error && e.message
+                        ? e.message
+                        : "Could not change it back",
+                  });
+                } finally {
+                  setNarrowingFor((current) => (current === target.id ? null : current));
+                }
+              }}
+              className="flex items-center gap-2 text-xs text-muted hover:text-foreground disabled:opacity-50"
+            >
+              <Lock className="h-3.5 w-3.5" />
+              {narrowing ? "Making private…" : "Make this clip private again"}
+            </button>
+            <p className="mt-1 text-[11px] text-muted">
+              Posts of this clip stay up but will show nothing to other
+              people. A link you already shared may keep working for up to an
+              hour.
+            </p>
+            {narrowError && (
+              <p role="alert" className="mt-2 text-[11px] text-red-400">
+                {narrowError}
+              </p>
+            )}
+          </div>
+        )}
       </div>
       {composing && (
-        <PostComposerModal clip={clip} onClose={() => setComposingFor(null)} />
+        <PostComposerModal
+          clip={clip}
+          onClose={() => setComposingFor(null)}
+          // Publishing can widen the clip, and this dialog holds the copy of it
+          // that decides whether the undo below is offered. Without this the
+          // consent checkbox promises "you can make it private again from the
+          // clip on its game's page" and then the control is nowhere until a
+          // reload — the promise unreachable in exactly the flow that makes it.
+          onPosted={(raisedClipTo) => {
+            if (raisedClipTo) onUpdate?.({ ...clip, effective_visibility: raisedClipTo });
+          }}
+        />
       )}
     </div>,
     document.body
