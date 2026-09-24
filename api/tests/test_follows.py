@@ -136,9 +136,11 @@ def test_a_post_read_resolves_one_edge_when_the_principals_coincide():
     """
     import inspect
 
-    from app.routers import posts as posts_router
+    from app.services import post_read
 
-    src = inspect.getsource(posts_router._load_for_read)
+    # Moved from `routers/posts.py` to a service when CF-113 needed it from a
+    # second router; the properties pinned below are unchanged.
+    src = inspect.getsource(post_read.load_for_read)
     assert "post.author_id == game.owner_id" in src, "reuse must stay conditional"
     assert "if same_principal" in src, "and the condition must actually gate the reuse"
     assert src.count("follow_graph.resolve_follow(") == 2, "a fallback for the split case"

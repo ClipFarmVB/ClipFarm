@@ -1,5 +1,15 @@
-/** Where a redirect falls back to when the requested destination isn't ours. */
-export const DEFAULT_NEXT = "/games";
+import { SOCIAL_ENABLED } from "@/lib/features";
+
+/**
+ * Where a redirect falls back to when the requested destination isn't ours —
+ * and, because the middleware only sets `?next=` for a route it intercepted,
+ * where a plain sign-in lands.
+ *
+ * The feed is that landing once social is on (CF-112). Behind the flag because
+ * with it off `/feed` renders an explanation rather than a feed, which is a
+ * worse first screen than the library.
+ */
+export const DEFAULT_NEXT = SOCIAL_ENABLED ? "/feed" : "/games";
 
 /**
  * A base to resolve against. Any absolute or protocol-relative destination

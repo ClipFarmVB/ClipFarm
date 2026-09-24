@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import Select, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import load_only
 
 from app.auth import get_current_user_id
 from app.database import get_db
@@ -15,7 +14,10 @@ from app.models.post import Post
 from app.models.user import User
 from app.schemas.feed import FeedPage
 from app.schemas.post import PostOut
-from app.services import access, cursors, follow_graph, post_view, storage
+from app.services import access, cursors, engagement, follow_graph, post_view, storage
+# Re-exported: `test_feed.py` applies this object to a real row to prove the
+# raise. It moved to the renderer when the comment list needed the same loader.
+from app.services.post_view import AUTHOR_COLUMNS  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -25,28 +27,6 @@ DB = Annotated[AsyncSession, Depends(get_db)]
 UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
 
 DEFAULT_PAGE = 20
-
-# The five `User` columns `PostAuthor.from_author` renders, and nothing else.
-# `load_only` *defers* the rest rather than forbidding it, so a future line in
-# `post_view.serialize` touching, say, `author.bio` would emit a
-# deferred-column load — from a threadpool worker, against an `AsyncSession`,
-# i.e. `MissingGreenlet` at runtime and nothing visible at review time.
-# `raiseload=True` *here* turns that into an immediate `InvalidRequestError`
-# at the line that caused it. It has to be this keyword: a separate
-# `raiseload("*")` option — which an earlier version used, and documented as
-# doing this — governs *relationship* loads only and lets a deferred column
-# load silently. Verified against the pinned 2.0.36: with `raiseload("*")` the
-# access emitted one extra SELECT and returned the value; with this keyword it
-# raised. Module-level so `test_feed.py` can apply the same object to a row
-# and prove the raise, rather than trust this comment.
-AUTHOR_COLUMNS = load_only(
-    User.id,
-    User.username,
-    User.display_name,
-    User.avatar_url,
-    User.username_is_generated,
-    raiseload=True,
-)
 
 
 def feed_query(
@@ -91,7 +71,19 @@ def feed_query(
         )
 
     q = (
-        access.apply_post_visibility(select(Post, Clip, User), user_id)
+        # The fourth column is `viewer_has_liked`, answered by a correlated
+        # EXISTS on the `post_likes` primary key — a column, not a second round
+        # trip, so the page stays one SELECT (CF-113; `test_the_page_costs_one_
+        # query` pins it).
+        access.apply_post_visibility(
+            select(
+                Post,
+                Clip,
+                User,
+                engagement.viewer_liked_column(user_id).label("viewer_has_liked"),
+            ),
+            user_id,
+        )
         .join(User, Post.author_id == User.id)
         # Only the columns `PostAuthor` renders. Without this the whole `User`
         # row is materialized per card — `hashed_password` and `email` included,
@@ -176,8 +168,9 @@ async def get_feed(
                 r2_ready=r2_ready,
                 avatar_cache=avatar_cache,
                 failures=failures,
+                viewer_has_liked=liked,
             )
-            for post, clip, author in page
+            for post, clip, author, liked in page
         ]
 
     items = await run_in_threadpool(render)

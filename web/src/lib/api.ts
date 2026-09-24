@@ -422,9 +422,17 @@ export type Visibility = "private" | "followers" | "public";
 export interface PostPlayback {
   clip_url: string | null;
   thumbnail_url: string | null;
+  /**
+   * Per-game proxy (CF-48). Null on every post today, because neither CF-48 nor
+   * the CF-51 virtual-clip player has landed — the feed prefers it when present
+   * and seeks to (start_time, end_time), and falls back to the per-clip file
+   * otherwise. That fallback is the only path currently exercised.
+   */
   proxy_url: string | null;
   start_time: number;
   end_time: number;
+  action_type: ActionType;
+  highlight_score: number | null;
 }
 
 export interface Post {
@@ -442,6 +450,26 @@ export interface Post {
     avatar_url: string | null;
   };
   playback: PostPlayback;
+  viewer_has_liked: boolean;
+}
+
+/** One page of the home feed (CF-111). `next_cursor` is null on the last page. */
+export interface FeedPage {
+  items: Post[];
+  next_cursor: string | null;
+}
+
+/**
+ * Fetch a page of the home feed.
+ *
+ * The cursor is opaque and must be passed back verbatim — it encodes
+ * `(created_at, id)` so paging can't duplicate or skip a post while new ones
+ * are being inserted. Never build one client-side.
+ */
+export function getFeed(cursor?: string | null, limit = 20): Promise<FeedPage> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set("cursor", cursor);
+  return request<FeedPage>(`/feed?${params}`);
 }
 
 export function createPost(
@@ -512,4 +540,63 @@ export async function getUserPosts(username: string, limit = 50): Promise<Post[]
 
 export function deletePost(postId: string): Promise<void> {
   return request<void>(`/posts/${postId}`, { method: "DELETE" });
+}
+
+// ─── Engagement (CF-113) ──────────────────────────────────────────────────────
+
+/**
+ * What the server reconciles a like to.
+ *
+ * Both the like and the unlike return this rather than a 204, deliberately:
+ * the card renders the tap optimistically, and the count it guessed can be
+ * wrong under concurrent likes. The server's number is the one that matches
+ * the rows, so it comes back on every write and the card settles on it.
+ */
+export interface LikeState {
+  liked: boolean;
+  like_count: number;
+}
+
+export function likePost(postId: string): Promise<LikeState> {
+  return request<LikeState>(`/posts/${postId}/like`, { method: "POST" });
+}
+
+export function unlikePost(postId: string): Promise<LikeState> {
+  return request<LikeState>(`/posts/${postId}/like`, { method: "DELETE" });
+}
+
+export interface Comment {
+  id: string;
+  post_id: string;
+  body: string;
+  created_at: string;
+  author: Post["author"];
+}
+
+/** One page of a post's comments, newest first. `next_cursor` is null on the last page. */
+export interface CommentPage {
+  items: Comment[];
+  next_cursor: string | null;
+}
+
+/** Same contract as `getFeed`: the cursor is opaque, pass it back verbatim. */
+export function getComments(
+  postId: string,
+  cursor?: string | null,
+  limit = 50,
+): Promise<CommentPage> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set("cursor", cursor);
+  return request<CommentPage>(`/posts/${postId}/comments?${params}`);
+}
+
+export function createComment(postId: string, body: string): Promise<Comment> {
+  return request<Comment>(`/posts/${postId}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
+}
+
+export function deleteComment(commentId: string): Promise<void> {
+  return request<void>(`/comments/${commentId}`, { method: "DELETE" });
 }

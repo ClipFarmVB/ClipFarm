@@ -21,12 +21,40 @@ two, leaving the other quietly returning a wrong value forever.
 """
 import logging
 
+from sqlalchemy.orm import load_only
+
 from app.models.clip import Clip
 from app.models.post import Post
+from app.models.user import User
 from app.schemas.post import PostAuthor, PostOut, PostPlayback
 from app.services import profiles, storage
 
 logger = logging.getLogger(__name__)
+
+# The five `User` columns `PostAuthor.from_author` renders, and nothing else.
+# Owned by the renderer rather than by the feed, because every statement that
+# hands a `User` row to this module off a threadpool needs the same loader —
+# the feed, and since CF-113 the comment list.
+#
+# `load_only` *defers* the rest rather than forbidding it, so a future line in
+# `serialize` touching, say, `author.bio` would emit a deferred-column load —
+# from a threadpool worker, against an `AsyncSession`, i.e. `MissingGreenlet`
+# at runtime and nothing visible at review time. `raiseload=True` *here* turns
+# that into an immediate `InvalidRequestError` at the line that caused it. It
+# has to be this keyword: a separate `raiseload("*")` option — which an earlier
+# version used, and documented as doing this — governs *relationship* loads
+# only and lets a deferred column load silently. Verified against the pinned
+# 2.0.36: with `raiseload("*")` the access emitted one extra SELECT and
+# returned the value; with this keyword it raised. `test_feed.py` applies this
+# object to a real row and proves the raise, rather than trusting this comment.
+AUTHOR_COLUMNS = load_only(
+    User.id,
+    User.username,
+    User.display_name,
+    User.avatar_url,
+    User.username_is_generated,
+    raiseload=True,
+)
 
 
 def _playback(
@@ -57,27 +85,33 @@ def _playback(
     that cannot change mid-page, and probing it per row re-read five settings
     fields per card for an answer that was already known.
     """
-    if not r2_ready:
-        return PostPlayback(
-            clip_url=clip.clip_url,
-            thumbnail_url=clip.thumbnail_url,
-            proxy_url=None,
-            start_time=clip.start_time,
-            end_time=clip.end_time,
-        )
+    # One construction, two URL sources. Written as a branch on the URLs rather
+    # than two `return PostPlayback(...)` calls so a field added to the schema —
+    # CF-112 added two — cannot be filled on one path and forgotten on the
+    # other, which is the same duplication-by-copy this module exists to end.
+    #
+    # Signing is guarded per URL. A page is up to 40 signings, and an unguarded
+    # one turns a single malformed `clip_url` — a stored value that never
+    # matched `r2_public_url`, say, after a bucket rename — into a 500 for the
+    # whole page rather than one card with no video. `profiles.serialize` has
+    # wrapped the identical call since CF-107 for the same reason; the feed's
+    # blast radius is 40x a profile's, and it is the default screen.
+    clip_url = _presign(clip.clip_url, failures) if r2_ready else clip.clip_url
+    thumbnail_url = (
+        _presign(clip.thumbnail_url, failures) if r2_ready else clip.thumbnail_url
+    )
 
-    # Guarded per URL. A page is up to 40 signings, and an unguarded one turns a
-    # single malformed `clip_url` — a stored value that never matched
-    # `r2_public_url`, say, after a bucket rename — into a 500 for the whole
-    # page rather than one card with no video. `profiles.serialize` has wrapped
-    # the identical call since CF-107 for the same reason; the feed's blast
-    # radius is 40x a profile's, and it is the default screen.
     return PostPlayback(
-        clip_url=_presign(clip.clip_url, failures),
-        thumbnail_url=_presign(clip.thumbnail_url, failures),
+        clip_url=clip_url,
+        thumbnail_url=thumbnail_url,
         proxy_url=None,  # CF-48 populates this
         start_time=clip.start_time,
         end_time=clip.end_time,
+        # The volleyball-specific bits the feed overlay surfaces (CF-112). They
+        # live on the clip, which is already joined, so they are free here and
+        # would be the per-post N+1 CF-111 exists to avoid anywhere else.
+        action_type=clip.action_type.value,
+        highlight_score=clip.highlight_score,
     )
 
 
