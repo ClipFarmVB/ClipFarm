@@ -271,6 +271,11 @@ in the log and the report.** That is the capability check in
 optional: at one subagent the rules above cost nothing, so there is no reason to
 proceed without isolation rather than degrade to serial.
 
+**This session's own checkout stays on `main`** (CF-563). It no longer
+implements anything itself, so nothing needs a branch here, and every worktree
+the harness makes starts from whatever this checkout has checked out — a
+feature branch left here would become every subagent's starting point.
+
 #### The registry
 
 **Every dispatch appends a line to the log, and every completion appends
@@ -392,7 +397,7 @@ is left alone too.
 ME=$(gh api user --jq .login)
 SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
 [ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
-LONGEST_MIN=60   # the longest "lost after" in the table below
+LONGEST_MIN=120  # the longest "lost after" in the table below
 CUTOFF=$(date -u -d "-$LONGEST_MIN minutes" +%Y-%m-%dT%H:%M:%SZ)
 [ -n "$CUTOFF" ] || { echo "could not compute the cutoff"; exit 1; }
 gh api --paginate "repos/ClipFarmVB/ClipFarm/issues?state=open&labels=in-progress&per_page=100" --jq '.[].number' |
@@ -502,9 +507,9 @@ file its plan changes is held by other work. Two things hold files:
 
 - a **ticket in flight**: the existing files its [planner](TICKETS.md#the-planners-brief)
   listed, as recorded in the log
-- **this account's open PRs that are in cycle or `review-settled`**: the files
-  in the PR's diff, `gh pr view <n> --json files --jq '.files[].path'`. A settled
-  PR is about to land, and work in its files would collide with it. An
+- **this account's open PRs that are in cycle or `review-settled`**: every path
+  the PR changes relative to `main`. A settled PR is about to land, and work in
+  its files would collide with it. An
   `unsettled` PR releases its files: it may sit for weeks, and the collision is
   dealt with when it comes back
 
@@ -512,17 +517,44 @@ Other accounts' PRs hold nothing. The run cannot schedule around work it does
 not control, and some of it — a long-lived mobile branch — would otherwise hold
 half the tree.
 
-**A path inside a held directory is held.** That is what makes the migration
-rule in the planner's brief work: a plan adding an Alembic revision lists
-`api/alembic/versions/` as one path, because two plans that each take the next
-revision number collide at merge with no file in common.
+**Read a PR's paths from git, not from `gh pr view`:**
+
+```
+git fetch -q origin main
+git fetch -q origin "pull/<n>/head"
+git diff --name-only --no-renames origin/main...FETCH_HEAD
+```
+
+**Two fetches, in that order, never one.** Fetching both refspecs at once writes
+both into `FETCH_HEAD`, which then resolves to the first — `main` — and the
+diff compares `main` with itself and prints nothing: a PR that appears to hold
+no files. Found by running this block as first written, on 2026-09-27.
+
+Two things the API's file list gets wrong for this purpose, both checked on
+2026-09-27. It is the diff against the PR's *base*, so a PR stacked on another
+PR's branch reports none of the files beneath it. And it lists a renamed file
+by its new path only, so the old path is held by nobody. The
+three-dot diff against `main` is what the PR will change when it lands, and
+`--no-renames` lists a rename as a deletion and an addition, which holds both
+paths.
+
+**Two paths collide when they are the same, or when one is a directory that
+contains the other** — in either direction. That is what makes the migration
+rule work. A plan adding an Alembic revision lists `api/alembic/versions/` as
+one path, because two plans that each take the next revision number collide
+with no file in common; and **a PR that adds a revision holds that whole
+directory too**, whatever its file is called, since its revision number is
+taken the moment it merges.
 
 **Why not the repo's labels, which look like areas.** Measured on 2026-09-27
-across the 152 merged PRs, using the labels on the issue each one closed: `api`
-PRs touched `web/src/` in 9 of 25, `web` PRs touched `api/app/` in 6 of 13,
-`devops` — the largest, 42 — touches everything, and `scoring`, `audio` and
-`mobile` have never closed a merged PR. The files shared across the most labels
-are exactly the ones two tickets would fight over: `.gitignore` under six labels,
+over the 152 merged PRs, of which 99 close an issue: each of those takes the
+labels on the issues in its `closingIssuesReferences`, counting only the ten
+that read as areas — `api`, `web`, `devops`, `docs`, `eval`, `dead-time`,
+`ball-detection`, `audio`, `scoring`, `mobile`. `api` PRs touched `web/src/` in
+9 of 25, `web` PRs touched `api/app/` in 6 of 13, `devops` — the largest, at 42 —
+reaches nearly every top-level directory, and `scoring`, `audio` and `mobile`
+have never closed a merged PR. The files shared across the most of those ten
+are exactly the ones two tickets would fight over: `.gitignore` under six,
 `README.md` and `ARCHITECTURE.md` under five, `api/app/config.py` and
 `render.yaml` under four. Label exclusivity would let two tickets that both edit
 `config.py` run side by side, provided one was filed as `api` and the other as
@@ -531,8 +563,11 @@ are exactly the ones two tickets would fight over: `.gitignore` under six labels
 **What files cannot promise.** An implementer that has to change a file its plan
 did not list may do so and must name it — see [its
 brief](TICKETS.md#the-implementers-brief). Declared files make collisions rare,
-not impossible, and one that happens anyway surfaces as a PR GitHub cannot
-merge.
+not impossible. One that happens anyway usually surfaces as a PR GitHub cannot
+merge — but not always: two migrations that each took the same revision number
+merge cleanly one after the other and leave `main` with two Alembic heads,
+which is why the directory rule above exists rather than trusting a merge
+conflict to announce it.
 
 ### Log before you finish each iteration
 

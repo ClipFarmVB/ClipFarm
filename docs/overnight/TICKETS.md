@@ -61,8 +61,12 @@ time, up to [the WIP limit](RULES.md#the-wip-limit-and-areas).
    one. It can be selected again once `#<n>` is done, and is planned again then:
    `main` will have moved under the first plan.
 5. **Dispatch an implementer** with [its brief](#the-implementers-brief), the
-   plan as recorded, and a free slot number from 1 to the WIP limit, written on
-   its `dispatched:` line as `slot=<k>`.
+   plan as recorded, and a free slot number from 1 to the WIP limit, written at
+   the end of its `dispatched:` line as `slot=<k>`. A slot is free again once
+   that line has its `finished:`. **Unless the review budget is spent** — then
+   step 3 may [only plan and file](RULES.md#the-run-budget), so release the
+   ticket with `released: <UTC> — no PR — review budget spent`, the plan kept in
+   the log.
 6. **When it reports, check GitHub, not the report.** The PR exists, is a
    draft, and GitHub lists the ticket among the issues it closes — read
    `closingIssuesReferences`, not the body, so GitHub's own parse of the
@@ -74,6 +78,10 @@ time, up to [the WIP limit](RULES.md#the-wip-limit-and-areas).
    gh pr view <n> --json isDraft,closingIssuesReferences,files \
      --jq '"draft: \(.isDraft)", "closes: \([.closingIssuesReferences[].number] | join(","))", (.files[].path)'
    ```
+
+   **Release the ticket's claim** with `released: <UTC> — PR #<n>`. The PR
+   carries the work from here, and [a ticket an open PR closes is never
+   selected](START.md#choosing-work).
 
    Then the PR joins step 1, at the front of the queue as a PR this run opened.
    Getting it reviewed — by a cold subagent, never by you — is your job, and
@@ -92,7 +100,11 @@ beats a half-finished 2000-line PR.
 The planner works alone in its own worktree, never sees the rest of the run,
 and **changes nothing** — no edits, no branch, no push. Give it the ticket and
 `CLAUDE.md`, and [pass what binds it explicitly](RULES.md#dispatching-subagents).
-Ask it for:
+**It starts from `main`, checked out explicitly** —
+`git fetch -q origin main && git checkout -q --detach FETCH_HEAD` — because
+[its worktree starts wherever this session's checkout
+is](RULES.md#dispatching-subagents), and a plan read against another branch
+lists the wrong files. Ask it for:
 
 - **A plan** — approach, files, migration if any, tests, and what could go
   wrong — read against the code the ticket touches, not the card alone.
@@ -108,6 +120,11 @@ Ask it for:
   already exist, and anything the plan asserts without verifying. It reports
   what the cross-check said, including anything it disagreed with, and what it
   changed in response. The planner rereading its own plan is not a cross-check.
+  The cross-check starts from `main` the same way. **Its worktree is the
+  planner's to remove**: the harness puts it beside the planner's, at
+  `.claude/worktrees/agent-<its id>`, and this session's registry never sees
+  that id — so the planner removes it and its `worktree-agent-<its id>` branch
+  before reporting, and names its id in the report if it could not.
 - **A size verdict**: whether the diff would be reviewable in one sitting.
 
 #### The implementer's brief
@@ -141,6 +158,17 @@ explicitly](RULES.md#dispatching-subagents). Ask it to:
    on `uuid4()` keys, and terminates backends only by its own pid or its own
    database. **A test with a fixed database name or a fixed lock key would break
    that**, and make concurrent gates flaky in a way no single run shows.
+
+   **Name the interpreter in every command; do not rely on activating it.** In
+   this harness shell state does not carry from one command to the next, so an
+   `activate` or an `export` lasts exactly one command, and the gate block below
+   — which says plain `pip`, `python`, `ruff`, `mypy` — would quietly fall back
+   to the shared interpreter this step exists to avoid. Run each line through the
+   venv, `.venv/Scripts/python.exe -m pip install ...`,
+   `.venv/Scripts/python.exe -m ruff check api/` and so on, and give the hook its
+   interpreter on the commit itself:
+   `CLIPFARM_PYTHON="$PWD/.venv/Scripts/python.exe" git commit ...`. Off Windows
+   the interpreter is `.venv/bin/python`.
 
    **Ports**, if it runs the app at all: web on `3100 + k`, api on `8100 + k`.
    The gate itself starts no server.

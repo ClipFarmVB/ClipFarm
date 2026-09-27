@@ -396,6 +396,10 @@ reason its `released:` comment gives, and nothing about the reason changes by
 the next lap; selecting it again only spends another planner on the same
 answer. The log's `released:` lines are the list.
 
+**Except a ticket released because its area was held** (CF-563): that reason
+does change, and the ticket is eligible again once the PR or ticket that held
+the area has let go of it — released, merged, closed, or `unsettled`.
+
 Work highest priority first (`P0` > `P1` > `P2` > unlabelled), taking tickets
 while [the WIP limit](RULES.md#the-wip-limit-and-areas) has room — each one
 goes through [Working a ticket](TICKETS.md#working-a-ticket). If a ticket turns out to need a decision after all, say so in the
@@ -512,6 +516,7 @@ one block. The first run discovered three gaps separately, mid-work.
   git rev-parse --path-format=absolute --git-common-dir
   git remote get-url origin
   gh api user --jq .login
+  git push --dry-run origin HEAD:refs/heads/overnight-probe
   ```
 
   Run the middle two here as well, and compare. Three distinct gaps, and they
@@ -543,6 +548,25 @@ one block. The first run discovered three gaps separately, mid-work.
   starting the run from this repository's root, which
   [dispatching](RULES.md#dispatching-subagents) already requires, and nothing
   inside the run can repair it.
+
+  **Implementers and fixers push from subagents** (CF-563), so their push has to
+  work there too. The dry-run above contacts the remote with the subagent's
+  credentials and creates nothing — checked on 2026-09-27: no ref appeared. A
+  prompt or a refusal on it stalls every implementer at its last step; stop and
+  name it.
+
+  **Planners spawn subagents of their own**, for the cross-check, so have the
+  probe spawn one child with worktree isolation and report the child's
+  `--git-common-dir`. Checked on 2026-09-27: it works, and the child's worktree
+  lands beside the parent's rather than inside it.
+
+  **Log `git config core.hooksPath` here too.** Relative `.hooks` is right. An
+  absolute path makes every worktree's commit run this checkout's copy of the
+  hook, which by its own comment then skips the api tests in a worktree whose
+  tree it does not recognise — so an implementer's commit hook can pass having
+  run less than it appears to. The gate each implementer runs explicitly is what
+  counts; name an absolute path in the report so the operator can fix it, and do
+  not change it from here.
 - **`gh` against this repo** — `gh api repos/ClipFarmVB/ClipFarm --jq .full_name`.
   Every command in this document is written for `gh`, and each was verified
   against this repo in the exact form given. A cloud runner may have no `gh`

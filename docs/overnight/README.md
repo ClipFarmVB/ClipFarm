@@ -22,13 +22,13 @@ not the ones it is not. Every rule lives in exactly one file.
 
 | file | when to read it | ~tokens |
 |---|---|---|
-| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.2k |
-| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 7.9k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, dispatching subagents, the registry and claims, the WIP limit and areas, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 14.7k |
+| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.3k |
+| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 8.2k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, dispatching subagents, the registry and claims, the WIP limit and areas, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 15.1k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 15.2k |
 | [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.3k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
-| [`TICKETS.md`](./TICKETS.md) | a lap that starts or receives ticket work, and whenever a card needs filing | 6.4k |
+| [`TICKETS.md`](./TICKETS.md) | a lap that starts or receives ticket work, and whenever a card needs filing | 6.8k |
 | [`REPORTING.md`](./REPORTING.md) | the end of the run | 2.8k |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background — what a night costs, why the machinery is shaped this way | 2.7k |
 
@@ -43,9 +43,13 @@ run that learned it.
 
 - **First iteration: `START.md` and `RULES.md`, in full.** Not skimmed. The
   reasoning is what stops you applying a rule where it does not fit.
-- **Every iteration after: `RULES.md`, plus the one phase file the lap needs.**
-  Reviewing a PR → `REVIEW.md`. Fixing findings → `FIX.md`. Implementing a
-  ticket → `TICKETS.md`. Writing the report → `REPORTING.md`.
+- **Every iteration after: `RULES.md`, plus the phase file for each phase the
+  lap works in.** Reviewing a PR → `REVIEW.md`. Fixing findings → `FIX.md`.
+  Starting or receiving ticket work → `TICKETS.md`. Writing the report →
+  `REPORTING.md`. With work in flight in parallel (CF-563), one lap can route a
+  round's marker, handle a fix and receive an implementer's report — three
+  phases, three files. The lap figures below each price one phase; a lap that
+  works in several reads their union.
   **Spawning a round → `BRIEFS.md`**, on top of whichever of those you are on —
   it is the one file reached from two phases, because step 2 spawns semi-cold
   rounds as readily as step 1 spawns cold ones.
@@ -61,9 +65,9 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap that only selects costs about 32k tokens of brief instead of 63k;
-one that also spawns a round, about 37k. A step-2 lap is about 28k, a step-3 lap
-about 23k. That is the whole point of the split.
+A step-1 lap that only selects costs about 33k tokens of brief instead of 64k;
+one that also spawns a round, about 38k. A step-2 lap is about 28k, a step-3 lap
+about 24k. That is the whole point of the split.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
