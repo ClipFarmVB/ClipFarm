@@ -23,13 +23,13 @@ not the ones it is not. Every rule lives in exactly one file.
 | file | when to read it | ~tokens |
 |---|---|---|
 | [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.2k |
-| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 7.4k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, dispatching subagents, the registry and claims, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 12.7k |
+| [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 7.7k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, dispatching subagents, the registry and claims, the WIP limit and areas, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 13.7k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 15.1k |
 | [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.3k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, and whenever a card needs filing | 4.9k |
-| [`REPORTING.md`](./REPORTING.md) | the end of the run | 2.6k |
+| [`TICKETS.md`](./TICKETS.md) | a lap that starts or receives ticket work, and whenever a card needs filing | 6.3k |
+| [`REPORTING.md`](./REPORTING.md) | the end of the run | 2.8k |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background — what a night costs, why the machinery is shaped this way | 2.7k |
 
 `.claude/overnight-log.md` is scratch memory for one run, gitignored on purpose.
@@ -61,9 +61,9 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap that only selects costs about 30k tokens of brief instead of 59k;
-one that also spawns a round, about 35k. A step-2 lap is about 26k, a step-3 lap
-about 20k. That is the whole point of the split.
+A step-1 lap that only selects costs about 31k tokens of brief instead of 61k;
+one that also spawns a round, about 36k. A step-2 lap is about 27k, a step-3 lap
+about 22k. That is the whole point of the split.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —

@@ -39,6 +39,14 @@ in the first line which run this was.
 mode ran. A reader cannot otherwise tell "reviewed nothing new" from "was not
 looking".
 
+**State the WIP limit beside them, and the most targets that were in flight at
+once** (CF-563) — read off the registry, not remembered. The two differ when
+the queue could not fill the limit or a capability check forced it to 1, and
+the difference is what an operator needs before raising it. **List every
+ticket released because its area was held, with the PR that held it**, and
+every file an implementer changed outside its plan: those are the two
+measurements of how often parallel work collides.
+
 **Before writing the report, stop what is still in flight and release it**
 (CF-562). Stop every subagent with a `dispatched:` line and no `finished:`, write
 its `finished:` line with the outcome `run ended`, and release its claim with

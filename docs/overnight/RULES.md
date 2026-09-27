@@ -273,8 +273,8 @@ dispatched: ROLE TARGET AGENT UTC
 finished: ROLE TARGET AGENT UTC OUTCOME
 ```
 
-`ROLE` is what the subagent was spawned to do — `cold`, `semi-cold` or
-`cross-check`. `TARGET` is `#<n>`, the PR or issue it works on. `AGENT` is the
+`ROLE` is what the subagent was spawned to do — `cold`, `semi-cold`,
+`planner` or `implementer`. `TARGET` is `#<n>`, the PR or issue it works on. `AGENT` is the
 id the harness returned for the spawn. `UTC` is a resolved timestamp, never the
 command that produces one ([Measure what you publish](#measure-what-you-publish)).
 **A `dispatched:` line with no matching `finished:` line is in flight.**
@@ -381,7 +381,8 @@ again.
 | role | lost after | measured from |
 |---|---|---|
 | `cold`, `semi-cold` | 60 min with no marker | the `dispatched:` line |
-| `cross-check` | 60 min with no result | the `dispatched:` line |
+| `planner` | 90 min with no plan | the `dispatched:` line |
+| `implementer` | 120 min with no PR | the `dispatched:` line |
 
 **Where 60 minutes comes from.** Consecutive markers on one PR, from every PR
 comment since 2026-08-01, gaps under four hours: cold to cold has a median of
@@ -389,8 +390,13 @@ comment since 2026-08-01, gaps under four hours: cold to cold has a median of
 pairings have p90s of 21 to 29 min. A gap spans a whole round plus the lap that
 spawned it, so a round is shorter than its gap. The 45 minutes the build harness
 this was ported from uses would have stopped the slowest measured round here
-before it finished. A cross-check reviews a plan rather than a diff, and gets
-the same bound for want of its own data.
+before it finished.
+
+**The planner and implementer figures are not measured.** Before CF-563 this
+session planned and implemented tickets itself, so no marker records how long
+either takes. The implementer's 120 minutes is the ported harness's own figure;
+the planner's 90 is a round's 60 plus the cross-check it spawns, which is a
+second, smaller review. Both are the first rows to re-derive from the registry.
 
 **These are the first figures, not the last.** The registry records the exact
 duration of every round from now on; re-derive the table from it once there is
@@ -400,6 +406,69 @@ a run's worth, and say in the table where the new figures came from.
 the line. Time it from its `claimed:` comment instead, and before releasing it,
 look for the subagent in the harness's list of agents this session spawned and
 stop it if it is there.
+
+#### The WIP limit and areas
+
+**The WIP limit** (CF-563) is the `wip limit:` value in [This
+run](START.md#this-run). It caps **targets in flight**, counted two ways:
+
+- a **ticket** from its claim until its implementer reports — a PR, or a
+  release
+- a **PR** from the first round of its cycle until it reaches a terminal state
+
+**Count from the registry and the claims this run made, never from a label
+query** — the label-filtered listing [lags a fresh
+label](#stale-claims), so a count taken just after a claim can come back one
+short and let a slot be filled twice. A ticket released because its area was
+held does not count; it is no longer in flight.
+
+**The per-run PR cap still binds, and parallel work can overshoot it.** Before
+dispatching an implementer, add the PRs this run has opened to the
+implementers already in flight: if that reaches the [hard rules'](#hard-rules)
+maximum, dispatch nothing. Checking only the PRs already opened lets three
+implementers dispatched at five PRs open eight.
+
+**Two dispatches are one target.** A ticket's planner and its implementer work
+one after the other on the same claim, and a planner's own cross-check runs
+inside its dispatch, so the limit counts targets, not agents. The number of
+agents alive at once can briefly reach twice the limit.
+
+**Areas are files, not labels.** A ticket may not start implementing while any
+file its plan changes is held by other work. Two things hold files:
+
+- a **ticket in flight**: the existing files its [planner](TICKETS.md#the-planners-brief)
+  listed, as recorded in the log
+- **this account's open PRs that are in cycle or `review-settled`**: the files
+  in the PR's diff, `gh pr view <n> --json files --jq '.files[].path'`. A settled
+  PR is about to land, and work in its files would collide with it. An
+  `unsettled` PR releases its files: it may sit for weeks, and the collision is
+  dealt with when it comes back
+
+Other accounts' PRs hold nothing. The run cannot schedule around work it does
+not control, and some of it — a long-lived mobile branch — would otherwise hold
+half the tree.
+
+**A path inside a held directory is held.** That is what makes the migration
+rule in the planner's brief work: a plan adding an Alembic revision lists
+`api/alembic/versions/` as one path, because two plans that each take the next
+revision number collide at merge with no file in common.
+
+**Why not the repo's labels, which look like areas.** Measured on 2026-09-27
+across the 152 merged PRs, using the labels on the issue each one closed: `api`
+PRs touched `web/src/` in 9 of 25, `web` PRs touched `api/app/` in 6 of 13,
+`devops` — the largest, 42 — touches everything, and `scoring`, `audio` and
+`mobile` have never closed a merged PR. The files shared across the most labels
+are exactly the ones two tickets would fight over: `.gitignore` under six labels,
+`README.md` and `ARCHITECTURE.md` under five, `api/app/config.py` and
+`render.yaml` under four. Label exclusivity would let two tickets that both edit
+`config.py` run side by side, provided one was filed as `api` and the other as
+`devops`. The labels are topics; nothing about filing a card makes them regions.
+
+**What files cannot promise.** An implementer that has to change a file its plan
+did not list may do so and must name it — see [its
+brief](TICKETS.md#the-implementers-brief). Declared files make collisions rare,
+not impossible, and one that happens anyway surfaces as a PR GitHub cannot
+merge.
 
 ### Log before you finish each iteration
 

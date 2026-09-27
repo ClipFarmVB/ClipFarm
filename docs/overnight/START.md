@@ -279,21 +279,32 @@ is stale and act on the inference; the operator owns this section, and a run
 that second-guesses it is guessing.
 
 The one case that still stops the run is an unreadable block, not an old one:
-if the block is missing, or either value is one you do not recognise, stop and
+if the block is missing, or any value is one you do not recognise, stop and
 ask — see below.
 
 ```
 mode: build            # or: review-only
 review scope: own      # or: all
+wip limit: 3           # a whole number, 1 to 3
 ```
 
-**If this block is missing, or either value is one you do not recognise, stop
-and ask** — do not assume. The defaults named here are `build` and `own`, and
+**If this block is missing, or any value is one you do not recognise, stop
+and ask** — do not assume. The defaults named here are `build`, `own` and `3`, and
 they are what an operator who wrote the block intended; an operator who deleted
 it, or typed something else, has not told you anything. This section is the one
 a human rewrites each run, so a missing block is as likely to mean "half-edited"
 as "left at defaults", and the two differ by whether the run reviews other
 people's work.
+
+**`wip limit` is the most work in flight at once** (CF-563) — see [the WIP
+limit and areas](RULES.md#the-wip-limit-and-areas) for what it counts. Two
+things override it downward and nothing overrides it upward: a [capability
+check](#first-establish-what-you-can-actually-do) that finds no worktree
+isolation runs the whole night at 1, and so does `review-only`, which has no
+ticket work to run beside its one PR cycle. Like `review scope`, it is not
+overridable from the starting instruction — a higher limit multiplies what the
+night spends and how many PRs can collide, which is the operator's call and is
+written here.
 
 See [Mode](#mode). The mode decides whether ticket work happens at all; *which*
 tickets is governed by [Choosing work](#choosing-work) under Standing policy,
@@ -371,8 +382,9 @@ report instead of taking it.
 `in-progress` is a live claim — this run's, since [stale claims are released
 at run start](RULES.md#stale-claims). See [Claims](RULES.md#claims).
 
-Work highest priority first (`P0` > `P1` > `P2` > unlabelled). One ticket per
-iteration. If a ticket turns out to need a decision after all, say so in the
+Work highest priority first (`P0` > `P1` > `P2` > unlabelled), taking tickets
+while [the WIP limit](RULES.md#the-wip-limit-and-areas) has room — each one
+goes through [Working a ticket](TICKETS.md#working-a-ticket). If a ticket turns out to need a decision after all, say so in the
 log, drop it, and move on — do not guess.
 
 If nothing carries the label, or everything that does is done, **stop the loop**.
