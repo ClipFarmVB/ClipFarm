@@ -70,14 +70,17 @@ time, up to [the WIP limit](RULES.md#the-wip-limit-and-areas).
 6. **When it reports, check GitHub, not the report.** The PR exists, is a
    draft, and GitHub lists the ticket among the issues it closes — read
    `closingIssuesReferences`, not the body, so GitHub's own parse of the
-   closing keyword is the one checked. Compare its files with
-   the plan and log every existing file outside it — those are the collisions
-   areas could not see:
+   closing keyword is the one checked:
 
    ```
-   gh pr view <n> --json isDraft,closingIssuesReferences,files \
-     --jq '"draft: \(.isDraft)", "closes: \([.closingIssuesReferences[].number] | join(","))", (.files[].path)'
+   gh pr view <n> --json isDraft,closingIssuesReferences \
+     --jq '"draft: \(.isDraft)", "closes: \([.closingIssuesReferences[].number] | join(","))"'
    ```
+
+   Then compare the PR's files with the plan and log every existing file
+   outside it — those are the collisions areas could not see. Read the files
+   with [the areas command](RULES.md#the-wip-limit-and-areas), not the API's
+   list, which names a renamed file by its new path only.
 
    **Release the ticket's claim** with `released: <UTC> — PR #<n>`. The PR
    carries the work from here, and [a ticket an open PR closes is never
@@ -135,8 +138,11 @@ and its slot number `k`, and [pass what binds it
 explicitly](RULES.md#dispatching-subagents). Ask it to:
 
 1. **Set up its own Python environment before anything installs.** A virtualenv
-   in the worktree — `python -m venv .venv`, which `.gitignore` already covers —
-   whose interpreter runs every `pip` and `python` in the gate. Point the
+   in the worktree — `python -m venv .venv`, which `.gitignore` already covers,
+   run with a Python that actually works: the pre-commit hook tries `python`,
+   `py` and `python3` in that order because a standard Windows install ships a
+   `python` stub that runs nothing — whose interpreter runs every `pip` and
+   `python` in the gate. Point the
    pre-commit hook at it too: the hook honours `CLIPFARM_PYTHON` before probing
    `PATH`, so set it to `.venv/bin/python`, or `.venv/Scripts/python.exe` on
    Windows.
@@ -163,12 +169,14 @@ explicitly](RULES.md#dispatching-subagents). Ask it to:
    this harness shell state does not carry from one command to the next, so an
    `activate` or an `export` lasts exactly one command, and the gate block below
    — which says plain `pip`, `python`, `ruff`, `mypy` — would quietly fall back
-   to the shared interpreter this step exists to avoid. Run each line through the
-   venv, `.venv/Scripts/python.exe -m pip install ...`,
-   `.venv/Scripts/python.exe -m ruff check api/` and so on, and give the hook its
-   interpreter on the commit itself:
-   `CLIPFARM_PYTHON="$PWD/.venv/Scripts/python.exe" git commit ...`. Off Windows
-   the interpreter is `.venv/bin/python`.
+   to the shared interpreter this step exists to avoid. **Write the interpreter's
+   absolute path out in full in every command** — the worktree's own path, then
+   `.venv/Scripts/python.exe`, or `.venv/bin/python` off Windows. Absolute,
+   because the gate `cd`s into `api/`, where a relative `.venv/...` names
+   nothing; in full every time, because a variable set in one command is gone by
+   the next, exactly like the activation. So `<abs>/python.exe -m pip install ...`,
+   `<abs>/python.exe -m ruff check api/`, `cd api && <abs>/python.exe -m pytest
+   tests/`, and on the commit itself `CLIPFARM_PYTHON=<abs>/python.exe git commit ...`.
 
    **Ports**, if it runs the app at all: web on `3100 + k`, api on `8100 + k`.
    The gate itself starts no server.

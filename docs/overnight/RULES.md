@@ -530,11 +530,14 @@ file its plan changes is held by other work. Two things hold files:
 
 - a **ticket in flight**: the existing files its [planner](TICKETS.md#the-planners-brief)
   listed, as recorded in the log
-- **this account's open PRs that are in cycle or `review-settled`**: every path
-  the PR changes relative to `main`. A settled PR is about to land, and work in
-  its files would collide with it. An
-  `unsettled` PR releases its files: it may sit for weeks, and the collision is
-  dealt with when it comes back
+- **this account's open PRs, except `unsettled` and `hold` ones**: every path
+  the PR changes relative to `main`. Each of them is headed for `main` whether or
+  not its cycle has started — a PR this run opened a minute ago, an older one
+  never yet reviewed, one reviewed clean and waiting on a check — and work in its
+  files would collide with it. Holding files only from the first round of a
+  cycle left exactly the PR an implementer had just opened holding nothing. An
+  `unsettled` or `hold` PR releases its files: it may sit for weeks, and the
+  collision is dealt with when it comes back
 
 Other accounts' PRs hold nothing. The run cannot schedule around work it does
 not control, and some of it — a long-lived mobile branch — would otherwise hold
@@ -543,10 +546,14 @@ half the tree.
 **Read a PR's paths from git, not from `gh pr view`:**
 
 ```
-git fetch -q origin main
-git fetch -q origin "pull/<n>/head"
+git fetch -q origin main || { echo "cannot read main"; exit 1; }
+git fetch -q origin "pull/<n>/head" || { echo "cannot read #<n>"; exit 1; }
 git diff --name-only --no-renames origin/main...FETCH_HEAD
 ```
+
+**If either fetch fails, that PR holds everything** until it can be read. A PR
+whose files could not be read and that therefore holds none is the same
+fail-open the push guard was rewritten to remove.
 
 **Two fetches, in that order, never one.** Fetching both refspecs at once writes
 both into `FETCH_HEAD`, which then resolves to the first — `main` — and the
