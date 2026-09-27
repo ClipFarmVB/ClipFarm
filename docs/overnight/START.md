@@ -379,8 +379,22 @@ however appealing it looks; if you think one deserves it, argue for it in the
 report instead of taking it.
 
 **Nor one carrying `hold` or `in-progress`.** `hold` is a human parking it;
-`in-progress` is a live claim — this run's, since [stale claims are released
-at run start](RULES.md#stale-claims). See [Claims](RULES.md#claims).
+`in-progress` is a live claim — this run's, a person's, or an earlier run's
+[too recent to release](RULES.md#stale-claims). See [Claims](RULES.md#claims).
+
+**Nor one an open PR already closes** (CF-562). Its work is in that PR, whatever
+labels the issue carries, and the issue stays open until the PR merges. Read
+GitHub's own parse of the closing keywords, not the PR bodies:
+
+```
+gh pr list --state open --limit 100 --json closingIssuesReferences \
+  --jq '.[].closingIssuesReferences[].number' | sort -un
+```
+
+**Nor one this run has already released without a PR.** It was dropped for a
+reason its `released:` comment gives, and nothing about the reason changes by
+the next lap; selecting it again only spends another planner on the same
+answer. The log's `released:` lines are the list.
 
 Work highest priority first (`P0` > `P1` > `P2` > unlabelled), taking tickets
 while [the WIP limit](RULES.md#the-wip-limit-and-areas) has room — each one
@@ -474,17 +488,20 @@ one block. The first run discovered three gaps separately, mid-work.
   anything is claimed:
 
   ```
-  gh label list --limit 200 --json name --jq '.[].name' | grep -xE 'in-progress|hold'
+  gh api --paginate repos/ClipFarmVB/ClipFarm/labels --jq '.[].name' | grep -xE 'in-progress|hold'
   ```
 
-  Two lines back means both exist. A missing one is created, not worked around —
+  Two lines back means both exist. Both commands are REST, so they work where
+  GraphQL is refused — see **Projects v2** below. A missing one is created, not worked around —
   `gh issue edit --add-label` against a label that does not exist fails, and a
   claim that lands as a comment with no label is invisible to every query that
   reads labels:
 
   ```
-  gh label create in-progress --color fef2c0 --description "Claimed by the overnight loop; see docs/overnight/RULES.md#claims"
-  gh label create hold --color cccccc --description "A human parked this; the overnight loop leaves it alone"
+  gh api -X POST repos/ClipFarmVB/ClipFarm/labels -f name=in-progress -f color=fef2c0 \
+    -f description="Claimed by the overnight loop; see docs/overnight/RULES.md#claims"
+  gh api -X POST repos/ClipFarmVB/ClipFarm/labels -f name=hold -f color=cccccc \
+    -f description="A human parked this; the overnight loop leaves it alone"
   ```
 - **Subagents, and whether they get their own worktree** (CF-561). Dispatch one
   throwaway background subagent with worktree isolation. Have it run these and

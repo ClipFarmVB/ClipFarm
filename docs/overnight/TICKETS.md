@@ -46,7 +46,8 @@ time, up to [the WIP limit](RULES.md#the-wip-limit-and-areas).
 
 1. **Claim it.** [Claim](RULES.md#claims) the ticket before anything else, so a
    run cut off mid-ticket leaves it marked rather than silently half-done. The
-   claim stays until the ticket's PR is closed or merged.
+   claim stays until the ticket's PR is opened, and is released then with
+   `PR #<n>` — see step 6.
 2. **Dispatch a planner** with [its brief](#the-planners-brief).
 3. **Record the plan, then decide.** Write the plan and what its cross-check
    said into the log — including where they disagreed and the planner went its
