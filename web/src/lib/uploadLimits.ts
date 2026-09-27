@@ -35,6 +35,7 @@ export const FALLBACK_UPLOAD_CONFIG: UploadConfig = {
  */
 export const SUPPORTED_FORMATS_LABEL = "MP4, MOV, MKV, WebM";
 
+// Key order is display order, and matches SUPPORTED_FORMATS_LABEL.
 const FORMAT_NAMES: Record<string, string> = {
   "video/mp4": "MP4",
   "video/quicktime": "MOV",
@@ -44,16 +45,25 @@ const FORMAT_NAMES: Record<string, string> = {
 
 /**
  * The formats `GET /games/upload-config` admits (`allowed_content_types`), as
- * a user reads them. A type without a friendly name shows as its MIME subtype
- * with any `x-` prefix stripped, uppercased (`video/x-msvideo` reads `MSVIDEO`),
- * rather than being dropped, so the label never claims less than the server
- * accepts. An empty list falls back to `SUPPORTED_FORMATS_LABEL`.
+ * a user reads them. The order is fixed, not the server's: the api sorts the
+ * types (`api/app/services/quota.py`), which would read "MP4, MOV, WebM, MKV"
+ * and reorder the label on screen when the response replaces the fallback. So
+ * the named formats come first in `FORMAT_NAMES` order (MP4, MOV, MKV, WebM),
+ * keeping only those the server allows, then any other types in the server's
+ * order. A type without a friendly name shows as its MIME subtype with any
+ * `x-` prefix stripped, uppercased (`video/x-msvideo` reads `MSVIDEO`), rather
+ * than being dropped, so a non-empty list is never under-reported. An empty
+ * list is the exception: it returns `SUPPORTED_FORMATS_LABEL`, which names
+ * four formats although the server then accepts none.
  */
 export function formatsLabel(contentTypes: readonly string[]): string {
-  const names = contentTypes.map(
-    (t) => FORMAT_NAMES[t] ?? (t.split("/").pop() ?? t).replace(/^x-/, "").toUpperCase(),
-  );
-  const unique = [...new Set(names.filter(Boolean))];
+  const allowed = new Set(contentTypes);
+  const named = Object.keys(FORMAT_NAMES);
+  const known = named.filter((t) => allowed.has(t)).map((t) => FORMAT_NAMES[t]);
+  const unknown = contentTypes
+    .filter((t) => !named.includes(t))
+    .map((t) => (t.split("/").pop() ?? t).replace(/^x-/, "").toUpperCase());
+  const unique = [...new Set([...known, ...unknown].filter(Boolean))];
   return unique.length > 0 ? unique.join(", ") : SUPPORTED_FORMATS_LABEL;
 }
 

@@ -56,13 +56,24 @@ describe("formatsLabel", () => {
     expect(formatsLabel(FALLBACK_UPLOAD_CONFIG.allowed_content_types)).toBe(SUPPORTED_FORMATS_LABEL);
   });
 
-  it("follows the server's list, not the constant", () => {
+  it("names only the server's types, not the constant's", () => {
     expect(formatsLabel(["video/mp4"])).toBe("MP4");
-    expect(formatsLabel(["video/webm", "video/mp4"])).toBe("WebM, MP4");
+    expect(formatsLabel(["video/webm", "video/mp4"])).toBe("MP4, WebM");
   });
 
-  it("shows an unnamed type by its subtype rather than dropping it", () => {
+  it("keeps a fixed order whatever order the server sends", () => {
+    // The api sorts the types (api/app/services/quota.py), so the default
+    // config arrives in this order. The label must match the fallback's, or
+    // the formats line reorders on screen when the response lands.
+    const serverOrder = ["video/mp4", "video/quicktime", "video/webm", "video/x-matroska"];
+    expect(formatsLabel(serverOrder)).toBe("MP4, MOV, MKV, WebM");
+    expect(formatsLabel(serverOrder)).toBe(formatsLabel(FALLBACK_UPLOAD_CONFIG.allowed_content_types));
+    expect(formatsLabel([...serverOrder].reverse())).toBe("MP4, MOV, MKV, WebM");
+  });
+
+  it("shows an unnamed type by its subtype after the named ones", () => {
     expect(formatsLabel(["video/mp4", "video/x-msvideo"])).toBe("MP4, MSVIDEO");
+    expect(formatsLabel(["video/x-msvideo", "video/webm", "video/mp4"])).toBe("MP4, WebM, MSVIDEO");
   });
 
   it("falls back to the constant for an empty list", () => {
