@@ -142,6 +142,9 @@ function GamesContent() {
         </Link>
       </div>
 
+      {/* sampleGameId: the copied sample game (#220), shown as the example and
+          kept out of the user's progress. Null until wired; a game flagged
+          is_sample is excluded from progress regardless. */}
       <OnboardingPanel games={games} loading={loading} error={error} userId={user?.id} sampleGameId={null} />
 
       {/* Error */}

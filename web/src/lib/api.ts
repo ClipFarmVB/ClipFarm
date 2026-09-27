@@ -77,6 +77,8 @@ export interface Game {
   condensed_video_url?: string | null;
   original_duration?: number | null;
   condensed_duration?: number | null;
+  // The copied sample game (#220). Absent until the api sends it.
+  is_sample?: boolean;
 }
 
 export function getGames(): Promise<Game[]> {

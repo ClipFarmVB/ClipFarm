@@ -213,6 +213,14 @@ describe("OnboardingPanel", () => {
     expect(host.querySelector('a[href="/games/sample"]')?.textContent).toBe("See an example");
   });
 
+  it("does not count a game flagged is_sample, even with sampleGameId unwired", async () => {
+    const sample: Game = { ...game("flagged", "ready"), is_sample: true };
+    await render({ userId: "flagged-1", games: [sample], sampleGameId: null });
+
+    expect(panel()).not.toBeNull();
+    expect(localStorage.getItem(onboardingKey("flagged-1"))).toBeNull();
+  });
+
   it("has no example link without a sample game", async () => {
     await render({ userId: "nosample-1" });
 

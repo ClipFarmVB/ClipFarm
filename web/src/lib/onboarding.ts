@@ -109,13 +109,15 @@ export interface OnboardingProgress {
 
 /**
  * Progress through the walkthrough, from the user's own games only. The sample
- * game is always `ready`; counting it would complete onboarding on first load.
+ * game is always `ready`; counting it would complete onboarding on first load,
+ * and that `done` is stored for good. So a game is excluded by `sampleGameId`
+ * or by its own `is_sample` flag, whichever arrives first.
  */
 export function onboardingProgress(
   games: readonly Game[],
   sampleGameId: string | null,
 ): OnboardingProgress {
-  const own = games.filter((g) => g.id !== sampleGameId);
+  const own = games.filter((g) => g.id !== sampleGameId && g.is_sample !== true);
   const active = own.find(
     (g) => g.status === "queued" || g.status === "processing" || g.status === "uploading",
   );

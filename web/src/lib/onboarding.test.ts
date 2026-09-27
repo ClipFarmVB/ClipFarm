@@ -118,4 +118,14 @@ describe("onboardingProgress", () => {
       ready: false,
     });
   });
+
+  it("excludes a game flagged is_sample without a sampleGameId", () => {
+    const games = [{ ...game("sample", "ready"), is_sample: true }];
+    expect(onboardingProgress(games, null)).toEqual({
+      uploaded: false,
+      inProgressGameId: null,
+      ready: false,
+    });
+    expect(onboardingProgress([{ ...game("r1", "ready"), is_sample: false }], null).ready).toBe(true);
+  });
 });

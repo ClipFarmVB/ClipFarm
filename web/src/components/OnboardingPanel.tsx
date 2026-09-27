@@ -21,6 +21,7 @@ interface OnboardingPanelProps {
   /**
    * The copied sample game, used as the worked example and excluded from the
    * user's own progress. Null until the web types carry `is_sample` (#220).
+   * A game flagged `is_sample` is excluded from progress either way.
    */
   sampleGameId?: string | null;
 }
@@ -118,7 +119,7 @@ export function OnboardingPanel({
           )}
         </Step>
         <Step n={2} done={false} title="Processing can take a while">
-          Often tens of minutes for a full game. The game&apos;s page shows a
+          Expect a wait, not seconds. The game&apos;s page shows a
           progress bar with the current stage and an estimate, and you can leave
           the page while it runs. If it fails, the game reads Failed here in the
           Library; upload it again.{" "}
