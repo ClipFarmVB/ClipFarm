@@ -60,6 +60,22 @@ lost, and those released because the run ended. Each is work somebody should
 know did not complete. An orphaned claim in particular is the only evidence that
 the previous run ended without reporting.
 
+**Remove the worktrees this run's subagents left behind** (CF-564), once each
+one's work is pushed or released. The harness removes a worktree only if it is
+unchanged, and every implementer and fixer changes its tree, so at six agents
+a night with its own virtualenvs they pile up — twelve were found left over
+from earlier runs on 2026-09-27. Each sits at
+`.claude/worktrees/agent-<AGENT>`, `AGENT` being the id on its `dispatched:`
+line:
+
+```
+git worktree remove --force .claude/worktrees/agent-<AGENT>
+```
+
+**Only those the registry names.** Other worktrees under `.claude/worktrees/`
+belong to people and sessions this run knows nothing about. Name in the report
+any it could not remove.
+
 ### Then reset the log, and only then
 
 `.claude/overnight-log.md` is scratch memory for **one** run. Once the report
@@ -135,10 +151,11 @@ The report contains:
   a run cannot fix an upstream breakage unattended either way. It is here because
   the two want different humans, and a report that does not say which is which
   sends the question to the wrong one.
-- PRs labelled `unsettled`, split by the four reasons their `unsettled:` comment
+- PRs labelled `unsettled`, split by the five reasons their `unsettled:` comment
   gives — `needs a decision` (a reviewer found a judgement call), `latched` (the
   harness refused the push), `not our branch` (the author's next push re-opens
-  it), and `ran out of rounds` (the per-PR ceiling, or the run-wide budget) — and
+  it), `ran out of rounds` (the per-PR ceiling, or the run-wide budget), and
+  `head moved` (someone pushed while this run was fixing it) — and
   what is still outstanding on each
 - **Latched PRs by name, each saying exactly what refused the push.** Two of
   these reasons want a human and want *different* humans doing different things:

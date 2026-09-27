@@ -224,6 +224,43 @@ and **all seven were this account's own work from earlier runs**. The loop could
 review everything it had built and fix none of it. The sign-off is now given:
 earlier runs of this account are this account.
 
+#### Pushing to a branch that may have moved
+
+With several PRs cycling at once (CF-564), a fix can take long enough that
+someone else pushes to the branch first — a collaborator, or the operator on this
+same account. **Every push to a PR branch goes through this guard**, where
+`STARTED_AT` is the full SHA of the head the work was built on and `BRANCH` is
+the PR's branch:
+
+```
+# push guard (CF-564)
+git fetch -q origin "$BRANCH"
+[ "$(git rev-parse FETCH_HEAD)" = "$STARTED_AT" ] || { echo "head moved - do not push"; exit 1; }
+git push origin "HEAD:$BRANCH"
+```
+
+**What git already refuses, and what it does not.** A plain push is rejected when
+someone added commits on top: the fix is no longer a fast-forward. It is
+**accepted** when someone *rewound* the branch — pushed it back to an ancestor, to
+drop a bad commit, say — because the fix still descends from the new tip, and the
+push silently restores the commit they removed. The guard catches both, by
+comparing against the head the work started from instead of asking git whether
+the push fits. `api/tests/test_overnight_push_guard.py` runs this block as
+written against both, and shows that a plain push lets the rewind through.
+
+**What it leaves open.** Between the fetch and the push — about a second — the
+branch can still be rewound, and the push would then succeed.
+`--force-with-lease` with an explicit expected SHA would close that window
+atomically and is deliberately not used: [the hard rules](#hard-rules) forbid
+force-pushing, and a rule that reads "never force, except this flag" is how an
+exception grows. The consequence is a removed commit reappearing on the branch —
+visible, and nothing lost.
+
+**When the guard fires, or a push is rejected anyway: never rebase, merge or
+force.** Each would either discard someone's commits or fold in commits no round
+has read. Stop, and route the PR as [`head
+moved`](FIX.md#when-you-cannot-fix-it-choosing-a-reason).
+
 ### Dispatching subagents
 
 Ported from the `Solo_Hack` / `HTN_WHITEOUT` build harness (CF-561), which runs
@@ -274,7 +311,7 @@ finished: ROLE TARGET AGENT UTC OUTCOME
 ```
 
 `ROLE` is what the subagent was spawned to do — `cold`, `semi-cold`,
-`planner` or `implementer`. `TARGET` is `#<n>`, the PR or issue it works on. `AGENT` is the
+`fixer`, `planner` or `implementer`. `TARGET` is `#<n>`, the PR or issue it works on. `AGENT` is the
 id the harness returned for the spawn. `UTC` is a resolved timestamp, never the
 command that produces one ([Measure what you publish](#measure-what-you-publish)).
 **A `dispatched:` line with no matching `finished:` line is in flight.**
@@ -308,7 +345,7 @@ the next run can read it:
 
 **What gets claimed.** A **PR** is claimed from the first round of its cycle
 until it reaches one of the terminal states in [Order of
-work](#order-of-work-one-pr-at-a-time) — `review-settled`, `unsettled`, or
+work](#order-of-work-every-pr-carried-to-a-terminal-state) — `review-settled`, `unsettled`, or
 reviewed clean but held back by a check, which releases with the outcome
 `held by a check` and still carries no review-state label, as before. A
 **ticket** is claimed from the moment work on it starts until its PR is closed
@@ -381,6 +418,7 @@ again.
 | role | lost after | measured from |
 |---|---|---|
 | `cold`, `semi-cold` | 60 min with no marker | the `dispatched:` line |
+| `fixer` | 60 min with no push or reply | the `dispatched:` line |
 | `planner` | 90 min with no plan | the `dispatched:` line |
 | `implementer` | 120 min with no PR | the `dispatched:` line |
 
@@ -391,6 +429,10 @@ pairings have p90s of 21 to 29 min. A gap spans a whole round plus the lap that
 spawned it, so a round is shorter than its gap. The 45 minutes the build harness
 this was ported from uses would have stopped the slowest measured round here
 before it finished.
+
+**The fixer's figure is bounded by the same data.** A fix sits inside the
+cold-to-semi-cold gap — the fix, then the round that checks it — whose median
+is 11.1 min and p90 21.4 min (n=84), so an hour is generous for the fix alone.
 
 **The planner and implementer figures are not measured.** Before CF-563 this
 session planned and implemented tickets itself, so no marker records how long
@@ -470,6 +512,31 @@ brief](TICKETS.md#the-implementers-brief). Declared files make collisions rare,
 not impossible, and one that happens anyway surfaces as a PR GitHub cannot
 merge.
 
+#### Six agents, one credential
+
+Every subagent posts as this run's account, so the whole run shares one GitHub
+credential (CF-564). **The secondary limits are the ones concurrency reaches**,
+not the hourly allowance: GitHub allows at most 80 content-generating requests a
+minute and 500 an hour, and answers a breach with a 403 or 429, sometimes with a
+`retry-after` header ([GitHub's REST rate-limit
+documentation](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api),
+read 2026-09-27). Every marker, review, label change and claim comment is
+content-generating.
+
+Serial runs of this loop peaked at 20 comments in an hour and 13 in one minute —
+every PR and issue comment since 2026-08-01, all authors. Reviews and label
+changes come on top and are not in that count. Six agents at the serial hourly
+peak stay well inside 500; six *bursts* landing in the same minute do not stay
+inside 80.
+
+**A secondary rate limit is not a usage limit.** The hard rule that stops the
+loop on a usage limit is about the model's quota; this is GitHub's, and it
+clears in minutes. The subagent that hits it stops, reports it with the
+`retry-after` value if there was one, and posts nothing further. This session
+writes its `finished:` line with the outcome `rate-limited`, dispatches nothing
+until the `retry-after` has passed — or a minute, if there was none — and then
+routes the target again.
+
 ### Log before you finish each iteration
 
 Append a dated section to `.claude/overnight-log.md`: what you did, what you
@@ -543,9 +610,11 @@ Finish work already in flight before starting anything new.
 
 **Steps 1 and 2 are the two halves of one PR's cycle, not two sweeps over the
 queue.** Read them as: pick a PR that needs a review, then carry *that* PR
-through review and fix and re-review until it reaches a terminal state, then
-pick the next one. Running step 1 across every open PR and only then starting
-step 2 is the breadth-first pass ruled out below.
+through review and fix and re-review until it reaches a terminal state. Several
+PRs can be in their cycles at once, up to [the WIP
+limit](#the-wip-limit-and-areas), and each is carried through in the same way.
+Running step 1 across every open PR and only then starting step 2 is still the
+breadth-first pass ruled out below.
 
 #### The ceiling, and the settling exception
 
@@ -587,22 +656,37 @@ the counting query charges them automatically; unlike a `reopened:` marker or a
 re-posted marker, nothing here is free. The exception lifts the *per-PR*
 ceiling, never the run-wide budget.
 
-#### Order of work: one PR at a time
+#### Order of work: every PR carried to a terminal state
 
-**Take one PR all the way through before opening the next.** Review it, fix it,
-check the fix, settle or label it — then move on. Do not run a pass over every
-open PR and come back for a second lap.
+**Take every PR you start all the way through.** Review it, fix it, check the
+fix, settle or label it. Several can be in that cycle at once (CF-564), each
+[claimed](#claims) for as long as it is. Do not run a pass over every open PR
+and come back for a second lap.
 
-The reason is that this loop gets interrupted: context is compacted between
-iterations, and a usage limit stops the run outright, at no point of your
-choosing. Finishing PRs one at a time means whenever that happens, everything
-touched so far is in a terminal state — `review-settled`, `unsettled`,
-untouched, or reviewed-clean-but-held-back-by-a-check, which [carries no label
-deliberately](FIX.md#the-cycle-and-the-settle-bar) — and the next run can tell
-those apart. A breadth-first pass that is
-cut off leaves every PR half-cycled, which is precisely the "abandoned
-mid-cycle looks identical to reviewed clean" condition these labels exist to
-prevent. It also keeps the state you carry small: one PR's findings, not twenty.
+**This was "one PR at a time" until CF-564, and the reason it was is still the
+reason for everything here.** This loop gets interrupted: context is compacted
+between iterations, a usage limit stops the run outright, and the operator
+stops it, all at no point of your choosing. A breadth-first pass that is cut off
+leaves every PR half-cycled, which is precisely the "abandoned mid-cycle looks
+identical to reviewed clean" condition the terminal labels exist to prevent.
+The answer used to be to keep the loop narrow enough that only one PR could
+ever be mid-cycle, so that an interruption left everything else in a terminal
+state — `review-settled`, `unsettled`, untouched, or reviewed-clean-but-held-back-
+by-a-check, which [carries no label deliberately](FIX.md#the-cycle-and-the-settle-bar).
+
+**The answer now is to make mid-cycle a state that can be read.** Every PR in
+its cycle carries `in-progress`, so an interruption leaves the claim on exactly
+the PRs it cut off, [the next run releases them](#stale-claims) and they are
+cycled again from the top. The interruption is the same; what it leaves behind
+is no longer ambiguous. That is what made running cycles side by side
+defensible, and why the claim is not optional: **a PR in cycle without its claim
+is the old failure, at up to six times the size.**
+
+**What stays ruled out is starting cycles you will not carry.** Claim a PR only
+when you can cycle it now — a free slot, and [budget reserved for
+it](#the-run-budget). The state you carry is bounded by the limit rather than by
+one: at most that many PRs' findings, with each PR's own markers holding the
+rest.
 
 The cost is real: if the run dies early, PRs at the back of the queue got
 nothing at all. So the order matters. Take them: PRs this run opened, then any
@@ -641,6 +725,22 @@ If the budget runs out with findings open on a PR, it gets the same treatment as
 the ceiling: `unsettled`, recorded, move on. Never leave a PR with open findings
 carrying no label — unlabelled and unreviewed are indistinguishable to the next
 run, which is the whole reason these labels exist.
+
+**Reserve before you start, now that cycles overlap** (CF-564). Claim a PR for
+a cycle only while the unspent budget covers three rounds for it *and* three for
+every PR already in cycle; dispatch an implementer only under the same test,
+counting the PR it will open. Three is what [one round of findings
+costs](RATIONALE.md#what-a-night-costs) — cold, semi-cold on the fix, cold to
+settle. Without the reservation, several cycles run the budget out together, and
+every one of them lands on the paragraph above at the same moment: `unsettled`,
+findings open, for arithmetic rather than for anything a reviewer found.
+
+**Both numbers were re-derived for concurrent cycles, and both stand.** The
+ceiling is per PR: seven rounds bound one PR's cycle whether or not others run
+beside it, so concurrency does not reach it. The budget of 40 is a cap on what a
+night spends, not a throughput target: parallel cycles spend it sooner in
+wall-clock time, but not more of it. What concurrency changes is *how* it runs
+out, and that is what the reservation is for.
 
 #### Logging, and the counting windows
 

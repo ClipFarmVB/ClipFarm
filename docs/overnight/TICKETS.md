@@ -23,8 +23,10 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 
 #### Step 3 — ticket work
 
-**3 — Only when 1 and 2 are clear**, take tickets while [the WIP
-limit](RULES.md#the-wip-limit-and-areas) has room. *Clear*
+**3 — Once every PR that needs a round is in its cycle**, take tickets with the
+room [the WIP limit](RULES.md#the-wip-limit-and-areas) has left. Slots go to the
+review queue first (CF-564): a PR owed a round and waiting for a slot holds
+step 3 back, and a PR already in its cycle does not. *Owed a round*
 is [step 1's test](REVIEW.md#step-1--which-prs-need-a-round) and its check-held
 clause: a PR reviewed clean and waiting on CI is not a round owed, so it does
 not hold step 3 back for the rest of the night.

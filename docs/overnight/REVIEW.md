@@ -44,8 +44,8 @@ This has to be said here rather than left to the reader, because the test is
 keyed on labels and that PR deliberately carries none: read literally, it needs
 a round forever, and no round can change the thing holding it. Everything that
 consumes this test inherits the clause — the [`review-only` stop
-condition](START.md#when-a-review-only-run-is-done) and [step 3's "when 1 and 2
-are clear"](TICKETS.md#step-3--ticket-work) — which is what keeps a night whose
+condition](START.md#when-a-review-only-run-is-done) and [step 3's
+gate](TICKETS.md#step-3--ticket-work) — which is what keeps a night whose
 remaining queue is one red PR from having no way to end.
 
 **Two cases leave the queue before the test runs** (CF-562):
@@ -55,11 +55,12 @@ remaining queue is one red PR from having no way to end.
   [Claims](RULES.md#claims).
 - **A PR with a subagent in flight against it** — a `dispatched:` line in [the
   registry](RULES.md#the-registry) with no `finished:` — gets no new round. It
-  is not owed one: one is running. **Nor is it clear.** Nothing that consumes
-  this test may treat it as finished until its `finished:` line is written —
-  not the `review-only` stop condition, and not step 3's gate. A run that
-  stopped on a queue whose last round was still in flight would orphan that
-  round and its claim.
+  is not owed one: one is running. **Nor is it finished.** The `review-only`
+  stop condition may not treat it as done until its `finished:` line is
+  written: a run that stopped on a queue whose last round was still in flight
+  would orphan that round and its claim. Step 3's gate asks something weaker —
+  whether every PR owed a round is *in* its cycle — and a PR with a round in
+  flight is.
 
 **And one filter in front of that test: the run's `review scope`.** With scope
 `own`, a PR whose author is not this account is out of scope and gets no round —
@@ -728,8 +729,9 @@ of which reason applies, and it is what a later run reads back:
 - `unsettled: needs a decision @ <sha>`
 - `unsettled: ran out of rounds @ <sha>`
 - `unsettled: latched @ <sha>`
+- `unsettled: head moved @ <sha>`
 
-The four differ in what clears them, and that is the property to check before
+The five differ in what clears them, and that is the property to check before
 choosing one — a reason that clears itself on a commit is the wrong reason for
 something a commit does not fix:
 
@@ -739,6 +741,7 @@ something a commit does not fix:
 | `not our branch` | findings are fixable, but the branch belongs to **another account** and this run may not push | **new commits**, no human needed | reset |
 | `needs a decision` | a finding needs a judgement nobody unattended should make | **a human removing the label** — commits do not | — |
 | `latched` | this account's PR and [the push test](RULES.md#the-push-test) passes, but the **harness** refuses the push | **a human, outside the loop** — no run can clear it | — |
+| `head moved` | someone pushed to the branch while this run was fixing it; the fix is described, not pushed ([the push guard](RULES.md#pushing-to-a-branch-that-may-have-moved)) | **new commits**, no human needed | reset |
 
 **When more than one is true, `needs a decision` wins**, over each of the other
 three; note the losing one in the comment as context rather than as the reason.
@@ -748,6 +751,11 @@ cosmetic, since both clear on a commit and both reset the count, and `not our
 branch` wins only because it says why this run could not have fixed the PR at
 any budget. `not our branch` and `latched` cannot both apply: the first is only
 ever another account's PR, the second only ever this account's.
+
+**`head moved` sits where `not our branch` does** (CF-564): it beats `ran out of
+rounds`, because it says why the fix never landed, and loses to `latched` and
+`needs a decision`, which both want a human. It cannot coincide with `not our
+branch`, which never pushes.
 
 Why that order and not another: the two commit-cleared reasons discharge
 themselves on the author's next push, so a PR that also needs a judgement would
