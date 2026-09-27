@@ -80,11 +80,18 @@ def async_url(pg_db):
 
 
 def _seed(pg_db, user_id, email):
+    """Insert a users row with raw SQL.
+
+    `created_at` is spelled out because the model's default is Python-side
+    (`default=lambda: datetime.now(...)`), not a server default — the ORM fills
+    it, a raw INSERT does not, and leaving it out is a NOT NULL violation rather
+    than a row with a null timestamp.
+    """
     sync = create_engine(pg_db)
     with sync.begin() as c:
         c.execute(
-            text("INSERT INTO users (id, email, is_private, username_is_generated) "
-                 "VALUES (:i, :e, true, false)"),
+            text("INSERT INTO users (id, email, created_at, is_private, "
+                 "username_is_generated) VALUES (:i, :e, now(), true, false)"),
             {"i": str(user_id), "e": email},
         )
     sync.dispose()
