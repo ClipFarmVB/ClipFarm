@@ -40,7 +40,8 @@ mode ran. A reader cannot otherwise tell "reviewed nothing new" from "was not
 looking".
 
 **Before writing the report, stop what is still in flight and release it**
-(CF-562). Stop every subagent with a `dispatched:` line and no `finished:`, write
+(CF-562). Stop every subagent with a `dispatching:` or `dispatched:` line and no
+`finished:`, write
 its `finished:` line with the outcome `run ended`, and release its claim with
 `released: <UTC> — run ended`. A run that stops cleanly should hand the next one
 no claims at all; [releasing at run start](RULES.md#stale-claims) is the backstop

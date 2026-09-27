@@ -322,11 +322,24 @@ the two markers by the SHA test.
 truncated at the end of each one. So every claim is mirrored on GitHub, where
 the next run can read it:
 
-1. **Claim before dispatching**, and before working a target yourself: add the
-   `in-progress` label, then comment `claimed: <UTC>`.
-2. Dispatch, then write the `dispatched:` line.
+1. **Claim before dispatching**, and before working a target yourself: comment
+   `claimed: <UTC>`, *then* add the `in-progress` label. In that order, a run
+   cut off between the two leaves a comment with no label, which nothing reads as
+   a claim. The other order leaves a label that no run will ever release, since
+   every release first looks for this account's `claimed:` comment.
+2. **Write `dispatching:`, spawn, write `dispatched:`** ([the
+   registry](#the-registry)). On every dispatch after the claim's first,
+   **re-stamp the claim**: edit this run's `claimed:` comment to the new time
+   rather than posting another —
+   `gh api -X PATCH repos/ClipFarmVB/ClipFarm/issues/comments/<id> -f body="claimed: <UTC>"`.
+   Editing moves the comment's `updated_at` (checked on 2026-09-27), so the claim
+   records when the target was last given work. That, not when the claim began,
+   is what [releasing stale claims](#stale-claims) has to age: a PR is claimed
+   for its whole cycle, and its last fixer can be minutes old on a claim hours old.
 3. **Release when the target reaches a terminal state**: remove `in-progress`,
-   then comment `released: <UTC> — <outcome>`.
+   then comment `released: <UTC> — <outcome>`, and write the same `released:`
+   line into the log, which is where [selection](START.md#choosing-work) reads
+   this run's releases from.
 
 **What gets claimed.** A **PR** is claimed from the first round of its cycle
 until it reaches one of the terminal states in [Order of
@@ -377,18 +390,24 @@ it** with the outcome `merged`, `closed` or `held by a human`. A slot held by a
 target nobody wants worked on anymore is a slot lost for the rest of the night,
 and a fixer still pushing to it is working against a person.
 
+**The same reconcile re-runs [the stale-claim check](#stale-claims)**, so that
+an earlier run's claim left alone as too recent is released once it has aged
+past the limit, rather than waiting for the next run to start.
+
 #### Stale claims
 
-**At the start of a run, release every claim that is older than the `run start:`
-line *and* older than the longest limit in [the table below](#stale-claims)** —
+**At the start of a run, release every claim last stamped before the `run start:`
+line *and* longer ago than the longest limit in [the table below](#stale-claims)** —
 remove `in-progress`, then comment `released: <UTC> — orphaned by an earlier
 run`. [Only one run may be live at a
 time](START.md#what-it-may-push-to-and-what-follows-from-that), so a claim from
 before this run belongs to a run that is over. **But over is not the same as
 gone**: stopping a loop removes its schedule, not the background subagents it
-had already spawned, and one of those can still push. A claim younger than the
-longest limit is left alone, and its target is not selected, until it ages past
-it. **Only release a claim whose `claimed:` comment this account posted**: an
+had already spawned, and one of those can still push. A claim stamped more
+recently than the longest limit is left alone, and its target is not selected,
+until it ages past it. The stamp is the claim comment's `updated_at`, which
+[every dispatch moves](#claims) — so the age is measured from the last work
+given out, which is what a live subagent's age can be. **Only release a claim whose `claimed:` comment this account posted**: an
 `in-progress` label with no such comment was put there by someone else, and it
 is left alone too.
 
@@ -402,7 +421,7 @@ CUTOFF=$(date -u -d "-$LONGEST_MIN minutes" +%Y-%m-%dT%H:%M:%SZ)
 gh api --paginate "repos/ClipFarmVB/ClipFarm/issues?state=open&labels=in-progress&per_page=100" --jq '.[].number' |
 while read -r n; do
   CLAIMED=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/$n/comments" \
-    --jq ".[] | select(.user.login == \"$ME\") | select(.body | test(\"^claimed: \")) | .created_at" | tail -1)
+    --jq ".[] | select(.user.login == \"$ME\") | select(.body | test(\"^claimed: \")) | .updated_at" | tail -1)
   if [ -z "$CLAIMED" ]; then echo "#$n: in-progress, no claim of ours - leave it"
   elif [ "$CLAIMED" \< "$SINCE" ] && [ "$CLAIMED" \< "$CUTOFF" ]; then echo "#$n: orphaned, claimed $CLAIMED - release"
   elif [ "$CLAIMED" \< "$SINCE" ]; then echo "#$n: an earlier run's, claimed $CLAIMED - too recent, leave it"
@@ -414,9 +433,9 @@ The `issues` endpoint returns PRs as well as issues, which is why it is used
 rather than `gh issue list`: one query covers both kinds of claim. The
 comparison is the same `Z`-suffixed string compare as [the counting
 windows](#logging-and-the-counting-windows), with the same requirement on
-`SINCE`. `tail -1` takes the newest of this account's claims, because the
-comments endpoint returns oldest first and a target claimed again after a
-release carries more than one.
+`SINCE`. `tail -1` takes the newest of this account's claim comments, because
+the comments endpoint returns them oldest first and a target claimed again after
+a release carries more than one; `updated_at` is that comment's last re-stamp.
 
 **The label-filtered listing can lag a label change.** Seen once, on
 2026-09-27: `issues?labels=in-progress` omitted an issue labelled about five
