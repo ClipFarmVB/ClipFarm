@@ -42,6 +42,25 @@ def _get_jwks_client() -> PyJWKClient:
     return _jwks_client
 
 
+def _violated_constraint(err: IntegrityError) -> str:
+    """The name of the constraint an IntegrityError hit, and nothing else.
+
+    Its message is not safe to log: Postgres puts the offending row's values in
+    the DETAIL line, and for `users` that is the email address — the Sentry
+    event that started CF-295 carried one. Sentry's scrubbing redacts secrets,
+    not personal data, so what reaches a log from here is the constraint name.
+    asyncpg carries it as `constraint_name` on the driver error, which
+    SQLAlchemy chains beneath its own.
+    """
+    cause: BaseException | None = err.orig
+    while cause is not None:
+        name = getattr(cause, "constraint_name", None)
+        if name:
+            return str(name)
+        cause = cause.__cause__
+    return "unknown"
+
+
 async def _ensure_user_exists(user_id: uuid.UUID, email: str, db: AsyncSession) -> None:
     """Create a users row if one doesn't exist yet (first login after Supabase signup).
 
@@ -99,10 +118,11 @@ async def _ensure_user_exists(user_id: uuid.UUID, email: str, db: AsyncSession) 
 
     holder = await db.scalar(select(User.id).where(User.email == email))
     if holder is not None and holder != user_id:
+        # Ids, not the email: they identify both accounts, and the address
+        # can be read from the database by whoever follows this up.
         logger.warning(
-            "auth: email %r is held by user %s but the token carries %s; "
-            "refusing to relink (CF-295)",
-            email,
+            "auth: the token's email is held by user %s but the token carries "
+            "%s; refusing to relink (CF-295)",
             holder,
             user_id,
         )
@@ -116,12 +136,15 @@ async def _ensure_user_exists(user_id: uuid.UUID, email: str, db: AsyncSession) 
 
     # Neither case. Something else in this INSERT violated a constraint, and
     # returning quietly would strand the caller with no row and no explanation
-    # while every later FK write failed. Log the original error rather than the
-    # 503, or the one line that says what actually broke is the one lost.
+    # while every later FK write failed. Name what broke rather than only
+    # returning a 503 — but by constraint, not by attaching the error, whose
+    # message carries the row's email (see _violated_constraint).
     logger.error(
-        "auth: could not provision user %s and no email holder explains it",
+        "auth: could not provision user %s: %s violated (%s), and no email "
+        "holder explains it",
         user_id,
-        exc_info=integrity_error,
+        _violated_constraint(integrity_error),
+        type(integrity_error.orig).__name__,
     )
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

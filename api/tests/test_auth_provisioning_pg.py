@@ -137,6 +137,34 @@ def test_id_arbiter_does_not_cover_the_email_index(async_url, pg_db):
     _run(async_url, body)
 
 
+def test_the_constraint_name_comes_through_from_asyncpg(async_url, pg_db):
+    """`_violated_constraint` is what the 503 path logs instead of the error,
+    whose message carries the email. The stub tests assume asyncpg exposes
+    `constraint_name` somewhere under SQLAlchemy's wrapper; this checks it
+    against the real driver, so a wrapper change cannot quietly turn every log
+    line into "unknown"."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from app.auth import _violated_constraint
+    from app.models.user import User
+
+    email = f"named-{uuid.uuid4().hex[:8]}@example.com"
+    _seed(pg_db, uuid.uuid4(), email)
+
+    async def body(db):
+        stmt = (
+            pg_insert(User)
+            .values(id=uuid.uuid4(), email=email)
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
+        try:
+            await db.execute(stmt)
+        except IntegrityError as err:
+            return _violated_constraint(err)
+        return None
+
+    assert _run(async_url, body) == "users_email_key"
+
+
 def test_row_already_present_is_a_no_op(async_url, pg_db):
     """The benign race: the request we lost to already committed our row."""
     from app.auth import _ensure_user_exists
