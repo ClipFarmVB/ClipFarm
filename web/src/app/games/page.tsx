@@ -6,6 +6,8 @@ import { AlertCircle, ArrowRight, Pencil, Plus, Trash2 } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
+import { OnboardingPanel } from "@/components/OnboardingPanel";
+import { useAuth } from "@/contexts/AuthContext";
 import { deleteGame, renameGame, type Game } from "@/lib/api";
 import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
@@ -30,6 +32,7 @@ const STATUS_LABEL: Record<Game["status"], string> = {
 };
 
 function GamesContent() {
+  const { user } = useAuth();
   // Initialise from cache for an instant render — no spinner if data is ready.
   const [games, setGames] = useState<Game[]>(() => getCachedGames() ?? []);
   const [loading, setLoading] = useState(() => getCachedGames() === null);
@@ -138,6 +141,8 @@ function GamesContent() {
           </Button>
         </Link>
       </div>
+
+      <OnboardingPanel games={games} loading={loading} error={error} userId={user?.id} sampleGameId={null} />
 
       {/* Error */}
       {error && (
