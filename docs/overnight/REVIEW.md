@@ -48,6 +48,19 @@ condition](START.md#when-a-review-only-run-is-done) and [step 3's "when 1 and 2
 are clear"](TICKETS.md#step-3--ticket-work) — which is what keeps a night whose
 remaining queue is one red PR from having no way to end.
 
+**Two cases leave the queue before the test runs** (CF-562):
+
+- **A PR labelled `hold`** is out of the queue, exactly as an out-of-scope PR is
+  — no round, no label, no comment. A human put it there; see
+  [Claims](RULES.md#claims).
+- **A PR with a subagent in flight against it** — a `dispatched:` line in [the
+  registry](RULES.md#the-registry) with no `finished:` — gets no new round. It
+  is not owed one: one is running. **Nor is it clear.** Nothing that consumes
+  this test may treat it as finished until its `finished:` line is written —
+  not the `review-only` stop condition, and not step 3's gate. A run that
+  stopped on a queue whose last round was still in flight would orphan that
+  round and its claim.
+
 **And one filter in front of that test: the run's `review scope`.** With scope
 `own`, a PR whose author is not this account is out of scope and gets no round —
 it is not skipped-because-settled, it is not in the queue at all. With scope
@@ -703,7 +716,9 @@ them.
 **The label is bare `unsettled`. The reason goes in the comment, never in the
 label name.** There are exactly two **review-state** labels — `review-settled`
 and `unsettled` — alongside the ordinary ones the repo uses (`P1`, `api`,
-`overnight-ok` and so on). `gh pr edit --add-label "unsettled: blocked"` fails against a
+`overnight-ok` and so on). `in-progress` and `hold` are not review states either — they
+record who is working on a PR, not what any round found; see
+[Claims](RULES.md#claims). `gh pr edit --add-label "unsettled: blocked"` fails against a
 label that does not exist, leaving the PR unlabelled with open Criticals, which
 is the one state this document forbids. So: apply `unsettled`, and post a
 comment opening `unsettled: <reason> @ <sha>`. That comment is the only record

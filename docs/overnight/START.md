@@ -367,6 +367,10 @@ It is the selection gate. **Do not take an issue that does not carry it**,
 however appealing it looks; if you think one deserves it, argue for it in the
 report instead of taking it.
 
+**Nor one carrying `hold` or `in-progress`.** `hold` is a human parking it;
+`in-progress` is a live claim — this run's, since [stale claims are released
+at run start](RULES.md#stale-claims). See [Claims](RULES.md#claims).
+
 Work highest priority first (`P0` > `P1` > `P2` > unlabelled). One ticket per
 iteration. If a ticket turns out to need a decision after all, say so in the
 log, drop it, and move on — do not guess.
@@ -454,6 +458,22 @@ one block. The first run discovered three gaps separately, mid-work.
   and name the tool you used in the report.
 - **Docker** — `docker info`. If absent, the local stack and the eval harness
   cannot run at all.
+- **The claim labels** (CF-562) — `in-progress` and `hold` must exist before
+  anything is claimed:
+
+  ```
+  gh label list --limit 200 --json name --jq '.[].name' | grep -xE 'in-progress|hold'
+  ```
+
+  Two lines back means both exist. A missing one is created, not worked around —
+  `gh issue edit --add-label` against a label that does not exist fails, and a
+  claim that lands as a comment with no label is invisible to every query that
+  reads labels:
+
+  ```
+  gh label create in-progress --color fef2c0 --description "Claimed by the overnight loop; see docs/overnight/RULES.md#claims"
+  gh label create hold --color cccccc --description "A human parked this; the overnight loop leaves it alone"
+  ```
 - **Subagents, and whether they get their own worktree** (CF-561). Dispatch one
   throwaway background subagent with worktree isolation. Have it run `git status`,
   `git rev-parse --show-toplevel` and `gh api user --jq .login`, then report the
