@@ -2,7 +2,13 @@
 // limits the upload form enforces. UploadZone has no tests of its own, so this
 // is what notices if the move changed an output.
 import { describe, expect, it } from "vitest";
-import { FALLBACK_UPLOAD_CONFIG, SUPPORTED_FORMATS_LABEL, fmtLimit, fmtMinutes } from "@/lib/uploadLimits";
+import {
+  FALLBACK_UPLOAD_CONFIG,
+  SUPPORTED_FORMATS_LABEL,
+  fmtLimit,
+  fmtMinutes,
+  formatsLabel,
+} from "@/lib/uploadLimits";
 
 describe("fmtLimit", () => {
   it("formats gigabytes with one decimal under 10 GB", () => {
@@ -42,5 +48,24 @@ describe("FALLBACK_UPLOAD_CONFIG", () => {
     const types = FALLBACK_UPLOAD_CONFIG.allowed_content_types;
     expect(types).toHaveLength(4);
     expect(SUPPORTED_FORMATS_LABEL.split(", ")).toHaveLength(types.length);
+  });
+});
+
+describe("formatsLabel", () => {
+  it("names the fallback's types as the fallback label", () => {
+    expect(formatsLabel(FALLBACK_UPLOAD_CONFIG.allowed_content_types)).toBe(SUPPORTED_FORMATS_LABEL);
+  });
+
+  it("follows the server's list, not the constant", () => {
+    expect(formatsLabel(["video/mp4"])).toBe("MP4");
+    expect(formatsLabel(["video/webm", "video/mp4"])).toBe("WebM, MP4");
+  });
+
+  it("shows an unnamed type by its subtype rather than dropping it", () => {
+    expect(formatsLabel(["video/mp4", "video/x-msvideo"])).toBe("MP4, MSVIDEO");
+  });
+
+  it("falls back to the constant for an empty list", () => {
+    expect(formatsLabel([])).toBe(SUPPORTED_FORMATS_LABEL);
   });
 });

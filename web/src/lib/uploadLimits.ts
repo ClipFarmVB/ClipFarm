@@ -17,7 +17,7 @@ export const FALLBACK_UPLOAD_CONFIG: UploadConfig = {
   url_ttl_seconds: 12 * 3600,
   // Quota fallbacks are deliberately "nothing used yet": if the config never
   // arrives we must not invent a limit and block a legitimate upload. The
-  // readout is hidden in that case (see `quotaKnown`), and the server enforces
+  // readout is hidden in that case (see `quotaKnown` in UploadZone.tsx), and the server enforces
   // the real numbers at presign regardless.
   max_duration_seconds: 4 * 3600,
   window_hours: 24,
@@ -29,8 +29,32 @@ export const FALLBACK_UPLOAD_CONFIG: UploadConfig = {
   minutes_remaining: 360,
 };
 
-/** The container formats `allowed_content_types` admits, as a user reads them. */
+/**
+ * The fallback's formats as a user reads them. Used only when `formatsLabel`
+ * gets an empty list.
+ */
 export const SUPPORTED_FORMATS_LABEL = "MP4, MOV, MKV, WebM";
+
+const FORMAT_NAMES: Record<string, string> = {
+  "video/mp4": "MP4",
+  "video/quicktime": "MOV",
+  "video/x-matroska": "MKV",
+  "video/webm": "WebM",
+};
+
+/**
+ * The formats `GET /games/upload-config` admits (`allowed_content_types`), as
+ * a user reads them. A type without a friendly name shows as its MIME subtype
+ * rather than being dropped, so the label never claims less than the server
+ * accepts. An empty list falls back to `SUPPORTED_FORMATS_LABEL`.
+ */
+export function formatsLabel(contentTypes: readonly string[]): string {
+  const names = contentTypes.map(
+    (t) => FORMAT_NAMES[t] ?? (t.split("/").pop() ?? t).replace(/^x-/, "").toUpperCase(),
+  );
+  const unique = [...new Set(names.filter(Boolean))];
+  return unique.length > 0 ? unique.join(", ") : SUPPORTED_FORMATS_LABEL;
+}
 
 export function fmtMinutes(minutes: number): string {
   const m = Math.max(0, Math.round(minutes));

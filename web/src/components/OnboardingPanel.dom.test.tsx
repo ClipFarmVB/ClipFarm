@@ -5,7 +5,8 @@
 // The record module keeps a module-level memory fallback that outlives each
 // case, so every case uses its own user id.
 import { act, type ComponentProps } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createRoot, hydrateRoot, type Root } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Game, UploadConfig } from "@/lib/api";
 
@@ -128,6 +129,65 @@ describe("OnboardingPanel", () => {
 
     expect(panel()).not.toBeNull();
     expect(host.textContent).toContain("up to 8 GB and 4 h");
+  });
+
+  it("quotes the server's formats", async () => {
+    getUploadConfig.mockResolvedValue({ ...FALLBACK_UPLOAD_CONFIG, allowed_content_types: ["video/mp4"] });
+    await render({ userId: "formats-1" });
+
+    expect(host.textContent).toContain("MP4, up to");
+    expect(host.textContent).not.toContain("MKV");
+  });
+
+  it("keeps the upload link when the user's only game failed", async () => {
+    await render({ userId: "failed-1", games: [game("f1", "failed")] });
+
+    expect(panel()).not.toBeNull();
+    // A failed game is not progress: step one stays open with its link.
+    expect(host.querySelector('a[href="/upload"]')).not.toBeNull();
+    expect(host.textContent).not.toContain("Done:");
+  });
+
+  it("hides when another tab records a skip", async () => {
+    await render({ userId: "tab-1" });
+    expect(panel()).not.toBeNull();
+
+    // jsdom, like a browser, fires no storage event in the tab that wrote, so
+    // dispatch the one another tab's write would deliver here.
+    localStorage.setItem(onboardingKey("tab-1"), "skipped");
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent("storage", { key: onboardingKey("tab-1") }));
+    });
+
+    expect(host.innerHTML).toBe("");
+  });
+
+  it("renders nothing on the server and hydrates cleanly", async () => {
+    const html = renderToString(
+      <OnboardingPanel games={[]} loading={false} error={null} userId="ssr-1" />,
+    );
+    expect(html).toBe("");
+
+    const recoverable = vi.fn();
+    const hydrateHost = document.createElement("div");
+    hydrateHost.innerHTML = html;
+    document.body.appendChild(hydrateHost);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    let hydrated: Root | undefined;
+    await act(async () => {
+      hydrated = hydrateRoot(
+        hydrateHost,
+        <OnboardingPanel games={[]} loading={false} error={null} userId="ssr-1" />,
+        { onRecoverableError: recoverable },
+      );
+    });
+
+    expect(recoverable).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
+    // The client snapshot takes over once hydration is done.
+    expect(hydrateHost.querySelector("section")).not.toBeNull();
+    act(() => hydrated!.unmount());
+    hydrateHost.remove();
   });
 
   it("links to the game while it processes", async () => {

@@ -94,12 +94,15 @@ describe("onboardingProgress", () => {
     expect(onboardingProgress([game("q1", "queued")], null).inProgressGameId).toBe("q1");
   });
 
-  it("counts a failed game as uploaded but not ready", () => {
+  it("does not count a failed game as uploaded", () => {
+    // A failed game is not progress: step one must stay open so the user
+    // still has the upload link.
     expect(onboardingProgress([game("f1", "failed")], null)).toEqual({
-      uploaded: true,
+      uploaded: false,
       inProgressGameId: null,
       ready: false,
     });
+    expect(onboardingProgress([game("f1", "failed"), game("q1", "queued")], null).uploaded).toBe(true);
   });
 
   it("is ready once one of the user's games is ready", () => {

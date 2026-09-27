@@ -95,7 +95,11 @@ export function useOnboardingRecord(userId: string | undefined): OnboardingSnaps
 }
 
 export interface OnboardingProgress {
-  /** The user has at least one game of their own in the Library. */
+  /**
+   * The user has a game of their own in the Library that has not failed. A
+   * failed game does not count: step one stays open, with its upload link,
+   * since re-uploading is the only way forward from a failure.
+   */
   uploaded: boolean;
   /** The newest of their games still queued or processing, if any. */
   inProgressGameId: string | null;
@@ -116,7 +120,7 @@ export function onboardingProgress(
     (g) => g.status === "queued" || g.status === "processing" || g.status === "uploading",
   );
   return {
-    uploaded: own.length > 0,
+    uploaded: own.some((g) => g.status !== "failed"),
     inProgressGameId: active?.id ?? null,
     ready: own.some((g) => g.status === "ready"),
   };

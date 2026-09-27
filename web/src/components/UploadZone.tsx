@@ -16,7 +16,7 @@ import { uploadFileToR2 } from "@/lib/upload";
 import { addGameToCache } from "@/lib/gamesCache";
 import {
   FALLBACK_UPLOAD_CONFIG,
-  SUPPORTED_FORMATS_LABEL,
+  formatsLabel,
   fmtLimit,
   fmtMinutes,
 } from "@/lib/uploadLimits";
@@ -92,7 +92,7 @@ export function UploadZone() {
 
   const validate = (f: File) => {
     if (!config.allowed_content_types.includes(f.type))
-      return `Unsupported file type. Supported formats: ${SUPPORTED_FORMATS_LABEL}.`;
+      return `Unsupported file type. Supported formats: ${formatsLabel(config.allowed_content_types)}.`;
     if (f.size > config.max_upload_bytes)
       // Same sentence the server would have returned — see quota.fmt_size.
       return `File is ${fmtLimit(f.size)}; the maximum is ${fmtLimit(config.max_upload_bytes)}.`;
@@ -283,7 +283,7 @@ export function UploadZone() {
             </div>
             <p className="text-[14px] font-medium text-foreground">Drop video here</p>
             <p className="mt-1.5 text-[12px] text-muted">
-              {SUPPORTED_FORMATS_LABEL} · up to {fmtLimit(config.max_upload_bytes)}
+              {formatsLabel(config.allowed_content_types)} · up to {fmtLimit(config.max_upload_bytes)}
               {` · ${fmtMinutes(config.max_duration_seconds / 60)} max`}
             </p>
             <p className="mt-3 text-[11px] text-subtle">or click to browse</p>

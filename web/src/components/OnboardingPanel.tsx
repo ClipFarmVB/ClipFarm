@@ -7,7 +7,7 @@ import { getUploadConfig, type Game, type UploadConfig } from "@/lib/api";
 import { onboardingProgress, useOnboardingRecord, writeOnboarding } from "@/lib/onboarding";
 import {
   FALLBACK_UPLOAD_CONFIG,
-  SUPPORTED_FORMATS_LABEL,
+  formatsLabel,
   fmtLimit,
   fmtMinutes,
 } from "@/lib/uploadLimits";
@@ -109,7 +109,7 @@ export function OnboardingPanel({
       <ol className="mt-4 space-y-3 sm:pl-7">
         <Step n={1} done={progress.uploaded} title="Upload a full game">
           The whole match recording, not a highlight — clips are cut from it for you.{" "}
-          {SUPPORTED_FORMATS_LABEL}, up to {fmtLimit(config.max_upload_bytes)} and{" "}
+          {formatsLabel(config.allowed_content_types)}, up to {fmtLimit(config.max_upload_bytes)} and{" "}
           {fmtMinutes(config.max_duration_seconds / 60)}.{" "}
           {!progress.uploaded && (
             <Link href="/upload" className="font-medium text-brand underline-offset-2 hover:underline">
@@ -117,10 +117,11 @@ export function OnboardingPanel({
             </Link>
           )}
         </Step>
-        <Step n={2} done={false} title="Processing takes minutes, not seconds">
-          The game&apos;s page shows a progress bar with the current stage and an
-          estimate. It&apos;s working even when it looks slow, and you can leave the
-          page while it runs.{" "}
+        <Step n={2} done={false} title="Processing can take a while">
+          Often tens of minutes for a full game. The game&apos;s page shows a
+          progress bar with the current stage and an estimate, and you can leave
+          the page while it runs. If it fails, the game reads Failed here in the
+          Library; upload it again.{" "}
           {progress.inProgressGameId && (
             <Link
               href={`/games/${progress.inProgressGameId}`}
