@@ -47,8 +47,10 @@ no claims at all; [releasing at run start](RULES.md#stale-claims) is the backsto
 for a run that could not stop cleanly, not the plan.
 
 **Name every claim this run released that it did not finish**, in its own list:
-those released at run start as orphaned by an earlier run, those stopped as
-lost, and those released because the run ended. Each is work somebody should
+those released at run start as orphaned by an earlier run, those left alone
+because they were too recent to release, those stopped as lost, those released
+because a person merged, closed or held the target, and those released because
+the run ended. Each is work somebody should
 know did not complete. An orphaned claim in particular is the only evidence that
 the previous run ended without reporting.
 

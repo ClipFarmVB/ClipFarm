@@ -37,7 +37,8 @@ applies in both modes.
 
 1. **Claim it, then plan.** [Claim](RULES.md#claims) the ticket before reading
    anything, so a run cut off mid-ticket leaves it marked rather than silently
-   half-done. The claim stays until the ticket's PR is closed or merged. Then
+   half-done. The claim stays until the ticket's PR is opened, and is released
+   then with `PR #<n>` — see [Claims](RULES.md#claims). Then
    read the card and the code it touches, and write the plan into the
    log: approach, files, migration if any, tests, and what could go wrong.
 2. **Cross-check the plan before implementing.** Spawn a subagent to review it
