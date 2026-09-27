@@ -270,36 +270,55 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
           </button>
         </div>
 
+        {/* Both cards sit OUTSIDE the scrolling list below, deliberately. Inside
+            it, a message inserted above the rows is inserted above the retained
+            `scrollTop`: a user with enough collections to scroll clicks a row,
+            the write fails, the row un-spins with no check mark, and the reason
+            is off-screen — the failure the catch was added to remove, for
+            exactly the users most likely to hit it.
+
+            `role="alert"` for the same reason it is on `ClipModal` and
+            `PostComposerModal`: focus never moves when either of these appears
+            — `loadError` arrives after mount and `error` while focus is still
+            on the row button — so without it the failure is silent to a screen
+            reader.
+
+            Labelled, because the two are otherwise identical and can carry the
+            same sentence — one about the list, one about what the user just
+            did. Without the prefix a failed create reads as the list failing
+            again.
+
+            "Your existing collections are not shown" rather than "anything
+            below may be incomplete": the fetch failed, so nothing below came
+            from it, and the only row that can appear afterwards is one the user
+            just created. */}
+        {loadError && (
+          <div
+            role="alert"
+            className="mx-4 my-3 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400"
+          >
+            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            <span>
+              <span className="font-medium">Couldn&apos;t load your collections.</span>{" "}
+              {loadError} Your existing collections are not shown.
+            </span>
+          </div>
+        )}
+
+        {error && (
+          <div
+            role="alert"
+            className="mx-4 my-3 flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400"
+          >
+            <AlertCircle size={13} className="shrink-0" /> {error}
+          </div>
+        )}
+
         {/* Collection list */}
         <div className="max-h-60 overflow-y-auto py-1">
           {loading && (
             <div className="flex justify-center py-6">
               <Loader size={16} className="text-subtle animate-spin" />
-            </div>
-          )}
-
-          {/* Labelled, because the two cards are otherwise identical and can
-              carry the same sentence — one about the list, one about what the
-              user just did. Without the prefix a failed create reads as the
-              list failing again.
-
-              "Your existing collections are not shown" rather than "anything
-              below may be incomplete": the fetch failed, so nothing below came
-              from it, and the only row that can appear afterwards is one the
-              user just created. */}
-          {loadError && (
-            <div className="mx-4 my-3 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
-              <AlertCircle size={13} className="mt-0.5 shrink-0" />
-              <span>
-                <span className="font-medium">Couldn&apos;t load your collections.</span>{" "}
-                {loadError} Your existing collections are not shown.
-              </span>
-            </div>
-          )}
-
-          {error && (
-            <div className="mx-4 my-3 flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
-              <AlertCircle size={13} className="shrink-0" /> {error}
             </div>
           )}
 

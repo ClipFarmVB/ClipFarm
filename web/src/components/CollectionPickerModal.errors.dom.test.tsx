@@ -113,6 +113,10 @@ describe("a failed collections fetch (CF-304)", () => {
 
     expect(createCollection).toHaveBeenCalledWith("Dunks");
     expect(card.textContent).toContain("Failed to fetch");
+    // The sentence, not just the reason: the name of this case is a claim about
+    // what the user is told, and the reason alone could survive the sentence
+    // being dropped.
+    expect(card.textContent).toContain("Your existing collections are not shown.");
   });
 
   it("does not leave the fetch rejecting unhandled", async () => {
@@ -129,5 +133,47 @@ describe("a failed collections fetch (CF-304)", () => {
     }
 
     expect(unhandled).toEqual([]);
+  });
+});
+
+describe("where the picker's failures are said, and to whom (CF-304)", () => {
+  // Both of these are about the card being *perceivable*, which is a different
+  // claim from the text existing — the assertions above would all pass with the
+  // message rendered off-screen and unannounced, which is what they did.
+
+  it("announces a failed load rather than only showing it", async () => {
+    getCollections.mockRejectedValue(new Error("Failed to fetch"));
+    const card = await mount();
+
+    const alert = card.querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert!.textContent).toContain("Failed to fetch");
+  });
+
+  it("announces a failed save, and keeps both cards out of the scrolling list", async () => {
+    // The scroll box retains `scrollTop`, so a card inserted above the rows is
+    // off-screen for a user who had to scroll to the row they clicked — the
+    // failure the catch exists to surface, unseen by the people most likely to
+    // hit it. jsdom does no layout, so containment is what can be asserted
+    // here; it is also what the fix changed.
+    getCollections.mockResolvedValue([{ id: "c1", name: "Dunks", clip_count: 2 }]);
+    addClipToCollection.mockRejectedValue(new Error("Save failed"));
+    const card = await mount();
+
+    const row = [...card.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Dunks"),
+    );
+    if (!row) throw new Error("no collection row");
+    await act(async () => {
+      row.click();
+    });
+
+    const alerts = [...card.querySelectorAll('[role="alert"]')];
+    expect(alerts.length).toBe(1);
+    expect(alerts[0].textContent).toContain("Save failed");
+
+    const scroller = card.querySelector(".overflow-y-auto");
+    if (!scroller) throw new Error("no scrolling list");
+    expect(scroller.contains(alerts[0])).toBe(false);
   });
 });

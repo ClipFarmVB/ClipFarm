@@ -49,12 +49,13 @@ export function ProfileView({ handle }: { handle: string }) {
       })
       .catch((e) => {
         // `instanceof` like every other catch this PR touched. The case that
-        // matters is `null`, where `e.message` THROWS — inside this catch, so
-        // the chain rejects with nothing left to handle it. A non-Error that is
-        // merely not `null` is harmless: `e.message` is undefined and the
-        // paragraph below is `{error ?? "Please try again."}`, which renders
-        // the fallback. An earlier version of this comment named that harmless
-        // case as the reason and left the throwing one out.
+        // matters is a NULLISH rejection — `null` or `undefined` — where
+        // `e.message` throws inside this catch, so the chain rejects with
+        // nothing left to handle it. Any other non-Error is harmless:
+        // `e.message` is undefined and the paragraph below is
+        // `{error ?? "Please try again."}`, which renders the fallback. An
+        // earlier version of this comment named that harmless case as the
+        // reason and left the throwing one out.
         if (!cancelled) {
           setError(e instanceof Error ? e.message : "Please try again.");
         }
@@ -81,7 +82,7 @@ export function ProfileView({ handle }: { handle: string }) {
   //
   // `!profile` stays in this condition rather than getting its own arm.
   // `request()` does have one resolved-undefined path — a 204, or any response
-  // with `content-length: 0` (`api.ts:76`) — which this endpoint does not
+  // with `content-length: 0` (`api.ts:84`) — which this endpoint does not
   // produce but which the types do not rule out, and TypeScript needs the
   // narrowing regardless. It shares the arm because the copy below is right for
   // it too: a profile that arrived empty is not evidence the handle is free.
