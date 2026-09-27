@@ -390,6 +390,12 @@ def test_each_row_scores_exactly_what_its_label_advertises(monkeypatch, capsys):
     every `COND` key — are recorded per row and compared whole. A row that moves
     anything its label does not name now fails, which is what "scores what its
     label advertises" was always supposed to mean.
+
+    For combo rows that holds only together with
+    `test_each_combo_label_names_exactly_its_overrides` in
+    `test_tune_contacts_sweep.py`. The expectation below takes a combo's label
+    and its dict from the same `COMBOS` entry, so on its own this proves a
+    combo row scores its dict, not the value its hand-written label names.
     """
     applied: list[tuple[dict, dict]] = []
     real = B.find_contacts

@@ -40,7 +40,9 @@ re-type a literal loop. That rung is four tests in
 against these tables in both directions, one pins the order, one requires every
 results line to have come from `_row`, and one records the ball constants AND
 `COND` as the scoring call sees them and checks each row scored exactly what its
-label advertises. Rows are found by the SHAPE of `_row`'s output rather than by
+table entry holds. For a combo, whose label is hand-written, "what its label
+advertises" also needs `test_each_combo_label_names_exactly_its_overrides`
+below, which reads the label text back into values. Rows are found by the SHAPE of `_row`'s output rather than by
 a list of label prefixes, because a prefix list is an enumeration of today's
 spellings — which is the mistake this file is about.
 """
@@ -203,6 +205,56 @@ def test_no_two_combos_are_the_same_run():
         clash = [prev for prev, o in seen if o == overrides]
         assert not clash, f"{label!r} scores exactly what {clash[0]!r} scores"
         seen.append((label, overrides))
+
+
+# The shorthand combo labels are written in, and the knobs each word names in
+# order. A word missing from here fails the test below rather than being
+# skipped, so a new combo spelled in new shorthand has to be taught to it.
+_COMBO_SHORTHAND: dict[str, tuple[str, ...]] = {
+    "resid": ("CONTACT_RESIDUAL_MIN_PXPS",),
+    "ratio": ("CONTACT_RESIDUAL_RATIO",),
+    "hit": ("CONTACT_HIT_SPEED_PXPS",),
+    "spacing": ("MIN_CONTACT_SPACING",),
+    "seg": ("SEG_MIN_POSITIONS", "SEG_MIN_MEDIAN_SPEED_PXPS"),
+}
+
+
+def _advertised(label: str, previous: dict[str, float]) -> dict[str, float]:
+    """The overrides a combo label claims, read back from its text.
+
+    `combo: + seg 3/40` is an increment on the combo before it, so a body that
+    opens with `+` starts from what that one advertised."""
+    body = label.split(":", 1)[1].strip()
+    claimed = dict(previous) if body.startswith("+") else {}
+    for term in filter(None, (t.strip() for t in body.split("+"))):
+        word, _, values = term.partition(" ")
+        assert word in _COMBO_SHORTHAND, (
+            f"{label!r} uses {word!r}, which _COMBO_SHORTHAND does not know — "
+            f"add it there rather than letting the label go unchecked")
+        knobs = _COMBO_SHORTHAND[word]
+        parts = values.split("/")
+        assert len(parts) == len(knobs), f"{label!r}: {term!r} names {knobs}"
+        claimed.update(zip(knobs, (float(p) for p in parts)))
+    return claimed
+
+
+def test_each_combo_label_names_exactly_its_overrides():
+    """Single-knob and padding labels are derived from their values; combo
+    labels are hand-written, and the row-state test in
+    `test_tune_contacts_fixture.py` takes a combo's label and its dict from the
+    same entry, so it proves the row scores its DICT and says nothing about the
+    text. Setting `CONTACT_HIT_SPEED_PXPS` to 90 in both combos, under labels
+    still reading "hit 120", left all 416 tests green. With this test, that
+    mutation fails here, and so does changing only the `+ seg 3/40` combo's 40
+    to 20, which exercises the inherited half of the label.
+    """
+    previous: dict[str, float] = {}
+    for label, overrides in _combos():
+        claimed = _advertised(label, previous)
+        actual = {k: float(v) for k, v in overrides.items()}
+        assert claimed == actual, (
+            f"{label!r} advertises {claimed} but scores {actual}")
+        previous = claimed
 
 
 def test_the_combos_are_written_cumulatively():

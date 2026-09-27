@@ -73,8 +73,14 @@ def _spans(raw: dict) -> list[dict]:
     return raw.get("spans", raw.get("keep", []))
 
 
-def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, float]]) -> list[str]:
+def highlight_wellformedness_violations(
+        raw: dict, scored: list[tuple[float, float]] | None) -> list[str]:
     """Well-formedness for a HIGHLIGHT fixture. Empty means nothing to report.
+
+    `scored` is None when `load_fixture` could not build the scored list at
+    all — it indexes `c["end"]` and parses every scored timestamp, so the very
+    shapes reported below make it raise. The scored-list rules are then
+    skipped; the per-clip report already says why there is no list.
 
     Two lists, deliberately, because the two rules have different strengths.
 
@@ -156,7 +162,11 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
         if missing:
             # Reported rather than raised: a bare KeyError from inside a
             # well-formedness check reads like a broken test, not a broken
-            # fixture, and it stops the remaining clips being looked at.
+            # fixture, and it stops the remaining clips being looked at. On a
+            # real fixture this holds only because the parametrized test reads
+            # the raw JSON itself — `load_fixture` indexes `c["end"]` and raises
+            # first, which is why that test catches the loader rather than
+            # calling it for `raw`.
             problems.append(f"clip {clip!r} has no {' or '.join(missing)}")
             continue
         if any(isinstance(clip[k], bool) for k in ("start", "end")):
@@ -189,6 +199,9 @@ def highlight_wellformedness_violations(raw: dict, scored: list[tuple[float, flo
             problems.append(
                 f"clip {clip['start']}-{clip['end']} ends past the declared "
                 f"{duration}s video")
+
+    if scored is None:
+        return problems
 
     if clips and not scored:
         # The twin of "no clips at all", one list over — and the list that
@@ -622,12 +635,28 @@ class TestGroundTruthTierFilter:
         `ml/eval/README.md` advertises that adding a case "needs no code
         change", which makes a hand-typed `0:32` for `0:23` the likely way in.
 
-        The dead-time fixtures have carried these checks since CF-174
+        The dead-time fixtures have carried these checks since CF-187
         (`TestEveryDeadtimeFixture`); the highlight loader is a different
         function reading a different shape, and it never acquired them.
+
+        The raw JSON is read here, not taken from `load_fixture(...).raw`,
+        because the loader raises on the very shapes the helper reports: a
+        scored clip with no `end` is a `KeyError` at `c["end"]`, and `0O:23`
+        is a `ValueError` from `parse_timestamp`. Taking `raw` from the loader
+        meant the user got the bare exception from inside the harness and the
+        helper never ran. Measured with a temporary fixture of each shape: both
+        now come back as the helper's messages, with the loader's exception
+        appended, and the clip after the malformed one is still checked.
         """
-        fx = load_fixture(test_id)
-        problems = highlight_wellformedness_violations(fx.raw, fx.clips)
+        raw = json.loads((FIXTURES_DIR / f"{test_id}.json").read_text(encoding="utf-8"))
+        try:
+            scored: list[tuple[float, float]] | None = load_fixture(test_id).clips
+            load_error = None
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            scored, load_error = None, exc
+        problems = highlight_wellformedness_violations(raw, scored)
+        if load_error is not None:
+            problems.append(f"load_fixture raised {load_error!r}")
         assert not problems, f"{test_id}.json: " + "; ".join(problems)
 
     def test_test1_still_scores_every_clip_it_ships(self):
