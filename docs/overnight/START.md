@@ -454,6 +454,25 @@ one block. The first run discovered three gaps separately, mid-work.
   and name the tool you used in the report.
 - **Docker** — `docker info`. If absent, the local stack and the eval harness
   cannot run at all.
+- **Subagents, and whether they get their own worktree** (CF-561). Dispatch one
+  throwaway background subagent with worktree isolation. Have it run `git status`,
+  `git rev-parse --show-toplevel` and `gh api user --jq .login`, then report the
+  toplevel path it saw, whether anything prompted for permission, and whether the
+  path differs from this session's.
+
+  Two distinct gaps, and they want different answers.
+
+  **A permission prompt stalls an unattended run on the first one.** Subagents do
+  not reliably inherit this session's permission mode, so a run that never
+  checked discovers this when a lap hangs with nobody watching. Stop and name the
+  commands that prompted.
+
+  **No worktree means no parallelism.** The toplevel matching this session's is
+  the tell. Run one subagent at a time, log it, and say so in the report —
+  [dispatching](RULES.md#dispatching-subagents) explains why the degraded mode is
+  correct rather than a workaround. Do not raise the count on the assumption that
+  isolation is probably working; two subagents in one checkout fail silently, so
+  there is nothing to notice afterwards.
 - **`gh` against this repo** — `gh api repos/ClipFarmVB/ClipFarm --jq .full_name`.
   Every command in this document is written for `gh`, and each was verified
   against this repo in the exact form given. A cloud runner may have no `gh`
