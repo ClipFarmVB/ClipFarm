@@ -127,7 +127,9 @@ function GamesContent() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-[18px] font-semibold text-foreground tracking-tight">Library</h1>
-          {!loading && (
+          {/* `!error` for the same reason the empty state has it: a failed
+              load must not say "No games yet" (CF-304). */}
+          {!loading && !error && (
             <p className="mt-0.5 text-[12px] text-muted">
               {games.length === 0
                 ? "No games yet"

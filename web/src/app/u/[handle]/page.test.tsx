@@ -1,12 +1,14 @@
 /**
- * CF-304 round 3: the profile page must not carry one handle's failure to the
- * next one.
+ * CF-304: the profile page keys `ProfileView` on the handle.
  *
  * `ProfileView` keeps `profile`, `error` and `loading` in state and fetches in
  * an effect keyed on `handle`. The effect re-runs on a handle change; the state
  * does not reset, and `react-hooks/set-state-in-effect` refuses the version
- * that resets it there. So the fix is a `key` on the element, and the defect is
- * the absence of one — which means the assertion has to be about what THIS file
+ * that resets it there. The installed Next router already remounts the
+ * `[handle]` subtree when the param changes (each segment is keyed by a cache
+ * key that carries the param value), so this is not a live bug. The `key` is a
+ * defence that makes the remount independent of router internals, and these
+ * tests pin it — which means the assertion has to be about what THIS file
  * renders, not about `ProfileView`.
  *
  * Rendering `<ProfileView key={handle} …>` in a component test would pass
