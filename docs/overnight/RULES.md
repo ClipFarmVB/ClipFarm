@@ -552,7 +552,8 @@ labels on the issues in its `closingIssuesReferences`, counting only the ten
 that read as areas — `api`, `web`, `devops`, `docs`, `eval`, `dead-time`,
 `ball-detection`, `audio`, `scoring`, `mobile`. `api` PRs touched `web/src/` in
 9 of 25, `web` PRs touched `api/app/` in 6 of 13, `devops` — the largest, at 42 —
-reaches nearly every top-level directory, and `scoring`, `audio` and `mobile`
+touched 10 of the 11 top-level
+directories any merged PR has touched, and `scoring`, `audio` and `mobile`
 have never closed a merged PR. The files shared across the most of those ten
 are exactly the ones two tickets would fight over: `.gitignore` under six,
 `README.md` and `ARCHITECTURE.md` under five, `api/app/config.py` and
