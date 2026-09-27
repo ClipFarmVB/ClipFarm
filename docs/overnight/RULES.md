@@ -255,6 +255,10 @@ ticket](TICKETS.md#working-a-ticket).
   cross-check — `git fetch -q origin main && git checkout -q --detach FETCH_HEAD`.
   A subagent that reads the tree it was handed reviews whatever branch this
   session happened to be on, and says nothing, because the tree is consistent.
+  **If the fetch or the checkout fails, it stops and reports** — it does not
+  read on. Two subagents fetching `main` at once can contend for the same
+  ref lock, and one that shrugs off the failure is back to reading the tree it
+  was handed.
 - **Spawn from the repository root**, so a relative path in the brief means what
   it says.
 - **Pass the rules that bind the subagent explicitly.** Do not hand it this
