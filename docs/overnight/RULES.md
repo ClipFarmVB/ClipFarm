@@ -272,16 +272,33 @@ discard someone's commits or fold in commits no round has read. Stop, and route
 the PR as [`head moved`](FIX.md#when-you-cannot-fix-it-choosing-a-reason) — or,
 if it could not read the remote at all, route the target again once it can.
 
-**When the guard passes and the push is still rejected, that is not `head
-moved`.** The branch had not moved; something refused the push itself — branch
+**When the guard passes and the push is still rejected, read git's reason.**
+`fetch first` and `non-fast-forward` are how git says the branch moved (checked
+on 2026-09-27) — someone pushed inside the window above — so that is `head
+moved` after all. A push that never reached the remote is neither: route the
+target again once the remote can be read. **Anything else is not `head moved`.**
+The branch had not moved; something refused the push itself — branch
 protection, a hook, the harness. That is
 [`latched`](FIX.md#when-you-cannot-fix-it-choosing-a-reason), and the difference
 matters: `head moved` re-opens on the next commit, and whatever refused this
 push will refuse the next, so it would cycle the PR forever — the loop `latched`
-exists to prevent. And **the fix now exists only in the fixer's worktree**, so
-that worktree is kept at the end of the run rather than removed, and named in the
-report; the one retry [the latch rule
-allows](REVIEW.md#record-comments-human-removal-and-re-opening) runs from it.
+exists to prevent.
+
+**And the fix now exists only in the fixer's worktree**, on a detached `HEAD`
+that nothing else refers to. Pin it before anything else touches that worktree:
+
+```
+git -C .claude/worktrees/agent-<AGENT> branch overnight-latched-<n>
+```
+
+That is a local branch in the one repository every worktree shares, so it
+outlives the worktree, which can then be cleaned up like any other. Name it in
+the `unsettled: latched` comment and in the report. The one retry [the latch
+rule allows](REVIEW.md#record-comments-human-removal-and-re-opening) happens in
+whichever run finds the label removed: dispatch a fixer whose only job is the
+push — a detached checkout of `overnight-latched-<n>`, `STARTED_AT` set to that
+commit's parent, through the guard — and delete the pin once it lands. The pin
+exists on this machine only; a run anywhere else cannot retry it and says so.
 
 ### Dispatching subagents
 
@@ -540,7 +557,7 @@ percentiles (Python's `statistics.quantiles(..., method="inclusive")`):
 | semi-cold then cold | 89 | 16.1 | 23.9 | 148.0 | 2 |
 | semi-cold then semi-cold | 78 | 12.4 | 21.3 | 108.1 | 2 |
 
-So 60 minutes is **a judgement, not a measurement**: about twice every p90, and
+So 60 minutes is **a judgement, not a measurement**: two to three times every p90, and
 exceeded by 6 of 285 gaps, each of which may hold a round far shorter than
 itself. What it costs when it is wrong is one round, stopped and spawned again.
 
@@ -667,6 +684,27 @@ merge — but not always: two migrations that each took the same revision number
 merge cleanly one after the other and leave `main` with two Alembic heads,
 which is why the directory rule above exists rather than trusting a merge
 conflict to announce it.
+
+#### When a PR's head has moved, find out who moved it
+
+A fixer's commit subject ends with `(round @<sha7>)`, `sha7` being the first
+seven characters of the head it was built on (see [its
+brief](FIX.md#the-fixers-brief)). That is how a moved head is read, and it has
+to be read whenever one turns up mid-cycle — a fixer reporting `head moved`, or
+a lost fixer's PR whose head is no longer its `STARTED_AT`:
+
+```
+git fetch -q origin "pull/<n>/head" || { echo "cannot read #<n>"; exit 1; }
+git log --format=%s "<STARTED_AT>..FETCH_HEAD"
+```
+
+**Every subject ends `(round @<STARTED_AT's first seven>)`: this loop's own fix
+landed.** A fixer was stopped after its push, or its push arrived after it was
+stopped. Post the reply it did not, from those subjects, and spawn the semi-cold
+round against the new head. **Any other subject: a person pushed**, and the PR
+is [`head moved`](FIX.md#when-you-cannot-fix-it-choosing-a-reason) — describe the
+fix, label, move on. The subject is the only reliable tell: this loop and its
+operator commit as the same person, so authorship says nothing.
 
 #### Six agents, one credential
 
@@ -893,13 +931,27 @@ settle. Without the reservation, several cycles run the budget out together, and
 every one of them lands on the paragraph above at the same moment: `unsettled`,
 findings open, for arithmetic rather than for anything a reviewer found.
 
-**When the reservation refuses, treat the budget as spent for starting
-anything.** Finish the cycles already claimed — the reservation covers them —
-and then follow the paragraph on a spent budget above: step 3 plans and files
-only, and `review-only` ends. Without that, a run with one or two rounds left can
-neither start work nor reach the rule that says what to do instead. **In `build`
-count what is unspent against 35, not 40**, keeping the five rounds [reserved for
-step 3](RATIONALE.md#what-a-night-costs).
+**When the reservation refuses, look at what is in flight first.** If cycles are
+running, the refusal is temporary: they will finish and hand back what they did
+not spend, so start nothing new and wait for them. Only when nothing is in
+flight and the reservation still refuses is the budget spent for starting
+anything — then follow the paragraph on a spent budget above: step 3 plans and
+files only, and `review-only` ends. Without that second half, a run with one or
+two rounds left could neither start work nor reach the rule that says what to do
+instead.
+
+**Three rounds is a reservation, not a guarantee.** It is what a typical cycle
+costs; a PR with two rounds of findings takes five, and the ceiling allows
+seven. A cycle that outruns its reservation draws on the rest of the budget like
+any other, and if that runs out, the paragraph above on a budget spent with
+findings open applies. The reservation makes several cycles running out together
+rare. It does not make it impossible.
+
+**In `build`, the review queue counts against 35 and ticket work against 40.**
+A claim on a PR already open is tested against 35, which keeps the five rounds
+[reserved for step 3](RATIONALE.md#what-a-night-costs). An implementer, and the
+cycle of the PR it opens, are tested against 40: those five rounds exist for
+exactly that work, and testing it against 35 would leave them unspendable.
 
 **Both numbers were re-derived for concurrent cycles, and both stand.** The
 ceiling is per PR: seven rounds bound one PR's cycle whether or not others run

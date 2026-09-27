@@ -20,6 +20,7 @@ cannot pass while the brief's version rots.
 
 Skips where there is no POSIX `bash` and `git` — the block is bash.
 """
+import atexit
 import os
 import pathlib
 import re
@@ -68,6 +69,7 @@ def _guard() -> str:
 # default branch) cannot change what these throwaway repositories do.
 _EMPTY_GLOBAL = tempfile.NamedTemporaryFile(prefix="gitconfig-", delete=False)
 _EMPTY_GLOBAL.close()
+atexit.register(os.unlink, _EMPTY_GLOBAL.name)
 
 ENV = {
     **os.environ,

@@ -64,22 +64,30 @@ know did not complete. An orphaned claim in particular is the only evidence that
 the previous run ended without reporting.
 
 **Remove the worktrees this run's subagents left behind** (CF-564), once each
-one's work is pushed or released. The harness's own documentation of worktree
-isolation says it cleans a worktree up only if it is unchanged, and every
+one's work is pushed or released. The harness's description of its own worktree
+isolation — in the documentation of the tool that spawns subagents — says a
+worktree is cleaned up automatically only if it is unchanged, and every
 implementer and fixer changes its tree, so at six agents a night, each with its
 own virtualenv, they pile up. On 2026-09-27 `git worktree list` held eleven
 `agent-*` worktrees whose agents had long finished, the oldest from 2026-09-14,
-and 68 of the `worktree-agent-*` branches the harness makes beside them. Each
-worktree sits at `.claude/worktrees/agent-<AGENT>`, on a branch
-`worktree-agent-<AGENT>`, `AGENT` being the id on its `dispatched:` line:
+and there were 68 `worktree-agent-*` branches. Each worktree sits at
+`.claude/worktrees/agent-<AGENT>`, `AGENT` being the id on its `dispatched:`
+line. The harness creates it on a branch `worktree-agent-<AGENT>`, which the
+subagent's detached checkout then leaves behind:
 
 ```
 git worktree remove --force .claude/worktrees/agent-<AGENT>
 git branch -D worktree-agent-<AGENT>
 ```
 
-**Only those the registry names**, and **never a latched fix's**: its commit
-exists nowhere else, and deleting the branch would lose it. Keep it and name it
+**Only those the registry names**, and a latched fix's only once it is
+[pinned](RULES.md#pushing-to-a-branch-that-may-have-moved): its commit sits on a
+detached `HEAD`, so removing the worktree unpinned is what would lose it.
+
+**Name, but do not remove, the ones nobody accounts for.** A planner's
+cross-check, or any subagent lost before it reported, can leave a worktree whose
+id the registry never learned. List the `agent-*` worktrees whose directories
+are newer than the run's start and that the registry does not name, and put them
 in the report. Other worktrees under `.claude/worktrees/` belong to people and
 sessions this run knows nothing about. Name in the report any it could not
 remove.

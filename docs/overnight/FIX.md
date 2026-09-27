@@ -127,20 +127,26 @@ rest of the run. Give it:
   leave alone — anything needing a human decision;
 - `CLAUDE.md`, and [what binds it, passed explicitly](RULES.md#dispatching-subagents);
 - a free slot number `k`, as an implementer gets one, for the same ports if it
-  has to run the app.
+  has to run the app, and written on its `dispatched:` line as `slot=<k>`.
 
 Ask it to:
 
 1. **Fix those findings and nothing else.** [Grep for every copy of a wrong
-   claim](#step-2--fix-what-the-round-found) before calling it fixed.
+   claim](#step-2--fix-what-the-round-found) before calling it fixed. **End
+   every commit subject with `(round @<sha7>)`**, the first seven characters
+   of `STARTED_AT` — it is how this session later tells [this fixer's push
+   from a person's](RULES.md#when-a-prs-head-has-moved-find-out-who-moved-it).
 2. **Run the gate in its own environment**, exactly as [the implementer
    does](TICKETS.md#the-implementers-brief) — its own venv, the shared stack
    untouched.
-3. **Push once, through the push guard.** If the guard refuses, it stops and
-   reports `head moved` with the new head. If the guard passes and the push is
-   rejected anyway, it stops and reports `push refused` with the error verbatim
-   — a different thing, [routed as `latched`](RULES.md#pushing-to-a-branch-that-may-have-moved).
-   Either way it does not rebase, merge or force.
+3. **Push once, through the push guard, and report which of four things
+   happened**: `pushed`; `head moved`, if the guard refused on a moved head or
+   git rejected the push as `fetch first` or `non-fast-forward`; `remote
+   unreadable`, if the guard could not read the remote or the push never
+   reached it; or `push refused`, with git's error verbatim, for any other
+   rejection. Only `push refused` is [routed as
+   `latched`](RULES.md#pushing-to-a-branch-that-may-have-moved). Whatever
+   happens, it does not rebase, merge or force.
 4. **Reply on the thread saying what changed**, finding by finding — never that a
    finding is fixed. [Never describe a fix inside the review that found
    it](#the-cycle-and-the-settle-bar); the semi-cold round decides whether it
@@ -152,15 +158,13 @@ When it reports, check GitHub for the push and the reply, write its `finished:`
 line, and carry on with the cycle: the semi-cold round against the new head. A
 fixer that reported `head moved` routes the PR as [below](#when-you-cannot-fix-it-choosing-a-reason).
 
-**A fixer that was lost or rate-limited is not simply dispatched again.** Read
-the PR's head first. If it still equals `STARTED_AT`, dispatch again. If it
-moved, the change may be that fixer's own push, landed just before it was
-stopped, or someone else's — and nothing here tells the two apart reliably,
-because this loop and its operator commit as the same person. So do not guess
-either way: spawn the semi-cold round against the new head. If the fix is there,
-it closes; if it is not, the round says so and a new fixer starts from the new
-head. Treating the loop's own push as someone else's would label the PR
-`head moved` over a fix that had landed.
+**A fixer that was lost or rate-limited is not simply dispatched again**, and a
+`head moved` report is not taken at its word. Read the PR's head first. If it
+still equals `STARTED_AT`, dispatch again. If it moved, [find out who moved
+it](RULES.md#when-a-prs-head-has-moved-find-out-who-moved-it): the move may be
+the lost fixer's own push, landed just before or just after it was stopped, and
+labelling that `head moved` would park a PR on a fix that had landed. `remote
+unreadable` routes the PR again once the remote can be read.
 
 ##### The cycle and the settle bar
 
