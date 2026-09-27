@@ -454,6 +454,46 @@ one block. The first run discovered three gaps separately, mid-work.
   and name the tool you used in the report.
 - **Docker** — `docker info`. If absent, the local stack and the eval harness
   cannot run at all.
+- **Subagents, and whether they get their own worktree** (CF-561). Dispatch one
+  throwaway background subagent with worktree isolation. Have it run these and
+  report each output verbatim, plus whether anything prompted for permission:
+
+  ```
+  git rev-parse --show-toplevel
+  git rev-parse --path-format=absolute --git-common-dir
+  git remote get-url origin
+  gh api user --jq .login
+  ```
+
+  Run the middle two here as well, and compare. Three distinct gaps, and they
+  want different answers.
+
+  **A permission prompt stalls an unattended run on the first one.** Subagents do
+  not reliably inherit this session's permission mode, so a run that never
+  checked discovers this when a lap hangs with nobody watching. Stop and name the
+  commands that prompted.
+
+  **No worktree means no parallelism.** The toplevel matching this session's is
+  the tell. Run one subagent at a time, log it, and say so in the report —
+  [dispatching](RULES.md#dispatching-subagents) explains why the degraded mode is
+  correct rather than a workaround. Do not raise the count on the assumption that
+  isolation is probably working; two subagents in one checkout fail silently, so
+  there is nothing to notice afterwards.
+
+  **A worktree of the wrong repository is worse than none, and a differing path
+  does not rule it out.** The harness makes worktrees of the repository the
+  *session* was started in, which need not be this one. Found on 2026-09-27: a
+  session started in an older checkout of this project handed its subagents
+  worktrees of `Ollienel777/ClipFarm` while the work was in `ClipFarmVB/ClipFarm`.
+  The paths differed, so a check on the path alone passed. Each subagent would
+  then have reviewed or built against another codebase and reported nothing
+  odd, because from inside it everything is consistent. **The subagent's
+  `--git-common-dir` must equal this session's, and so must its origin** — a
+  linked worktree of this repository reports this repository's `.git` as its
+  common directory, and nothing else does. If either differs, stop: the fix is
+  starting the run from this repository's root, which
+  [dispatching](RULES.md#dispatching-subagents) already requires, and nothing
+  inside the run can repair it.
 - **`gh` against this repo** — `gh api repos/ClipFarmVB/ClipFarm --jq .full_name`.
   Every command in this document is written for `gh`, and each was verified
   against this repo in the exact form given. A cloud runner may have no `gh`

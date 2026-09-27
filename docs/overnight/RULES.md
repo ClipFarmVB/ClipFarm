@@ -224,6 +224,57 @@ and **all seven were this account's own work from earlier runs**. The loop could
 review everything it had built and fix none of it. The sign-off is now given:
 earlier runs of this account are this account.
 
+### Dispatching subagents
+
+Ported from the `Solo_Hack` / `HTN_WHITEOUT` build harness (CF-561), which runs
+several implementers at once. **None of this changes anything while one subagent
+runs at a time. It is what makes more than one safe**, and it is here rather than
+in `BRIEFS.md` because more than one phase spawns: a review round spawns, and so
+does the plan cross-check in [Working a
+ticket](TICKETS.md#working-a-ticket).
+
+- **Every subagent gets worktree isolation** — reviewers, fixers, implementers,
+  and the cross-check alike, not only the ones that write. A subagent that reads
+  the orchestrator's checkout is reading a tree anything else may move.
+
+  The failure this prevents is silent, which is why it is a rule and not a
+  preference: two subagents sharing one checkout **switch each other's
+  branches**, and each then reports confidently on a tree that is not the one it
+  was told to read. Nothing errors and both reports look ordinary. This is the
+  same class as every other trap in this file — a wrong answer that arrives
+  looking like a right one.
+- **Work on an existing PR happens on a detached checkout.** The subagent runs
+  `git fetch origin BRANCH`, then `git checkout --detach FETCH_HEAD`; a fixer
+  pushes with `git push origin HEAD:BRANCH`. That way no worktree *holds* a
+  branch another agent needs, which a plain `git checkout BRANCH` would.
+- **A worktree starts wherever this session's checkout is, not at `main`.** The
+  harness copies this session's current commit, and a probe on 2026-09-27 found a
+  nested child starting at a commit that was neither `main` nor its parent's.
+  So every subagent checks out what it reads before reading it: the detached PR
+  head above for PR work, and for anything judged against `main` — a plan, a
+  cross-check — `git fetch -q origin main && git checkout -q --detach FETCH_HEAD`.
+  A subagent that reads the tree it was handed reviews whatever branch this
+  session happened to be on, and says nothing, because the tree is consistent.
+  **If the fetch or the checkout fails, it stops and reports** — it does not
+  read on. Two subagents fetching `main` at once can contend for the same
+  ref lock, and one that shrugs off the failure is back to reading the tree it
+  was handed.
+- **Spawn from the repository root**, so a relative path in the brief means what
+  it says.
+- **Pass the rules that bind the subagent explicitly.** Do not hand it this
+  file: it opens by telling its reader that the reader is never the reviewer, so
+  a subagent given `RULES.md` has been told the opposite of its job. Spell out
+  what binds it — at minimum that it must not push to `main`, merge, force-push
+  or deploy; must not read or echo a secret; adds no attribution stamp; prefixes
+  its comments; stays inside its scope; and reports a decision it needs rather
+  than taking it.
+
+**When the environment gives no worktree, run one subagent at a time and say so
+in the log and the report.** That is the capability check in
+[`START.md`](START.md#first-establish-what-you-can-actually-do), and it is not
+optional: at one subagent the rules above cost nothing, so there is no reason to
+proceed without isolation rather than degrade to serial.
+
 ### Log before you finish each iteration
 
 Append a dated section to `.claude/overnight-log.md`: what you did, what you

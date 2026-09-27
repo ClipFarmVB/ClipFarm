@@ -26,6 +26,8 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 ### Cold and semi-cold rounds
 
 **Never review from this session. Spawn a subagent and let it review cold.**
+*How* to spawn one — worktree isolation, the detached checkout for PR work, and what to pass it — is [one section in `RULES.md`](RULES.md#dispatching-subagents), which every lap reads. It is not repeated here.
+
 The session that wrote the code is the most anchored possible reviewer: once it
 has judged a file fine it checks the delta rather than re-deriving that
 judgement, so everything already blessed becomes invisible. A long context also
