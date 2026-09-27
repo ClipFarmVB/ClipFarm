@@ -30,6 +30,17 @@ class GameOut(BaseModel):
     condensed_video_url: str | None = None
     original_duration: float | None = None
     condensed_duration: float | None = None
+    # A copy of the example game every new account starts with (CF-220), so
+    # the client can mark it as an example and offer to remove it.
+    is_sample: bool = False
+
+    @field_validator("is_sample", mode="before")
+    @classmethod
+    def unset_is_not_a_sample(cls, v: object) -> object:
+        # The column's default is applied at flush, so a Game built in this
+        # process and not yet flushed reads None here. Only the copier sets it,
+        # and it sets True explicitly.
+        return False if v is None else v
 
 
 class GameCreate(BaseModel):

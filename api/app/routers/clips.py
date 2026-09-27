@@ -23,7 +23,7 @@ from app.schemas.clip import (
     ClipTrimRequest,
     ClipVisibilityRequest,
 )
-from app.services import access, publishing, storage
+from app.services import access, publishing, sample_game, storage
 from app.services.ratelimit import POLICIES, rate_limit
 from app.services.filenames import clip_download_filename
 from app.workers.celery_app import celery_app
@@ -112,6 +112,7 @@ def _clip_out(clip: Clip, game: Game, *, player_name: str | None = None) -> Clip
     out.player_name = player_name  # type: ignore[assignment]
     out.source_available = game.raw_video_url is not None
     out.effective_visibility = access.widest_allowed(clip, game)
+    out.is_sample = sample_game.is_sample(game)
     urls = _rewrite_urls(clip)
     out.clip_url = urls["clip_url"]  # type: ignore[assignment]
     out.thumbnail_url = urls["thumbnail_url"]
@@ -292,6 +293,10 @@ async def update_clip_visibility(
     # the 404-not-403 rule the rest of this router keeps, by giving a refusal
     # that is not the one a non-owner should ever see.
     clip, game = await _get_owned_clip(clip_id, user_id, db)
+    # Before the tier check, so the answer does not depend on the deployment's
+    # posting flag: the example's footage is not the owner's to publish at any
+    # tier (CF-220).
+    sample_game.assert_not_sample(game)
     publishing.assert_tier_allowed(body.visibility)
     clip.visibility = body.visibility
     await db.commit()
@@ -322,29 +327,32 @@ async def update_clip_labels(
     label_1 = user_labels[0] if len(user_labels) > 0 else "not_an_action"
     label_2 = user_labels[1] if len(user_labels) > 1 else None
 
-    # Upsert correction — one row per clip per user
-    existing = (await db.execute(
-        select(Correction).where(
-            Correction.clip_id == clip.id,
-            Correction.user_id == user_id,
-        )
-    )).scalar_one_or_none()
+    # Upsert correction — one row per clip per user. Not for the example game
+    # (CF-220): the relabel still applies to the owner's copy, but a new
+    # user's opinion of our own footage is not training signal.
+    if not sample_game.is_sample(game):
+        existing = (await db.execute(
+            select(Correction).where(
+                Correction.clip_id == clip.id,
+                Correction.user_id == user_id,
+            )
+        )).scalar_one_or_none()
 
-    if existing:
-        existing.corrected_label_1 = label_1
-        existing.corrected_label_2 = label_2
-    else:
-        correction = Correction(
-            clip_id=clip.id,
-            user_id=user_id,
-            original_action=clip.action_type,
-            corrected_label_1=label_1,
-            corrected_label_2=label_2,
-            original_confidence=clip.confidence,
-            start_time=clip.start_time,
-            end_time=clip.end_time,
-        )
-        db.add(correction)
+        if existing:
+            existing.corrected_label_1 = label_1
+            existing.corrected_label_2 = label_2
+        else:
+            correction = Correction(
+                clip_id=clip.id,
+                user_id=user_id,
+                original_action=clip.action_type,
+                corrected_label_1=label_1,
+                corrected_label_2=label_2,
+                original_confidence=clip.confidence,
+                start_time=clip.start_time,
+                end_time=clip.end_time,
+            )
+            db.add(correction)
 
     # Update labels on clip (keep "not_an_action" so frontend knows it was explicit)
     if "not_an_action" in body.labels:
@@ -385,6 +393,15 @@ async def trim_clip(
     end_delta:   positive = extend later, negative = shrink from end
     """
     clip, game = await _get_owned_clip(clip_id, user_id, db)
+
+    # The example game has no source upload of its own, and a re-cut would
+    # overwrite the clip object every copy shares (CF-220). Its own message,
+    # because "passed its retention window" is not what happened.
+    if sample_game.is_sample(game):
+        raise HTTPException(
+            status_code=400,
+            detail="Example clips can't be trimmed — upload your own game to trim its clips",
+        )
 
     # Gone once the raw upload passes raw_upload_retention_days (CF-194).
     # ClipOut.source_available tells clients this before they try.
@@ -444,10 +461,13 @@ async def delete_clips(
         if game.owner_id != user_id:
             raise HTTPException(status_code=404, detail="One or more clips not found")
 
-    # Delete from R2 (best-effort) and DB
+    # Delete from R2 (best-effort) and DB. An example clip's objects are
+    # shared by every copy of the example game (CF-220), so for those it is
+    # the row alone.
     deleted = 0
-    for clip, _ in rows:
-        for url in (clip.clip_url, clip.thumbnail_url):
+    for clip, game in rows:
+        urls = [] if sample_game.is_sample(game) else [clip.clip_url, clip.thumbnail_url]
+        for url in urls:
             if not url:
                 continue
             try:

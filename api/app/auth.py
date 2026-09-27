@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
+from app.services import sample_game
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,39 @@ def _violated_constraint(err: IntegrityError) -> str:
             return str(name)
         cause = cause.__cause__
     return "unknown"
+
+
+async def _copy_sample_game(user_id: uuid.UUID, db: AsyncSession) -> None:
+    """Give a just-created account its copy of the example game (CF-220).
+
+    **Never breaks signup.** Any failure costs the example, not the account:
+    it is logged and swallowed, and the user row commits without it.
+
+    **In a savepoint, flushed inside it.** The copy's INSERTs must fail HERE,
+    where the savepoint can roll back just them. Left pending to the outer
+    `commit()`, a failing INSERT would raise an IntegrityError into the
+    caller's handler below — which rolls back the whole transaction, user row
+    included, and then misreads the failure as a provisioning race.
+
+    Nothing from the copy is touched after a rollback: on an AsyncSession an
+    expired attribute lazy-loads and raises MissingGreenlet.
+
+    Committing with the user row, rather than after it, is what keeps a
+    concurrent first load from seeing an account with an empty Library: the
+    other request blocks on the `users` unique index until this commits, then
+    finds the row — and the example — already there.
+    """
+    if not settings.sample_game_id.strip():
+        return  # off: signup exactly as it was before CF-220
+    try:
+        async with db.begin_nested():
+            await sample_game.copy_sample_game(db, user_id)
+    except Exception:
+        logger.exception(
+            "auth: could not copy the sample game for user %s; the account is "
+            "created without it (CF-220)",
+            user_id,
+        )
 
 
 async def _ensure_user_exists(user_id: uuid.UUID, email: str, db: AsyncSession) -> None:
@@ -99,11 +133,19 @@ async def _ensure_user_exists(user_id: uuid.UUID, email: str, db: AsyncSession) 
     if await db.scalar(select(User.id).where(User.id == user_id)) is not None:
         return
 
-    stmt = pg_insert(User).values(id=user_id, email=email).on_conflict_do_nothing(
-        index_elements=["id"]
+    stmt = (
+        pg_insert(User)
+        .values(id=user_id, email=email)
+        .on_conflict_do_nothing(index_elements=["id"])
+        .returning(User.id)
     )
     try:
-        await db.execute(stmt)
+        # A row back means THIS request created the user; DO NOTHING returns
+        # none. That is the only request that copies the example game, so a
+        # concurrent first load can never copy it twice.
+        created = (await db.execute(stmt)).scalar_one_or_none() is not None
+        if created:
+            await _copy_sample_game(user_id, db)
         await db.commit()
         return
     except IntegrityError as err:

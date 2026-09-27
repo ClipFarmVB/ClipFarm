@@ -39,6 +39,11 @@ class ClipOut(BaseModel):
     # forgets to resolve it offers less than it could, never more. It is a hint
     # for the UI either way — `create_post` re-derives it server-side.
     effective_visibility: Visibility = Visibility.private
+    # True when the clip belongs to a copy of the example game (CF-220). Read
+    # off the game, like source_available, because the clip modal is reached
+    # from pages that hold only the clip. Such a clip cannot be posted or have
+    # its visibility changed — the footage is not the owner's to publish.
+    is_sample: bool = False
 
 
 class ClipTagRequest(BaseModel):

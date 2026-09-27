@@ -23,7 +23,7 @@ from app.schemas.game import (
     UploadPart,
     UploadTicket,
 )
-from app.services import access, quota, storage
+from app.services import access, quota, sample_game, storage
 from app.services.ratelimit import POLICIES, rate_limit
 from app.services.filenames import condensed_download_filename
 from app.workers.tasks import process_game_task
@@ -668,13 +668,17 @@ async def delete_game(game_id: uuid.UUID, user_id: UserId, db: DB):
     clips = clips_result.scalars().all()
 
     r2_keys: list[str] = []
-    for clip in clips:
-        for url in (clip.clip_url, clip.thumbnail_url):
+    # A copy of the example game owns none of its media — its clips point at
+    # the source game's objects, which every other copy plays too (CF-220).
+    # Deleting it is how the owner dismisses the example: rows only.
+    if not sample_game.is_sample(game):
+        for clip in clips:
+            for url in (clip.clip_url, clip.thumbnail_url):
+                if url:
+                    r2_keys.append(urlparse(url).path.lstrip("/"))
+        for url in (game.raw_video_url, game.condensed_video_url):
             if url:
                 r2_keys.append(urlparse(url).path.lstrip("/"))
-    for url in (game.raw_video_url, game.condensed_video_url):
-        if url:
-            r2_keys.append(urlparse(url).path.lstrip("/"))
 
     # A delete during an in-flight upload: abort the multipart so its uploaded
     # parts stop being billed. Parts are invisible to delete_object — only an
