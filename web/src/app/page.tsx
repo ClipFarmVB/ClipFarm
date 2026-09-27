@@ -12,16 +12,16 @@ import { SignedInRedirect } from "@/components/landing/SignedInRedirect";
 // it: the middleware sends them to /games, and SignedInRedirect covers a
 // client-side navigation served from the router cache.
 
-// No image here — the social card is CF-263's. This title replaces the root
+// No image here — the social card is CF-248's. This title replaces the root
 // layout's rather than extending it, as the layout sets no template.
 export const metadata: Metadata = {
   title: "ClipFarm — Volleyball highlights from full-game footage",
   description:
-    "Upload a full volleyball game and get every rally cut into clips, tagged by action and ranked by how big the play was.",
+    "Upload a full volleyball game and get the rallies worth keeping cut into clips, tagged by action and ranked by how big the play was.",
   openGraph: {
     title: "ClipFarm — Volleyball highlights from full-game footage",
     description:
-      "Upload a full volleyball game and get every rally cut into clips, tagged by action and ranked by how big the play was.",
+      "Upload a full volleyball game and get the rallies worth keeping cut into clips, tagged by action and ranked by how big the play was.",
   },
 };
 
@@ -108,8 +108,8 @@ const STEPS = [
   },
   {
     step: "02",
-    title: "Every rally, found and ranked",
-    body: "Ball tracking follows the play to find each rally, then ranks them by crowd reaction and the shape of the rally.",
+    title: "Rallies found, the best kept",
+    body: "Ball tracking follows the play to find each rally, then scores it on crowd reaction and rally shape and keeps the best.",
   },
   {
     step: "03",
@@ -222,8 +222,8 @@ export default function HomePage() {
                 className="landing-fade mt-5 text-[14px] text-muted leading-[1.75] max-w-[400px]"
                 style={{ animationDelay: "0.75s" }}
               >
-                Upload a full game and get back a filterable feed of its rallies —
-                every spike, serve, dig, set, and block cut into its own clip.
+                Upload a full game and get back a filterable feed of its best rallies —
+                the spikes, serves, digs, sets, and blocks worth keeping, each in its own clip.
               </p>
 
               <div className="landing-fade mt-8" style={{ animationDelay: "0.9s" }}>

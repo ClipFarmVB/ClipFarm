@@ -21,6 +21,9 @@ let host: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  // The page renders the video only when this is set; pin it so a value
+  // exported in the shell cannot change which slot the test sees.
+  vi.stubEnv("NEXT_PUBLIC_DEMO_VIDEO_URL", "");
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -30,6 +33,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  vi.unstubAllEnvs();
 });
 
 const headings = () => Array.from(host.querySelectorAll("h2")).map((h) => h.textContent);
@@ -67,6 +71,15 @@ describe("landing page", () => {
     // README Key Concepts: ball tracking finds the play; pose refines the label.
     expect(host.textContent).toContain("Ball tracking");
     expect(host.textContent).not.toMatch(/pose estimation identifies/i);
+  });
+
+  it("does not promise a clip for every rally", () => {
+    // README: rallies below highlight_score_threshold are dropped before cutting.
+    const claim = /every rally|every spike/i;
+
+    expect(host.textContent).not.toMatch(claim);
+    expect(metadata.description).not.toMatch(claim);
+    expect(metadata.openGraph?.description).not.toMatch(claim);
   });
 
   it("shows no stat counters", () => {

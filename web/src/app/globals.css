@@ -301,7 +301,8 @@ input[type="range"]::-webkit-slider-thumb:hover {
   .float-a,
   .float-b,
   .float-c,
-  .dot-grid {
+  .dot-grid,
+  .stagger > * {
     animation: none;
   }
   .float-a { transform: rotate(-2deg); }
