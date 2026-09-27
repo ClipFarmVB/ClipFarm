@@ -275,6 +275,220 @@ in the log and the report.** That is the capability check in
 optional: at one subagent the rules above cost nothing, so there is no reason to
 proceed without isolation rather than degrade to serial.
 
+#### The registry
+
+**Every dispatch appends a line to the log, and every completion appends
+another** (CF-562):
+
+```
+dispatching: ROLE TARGET UTC
+dispatched: ROLE TARGET AGENT UTC
+finished: ROLE TARGET AGENT UTC OUTCOME
+```
+
+`ROLE` is what the subagent was spawned to do — `cold`, `semi-cold` or
+`cross-check`. `TARGET` is `#<n>`, the PR or issue it works on. `AGENT` is the
+id the harness returned for the spawn. `UTC` is a resolved timestamp, never the
+command that produces one ([Measure what you publish](#measure-what-you-publish)).
+**A `dispatching:` or `dispatched:` line with no matching `finished:` line is in
+flight.**
+
+**Write `dispatching:` before the spawn and `dispatched:` straight after it
+returns**, in the same turn. The agent's id does not exist until the spawn
+returns, so the second line cannot come first; the first line exists so that a
+compaction landing *during* the spawn still leaves a trace. Without it, the
+next lap finds nothing in flight, reads the PR as still owed a round, and
+spawns a second one.
+
+**A `dispatching:` with no `dispatched:` is that case.** Look for the agent in
+the harness's list of agents this session spawned. If it is there, write its
+`dispatched:` line now; if not, the spawn never happened — write
+`finished: ROLE TARGET - UTC never-spawned` and route the target again.
+
+**Never run two subagents against the same target at once.** Before spawning
+anything against a PR or an issue, read the registry for an in-flight line on
+it. This is not only a concern for later parallel work: laps run while
+background subagents are still working — [the logging
+rule](#log-before-you-finish-each-iteration) records a run whose laps were
+driven by subagent notifications — and a round in flight has posted no marker
+yet, so [step 1](REVIEW.md#step-1--which-prs-need-a-round) reads its PR as still
+owed one. Nothing in this brief stopped that second spawn before the registry
+existed. It costs a round of budget, and a fix pushed in between voids one of
+the two markers by the SHA test.
+
+#### Claims
+
+**The registry lives in the log, and the log does not outlive the run** — it is
+truncated at the end of each one. So every claim is mirrored on GitHub, where
+the next run can read it:
+
+1. **Claim before dispatching**, and before working a target yourself: comment
+   `claimed: <UTC>`, *then* add the `in-progress` label. In that order, a run
+   cut off between the two leaves a comment with no label, which nothing reads as
+   a claim. The other order leaves a label that no run will ever release, since
+   every release first looks for this account's `claimed:` comment.
+2. **Write `dispatching:`, spawn, write `dispatched:`** ([the
+   registry](#the-registry)). On every dispatch after the claim's first,
+   **re-stamp the claim**: edit this run's `claimed:` comment to the new time
+   rather than posting another —
+   `gh api -X PATCH repos/ClipFarmVB/ClipFarm/issues/comments/<id> -f body="claimed: <UTC>"`.
+   Editing moves the comment's `updated_at` (checked on 2026-09-27), so the claim
+   records when the target was last given work. That, not when the claim began,
+   is what [releasing stale claims](#stale-claims) has to age: a PR is claimed
+   for its whole cycle, and its last fixer can be minutes old on a claim hours old.
+3. **Release when the target reaches a terminal state**: remove `in-progress`,
+   then comment `released: <UTC> — <outcome>`, and write the same `released:`
+   line into the log, which is where [selection](START.md#choosing-work) reads
+   this run's releases from.
+
+**What gets claimed.** A **PR** is claimed from the first round of its cycle
+until it reaches one of the terminal states in [Order of
+work](#order-of-work-one-pr-at-a-time) — `review-settled`, `unsettled`, or
+reviewed clean but held back by a check, which releases with the outcome
+`held by a check` and still carries no review-state label, as before. A
+**ticket** is claimed from the moment work on it starts until its PR is opened,
+releasing with `PR #<n>`, or until it is dropped, releasing with
+`no PR — <why>`. From there the PR carries the work, and [a ticket an open PR
+already closes is never selected](START.md#choosing-work) — so no ticket claim
+has to outlive the run, and none does.
+
+*It said "until its PR is closed or merged" when CF-562 was first written.*
+Merging is a human act, usually after the run has ended, so that claim could not
+be released by any run: the next one found it older than its start, released it
+as orphaned, and the ticket became selectable again with its PR still open — a
+duplicate PR waiting to happen. Two independent reviews found it.
+
+**Why claims and not only the registry.** The terminal labels exist because
+[a PR abandoned mid-cycle looks identical to one reviewed
+clean](REVIEW.md#the-terminal-labels-and-their-reasons). The claim closes the
+remaining gap: a run cut off by a usage limit, a compaction or the operator
+leaves every PR it had in cycle carrying `in-progress`, so **mid-cycle is a
+state the next run can read rather than infer**. Without the claim, the only
+record of mid-cycle was the registry, and the registry is exactly what the
+interruption loses.
+
+**`in-progress` is a claim, not a review state.** It records that a run is
+working on something, not what any round found, so it never replaces
+`review-settled` or `unsettled`, and a PR can carry it alongside neither.
+
+**`hold` is the human's.** A human applies it to tell the loop to leave a PR or
+ticket alone. **The run never applies or removes it, and never selects anything
+carrying it** — not for a round, not for a fix, not for ticket work.
+
+**Every lap starts by reconciling this run's claims against GitHub**, because
+people act on a target while the run holds it: a PR is merged or closed, a
+ticket is closed, `hold` is applied. For each target this run has claimed:
+
+```
+gh api repos/ClipFarmVB/ClipFarm/issues/<n> \
+  --jq '"\(.state) merged=\(.pull_request.merged_at // "-") \([.labels[].name] | join(","))"'
+```
+
+The issues endpoint answers for PRs too, and `merged_at` tells a merge from a
+close. **Closed, merged or `hold`: stop any subagent working on it, and release
+it** with the outcome `merged`, `closed` or `held by a human`. A slot held by a
+target nobody wants worked on anymore is a slot lost for the rest of the night,
+and a fixer still pushing to it is working against a person.
+
+**The same reconcile re-runs [the stale-claim check](#stale-claims)**, so that
+an earlier run's claim left alone as too recent is released once it has aged
+past the limit, rather than waiting for the next run to start.
+
+#### Stale claims
+
+**At the start of a run, release every claim last stamped before the `run start:`
+line *and* longer ago than the longest limit in [the table below](#stale-claims)** —
+remove `in-progress`, then comment `released: <UTC> — orphaned by an earlier
+run`. [Only one run may be live at a
+time](START.md#what-it-may-push-to-and-what-follows-from-that), so a claim from
+before this run belongs to a run that is over. **But over is not the same as
+gone**: stopping a loop removes its schedule, not the background subagents it
+had already spawned, and one of those can still push. A claim stamped more
+recently than the longest limit is left alone, and its target is not selected,
+until it ages past it. The stamp is the claim comment's `updated_at`, which
+[every dispatch moves](#claims) — so the age is measured from the last work
+given out, which is what a live subagent's age can be. **Only release a claim whose `claimed:` comment this account posted**: an
+`in-progress` label with no such comment was put there by someone else, and it
+is left alone too.
+
+```
+ME=$(gh api user --jq .login)
+SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
+[ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
+LONGEST_MIN=60   # the longest "lost after" in the table below
+CUTOFF=$(date -u -d "-$LONGEST_MIN minutes" +%Y-%m-%dT%H:%M:%SZ)
+[ -n "$CUTOFF" ] || { echo "could not compute the cutoff"; exit 1; }
+gh api --paginate "repos/ClipFarmVB/ClipFarm/issues?state=open&labels=in-progress&per_page=100" --jq '.[].number' |
+while read -r n; do
+  CLAIMED=$(gh api --paginate "repos/ClipFarmVB/ClipFarm/issues/$n/comments" \
+    --jq ".[] | select(.user.login == \"$ME\") | select(.body | test(\"^claimed: \")) | .updated_at" | tail -1)
+  if [ -z "$CLAIMED" ]; then echo "#$n: in-progress, no claim of ours - leave it"
+  elif [ "$CLAIMED" \< "$SINCE" ] && [ "$CLAIMED" \< "$CUTOFF" ]; then echo "#$n: orphaned, claimed $CLAIMED - release"
+  elif [ "$CLAIMED" \< "$SINCE" ]; then echo "#$n: an earlier run's, claimed $CLAIMED - too recent, leave it"
+  fi
+done
+```
+
+The `issues` endpoint returns PRs as well as issues, which is why it is used
+rather than `gh issue list`: one query covers both kinds of claim. The
+comparison is the same `Z`-suffixed string compare as [the counting
+windows](#logging-and-the-counting-windows), with the same requirement on
+`SINCE`. `tail -1` takes the newest of this account's claim comments, because
+the comments endpoint returns them oldest first and a target claimed again after
+a release carries more than one; `updated_at` is that comment's last re-stamp.
+
+**The label-filtered listing can lag a label change.** Seen once, on
+2026-09-27: `issues?labels=in-progress` omitted an issue labelled about five
+seconds earlier, and listed it on the next call. One observation is not a
+measured property, and the rule below does not need one — it only makes the
+run more conservative. Harmless here, because a claim
+old enough to be orphaned is old enough to be indexed. It is not harmless
+anywhere a claim was *just* made, so **nothing that needs this run's own
+claims — counting what is in flight, above all — reads them from a label
+query.** The registry is the source for those; GitHub is the source for what
+an earlier run left.
+
+**Within a run, a subagent silent past its limit is stopped first, then
+released.** Stop it with the harness's task-stop tool before doing anything
+else, so it cannot post a marker or push after its target has been handed on.
+Then write its `finished:` line with the outcome `lost`. A lost **round** is
+spawned again, and its PR's claim stays: the cycle is not over. A lost worker on
+a **ticket** releases it with `no PR — lost`.
+
+| role | lost after | measured from |
+|---|---|---|
+| `cold`, `semi-cold` | 60 min with no marker | the `dispatched:` line |
+| `cross-check` | 60 min with no result | the `dispatched:` line |
+
+**Where 60 minutes comes from, and what it is not.** Markers do not measure how
+long a round takes; they bound it. The gap between two consecutive markers on
+one PR contains a whole round, plus whatever else happened before it was
+spawned — a fix, an idle lap. Measured over every PR comment from 2026-08-01 to
+2026-09-27T00:00Z, keeping gaps under four hours, with inclusive-method
+percentiles (Python's `statistics.quantiles(..., method="inclusive")`):
+
+| pair of markers | n | median | p90 | max | over 60 min |
+|---|---|---|---|---|---|
+| cold then cold | 34 | 15.5 | 30.9 | 49.6 | 0 |
+| cold then semi-cold | 84 | 11.0 | 21.1 | 190.1 | 2 |
+| semi-cold then cold | 89 | 16.1 | 23.9 | 148.0 | 2 |
+| semi-cold then semi-cold | 78 | 12.4 | 21.3 | 108.1 | 2 |
+
+So 60 minutes is **a judgement, not a measurement**: about twice every p90, and
+exceeded by 6 of 285 gaps, each of which may hold a round far shorter than
+itself. What it costs when it is wrong is one round, stopped and spawned again.
+A cross-check reviews a plan rather than a diff, and gets the same bound for
+want of its own data.
+
+**These are the first figures, not the last.** The registry records the exact
+duration of every round from now on; re-derive the table from it once there is
+a run's worth, and say in the table where the new figures came from.
+
+**If a claim has no registry line**, a compaction landed between the spawn and
+the line. Time it from its `claimed:` comment instead, and before releasing it,
+look for the subagent in the harness's list of agents this session spawned and
+stop it if it is there.
+
 ### Log before you finish each iteration
 
 Append a dated section to `.claude/overnight-log.md`: what you did, what you

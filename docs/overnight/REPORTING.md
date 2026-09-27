@@ -39,6 +39,22 @@ in the first line which run this was.
 mode ran. A reader cannot otherwise tell "reviewed nothing new" from "was not
 looking".
 
+**Before writing the report, stop what is still in flight and release it**
+(CF-562). Stop every subagent with a `dispatching:` or `dispatched:` line and no
+`finished:`, write
+its `finished:` line with the outcome `run ended`, and release its claim with
+`released: <UTC> — run ended`. A run that stops cleanly should hand the next one
+no claims at all; [releasing at run start](RULES.md#stale-claims) is the backstop
+for a run that could not stop cleanly, not the plan.
+
+**Name every claim this run released that it did not finish**, in its own list:
+those released at run start as orphaned by an earlier run, those left alone
+because they were too recent to release, those stopped as lost, those released
+because a person merged, closed or held the target, and those released because
+the run ended. Each is work somebody should
+know did not complete. An orphaned claim in particular is the only evidence that
+the previous run ended without reporting.
+
 ### Then reset the log, and only then
 
 `.claude/overnight-log.md` is scratch memory for **one** run. Once the report
