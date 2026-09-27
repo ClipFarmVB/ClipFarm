@@ -24,7 +24,7 @@ not the ones it is not. Every rule lives in exactly one file.
 |---|---|---|
 | [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.3k |
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 8.2k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, dispatching subagents, the registry and claims, the WIP limit and areas, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 15.2k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test, dispatching subagents, the registry and claims, the WIP limit and areas, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 15.6k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 15.2k |
 | [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.3k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the cycle, the settle bar, choosing an `unsettled` reason | 5.6k |
@@ -66,8 +66,8 @@ run that learned it.
   that had since been amended.
 
 A step-1 lap that only selects costs about 33k tokens of brief instead of 64k;
-one that also spawns a round, about 38k. A step-2 lap is about 28k, a step-3 lap
-about 24k. That is the whole point of the split.
+one that also spawns a round, about 38k. A step-2 lap is about 29k, a step-3 lap
+about 25k. That is the whole point of the split.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
