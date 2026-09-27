@@ -748,7 +748,7 @@ something a commit does not fix:
 | `head moved` | someone pushed to the branch while this run was fixing it; the fix is described, not pushed ([the push guard](RULES.md#pushing-to-a-branch-that-may-have-moved)) | **new commits**, no human needed | reset |
 
 **When more than one is true, `needs a decision` wins**, over each of the other
-three; note the losing one in the comment as context rather than as the reason.
+four; note the losing one in the comment as context rather than as the reason.
 Among the rest, `latched` beats `ran out of rounds`, and `not our branch` beats
 `ran out of rounds` too — though where **those** two coincide the choice is
 cosmetic, since both clear on a commit and both reset the count, and `not our
@@ -914,8 +914,8 @@ decide the round.** Do not force a cold one: what the PR needs depends on what
 its last round said, and the table already tells the two cases apart by SHA. A
 re-opened `review-settled` PR wants a cold round: its last round was
 `cold: clean`, and the new commits are code nothing has read. A re-opened
-`unsettled` PR — either reason that commits can re-open, `not our branch` or
-`ran out of rounds` — wants whatever its last round marker says, which is
+`unsettled` PR — any reason that commits can re-open, `not our branch`,
+`ran out of rounds` or `head moved` — wants whatever its last round marker says, which is
 usually `cold: findings` at a stale SHA, and so a semi-cold check of the fix
 that has since landed. So:
 

@@ -63,20 +63,25 @@ know did not complete. An orphaned claim in particular is the only evidence that
 the previous run ended without reporting.
 
 **Remove the worktrees this run's subagents left behind** (CF-564), once each
-one's work is pushed or released. The harness removes a worktree only if it is
-unchanged, and every implementer and fixer changes its tree, so at six agents
-a night with its own virtualenvs they pile up — twelve were found left over
-from earlier runs on 2026-09-27. Each sits at
-`.claude/worktrees/agent-<AGENT>`, `AGENT` being the id on its `dispatched:`
-line:
+one's work is pushed or released. The harness's own documentation of worktree
+isolation says it cleans a worktree up only if it is unchanged, and every
+implementer and fixer changes its tree, so at six agents a night, each with its
+own virtualenv, they pile up. On 2026-09-27 `git worktree list` held eleven
+`agent-*` worktrees whose agents had long finished, the oldest from 2026-09-14,
+and 68 of the `worktree-agent-*` branches the harness makes beside them. Each
+worktree sits at `.claude/worktrees/agent-<AGENT>`, on a branch
+`worktree-agent-<AGENT>`, `AGENT` being the id on its `dispatched:` line:
 
 ```
 git worktree remove --force .claude/worktrees/agent-<AGENT>
+git branch -D worktree-agent-<AGENT>
 ```
 
-**Only those the registry names.** Other worktrees under `.claude/worktrees/`
-belong to people and sessions this run knows nothing about. Name in the report
-any it could not remove.
+**Only those the registry names**, and **never a latched fix's**: its commit
+exists nowhere else, and deleting the branch would lose it. Keep it and name it
+in the report. Other worktrees under `.claude/worktrees/` belong to people and
+sessions this run knows nothing about. Name in the report any it could not
+remove.
 
 ### Then reset the log, and only then
 

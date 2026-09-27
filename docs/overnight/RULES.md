@@ -234,10 +234,20 @@ the PR's branch:
 
 ```
 # push guard (CF-564)
-git fetch -q origin "$BRANCH"
-[ "$(git rev-parse FETCH_HEAD)" = "$STARTED_AT" ] || { echo "head moved - do not push"; exit 1; }
+REMOTE=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+[ -n "$REMOTE" ] || { echo "cannot read the remote head - do not push"; exit 1; }
+[ "$REMOTE" = "$STARTED_AT" ] || { echo "head moved - do not push"; exit 1; }
 git push origin "HEAD:$BRANCH"
 ```
+
+**Why `ls-remote`, not a fetch.** It reads the branch straight off the remote,
+and a read that fails prints nothing, which the second line refuses — the guard
+fails closed by what it says. The first version fetched and compared
+`FETCH_HEAD`; review asked whether a failed fetch would leave a stale
+`FETCH_HEAD` equal to `STARTED_AT` and wave the push through. Tried on
+2026-09-27 with the remote made unreachable: it refused, but only because git
+empties `FETCH_HEAD` when a fetch begins — a property of git's implementation,
+not of the guard.
 
 **What git already refuses, and what it does not.** A plain push is rejected when
 someone added commits on top: the fix is no longer a fast-forward. It is
@@ -248,18 +258,30 @@ comparing against the head the work started from instead of asking git whether
 the push fits. `api/tests/test_overnight_push_guard.py` runs this block as
 written against both, and shows that a plain push lets the rewind through.
 
-**What it leaves open.** Between the fetch and the push — about a second — the
-branch can still be rewound, and the push would then succeed.
+**What it leaves open.** Between reading the remote head and the push landing —
+a short window, the push's own round trip included — the branch can still be
+rewound, and the push would then succeed.
 `--force-with-lease` with an explicit expected SHA would close that window
 atomically and is deliberately not used: [the hard rules](#hard-rules) forbid
 force-pushing, and a rule that reads "never force, except this flag" is how an
 exception grows. The consequence is a removed commit reappearing on the branch —
 visible, and nothing lost.
 
-**When the guard fires, or a push is rejected anyway: never rebase, merge or
-force.** Each would either discard someone's commits or fold in commits no round
-has read. Stop, and route the PR as [`head
-moved`](FIX.md#when-you-cannot-fix-it-choosing-a-reason).
+**When the guard refuses: never rebase, merge or force.** Each would either
+discard someone's commits or fold in commits no round has read. Stop, and route
+the PR as [`head moved`](FIX.md#when-you-cannot-fix-it-choosing-a-reason) — or,
+if it could not read the remote at all, route the target again once it can.
+
+**When the guard passes and the push is still rejected, that is not `head
+moved`.** The branch had not moved; something refused the push itself — branch
+protection, a hook, the harness. That is
+[`latched`](FIX.md#when-you-cannot-fix-it-choosing-a-reason), and the difference
+matters: `head moved` re-opens on the next commit, and whatever refused this
+push will refuse the next, so it would cycle the PR forever — the loop `latched`
+exists to prevent. And **the fix now exists only in the fixer's worktree**, so
+that worktree is kept at the end of the run rather than removed, and named in the
+report; the one retry [the latch rule
+allows](REVIEW.md#record-comments-human-removal-and-re-opening) runs from it.
 
 ### Dispatching subagents
 
@@ -501,7 +523,11 @@ itself. What it costs when it is wrong is one round, stopped and spawned again.
 
 **The fixer's figure is bounded by the same data.** A fix sits inside the
 cold-to-semi-cold gap — the fix, then the round that checks it — whose median
-is 11.1 min and p90 21.4 min (n=84), so an hour is generous for the fix alone.
+is 11.0 min and p90 21.1 min (n=84, same window and method as the table above),
+so an hour is generous for the fix alone — though two of those 84 gaps did
+exceed it. A fixer now also builds its own environment: the two demonstration
+implementers on 2026-09-27 each installed the linting tools into a fresh venv in
+about 42 seconds. The full dev requirements take longer and were not timed.
 
 **The planner and implementer figures are not measured.** Before CF-563 this
 session planned and implemented tickets itself, so no marker records how long
@@ -619,22 +645,24 @@ not the hourly allowance: GitHub allows at most 80 content-generating requests a
 minute and 500 an hour, and answers a breach with a 403 or 429, sometimes with a
 `retry-after` header ([GitHub's REST rate-limit
 documentation](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api),
-read 2026-09-27). Every marker, review, label change and claim comment is
-content-generating.
+read 2026-09-27). Every marker, review and claim comment creates content; label
+changes are writes too, and are counted here as though they do.
 
-Serial runs of this loop peaked at 20 comments in an hour and 13 in one minute —
-every PR and issue comment since 2026-08-01, all authors. Reviews and label
-changes come on top and are not in that count. Six agents at the serial hourly
-peak stay well inside 500; six *bursts* landing in the same minute do not stay
-inside 80.
+Serial runs of this loop peaked at 25 comments in any sixty minutes and 16 in any
+sixty seconds — every PR and issue comment from 2026-08-01 to 2026-09-27T00:00Z,
+all authors, counted over a sliding window. Those 16 were `unsettled` comments,
+each with a label change beside it, so that minute was nearer 32 requests than
+16. Six agents at the hourly peak stay well inside 500. Six at the per-minute
+peak — 96 comments before their label changes — do not stay inside 80.
 
 **A secondary rate limit is not a usage limit.** The hard rule that stops the
 loop on a usage limit is about the model's quota; this is GitHub's, and it
 clears in minutes. The subagent that hits it stops, reports it with the
 `retry-after` value if there was one, and posts nothing further. This session
-writes its `finished:` line with the outcome `rate-limited`, dispatches nothing
-until the `retry-after` has passed — or a minute, if there was none — and then
-routes the target again.
+writes its `finished:` line with the outcome `rate-limited` and dispatches
+nothing until the `retry-after` has passed. With no `retry-after`, it waits a
+minute, and doubles the wait each time the limit is hit again, as GitHub's
+documentation asks. Then it routes the target again.
 
 ### Log before you finish each iteration
 
@@ -815,8 +843,8 @@ run.** Do not read the fall-through above as permission to keep reviewing past t
 budget because the destination is missing.
 
 **"Ends the run" means it starts no new round — not that it stops mid-carry.**
-Everything the paragraph below requires still happens: label the PR you are
-holding, post its reason comment, and record it. A run that reads "ends" as
+Everything the paragraph below requires still happens: label each PR you are
+holding, post each one's reason comment, and record them. A run that reads "ends" as
 immediate leaves exactly the unlabelled-with-open-findings PR that paragraph
 forbids.
 
@@ -833,6 +861,14 @@ costs](RATIONALE.md#what-a-night-costs) — cold, semi-cold on the fix, cold to
 settle. Without the reservation, several cycles run the budget out together, and
 every one of them lands on the paragraph above at the same moment: `unsettled`,
 findings open, for arithmetic rather than for anything a reviewer found.
+
+**When the reservation refuses, treat the budget as spent for starting
+anything.** Finish the cycles already claimed — the reservation covers them —
+and then follow the paragraph on a spent budget above: step 3 plans and files
+only, and `review-only` ends. Without that, a run with one or two rounds left can
+neither start work nor reach the rule that says what to do instead. **In `build`
+count what is unspent against 35, not 40**, keeping the five rounds [reserved for
+step 3](RATIONALE.md#what-a-night-costs).
 
 **Both numbers were re-derived for concurrent cycles, and both stand.** The
 ceiling is per PR: seven rounds bound one PR's cycle whether or not others run
@@ -887,9 +923,10 @@ touched it. So count markers newer than the run's start time, which the
 **When a PR was re-opened mid-run, count from the `reopened:` marker instead —
 but only if that marker falls inside this run.** There is no label event to
 read here; re-opening writes that marker precisely so this bound survives the
-label being removed. Three states carry a commits-since carve-out —
-`review-settled`, and the `ran out of rounds` and `not our branch` reasons for
-`unsettled` — and each re-opens the same way, so each gets the same bound.
+label being removed. Four states carry a commits-since carve-out —
+`review-settled`, and the `ran out of rounds`, `not our branch` and `head moved`
+reasons for `unsettled` — and each re-opens the same way, so each gets the same
+bound.
 (`needs a decision` and `latched` have no carve-out and never need it: both
 wait for a human, and neither is cleared by anything a run can do.) The bound
 you want is the *later* of the run start and that marker: a `reopened:` marker

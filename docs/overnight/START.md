@@ -297,8 +297,8 @@ as "left at defaults", and the two differ by whether the run reviews other
 people's work.
 
 **`wip limit` is the most work in flight at once** (CF-563) — see [the WIP
-limit and areas](RULES.md#the-wip-limit-and-areas) for what it counts. Two
-things override it downward and nothing overrides it upward: a [capability
+limit and areas](RULES.md#the-wip-limit-and-areas) for what it counts. One
+thing overrides it downward and nothing overrides it upward: a [capability
 check](#first-establish-what-you-can-actually-do) that finds no worktree
 isolation runs the whole night at 1. In `review-only` the limit applies to PR
 cycles alone. Like `review scope`, it is not
@@ -309,7 +309,7 @@ written here.
 **Six is where it is set, and what to lower it from is measured.** Areas are
 exact files, so what can still collide is an implementer's edit outside its
 plan, or a ticket turned away because its area was held — and [the
-report](REPORTING.md#reporting) lists both, every night. Lower it from those
+report](REPORTING.md#reporting-1) lists both, every night. Lower it from those
 lists, not from a feeling that six is a lot.
 
 See [Mode](#mode). The mode decides whether ticket work happens at all; *which*

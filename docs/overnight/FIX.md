@@ -19,7 +19,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 
 #### Step 2 — fix what the round found
 
-**2 — Address the review findings on the PR you are carrying**, if this account
+**2 — Address the review findings on a PR you are carrying**, if this account
 opened it. That is the same test the `review scope` filter runs —
 `gh api user --jq ".login"` against the PR's `.user.login` — so at
 `review scope: own` it is true of every PR in the queue. See
@@ -125,7 +125,9 @@ rest of the run. Give it:
   the head has already moved and it stops there;
 - the findings to fix, read from the round's review as above, and the ones to
   leave alone — anything needing a human decision;
-- `CLAUDE.md`, and [what binds it, passed explicitly](RULES.md#dispatching-subagents).
+- `CLAUDE.md`, and [what binds it, passed explicitly](RULES.md#dispatching-subagents);
+- a free slot number `k`, as an implementer gets one, for the same ports if it
+  has to run the app.
 
 Ask it to:
 
@@ -134,9 +136,11 @@ Ask it to:
 2. **Run the gate in its own environment**, exactly as [the implementer
    does](TICKETS.md#the-implementers-brief) — its own venv, the shared stack
    untouched.
-3. **Push once, through the push guard.** If the guard refuses, or the push is
-   rejected anyway, it does not rebase, merge or force: it stops and reports
-   `head moved` with the new head.
+3. **Push once, through the push guard.** If the guard refuses, it stops and
+   reports `head moved` with the new head. If the guard passes and the push is
+   rejected anyway, it stops and reports `push refused` with the error verbatim
+   — a different thing, [routed as `latched`](RULES.md#pushing-to-a-branch-that-may-have-moved).
+   Either way it does not rebase, merge or force.
 4. **Reply on the thread saying what changed**, finding by finding — never that a
    finding is fixed. [Never describe a fix inside the review that found
    it](#the-cycle-and-the-settle-bar); the semi-cold round decides whether it
@@ -147,6 +151,16 @@ Ask it to:
 When it reports, check GitHub for the push and the reply, write its `finished:`
 line, and carry on with the cycle: the semi-cold round against the new head. A
 fixer that reported `head moved` routes the PR as [below](#when-you-cannot-fix-it-choosing-a-reason).
+
+**A fixer that was lost or rate-limited is not simply dispatched again.** Read
+the PR's head first. If it still equals `STARTED_AT`, dispatch again. If it
+moved, the change may be that fixer's own push, landed just before it was
+stopped, or someone else's — and nothing here tells the two apart reliably,
+because this loop and its operator commit as the same person. So do not guess
+either way: spawn the semi-cold round against the new head. If the fix is there,
+it closes; if it is not, the round says so and a new fixer starts from the new
+head. Treating the loop's own push as someone else's would label the PR
+`head moved` over a fix that had landed.
 
 ##### The cycle and the settle bar
 

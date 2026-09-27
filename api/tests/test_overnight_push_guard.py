@@ -26,26 +26,34 @@ import re
 import shutil
 import subprocess
 
+import tempfile
+
 import pytest
 
 RULES = pathlib.Path(__file__).resolve().parents[2] / "docs" / "overnight" / "RULES.md"
 MARKER = "# push guard (CF-564)"
 
 
-def _bash_works() -> bool:
-    # On Windows, `bash` on PATH can be the WSL launcher with no distribution
-    # installed; it exists and fails. Probe instead of trusting `which`.
+def _working_bash():
+    """The bash to run the guard with, or None.
+
+    On Windows, `bash` on PATH can be the WSL launcher with no distribution
+    installed: it exists and fails. So this probes, and the path it probed is
+    the one the tests then run — resolving `bash` a second time could pick a
+    different one.
+    """
     bash = shutil.which("bash")
     if not bash or not shutil.which("git"):
-        return False
+        return None
     try:
         r = subprocess.run([bash, "-c", "echo ok"], capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    return r.returncode == 0 and r.stdout.strip() == "ok"
+        return None
+    return bash if r.returncode == 0 and r.stdout.strip() == "ok" else None
 
 
-pytestmark = pytest.mark.skipif(not _bash_works(), reason="needs a working bash and git")
+BASH = _working_bash()
+pytestmark = pytest.mark.skipif(BASH is None, reason="needs a working bash and git")
 
 
 def _guard() -> str:
@@ -56,8 +64,14 @@ def _guard() -> str:
     return blocks[0]
 
 
+# An empty global config, so a developer's own settings (signing, hooks, a
+# default branch) cannot change what these throwaway repositories do.
+_EMPTY_GLOBAL = tempfile.NamedTemporaryFile(prefix="gitconfig-", delete=False)
+_EMPTY_GLOBAL.close()
+
 ENV = {
     **os.environ,
+    "GIT_CONFIG_GLOBAL": _EMPTY_GLOBAL.name,
     "GIT_AUTHOR_NAME": "test",
     "GIT_AUTHOR_EMAIL": "test@example.com",
     "GIT_COMMITTER_NAME": "test",
@@ -105,7 +119,7 @@ def repos(tmp_path):
 
 def _run_guard(r):
     return subprocess.run(
-        ["bash", "-c", _guard()],
+        [BASH, "-c", _guard()],
         cwd=r["fixer"],
         capture_output=True,
         text=True,
@@ -153,6 +167,30 @@ def test_a_rewound_branch_stops_the_push(repos):
     assert result.returncode != 0
     assert "head moved" in result.stdout
     assert _remote_head(repos) == repos["a"], "the rewind must stand"
+
+
+def test_an_unreadable_remote_stops_the_push(repos):
+    """If the guard cannot read the remote head it must refuse, not compare
+    against something stale. Review asked whether the first, fetch-based
+    version would; the guard now fails closed by what it says."""
+    shutil.move(str(repos["remote"]), str(repos["remote"]) + ".gone")
+    try:
+        result = _run_guard(repos)
+    finally:
+        shutil.move(str(repos["remote"]) + ".gone", str(repos["remote"]))
+    assert result.returncode != 0
+    assert "cannot read the remote head" in result.stdout
+    assert _remote_head(repos) == repos["b"]
+
+
+def test_a_deleted_branch_stops_the_push(repos):
+    """A branch deleted under the fixer reads as no head at all — refuse,
+    rather than recreate it."""
+    _git(repos["human"], "push", "-q", "origin", "--delete", "feat")
+    result = _run_guard(repos)
+    assert result.returncode != 0
+    assert "cannot read the remote head" in result.stdout
+    assert _git(repos["remote"], "branch", "--list", "feat") == ""
 
 
 def test_a_plain_push_would_have_undone_the_rewind(repos):
