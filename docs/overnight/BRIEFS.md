@@ -103,7 +103,7 @@ verdict from an empty diff.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, apply the `unsettled` label with a
-comment naming the reason that fits — any of the four — record it, and move on.
+comment naming the reason that fits — any of the five — record it, and move on.
 It does not become closed by being argued with.
 
 **Never let a semi-cold round settle a PR.** It was handed the previous

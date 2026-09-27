@@ -224,6 +224,87 @@ and **all seven were this account's own work from earlier runs**. The loop could
 review everything it had built and fix none of it. The sign-off is now given:
 earlier runs of this account are this account.
 
+#### Pushing to a branch that may have moved
+
+With several PRs cycling at once (CF-564), a fix can take long enough that
+someone else pushes to the branch first — a collaborator, or the operator on this
+same account. **Every push to a PR branch goes through this guard**, where
+`STARTED_AT` is the full SHA of the head the work was built on and `BRANCH` is
+the PR's branch:
+
+```
+# push guard (CF-564)
+REMOTE=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+[ -n "$REMOTE" ] || { echo "cannot read the remote head - do not push"; exit 1; }
+[ "$REMOTE" = "$STARTED_AT" ] || { echo "head moved - do not push"; exit 1; }
+git push origin "HEAD:$BRANCH"
+```
+
+**Why `ls-remote`, not a fetch.** It reads the branch straight off the remote,
+and a read that fails prints nothing, which the second line refuses — the guard
+fails closed by what it says. The first version fetched and compared
+`FETCH_HEAD`; review asked whether a failed fetch would leave a stale
+`FETCH_HEAD` equal to `STARTED_AT` and wave the push through. Tried on
+2026-09-27 with the remote made unreachable: it refused, but only because git
+empties `FETCH_HEAD` when a fetch begins — a property of git's implementation,
+not of the guard.
+
+**What git already refuses, and what it does not.** A plain push is rejected when
+someone added commits on top: the fix is no longer a fast-forward. It is
+**accepted** when someone *rewound* the branch — pushed it back to an ancestor, to
+drop a bad commit, say — because the fix still descends from the new tip, and the
+push silently restores the commit they removed. The guard catches both, by
+comparing against the head the work started from instead of asking git whether
+the push fits. `api/tests/test_overnight_push_guard.py` runs this block as
+written against both, and shows that a plain push lets the rewind through.
+
+**What it leaves open.** Between reading the remote head and the push landing —
+a short window, the push's own round trip included — the branch can still be
+rewound, and the push would then succeed.
+`--force-with-lease` with an explicit expected SHA would close that window
+atomically and is deliberately not used: [the hard rules](#hard-rules) forbid
+force-pushing, and a rule that reads "never force, except this flag" is how an
+exception grows. The consequence is a removed commit reappearing on the branch —
+visible, and nothing lost.
+
+**When the guard refuses: never rebase, merge or force.** Each would either
+discard someone's commits or fold in commits no round has read. Stop, and route
+the PR as [`head moved`](FIX.md#when-you-cannot-fix-it-choosing-a-reason) — or,
+if it could not read the remote at all, route the target again once it can.
+
+**When the guard passes and the push is still rejected, read git's reason.**
+`fetch first` and `non-fast-forward` are how git says the branch moved (checked
+on 2026-09-27) — someone pushed inside the window above — so that is `head
+moved` after all. A push that never reached the remote is neither: route the
+target again once the remote can be read. **Anything else is not `head moved`.**
+The branch had not moved; something refused the push itself — branch
+protection, a hook, the harness. That is
+[`latched`](FIX.md#when-you-cannot-fix-it-choosing-a-reason), and the difference
+matters: `head moved` re-opens on the next commit, and whatever refused this
+push will refuse the next, so it would cycle the PR forever — the loop `latched`
+exists to prevent.
+
+**And the fix now exists only in the fixer's worktree**, on a detached `HEAD`
+that nothing else refers to. Pin it before anything else touches that worktree:
+
+```
+git -C .claude/worktrees/agent-<AGENT> branch overnight-latched-<n>
+```
+
+That is a local branch in the one repository every worktree shares, so it
+outlives the worktree, which can then be cleaned up like any other. **Name it in
+the `unsettled: latched` comment together with the full `STARTED_AT`** — the head
+the fix was built on, forty characters — and in the report. The one retry [the
+latch rule allows](REVIEW.md#record-comments-human-removal-and-re-opening)
+happens in whichever run finds the label removed, by a **push-only fixer**: a
+detached checkout of `overnight-latched-<n>`; a check that it descends from the
+recorded `STARTED_AT` (`git merge-base --is-ancestor`); then the guard, with
+that `STARTED_AT`, and nothing else — no new commits and no gate, which the fix
+already passed. Not the pin's parent: a fix of several commits has a parent the
+remote never saw. Delete the pin only once the push has landed and the PR's head
+equals it. The pin exists on this machine only; a run anywhere else cannot retry
+it and says so.
+
 ### Dispatching subagents
 
 Ported from the `Solo_Hack` / `HTN_WHITEOUT` build harness (CF-561), which runs
@@ -256,7 +337,9 @@ ticket](TICKETS.md#working-a-ticket).
   A subagent that reads the tree it was handed reviews whatever branch this
   session happened to be on, and says nothing, because the tree is consistent.
   **If the fetch or the checkout fails, it stops and reports** — it does not
-  read on. Two subagents fetching `main` at once can contend for the same
+  read on. Its `finished:` outcome is `aborted`: nothing was reviewed or
+  written, so it is not a round against the budget or the ceiling, and the
+  target is routed again. Two subagents fetching `main` at once can contend for the same
   ref lock, and one that shrugs off the failure is back to reading the tree it
   was handed.
 - **Spawn from the repository root**, so a relative path in the brief means what
@@ -292,7 +375,7 @@ finished: ROLE TARGET AGENT UTC OUTCOME
 ```
 
 `ROLE` is what the subagent was spawned to do — `cold`, `semi-cold`,
-`planner` or `implementer`. `TARGET` is `#<n>`, the PR or issue it works on. `AGENT` is the
+`fixer`, `planner` or `implementer`. `TARGET` is `#<n>`, the PR or issue it works on. `AGENT` is the
 id the harness returned for the spawn. `UTC` is a resolved timestamp, never the
 command that produces one ([Measure what you publish](#measure-what-you-publish)).
 **A `dispatching:` or `dispatched:` line with no matching `finished:` line is in
@@ -336,7 +419,10 @@ the next run can read it:
    registry](#the-registry)). On every dispatch after the claim's first,
    **re-stamp the claim**: edit this run's `claimed:` comment to the new time
    rather than posting another —
-   `gh api -X PATCH repos/ClipFarmVB/ClipFarm/issues/comments/<id> -f body="claimed: <UTC>"`.
+   `gh api -X PATCH repos/ClipFarmVB/ClipFarm/issues/comments/<id> -f body="claimed: <UTC>"`,
+   where `<id>` is the newest `claimed:` comment of this account's on that
+   target: the [stale-claim script's](#stale-claims) query, with `.id` in place
+   of `.updated_at`.
    Editing moves the comment's `updated_at` (checked on 2026-09-27), so the claim
    records when the target was last given work. That, not when the claim began,
    is what [releasing stale claims](#stale-claims) has to age: a PR is claimed
@@ -348,7 +434,7 @@ the next run can read it:
 
 **What gets claimed.** A **PR** is claimed from the first round of its cycle
 until it reaches one of the terminal states in [Order of
-work](#order-of-work-one-pr-at-a-time) — `review-settled`, `unsettled`, or
+work](#order-of-work-every-pr-carried-to-a-terminal-state) — `review-settled`, `unsettled`, or
 reviewed clean but held back by a check, which releases with the outcome
 `held by a check` and still carries no review-state label, as before. A
 **ticket** is claimed from the moment work on it starts until its PR is opened,
@@ -463,6 +549,7 @@ a **ticket** releases it with `no PR — lost`.
 | role | lost after | measured from |
 |---|---|---|
 | `cold`, `semi-cold` | 60 min with no marker | the `dispatched:` line |
+| `fixer` | 60 min with no push or reply | the `dispatched:` line |
 | `planner` | 90 min with no plan | the `dispatched:` line |
 | `implementer` | 120 min with no PR | the `dispatched:` line |
 
@@ -480,9 +567,17 @@ percentiles (Python's `statistics.quantiles(..., method="inclusive")`):
 | semi-cold then cold | 89 | 16.1 | 23.9 | 148.0 | 2 |
 | semi-cold then semi-cold | 78 | 12.4 | 21.3 | 108.1 | 2 |
 
-So 60 minutes is **a judgement, not a measurement**: about twice every p90, and
+So 60 minutes is **a judgement, not a measurement**: two to three times every p90, and
 exceeded by 6 of 285 gaps, each of which may hold a round far shorter than
 itself. What it costs when it is wrong is one round, stopped and spawned again.
+
+**The fixer's figure is bounded by the same data.** A fix sits inside the
+cold-to-semi-cold gap — the fix, then the round that checks it — whose median
+is 11.0 min and p90 21.1 min (n=84, same window and method as the table above),
+so an hour is generous for the fix alone — though two of those 84 gaps did
+exceed it. A fixer now also builds its own environment: the two demonstration
+implementers on 2026-09-27 each installed the linting tools into a fresh venv in
+about 42 seconds. The full dev requirements take longer and were not timed.
 
 **The planner and implementer figures are not measured.** Before CF-563 this
 session planned and implemented tickets itself, so no marker records how long
@@ -600,6 +695,62 @@ merge cleanly one after the other and leave `main` with two Alembic heads,
 which is why the directory rule above exists rather than trusting a merge
 conflict to announce it.
 
+#### When a PR's head has moved, find out who moved it
+
+A fixer's commit subject ends with `(round @<sha7>)`, `sha7` being the first
+seven characters of the head it was built on (see [its
+brief](FIX.md#the-fixers-brief)). That is how a moved head is read, and it has
+to be read whenever one turns up mid-cycle — a fixer reporting `head moved`, or
+a lost fixer's PR whose head is no longer its `STARTED_AT`:
+
+```
+git fetch -q origin "pull/<n>/head" || { echo "cannot read #<n>"; exit 1; }
+git merge-base --is-ancestor "<STARTED_AT>" FETCH_HEAD || { echo "rewritten - head moved"; exit 1; }
+git log --format=%s "<STARTED_AT>..FETCH_HEAD"
+```
+
+**The second line comes first for a reason.** A branch rewound or rewritten
+under the fix no longer descends from `STARTED_AT`, and the range after it is
+then empty — and "every subject is marked" is true of no subjects at all, which
+would read a person's rewind as this loop's own push. So a head that does not
+descend from `STARTED_AT` is `head moved`, before any subject is read.
+
+**At least one subject, and every one ending `(round @<STARTED_AT's first
+seven>)`: this loop's own fix landed.** A fixer was stopped after its push, or its push arrived after it was
+stopped. Post the reply it did not, from those subjects — unless one for those
+commits is already on the PR, as it is when a re-dispatched fixer got there first
+— and spawn the semi-cold round against the new head. **Any other subject: a person pushed**, and the PR
+is [`head moved`](FIX.md#when-you-cannot-fix-it-choosing-a-reason) — describe the
+fix, label, move on. The subject is the only reliable tell: this loop and its
+operator commit as the same person, so authorship says nothing.
+
+#### Six agents, one credential
+
+Every subagent posts as this run's account, so the whole run shares one GitHub
+credential (CF-564). **The secondary limits are the ones concurrency reaches**,
+not the hourly allowance: GitHub allows at most 80 content-generating requests a
+minute and 500 an hour, and answers a breach with a 403 or 429, sometimes with a
+`retry-after` header ([GitHub's REST rate-limit
+documentation](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api),
+read 2026-09-27). Every marker, review and claim comment creates content; label
+changes are writes too, and are counted here as though they do.
+
+Serial runs of this loop peaked at 25 comments in any sixty minutes and 16 in any
+sixty seconds — every PR and issue comment from 2026-08-01 to 2026-09-27T00:00Z,
+all authors, counted over a sliding window. Those 16 were `unsettled` comments,
+each with a label change beside it, so that minute was nearer 32 requests than
+16. Six agents at the hourly peak stay well inside 500. Six at the per-minute
+peak — 96 comments before their label changes — do not stay inside 80.
+
+**A secondary rate limit is not a usage limit.** The hard rule that stops the
+loop on a usage limit is about the model's quota; this is GitHub's, and it
+clears in minutes. The subagent that hits it stops, reports it with the
+`retry-after` value if there was one, and posts nothing further. This session
+writes its `finished:` line with the outcome `rate-limited` and dispatches
+nothing until the `retry-after` has passed. With no `retry-after`, it waits a
+minute, and doubles the wait each time the limit is hit again, as GitHub's
+documentation asks. Then it routes the target again.
+
 ### Log before you finish each iteration
 
 Append a dated section to `.claude/overnight-log.md`: what you did, what you
@@ -673,9 +824,11 @@ Finish work already in flight before starting anything new.
 
 **Steps 1 and 2 are the two halves of one PR's cycle, not two sweeps over the
 queue.** Read them as: pick a PR that needs a review, then carry *that* PR
-through review and fix and re-review until it reaches a terminal state, then
-pick the next one. Running step 1 across every open PR and only then starting
-step 2 is the breadth-first pass ruled out below.
+through review and fix and re-review until it reaches a terminal state. Several
+PRs can be in their cycles at once, up to [the WIP
+limit](#the-wip-limit-and-areas), and each is carried through in the same way.
+Running step 1 across every open PR and only then starting step 2 is still the
+breadth-first pass ruled out below.
 
 #### The ceiling, and the settling exception
 
@@ -717,22 +870,37 @@ the counting query charges them automatically; unlike a `reopened:` marker or a
 re-posted marker, nothing here is free. The exception lifts the *per-PR*
 ceiling, never the run-wide budget.
 
-#### Order of work: one PR at a time
+#### Order of work: every PR carried to a terminal state
 
-**Take one PR all the way through before opening the next.** Review it, fix it,
-check the fix, settle or label it — then move on. Do not run a pass over every
-open PR and come back for a second lap.
+**Take every PR you start all the way through.** Review it, fix it, check the
+fix, settle or label it. Several can be in that cycle at once (CF-564), each
+[claimed](#claims) for as long as it is. Do not run a pass over every open PR
+and come back for a second lap.
 
-The reason is that this loop gets interrupted: context is compacted between
-iterations, and a usage limit stops the run outright, at no point of your
-choosing. Finishing PRs one at a time means whenever that happens, everything
-touched so far is in a terminal state — `review-settled`, `unsettled`,
-untouched, or reviewed-clean-but-held-back-by-a-check, which [carries no label
-deliberately](FIX.md#the-cycle-and-the-settle-bar) — and the next run can tell
-those apart. A breadth-first pass that is
-cut off leaves every PR half-cycled, which is precisely the "abandoned
-mid-cycle looks identical to reviewed clean" condition these labels exist to
-prevent. It also keeps the state you carry small: one PR's findings, not twenty.
+**This was "one PR at a time" until CF-564, and the reason it was is still the
+reason for everything here.** This loop gets interrupted: context is compacted
+between iterations, a usage limit stops the run outright, and the operator
+stops it, all at no point of your choosing. A breadth-first pass that is cut off
+leaves every PR half-cycled, which is precisely the "abandoned mid-cycle looks
+identical to reviewed clean" condition the terminal labels exist to prevent.
+The answer used to be to keep the loop narrow enough that only one PR could
+ever be mid-cycle, so that an interruption left everything else in a terminal
+state — `review-settled`, `unsettled`, untouched, or reviewed-clean-but-held-back-
+by-a-check, which [carries no label deliberately](FIX.md#the-cycle-and-the-settle-bar).
+
+**The answer now is to make mid-cycle a state that can be read.** Every PR in
+its cycle carries `in-progress`, so an interruption leaves the claim on exactly
+the PRs it cut off, [the next run releases them](#stale-claims) and they are
+cycled again from the top. The interruption is the same; what it leaves behind
+is no longer ambiguous. That is what made running cycles side by side
+defensible, and why the claim is not optional: **a PR in cycle without its claim
+is the old failure, at up to six times the size.**
+
+**What stays ruled out is starting cycles you will not carry.** Claim a PR only
+when you can cycle it now — a free slot, and [budget reserved for
+it](#the-run-budget). The state you carry is bounded by the limit rather than by
+one: at most that many PRs' findings, with each PR's own markers holding the
+rest.
 
 The cost is real: if the run dies early, PRs at the back of the queue got
 nothing at all. So the order matters. Take them: PRs this run opened, then any
@@ -762,8 +930,8 @@ run.** Do not read the fall-through above as permission to keep reviewing past t
 budget because the destination is missing.
 
 **"Ends the run" means it starts no new round — not that it stops mid-carry.**
-Everything the paragraph below requires still happens: label the PR you are
-holding, post its reason comment, and record it. A run that reads "ends" as
+Everything the paragraph below requires still happens: label each PR you are
+holding, post each one's reason comment, and record them. A run that reads "ends" as
 immediate leaves exactly the unlabelled-with-open-findings PR that paragraph
 forbids.
 
@@ -771,6 +939,47 @@ If the budget runs out with findings open on a PR, it gets the same treatment as
 the ceiling: `unsettled`, recorded, move on. Never leave a PR with open findings
 carrying no label — unlabelled and unreviewed are indistinguishable to the next
 run, which is the whole reason these labels exist.
+
+**Reserve before you start, now that cycles overlap** (CF-564). Claim a PR for
+a cycle only while the unspent budget covers three rounds for it *and* three for
+every PR already in cycle; dispatch an implementer only under the same test,
+counting the PR it will open. Three is what [one round of findings
+costs](RATIONALE.md#what-a-night-costs) — cold, semi-cold on the fix, cold to
+settle. Without the reservation, several cycles run the budget out together, and
+every one of them lands on the paragraph above at the same moment: `unsettled`,
+findings open, for arithmetic rather than for anything a reviewer found.
+
+**When the reservation refuses, look at what is in flight first.** If cycles are
+running, the refusal is temporary: they will finish and hand back what they did
+not spend, so start nothing new and wait for them. Only when nothing is in
+flight and the reservation still refuses is the budget spent for starting
+anything — then follow the paragraph on a spent budget above: step 3 plans and
+files only, and `review-only` ends. Without that second half, a run with one or
+two rounds left could neither start work nor reach the rule that says what to do
+instead.
+
+**Three rounds is a reservation, not a guarantee.** It is what a typical cycle
+costs; a PR with two rounds of findings takes five, and the ceiling allows
+seven. A cycle that outruns its reservation draws on the rest of the budget like
+any other, and if that runs out, the paragraph above on a budget spent with
+findings open applies. The reservation makes several cycles running out together
+rare. It does not make it impossible.
+
+**In `build`, the review queue counts against 35 and ticket work against 40.**
+A claim on a PR that was open before this run is tested against 35, which
+keeps the five rounds [reserved for step 3](RATIONALE.md#what-a-night-costs). An
+implementer, and the cycle of the PR it opens — its first round's claim
+included, though by then it is "a PR already open" — are tested against 40:
+those five rounds exist for exactly that work, and testing it against 35 would
+leave them unspendable. **The two tests are separate**: waiting because the
+review queue's test refused does not hold back ticket work that passes its own.
+
+**Both numbers were re-derived for concurrent cycles, and both stand.** The
+ceiling is per PR: seven rounds bound one PR's cycle whether or not others run
+beside it, so concurrency does not reach it. The budget of 40 is a cap on what a
+night spends, not a throughput target: parallel cycles spend it sooner in
+wall-clock time, but not more of it. What concurrency changes is *how* it runs
+out, and that is what the reservation is for.
 
 #### Logging, and the counting windows
 
@@ -818,9 +1027,10 @@ touched it. So count markers newer than the run's start time, which the
 **When a PR was re-opened mid-run, count from the `reopened:` marker instead —
 but only if that marker falls inside this run.** There is no label event to
 read here; re-opening writes that marker precisely so this bound survives the
-label being removed. Three states carry a commits-since carve-out —
-`review-settled`, and the `ran out of rounds` and `not our branch` reasons for
-`unsettled` — and each re-opens the same way, so each gets the same bound.
+label being removed. Four states carry a commits-since carve-out —
+`review-settled`, and the `ran out of rounds`, `not our branch` and `head moved`
+reasons for `unsettled` — and each re-opens the same way, so each gets the same
+bound.
 (`needs a decision` and `latched` have no carve-out and never need it: both
 wait for a human, and neither is cleared by anything a run can do.) The bound
 you want is the *later* of the run start and that marker: a `reopened:` marker
