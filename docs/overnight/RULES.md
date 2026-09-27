@@ -275,6 +275,11 @@ in the log and the report.** That is the capability check in
 optional: at one subagent the rules above cost nothing, so there is no reason to
 proceed without isolation rather than degrade to serial.
 
+**This session's own checkout stays on `main`** (CF-563). It no longer
+implements anything itself, so nothing needs a branch here, and every worktree
+the harness makes starts from whatever this checkout has checked out — a
+feature branch left here would become every subagent's starting point.
+
 #### The registry
 
 **Every dispatch appends a line to the log, and every completion appends
@@ -286,8 +291,8 @@ dispatched: ROLE TARGET AGENT UTC
 finished: ROLE TARGET AGENT UTC OUTCOME
 ```
 
-`ROLE` is what the subagent was spawned to do — `cold`, `semi-cold` or
-`cross-check`. `TARGET` is `#<n>`, the PR or issue it works on. `AGENT` is the
+`ROLE` is what the subagent was spawned to do — `cold`, `semi-cold`,
+`planner` or `implementer`. `TARGET` is `#<n>`, the PR or issue it works on. `AGENT` is the
 id the harness returned for the spawn. `UTC` is a resolved timestamp, never the
 command that produces one ([Measure what you publish](#measure-what-you-publish)).
 **A `dispatching:` or `dispatched:` line with no matching `finished:` line is in
@@ -415,7 +420,7 @@ is left alone too.
 ME=$(gh api user --jq .login)
 SINCE=$(grep '^run start: ' .claude/overnight-log.md | tail -1 | cut -d' ' -f3)
 [ -n "$SINCE" ] || { echo "no run start in log"; exit 1; }
-LONGEST_MIN=60   # the longest "lost after" in the table below
+LONGEST_MIN=120  # the longest "lost after" in the table below
 CUTOFF=$(date -u -d "-$LONGEST_MIN minutes" +%Y-%m-%dT%H:%M:%SZ)
 [ -n "$CUTOFF" ] || { echo "could not compute the cutoff"; exit 1; }
 gh api --paginate "repos/ClipFarmVB/ClipFarm/issues?state=open&labels=in-progress&per_page=100" --jq '.[].number' |
@@ -458,7 +463,8 @@ a **ticket** releases it with `no PR — lost`.
 | role | lost after | measured from |
 |---|---|---|
 | `cold`, `semi-cold` | 60 min with no marker | the `dispatched:` line |
-| `cross-check` | 60 min with no result | the `dispatched:` line |
+| `planner` | 90 min with no plan | the `dispatched:` line |
+| `implementer` | 120 min with no PR | the `dispatched:` line |
 
 **Where 60 minutes comes from, and what it is not.** Markers do not measure how
 long a round takes; they bound it. The gap between two consecutive markers on
@@ -477,8 +483,12 @@ percentiles (Python's `statistics.quantiles(..., method="inclusive")`):
 So 60 minutes is **a judgement, not a measurement**: about twice every p90, and
 exceeded by 6 of 285 gaps, each of which may hold a round far shorter than
 itself. What it costs when it is wrong is one round, stopped and spawned again.
-A cross-check reviews a plan rather than a diff, and gets the same bound for
-want of its own data.
+
+**The planner and implementer figures are not measured.** Before CF-563 this
+session planned and implemented tickets itself, so no marker records how long
+either takes. The implementer's 120 minutes is the ported harness's own figure;
+the planner's 90 is a round's 60 plus the cross-check it spawns, which is a
+second, smaller review. Both are the first rows to re-derive from the registry.
 
 **These are the first figures, not the last.** The registry records the exact
 duration of every round from now on; re-derive the table from it once there is
@@ -488,6 +498,107 @@ a run's worth, and say in the table where the new figures came from.
 the line. Time it from its `claimed:` comment instead, and before releasing it,
 look for the subagent in the harness's list of agents this session spawned and
 stop it if it is there.
+
+#### The WIP limit and areas
+
+**The WIP limit** (CF-563) is the `wip limit:` value in [This
+run](START.md#this-run). It caps **targets in flight**, counted two ways:
+
+- a **ticket** from its claim until its implementer reports — a PR, or a
+  release
+- a **PR** from the first round of its cycle until it reaches a terminal state
+
+**Count from the registry and the claims this run made, never from a label
+query** — the label-filtered listing [lags a fresh
+label](#stale-claims), so a count taken just after a claim can come back one
+short and let a slot be filled twice. A ticket released because its area was
+held does not count; it is no longer in flight.
+
+**The per-run PR cap still binds, and parallel work can overshoot it.** Before
+dispatching an implementer, add the PRs this run has opened to the
+implementers already in flight: if that reaches the [hard rules'](#hard-rules)
+maximum, dispatch nothing. Checking only the PRs already opened lets three
+implementers dispatched at five PRs open eight.
+
+**Two dispatches are one target.** A ticket's planner and its implementer work
+one after the other on the same claim, and a planner's own cross-check runs
+inside its dispatch, so the limit counts targets, not agents. The number of
+agents alive at once can briefly reach twice the limit.
+
+**Areas are files, not labels.** A ticket may not start implementing while any
+file its plan changes is held by other work. Two things hold files:
+
+- a **ticket in flight**: the existing files its [planner](TICKETS.md#the-planners-brief)
+  listed, as recorded in the log
+- **this account's open PRs, except `unsettled` and `hold` ones**: every path
+  the PR changes relative to `main`. Each of them is headed for `main` whether or
+  not its cycle has started — a PR this run opened a minute ago, an older one
+  never yet reviewed, one reviewed clean and waiting on a check — and work in its
+  files would collide with it. Holding files only from the first round of a
+  cycle left exactly the PR an implementer had just opened holding nothing. An
+  `unsettled` or `hold` PR releases its files: it may sit for weeks, and the
+  collision is dealt with when it comes back
+
+Other accounts' PRs hold nothing. The run cannot schedule around work it does
+not control, and some of it — a long-lived mobile branch — would otherwise hold
+half the tree.
+
+**Read a PR's paths from git, not from `gh pr view`:**
+
+```
+git fetch -q origin main || { echo "cannot read main"; exit 1; }
+git fetch -q origin "pull/<n>/head" || { echo "cannot read #<n>"; exit 1; }
+git diff --name-only --no-renames origin/main...FETCH_HEAD
+```
+
+**If either fetch fails, that PR holds everything** until it can be read. A PR
+whose files could not be read and that therefore holds none is the same
+fail-open the push guard was rewritten to remove.
+
+**Two fetches, in that order, never one.** Fetching both refspecs at once writes
+both into `FETCH_HEAD`, which then resolves to the first — `main` — and the
+diff compares `main` with itself and prints nothing: a PR that appears to hold
+no files. Found by running this block as first written, on 2026-09-27.
+
+Two things the API's file list gets wrong for this purpose, both checked on
+2026-09-27. It is the diff against the PR's *base*, so a PR stacked on another
+PR's branch reports none of the files beneath it. And it lists a renamed file
+by its new path only, so the old path is held by nobody. The
+three-dot diff against `main` is what the PR will change when it lands, and
+`--no-renames` lists a rename as a deletion and an addition, which holds both
+paths.
+
+**Two paths collide when they are the same, or when one is a directory that
+contains the other** — in either direction. That is what makes the migration
+rule work. A plan adding an Alembic revision lists `api/alembic/versions/` as
+one path, because two plans that each take the next revision number collide
+with no file in common; and **a PR that adds a revision holds that whole
+directory too**, whatever its file is called, since its revision number is
+taken the moment it merges.
+
+**Why not the repo's labels, which look like areas.** Measured on 2026-09-27
+over the 152 merged PRs, of which 99 close an issue: each of those takes the
+labels on the issues in its `closingIssuesReferences`, counting only the ten
+that read as areas — `api`, `web`, `devops`, `docs`, `eval`, `dead-time`,
+`ball-detection`, `audio`, `scoring`, `mobile`. `api` PRs touched `web/src/` in
+9 of 25, `web` PRs touched `api/app/` in 6 of 13, `devops` — the largest, at 42 —
+touched 10 of the 11 top-level
+directories any merged PR has touched, and `scoring`, `audio` and `mobile`
+have never closed a merged PR. The files shared across the most of those ten
+are exactly the ones two tickets would fight over: `.gitignore` under six,
+`README.md` and `ARCHITECTURE.md` under five, `api/app/config.py` and
+`render.yaml` under four. Label exclusivity would let two tickets that both edit
+`config.py` run side by side, provided one was filed as `api` and the other as
+`devops`. The labels are topics; nothing about filing a card makes them regions.
+
+**What files cannot promise.** An implementer that has to change a file its plan
+did not list may do so and must name it — see [its
+brief](TICKETS.md#the-implementers-brief). Declared files make collisions rare,
+not impossible. One that happens anyway usually surfaces as a PR GitHub cannot
+merge — but not always: two migrations that each took the same revision number
+merge cleanly one after the other and leave `main` with two Alembic heads,
+which is why the directory rule above exists rather than trusting a merge
+conflict to announce it.
 
 ### Log before you finish each iteration
 

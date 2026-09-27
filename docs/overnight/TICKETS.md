@@ -1,6 +1,7 @@
 # Step 3 — ticket work
 
-Read on a lap that **implements a ticket**, and whenever a card needs filing.
+Read on a lap that **starts or receives ticket work**, and whenever a card needs
+filing.
 The gate list and everything under [Working a ticket](#working-a-ticket) are
 `build`-only; [Filing cards](#filing-cards-for-out-of-scope-findings) is reached
 in both modes, which is why this file is not.
@@ -22,7 +23,8 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 
 #### Step 3 — ticket work
 
-**3 — Only when 1 and 2 are clear**, take one ticket from "This run". *Clear*
+**3 — Only when 1 and 2 are clear**, take tickets while [the WIP
+limit](RULES.md#the-wip-limit-and-areas) has room. *Clear*
 is [step 1's test](REVIEW.md#step-1--which-prs-need-a-round) and its check-held
 clause: a PR reviewed clean and waiting on CI is not a round owed, so it does
 not hold step 3 back for the rest of the night.
@@ -35,18 +37,154 @@ applies in both modes.
 
 ### Working a ticket
 
-1. **Claim it, then plan.** [Claim](RULES.md#claims) the ticket before reading
-   anything, so a run cut off mid-ticket leaves it marked rather than silently
-   half-done. The claim stays until the ticket's PR is opened, and is released
-   then with `PR #<n>` — see [Claims](RULES.md#claims). Then
-   read the card and the code it touches, and write the plan into the
-   log: approach, files, migration if any, tests, and what could go wrong.
-2. **Cross-check the plan before implementing.** Spawn a subagent to review it
-   against the actual repository, looking for stale assumptions about repo state,
-   a migration number that collides, tests or CI steps that already exist, and
-   anything the plan asserts without verifying. Record what it said — including
-   when it disagreed and you proceeded anyway, with your reasoning.
-3. **Implement** on a branch named for the card.
+**Ticket work is dispatched, not done in this session** (CF-563). Each ticket
+goes through two subagents in turn — a [planner](#the-planners-brief), then an
+[implementer](#the-implementers-brief). This session keeps the one part that
+needs to see every ticket at once: whether a plan's files collide with work
+already in flight. Several tickets can be at different steps below at the same
+time, up to [the WIP limit](RULES.md#the-wip-limit-and-areas).
+
+1. **Claim it.** [Claim](RULES.md#claims) the ticket before anything else, so a
+   run cut off mid-ticket leaves it marked rather than silently half-done. The
+   claim stays until the ticket's PR is opened, and is released then with
+   `PR #<n>` — see step 6.
+2. **Dispatch a planner** with [its brief](#the-planners-brief).
+3. **Record the plan, then decide.** Write the plan and what its cross-check
+   said into the log — including where they disagreed and the planner went its
+   own way, and your reasoning if you proceed anyway. If the plan needs a
+   decision, or the ticket is too large to implement ([size
+   discipline](#size-discipline) below), release it with
+   `released: <UTC> — no PR — <why>`. The plan stays in the log.
+4. **Check its files against the areas already held** — see [the WIP limit and
+   areas](RULES.md#the-wip-limit-and-areas). If any is held, release the ticket
+   with `released: <UTC> — no PR — area held by #<n>` and take the next eligible
+   one. It can be selected again once `#<n>` is done, and is planned again then:
+   `main` will have moved under the first plan.
+5. **Dispatch an implementer** with [its brief](#the-implementers-brief), the
+   plan as recorded, and a free slot number from 1 to the WIP limit, written at
+   the end of its `dispatched:` line as `slot=<k>`. A slot is free again once
+   that line has its `finished:`. **Unless the review budget is spent** — then
+   step 3 may [only plan and file](RULES.md#the-run-budget), so release the
+   ticket with `released: <UTC> — no PR — review budget spent`, the plan kept in
+   the log.
+6. **When it reports, check GitHub, not the report.** The PR exists, is a
+   draft, and GitHub lists the ticket among the issues it closes — read
+   `closingIssuesReferences`, not the body, so GitHub's own parse of the
+   closing keyword is the one checked:
+
+   ```
+   gh pr view <n> --json isDraft,closingIssuesReferences \
+     --jq '"draft: \(.isDraft)", "closes: \([.closingIssuesReferences[].number] | join(","))"'
+   ```
+
+   Then compare the PR's files with the plan and log every existing file
+   outside it — those are the collisions areas could not see. Read the files
+   with [the areas command](RULES.md#the-wip-limit-and-areas), not the API's
+   list, which names a renamed file by its new path only.
+
+   **Release the ticket's claim** with `released: <UTC> — PR #<n>`. The PR
+   carries the work from here, and [a ticket an open PR closes is never
+   selected](START.md#choosing-work).
+
+   Then the PR joins step 1, at the front of the queue as a PR this run opened.
+   Getting it reviewed — by a cold subagent, never by you — is your job, and
+   draft status does not exempt it. **An implementer that reports a failed
+   gate** is logged with the step and its output, and its ticket released with
+   `released: <UTC> — no PR — gate failed: <step>`.
+
+#### Size discipline
+
+If a ticket would produce a diff too large to review in one
+sitting, do not implement it. Write the plan into the log instead — a good plan
+beats a half-finished 2000-line PR.
+
+#### The planner's brief
+
+The planner works alone in its own worktree, never sees the rest of the run,
+and **changes nothing** — no edits, no branch, no push. Give it the ticket and
+`CLAUDE.md`, and [pass what binds it explicitly](RULES.md#dispatching-subagents).
+**It starts from `main`, checked out explicitly** —
+`git fetch -q origin main && git checkout -q --detach FETCH_HEAD` — because
+[its worktree starts wherever this session's checkout
+is](RULES.md#dispatching-subagents), and a plan read against another branch
+lists the wrong files. Ask it for:
+
+- **A plan** — approach, files, migration if any, tests, and what could go
+  wrong — read against the code the ticket touches, not the card alone.
+- **The existing files the plan changes**, as repository paths, one per line.
+  These become its [area](RULES.md#the-wip-limit-and-areas). Files it will
+  create go in a separate list and hold nothing. **A plan that adds an Alembic
+  migration lists `api/alembic/versions/` as one path**: two plans that each
+  take the next revision number collide at merge with no file in common.
+- **A cross-check before it reports.** It spawns its own subagent — with
+  worktree isolation, like [every subagent](RULES.md#dispatching-subagents) — to
+  review the plan against the actual repository, looking for stale assumptions
+  about repo state, a migration number that collides, tests or CI steps that
+  already exist, and anything the plan asserts without verifying. It reports
+  what the cross-check said, including anything it disagreed with, and what it
+  changed in response. The planner rereading its own plan is not a cross-check.
+  The cross-check starts from `main` the same way. **Its worktree is the
+  planner's to remove**: the harness puts it beside the planner's, at
+  `.claude/worktrees/agent-<its id>`, and this session's registry never sees
+  that id — so the planner removes it and its `worktree-agent-<its id>` branch
+  before reporting, and names its id in the report if it could not.
+- **A size verdict**: whether the diff would be reviewable in one sitting.
+
+#### The implementer's brief
+
+The implementer works alone, in its own worktree, and never sees the rest of the
+run. Give it the ticket, the plan as recorded after the cross-check, `CLAUDE.md`
+and its slot number `k`, and [pass what binds it
+explicitly](RULES.md#dispatching-subagents). Ask it to:
+
+1. **Set up its own Python environment before anything installs.** A virtualenv
+   in the worktree — `python -m venv .venv`, which `.gitignore` already covers,
+   run with a Python that actually works: the pre-commit hook tries `python`,
+   `py` and `python3` in that order because a standard Windows install ships a
+   `python` stub that runs nothing — whose interpreter runs every `pip` and
+   `python` in the gate. Point the
+   pre-commit hook at it too: the hook honours `CLIPFARM_PYTHON` before probing
+   `PATH`, so set it to `.venv/bin/python`, or `.venv/Scripts/python.exe` on
+   Windows.
+
+   Two reasons, and the second holds even with one implementer. **Concurrent
+   gates in one interpreter corrupt each other**: the gate installs `numpy`
+   after mypy *because numpy's presence changes mypy's error set* (step 3), so
+   one implementer's install can land in the middle of another's type check.
+   And **on a machine that has run the gate once, numpy is already installed
+   before mypy runs**, so in a shared interpreter the order step 3 calls
+   load-bearing stops holding after the first gate. A fresh environment is the
+   only way that order means anything.
+
+   **What stays shared, and why that is safe.** The compose stack's Postgres
+   and Redis: use them, and never restart or recreate the stack, because another
+   implementer's gate may be running against it. Sharing Postgres between
+   concurrent gates was checked on 2026-09-27: every suite that needs a real
+   server creates its own database under a random name or takes advisory locks
+   on `uuid4()` keys, and terminates backends only by its own pid or its own
+   database. **A test with a fixed database name or a fixed lock key would break
+   that**, and make concurrent gates flaky in a way no single run shows.
+
+   **Name the interpreter in every command; do not rely on activating it.** In
+   this harness shell state does not carry from one command to the next, so an
+   `activate` or an `export` lasts exactly one command, and the gate block below
+   — which says plain `pip`, `python`, `ruff`, `mypy` — would quietly fall back
+   to the shared interpreter this step exists to avoid. **Write the interpreter's
+   absolute path out in full in every command** — the worktree's own path, then
+   `.venv/Scripts/python.exe`, or `.venv/bin/python` off Windows. Absolute,
+   because the gate `cd`s into `api/`, where a relative `.venv/...` names
+   nothing; in full every time, because a variable set in one command is gone by
+   the next, exactly like the activation. So `<abs>/python.exe -m pip install ...`,
+   `<abs>/python.exe -m ruff check api/`, `cd api && <abs>/python.exe -m pytest
+   tests/`, and on the commit itself `CLIPFARM_PYTHON=<abs>/python.exe git commit ...`.
+
+   **Ports**, if it runs the app at all: web on `3100 + k`, api on `8100 + k`.
+   The gate itself starts no server.
+2. **Implement** on a branch named for the card, cut from the latest
+   `origin/main`. **Stay inside the plan.** An existing file the plan does not
+   list may still be changed when the work needs it, but it goes in the report
+   by name — it is the one collision [areas](RULES.md#the-wip-limit-and-areas)
+   could not see coming.
 
    **If the thing you are writing parses a standard format, use the parser for
    that format.** A version specifier, a requirements line, a semver range, a
@@ -82,7 +220,7 @@ applies in both modes.
    than refine the expression — and in this case the losing version's own
    docstring already advised taking the dependency, which its author had not
    done.
-4. **Run the full gate.** Every step `ci.yml` runs:
+3. **Run the full gate**, in the environment from step 1. Every step `ci.yml` runs:
 
    ```
    pip install -r requirements-tooling.txt
@@ -164,15 +302,15 @@ applies in both modes.
    reddened a PR in untouched code. CF-92 (#255) pinned them and has since
    landed, which is why this paragraph no longer says the opposite.
 
-   Do not open a PR if any gate fails — log it and move on.
-5. **Open a draft PR** following `.github/pull_request_template.md`, including
-   the bare `Closes #<issue>` line `CLAUDE.md` requires. Then go back to step 1:
-   a PR you just opened has no review yet, and getting it reviewed — by a cold
-   subagent, never by you — is your job. Draft status does not exempt it.
-
-**Size discipline.** If a ticket would produce a diff too large to review in one
-sitting, do not implement it. Write the plan into the log instead — a good plan
-beats a half-finished 2000-line PR.
+   Do not open a PR if any gate fails — report which step failed, with its
+   output, and stop.
+4. **Push once, at the end, then open a draft PR** following
+   `.github/pull_request_template.md`, including the bare `Closes #<issue>` line
+   `CLAUDE.md` requires. One push means CI never runs on half the work, and a
+   branch that exists is a branch that is finished.
+5. **Report**: the PR number; every existing file the PR changes that the plan
+   did not list; the gate's summary lines verbatim, skip counts included; and
+   the tool versions it ran.
 
 ### Filing cards for out-of-scope findings
 
