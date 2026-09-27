@@ -80,11 +80,17 @@ def pg_db():
 
 @pytest.fixture(scope="module")
 def sources(pg_db):
-    """A ready source game with tagged clips, and one still processing."""
+    """A ready source game with tagged clips, and one still processing.
+
+    The ready source is public, and so is its first clip, so a copier that
+    carried either visibility across would fail the copy test's `private` and
+    NULL assertions. A private source with inheriting clips could not tell.
+    """
     from app.models.clip import ActionType, Clip
     from app.models.game import Game, GameStatus
     from app.models.player import Player
     from app.models.user import User
+    from app.models.visibility import Visibility
 
     owner, player = uuid.uuid4(), uuid.uuid4()
     ready, processing = uuid.uuid4(), uuid.uuid4()
@@ -100,6 +106,7 @@ def sources(pg_db):
             condensed_video_url="https://r2.test/condensed/src.mp4",
             original_duration=1800.0, condensed_duration=900.0, progress=1.0,
             processed_at=datetime.now(timezone.utc),
+            visibility=Visibility.public,
         ))
         s.add(Game(
             id=processing, owner_id=owner, title="Still going",
@@ -112,14 +119,20 @@ def sources(pg_db):
                 confidence=0.9, highlight_score=0.8, start_time=10.0 * i,
                 end_time=10.0 * i + 6, clip_url=clip_url, thumbnail_url=thumb,
                 labels=["spike"],
+                visibility=Visibility.public if i == 0 else None,
             ))
         s.commit()
     sync.dispose()
     return {"ready": ready, "processing": processing}
 
 
-def _provision(pg_db, uid, email):
+def _provision(pg_db, uid, email, *, stale_first_read=False):
+    """`stale_first_read` makes the opening `users` lookup miss, as it does
+    for a request whose read ran before another request's INSERT committed.
+    That request goes on to the INSERT, gets DO NOTHING, and must not copy."""
     from app.auth import _ensure_user_exists
+
+    reads_missed = []
 
     async def go():
         engine = create_async_engine(
@@ -127,11 +140,21 @@ def _provision(pg_db, uid, email):
         )
         try:
             async with AsyncSession(engine) as db:
+                if stale_first_read:
+                    real_scalar = db.scalar
+
+                    async def stale_scalar(*args, **kwargs):
+                        db.scalar = real_scalar  # type: ignore[method-assign]
+                        reads_missed.append(args[0])
+                        return None
+
+                    db.scalar = stale_scalar  # type: ignore[method-assign]
                 await _ensure_user_exists(uid, email, db)
         finally:
             await engine.dispose()
 
     asyncio.run(go())
+    return reads_missed
 
 
 def _query(pg_db, sql, **params):
@@ -215,8 +238,11 @@ def test_a_second_provisioning_does_not_copy_again(pg_db, sources, monkeypatch):
     uid, email = _new_user()
 
     _provision(pg_db, uid, email)
-    _provision(pg_db, uid, email)
+    # Past the opening read, so the second call reaches the INSERT, gets DO
+    # NOTHING, and is refused by the `created` gate rather than returning early.
+    missed = _provision(pg_db, uid, email, stale_first_read=True)
 
+    assert len(missed) == 1, "the second call never took the INSERT path"
     assert len(_games_of(pg_db, uid)) == 1
 
 

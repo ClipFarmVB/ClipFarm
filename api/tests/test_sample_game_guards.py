@@ -42,6 +42,7 @@ from app.models.correction import Correction  # noqa: E402
 from app.models.game import Game, GameStatus  # noqa: E402
 from app.models.visibility import Visibility  # noqa: E402
 from app.routers import clips as clips_router  # noqa: E402
+from app.routers import collections as collections_router  # noqa: E402
 from app.routers import games as games_router  # noqa: E402
 from app.routers import posts as posts_router  # noqa: E402
 from app.schemas.clip import (  # noqa: E402
@@ -326,6 +327,45 @@ def test_the_flag_reaches_both_response_shapes():
     plain, plain_clip, _ = _setup(is_sample=False)
     assert GameOut.model_validate(plain).is_sample is False
     assert clips_router._clip_out(plain_clip, plain).is_sample is False
+
+
+class _ListRows(_Rows):
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _CollectionStubDB:
+    """`list_collection_clips` reads the collection with `get()`, then runs the
+    clip page and the game lookup in that order. The clip here has no player,
+    so the player lookup between them is skipped."""
+
+    def __init__(self, collection, clips: list[Clip], games: list[Game]):
+        self._collection = collection
+        self._queued = [clips, games]
+
+    async def get(self, _model, _pk):
+        return self._collection
+
+    async def execute(self, _stmt):
+        return _ListRows(self._queued.pop(0))
+
+
+@pytest.mark.parametrize("is_sample", [True, False])
+def test_the_flag_reaches_a_clip_opened_from_a_collection(monkeypatch, is_sample):
+    # A collection is one of the pages that hold only the clip, and it builds
+    # its ClipOut by hand rather than through `_clip_out` — so the flag has to
+    # be set there too, or Share and Post are offered on a sample and 409.
+    monkeypatch.setattr(storage, "r2_configured", lambda: False)
+    game, clip, _db = _setup(is_sample=is_sample)
+    collection = MagicMock(id=uuid.uuid4(), owner_id=OWNER)
+    db = _CollectionStubDB(collection, [clip], [game])
+
+    out = asyncio.run(
+        collections_router.list_collection_clips(collection.id, OWNER, db)
+    )
+
+    assert [c.id for c in out] == [clip.id]
+    assert out[0].is_sample is is_sample
 
 
 def test_an_unflushed_game_reads_as_not_a_sample():

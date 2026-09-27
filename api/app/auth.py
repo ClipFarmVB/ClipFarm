@@ -68,11 +68,15 @@ async def _copy_sample_game(user_id: uuid.UUID, db: AsyncSession) -> None:
     **Never breaks signup.** Any failure costs the example, not the account:
     it is logged and swallowed, and the user row commits without it.
 
-    **In a savepoint, flushed inside it.** The copy's INSERTs must fail HERE,
-    where the savepoint can roll back just them. Left pending to the outer
-    `commit()`, a failing INSERT would raise an IntegrityError into the
-    caller's handler below — which rolls back the whole transaction, user row
-    included, and then misreads the failure as a provisioning race.
+    **In a savepoint.** The copy's INSERTs must fail HERE, where the savepoint
+    can roll back just them. They do, and not because of any flush in the
+    copier: leaving `begin_nested()` commits the nested transaction, which
+    flushes whatever is still pending before it releases the savepoint. So a
+    failing INSERT raises inside this block either way, the savepoint rolls it
+    back, and the user row is untouched. (The copier's first flush gives the
+    copied game its id, which its clips need; its closing flush is not what
+    makes this work.) Without the savepoint, a
+    failed INSERT would abort the outer transaction, and the user row with it.
 
     Nothing from the copy is touched after a rollback: on an AsyncSession an
     expired attribute lazy-loads and raises MissingGreenlet.
