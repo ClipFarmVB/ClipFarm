@@ -156,7 +156,8 @@ Ask it to:
 
 When it reports, check GitHub for the push and the reply, write its `finished:`
 line, and carry on with the cycle: the semi-cold round against the new head. A
-fixer that reported `head moved` routes the PR as [below](#when-you-cannot-fix-it-choosing-a-reason).
+fixer that reported `head moved` is checked first, as the next paragraph says,
+and only then routed as [below](#when-you-cannot-fix-it-choosing-a-reason).
 
 **A fixer that was lost or rate-limited is not simply dispatched again**, and a
 `head moved` report is not taken at its word. Read the PR's head first. If it

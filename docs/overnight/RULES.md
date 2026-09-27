@@ -292,13 +292,18 @@ git -C .claude/worktrees/agent-<AGENT> branch overnight-latched-<n>
 ```
 
 That is a local branch in the one repository every worktree shares, so it
-outlives the worktree, which can then be cleaned up like any other. Name it in
-the `unsettled: latched` comment and in the report. The one retry [the latch
-rule allows](REVIEW.md#record-comments-human-removal-and-re-opening) happens in
-whichever run finds the label removed: dispatch a fixer whose only job is the
-push — a detached checkout of `overnight-latched-<n>`, `STARTED_AT` set to that
-commit's parent, through the guard — and delete the pin once it lands. The pin
-exists on this machine only; a run anywhere else cannot retry it and says so.
+outlives the worktree, which can then be cleaned up like any other. **Name it in
+the `unsettled: latched` comment together with the full `STARTED_AT`** — the head
+the fix was built on, forty characters — and in the report. The one retry [the
+latch rule allows](REVIEW.md#record-comments-human-removal-and-re-opening)
+happens in whichever run finds the label removed, by a **push-only fixer**: a
+detached checkout of `overnight-latched-<n>`; a check that it descends from the
+recorded `STARTED_AT` (`git merge-base --is-ancestor`); then the guard, with
+that `STARTED_AT`, and nothing else — no new commits and no gate, which the fix
+already passed. Not the pin's parent: a fix of several commits has a parent the
+remote never saw. Delete the pin only once the push has landed and the PR's head
+equals it. The pin exists on this machine only; a run anywhere else cannot retry
+it and says so.
 
 ### Dispatching subagents
 
@@ -332,7 +337,9 @@ ticket](TICKETS.md#working-a-ticket).
   A subagent that reads the tree it was handed reviews whatever branch this
   session happened to be on, and says nothing, because the tree is consistent.
   **If the fetch or the checkout fails, it stops and reports** — it does not
-  read on. Two subagents fetching `main` at once can contend for the same
+  read on. Its `finished:` outcome is `aborted`: nothing was reviewed or
+  written, so it is not a round against the budget or the ceiling, and the
+  target is routed again. Two subagents fetching `main` at once can contend for the same
   ref lock, and one that shrugs off the failure is back to reading the tree it
   was handed.
 - **Spawn from the repository root**, so a relative path in the brief means what
@@ -412,7 +419,10 @@ the next run can read it:
    registry](#the-registry)). On every dispatch after the claim's first,
    **re-stamp the claim**: edit this run's `claimed:` comment to the new time
    rather than posting another —
-   `gh api -X PATCH repos/ClipFarmVB/ClipFarm/issues/comments/<id> -f body="claimed: <UTC>"`.
+   `gh api -X PATCH repos/ClipFarmVB/ClipFarm/issues/comments/<id> -f body="claimed: <UTC>"`,
+   where `<id>` is the newest `claimed:` comment of this account's on that
+   target: the [stale-claim script's](#stale-claims) query, with `.id` in place
+   of `.updated_at`.
    Editing moves the comment's `updated_at` (checked on 2026-09-27), so the claim
    records when the target was last given work. That, not when the claim began,
    is what [releasing stale claims](#stale-claims) has to age: a PR is claimed
@@ -695,13 +705,21 @@ a lost fixer's PR whose head is no longer its `STARTED_AT`:
 
 ```
 git fetch -q origin "pull/<n>/head" || { echo "cannot read #<n>"; exit 1; }
+git merge-base --is-ancestor "<STARTED_AT>" FETCH_HEAD || { echo "rewritten - head moved"; exit 1; }
 git log --format=%s "<STARTED_AT>..FETCH_HEAD"
 ```
 
-**Every subject ends `(round @<STARTED_AT's first seven>)`: this loop's own fix
-landed.** A fixer was stopped after its push, or its push arrived after it was
-stopped. Post the reply it did not, from those subjects, and spawn the semi-cold
-round against the new head. **Any other subject: a person pushed**, and the PR
+**The second line comes first for a reason.** A branch rewound or rewritten
+under the fix no longer descends from `STARTED_AT`, and the range after it is
+then empty — and "every subject is marked" is true of no subjects at all, which
+would read a person's rewind as this loop's own push. So a head that does not
+descend from `STARTED_AT` is `head moved`, before any subject is read.
+
+**At least one subject, and every one ending `(round @<STARTED_AT's first
+seven>)`: this loop's own fix landed.** A fixer was stopped after its push, or its push arrived after it was
+stopped. Post the reply it did not, from those subjects — unless one for those
+commits is already on the PR, as it is when a re-dispatched fixer got there first
+— and spawn the semi-cold round against the new head. **Any other subject: a person pushed**, and the PR
 is [`head moved`](FIX.md#when-you-cannot-fix-it-choosing-a-reason) — describe the
 fix, label, move on. The subject is the only reliable tell: this loop and its
 operator commit as the same person, so authorship says nothing.
@@ -948,10 +966,13 @@ findings open applies. The reservation makes several cycles running out together
 rare. It does not make it impossible.
 
 **In `build`, the review queue counts against 35 and ticket work against 40.**
-A claim on a PR already open is tested against 35, which keeps the five rounds
-[reserved for step 3](RATIONALE.md#what-a-night-costs). An implementer, and the
-cycle of the PR it opens, are tested against 40: those five rounds exist for
-exactly that work, and testing it against 35 would leave them unspendable.
+A claim on a PR that was open before this run is tested against 35, which
+keeps the five rounds [reserved for step 3](RATIONALE.md#what-a-night-costs). An
+implementer, and the cycle of the PR it opens — its first round's claim
+included, though by then it is "a PR already open" — are tested against 40:
+those five rounds exist for exactly that work, and testing it against 35 would
+leave them unspendable. **The two tests are separate**: waiting because the
+review queue's test refused does not hold back ticket work that passes its own.
 
 **Both numbers were re-derived for concurrent cycles, and both stand.** The
 ceiling is per PR: seven rounds bound one PR's cycle whether or not others run
