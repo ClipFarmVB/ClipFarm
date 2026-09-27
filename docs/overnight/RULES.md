@@ -247,6 +247,14 @@ ticket](TICKETS.md#working-a-ticket).
   `git fetch origin BRANCH`, then `git checkout --detach FETCH_HEAD`; a fixer
   pushes with `git push origin HEAD:BRANCH`. That way no worktree *holds* a
   branch another agent needs, which a plain `git checkout BRANCH` would.
+- **A worktree starts wherever this session's checkout is, not at `main`.** The
+  harness copies this session's current commit, and a probe on 2026-09-27 found a
+  nested child starting at a commit that was neither `main` nor its parent's.
+  So every subagent checks out what it reads before reading it: the detached PR
+  head above for PR work, and for anything judged against `main` — a plan, a
+  cross-check — `git fetch -q origin main && git checkout -q --detach FETCH_HEAD`.
+  A subagent that reads the tree it was handed reviews whatever branch this
+  session happened to be on, and says nothing, because the tree is consistent.
 - **Spawn from the repository root**, so a relative path in the brief means what
   it says.
 - **Pass the rules that bind the subagent explicitly.** Do not hand it this
