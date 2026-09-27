@@ -403,8 +403,11 @@ the next lap; selecting it again only spends another planner on the same
 answer. The log's `released:` lines are the list.
 
 **Except a ticket released because its area was held** (CF-563): that reason
-does change, and the ticket is eligible again once the PR or ticket that held
-the area has let go of it — released, merged, closed, or `unsettled`.
+does change. It is eligible again once none of the files its last plan listed
+— still in the log — is held; check that against [the
+areas](RULES.md#the-wip-limit-and-areas) before spending a planner on it. The
+holder being released is not the test: a ticket is released when its PR opens,
+and the PR then holds the same files.
 
 Work highest priority first (`P0` > `P1` > `P2` > unlabelled), taking tickets
 while [the WIP limit](RULES.md#the-wip-limit-and-areas) has room — each one
