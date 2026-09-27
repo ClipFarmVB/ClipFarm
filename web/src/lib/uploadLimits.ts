@@ -45,6 +45,7 @@ const FORMAT_NAMES: Record<string, string> = {
 /**
  * The formats `GET /games/upload-config` admits (`allowed_content_types`), as
  * a user reads them. A type without a friendly name shows as its MIME subtype
+ * with any `x-` prefix stripped, uppercased (`video/x-msvideo` reads `MSVIDEO`),
  * rather than being dropped, so the label never claims less than the server
  * accepts. An empty list falls back to `SUPPORTED_FORMATS_LABEL`.
  */

@@ -20,8 +20,9 @@ interface OnboardingPanelProps {
   userId?: string;
   /**
    * The copied sample game, used as the worked example and excluded from the
-   * user's own progress. Null until the web types carry `is_sample` (#220).
-   * A game flagged `is_sample` is excluded from progress either way.
+   * user's own progress. Null until wired (#220): nothing passes it yet, and
+   * the api only sends `is_sample` once #571 lands. A game flagged `is_sample`
+   * is excluded from progress either way.
    */
   sampleGameId?: string | null;
 }

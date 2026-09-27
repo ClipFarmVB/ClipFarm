@@ -31,8 +31,9 @@ export function onboardingKey(userId: string): string {
   return `${KEY_PREFIX}${userId}`;
 }
 
-// Fallback for when storage is blocked or throws. Written alongside storage,
-// never instead of it.
+// This tab's copy of each record, so a write sticks even when storage is
+// blocked or throws. Written alongside storage, never instead of it, and read
+// before it: once this tab has written a record, that value wins.
 const memory = new Map<string, OnboardingRecord>();
 const listeners = new Set<() => void>();
 
