@@ -48,19 +48,23 @@ condition](START.md#when-a-review-only-run-is-done) and [step 3's
 gate](TICKETS.md#step-3--ticket-work) — which is what keeps a night whose
 remaining queue is one red PR from having no way to end.
 
-**Two cases leave the queue before the test runs** (CF-562):
+**Three cases leave the queue before the test runs** (CF-562):
 
 - **A PR labelled `hold`** is out of the queue, exactly as an out-of-scope PR is
   — no round, no label, no comment. A human put it there; see
   [Claims](RULES.md#claims).
-- **A PR with a subagent in flight against it** — a `dispatched:` line in [the
-  registry](RULES.md#the-registry) with no `finished:` — gets no new round. It
-  is not owed one: one is running. **Nor is it finished.** The `review-only`
-  stop condition may not treat it as done until its `finished:` line is
-  written: a run that stopped on a queue whose last round was still in flight
+- **A PR with a subagent in flight against it** — a `dispatching:` or
+  `dispatched:` line in [the registry](RULES.md#the-registry) with no
+  `finished:` — gets no new round. It is not owed one: one is running.
+  **Nor is it finished.** The `review-only` stop condition may not treat it as
+  done until its `finished:` line is written: a run that stopped on a queue
+  whose last round was still in flight
   would orphan that round and its claim. Step 3's gate asks something weaker —
   whether every PR owed a round is *in* its cycle — and a PR with a round in
   flight is.
+- **A PR carrying `in-progress` that this run did not claim** is somebody
+  else's work in progress — a person's, or an earlier run's claim [too recent
+  to release](RULES.md#stale-claims). Out of the queue, untouched.
 
 **And one filter in front of that test: the run's `review scope`.** With scope
 `own`, a PR whose author is not this account is out of scope and gets no round —
