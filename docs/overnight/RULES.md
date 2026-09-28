@@ -75,10 +75,10 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
   **The trailer and the session link are emitted client-side and are
   suppressible**, and a sandbox does not inherit the settings that suppress
   them — which is the mechanism behind the prohibition, and what the reversal
-  nearly deleted along with the rest. So either one, or a "Generated with
-  Claude Code" line, found on your own PR body, review, comment or issue is a
-  setting to fix, not an exception to claim; the exemption below does not
-  cover them.
+  nearly deleted along with the rest. So either one, found on your own PR
+  body, review, comment or issue, is a setting to fix, not an exception to
+  claim; the exemption below does not cover them. Any other footer you did not
+  write goes through the reproduction test below.
 
   **Not every footer is one you wrote or one of those two, by measurement.** On
   2026-09-16 a run rewrote #554's body to end in a single footer it wrote itself — a
@@ -1173,9 +1173,9 @@ what was run.** Writing them as coverage of a *kind* of defect — the guard, th
 fills, both columns, the class — is the same defect as publishing a number you
 did not measure.
 
-The usual tell is a plural in a claim backed by a narrower run: *both* index
-assertions, *all three* mutations, *max_\**, *both* NaN conventions. Each was
-written after running part of the class and finding it caught.
+The usual tell is a plural in a claim backed by a narrower run: *all three*
+mutations, *max_\**, *both* NaN conventions. Each was written after running
+part of the class and finding it caught.
 But the tell is not always a plural — the first instance below generalised a
 single caught mutation into a statement about the guard, with no plural in
 sight. The reliable question is not "is there a plural" but **"is this sentence
