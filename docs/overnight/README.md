@@ -24,9 +24,9 @@ not the ones it is not. Every rule lives in exactly one file.
 |---|---|---|
 | [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.3k |
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 8.3k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test and its guard, dispatching subagents, the registry and claims, the WIP limit and areas, one credential, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 20.7k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test and its guard, dispatching subagents, the registry and claims, the WIP limit and areas, one credential, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 19.5k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 15.3k |
-| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.3k |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, how findings are tiered, and what a mutation result licenses | 6.6k |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings — the fixer, the cycle, the settle bar, choosing an `unsettled` reason | 6.6k |
 | [`TICKETS.md`](./TICKETS.md) | a lap that starts or receives ticket work, and whenever a card needs filing | 7.0k |
 | [`REPORTING.md`](./REPORTING.md) | the end of the run | 3.2k |
@@ -65,9 +65,9 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap that only selects costs about 38k tokens of brief instead of 71k;
+A step-1 lap that only selects costs about 37k tokens of brief instead of 72k;
 one that also spawns a round, about 44k. A step-2 lap is about 35k, a step-3 lap
-about 30k. That is the whole point of the split.
+about 29k. That is the whole point of the split.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
@@ -99,7 +99,7 @@ Two comparisons follow, answering different questions, so each says what it is
 measured on — which is the thing this page gets wrong when it gets anything
 wrong:
 
-- **On today's files.** A step-1 lap that only selects is ~6k cheaper than one
+- **On today's files.** A step-1 lap that only selects is ~7k cheaper than one
   that also spawns — the difference of the two rounded lap figures. The whole
   of it is `BRIEFS.md`, which only the spawning lap reads; the table rounds
   that file on its own, so the two need not print the same number.
