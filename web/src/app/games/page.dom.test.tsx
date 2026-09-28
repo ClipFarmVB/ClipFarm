@@ -10,6 +10,8 @@
 //   user's onboarding record. Another tab signing in as a different account
 //   changes `user` under a mounted Library; the list loaded for the previous
 //   user must not survive into the new user's panel.
+// - CF-221 R10-M1: signing out under a mounted Library must not remount it into
+//   an unauthenticated `fetchGames()`, whose 401 left a red error card.
 //
 // `fetchGames` is a single mock whose behaviour each test sets: by default it
 // hands back the in-flight prefetch (or never settles), which is what the
@@ -77,6 +79,7 @@ afterEach(() => {
 
 describe("the games page", () => {
   it("does not say there are no games when the load failed", async () => {
+    authUser = { id: "cf304" };
     fetchGames.mockRejectedValue(new Error("Network down"));
     await act(async () => {
       root.render(<GamesPage />);
@@ -87,6 +90,7 @@ describe("the games page", () => {
   });
 
   it("still says so when the load succeeded with none", async () => {
+    authUser = { id: "cf304" };
     fetchGames.mockResolvedValue([]);
     await act(async () => {
       root.render(<GamesPage />);
@@ -122,5 +126,26 @@ describe("Library across an account switch", () => {
     await act(async () => { resolveB([]); });
     expect(readOnboarding("switch-b")).toBeNull();
     expect(panel()).not.toBeNull();
+  });
+});
+
+describe("Library across a sign-out", () => {
+  it("makes no request and shows no error once the user is signed out", async () => {
+    authUser = { id: "signout-a" };
+    cached = [game("a-ready", "ready")];
+    await act(async () => { root.render(<GamesPage />); });
+    expect(host.textContent).toContain("a-ready");
+
+    // Sign-out: AuthContext clears the cache and, with no user, starts no
+    // prefetch. An unauthenticated fetch here would 401.
+    fetchGames.mockRejectedValue(new Error("401 Unauthorized"));
+    authUser = null;
+    cached = null;
+    inflight = null;
+    await act(async () => { root.render(<GamesPage />); });
+
+    expect(fetchGames).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain("401");
+    expect(host.textContent).not.toContain("a-ready");
   });
 });

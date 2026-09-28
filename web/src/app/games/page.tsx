@@ -301,9 +301,15 @@ export default function GamesPage() {
   // user's list in state. AuthContext has already cleared the module cache by
   // then, so the remount starts loading. Without this the onboarding panel
   // judged the old list against the new user and wrote their `done`.
+  //
+  // Signing out also clears the cache, but AuthContext starts no prefetch for
+  // a null user and nothing redirects until the next navigation. So with no
+  // user the Library renders nothing rather than mounting into an
+  // unauthenticated `fetchGames()` whose 401 would fill the page with an error
+  // card. The sidebar already offers "Sign in" in that state.
   return (
     <RequireAuth>
-      <GamesContent key={user?.id ?? ""} />
+      {user && <GamesContent key={user.id} />}
     </RequireAuth>
   );
 }
