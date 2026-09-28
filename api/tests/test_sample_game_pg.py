@@ -210,7 +210,7 @@ def test_a_new_account_gets_exactly_one_marked_private_copy(pg_db, sources, monk
     assert game.is_sample is True
     assert game.title == "Example: " + SOURCE_TITLE
     assert game.status == "ready"
-    assert game.raw_video_url is None, "a trim would overwrite the shared object"
+    assert game.raw_video_url is None, "a copy has no upload of its own to re-cut from"
     assert game.condensed_video_url is None
     assert game.visibility == "private"
     assert game.upload_id is None

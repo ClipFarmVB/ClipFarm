@@ -21,9 +21,13 @@ why the copies need guards the owner's own games do not:
 
 **Left out of the copy on purpose:**
 
-* `raw_video_url` — a trim would re-cut from the source upload and overwrite
-  the SHARED clip object in place, changing every copy at once. Null makes
-  trim refuse, and keeps the retention sweep away from the source's upload.
+* `raw_video_url` — the copy has no upload of its own to re-cut from. Handing
+  it the source's would make every copy a reference that keeps the source's
+  upload alive in the retention sweep (`sync_referenced_raw_keys`). Null makes
+  trim refuse. (A copy's re-cut would not touch the shared clip object: it
+  writes under the copy's own game id, `workers/tasks.py::recut_clip_task` —
+  but deleting the example is rows only, so that new object would be orphaned.
+  Only a re-cut of the *source* overwrites what every copy plays.)
 * `condensed_video_url` — a re-condense of the source replaces that object,
   and a copy pointing at it would silently change or break. `condensed_duration`
   goes with it, since the two describe one cut.

@@ -398,8 +398,9 @@ async def trim_clip(
     # plays (CF-220).
     sample_game.assert_not_source(game.id)
 
-    # The example game has no source upload of its own, and a re-cut would
-    # overwrite the clip object every copy shares (CF-220). Its own message,
+    # The example game has no source upload of its own to re-cut from, and a
+    # re-cut object under the copy's own key would be orphaned, since deleting
+    # an example removes rows only (CF-220). Its own message,
     # because "passed its retention window" is not what happened, and 409 like
     # every other example refusal rather than the retention case's 400.
     if sample_game.is_sample(game):
