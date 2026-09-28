@@ -39,9 +39,14 @@ export function Sidebar() {
   // flag-off build from calling a route the API doesn't register.
   const me = useMe(SOCIAL_ENABLED && Boolean(user) && !loading);
   // A generated handle is not published — /users/{handle} 404s until it's
-  // claimed — so linking to it would send the user to "No one is using @alice".
+  // claimed — so linking to it would send the user to a "Profile not found" page.
   // needsHandle() is the same predicate the banner and the API use.
   const hasPublicProfile = Boolean(me?.username) && !needsHandle(me);
+
+  // `/` is the signed-out landing page (CF-219). A signed-in user is redirected
+  // off it by the middleware, but `/` is static and the router serves its
+  // prefetched copy without asking — so the brand link skips the hop.
+  const homeHref = user ? "/games" : "/";
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
@@ -97,7 +102,7 @@ export function Sidebar() {
         >
           <Menu size={18} />
         </button>
-        <Link href="/" className="group flex items-center gap-2.5">
+        <Link href={homeHref} className="group flex items-center gap-2.5">
           <BrandMark />
         </Link>
       </header>
@@ -152,7 +157,7 @@ export function Sidebar() {
       >
         {/* Logo */}
         <div className="flex h-[52px] shrink-0 items-center border-b border-border">
-          <Link href="/" onClick={closeOnNavigate} className="group flex min-w-0 flex-1 items-center gap-2.5 px-4">
+          <Link href={homeHref} onClick={closeOnNavigate} className="group flex min-w-0 flex-1 items-center gap-2.5 px-4">
             <BrandMark />
           </Link>
           <button
