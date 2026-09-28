@@ -9,14 +9,14 @@ only the dump from diagnose_detection.py, which the container mounts.
 Step 0 prints the sweep's own baseline row, and beneath it the last recorded
 run for that fixture with the tag and commit it came from. That is context, not
 a pass/fail check: nothing here verifies the recorded run describes the
-configuration you are on. Restoring step 0 to a trustworthy control is CF-309
-(#359), and it needs more than a fresh row. The newest recorded run is the
+configuration you are on. Restoring step 0 to a trustworthy control is CF-416
+(#547), and it needs more than a fresh row. The newest recorded run is the
 `rules` figure (ml/eval/README.md's CF-187 table: 56.2% dead, 176s live), its
 `app.config` snapshot carries no `condense_mode` at all, and this tool replays
 `active_windows_from_contacts` + `bridge_windows_by_motion` — the `rules` path
 — while `condense_mode` has shipped `guarded` since CF-187. So a row
 re-recorded at app defaults would match step 0 LESS, not more. Either this tool
-scores the shipping builder (CF-416, #547), or "shipping defaults" here means
+scores the shipping builder, or "shipping defaults" here means
 the tuner's and the table says so. Re-recording also needs the R2 ball caches
 (#511).
 
@@ -179,7 +179,7 @@ def _last_recorded_run(test_id: str) -> dict | None:
 
     So this no longer claims. It reports what was last recorded and what it was
     recorded against, and leaves the comparison to the reader. Making step 0 a
-    trustworthy control again is CF-309 (#359), which is open and owns exactly
+    trustworthy control again is CF-416 (#547), which is open and owns exactly
     that — and what it needs is the module docstring's answer, not a matcher
     bolted on here. Not simply a re-recorded row either: see there for why a row
     taken at app defaults would match step 0 less, not more.
@@ -218,7 +218,7 @@ def _baseline_note(test_id: str) -> str:
         "  ^ last recorded run (%s, %s): %.0fs live-lost, %.1f%% dead-rm, "
         "%.1f%% recall\n"
         "    NOT a pass/fail check — whether that run describes your "
-        "configuration is not verified here (#359).\n"
+        "configuration is not verified here (#547).\n"
         % (row.get("version_tag", "?"), row.get("git_commit", "?"),
            d["live_removed_sec"], 100 * d["dead_removed_pct"],
            100 * d["kept_play_pct"])

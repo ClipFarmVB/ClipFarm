@@ -16,7 +16,7 @@ recorded run and says outright that nothing here verifies that run describes
 the configuration you are on. The literal it replaced was taken at
 `CONTACT_RESIDUAL_MIN_PXPS = 480` against a shipping 240, so it could not match
 and the tool called its own output untrustworthy every run. Deciding whether a
-recorded row still applies is CF-309 (#359), not this file.
+recorded row still applies is CF-416 (#547), not this file.
 
 Behavioural rather than a source scan: the guards in this suite were converted
 away from `inspect.getsource` substring checks in CF-174's own review rounds.
