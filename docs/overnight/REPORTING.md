@@ -39,6 +39,59 @@ in the first line which run this was.
 mode ran. A reader cannot otherwise tell "reviewed nothing new" from "was not
 looking".
 
+**State the WIP limit beside them, and the most targets that were in flight at
+once** (CF-563) — read off the registry, not remembered. The two differ when
+the queue could not fill the limit or a capability check forced it to 1, and
+the difference is what an operator needs before raising it. **List every
+ticket released because its area was held, with the PR that held it**, and
+every file an implementer changed outside its plan: those are the two
+measurements of how often parallel work collides.
+
+**Before writing the report, stop what is still in flight and release it**
+(CF-562). Stop every subagent with a `dispatching:` or `dispatched:` line and no
+`finished:`, write
+its `finished:` line with the outcome `run ended`, and release its claim with
+`released: <UTC> — run ended`. A run that stops cleanly should hand the next one
+no claims at all; [releasing at run start](RULES.md#stale-claims) is the backstop
+for a run that could not stop cleanly, not the plan.
+
+**Name every claim this run released that it did not finish**, in its own list:
+those released at run start as orphaned by an earlier run, those left alone
+because they were too recent to release, those stopped as lost, those released
+because a person merged, closed or held the target, and those released because
+the run ended. Each is work somebody should
+know did not complete. An orphaned claim in particular is the only evidence that
+the previous run ended without reporting.
+
+**Remove the worktrees this run's subagents left behind** (CF-564), once each
+one's work is pushed or released. The harness's description of its own worktree
+isolation — in the documentation of the tool that spawns subagents — says a
+worktree is cleaned up automatically only if it is unchanged, and every
+implementer and fixer changes its tree, so at six agents a night, each with its
+own virtualenv, they pile up. On 2026-09-27 `git worktree list` held eleven
+`agent-*` worktrees whose agents had long finished, the oldest from 2026-09-14,
+and there were 68 `worktree-agent-*` branches. Each worktree sits at
+`.claude/worktrees/agent-<AGENT>`, `AGENT` being the id on its `dispatched:`
+line. The harness creates it on a branch `worktree-agent-<AGENT>`, which the
+subagent's detached checkout then leaves behind:
+
+```
+git worktree remove --force .claude/worktrees/agent-<AGENT>
+git branch -D worktree-agent-<AGENT>
+```
+
+**Only those the registry names**, and a latched fix's only once it is
+[pinned](RULES.md#pushing-to-a-branch-that-may-have-moved): its commit sits on a
+detached `HEAD`, so removing the worktree unpinned is what would lose it.
+
+**Name, but do not remove, the ones nobody accounts for.** A planner's
+cross-check, or any subagent lost before it reported, can leave a worktree whose
+id the registry never learned. List the `agent-*` worktrees whose directories
+are newer than the run's start and that the registry does not name, and put them
+in the report. Other worktrees under `.claude/worktrees/` belong to people and
+sessions this run knows nothing about. Name in the report any it could not
+remove.
+
 ### Then reset the log, and only then
 
 `.claude/overnight-log.md` is scratch memory for **one** run. Once the report
@@ -114,10 +167,11 @@ The report contains:
   a run cannot fix an upstream breakage unattended either way. It is here because
   the two want different humans, and a report that does not say which is which
   sends the question to the wrong one.
-- PRs labelled `unsettled`, split by the four reasons their `unsettled:` comment
+- PRs labelled `unsettled`, split by the five reasons their `unsettled:` comment
   gives — `needs a decision` (a reviewer found a judgement call), `latched` (the
   harness refused the push), `not our branch` (the author's next push re-opens
-  it), and `ran out of rounds` (the per-PR ceiling, or the run-wide budget) — and
+  it), `ran out of rounds` (the per-PR ceiling, or the run-wide budget), and
+  `head moved` (someone pushed while this run was fixing it) — and
   what is still outstanding on each
 - **Latched PRs by name, each saying exactly what refused the push.** Two of
   these reasons want a human and want *different* humans doing different things:

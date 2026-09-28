@@ -39,8 +39,11 @@ vi.mock("next/link", () => ({
     <a href={href} {...rest}>{children}</a>
   ),
 }));
+// Mutable so the brand-link case can render both signed in and signed out;
+// every other case here runs signed in, as the whole file did before CF-219.
+let authUser: { id: string } | null = { id: "u1" };
 vi.mock("@/contexts/AuthContext", () => ({
-  useAuth: () => ({ user: { id: "u1" }, loading: false, signOut: vi.fn() }),
+  useAuth: () => ({ user: authUser, loading: false, signOut: vi.fn() }),
 }));
 vi.mock("@/contexts/ThemeContext", () => ({
   useTheme: () => ({ theme: "light", toggle: vi.fn() }),
@@ -76,6 +79,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  authUser = { id: "u1" };
 });
 
 describe("BrandMark", () => {
@@ -204,5 +208,27 @@ describe("Sidebar's BrandMark call sites", () => {
       expect(classes).toContain("flex");
       expect(classes).toContain("gap-2.5");
     }
+  });
+});
+
+describe("Sidebar's brand link destination", () => {
+  // CF-219: `/` is the signed-out landing page. A signed-in user clicking the
+  // brand would otherwise land on the router's cached copy of it, since the
+  // middleware redirect does not run for a prefetched static route.
+  function brandHrefs(): (string | null)[] {
+    act(() => root.render(<Sidebar />));
+    return Array.from(host.querySelectorAll("span"))
+      .filter((s) => s.textContent === "ClipFarm")
+      .map((s) => s.closest("a")?.getAttribute("href") ?? null);
+  }
+
+  it("goes to /games when signed in", () => {
+    authUser = { id: "u1" };
+    expect(brandHrefs()).toEqual(["/games", "/games"]);
+  });
+
+  it("goes to the landing page when signed out", () => {
+    authUser = null;
+    expect(brandHrefs()).toEqual(["/", "/"]);
   });
 });

@@ -1,8 +1,29 @@
 import type { CSSProperties } from "react";
+import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { StatCounter } from "@/components/StatCounter";
+import { DemoVideo } from "@/components/landing/DemoVideo";
+import { MockClipCard, type MockClip } from "@/components/landing/MockClipCard";
+import { SampleOutput } from "@/components/landing/SampleOutput";
+import { SignedInRedirect } from "@/components/landing/SignedInRedirect";
+
+// The landing page for signed-out visitors (CF-219). Signed-in users never see
+// it: the middleware sends them to /games, and SignedInRedirect covers a
+// client-side navigation served from the router cache.
+
+// No image here — the social card is CF-248's. This title replaces the root
+// layout's rather than extending it, as the layout sets no template.
+export const metadata: Metadata = {
+  title: "ClipFarm — Volleyball highlights from full-game footage",
+  description:
+    "Upload a full volleyball game and get the rallies worth keeping cut into clips, tagged by action and ranked by how big the play was.",
+  openGraph: {
+    title: "ClipFarm — Volleyball highlights from full-game footage",
+    description:
+      "Upload a full volleyball game and get the rallies worth keeping cut into clips, tagged by action and ranked by how big the play was.",
+  },
+};
 
 // ─── A: Ticker data ───────────────────────────────────────────────
 const ACTIONS = [
@@ -22,95 +43,108 @@ const HEADLINE = [
   "highlight", "reel,", "automatically.",
 ];
 
-// ─── C: Mock clip cards ───────────────────────────────────────────
-interface MockClipData {
-  action: string;
-  confidence: number;
-  time: string;
-  duration: string;
-  thumbFrom: string;
-  dotClass: string;
-  confClass: string;
+// ─── C: Hero card stack ───────────────────────────────────────────
+interface HeroClip extends MockClip {
   pos: CSSProperties;
-  anim: string;
+  /** One of the `.float-*` classes in globals.css. */
+  floatClass: string;
 }
 
-const MOCK_CLIPS: MockClipData[] = [
+const HERO_CLIPS: HeroClip[] = [
   {
     action: "serve", confidence: 79, time: "02:11", duration: "0:08",
     thumbFrom: "from-sky-950",
-    dotClass: "bg-sky-400", confClass: "text-amber-400",
+    dotClass: "bg-sky-400", confClass: "text-amber-500",
     pos: { position: "absolute", top: 48, left: 32, zIndex: 10 },
-    anim: "float-c 4.7s ease-in-out infinite 1.4s",
+    floatClass: "float-c",
   },
   {
     action: "dig", confidence: 87, time: "08:45", duration: "0:05",
     thumbFrom: "from-emerald-950",
-    dotClass: "bg-emerald-400", confClass: "text-amber-400",
+    dotClass: "bg-emerald-400", confClass: "text-amber-500",
     pos: { position: "absolute", top: 24, left: 16, zIndex: 20 },
-    anim: "float-b 5.1s ease-in-out infinite 0.7s",
+    floatClass: "float-b",
   },
   {
     action: "spike", confidence: 94, time: "14:23", duration: "0:06",
     thumbFrom: "from-red-950",
-    dotClass: "bg-red-400", confClass: "text-emerald-400",
+    dotClass: "bg-red-400", confClass: "text-emerald-500",
     pos: { position: "absolute", top: 0, left: 0, zIndex: 30 },
-    anim: "float-a 4.2s ease-in-out infinite",
+    floatClass: "float-a",
+  },
+];
+
+// ─── Sample output ────────────────────────────────────────────────
+// Illustrative mock-ups, labelled as such on the page. CF-220's sample game
+// replaces these with real clips through the same SampleOutput props.
+const SAMPLE_CLIPS: MockClip[] = [
+  {
+    action: "spike", confidence: 94, time: "14:23", duration: "0:06",
+    thumbFrom: "from-red-950", dotClass: "bg-red-400", confClass: "text-emerald-500",
+  },
+  {
+    action: "block", confidence: 88, time: "21:07", duration: "0:07",
+    thumbFrom: "from-orange-950", dotClass: "bg-orange-400", confClass: "text-emerald-500",
+  },
+  {
+    action: "dig", confidence: 87, time: "08:45", duration: "0:05",
+    thumbFrom: "from-emerald-950", dotClass: "bg-emerald-400", confClass: "text-amber-500",
+  },
+  {
+    action: "serve", confidence: 79, time: "02:11", duration: "0:08",
+    thumbFrom: "from-sky-950", dotClass: "bg-sky-400", confClass: "text-amber-500",
   },
 ];
 
 // ─── How it works ─────────────────────────────────────────────────
+// Kept in step with the README's Key Concepts: ball tracking finds the play,
+// pose only refines the label. Describing pose as the detector is the mistake
+// this copy used to make.
 const STEPS = [
   {
     step: "01",
-    title: "Upload footage",
-    body: "Drop any MP4, MOV, MKV, or WebM. Processing starts immediately in the background.",
+    title: "Upload the full game",
+    body: "Drop in the whole recording as MP4, MOV, MKV, or WebM. No trimming first — processing runs in the background.",
   },
   {
     step: "02",
-    title: "AI detects actions",
-    body: "YOLOv8 pose estimation identifies spikes, serves, digs, sets, and blocks frame-by-frame.",
+    title: "Rallies found, the best kept",
+    body: "Ball tracking follows the play to find each rally, then scores it on crowd reaction and rally shape and keeps the best.",
   },
   {
     step: "03",
-    title: "Browse your clips",
-    body: "Filter by action type, player, or confidence. Every clip is trimmed and ready to share.",
+    title: "Each play labelled",
+    body: "Clips are tagged spike, serve, dig, set, or block from the ball's path, with pose estimation refining the call.",
+  },
+  {
+    step: "04",
+    title: "Browse and download",
+    body: "Filter by action, confidence, or top plays. Every clip is trimmed and ready to download.",
   },
 ];
 
-// ─── MockClipCard ─────────────────────────────────────────────────
-function MockClipCard({
-  action, confidence, time, duration, thumbFrom, dotClass, confClass,
-}: Omit<MockClipData, "pos" | "anim">) {
+function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="w-[210px] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl shadow-black/60 select-none">
-      {/* Thumbnail */}
-      <div className={`relative aspect-video bg-gradient-to-br ${thumbFrom}/30 to-surface-high flex items-center justify-center`}>
-        {/* Action badge */}
-        <div className="absolute top-2 left-2 flex items-center gap-1.5 rounded bg-black/50 backdrop-blur-sm px-2 py-0.5">
-          <span className={`h-1 w-1 rounded-full shrink-0 ${dotClass}`} />
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-white/70">
-            {action}
-          </span>
-        </div>
-        {/* Play button */}
-        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/8 border border-white/12">
-          <svg className="ml-0.5 h-3.5 w-3.5 fill-white/50" viewBox="0 0 24 24">
-            <path d="M8 5v14l11-7z" />
-          </svg>
-        </div>
-        {/* Duration */}
-        <div className="absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white/75 tabular-nums">
-          {duration}
-        </div>
-      </div>
-      {/* Footer */}
-      <div className="flex items-center justify-between px-2.5 py-2 border-t border-border">
-        <span className={`text-[11px] font-semibold tabular-nums ${confClass}`}>
-          {confidence}%
-        </span>
-        <span className="text-[10px] text-subtle tabular-nums">{time}</span>
-      </div>
+    <p className="mb-6 text-[11px] font-semibold uppercase tracking-widest text-subtle">
+      {children}
+    </p>
+  );
+}
+
+function SignUpCtas() {
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <Link href="/signup">
+        <Button size="lg">
+          Get started
+          <ArrowRight size={13} />
+        </Button>
+      </Link>
+      <Link href="/login">
+        <Button size="lg" variant="ghost">
+          Log in
+        </Button>
+      </Link>
     </div>
   );
 }
@@ -119,16 +153,11 @@ function MockClipCard({
 export default function HomePage() {
   return (
     <div>
+      <SignedInRedirect />
 
       {/* ── A: Scrolling ticker ─────────────────────────────────── */}
-      <div className="-mx-4 overflow-hidden border-b border-border/40 sm:-mx-6 lg:-mx-8">
-        <div
-          style={{
-            display: "flex",
-            width: "max-content",
-            animation: "ticker 28s linear infinite",
-          }}
-        >
+      <div className="-mx-4 overflow-hidden border-b border-border/40 sm:-mx-6 lg:-mx-8" aria-hidden>
+        <div className="ticker">
           {TICKER.map((item, i) => (
             <div
               key={i}
@@ -165,14 +194,14 @@ export default function HomePage() {
             {/* Left: eyebrow + headline (B) + subtitle + CTA */}
             <div className="max-w-[500px]">
               <p
-                className="mb-5 text-[11px] font-semibold uppercase tracking-widest text-muted"
-                style={{ animation: "fade-up 0.4s cubic-bezier(0.16,1,0.3,1) 0.1s both" }}
+                className="landing-fade mb-5 text-[11px] font-semibold uppercase tracking-widest text-muted"
+                style={{ animationDelay: "0.1s" }}
               >
                 Volleyball highlights
               </p>
 
               {/* B: Word-by-word reveal */}
-              <h1 className="text-[40px] sm:text-[48px] font-semibold tracking-tight text-foreground leading-[1.12]">
+              <h1 className="text-[36px] sm:text-[48px] font-semibold tracking-tight text-foreground leading-[1.12]">
                 {HEADLINE.map((word, i) => (
                   <span
                     key={i}
@@ -180,11 +209,8 @@ export default function HomePage() {
                     style={{ marginRight: "0.22em" }}
                   >
                     <span
-                      className="inline-block"
-                      style={{
-                        animation: "word-up 0.65s cubic-bezier(0.16,1,0.3,1) both",
-                        animationDelay: `${120 + i * 70}ms`,
-                      }}
+                      className="word-up"
+                      style={{ animationDelay: `${120 + i * 70}ms` }}
                     >
                       {word}
                     </span>
@@ -193,43 +219,27 @@ export default function HomePage() {
               </h1>
 
               <p
-                className="mt-5 text-[14px] text-muted leading-[1.75] max-w-[380px]"
-                style={{ animation: "fade-up 0.5s cubic-bezier(0.16,1,0.3,1) 0.75s both" }}
+                className="landing-fade mt-5 text-[14px] text-muted leading-[1.75] max-w-[400px]"
+                style={{ animationDelay: "0.75s" }}
               >
-                Upload game footage and get a filterable feed of every spike,
-                serve, dig, set, and block — automatically tagged by player.
+                Upload a full game and get back a filterable feed of its best rallies —
+                the spikes, serves, digs, sets, and blocks worth keeping, each in its own clip.
               </p>
 
-              <div
-                className="mt-8 flex items-center gap-3"
-                style={{ animation: "fade-up 0.5s cubic-bezier(0.16,1,0.3,1) 0.9s both" }}
-              >
-                <Link href="/upload">
-                  <Button size="lg">
-                    Upload a game
-                    <ArrowRight size={13} />
-                  </Button>
-                </Link>
-                <Link href="/games">
-                  <Button size="lg" variant="ghost">
-                    View library
-                  </Button>
-                </Link>
+              <div className="landing-fade mt-8" style={{ animationDelay: "0.9s" }}>
+                <SignUpCtas />
               </div>
             </div>
 
             {/* Right: C — mock clip card stack */}
             <div
-              className="relative hidden lg:block shrink-0"
-              style={{
-                width: 250,
-                height: 260,
-                animation: "fade-up 0.8s cubic-bezier(0.16,1,0.3,1) 0.4s both",
-              }}
+              className="landing-fade relative hidden lg:block shrink-0"
+              style={{ width: 250, height: 260, animationDelay: "0.4s" }}
+              aria-hidden
             >
-              {MOCK_CLIPS.map((clip) => (
-                <div key={clip.action} style={clip.pos}>
-                  <div style={{ animation: clip.anim }}>
+              {HERO_CLIPS.map(({ pos, floatClass, ...clip }) => (
+                <div key={clip.action} style={pos}>
+                  <div className={floatClass}>
                     <MockClipCard {...clip} />
                   </div>
                 </div>
@@ -240,24 +250,23 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* ── Divider ─────────────────────────────────────────────── */}
-      <div className="h-px bg-border" />
+      {/* ── Demo video ──────────────────────────────────────────── */}
+      <section className="py-12" aria-labelledby="landing-demo">
+        <h2 id="landing-demo" className="sr-only">Demo video</h2>
+        <SectionLabel>See it run</SectionLabel>
+        <DemoVideo />
+      </section>
 
-      {/* ── D: Stat counters ────────────────────────────────────── */}
-      <StatCounter />
-
-      {/* ── Divider ─────────────────────────────────────────────── */}
       <div className="h-px bg-border" />
 
       {/* ── How it works ────────────────────────────────────────── */}
-      <div className="py-12">
-        <p className="mb-8 text-[11px] font-semibold uppercase tracking-widest text-subtle">
-          How it works
-        </p>
-        <div className="grid grid-cols-1 gap-8 sm:grid-cols-3 stagger">
+      <section className="py-12" aria-labelledby="landing-how">
+        <h2 id="landing-how" className="sr-only">How it works</h2>
+        <SectionLabel>How it works</SectionLabel>
+        <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-4 stagger">
           {STEPS.map(({ step, title, body }) => (
             <div key={step}>
-              <p className="mb-3 text-[11px] font-semibold tabular-nums text-brand/60">
+              <p className="mb-3 text-[11px] font-semibold tabular-nums text-brand">
                 {step}
               </p>
               <h3 className="text-[13px] font-semibold text-foreground">{title}</h3>
@@ -265,7 +274,38 @@ export default function HomePage() {
             </div>
           ))}
         </div>
-      </div>
+      </section>
+
+      <div className="h-px bg-border" />
+
+      {/* ── Sample output ───────────────────────────────────────── */}
+      <section className="py-12" aria-labelledby="landing-sample">
+        <h2 id="landing-sample" className="sr-only">What you get</h2>
+        <SectionLabel>What you get</SectionLabel>
+        <SampleOutput
+          clips={SAMPLE_CLIPS}
+          label="Example clips, for illustration — not from a real game."
+        />
+      </section>
+
+      {/* ── Closing sign-up band ────────────────────────────────── */}
+      <section
+        className="mb-4 rounded-xl border border-border bg-surface px-6 py-10 sm:px-10"
+        aria-labelledby="landing-cta"
+      >
+        <h2
+          id="landing-cta"
+          className="text-[22px] sm:text-[26px] font-semibold tracking-tight text-foreground"
+        >
+          Turn your next game into highlights.
+        </h2>
+        <p className="mt-2 max-w-[440px] text-[14px] text-muted leading-relaxed">
+          Create an account, upload a game, and come back to its clips.
+        </p>
+        <div className="mt-6">
+          <SignUpCtas />
+        </div>
+      </section>
 
     </div>
   );
