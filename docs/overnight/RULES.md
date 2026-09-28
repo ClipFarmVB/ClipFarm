@@ -60,11 +60,12 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 - **You are never the reviewer.** Every PR still gets reviewed — by a subagent
   spawned per step 1, whether or not this session wrote the diff.
 - **Maximum 6 new PRs** and **7 new cards** per run.
-- **A `Co-Authored-By` trailer and a session link on a COMMIT are fine** — the
-  maintainer settled this on 2026-09-16, reversing the rule described below.
-  Keep them off PR bodies, reviews, comments and issues, and **never write a
-  "Generated with Claude Code" line, or any similar footer, into those four
-  yourself** — the same bar [Dispatching subagents](#dispatching-subagents)
+- **A `Co-Authored-By` trailer, a session link and a "Generated with Claude
+  Code" line in a COMMIT message are all fine** — the maintainer settled the
+  first two on 2026-09-16, reversing the rule described below, and the line on
+  #545. Keep them off PR bodies, reviews, comments and issues, and **never
+  write a "Generated with Claude Code" line, or any similar footer, into those
+  four yourself** — the same bar [Dispatching subagents](#dispatching-subagents)
   sets for every subagent.
 
   The rule this replaces read "never exempt" and had a run flag its own commits
@@ -370,10 +371,11 @@ ticket](TICKETS.md#working-a-ticket).
   a subagent given `RULES.md` has been told the opposite of its job. Spell out
   what binds it — at minimum that it must not push to `main`, merge, force-push
   or deploy; must not read or echo a secret; adds no attribution stamp to a PR
-  body, review, comment or issue (a `Co-Authored-By` trailer or session link on
-  a commit is fine); prefixes its comments; stays inside its scope; claims a
-  mutation result only for the mutations it ran, never for their class; and
-  reports a decision it needs rather than taking it.
+  body, review, comment or issue (a `Co-Authored-By` trailer, session link or
+  "Generated with Claude Code" line on a commit is fine); prefixes its
+  comments; stays inside its scope; claims a mutation result only for the
+  mutations it ran, never for their class; and reports a decision it needs
+  rather than taking it.
 
 **When the environment gives no worktree, run one subagent at a time and say so
 in the log and the report.** That is the capability check in
