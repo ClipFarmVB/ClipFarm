@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { AlertCircle, CheckCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { LogoMark } from "@/components/LogoMark";
 import { createClient } from "@/lib/supabase";
 
 export default function SignupPage() {
@@ -77,6 +78,7 @@ export default function SignupPage() {
     <div className="flex min-h-[80vh] items-center justify-center fade-up">
       <div className="w-full max-w-[340px]">
         <div className="mb-7">
+          <LogoMark className="mb-5 h-12 w-12" />
           <h1 className="text-[18px] font-semibold text-foreground">Create an account</h1>
           <p className="mt-1 text-[13px] text-muted">Start clipping volleyball highlights</p>
         </div>

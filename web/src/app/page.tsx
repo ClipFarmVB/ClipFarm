@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { LogoMark } from "@/components/LogoMark";
 import { DemoVideo } from "@/components/landing/DemoVideo";
 import { MockClipCard, type MockClip } from "@/components/landing/MockClipCard";
 import { SampleOutput } from "@/components/landing/SampleOutput";
@@ -194,9 +195,10 @@ export default function HomePage() {
             {/* Left: eyebrow + headline (B) + subtitle + CTA */}
             <div className="max-w-[500px]">
               <p
-                className="landing-fade mb-5 text-[11px] font-semibold uppercase tracking-widest text-muted"
+                className="landing-fade mb-5 flex items-center gap-2.5 text-[11px] font-semibold uppercase tracking-widest text-brand"
                 style={{ animationDelay: "0.1s" }}
               >
+                <LogoMark className="h-6 w-6" />
                 Volleyball highlights
               </p>
 
