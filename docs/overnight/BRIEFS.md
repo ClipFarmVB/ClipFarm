@@ -26,6 +26,8 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 ### Cold and semi-cold rounds
 
 **Never review from this session. Spawn a subagent and let it review cold.**
+*How* to spawn one — worktree isolation, the detached checkout for PR work, and what to pass it — is [one section in `RULES.md`](RULES.md#dispatching-subagents), which every lap reads. It is not repeated here.
+
 The session that wrote the code is the most anchored possible reviewer: once it
 has judged a file fine it checks the delta rather than re-deriving that
 judgement, so everything already blessed becomes invisible. A long context also
@@ -101,7 +103,7 @@ verdict from an empty diff.
 
 **A "does not close" verdict leaves the finding open.** Fix it again and take
 another semi-cold round, or, if you cannot, apply the `unsettled` label with a
-comment naming the reason that fits — any of the four — record it, and move on.
+comment naming the reason that fits — any of the five — record it, and move on.
 It does not become closed by being argued with.
 
 **Never let a semi-cold round settle a PR.** It was handed the previous

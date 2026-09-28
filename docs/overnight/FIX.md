@@ -19,7 +19,7 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 
 #### Step 2 — fix what the round found
 
-**2 — Address the review findings on the PR you are carrying**, if this account
+**2 — Address the review findings on a PR you are carrying**, if this account
 opened it. That is the same test the `review scope` filter runs —
 `gh api user --jq ".login"` against the PR's `.user.login` — so at
 `review scope: own` it is true of every PR in the queue. See
@@ -108,14 +108,69 @@ after this landed leaves both artifacts, so the case disappears on its own as
 the queue turns over. Do not conclude a PR has no findings because it has no
 round review.
 
-If a fix needs no human decision, implement it, push to that PR's branch, and
-reply on the thread saying what changed. If it needs a judgement call, log it
+If a fix needs no human decision, dispatch [a fixer](#the-fixers-brief) for it:
+it pushes to that PR's branch and replies on the thread saying what changed. If it needs a judgement call, log it
 and leave it.
+
+##### The fixer's brief
+
+**Fixes are dispatched, like rounds** (CF-564), so that several PRs can be in
+their fix step at once. The fixer works alone in its own worktree, on [a detached
+checkout of the PR's head](RULES.md#dispatching-subagents), and never sees the
+rest of the run. Give it:
+
+- the PR number, and the full SHA of the head the round reviewed — its
+  `STARTED_AT` for [the push guard](RULES.md#pushing-to-a-branch-that-may-have-moved).
+  It checks its checkout is that head before changing anything; if it is not,
+  the head has already moved and it stops there;
+- the findings to fix, read from the round's review as above, and the ones to
+  leave alone — anything needing a human decision;
+- `CLAUDE.md`, and [what binds it, passed explicitly](RULES.md#dispatching-subagents);
+- a free slot number `k`, as an implementer gets one, for the same ports if it
+  has to run the app, and written on its `dispatched:` line as `slot=<k>`.
+
+Ask it to:
+
+1. **Fix those findings and nothing else.** [Grep for every copy of a wrong
+   claim](#step-2--fix-what-the-round-found) before calling it fixed. **End
+   every commit subject with `(round @<sha7>)`**, the first seven characters
+   of `STARTED_AT` — it is how this session later tells [this fixer's push
+   from a person's](RULES.md#when-a-prs-head-has-moved-find-out-who-moved-it).
+2. **Run the gate in its own environment**, exactly as [the implementer
+   does](TICKETS.md#the-implementers-brief) — its own venv, the shared stack
+   untouched.
+3. **Push once, through the push guard, and report which of four things
+   happened**: `pushed`; `head moved`, if the guard refused on a moved head or
+   git rejected the push as `fetch first` or `non-fast-forward`; `remote
+   unreadable`, if the guard could not read the remote or the push never
+   reached it; or `push refused`, with git's error verbatim, for any other
+   rejection. Only `push refused` is [routed as
+   `latched`](RULES.md#pushing-to-a-branch-that-may-have-moved). Whatever
+   happens, it does not rebase, merge or force.
+4. **Reply on the thread saying what changed**, finding by finding — never that a
+   finding is fixed. [Never describe a fix inside the review that found
+   it](#the-cycle-and-the-settle-bar); the semi-cold round decides whether it
+   closes.
+5. **Report** the new head, which findings it addressed, and the gate's summary
+   lines.
+
+When it reports, check GitHub for the push and the reply, write its `finished:`
+line, and carry on with the cycle: the semi-cold round against the new head. A
+fixer that reported `head moved` is checked first, as the next paragraph says,
+and only then routed as [below](#when-you-cannot-fix-it-choosing-a-reason).
+
+**A fixer that was lost or rate-limited is not simply dispatched again**, and a
+`head moved` report is not taken at its word. Read the PR's head first. If it
+still equals `STARTED_AT`, dispatch again. If it moved, [find out who moved
+it](RULES.md#when-a-prs-head-has-moved-find-out-who-moved-it): the move may be
+the lost fixer's own push, landed just before or just after it was stopped, and
+labelling that `head moved` would park a PR on a fix that had landed. `remote
+unreadable` routes the PR again once the remote can be read.
 
 ##### The cycle and the settle bar
 
 **This is a cycle, and the order matters.** A cold subagent posts the first
-review. *Then* you push the fix and reply saying what changed. *Then* a
+review. *Then* [a fixer](#the-fixers-brief) pushes the fix and replies saying what changed. *Then* a
 **semi-cold** subagent checks that fix against the finding it claims to close.
 *Then*, once nothing is left open, a fresh **cold** round decides whether the PR
 settles.
@@ -291,7 +346,7 @@ checked.
 ##### When you cannot fix it: choosing a reason
 
 **A finding you cannot fix stops the *cycling*, not the work.** What "the work"
-means depends on why you cannot fix it, and the four cases part company here:
+means depends on why you cannot fix it, and the five cases part company here:
 
 - *Another account's PR.* You cannot push anything, so the work is
   writing the findings down where the author will act on them: **all** of them,
@@ -316,6 +371,16 @@ means depends on why you cannot fix it, and the four cases part company here:
   different things. A latch is resolved by whoever can unblock the push; a
   judgement call is resolved by answering the reviewer's question. Filing one as
   the other loses it.
+- *This account's PR, but its head moved while the fix was being made*
+  (CF-564). Someone — a collaborator, or the operator on this same account —
+  pushed after the round the fix answers, so [the push
+  guard](RULES.md#pushing-to-a-branch-that-may-have-moved) refused it. Do not
+  rebase, merge or force it through. Describe the fix in a reply, apply
+  `unsettled` with an `unsettled: head moved @ <sha>` comment naming the new
+  head, and move on. A human pushing mid-cycle is a person working on the PR,
+  which [the push test](RULES.md#the-push-test) already treats as a reason to
+  comment rather than push; their next push re-opens it, and the next run
+  cycles it with their work included.
 - *A finding needing a human decision, on a branch you may push to.* First fix
   everything else that round raised and push it — those findings are real and
   abandoning them wastes the round that found them. *Then* apply `unsettled`
@@ -334,7 +399,7 @@ actually resolve this?" — if not, `not our branch` is wrong, because its
 carve-out fires on a commit that fixed nothing.
 
 **This is a tie-break between those two, not a general test.** (Precedence
-across all four is stated under the table in [the terminal labels and their
+across all five is stated under the table in [the terminal labels and their
 reasons](REVIEW.md#the-terminal-labels-and-their-reasons).)
 Read as a general rule it would rule out `ran out of rounds` for every ceiling-
 or budget-stopped PR — a push does not resolve those either, it only resets the
