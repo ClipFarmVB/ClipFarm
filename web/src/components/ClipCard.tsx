@@ -73,6 +73,10 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
       // stale `player_name`, so ClipModal for the same clip shows no player
       // (CF-304). `tagClip` returns the whole Clip, so this is the same
       // one-liner as its siblings — not a second channel for the same thing.
+      // Known, out of scope: the tag reaches ClipModal only until the next
+      // label change or trim on that clip, whose responses carry a null
+      // `player_name` that their own `onUpdate` writes back (CF-566, #574).
+      // The card itself keeps it.
       onUpdate?.(updated);
     } catch (e) {
       // `alert`, matching `handleDownload` above. Previously the select closed
