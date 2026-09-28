@@ -121,7 +121,18 @@ def test_migration_020_names_every_object_the_models_declare():
     """
     from pathlib import Path
 
-    src = (Path(__file__).parent.parent / "alembic" / "versions" / "020_post_engagement.py").read_text()
+    # 024 carries `ix_post_comments_post_id`, split out of 020 so a database
+    # already stamped at 020 still gets it (#214 carries a 020 without it).
+    # Split per file, dropping each file's prelude before its first `op.`, so a
+    # statement chunk never runs from one file's last statement into the next
+    # file's docstring.
+    versions = Path(__file__).parent.parent / "alembic" / "versions"
+    texts = [
+        (versions / name).read_text()
+        for name in ("020_post_engagement.py", "024_post_comments_post_id_index.py")
+    ]
+    src = "\n".join(texts)
+    statements = [st for t in texts for st in t.split("op.")[1:]]
     wanted = {
         "ix_post_likes_user_id",
         "ix_post_comments_post_created",
@@ -139,7 +150,7 @@ def test_migration_020_names_every_object_the_models_declare():
     )
     assert declared == wanted
     for name in wanted:
-        assert name in src, f"{name} is declared on a model and absent from 020"
+        assert name in src, f"{name} is declared on a model and absent from 020 and 024"
 
     # Indexes: the COLUMNS and the partial predicate, not just the name.
     #
@@ -151,8 +162,8 @@ def test_migration_020_names_every_object_the_models_declare():
         for ix in table.indexes:
             if ix.name not in wanted:
                 continue
-            stmt = next((st for st in src.split("op.") if ix.name in st), None)
-            assert stmt, f"{ix.name} appears in 020 but not in a statement"
+            stmt = next((st for st in statements if ix.name in st), None)
+            assert stmt, f"{ix.name} appears in 020/024 but not in a statement"
             # Strip COMMENTS before looking at anything. Splitting on "op."
             # leaves each chunk carrying the comment block that introduces the
             # NEXT statement, and those comments discuss columns and predicates:
@@ -176,7 +187,7 @@ def test_migration_020_names_every_object_the_models_declare():
                 assert term in body, (
                     f"{ix.name} is declared on the model over "
                     f"{[getattr(e, 'name', None) or str(e) for e in ix.expressions]} "
-                    f"but 020's statement for it does not mention {term!r}. An index "
+                    f"but the migration statement for it does not mention {term!r}. An index "
                     "with the right name on the wrong columns is the drift this catches."
                 )
             # Partial-ness has to match too. `ix_post_comments_post_id` exists
@@ -187,7 +198,7 @@ def test_migration_020_names_every_object_the_models_declare():
             migration_partial = "where" in body.lower()
             assert model_partial == migration_partial, (
                 f"{ix.name}: the model declares it "
-                f"{'partial' if model_partial else 'full'} and 020 builds it "
+                f"{'partial' if model_partial else 'full'} and the migration builds it "
                 f"{'partial' if migration_partial else 'full'}."
             )
 

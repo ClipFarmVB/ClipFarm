@@ -23,7 +23,7 @@ class PostComment(Base):
     __tablename__ = "post_comments"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    # No `index=True` on either FK — the shapes migration 020 built are
+    # No `index=True` on either FK — the shapes migrations 020 and 024 built are
     # declared in `__table_args__` below, so the metadata and the database
     # agree (the `follow.py` reasoning; `post.py` declines the same shortcut).
     post_id: Mapped[uuid.UUID] = mapped_column(
