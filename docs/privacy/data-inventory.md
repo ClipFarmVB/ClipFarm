@@ -72,6 +72,20 @@ Also user-typed and not tabulated above, because the table is scoped to `users`:
 to the reader to notice, since a scope boundary the document does not state
 reads as completeness.
 
+`device_tokens` (CF-318) is the one row here that is personal data without
+anyone typing it. A push token is issued by Apple or Google per app install and
+is a **device identifier**: it does not name a person, but it reaches one, and
+it is stable enough across sessions to link activity to a handset. It is not a
+credential — holding it does not let anyone send a notification, which needs our
+signing key — so the exposure it carries is being *reached*, not impersonated.
+Two consequences worth stating rather than leaving to be inferred: the row is
+unique on the token rather than on `(user, token)`, so a device that changes
+hands moves to its new owner instead of accumulating owners; and the table
+cascades on account delete, so it is one of the rows erasure actually removes.
+What it does not do is reach the vendor — a token deleted here stays valid at
+APNs or FCM until the OS reissues it, so erasure ends *our* ability to reach the
+device, not the device's registration.
+
 Nothing in this document should be read as suggesting the account columns are
 the sensitive part; they are the easy part.
 
@@ -133,6 +147,7 @@ likely to miss:
 | `posts` | `CASCADE` | Removed with the account |
 | `corrections` | `CASCADE` | Removed with the account |
 | `upload_events` | `CASCADE` | Removed with the account |
+| `device_tokens` | `CASCADE` | Removed with the account |
 
 Any user who has uploaded a game, made a team, or built a collection — that is,
 every real user — cannot be deleted without those rows being dealt with first.
