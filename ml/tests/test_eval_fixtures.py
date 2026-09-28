@@ -631,7 +631,9 @@ class TestGroundTruthTierFilter:
         still counts it in the human total, so a reversed clip scores as a
         clip the model can never hit — permanently, with plausible-looking
         recall numbers and nothing to catch it. A span past
-        `video_duration_sec` is clamped silently for the same shape of harm.
+        `video_duration_sec` is the same harm in part: nothing on the highlight
+        path reads the duration (`evaluate()` takes none), so the over-run is
+        counted in full as human seconds no model window can cover.
         `ml/eval/README.md` advertises that adding a case "needs no code
         change", which makes a hand-typed `0:32` for `0:23` the likely way in.
 
@@ -733,7 +735,8 @@ class TestHighlightWellFormedness:
 
     def test_a_span_ending_exactly_at_the_duration_is_fine(self):
         """The boundary belongs inside. A clip running to the final frame is
-        ordinary, and `metrics` clamps at the duration rather than past it."""
+        ordinary; only the seconds after the end are ones no model window can
+        cover."""
         raw = self._raw([{"start": "09:50", "end": "10:00"}], duration=600.0)
         assert highlight_wellformedness_violations(raw, self._scored(raw)) == []
 

@@ -66,11 +66,10 @@ COMBOS = TC.COMBOS
 TUNABLES = TC.TUNABLES
 
 
-def _literal(name: str):
-    """The module-level literal assigned to `name`, read from the source.
-
-    Used only by `test_the_source_reads_as_what_python_binds`. The LAST
-    assignment wins, because that is the one Python leaves bound.
+def _last_assignment(name: str) -> ast.expr:
+    """The value of the LAST module-level assignment to `name` in the source,
+    because that is the one Python leaves bound. Shared so every source check
+    reads the same assignment the import does.
     """
     tree = ast.parse(TUNE_PY.read_text(encoding="utf-8"))
     found = None
@@ -86,8 +85,16 @@ def _literal(name: str):
     if found is None:
         raise AssertionError(
             f"{name} not found as a module-level literal in {TUNE_PY.name}")
+    return found
+
+
+def _literal(name: str):
+    """The module-level literal assigned to `name`, read from the source.
+
+    Used only by `test_the_source_reads_as_what_python_binds`.
+    """
     try:
-        return ast.literal_eval(found)
+        return ast.literal_eval(_last_assignment(name))
     except ValueError as exc:
         raise AssertionError(
             f"{TUNE_PY.name}: `{name}` is not a literal ({exc}). The table is "
@@ -103,18 +110,11 @@ def _duplicate_literal_keys(name: str) -> list[str]:
     comparing values — the runtime table is correct while the source reads as
     sweeping something it does not.
     """
-    tree = ast.parse(TUNE_PY.read_text(encoding="utf-8"))
-    for node in tree.body:
-        targets = (
-            [node.target] if isinstance(node, ast.AnnAssign)
-            else node.targets if isinstance(node, ast.Assign)
-            else []
-        )
-        for t in targets:
-            if isinstance(t, ast.Name) and t.id == name and isinstance(node.value, ast.Dict):
-                keys = [k.value for k in node.value.keys if isinstance(k, ast.Constant)]
-                return sorted({k for k in keys if keys.count(k) > 1})
-    return []
+    value = _last_assignment(name)
+    if not isinstance(value, ast.Dict):
+        return []
+    keys = [k.value for k in value.keys if isinstance(k, ast.Constant)]
+    return sorted({k for k in keys if keys.count(k) > 1})
 
 
 def _combos():
