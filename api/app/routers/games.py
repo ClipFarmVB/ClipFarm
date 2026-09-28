@@ -662,6 +662,8 @@ async def delete_game(game_id: uuid.UUID, user_id: UserId, db: DB):
     game = await db.get(Game, game_id)
     if not game or game.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Game not found")
+    # The source of the example game: every copy plays its objects (CF-220).
+    sample_game.assert_not_source(game.id)
 
     # Collect all R2 keys to delete (clips + thumbnails + raw video)
     clips_result = await db.execute(select(Clip).where(Clip.game_id == game_id))

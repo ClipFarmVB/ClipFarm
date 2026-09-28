@@ -394,6 +394,10 @@ async def trim_clip(
     """
     clip, game = await _get_owned_clip(clip_id, user_id, db)
 
+    # A re-cut of the example's source overwrites the clip object every copy
+    # plays (CF-220).
+    sample_game.assert_not_source(game.id)
+
     # The example game has no source upload of its own, and a re-cut would
     # overwrite the clip object every copy shares (CF-220). Its own message,
     # because "passed its retention window" is not what happened.
@@ -460,6 +464,10 @@ async def delete_clips(
     for _, game in rows:
         if game.owner_id != user_id:
             raise HTTPException(status_code=404, detail="One or more clips not found")
+    # Whole batch refused, before anything is touched, if any clip is the
+    # example's source: every copy plays its objects (CF-220).
+    for _, game in rows:
+        sample_game.assert_not_source(game.id)
 
     # Delete from R2 (best-effort) and DB. An example clip's objects are
     # shared by every copy of the example game (CF-220), so for those it is

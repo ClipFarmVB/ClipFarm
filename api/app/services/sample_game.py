@@ -15,7 +15,9 @@ why the copies need guards the owner's own games do not:
 * the owner may not publish the footage (clip visibility, posts), because it
   is not theirs to publish;
 * a relabel writes no `Correction`, so our own footage does not become
-  training signal attributed to a stranger.
+  training signal attributed to a stranger;
+* the source game itself cannot be deleted or trimmed while the setting names
+  it (`assert_not_source`).
 
 **Left out of the copy on purpose:**
 
@@ -95,6 +97,26 @@ def configured_source_id() -> uuid.UUID | None:
             raw,
         )
         return None
+
+
+def assert_not_source(game_id: uuid.UUID) -> None:
+    """409 for deleting or trimming the configured source game itself.
+
+    Used by `DELETE /games/{id}`, `POST /clips/delete` and
+    `PATCH /clips/{id}/trim` — the paths that delete or overwrite the R2
+    objects every copy plays. Follows the *current* setting only: a source
+    that `SAMPLE_GAME_ID` no longer names has no guard here, which is why the
+    README says to keep a retired source untouched while copies of it exist.
+    """
+    source_id = configured_source_id()
+    if source_id is not None and game_id == source_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This is the example game every new account copies — its "
+                "clips can't be deleted or trimmed while SAMPLE_GAME_ID names it"
+            ),
+        )
 
 
 async def copy_sample_game(db: AsyncSession, user_id: uuid.UUID) -> Game | None:

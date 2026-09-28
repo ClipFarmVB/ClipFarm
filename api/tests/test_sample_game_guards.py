@@ -9,7 +9,9 @@ publish that footage, behave differently for a sample:
   `storage.delete_file`;
 * `PATCH /clips/{id}/visibility` and `POST /posts` answer 409;
 * a relabel still applies to the owner's copy but writes no `Correction`;
-* a trim refuses with its own message rather than the retention one.
+* a trim refuses with its own message rather than the retention one;
+* the configured source game itself cannot be deleted, have clips deleted, or
+  be trimmed (409) while `SAMPLE_GAME_ID` names it.
 
 Each refusal is paired with a control on an ordinary game, so a stub that
 never reached the guarded code cannot pass for a guard that held.
@@ -313,6 +315,96 @@ def test_trimming_a_sample_clip_is_refused_with_its_own_message(monkeypatch):
     assert "retention" not in exc.value.detail
     assert (clip.start_time, clip.end_time) == (10.0, 18.0)
     celery.send_task.assert_not_called()
+
+
+# ── the configured source game itself ───────────────────────────────────────
+#
+# Not a copy: the ordinary game on the internal account that SAMPLE_GAME_ID
+# names. Its objects are the ones every copy plays, so the paths that delete
+# or overwrite them answer 409 while the setting names it.
+
+
+@pytest.fixture
+def source_configured(monkeypatch):
+    def _point_at(game: Game) -> None:
+        monkeypatch.setattr(settings, "sample_game_id", str(game.id))
+    return _point_at
+
+
+def test_deleting_the_source_game_is_refused(deleted_keys, source_configured):
+    game, _clip_row, db = _setup(is_sample=False)
+    source_configured(game)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(games_router.delete_game(game.id, OWNER, db))
+
+    assert exc.value.status_code == 409
+    assert db.deleted == []
+    assert db.commits == 0
+    assert deleted_keys == []
+
+
+class _MixedBatchDB(StubDB):
+    """A clip delete whose batch spans two games."""
+
+    def __init__(self, rows: list[tuple[Clip, Game]]):
+        super().__init__(rows[0][1], [c for c, _ in rows])
+        self.rows = rows
+
+    async def execute(self, stmt):
+        self.executed.append(stmt)
+        return _Rows(self.rows)
+
+
+def test_a_clip_batch_touching_the_source_is_refused_whole(deleted_keys, source_configured):
+    source, source_clip, _ = _setup(is_sample=False)
+    other, other_clip, _ = _setup(is_sample=False)
+    source_configured(source)
+    # The ordinary clip first, so a guard checked per clip inside the delete
+    # loop would already have removed it.
+    db = _MixedBatchDB([(other_clip, other), (source_clip, source)])
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            clips_router.delete_clips(
+                ClipDeleteRequest(clip_ids=[other_clip.id, source_clip.id]), db, OWNER
+            )
+        )
+
+    assert exc.value.status_code == 409
+    assert db.deleted == [], "nothing in the batch is deleted"
+    assert db.commits == 0
+    assert deleted_keys == []
+
+
+def test_trimming_a_source_clip_is_refused(monkeypatch, source_configured):
+    celery = MagicMock()
+    monkeypatch.setattr(clips_router, "celery_app", celery)
+    game, clip, db = _setup(is_sample=False)
+    source_configured(game)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            clips_router.trim_clip(
+                clip.id, ClipTrimRequest(start_delta=-2, end_delta=0), db, OWNER
+            )
+        )
+
+    assert exc.value.status_code == 409
+    assert (clip.start_time, clip.end_time) == (10.0, 18.0)
+    assert db.commits == 0
+    celery.send_task.assert_not_called()
+
+
+def test_the_source_guard_is_off_when_the_setting_is_empty(monkeypatch, deleted_keys):
+    """The guard follows the current setting: unset, the same game deletes."""
+    monkeypatch.setattr(settings, "sample_game_id", "")
+    game, _clip_row, db = _setup(is_sample=False)
+
+    asyncio.run(games_router.delete_game(game.id, OWNER, db))
+
+    assert db.deleted == [game]
+    assert "raw/abc.mp4" in deleted_keys
 
 
 # ── what the client is told ─────────────────────────────────────────────────
