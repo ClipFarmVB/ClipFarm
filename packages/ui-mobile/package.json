@@ -1,0 +1,21 @@
+{
+  "name": "@clipfarm/ui-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "React Native primitives built on @clipfarm/tokens. Consumed by mobile/.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "dependencies": {
+    "@clipfarm/tokens": "*"
+  },
+  "peerDependencies": {
+    "react": ">=19",
+    "react-native": ">=0.76"
+  }
+}
