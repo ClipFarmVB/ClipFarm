@@ -1,8 +1,9 @@
 # Reviewer briefs — what to tell a round
 
-Read on a lap that **spawns a review round**, cold or semi-cold. Everything a
-subagent needs to be told is here; the selection and routing that decide *which*
-round to spawn are in [`REVIEW.md`](./REVIEW.md).
+Read on a lap that **spawns a review round**, cold or semi-cold — and its last
+section, on what a mutation result licenses, on a lap that dispatches an
+implementer. Everything a subagent needs to be told is here; the selection and
+routing that decide *which* round to spawn are in [`REVIEW.md`](./REVIEW.md).
 
 Split out of `REVIEW.md` (CF-365) because a **step 2** lap spawns semi-cold
 rounds and needed the whole of that file — 18k tokens — to reach one section.

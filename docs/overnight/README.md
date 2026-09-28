@@ -22,13 +22,13 @@ not the ones it is not. Every rule lives in exactly one file.
 
 | file | when to read it | ~tokens |
 |---|---|---|
-| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.3k |
+| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.4k |
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 8.3k |
 | [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test and its guard, dispatching subagents, the registry and claims, the WIP limit and areas, one credential, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 19.5k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 15.3k |
-| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, how findings are tiered, and what a mutation result licenses | 6.6k |
-| [`FIX.md`](./FIX.md) | a lap that fixes findings — the fixer, the cycle, the settle bar, choosing an `unsettled` reason | 6.6k |
-| [`TICKETS.md`](./TICKETS.md) | a lap that starts or receives ticket work, and whenever a card needs filing | 7.0k |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, how findings are tiered, and what a mutation result licenses | 6.7k |
+| [`FIX.md`](./FIX.md) | a lap that fixes findings — the fixer, the cycle, the settle bar, choosing an `unsettled` reason | 6.7k |
+| [`TICKETS.md`](./TICKETS.md) | a lap that starts or receives ticket work, and whenever a card needs filing | 7.1k |
 | [`REPORTING.md`](./REPORTING.md) | the end of the run | 3.2k |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background — what a night costs, why the machinery is shaped this way | 2.7k |
 
@@ -58,6 +58,10 @@ run that learned it.
   chose not to fix, and `review-only` runs never otherwise open `TICKETS.md`,
   so without this line the instruction to file one points at a file the
   protocol has just told you this lap does not need.
+  **Dispatching an implementer → the last section of `BRIEFS.md`**, [what a
+  mutation result licenses](BRIEFS.md#a-mutation-result-licenses-a-claim-about-that-mutation-not-about-its-class).
+  `TICKETS.md` tells you to pass it on, and a step-3 lap otherwise never opens
+  `BRIEFS.md`; a fixer gets it from a step-2 lap, which reads the whole file.
 - **Re-read `RULES.md` in full after any compaction**, and say in the log that
   you did. Compaction is exactly when a half-remembered rule reads like a real
   one.
@@ -67,7 +71,8 @@ run that learned it.
 
 A step-1 lap that only selects costs about 37k tokens of brief instead of 72k;
 one that also spawns a round, about 44k. A step-2 lap is about 35k, a step-3 lap
-about 29k. That is the whole point of the split.
+about 29k. That is the whole point of the split. A step-3 lap that dispatches an
+implementer adds one section of `BRIEFS.md` to that, about 1.3k.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
