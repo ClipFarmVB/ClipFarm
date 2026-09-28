@@ -61,7 +61,7 @@ run that learned it.
   **Dispatching an implementer → the last section of `BRIEFS.md`**, [what a
   mutation result licenses](BRIEFS.md#a-mutation-result-licenses-a-claim-about-that-mutation-not-about-its-class).
   `TICKETS.md` tells you to pass it on, and a step-3 lap otherwise never opens
-  `BRIEFS.md`; a fixer gets it from a step-2 lap, which reads the whole file.
+  `BRIEFS.md`; a fixer gets it because `FIX.md`'s "Give it" list names it.
 - **Re-read `RULES.md` in full after any compaction**, and say in the log that
   you did. Compaction is exactly when a half-remembered rule reads like a real
   one.
