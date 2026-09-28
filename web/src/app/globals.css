@@ -273,3 +273,39 @@ input[type="range"]::-webkit-slider-thumb:hover {
   background-size: 24px 24px;
   animation: grid-drift 6s linear infinite;
 }
+
+/* ── Landing page motion (CF-219) ───────────────────────────────────── */
+/* Classes rather than inline `animation` styles so the reduced-motion block
+   below can reach them — an inline style beats any stylesheet rule. Per-element
+   delays stay inline as `animation-delay`, which that block makes moot. */
+.ticker {
+  display: flex;
+  width: max-content;
+  animation: ticker 28s linear infinite;
+}
+.word-up {
+  display: inline-block;
+  animation: word-up 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.landing-fade { animation: fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.float-a { animation: float-a 4.2s ease-in-out infinite; }
+.float-b { animation: float-b 5.1s ease-in-out infinite 0.7s; }
+.float-c { animation: float-c 4.7s ease-in-out infinite 1.4s; }
+
+/* Everything lands in its final state with no movement. The float keyframes
+   carry each card's rotation, so it is restated here to keep the stack fanned. */
+@media (prefers-reduced-motion: reduce) {
+  .ticker,
+  .word-up,
+  .landing-fade,
+  .float-a,
+  .float-b,
+  .float-c,
+  .dot-grid,
+  .stagger > * {
+    animation: none;
+  }
+  .float-a { transform: rotate(-2deg); }
+  .float-b { transform: rotate(3.5deg); }
+  .float-c { transform: rotate(-4deg); }
+}
