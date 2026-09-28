@@ -12,8 +12,11 @@ why the copies need guards the owner's own games do not:
 
 * the delete paths must not remove those objects (routers/games.py,
   routers/clips.py) — removing the example is removing rows only;
-* the owner may not publish the footage (clip visibility, posts, share and
-  download links), because it is not theirs to publish;
+* the footage is not the owner's to publish, so raising clip visibility and
+  posting are refused — real controls, the copy stays private. `/share` and
+  `/download` refuse too, but that only stops the app offering a link; it is
+  not access control, since the owner's clips listings already return the
+  presigned URLs (`assert_not_sample`);
 * a relabel writes no `Correction`, so our own footage does not become
   training signal attributed to a stranger;
 * the source game itself cannot be deleted or trimmed while the setting names
