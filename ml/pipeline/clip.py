@@ -28,6 +28,127 @@ logger = logging.getLogger(__name__)
 # is a default sized by the wrong machine.
 DEFAULT_THREADS = 2
 
+# CF-321: the phone rendition. Clips are encoded at source resolution, so a 4K
+# upload yields 4K clips and a phone on cellular pays for every pixel it cannot
+# see. One fixed rendition rather than an HLS ladder — these clips are seconds
+# long, and adaptive streaming is a lot of machinery for that.
+#
+# The bound is on the SHORT side, not the height: a game filmed in portrait is
+# 1080x1920, and clamping *height* there would hand back a 405px-wide video.
+# Short-side 720 means 1920x1080 -> 1280x720 and 1080x1920 -> 720x1280, which is
+# what "720p" is normally taken to mean on both orientations.
+MOBILE_SHORT_SIDE = 720
+
+# Higher than the 23 the full-size clip uses. The rendition is watched on a
+# phone-sized screen where the extra detail is not resolvable, and bandwidth is
+# the entire point of the ticket — see the measured deltas on CF-321 (#371).
+MOBILE_CRF = 26
+
+
+def _mobile_scale_filter(short_side: int = MOBILE_SHORT_SIDE) -> str:
+    """Build the scale filter for the phone rendition.
+
+    Expressed in ffmpeg's own `iw`/`ih` rather than in numbers computed from a
+    probe, for two reasons that both bite on real phone footage:
+
+    * `iw`/`ih` are read **after** autorotation, so a portrait clip recorded as
+      1920x1080-plus-a-rotate-flag scales by the dimensions it actually has.
+      Explicit `scale=1280:720` on that frame stretches it.
+    * `min()` makes an upscale unrepresentable rather than merely unlikely, so
+      a source smaller than the bound can never be blown up by a bad branch.
+
+    `-2` on the free axis keeps the aspect ratio and rounds to an even number,
+    which `yuv420p` requires — an odd dimension fails the encode outright.
+    """
+    return (
+        f"scale='if(gt(iw,ih),-2,min({short_side},iw))'"
+        f":'if(gt(iw,ih),min({short_side},ih),-2)'"
+    )
+
+
+def _needs_mobile_rendition(
+    width: int, height: int, short_side: int = MOBILE_SHORT_SIDE
+) -> bool:
+    """Is this clip big enough that a phone rendition saves anything?
+
+    Compares the short side, which makes the answer independent of rotation:
+    `min(w, h)` is the same whether the probe reports 1080x1920 or 1920x1080
+    with a rotate flag, so this never has to interpret that metadata.
+
+    A clip already at or under the bound gets no second file, and NULL is a
+    perfectly good answer — the client falls back to the full-size URL, which
+    for a clip this small is nearly the phone rendition already.
+
+    That skip is a judgement, not a free win, and the measurements on CF-321
+    (#371) are what make it one. Almost all of the saving comes from the
+    downscale: at 4K the rendition is 1.3% of the clip and costs +12% of the
+    cutting time, at 1080p 9.3% for +25%. On a source already at the bound
+    there is no downscale left, so the only lever is the higher crf — which
+    still halves the bytes, but costs +75% of the cutting time to do it and
+    spends visible quality on the smallest clip we serve. Ten times the saving
+    for half the cost is worth an encode; two times the saving for three times
+    the cost is not.
+    """
+    if width <= 0 or height <= 0:
+        return False
+    return min(width, height) > short_side
+
+
+def _probe_dimensions(ffmpeg, video_path: str) -> tuple[int, int] | None:
+    """Dimensions of the first video stream, or None if they can't be read."""
+    try:
+        probe = ffmpeg.probe(str(video_path))
+        for stream in probe.get("streams", []):
+            if stream.get("codec_type") == "video":
+                return int(stream["width"]), int(stream["height"])
+    except Exception:
+        logger.warning("Could not probe dimensions of %s", video_path, exc_info=True)
+    return None
+
+
+def _encode_mobile_rendition(
+    ffmpeg, clip_path: Path, output_path: Path, threads: int, short_side: int
+) -> Path | None:
+    """Transcode a cut clip down to the phone rendition.
+
+    Reads the **cut clip**, not the source video. The clip is seconds long and
+    already on local disk, where the source is up to 8 GB and would have to be
+    sought and decoded a second time. It also keeps this independent of how the
+    clip was produced, which matters because CF-239 (#242) is about to make that
+    conditional: it stream-copies when the upload is already H.264/AAC, so the
+    clip is browser-safe H.264 on both paths and this encode reads it the same
+    way either way.
+
+    Returns None on failure. A missing rendition costs a phone some bandwidth;
+    failing the clip costs the user the clip.
+    """
+    try:
+        (
+            ffmpeg
+            .input(str(clip_path), threads=threads)
+            .output(
+                str(output_path),
+                vf=_mobile_scale_filter(short_side),
+                vcodec="libx264",
+                preset="fast",
+                crf=MOBILE_CRF,
+                acodec="aac",
+                movflags="+faststart",
+                pix_fmt="yuv420p",
+                threads=threads,
+                loglevel="error",
+            )
+            .overwrite_output()
+            .run()
+        )
+        return output_path
+    except Exception:
+        logger.warning(
+            "Phone rendition failed for %s — serving the full-size clip only",
+            clip_path, exc_info=True,
+        )
+        return None
+
 
 def _bounded(threads: int) -> int:
     """Refuse a thread count that is not a bound.
@@ -63,6 +184,7 @@ def generate_clips(
     output_dir: Path,
     on_progress=None,
     threads: int = DEFAULT_THREADS,
+    mobile_short_side: int = MOBILE_SHORT_SIDE,
 ) -> list[dict]:
     """
     Cut clips and extract thumbnails for each detection.
@@ -73,7 +195,8 @@ def generate_clips(
     threads bounds both the decoder and the x264 encoder — see DEFAULT_THREADS.
 
     Returns extended detection dicts with keys:
-      clip_path, thumb_path (may be None on failure)
+      clip_path, thumb_path (may be None on failure),
+      mobile_path (may be None — see _needs_mobile_rendition)
     """
     try:
         import ffmpeg
@@ -82,11 +205,31 @@ def generate_clips(
         return []
 
     threads = _bounded(threads)
+
+    # Probed once per game rather than once per clip: clips are cut without a
+    # scale filter, so every one of them has the source's dimensions, and the
+    # probe is a process spawn we would otherwise pay for on each detection.
+    dims = _probe_dimensions(ffmpeg, video_path)
+    if dims is None:
+        # Fail open. The scale filter cannot upscale, so the cost of guessing
+        # wrong here is one wasted encode; the cost of guessing wrong the other
+        # way is a phone streaming a 4K clip, which is the bug being fixed.
+        want_mobile = True
+        logger.info("Source dimensions unknown — encoding phone renditions anyway")
+    else:
+        want_mobile = _needs_mobile_rendition(*dims, mobile_short_side)
+        if not want_mobile:
+            logger.info(
+                "Source is %dx%d, at or under the %dpx phone bound — no rendition",
+                dims[0], dims[1], mobile_short_side,
+            )
+
     results = []
     for det_idx, det in enumerate(detections):
         clip_id = uuid.uuid4()
         clip_path = output_dir / f"{clip_id}.mp4"
         thumb_path = output_dir / f"{clip_id}.jpg"
+        mobile_path = output_dir / f"{clip_id}.mobile.mp4"
 
         start = det["start"]
         duration = det["end"] - det["start"]
@@ -130,10 +273,18 @@ def generate_clips(
         except Exception:
             logger.warning("Thumbnail extraction failed for clip at %.1f", mid)
 
+        # ── Phone rendition ───────────────────────────────────────────────────
+        mobile_out = None
+        if want_mobile:
+            mobile_out = _encode_mobile_rendition(
+                ffmpeg, clip_path, mobile_path, threads, mobile_short_side,
+            )
+
         results.append({
             **det,
             "clip_path": clip_path,
             "thumb_path": thumb_path if thumb_ok else None,
+            "mobile_path": mobile_out,
         })
         _report(on_progress, (det_idx + 1) / len(detections))
 
@@ -256,19 +407,27 @@ def recut_single(
     end: float,
     output_dir: Path,
     threads: int = DEFAULT_THREADS,
-) -> tuple[Path, Path | None]:
+    mobile_short_side: int = MOBILE_SHORT_SIDE,
+) -> tuple[Path, Path | None, Path | None]:
     """
     Re-cut a single clip from the source video.
 
     threads bounds both the decoder and the x264 encoder — see DEFAULT_THREADS.
 
-    Returns (clip_path, thumb_path or None).
+    Returns (clip_path, thumb_path or None, mobile_path or None).
+
+    The phone rendition is re-made here rather than left alone, because the
+    storage keys are deterministic per clip id: a trim that rewrote the clip and
+    not its rendition would leave the old boundaries sitting at the rendition's
+    key, and mobile clients would keep playing the untrimmed cut. A stale
+    rendition is a worse answer than no rendition.
     """
     import ffmpeg
 
     threads = _bounded(threads)
     clip_path = output_dir / "recut.mp4"
     thumb_path = output_dir / "recut.jpg"
+    mobile_path = output_dir / "recut.mobile.mp4"
     duration = end - start
     mid = start + duration / 2
 
@@ -303,4 +462,11 @@ def recut_single(
     except Exception:
         logger.warning("Thumbnail extraction failed for recut at %.1f", mid)
 
-    return clip_path, thumb_path if thumb_ok else None
+    dims = _probe_dimensions(ffmpeg, video_path)
+    mobile_out = None
+    if dims is None or _needs_mobile_rendition(*dims, mobile_short_side):
+        mobile_out = _encode_mobile_rendition(
+            ffmpeg, clip_path, mobile_path, threads, mobile_short_side,
+        )
+
+    return clip_path, thumb_path if thumb_ok else None, mobile_out
