@@ -443,6 +443,43 @@ def test_the_comment_cursor_round_trips_a_tied_timestamp(world):
     assert {first.items[0].id, second.items[0].id} == {a, b}, "the tie is split by id, not skipped"
 
 
+def test_comments_page_at_two_without_repeating_or_skipping(world):
+    """`limit=1` cannot tell a cursor built from the first row from one built
+    from the last: they are the same row. At `limit=2`, a first-row cursor
+    makes page two start with page one's second row, which this catches."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app.models.post_comment import PostComment
+    from app.routers import engagement as r
+
+    async_url, ids = world
+    pid = ids["public"]
+    when = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    made = [uuid.uuid4() for _ in range(5)]  # newest first
+
+    sync = create_engine(async_url.replace("postgresql+asyncpg://", "postgresql://"))
+    with Session(sync) as s:
+        for i, cid in enumerate(made):
+            s.add(PostComment(id=cid, post_id=pid, author_id=ids["stranger"], body="t",
+                              created_at=when - timedelta(minutes=i)))
+        s.commit()
+    sync.dispose()
+
+    seen: list[uuid.UUID] = []
+    cursor = None
+    for _ in range(len(made)):  # bounded: a cursor that never advances must not hang
+        page = _run(async_url, lambda db: r.list_comments(pid, db, None, cursor=cursor, limit=2))
+        assert len(page.items) <= 2
+        seen.extend(x.id for x in page.items)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+
+    assert len(seen) == len(set(seen)), "no comment repeats across pages"
+    assert seen == made, "every comment appears once, in order, none skipped"
+
+
 def test_a_generated_handle_commenter_is_withheld_but_the_comment_stays(world):
     from app.routers import engagement as r
     from app.schemas.engagement import CommentCreate

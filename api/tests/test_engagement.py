@@ -528,6 +528,41 @@ def test_comments_page_through_the_shared_cursor_window():
     assert exc.value.status_code == 400, "an empty cursor is malformed, not page 1"
 
 
+def test_the_comment_cursor_is_built_from_the_last_row_of_the_page(monkeypatch):
+    """`next_cursor` must key on the page's *last* row.
+
+    Keyed on the first, every page after the first repeats all but one of the
+    previous page's rows. At `limit=1` first and last are the same row, so
+    only a page of two or more can tell them apart.
+    """
+    from datetime import timedelta
+
+    from app.services import storage
+
+    post = _post()
+    _gate(monkeypatch, post)
+    monkeypatch.setattr(storage, "r2_configured", lambda: False)
+
+    when = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    author = SimpleNamespace(id=uuid.uuid4(), username="alice", display_name=None,
+                             avatar_url=None, username_is_generated=False)
+    # Newest first, as the query orders them; the third is the limit+1 probe.
+    comments = [
+        SimpleNamespace(id=uuid.uuid4(), post_id=post.id, body=f"c{i}",
+                        created_at=when - timedelta(minutes=i))
+        for i in range(3)
+    ]
+    db = _Session([_Result(rows=[(c, author) for c in comments])])
+
+    page = asyncio.run(r.list_comments(post.id, db, None, cursor=None, limit=2))
+
+    assert [c.id for c in page.items] == [comments[0].id, comments[1].id]
+    assert page.next_cursor is not None
+    assert cursors.decode(page.next_cursor) == (comments[1].created_at, comments[1].id), (
+        "the cursor resumes after the last row shown, not the first"
+    )
+
+
 def test_a_blank_or_oversized_comment_is_rejected():
     from pydantic import ValidationError
 
