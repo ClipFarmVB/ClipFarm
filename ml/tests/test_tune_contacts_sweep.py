@@ -203,6 +203,17 @@ def test_the_padding_anchor_is_the_current_COND():
     )
 
 
+def test_no_two_padding_rows_are_the_same_run():
+    """`PADDING`'s twin of the combo check below: a repeated row prints the
+    same figures twice, and two rows whose labels read alike are
+    indistinguishable in the table even when they score differently."""
+    rows = list(TC.PADDING)
+    assert len(set(rows)) == len(rows), f"PADDING repeats a row: {rows}"
+    labels = [TC.padding_label(*row) for row in rows]
+    assert len(set(labels)) == len(labels), (
+        f"distinct PADDING rows print the same label: {labels}")
+
+
 def test_no_two_combos_are_the_same_run():
     """Identical override sets print identical rows under different labels, and
     identical labels make two different rows indistinguishable in the table.
@@ -259,7 +270,7 @@ def test_each_combo_label_names_exactly_its_overrides():
     `test_tune_contacts_fixture.py` takes a combo's label and its dict from the
     same entry, so it proves the row scores its DICT and says nothing about the
     text. Setting `CONTACT_HIT_SPEED_PXPS` to 90 in both combos, under labels
-    still reading "hit 120", left all 416 tests green. With this test, that
+    still reading "hit 120", left the whole suite green. With this test, that
     mutation fails here, and so does changing only the `+ seg 3/40` combo's 40
     to 20, which exercises the inherited half of the label.
     """

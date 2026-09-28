@@ -133,8 +133,9 @@ BASELINE_LABEL = "BASELINE (shipping defaults)"
 
 def padding_label(pb: float, pa: float, mg: float) -> str:
     """The label for one padding row. Shared so the guard cannot spell it
-    differently from the tuner and call the difference a finding."""
-    return f"pad {pb:.0f}/{pa:.1f} merge {mg:.0f}"
+    differently from the tuner and call the difference a finding. `:g`, as for
+    the knob labels, because `:.0f` printed 2.5 and 2.0 both as `2`."""
+    return f"pad {pb:g}/{pa:g} merge {mg:g}"
 
 
 def load(test_id: str = DEFAULT_FIXTURE):
