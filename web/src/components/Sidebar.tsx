@@ -39,7 +39,7 @@ export function Sidebar() {
   // flag-off build from calling a route the API doesn't register.
   const me = useMe(SOCIAL_ENABLED && Boolean(user) && !loading);
   // A generated handle is not published — /users/{handle} 404s until it's
-  // claimed — so linking to it would send the user to "No one is using @alice".
+  // claimed — so linking to it would send the user to a "Profile not found" page.
   // needsHandle() is the same predicate the banner and the API use.
   const hasPublicProfile = Boolean(me?.username) && !needsHandle(me);
 
