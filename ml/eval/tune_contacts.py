@@ -115,6 +115,14 @@ COMBOS: tuple[tuple[str, dict[str, float | int]], ...] = (
 # the guard compares every row the tuner prints against the tables, and a row
 # it cannot account for is the finding. These are `COND` overrides, not ball
 # constants, so they live apart from SWEEPS.
+#
+# Row 0 is the current COND padding, on purpose: it is stage 2's anchor, the
+# best combo scored at today's pad/merge, so every row below it reads as a
+# change from that. It therefore repeats the last combo row above it — the one
+# named exception to "no swept value equals its default", kept because it is
+# the reference and not an accidental copy the way `=240` was.
+# `test_the_padding_anchor_is_the_current_COND` holds it to COND so the anchor
+# follows the defaults instead of drifting.
 PADDING: tuple[tuple[float, float, float], ...] = (
     (5.0, 4.0, 5.0), (4.0, 3.0, 3.0), (3.0, 2.0, 3.0),
     (3.0, 2.0, 2.0), (2.0, 1.5, 2.0), (2.0, 1.0, 1.0),

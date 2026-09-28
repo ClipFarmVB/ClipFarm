@@ -188,6 +188,21 @@ def test_no_knob_has_an_empty_sweep(name):
     assert SWEEPS[name], f"{name} is in SWEEPS but sweeps nothing"
 
 
+def test_the_padding_anchor_is_the_current_COND():
+    """`PADDING[0]` is stage 2's anchor row — the best combo at today's padding —
+    and the named exception to the rule above: it repeats the last combo row on
+    purpose. That only holds while it IS today's padding. A COND default moved
+    without this row would leave stage 2 anchored on a padding nothing ships,
+    which is the `=240` drift arriving from the COND side."""
+    pb, pa, mg = TC.PADDING[0]
+    anchor = {"pad_before": pb, "pad_after": pa, "merge_gap_seconds": mg}
+    current = {k: TC.COND[k] for k in anchor}
+    assert anchor == current, (
+        f"PADDING[0] is {anchor} but COND ships {current}; the anchor row must "
+        f"be the current padding"
+    )
+
+
 def test_no_two_combos_are_the_same_run():
     """Identical override sets print identical rows under different labels, and
     identical labels make two different rows indistinguishable in the table.
