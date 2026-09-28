@@ -475,7 +475,7 @@ def test_no_orm_attribute_is_read_after_a_rollback():
     from an `AsyncSession`. Ids are captured as locals first."""
     import inspect
 
-    for fn in (r.like_post, r.create_comment):
+    for fn in (r.like_post, r.unlike_post, r.create_comment):
         src = inspect.getsource(fn)
         after = src.split("db.rollback()", 1)
         if len(after) == 2:
