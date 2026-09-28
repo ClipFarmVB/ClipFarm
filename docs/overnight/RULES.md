@@ -1203,9 +1203,7 @@ names the very thing it got wrong.
 
 **So: to claim a class is covered, run the class.** All thirteen fills, not
 the two that already happened to be enforced; both columns separately, not
-one mutation that changes both at once. It is usually a loop, and it can
-find what one mutation cannot: running every index found that `ix.columns`
-does not contain a keyset index's `text()` terms.
+one mutation that changes both at once. It is usually a loop.
 
 Five corollaries:
 
