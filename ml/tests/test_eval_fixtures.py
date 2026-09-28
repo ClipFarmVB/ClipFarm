@@ -823,7 +823,7 @@ class TestHighlightWellFormedness:
         problems = highlight_wellformedness_violations(raw, self._scored(raw))
         assert any("starts before zero" in p for p in problems), problems
 
-    @pytest.mark.parametrize("bad", ["0:62", "1:60", "1:-5", "1:75:00", "--5"])
+    @pytest.mark.parametrize("bad", ["0:62", "1:60", "1:-5", "1:+5", "1:75:00", "--5", "+-5"])
     def test_an_out_of_range_or_signed_field_is_reported(self, bad):
         """`0:62` is a slip for `0:26` that used to score as 62s; a sign on an
         inner field is the same class of typo."""
@@ -833,11 +833,23 @@ class TestHighlightWellFormedness:
 
     @pytest.mark.parametrize("text, seconds", [
         ("-0:30", -30.0), ("-5", -5.0), ("1:59", 119.0), ("75:00", 4500.0),
-        ("1:02:03", 3723.0), ("0:00", 0.0), ("12.5", 12.5)])
+        ("1:02:03", 3723.0), ("0:00", 0.0), ("12.5", 12.5),
+        ("+30", 30.0), ("+0:30", 30.0)])
     def test_parse_timestamp_reads_the_well_formed_shapes(self, text, seconds):
         """The other callers (dead-time fixtures, model windows) keep every
-        form they could read before; only the first field is unbounded."""
+        well-formed value they could read before, a leading `+` included; only
+        the first field is unbounded. What they lose is the malformed values
+        (`0:62`, an inner sign) that used to score at the wrong time."""
         assert parse_timestamp(text) == seconds
+
+    @pytest.mark.parametrize("text, message", [
+        ("1:+5", "Signed field inside"), ("1:-5", "Signed field inside"),
+        ("--5", "More than one leading sign"), ("+-0:30", "More than one leading sign")])
+    def test_parse_timestamp_names_where_the_stray_sign_is(self, text, message):
+        """A sign on an inner field and a doubled leading sign are different
+        slips, so the error says which one it found."""
+        with pytest.raises(ValueError, match=message):
+            parse_timestamp(text)
 
     def test_an_unreadable_timestamp_is_reported_not_raised(self):
         """The neighbour of the missing key, and the likelier typo: `0O:23`
