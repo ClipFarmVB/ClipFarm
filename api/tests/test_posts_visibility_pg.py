@@ -175,6 +175,21 @@ def seeded(pg_db, monkeypatch):
     return async_url, author_id, ids
 
 
+def _like(async_url, post_id, user_id):
+    """Drive the real like endpoint, so the row is written the way production writes it."""
+    from app.routers import engagement as r
+
+    async def go():
+        engine = create_async_engine(async_url)
+        try:
+            async with AsyncSession(engine) as db:
+                return await r.like_post(post_id, user_id, db)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(go())
+
+
 def _list(async_url, viewer_id):
     """Run the real `list_user_posts` coroutine and return its PostOut list."""
     from app.routers import posts as posts_router
@@ -240,6 +255,37 @@ def test_the_author_sees_all_four(seeded):
     got = {p.id for p in _list(url, author_id)}
 
     assert got == set(ids.values())
+
+
+def test_the_profile_grid_fills_the_liked_flag_from_the_query(seeded):
+    """`viewer_has_liked` reaches the rendered post, not just the SQL.
+
+    `test_engagement.py` pins the QUERY — `user_posts_query` really does select
+    the EXISTS column — and its docstring says it exists because "a version that
+    hardcoded viewer_has_liked=False on the profile grid shipped green". It
+    still would have: that test reads compiled SQL, and nothing asserted the
+    router consumes the column it selects. Replacing `viewer_has_liked=liked`
+    with `False` in `list_user_posts` left all 1286 tests passing, while the
+    same mutation on the feed fails a test by name.
+
+    So this drives the real coroutine and asserts BOTH directions — a liked post
+    reads True and an unliked one reads False. One direction alone passes
+    against a constant.
+    """
+    url, author_id, ids = seeded
+    liked_id = ids["public_public"]
+    _like(url, liked_id, author_id)
+
+    by_id = {p.id: p for p in _list(url, author_id)}
+
+    assert by_id[liked_id].viewer_has_liked is True, (
+        "the author liked this post and the grid says otherwise"
+    )
+    others = [p for pid, p in by_id.items() if pid != liked_id]
+    assert others, "fixture no longer has a second post to contrast against"
+    assert all(p.viewer_has_liked is False for p in others), (
+        "an unliked post reads True, so a constant would satisfy the assertion above"
+    )
 
 
 def test_neither_gate_is_vacuous(seeded, monkeypatch):

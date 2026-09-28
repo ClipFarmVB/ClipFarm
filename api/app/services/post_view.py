@@ -16,17 +16,46 @@ or the reverse:
   broken images behind a 200;
 * one unsigned-able row took the whole page down with a 500.
 
-And `viewer_has_liked` is the one CF-113 is about to fill in exactly one of the
-two, leaving the other quietly returning a wrong value forever.
+And `viewer_has_liked` was the one that would have been filled in exactly one
+of the two, leaving the other quietly returning a wrong value forever. CF-113
+is this change; the list above is what the split copies had already cost.
 """
 import logging
 
+from sqlalchemy.orm import load_only
+
 from app.models.clip import Clip
 from app.models.post import Post
+from app.models.user import User
 from app.schemas.post import PostAuthor, PostOut, PostPlayback
 from app.services import profiles, storage
 
 logger = logging.getLogger(__name__)
+
+# The five `User` columns `PostAuthor.from_author` renders, and nothing else.
+# Owned by the renderer rather than by the feed, because every statement that
+# hands a `User` row to this module off a threadpool needs the same loader —
+# the feed, and since CF-113 the comment list.
+#
+# `load_only` *defers* the rest rather than forbidding it, so a future line in
+# `serialize` touching, say, `author.bio` would emit a deferred-column load —
+# from a threadpool worker, against an `AsyncSession`, i.e. `MissingGreenlet`
+# at runtime and nothing visible at review time. `raiseload=True` *here* turns
+# that into an immediate `InvalidRequestError` at the line that caused it. It
+# has to be this keyword: a separate `raiseload("*")` option — which an earlier
+# version used, and documented as doing this — governs *relationship* loads
+# only and lets a deferred column load silently. Verified against the pinned
+# 2.0.36: with `raiseload("*")` the access emitted one extra SELECT and
+# returned the value; with this keyword it raised. `test_feed.py` applies this
+# object to a real row and proves the raise, rather than trusting this comment.
+AUTHOR_COLUMNS = load_only(
+    User.id,
+    User.username,
+    User.display_name,
+    User.avatar_url,
+    User.username_is_generated,
+    raiseload=True,
+)
 
 
 def _playback(
@@ -102,7 +131,7 @@ def _presign(stored_url: str | None, failures: list[str] | None = None) -> str |
         return stored_url
 
 
-def _avatar(
+def sign_avatar(
     url: str | None,
     *,
     r2_ready: bool,
@@ -110,6 +139,10 @@ def _avatar(
     failures: list[str] | None = None,
 ) -> str | None:
     """Sign an avatar at most once per page.
+
+    Public, and named rather than `_avatar`, because `engagement._render_comment`
+    needs exactly this and had re-implemented it inline — the duplicate-copy
+    risk this module's own docstring records, arrived at from the other side.
 
     `failures` is threaded through for the same reason `_playback` takes it:
     the hoist that reached the clip URLs had not reached the avatar, so a
@@ -126,7 +159,7 @@ def _avatar(
 def serialize(
     post: Post,
     clip: Clip,
-    author: object,
+    author: User,
     *,
     r2_ready: bool,
     viewer_has_liked: bool = False,
@@ -135,15 +168,24 @@ def serialize(
 ) -> PostOut:
     """One post, rendered.
 
-    `author` is typed loosely because `PostAuthor.from_author` takes a Protocol
-    rather than `User` — a concrete import would run the model-layer cycle the
-    other way. `from_author`, never `model_validate`: the classmethod is what
-    withholds a handle its owner never chose.
+    `author` is a `User`. It was `object` with a `type: ignore` on the call,
+    justified by an import cycle that does not apply here: `_Author` is a
+    Protocol so that `schemas/post.py` need not import the model layer, but
+    this module already imports `User` at module scope, and every caller passes
+    one (`routers/posts.py` annotates it `User`). `from_author`, never
+    `model_validate`: the classmethod is what withholds a handle its owner
+    never chose.
 
-    `viewer_has_liked` defaults False until CF-113. It is a parameter rather
-    than a hardcoded literal so that when CF-113 resolves it with one query for
-    the whole page, there is one call site to thread it through instead of two
-    that have to be found.
+    `viewer_has_liked` is a parameter rather than a hardcoded literal so that
+    CF-113 could fill it from one query for the whole page through a single
+    call site. CF-113 is this change, so it is no longer a placeholder.
+
+    The default is not the anonymous answer — `schemas/post.py` says the same
+    thing beside the field, and an earlier version of this paragraph said the
+    opposite. Every read path passes an explicit value, including `False` for a
+    reader with no session; `create_post` is the only caller that takes the
+    default, where it is right because a post cannot have been liked at the
+    moment it is created.
 
     `avatar_cache` is per page, keyed by the stored URL. A profile grid is many
     posts by *one* author, so without it a 50-post page signed the same string
@@ -151,7 +193,7 @@ def serialize(
     version whenever an account owns several posts on a page. Optional so a
     single-post caller passes nothing.
     """
-    rendered = PostAuthor.from_author(author)  # type: ignore[arg-type]
+    rendered = PostAuthor.from_author(author)
     return PostOut(
         id=post.id,
         clip_id=post.clip_id,
@@ -168,7 +210,7 @@ def serialize(
             # doing the same; `PostAuthor` is not a `ProfileOut`, so it could
             # not simply be handed to that function.
             update={
-                "avatar_url": _avatar(
+                "avatar_url": sign_avatar(
                     rendered.avatar_url,
                     r2_ready=r2_ready,
                     cache=avatar_cache,

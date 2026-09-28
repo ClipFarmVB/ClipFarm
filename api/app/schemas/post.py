@@ -94,9 +94,18 @@ class PostOut(BaseModel):
     created_at: datetime
     author: PostAuthor
     playback: PostPlayback
-    # Always False until CF-113 adds likes. Shipped now so the response shape
-    # doesn't change under the client when it does, and so the feed can fill it
-    # with one query for the whole page rather than one per card.
+    # Filled for real as of CF-113, and no longer a placeholder — which is what
+    # this comment went on calling it for most of the change that stopped it
+    # being one.
+    #
+    # The default is not the anonymous answer: every read path passes an
+    # explicit value, including `False` for a reader with no session. The only
+    # caller that takes the default is `create_post`, where it is right because
+    # a post cannot have been liked at the moment it is created.
+    #
+    # The field was shipped ahead of the feature so the response shape would not
+    # move under the client, and so the feed could fill it with one query for
+    # the whole page rather than one per card.
     viewer_has_liked: bool = False
 
 
