@@ -217,7 +217,8 @@ def test_a_new_account_gets_exactly_one_marked_private_copy(pg_db, sources, monk
 
     clips = _query(
         pg_db,
-        "SELECT clip_url, thumbnail_url, player_id, visibility FROM clips "
+        "SELECT clip_url, thumbnail_url, player_id, visibility, action_type, "
+        "confidence, highlight_score FROM clips "
         "WHERE game_id = :g ORDER BY start_time",
         g=game.id,
     )
@@ -226,6 +227,10 @@ def test_a_new_account_gets_exactly_one_marked_private_copy(pg_db, sources, monk
     )
     assert all(c.player_id is None for c in clips), "the source's names must not leak"
     assert all(c.visibility is None for c in clips)
+    assert all(
+        (c.action_type, c.confidence, c.highlight_score) == ("spike", 0.9, 0.8)
+        for c in clips
+    ), "the example keeps its action types and highlight ranking"
 
     charged = _query(pg_db, "SELECT 1 FROM upload_events WHERE owner_id = :u", u=uid)
     assert charged == [], "the example costs no quota"

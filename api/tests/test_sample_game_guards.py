@@ -537,6 +537,9 @@ def test_the_copy_takes_the_fields_the_plan_names(monkeypatch):
     assert copied.visibility is None
     assert (copied.clip_url, copied.thumbnail_url) == (clip.clip_url, clip.thumbnail_url)
     assert (copied.start_time, copied.end_time, copied.labels) == (10.0, 18.0, ["spike"])
+    assert (copied.action_type, copied.confidence, copied.highlight_score) == (
+        ActionType.spike, 0.8, 0.7
+    ), "the example keeps its action types and highlight ranking"
 
 
 def test_a_source_that_is_not_ready_is_not_copied(monkeypatch):
