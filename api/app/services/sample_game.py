@@ -12,8 +12,8 @@ why the copies need guards the owner's own games do not:
 
 * the delete paths must not remove those objects (routers/games.py,
   routers/clips.py) — removing the example is removing rows only;
-* the owner may not publish the footage (clip visibility, posts), because it
-  is not theirs to publish;
+* the owner may not publish the footage (clip visibility, posts, share and
+  download links), because it is not theirs to publish;
 * a relabel writes no `Correction`, so our own footage does not become
   training signal attributed to a stranger;
 * the source game itself cannot be deleted or trimmed while the setting names
@@ -25,7 +25,8 @@ why the copies need guards the owner's own games do not:
   the SHARED clip object in place, changing every copy at once. Null makes
   trim refuse, and keeps the retention sweep away from the source's upload.
 * `condensed_video_url` — a re-condense of the source replaces that object,
-  and a copy pointing at it would silently change or break.
+  and a copy pointing at it would silently change or break. `condensed_duration`
+  goes with it, since the two describe one cut.
 * `player_id` — the source's roster names are not the new owner's to see.
 * `upload_id`, and no `upload_events` row — nothing was uploaded, so nothing
   is charged against the quota.
@@ -68,9 +69,10 @@ def is_sample(game: object) -> bool:
 def assert_not_sample(game: object) -> None:
     """409 for publishing the example game's footage.
 
-    Used by `PATCH /clips/{id}/visibility`, `POST /posts` and
-    `GET /clips/{id}/share`: each widens who sees a clip — the last by minting
-    a presigned link that plays for anyone holding it. The example's footage
+    Used by `PATCH /clips/{id}/visibility`, `POST /posts`,
+    `GET /clips/{id}/share` and `GET /clips/{id}/download`: each widens who
+    sees a clip — the last two by minting a presigned link that plays, or
+    downloads, for anyone holding it. The example's footage
     is ours, copied into the account to show what the product does — not the
     owner's to put in front of anyone else.
     """
@@ -78,8 +80,8 @@ def assert_not_sample(game: object) -> None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "Example clips can't be shared or posted — upload your own "
-                "game to publish its clips"
+                "Example clips can't be shared, downloaded or posted — upload "
+                "your own game to publish its clips"
             ),
         )
 
@@ -125,7 +127,8 @@ async def copy_sample_game(db: AsyncSession, user_id: uuid.UUID) -> Game | None:
     """Add a copy of the configured example game for `user_id` to `db`.
 
     Returns the new game, or None when there is nothing to copy — setting
-    empty or malformed, source missing, or source not `ready`. Flushes but does
+    empty or malformed, source missing, source not `ready`, or source with no
+    clips. Flushes but does
     not commit: the caller owns the transaction.
     """
     source_id = configured_source_id()
@@ -149,6 +152,10 @@ async def copy_sample_game(db: AsyncSession, user_id: uuid.UUID) -> Game | None:
             select(Clip).where(Clip.game_id == source_id).order_by(Clip.start_time)
         )
     ).scalars().all()
+    if not source_clips:
+        # An empty "Example: …" game in every new Library shows nothing.
+        logger.warning("sample game: source %s has no clips; skipping the copy", source_id)
+        return None
 
     # Every field by name. A generic column loop would carry across whatever
     # the next migration adds — visibility included, which
@@ -163,7 +170,9 @@ async def copy_sample_game(db: AsyncSession, user_id: uuid.UUID) -> Game | None:
         condense_requested=False,
         condensed_video_url=None,
         original_duration=source.original_duration,
-        condensed_duration=source.condensed_duration,
+        # Cleared with the URL, as _sync_db.py sets and clears the pair: a
+        # duration without its cut describes a condensed video the copy lacks.
+        condensed_duration=None,
         progress=1.0,
         processed_at=source.processed_at,
     )

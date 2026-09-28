@@ -400,10 +400,11 @@ async def trim_clip(
 
     # The example game has no source upload of its own, and a re-cut would
     # overwrite the clip object every copy shares (CF-220). Its own message,
-    # because "passed its retention window" is not what happened.
+    # because "passed its retention window" is not what happened, and 409 like
+    # every other example refusal rather than the retention case's 400.
     if sample_game.is_sample(game):
         raise HTTPException(
-            status_code=400,
+            status_code=409,
             detail="Example clips can't be trimmed — upload your own game to trim its clips",
         )
 
@@ -570,6 +571,10 @@ async def download_clip(
     accident.
     """
     clip, game = await _get_viewable_clip(clip_id, user_id, db)
+    # After the view check, as on /share, so a stranger still gets 404
+    # (CF-220): the attachment URL works for whoever holds it, and the file it
+    # hands over is the example's footage, which is not the owner's to pass on.
+    sample_game.assert_not_sample(game)
 
     # The filename is part of the response, not just decoration: presign_url
     # puts it in the URL's ResponseContentDisposition, in cleartext. So the

@@ -7,10 +7,10 @@ publish that footage, behave differently for a sample:
 
 * deleting the game or its clips removes rows and never calls
   `storage.delete_file`;
-* `PATCH /clips/{id}/visibility`, `POST /posts` and `GET /clips/{id}/share`
-  answer 409;
+* `PATCH /clips/{id}/visibility`, `POST /posts`, `GET /clips/{id}/share` and
+  `GET /clips/{id}/download` answer 409;
 * a relabel still applies to the owner's copy but writes no `Correction`;
-* a trim refuses with its own message rather than the retention one;
+* a trim refuses (409) with its own message rather than the retention one;
 * the configured source game itself cannot be deleted, have clips deleted, or
   be trimmed (409) while `SAMPLE_GAME_ID` names it.
 
@@ -296,6 +296,41 @@ def test_a_stranger_cannot_share_a_sample_clip_either():
     assert exc.value.status_code == 404
 
 
+def test_a_sample_clip_cannot_be_downloaded(monkeypatch):
+    # The attachment URL is the same presigned object as a share link, good
+    # for an hour to whoever holds it — refusing /share alone left this open.
+    presigned: list[str] = []
+    monkeypatch.setattr(
+        storage, "presign_from_stored_url", lambda url, **_: presigned.append(url) or url
+    )
+    _game_row, clip, db = _setup(is_sample=True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(clips_router.download_clip(clip.id, db, OWNER))
+
+    assert exc.value.status_code == 409
+    assert presigned == [], "no link is minted for a sample"
+
+
+def test_an_ordinary_clip_can_still_be_downloaded(monkeypatch):
+    monkeypatch.setattr(storage, "presign_from_stored_url", lambda url, **_: url + "?sig")
+    _game_row, clip, db = _setup(is_sample=False)
+
+    out = asyncio.run(clips_router.download_clip(clip.id, db, OWNER))
+
+    assert out == {"url": clip.clip_url + "?sig"}
+
+
+def test_a_stranger_cannot_download_a_sample_clip_either():
+    """The view check comes first: a stranger gets 404, not the 409."""
+    _game_row, clip, db = _setup(is_sample=True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(clips_router.download_clip(clip.id, db, uuid.uuid4()))
+
+    assert exc.value.status_code == 404
+
+
 def test_a_stranger_still_gets_404_for_a_sample_clip():
     """Ownership first: the 409 must not confirm the clip exists."""
     _game_row, clip, db = _setup(is_sample=True)
@@ -346,7 +381,7 @@ def test_trimming_a_sample_clip_is_refused_with_its_own_message(monkeypatch):
             )
         )
 
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 409, "the same status as every other example refusal"
     assert "Example" in exc.value.detail
     assert "retention" not in exc.value.detail
     assert (clip.start_time, clip.end_time) == (10.0, 18.0)
@@ -563,6 +598,7 @@ def test_the_copy_takes_the_fields_the_plan_names(monkeypatch):
     assert copy.title == "Example: Varsity vs Lincoln"
     assert copy.raw_video_url is None
     assert copy.condensed_video_url is None
+    assert copy.condensed_duration is None, "cleared with the cut it describes"
     assert copy.upload_id is None
     assert copy.visibility is None, "not passed, so the column default (private) applies"
     assert (copy.original_duration, copy.processed_at) == (1800.0, NOW)
@@ -586,6 +622,17 @@ def test_a_source_that_is_not_ready_is_not_copied(monkeypatch):
 
     assert asyncio.run(sample_game.copy_sample_game(db, uuid.uuid4())) is None
     assert db.added == []
+
+
+def test_a_source_with_no_clips_is_not_copied(monkeypatch, caplog):
+    source = _game(is_sample=False)
+    db = _CopyDB(source, [])
+    monkeypatch.setattr(settings, "sample_game_id", str(source.id))
+
+    with caplog.at_level(logging.WARNING):
+        assert asyncio.run(sample_game.copy_sample_game(db, uuid.uuid4())) is None
+    assert db.added == [], "no empty example game"
+    assert "has no clips" in caplog.text
 
 
 def test_a_missing_source_is_not_copied(monkeypatch):
