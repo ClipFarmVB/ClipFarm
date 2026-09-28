@@ -1,9 +1,19 @@
 // @vitest-environment jsdom
 //
-// CF-221 R8-M1: the Library must not judge one user's games against another
-// user's onboarding record. Another tab signing in as a different account
-// changes `user` under a mounted Library; the list loaded for the previous
-// user must not survive into the new user's panel.
+// Two suites share this file, and one set of module mocks:
+//
+// - CF-304 (#354): "A failed fetch renders an error, never an affirmative 'you
+//   have none'." The empty-state body already carried `!error`; the header
+//   subtitle did not, so a failed games fetch put "No games yet" directly above
+//   the red error card.
+// - CF-221 R8-M1: the Library must not judge one user's games against another
+//   user's onboarding record. Another tab signing in as a different account
+//   changes `user` under a mounted Library; the list loaded for the previous
+//   user must not survive into the new user's panel.
+//
+// `fetchGames` is a single mock whose behaviour each test sets: by default it
+// hands back the in-flight prefetch (or never settles), which is what the
+// account-switch test drives; the CF-304 tests override it per test.
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,11 +27,12 @@ vi.mock("@/contexts/AuthContext", () => ({
 
 let cached: Game[] | null = null;
 let inflight: Promise<Game[]> | null = null;
+const fetchGames = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/gamesCache", () => ({
+  fetchGames,
   getCachedGames: () => cached,
   getInflightGames: () => inflight,
-  fetchGames: () => inflight ?? new Promise<Game[]>(() => {}),
-  updateGamesCache: () => {},
+  updateGamesCache: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -48,6 +59,7 @@ let host: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  fetchGames.mockImplementation(() => inflight ?? new Promise<Game[]>(() => {}));
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -56,10 +68,32 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  vi.clearAllMocks();
   localStorage.clear();
   authUser = null;
   cached = null;
   inflight = null;
+});
+
+describe("the games page", () => {
+  it("does not say there are no games when the load failed", async () => {
+    fetchGames.mockRejectedValue(new Error("Network down"));
+    await act(async () => {
+      root.render(<GamesPage />);
+    });
+
+    expect(host.textContent).toContain("Network down");
+    expect(host.textContent).not.toContain("No games yet");
+  });
+
+  it("still says so when the load succeeded with none", async () => {
+    fetchGames.mockResolvedValue([]);
+    await act(async () => {
+      root.render(<GamesPage />);
+    });
+
+    expect(host.textContent).toContain("No games yet");
+  });
 });
 
 const panel = () => host.querySelector('section[aria-labelledby="onboarding-heading"]');

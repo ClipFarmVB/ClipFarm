@@ -54,17 +54,34 @@ _SNAPSHOT_MODULES = ("ml.pipeline.ball", "ml.pipeline.score")
 # ── timestamp / fixture loading ────────────────────────────────────────────
 
 def parse_timestamp(value: str | int | float) -> float:
-    """Accept mm:ss, hh:mm:ss, or raw seconds → float seconds."""
+    """Accept mm:ss, hh:mm:ss, or raw seconds → float seconds.
+
+    One leading sign applies to the whole timestamp, not just its first field:
+    `-0:30` is -30s, where applying the sign to `-0` alone gave +30 and hid a
+    negative time from every `start < 0` check. A leading `+` is accepted the
+    same way (`+0:30` is 30s), as it was before the sign handling existed. The
+    fields after the first are base-60 digits, so a sign on them or a value of
+    60 or more (`0:62`, a slip for `0:26`) is a typo, and raises rather than
+    scoring at the wrong time. So does a second leading sign (`--5`).
+    """
     if isinstance(value, (int, float)):
         return float(value)
-    parts = [float(p) for p in str(value).split(":")]
-    if len(parts) == 1:
-        return parts[0]
-    if len(parts) == 2:
-        return parts[0] * 60 + parts[1]
-    if len(parts) == 3:
-        return parts[0] * 3600 + parts[1] * 60 + parts[2]
-    raise ValueError(f"Unrecognized timestamp: {value!r}")
+    text = str(value).strip()
+    sign = -1.0 if text.startswith("-") else 1.0
+    fields = (text[1:] if text.startswith(("-", "+")) else text).split(":")
+    if len(fields) > 3:
+        raise ValueError(f"Unrecognized timestamp: {value!r}")
+    if fields[0].strip().startswith(("-", "+")):
+        raise ValueError(f"More than one leading sign on timestamp: {value!r}")
+    if any(f.strip().startswith(("-", "+")) for f in fields[1:]):
+        raise ValueError(f"Signed field inside timestamp: {value!r}")
+    parts = [float(p) for p in fields]
+    if not all(0 <= p < 60 for p in parts[1:]):
+        raise ValueError(f"Minutes/seconds field out of range: {value!r}")
+    total = 0.0
+    for p in parts:
+        total = total * 60 + p
+    return sign * total
 
 
 @dataclass

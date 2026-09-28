@@ -34,10 +34,21 @@ export default function SignupPage() {
 
   async function handleGoogleSignup() {
     const supabase = createClient();
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: `${window.location.origin}/auth/callback` },
-    });
+    setError(null);
+    // Same two failure paths as /login's handleGoogleLogin, which carries the
+    // full reasoning: the `{ error }` arm is the API's shape, and the reachable
+    // failure is a rejection from the PKCE code challenge. This is an
+    // un-awaited `onClick`, so without the catch that rejection gave no UI and
+    // an unhandled rejection (CF-304).
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
+      });
+      if (error) setError(error.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Please try again.");
+    }
   }
 
   if (success) {
@@ -105,7 +116,10 @@ export default function SignupPage() {
           </div>
 
           {error && (
-            <div className="flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400"
+            >
               <AlertCircle size={13} className="shrink-0 mt-0.5" />
               {error}
             </div>
