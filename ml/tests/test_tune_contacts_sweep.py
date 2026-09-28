@@ -335,17 +335,22 @@ def test_no_combo_collapses_onto_a_single_knob_row(label, overrides):
 
 
 @pytest.mark.parametrize("label,overrides", _combos(), ids=[c[0] for c in _combos()])
-def test_every_swept_knob_is_restored_after_scoring(label, overrides):
-    """`score()` restores exactly `TUNABLES`, so an override outside that tuple
-    is set on the module and never put back — every row after it is scored
-    against a mutated `ball`, silently, and the table stays plausible."""
+def test_every_combo_override_is_a_declared_tunable(label, overrides):
+    """`score()` only sets the keys of `TUNABLES`, so an override outside that
+    tuple is silently dropped: the row scores the shipping defaults under a
+    label naming a change it never made, and the table stays plausible. Nothing
+    leaks into later rows; the one row is simply wrong."""
     stray = sorted(set(overrides) - set(TUNABLES))
-    assert not stray, f"{label!r} overrides {stray}, which score() does not restore"
+    assert not stray, (
+        f"{label!r} overrides {stray}, which score() ignores, so the row "
+        f"scores the defaults")
 
 
 def test_every_swept_knob_is_a_declared_tunable():
     stray = sorted(set(SWEEPS) - set(TUNABLES))
-    assert not stray, f"SWEEPS covers {stray}, which score() does not restore"
+    assert not stray, (
+        f"SWEEPS covers {stray}, which score() ignores, so those rows score "
+        f"the defaults")
 
 
 def test_the_swept_knobs_are_the_ones_intended():

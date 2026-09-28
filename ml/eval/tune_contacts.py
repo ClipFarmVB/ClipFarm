@@ -289,13 +289,8 @@ def _sweep(test_id: str) -> None:
     print(_baseline_note(test_id))
 
     # `%g` rather than a per-knob format, now that one table holds a mix of
-    # floats and ints. Checked against the formats it replaces rather than
-    # assumed: there were seventeen single-knob labels before this change and
-    # sixteen survive it, and `%g` reproduces all seventeen byte-for-byte —
-    # including the deleted `=240` row — across both the `%.0f` knobs and the
-    # bare `{v}` ones. Sixteen is the count of rows that remain, not of labels
-    # checked; saying "sixteen old labels" would be a count taken from the
-    # wrong set.
+    # floats and ints. It reproduces the labels the earlier per-knob `%.0f`
+    # and bare `{v}` formats printed, byte-for-byte, for every value swept.
     #
     # Byte-exact for these values, not label-stable in general: `%g` truncates
     # to six significant digits and switches to scientific notation at 1e6, so
@@ -330,10 +325,8 @@ def _sweep(test_id: str) -> None:
     # `[-1]` is positional and load-bearing: stage 2 sweeps padding on top of
     # the FULLEST combo, which is the last one because the table is written
     # cumulatively, so the order is part of the table's meaning rather than its
-    # presentation. It re-based stage 2 SILENTLY until
-    # `test_the_combos_are_written_cumulatively` was added; the word is struck
-    # here because the property is now enforced, and a comment that keeps
-    # describing the world before its own fix is this PR's most repeated defect.
+    # presentation. `test_the_combos_are_written_cumulatively` enforces it,
+    # so a reordered table fails that test rather than re-basing stage 2.
     best = dict(COMBOS[-1][1])
     print("\n-- padding sweep, on top of the full best contact combo --")
     global COND
