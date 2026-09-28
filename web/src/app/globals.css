@@ -27,50 +27,74 @@
   --color-brand:         var(--cf-brand);
   --color-brand-light:   var(--cf-brand-light);
   --color-brand-dim:     var(--cf-brand-dim);
+  /* Text and icons drawn on a brand fill (the primary button). Per theme,
+     because the light-theme teal is dark and the dark-theme teal is light. */
+  --color-on-brand:      var(--cf-on-brand);
 }
 
-/* ── Light mode (default) — white / off-white / blue ───────────────── */
+/*
+ * Both themes take their accent from the logo (CF-573): a teal line-art mark
+ * on cream. `--cf-brand-light` is the hover state of a brand fill, so in the
+ * light theme it is *darker* than the base — a lighter teal would drop white
+ * button text below AA.
+ *
+ * Contrast, WCAG relative luminance, measured when these were set (CF-568):
+ *   light  on-brand #fff on brand #037170          5.83:1
+ *          on-brand #fff on brand-light #025f5e    7.49:1
+ *          brand #037170 as text on bg #faf7f1     5.46:1
+ *          muted #65604f on bg                     5.88:1
+ *   dark   on-brand #0b0f0f on brand #3cc2b3      8.77:1
+ *          on-brand on brand-light #5fd3c5        10.66:1
+ *          brand as text on bg #0b0f0f             8.77:1
+ *          muted #7f8c8a on bg                     5.53:1
+ * `subtle` stays near 3:1 in both, as before: it is for decorative and
+ * tertiary text only.
+ */
+
+/* ── Light mode (default) — cream / warm neutrals / logo teal ────────── */
 :root {
-  --cf-bg:            #ffffff;
-  --cf-surface:       #f6f6f9;
-  --cf-surface-high:  #ededf2;
-  --cf-surface-hover: #e4e4eb;
-  --cf-border:        #e2e2ea;
-  --cf-border-strong: #ccccd8;
+  --cf-bg:            #faf7f1;
+  --cf-surface:       #f3eee4;
+  --cf-surface-high:  #ebe4d7;
+  --cf-surface-hover: #e3dbcc;
+  --cf-border:        #e5ded1;
+  --cf-border-strong: #d2c9b8;
 
-  --cf-fg:            #111116;
-  --cf-muted:         #62627a;
-  --cf-subtle:        #9898b4;
+  --cf-fg:            #1c1b17;
+  --cf-muted:         #65604f;
+  --cf-subtle:        #948c7b;
 
-  --cf-brand:         #2563eb;
-  --cf-brand-light:   #3b82f6;
-  --cf-brand-dim:     rgba(37, 99, 235, 0.09);
+  --cf-brand:         #037170;
+  --cf-brand-light:   #025f5e;
+  --cf-brand-dim:     rgba(3, 113, 112, 0.09);
+  --cf-on-brand:      #ffffff;
 
-  --cf-dot:           rgba(0, 0, 0, 0.10);
-  --cf-scrollbar:     #d4d4e0;
-  --cf-scrollbar-hover: #b8b8cc;
+  --cf-dot:           rgba(60, 50, 30, 0.12);
+  --cf-scrollbar:     #d9d1c2;
+  --cf-scrollbar-hover: #c2b8a5;
 }
 
-/* ── Dark mode — charcoal / amber ──────────────────────────────────── */
+/* ── Dark mode — deep teal-black / bright logo teal ─────────────────── */
 .dark {
-  --cf-bg:            #0c0c0e;
-  --cf-surface:       #111114;
-  --cf-surface-high:  #18181c;
-  --cf-surface-hover: #1e1e24;
-  --cf-border:        #222226;
-  --cf-border-strong: #333338;
+  --cf-bg:            #0b0f0f;
+  --cf-surface:       #101616;
+  --cf-surface-high:  #172020;
+  --cf-surface-hover: #1d2828;
+  --cf-border:        #1f2a2a;
+  --cf-border-strong: #2f3d3c;
 
-  --cf-fg:            #f0f0f2;
-  --cf-muted:         #6e6e7a;
-  --cf-subtle:        #44444e;
+  --cf-fg:            #eef3f2;
+  --cf-muted:         #7f8c8a;
+  --cf-subtle:        #56625f;
 
-  --cf-brand:         #f59e0b;
-  --cf-brand-light:   #fbbf24;
-  --cf-brand-dim:     rgba(245, 158, 11, 0.12);
+  --cf-brand:         #3cc2b3;
+  --cf-brand-light:   #5fd3c5;
+  --cf-brand-dim:     rgba(60, 194, 179, 0.12);
+  --cf-on-brand:      #0b0f0f;
 
-  --cf-dot:           rgba(255, 255, 255, 0.18);
-  --cf-scrollbar:     #2a2a2e;
-  --cf-scrollbar-hover: #3a3a40;
+  --cf-dot:           rgba(255, 255, 255, 0.16);
+  --cf-scrollbar:     #26302f;
+  --cf-scrollbar-hover: #36423f;
 }
 
 body {
