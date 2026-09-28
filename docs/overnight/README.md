@@ -65,7 +65,7 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap that only selects costs about 38k tokens of brief instead of 72k;
+A step-1 lap that only selects costs about 38k tokens of brief instead of 71k;
 one that also spawns a round, about 44k. A step-2 lap is about 35k, a step-3 lap
 about 30k. That is the whole point of the split.
 
