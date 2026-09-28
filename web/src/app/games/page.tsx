@@ -289,9 +289,15 @@ function GamesContent() {
 }
 
 export default function GamesPage() {
+  const { user } = useAuth();
+  // Keyed on the user so an identity change (e.g. another tab signing in as
+  // someone else) remounts the Library instead of keeping the previous
+  // user's list in state. AuthContext has already cleared the module cache by
+  // then, so the remount starts loading. Without this the onboarding panel
+  // judged the old list against the new user and wrote their `done`.
   return (
     <RequireAuth>
-      <GamesContent />
+      <GamesContent key={user?.id ?? ""} />
     </RequireAuth>
   );
 }
