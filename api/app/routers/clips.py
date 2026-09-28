@@ -465,9 +465,10 @@ async def delete_clips(
         if game.owner_id != user_id:
             raise HTTPException(status_code=404, detail="One or more clips not found")
     # Whole batch refused, before anything is touched, if any clip is the
-    # example's source: every copy plays its objects (CF-220).
-    for _, game in rows:
-        sample_game.assert_not_source(game.id)
+    # example's source: every copy plays its objects (CF-220). Once per game,
+    # not per clip, so a malformed setting logs once rather than N times.
+    for game_id in {game.id for _, game in rows}:
+        sample_game.assert_not_source(game_id)
 
     # Delete from R2 (best-effort) and DB. An example clip's objects are
     # shared by every copy of the example game (CF-220), so for those it is
@@ -514,7 +515,10 @@ async def share_clip(
     Content-Disposition: attachment and requires a signed-in caller.
     """
     # Read path (CF-108): anyone who may view the clip may mint a share link.
-    clip, _game = await _get_viewable_clip(clip_id, viewer_id, db)
+    clip, game = await _get_viewable_clip(clip_id, viewer_id, db)
+    # After the view check, so a viewer who cannot see the clip still gets 404
+    # (CF-220): a share link hands the example's footage to whoever holds it.
+    sample_game.assert_not_sample(game)
     # NOTE: still a 1h presigned URL even for public clips. CF-108's card flags
     # revisiting this — a public clip's link is meant to be passed around, so a
     # short expiry is user-hostile, while a long one is a bearer token nobody

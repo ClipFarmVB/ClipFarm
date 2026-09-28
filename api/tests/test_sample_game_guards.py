@@ -7,7 +7,8 @@ publish that footage, behave differently for a sample:
 
 * deleting the game or its clips removes rows and never calls
   `storage.delete_file`;
-* `PATCH /clips/{id}/visibility` and `POST /posts` answer 409;
+* `PATCH /clips/{id}/visibility`, `POST /posts` and `GET /clips/{id}/share`
+  answer 409;
 * a relabel still applies to the owner's copy but writes no `Correction`;
 * a trim refuses with its own message rather than the retention one;
 * the configured source game itself cannot be deleted, have clips deleted, or
@@ -258,6 +259,41 @@ def test_a_sample_clip_cannot_be_posted():
 
     assert exc.value.status_code == 409
     assert db.added == []
+
+
+def test_a_sample_clip_cannot_be_shared(monkeypatch):
+    # A share link is a presigned URL that plays for anyone it is sent to, so
+    # it publishes the footage as surely as a visibility change does.
+    presigned: list[str] = []
+    monkeypatch.setattr(
+        storage, "presign_from_stored_url", lambda url, **_: presigned.append(url) or url
+    )
+    _game_row, clip, db = _setup(is_sample=True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(clips_router.share_clip(clip.id, db, OWNER))
+
+    assert exc.value.status_code == 409
+    assert presigned == [], "no link is minted for a sample"
+
+
+def test_an_ordinary_clip_can_still_be_shared(monkeypatch):
+    monkeypatch.setattr(storage, "presign_from_stored_url", lambda url, **_: url + "?sig")
+    _game_row, clip, db = _setup(is_sample=False)
+
+    out = asyncio.run(clips_router.share_clip(clip.id, db, OWNER))
+
+    assert out == {"url": clip.clip_url + "?sig"}
+
+
+def test_a_stranger_cannot_share_a_sample_clip_either():
+    """The view check comes first: a stranger gets 404, not the 409."""
+    _game_row, clip, db = _setup(is_sample=True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(clips_router.share_clip(clip.id, db, uuid.uuid4()))
+
+    assert exc.value.status_code == 404
 
 
 def test_a_stranger_still_gets_404_for_a_sample_clip():

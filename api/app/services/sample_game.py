@@ -68,10 +68,11 @@ def is_sample(game: object) -> bool:
 def assert_not_sample(game: object) -> None:
     """409 for publishing the example game's footage.
 
-    Used by `PATCH /clips/{id}/visibility` and `POST /posts`: both widen who
-    sees a clip, and the example's footage is ours, copied into the account to
-    show what the product does — not the owner's to put in front of anyone
-    else.
+    Used by `PATCH /clips/{id}/visibility`, `POST /posts` and
+    `GET /clips/{id}/share`: each widens who sees a clip — the last by minting
+    a presigned link that plays for anyone holding it. The example's footage
+    is ours, copied into the account to show what the product does — not the
+    owner's to put in front of anyone else.
     """
     if is_sample(game):
         raise HTTPException(
@@ -93,7 +94,8 @@ def configured_source_id() -> uuid.UUID | None:
     except ValueError:
         # The value, not an error object: it is our own config, not user data.
         logger.warning(
-            "sample game: SAMPLE_GAME_ID is not a UUID (%r); skipping the copy",
+            "sample game: SAMPLE_GAME_ID is not a UUID (%r); treating the "
+            "example game as off",
             raw,
         )
         return None
