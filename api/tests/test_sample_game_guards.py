@@ -262,8 +262,9 @@ def test_a_sample_clip_cannot_be_posted():
 
 
 def test_a_sample_clip_cannot_be_shared(monkeypatch):
-    # A share link is a presigned URL that plays for anyone it is sent to, so
-    # it publishes the footage as surely as a visibility change does.
+    # The app does not offer a share link for the example. This is a product
+    # signal, not access control: the owner's clip listings already carry a
+    # presigned URL for the same object (sample_game.assert_not_sample).
     presigned: list[str] = []
     monkeypatch.setattr(
         storage, "presign_from_stored_url", lambda url, **_: presigned.append(url) or url
@@ -297,8 +298,8 @@ def test_a_stranger_cannot_share_a_sample_clip_either():
 
 
 def test_a_sample_clip_cannot_be_downloaded(monkeypatch):
-    # The attachment URL is the same presigned object as a share link, good
-    # for an hour to whoever holds it — refusing /share alone left this open.
+    # The attachment URL is the same presigned object as a share link, so the
+    # app refuses to offer it too. Like /share, not access control.
     presigned: list[str] = []
     monkeypatch.setattr(
         storage, "presign_from_stored_url", lambda url, **_: presigned.append(url) or url

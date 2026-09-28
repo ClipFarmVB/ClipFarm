@@ -74,18 +74,28 @@ def assert_not_sample(game: object) -> None:
     """409 for publishing the example game's footage.
 
     Used by `PATCH /clips/{id}/visibility`, `POST /posts`,
-    `GET /clips/{id}/share` and `GET /clips/{id}/download`: each widens who
-    sees a clip — the last two by minting a presigned link that plays, or
-    downloads, for anyone holding it. The example's footage
-    is ours, copied into the account to show what the product does — not the
-    owner's to put in front of anyone else.
+    `GET /clips/{id}/share` and `GET /clips/{id}/download`. The example's
+    footage is ours, copied into the account to show what the product does —
+    not the owner's to put in front of anyone else.
+
+    What each refusal actually stops differs, and the difference matters to
+    anyone scoping consent for the footage (CF-571, #581):
+
+    - visibility and posts: real controls. They keep the clip private, so no
+      one but the owner may view it or mint a URL for it.
+    - share and download: the app stops *offering* a share or download link.
+      They are not access control. The owner's own reads —
+      `GET /games/{id}/clips` and `GET /collections/{id}/clips` — already
+      return the same presigned `clip_url` (1 h), which plays for anyone
+      holding it for its lifetime and can be saved or passed on.
     """
     if is_sample(game):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "Example clips can't be shared, downloaded or posted — upload "
-                "your own game to publish its clips"
+                "Example clips can't be posted, and the app doesn't make share "
+                "or download links for them — upload your own game to publish "
+                "its clips"
             ),
         )
 

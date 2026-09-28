@@ -519,7 +519,9 @@ async def share_clip(
     # Read path (CF-108): anyone who may view the clip may mint a share link.
     clip, game = await _get_viewable_clip(clip_id, viewer_id, db)
     # After the view check, so a viewer who cannot see the clip still gets 404
-    # (CF-220): a share link hands the example's footage to whoever holds it.
+    # (CF-220): the app does not offer a share link for the example's footage.
+    # Not access control — the owner's clip listings already return the same
+    # presigned URL (see sample_game.assert_not_sample).
     sample_game.assert_not_sample(game)
     # NOTE: still a 1h presigned URL even for public clips. CF-108's card flags
     # revisiting this — a public clip's link is meant to be passed around, so a
@@ -573,8 +575,10 @@ async def download_clip(
     """
     clip, game = await _get_viewable_clip(clip_id, user_id, db)
     # After the view check, as on /share, so a stranger still gets 404
-    # (CF-220): the attachment URL works for whoever holds it, and the file it
-    # hands over is the example's footage, which is not the owner's to pass on.
+    # (CF-220): the app does not offer a download of the example's footage,
+    # which is not the owner's to pass on. Not access control — the owner's
+    # clip listings already return a presigned URL for the same object (see
+    # sample_game.assert_not_sample).
     sample_game.assert_not_sample(game)
 
     # The filename is part of the response, not just decoration: presign_url
