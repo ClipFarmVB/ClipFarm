@@ -371,8 +371,9 @@ ticket](TICKETS.md#working-a-ticket).
   what binds it — at minimum that it must not push to `main`, merge, force-push
   or deploy; must not read or echo a secret; adds no attribution stamp to a PR
   body, review, comment or issue (a `Co-Authored-By` trailer or session link on
-  a commit is fine); prefixes its comments; stays inside its scope; and reports
-  a decision it needs rather than taking it.
+  a commit is fine); prefixes its comments; stays inside its scope; claims a
+  mutation result only for the mutations it ran, never for their class; and
+  reports a decision it needs rather than taking it.
 
 **When the environment gives no worktree, run one subagent at a time and say so
 in the log and the report.** That is the capability check in
@@ -1173,9 +1174,9 @@ what was run.** Writing them as coverage of a *kind* of defect — the guard, th
 fills, both columns, the class — is the same defect as publishing a number you
 did not measure.
 
-The usual tell is a plural in a claim backed by a narrower run: *all three*
-mutations, *max_\**, *both* NaN conventions. Each was written after running
-part of the class and finding it caught.
+The usual tell is a plural in a claim backed by a narrower run: *max_\**,
+*both* NaN conventions. Each was written after running part of the class and
+finding it caught.
 But the tell is not always a plural — the first instance below generalised a
 single caught mutation into a statement about the guard, with no plural in
 sight. The reliable question is not "is there a plural" but **"is this sentence
@@ -1183,14 +1184,12 @@ wider than the run behind it".**
 
 **No count, deliberately.** A tally here was written three times and found low
 three times, because the run that produced these was still producing them while
-the tally was being written. Six representative cases, each found by a review
+the tally was being written. Four representative cases, each found by a review
 round running the **neighbour** of the mutation the commit had run:
 
 | PR · commit | claimed | what one neighbouring mutation showed |
 | --- | --- | --- |
 | #477 · `ef67146` | "The guard now compares the text" | the named mutation was caught; a *prefix* of the constraint text passed |
-| #477 · `ead16e0` | "the migration, the model, and both index assertions" | both assertions compared only the name |
-| #477 · `abd0ae8` | "All three mutations now fail" | the parsed chunk carried the *next* statement's comment, which supplied both checks |
 | #477 · `adddc9e` | "`id DESC` could be dropped … It reads `ix.expressions` now" | `post_id DESC` supplies the substring `id DESC`, so the term can still go |
 | #543 · `7aae60e` | "max_\* reduced to a copy of the mean" | caught for `max_conf_3s` only; `max_speed_3s` shipped green |
 | #543 · `e52ed47` | "both NaN conventions" | the magnitude half asserted `.max()`, which is identical under both |
@@ -1200,18 +1199,13 @@ clone of `main` finds them, if at all, only by their subjects in a squash
 message. The PR number is the durable reference.
 
 The last was written while fixing the one before it, in a commit whose subject
-names the very thing it got wrong. `abd0ae8` earns its row twice over —
-`adddc9e` records that it "listed this hole as closed while the mutation it
-named by name still passed" — and it sits between two other instances by the
-same author within ninety minutes, which is the strongest evidence here that
-noticing the pattern does not stop it.
+names the very thing it got wrong.
 
 **So: to claim a class is covered, run the class.** All thirteen fills, not
 the two that already happened to be enforced; both columns separately, not
-one mutation that changes both at once. It is usually a loop, and it usually
-finds something — running all thirteen found a fill nobody had questioned, and
-running every index found that `ix.columns` does not contain a keyset index's
-`text()` terms.
+one mutation that changes both at once. It is usually a loop, and it can
+find what one mutation cannot: running every index found that `ix.columns`
+does not contain a keyset index's `text()` terms.
 
 Five corollaries:
 
