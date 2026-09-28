@@ -208,10 +208,7 @@ def highlight_wellformedness_violations(
         # matters more, since `evaluate()` sums the SCORED spans. A fixture
         # whose `ground_truth_tiers` excludes every clip it ships loads fine,
         # scores nothing, and makes every ordering check below vacuous while
-        # this function returns clean. `test_test1_still_scores_every_clip_it
-        # _ships` hides it today by pinning 41 for test1 alone; `HIGHLIGHT_IDS`
-        # is a glob precisely because a second fixture is expected, and that one
-        # would inherit the ordering checks in name and not in substance.
+        # this function returns clean.
         problems.append(
             f"{len(clips)} clips and none of them score, so nothing below "
             f"checks anything")
@@ -805,9 +802,7 @@ class TestHighlightWellFormedness:
 
         A fixture whose `ground_truth_tiers` excludes everything it ships loads
         fine and scores nothing; every ordering assertion is then vacuous and
-        the helper returns clean. Caught here rather than by
-        `test_test1_still_scores_every_clip_it_ships`, which pins 41 for `test1`
-        and says nothing about the second fixture the glob exists to admit.
+        the helper returns clean.
         """
         raw = self._raw([{"start": "00:10", "end": "00:20", "tier": "O"},
                          {"start": "00:30", "end": "00:40", "tier": "B"}])
