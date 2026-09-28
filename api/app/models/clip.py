@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Float, DateTime, ForeignKey, Enum as SAEnum, ARRAY
+from sqlalchemy import String, Float, DateTime, ForeignKey, Enum as SAEnum, ARRAY, Index, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -20,6 +20,16 @@ class ActionType(str, enum.Enum):
 
 class Clip(Base):
     __tablename__ = "clips"
+    __table_args__ = (
+        # Migration 018's shape — see the matching note on `Game`. The
+        # predicate covers NULL because inherit is what every pipeline clip
+        # carries, and the anonymous clip listing is served by that branch.
+        Index(
+            "ix_clips_visibility_public",
+            "game_id",
+            postgresql_where=text("visibility IS NULL OR visibility = 'public'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     game_id: Mapped[uuid.UUID] = mapped_column(

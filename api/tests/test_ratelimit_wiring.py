@@ -24,7 +24,7 @@ from starlette.datastructures import Headers
 
 from app.auth import get_current_user_id
 from app.config import Settings, settings
-from app.routers import clips, games, posts, profiles
+from app.routers import clips, follows, games, posts, profiles
 from app.services import ratelimit
 from app.services.ratelimit import MemoryBackend, RateLimiter
 
@@ -37,6 +37,16 @@ from app.services.ratelimit import MemoryBackend, RateLimiter
 THROTTLED = {
     ("/users/{handle}", "GET"): ("profile", "rate_limit_profile_per_minute", 30),
     ("/posts", "GET"): ("user_posts", "rate_limit_user_posts_per_minute", 30),
+    ("/users/{handle}/followers", "GET"): (
+        "follows",
+        "rate_limit_follows_per_minute",
+        30,
+    ),
+    ("/users/{handle}/following", "GET"): (
+        "follows",
+        "rate_limit_follows_per_minute",
+        30,
+    ),
     ("/games/{game_id}", "GET"): ("game", "rate_limit_game_per_minute", 60),
     ("/games/{game_id}/clips", "GET"): (
         "games_clips",
@@ -47,7 +57,7 @@ THROTTLED = {
     ("/posts/{post_id}", "GET"): ("post", "rate_limit_post_per_minute", 120),
 }
 
-ROUTERS = [clips.router, games.router, posts.router, profiles.router]
+ROUTERS = [clips.router, follows.router, games.router, posts.router, profiles.router]
 
 
 def _all_routes():

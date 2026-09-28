@@ -39,6 +39,11 @@ USER_COLUMN_CLASSES = {
     "is_private": "operational",
     "username_changed_at": "operational",
     "username_is_generated": "operational",
+    # Denormalized counts of the `follows` edges (CF-110), not independently
+    # collected data — they are publicly rendered, but they say nothing the
+    # follow graph does not already say, and erasing the edges erases them.
+    "follower_count": "operational",
+    "following_count": "operational",
 }
 
 VALID_CLASSES = {"identifier", "credential", "profile", "operational"}
@@ -63,6 +68,8 @@ VALID_CLASSES = {"identifier", "credential", "profile", "operational"}
 USER_REFERENCING_TABLES = {
     "collections": None,
     "corrections": "CASCADE",
+    # Two FKs, both CASCADE: the edge is deleted from either end (CF-110).
+    "follows": "CASCADE",
     "games": None,
     "posts": "CASCADE",
     "teams": None,

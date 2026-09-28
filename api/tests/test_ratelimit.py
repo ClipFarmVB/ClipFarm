@@ -464,7 +464,7 @@ def test_exactly_the_enumeration_policies_key_by_address():
     # Stated as a set so adding a policy forces a decision about which it is,
     # rather than defaulting to the account key and being wrong quietly.
     by_address = {n for n, p in ratelimit.POLICIES.items() if p.by_address}
-    assert by_address == {"profile", "user_posts"}
+    assert by_address == {"profile", "user_posts", "follows"}
 
 
 def test_retry_after_is_never_zero_at_the_end_of_a_window():

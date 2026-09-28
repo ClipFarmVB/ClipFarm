@@ -164,6 +164,7 @@ POLICIES: dict[str, Policy] = {
     "user_posts": Policy(
         "user_posts", "rate_limit_user_posts_per_minute", by_address=True
     ),
+    "follows": Policy("follows", "rate_limit_follows_per_minute", by_address=True),
     # Exposure B — content. The game pair is sized by the detail page's own
     # polling; the share pair is a load bound, not an anti-enumeration one.
     "game": Policy("game", "rate_limit_game_per_minute"),
