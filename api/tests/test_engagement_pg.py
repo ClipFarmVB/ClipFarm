@@ -310,6 +310,126 @@ def test_concurrent_likes_leave_the_counter_equal_to_the_rows(world):
     assert _scalar(async_url, "SELECT count(*) FROM post_likes WHERE post_id = :p", p=pid) == 10
 
 
+# ── one lock order: the post, then its child rows (R17-M1) ───────────────────
+
+
+class _PauseAfterFirstLock:
+    """The handler's session, paused after the first statement that takes a
+    write lock (anything but a plain SELECT) so a rival can be staged there.
+    Everything else passes straight through."""
+
+    def __init__(self, db, hook):
+        self._db, self._hook, self._fired = db, hook, False
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+    async def execute(self, stmt, *a, **k):
+        from sqlalchemy.dialects import postgresql
+
+        result = await self._db.execute(stmt, *a, **k)
+        sql = str(stmt.compile(dialect=postgresql.dialect())).lstrip().upper()
+        if not self._fired and (not sql.startswith("SELECT") or " FOR " in sql):
+            self._fired = True
+            await self._hook()
+        return result
+
+
+def _race_with_delete_post(async_url, pid, author, handler):
+    """Run `handler` and, the moment it holds its first write lock, the
+    author's `delete_post` on the same post — waiting until that delete is
+    actually blocked on a lock before letting the handler go on.
+
+    Locking the child row first (the old `unlike_post` / `delete_comment`)
+    stages the cycle exactly: the delete holds the post and its cascade waits
+    on the child row, then the handler's counter UPDATE waits on the post, and
+    Postgres aborts one side with 40P01. Locking the post first makes the
+    delete wait on the post instead, and there is nothing to cycle on.
+    Returns `(handler outcome, delete outcome)`, exceptions included.
+    """
+    from app.routers import posts as posts_router
+
+    async def go():
+        engine = create_async_engine(async_url)
+        deleting: list[asyncio.Task] = []
+
+        async def delete():
+            async with AsyncSession(engine, expire_on_commit=False) as db:
+                await posts_router.delete_post(pid, author, db)
+
+        async def stage():
+            deleting.append(asyncio.create_task(delete()))
+            for _ in range(200):
+                # A fresh transaction per probe: pg_stat_activity is a
+                # snapshot taken once per transaction.
+                async with engine.connect() as probe:
+                    waiting = (await probe.execute(text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                    ))).scalar_one()
+                if waiting:
+                    return
+                assert not deleting[0].done(), (
+                    "delete_post finished without waiting on the handler's lock, "
+                    "so the race was not staged"
+                )
+                await asyncio.sleep(0.05)
+            raise AssertionError("delete_post never blocked on the handler's lock")
+
+        try:
+            async with AsyncSession(engine, expire_on_commit=False) as db:
+                (handled,) = await asyncio.gather(
+                    asyncio.wait_for(handler(_PauseAfterFirstLock(db, stage)), 30),
+                    return_exceptions=True,
+                )
+            assert deleting, "the handler never took a write lock"
+            (deleted,) = await asyncio.gather(
+                asyncio.wait_for(deleting[0], 30), return_exceptions=True
+            )
+            return handled, deleted
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(go())
+
+
+@pytest.mark.parametrize("path", ["unlike_post", "delete_comment"])
+def test_a_child_write_racing_the_posts_deletion_does_not_deadlock(world, path):
+    """R17-M1, driven for real. `unlike_post` and `delete_comment` locked the
+    child row and then the post; `delete_post`'s cascade locks the post and
+    then the child. Staged at the worst moment, one of the two answered 500
+    with a deadlock. With the post locked first, both succeed: the handler
+    commits, then the delete takes the post and its children with it."""
+    from app.routers import engagement as r
+    from app.schemas.engagement import CommentCreate
+
+    async_url, ids = world
+    pid, who, author = ids["public"], ids["follower"], ids["author"]
+
+    if path == "unlike_post":
+        _run(async_url, lambda db: r.like_post(pid, who, db))
+
+        def handler(db):
+            return r.unlike_post(pid, who, db)
+    else:
+        made = _run(async_url, lambda db: r.create_comment(pid, CommentCreate(body="bye"), who, db))
+
+        def handler(db):
+            return r.delete_comment(made.id, who, db)
+
+    handled, deleted = _race_with_delete_post(async_url, pid, author, handler)
+
+    for side, outcome in (("the " + path, handled), ("delete_post", deleted)):
+        assert not isinstance(outcome, BaseException), (
+            f"{side} failed while racing the other: {outcome!r}. A deadlock "
+            f"(40P01) here means the post and child locks are taken in "
+            f"opposite orders."
+        )
+    assert _scalar(async_url, "SELECT count(*) FROM posts WHERE id = :p", p=pid) == 0
+    assert _scalar(async_url, "SELECT count(*) FROM post_likes WHERE post_id = :p", p=pid) == 0
+    assert _scalar(async_url, "SELECT count(*) FROM post_comments WHERE post_id = :p", p=pid) == 0
+
+
 # ── a user who cannot see a post cannot like or comment on it ────────────────
 
 

@@ -325,6 +325,11 @@ def _updates(db):
     return [s for s in db.statements if _sql(s).startswith("UPDATE")]
 
 
+def _locked(author_id=AUTHOR):
+    """`_lock_post`'s answer: the post exists, and this is its author."""
+    return _Result(scalar=author_id)
+
+
 def test_a_like_moves_the_counter_only_when_the_insert_landed(monkeypatch):
     """`ON CONFLICT DO NOTHING` plus rowcount: the tap that inserted the row
     increments; the double-tap (or the race's loser) does not, and is
@@ -333,15 +338,15 @@ def test_a_like_moves_the_counter_only_when_the_insert_landed(monkeypatch):
     _gate(monkeypatch, post)
 
     # Landed: INSERT rowcount 1, then the UPDATE ... RETURNING.
-    db = _Session([_Result(rowcount=1), _Result(scalar=4)])
+    db = _Session([_locked(), _Result(rowcount=1), _Result(scalar=4)])
     out = asyncio.run(r.like_post(post.id, VIEWER, db))
     assert (out.liked, out.like_count) == (True, 4)
     assert len(_updates(db)) == 1 and "like_count + 1" in _sql(_updates(db)[0])
-    assert "ON CONFLICT (post_id, user_id) DO NOTHING" in _sql(db.statements[0])
+    assert "ON CONFLICT (post_id, user_id) DO NOTHING" in _sql(db.statements[1])
     assert db.committed == 1
 
     # Did not land: no UPDATE at all, the existing count is read back.
-    db = _Session([_Result(rowcount=0), _Result(scalar=3)])
+    db = _Session([_locked(), _Result(rowcount=0), _Result(scalar=3)])
     out = asyncio.run(r.like_post(post.id, VIEWER, db))
     assert (out.liked, out.like_count) == (True, 3)
     assert _updates(db) == []
@@ -352,7 +357,7 @@ def test_an_unlike_is_gated_on_the_delete_and_floors_the_decrement(monkeypatch):
     post = _post(like_count=1)
     _gate(monkeypatch, post)
 
-    db = _Session([_Result(rowcount=1), _Result(scalar=0)])
+    db = _Session([_locked(), _Result(rowcount=1), _Result(scalar=0)])
     out = asyncio.run(r.unlike_post(post.id, VIEWER, db))
     assert (out.liked, out.like_count) == (False, 0)
     sql = _sql(_updates(db)[0]).lower()
@@ -364,7 +369,7 @@ def test_an_unlike_is_gated_on_the_delete_and_floors_the_decrement(monkeypatch):
     # `post.like_count` — the pre-delete value — and a fresh read and a stale one
     # are indistinguishable whenever they happen to agree. They agree in every
     # single-threaded call, which is why the stale read survived six rounds.
-    db = _Session([_Result(rowcount=0), _Result(scalar=9)])
+    db = _Session([_locked(), _Result(rowcount=0), _Result(scalar=9)])
     out = asyncio.run(r.unlike_post(post.id, VIEWER, db))
     assert (out.liked, out.like_count) == (False, 9), (
         "the count must come from the SELECT after the delete, not from "
@@ -380,7 +385,7 @@ def test_an_unlike_is_gated_on_the_delete_and_floors_the_decrement(monkeypatch):
 
     # And the post vanishing between the gate and that read is a 404, the same
     # answer `like_post`'s already-liked path gives for the same race.
-    db = _Session([_Result(rowcount=0), _Result(scalar=None)])
+    db = _Session([_locked(), _Result(rowcount=0), _Result(scalar=None)])
     with pytest.raises(HTTPException) as caught:
         asyncio.run(r.unlike_post(post.id, VIEWER, db))
     assert caught.value.status_code == 404
@@ -396,15 +401,15 @@ def test_a_comment_delete_is_a_conditional_update(monkeypatch):
         async def get(self, model, key):
             return {PostComment: comment, Post: post}[model]
 
-    db = _Db([_Result(rowcount=1), _Result(scalar=1)])
+    db = _Db([_locked(post.author_id), _Result(rowcount=1), _Result(scalar=1)])
     asyncio.run(r.delete_comment(comment.id, VIEWER, db))
-    hide, bump = db.statements
+    _lock, hide, bump = db.statements
     assert "deleted_at IS NULL" in _sql(hide)
     assert "comment_count" in _sql(bump) and "greatest(" in _sql(bump).lower()
 
-    db = _Db([_Result(rowcount=0)])
+    db = _Db([_locked(post.author_id), _Result(rowcount=0)])
     asyncio.run(r.delete_comment(comment.id, VIEWER, db))
-    assert len(db.statements) == 1, "a delete that matched nothing must not decrement"
+    assert len(db.statements) == 2, "a delete that matched nothing must not decrement"
 
 
 def test_comment_deletion_is_author_or_post_owner():
@@ -414,7 +419,7 @@ def test_comment_deletion_is_author_or_post_owner():
 
     class _Db(_Session):
         def __init__(self, comment):
-            super().__init__([_Result(rowcount=1), _Result(scalar=0)])
+            super().__init__([_locked(post.author_id), _Result(rowcount=1), _Result(scalar=0)])
             self.comment = comment
 
         async def get(self, model, key):
@@ -442,6 +447,11 @@ def test_a_comment_whose_post_vanished_is_a_404_not_a_500(monkeypatch):
 
     class _Db(_Session):
         async def execute(self, stmt, *a, **k):
+            # `_lock_post` answers; the write after it hits the foreign key —
+            # the backstop, since the lock itself 404s a post already gone.
+            if not self.statements:
+                self.statements.append(stmt)
+                return _locked()
             raise IntegrityError("insert", {}, Exception("fk"))
 
         async def get(self, model, key):
@@ -471,6 +481,9 @@ def test_a_like_on_a_post_that_vanished_is_a_404_not_a_500(monkeypatch):
 
     class _Db(_Session):
         async def execute(self, stmt, *a, **k):
+            if not self.statements:
+                self.statements.append(stmt)
+                return _locked()
             raise IntegrityError("insert", {}, Exception("fk"))
 
     db = _Db([])
@@ -478,6 +491,103 @@ def test_a_like_on_a_post_that_vanished_is_a_404_not_a_500(monkeypatch):
         asyncio.run(r.like_post(post.id, VIEWER, db))
     assert exc.value.status_code == 404
     assert db.rolled_back == 1
+
+
+def test_every_engagement_write_locks_the_post_before_its_child_row(monkeypatch):
+    """R17-M1: one lock order — the `posts` row, then the child row.
+
+    `delete_post` is a `DELETE FROM posts` whose cascade then deletes
+    `post_likes` / `post_comments` rows, so it holds the post and waits on the
+    child. `unlike_post` and `delete_comment` did the reverse — the child row's
+    DELETE / UPDATE first, `_bump`'s UPDATE on the post after — and the two
+    deadlock: 40P01, a plain DBAPIError, a 500. Pinned by recording the order
+    each handler issues its statements in: the post's `FOR NO KEY UPDATE` must
+    come before anything that writes a child row. `test_engagement_pg.py`
+    drives the actual race.
+    """
+    post = _post(author_id=AUTHOR)
+    _gate(monkeypatch, post)
+    comment = SimpleNamespace(id=uuid.uuid4(), post_id=post.id, author_id=VIEWER, deleted_at=None)
+
+    class _Stop(Exception):
+        """Raised at the counter UPDATE: the order is decided by then."""
+
+    class _Recorder:
+        def __init__(self):
+            self.events: list[str] = []
+
+        async def execute(self, stmt, *a, **k):
+            self.events.append(_sql(stmt))
+            if self.events[-1].startswith("UPDATE posts"):
+                raise _Stop
+            return _Result(rowcount=1, scalar=AUTHOR)
+
+        def add(self, obj):
+            self.events.append(f"ADD {type(obj).__tablename__}")
+
+        async def get(self, model, key):
+            if model is PostComment:
+                return comment
+            if model is Post:  # the pre-fix `delete_comment` read the post this way
+                return post
+            return SimpleNamespace(id=VIEWER, username="v", display_name=None,
+                                   avatar_url=None, username_is_generated=False)
+
+        async def commit(self):
+            pass
+
+        async def rollback(self):
+            pass
+
+    calls = {
+        "like_post": lambda db: r.like_post(post.id, VIEWER, db),
+        "unlike_post": lambda db: r.unlike_post(post.id, VIEWER, db),
+        "create_comment": lambda db: r.create_comment(
+            post.id, r.CommentCreate(body="hi"), VIEWER, db
+        ),
+        "delete_comment": lambda db: r.delete_comment(comment.id, VIEWER, db),
+    }
+    wrong = {}
+    for name, call in calls.items():
+        db = _Recorder()
+        with pytest.raises(_Stop):
+            asyncio.run(call(db))
+        lock = next(
+            (i for i, e in enumerate(db.events) if "FROM posts" in e and "FOR NO KEY UPDATE" in e),
+            None,
+        )
+        child = next(
+            i for i, e in enumerate(db.events) if "post_likes" in e or "post_comments" in e
+        )
+        if lock is None or lock > child:
+            wrong[name] = [e.split("\n")[0] for e in db.events]
+    assert not wrong, (
+        "the post's row lock must be taken before the child row is written, or "
+        f"the handler deadlocks against delete_post's cascade: {wrong}"
+    )
+
+
+def test_a_comment_delete_rolls_back_at_every_404(monkeypatch):
+    """R17-N1: `delete_comment` reached `_bump` with no rollback on its 404,
+    where `create_comment` has one for the same shape. Both 404s after the
+    post lock — the post gone at the lock, and `_bump`'s empty RETURNING —
+    roll back at the raise, and neither commits."""
+    post = _post(author_id=AUTHOR)
+    comment = SimpleNamespace(id=uuid.uuid4(), post_id=post.id, author_id=VIEWER, deleted_at=None)
+
+    class _Db(_Session):
+        async def get(self, model, key):
+            return {PostComment: comment, Post: post}[model]
+
+    for script in (
+        [_Result(scalar=None)],  # the post is gone by the time its lock is granted
+        [_locked(), _Result(rowcount=1), _Result(scalar=None)],  # `_bump` finds no row
+    ):
+        db = _Db(script)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(r.delete_comment(comment.id, VIEWER, db))
+        assert exc.value.status_code == 404
+        assert (db.rolled_back, db.committed) == (1, 0), script
 
 
 def test_no_orm_attribute_is_read_after_a_rollback():

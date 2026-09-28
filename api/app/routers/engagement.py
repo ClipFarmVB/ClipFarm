@@ -16,9 +16,19 @@ nothing. Decrements are floored with `GREATEST` in SQL so the CHECKs migration
 drift a cascade left behind — `_adjust_counts`' docstring has the full
 argument.
 
-**Lock order.** Every mutation here touches at most one `posts` row and locks
-it last, after the child row, so there is no id-ordering to do: the cycle
-that bit `_adjust_counts` needed two counter rows in one transaction.
+**Lock order: the `posts` row first, then the child row — everywhere.**
+`posts.delete_post` is a plain `DELETE FROM posts`: it takes the post's row
+lock, and the `ON DELETE CASCADE` migration 020 put on `post_likes` and
+`post_comments` then deletes the child rows, waiting on any a writer here holds.
+So every mutation here takes the post's row lock (`_lock_post`, `FOR NO KEY
+UPDATE`, the strength `_bump`'s UPDATE takes anyway) before it writes a child
+row. Locking the child first and the counter row after — which `unlike_post`
+and `delete_comment` did — closes a cycle with that cascade, Postgres aborts one
+side with 40P01, and asyncpg raises that as a plain DBAPIError: a 500, the
+failure `follows._adjust_counts` fixed for its own cycle. With one order there
+is no cycle, and a post deleted first is simply gone by the time the lock is
+granted, which is a 404. Each mutation touches one `posts` row, so there is no
+id-ordering between posts to do.
 
 **Nothing reads an ORM attribute after `rollback()`.** Ids are captured as
 locals before any statement that can fail — the expiry `follows.py` learned
@@ -81,6 +91,32 @@ ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
 DEFAULT_PAGE = 50
 
 
+async def _lock_post(
+    db: AsyncSession, post_id: uuid.UUID, *, detail: str = "Post not found"
+) -> uuid.UUID:
+    """Take the post's row lock, before any child row is written, and return
+    its author's id. 404 (`detail`) if the post is gone.
+
+    The module docstring's lock order, in one place. `FOR NO KEY UPDATE` is
+    what `_bump`'s UPDATE would take later anyway, so this moves the lock
+    earlier without making it stronger: it conflicts with `delete_post`'s
+    `DELETE` (so the two queue on the post, not on each other's child rows)
+    and with other counter writers, and not with the `FOR KEY SHARE` a
+    concurrent like's foreign-key check takes. Nothing has been written when
+    it 404s; the rollback ends the transaction at the raise rather than
+    leaving that to `get_db`.
+    """
+    author_id = (
+        await db.execute(
+            select(Post.author_id).where(Post.id == post_id).with_for_update(key_share=True)
+        )
+    ).scalar_one_or_none()
+    if author_id is None:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=detail)
+    return author_id
+
+
 async def _bump(
     db: AsyncSession, post_id: uuid.UUID, column: InstrumentedAttribute, delta: int
 ) -> int:
@@ -117,6 +153,11 @@ async def like_post(post_id: uuid.UUID, user_id: UserId, db: DB):
     """
     post, _clip, _author = await post_read.load_for_read(post_id, user_id, db)
     post_id = post.id  # a plain local; nothing below reads the ORM row
+    # The post's row lock before the like row — the module's lock order. The
+    # INSERT's foreign-key check would take a KEY SHARE on the post first
+    # anyway; this makes the order explicit rather than a property of how
+    # Postgres happens to run RI triggers.
+    await _lock_post(db, post_id)
 
     try:
         landed = await db.execute(
@@ -133,7 +174,8 @@ async def like_post(post_id: uuid.UUID, user_id: UserId, db: DB):
         # so post_likes.post_id has nothing to point at. `create_comment`
         # handles the identical race the identical way; this was the one
         # mutation that did not, and it answered 500 where every sibling
-        # answers 404.
+        # answers 404. With the post locked above, a deleted post is a 404 at
+        # `_lock_post` instead and this is the backstop, not the path.
         await db.rollback()
         raise HTTPException(status_code=404, detail="Post not found") from None
 
@@ -160,6 +202,11 @@ async def unlike_post(post_id: uuid.UUID, user_id: UserId, db: DB):
     """
     post, _clip, _author = await post_read.load_for_read(post_id, user_id, db)
     post_id = post.id  # a plain local; nothing below reads the ORM row
+    # The post's row lock BEFORE the DELETE locks the like row. The other way
+    # round — like row, then `_bump`'s UPDATE on the post — deadlocks against
+    # `delete_post`, whose DELETE holds the post and whose cascade then waits
+    # on this like row (R17-M1). See the module docstring.
+    await _lock_post(db, post_id)
 
     removed = await db.execute(
         delete(PostLike).where(PostLike.post_id == post_id, PostLike.user_id == user_id)
@@ -304,6 +351,11 @@ async def create_comment(post_id: uuid.UUID, body: CommentCreate, user_id: UserI
     if author is None:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # The post's row lock before the comment row is written: the module's lock
+    # order. As in `like_post`, the INSERT's foreign-key check would lock the
+    # post first anyway; this states it.
+    await _lock_post(db, post_id)
+
     comment = PostComment(post_id=post_id, author_id=user_id, body=body.body)
     db.add(comment)
     try:
@@ -347,13 +399,18 @@ async def delete_comment(comment_id: uuid.UUID, user_id: UserId, db: DB):
     comment = await db.get(PostComment, comment_id)
     if comment is None or comment.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Comment not found")
-    post = await db.get(Post, comment.post_id)
-    if post is None:
-        raise HTTPException(status_code=404, detail="Comment not found")
-    if user_id not in (comment.author_id, post.author_id):
+    comment_id, post_id, comment_author = comment.id, comment.post_id, comment.author_id
+
+    # The post's row lock BEFORE the soft-delete UPDATE locks the comment row —
+    # the module's lock order, and the same cycle `unlike_post` avoids:
+    # `delete_post`'s cascade waits on the comment row while holding the post.
+    # It also reads the post's author, so the ownership check below is made
+    # against the post as locked.
+    post_author = await _lock_post(db, post_id, detail="Comment not found")
+    if user_id not in (comment_author, post_author):
         # 404 not 403, as everywhere: a 403 confirms the id is real.
+        await db.rollback()
         raise HTTPException(status_code=404, detail="Comment not found")
-    comment_id, post_id = comment.id, post.id
 
     hidden = await db.execute(
         update(PostComment)
@@ -363,5 +420,13 @@ async def delete_comment(comment_id: uuid.UUID, user_id: UserId, db: DB):
     # A second tap, or a race with the other principal, matches nothing —
     # and decrements nothing.
     if hidden.rowcount == 1:
-        await _bump(db, post_id, Post.comment_count, -1)
+        try:
+            await _bump(db, post_id, Post.comment_count, -1)
+        except HTTPException:
+            # `create_comment`'s reason: `_bump` 404s rather than raising
+            # IntegrityError, so the soft delete above would still be pending.
+            # Roll back at the raise rather than relying on `get_db`. Unreachable
+            # while the post is locked above, which is why it is only a backstop.
+            await db.rollback()
+            raise
     await db.commit()
