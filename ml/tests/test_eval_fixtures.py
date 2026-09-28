@@ -816,6 +816,29 @@ class TestHighlightWellFormedness:
         problems = highlight_wellformedness_violations(raw, self._scored(raw))
         assert any("starts before zero" in p for p in problems), problems
 
+    def test_a_negative_minutes_timestamp_is_reported(self):
+        """`-0:30` used to parse as +30: the sign landed on `-0`, which is 0,
+        so the start-before-zero rule never saw it."""
+        raw = self._raw([{"start": "-0:30", "end": "00:20"}])
+        problems = highlight_wellformedness_violations(raw, self._scored(raw))
+        assert any("starts before zero" in p for p in problems), problems
+
+    @pytest.mark.parametrize("bad", ["0:62", "1:60", "1:-5", "1:75:00", "--5"])
+    def test_an_out_of_range_or_signed_field_is_reported(self, bad):
+        """`0:62` is a slip for `0:26` that used to score as 62s; a sign on an
+        inner field is the same class of typo."""
+        raw = self._raw([{"start": bad, "end": "59:00"}])
+        problems = highlight_wellformedness_violations(raw, [])
+        assert any("unreadable timestamp" in p for p in problems), problems
+
+    @pytest.mark.parametrize("text, seconds", [
+        ("-0:30", -30.0), ("-5", -5.0), ("1:59", 119.0), ("75:00", 4500.0),
+        ("1:02:03", 3723.0), ("0:00", 0.0), ("12.5", 12.5)])
+    def test_parse_timestamp_reads_the_well_formed_shapes(self, text, seconds):
+        """The other callers (dead-time fixtures, model windows) keep every
+        form they could read before; only the first field is unbounded."""
+        assert parse_timestamp(text) == seconds
+
     def test_an_unreadable_timestamp_is_reported_not_raised(self):
         """The neighbour of the missing key, and the likelier typo: `0O:23`
         with a letter O is exactly the hand-authoring slip the card describes,
