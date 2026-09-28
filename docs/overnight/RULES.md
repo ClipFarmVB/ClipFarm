@@ -75,7 +75,10 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
   **The trailer and the session link are emitted client-side and are
   suppressible**, and a sandbox does not inherit the settings that suppress
   them — which is the mechanism behind the prohibition, and what the reversal
-  nearly deleted along with the rest.
+  nearly deleted along with the rest. So either one, or a "Generated with
+  Claude Code" line, found on your own PR body, review, comment or issue is a
+  setting to fix, not an exception to claim; the exemption below does not
+  cover them.
 
   **Not every footer is one you wrote or one of those two, by measurement.** On
   2026-09-16 a run rewrote #554's body to end in a single footer it wrote itself — a
@@ -1170,9 +1173,9 @@ what was run.** Writing them as coverage of a *kind* of defect — the guard, th
 fills, both columns, the class — is the same defect as publishing a number you
 did not measure.
 
-The usual tell is a plural in a claim backed by a singular run: *both* index
-assertions, *all three* mutations, *max_\**, *every* member, *both* NaN
-conventions. Each was written after running one member and finding it caught.
+The usual tell is a plural in a claim backed by a narrower run: *both* index
+assertions, *all three* mutations, *max_\**, *both* NaN conventions. Each was
+written after running part of the class and finding it caught.
 But the tell is not always a plural — the first instance below generalised a
 single caught mutation into a statement about the guard, with no plural in
 sight. The reliable question is not "is there a plural" but **"is this sentence
@@ -1180,28 +1183,28 @@ wider than the run behind it".**
 
 **No count, deliberately.** A tally here was written three times and found low
 three times, because the run that produced these was still producing them while
-the tally was being written. Seven representative cases, each found by a review
+the tally was being written. Six representative cases, each found by a review
 round running the **neighbour** of the mutation the commit had run:
 
 | PR · commit | claimed | what one neighbouring mutation showed |
 | --- | --- | --- |
-| #477 · `ef67146` | "that exact mutation is caught" | true of the named one; a *prefix* of the constraint text passed |
+| #477 · `ef67146` | "The guard now compares the text" | the named mutation was caught; a *prefix* of the constraint text passed |
 | #477 · `ead16e0` | "the migration, the model, and both index assertions" | both assertions compared only the name |
 | #477 · `abd0ae8` | "All three mutations now fail" | the parsed chunk carried the *next* statement's comment, which supplied both checks |
-| #477 · `adddc9e` | "mutate every member of the class" | 2 of 8 members mutated; reordering never tried |
 | #477 · `adddc9e` | "`id DESC` could be dropped … It reads `ix.expressions` now" | `post_id DESC` supplies the substring `id DESC`, so the term can still go |
 | #543 · `7aae60e` | "max_\* reduced to a copy of the mean" | caught for `max_conf_3s` only; `max_speed_3s` shipped green |
 | #543 · `e52ed47` | "both NaN conventions" | the magnitude half asserted `.max()`, which is identical under both |
 
-The SHAs are on the PR branches, not on `main`: #477 is unmerged, and #543 was
-squashed, so a clone of `main` finds those two only by their subjects in the
-squash message. The PR number is the durable reference.
+The SHAs are on the PR branches, not on `main`: this repo squash-merges, so a
+clone of `main` finds them, if at all, only by their subjects in a squash
+message. The PR number is the durable reference.
 
 The last was written while fixing the one before it, in a commit whose subject
-names the very thing it got wrong. `abd0ae8` earns its row twice over — it also
-"listed as closed" a hole whose named mutation still passed — and it sits
-between two other instances by the same author within ninety minutes, which is
-the strongest evidence here that noticing the pattern does not stop it.
+names the very thing it got wrong. `abd0ae8` earns its row twice over —
+`adddc9e` records that it "listed this hole as closed while the mutation it
+named by name still passed" — and it sits between two other instances by the
+same author within ninety minutes, which is the strongest evidence here that
+noticing the pattern does not stop it.
 
 **So: to claim a class is covered, run the class.** All thirteen fills, not
 the two that already happened to be enforced; both columns separately, not
@@ -1210,9 +1213,7 @@ finds something — running all thirteen found a fill nobody had questioned, and
 running every index found that `ix.columns` does not contain a keyset index's
 `text()` terms.
 
-Five corollaries. Two cost a round, two were caught mid-fix by the author, and
-the last cost more than one — the cheap catches and the expensive ones have
-different lessons in them:
+Five corollaries:
 
 - **A test that derives its expected value from the thing under test cannot see
   that thing change.** A fill table spelling its expectation as
@@ -1238,7 +1239,6 @@ different lessons in them:
   claim](BRIEFS.md#the-cold-reviewers-brief) reaching the fixture rather than
   the assertion — the rule lives there; what is new here is that a fixture you
   wrote yourself is a place it hides.
-
 - **Pin the consumer, not the table it reads.** A guard that asserts properties
   of a data structure does not constrain the code that consumes it, and the
   distance between the two is where the defect lives: a consumer can ignore the
