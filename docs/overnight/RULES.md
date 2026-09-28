@@ -374,8 +374,8 @@ ticket](TICKETS.md#working-a-ticket).
   body, review, comment or issue (a `Co-Authored-By` trailer, session link or
   "Generated with Claude Code" line on a commit is fine); prefixes its
   comments; stays inside its scope; claims a mutation result only for the
-  mutations it ran, never for their class; and reports a decision it needs
-  rather than taking it.
+  mutations it ran, never for their class unless it ran the whole class; and
+  reports a decision it needs rather than taking it.
 
 **When the environment gives no worktree, run one subagent at a time and say so
 in the log and the report.** That is the capability check in
