@@ -1,8 +1,9 @@
 # Reviewer briefs — what to tell a round
 
-Read on a lap that **spawns a review round**, cold or semi-cold. Everything a
-subagent needs to be told is here; the selection and routing that decide *which*
-round to spawn are in [`REVIEW.md`](./REVIEW.md).
+Read on a lap that **spawns a review round**, cold or semi-cold — and its last
+section, on what a mutation result licenses, on a lap that dispatches an
+implementer. Everything a subagent needs to be told is here; the selection and
+routing that decide *which* round to spawn are in [`REVIEW.md`](./REVIEW.md).
 
 Split out of `REVIEW.md` (CF-365) because a **step 2** lap spawns semi-cold
 rounds and needed the whole of that file — 18k tokens — to reach one section.
@@ -348,3 +349,88 @@ review or a card carries its location as your claim, not the skill's.
 And "the skill agreed" is not verification of a number. It once confirmed a
 figure by recomputing it the way the diff's author had, rather than from the
 basis the diff stated — which is the one check that would have failed it.
+
+### A mutation result licenses a claim about that mutation, not about its class
+
+**"Revert-checked" and "that mutation is caught" are measurements of exactly
+what was run.** Writing them as coverage of a *kind* of defect — the guard, the
+fills, both columns, the class — is the same defect as publishing a number you
+did not measure.
+
+The usual tell is a plural in a claim backed by a narrower run: *max_\**,
+*both* NaN conventions. Each was written after running part of the class and
+finding it caught.
+But the tell is not always a plural — the first instance below generalised a
+single caught mutation into a statement about the guard, with no plural in
+sight. The reliable question is not "is there a plural" but **"is this sentence
+wider than the run behind it".**
+
+**No count, deliberately.** A tally here was written three times and found low
+three times, because the run that produced these was still producing them while
+the tally was being written. Four representative cases, each found by a review
+round running the **neighbour** of the mutation the commit had run:
+
+| PR · commit | claimed | what one neighbouring mutation showed |
+| --- | --- | --- |
+| #477 · `ef67146` | "The guard now compares the text" | the named mutation was caught; a *prefix* of the constraint text passed |
+| #477 · `adddc9e` | "`id DESC` could be dropped … It reads `ix.expressions` now" | `post_id DESC` supplies the substring `id DESC`, so the term can still go |
+| #543 · `7aae60e` | "max_\* reduced to a copy of the mean" | caught for `max_conf_3s` only; `max_speed_3s` shipped green |
+| #543 · `e52ed47` | "both NaN conventions" | the magnitude half asserted `.max()`, which is identical under both |
+
+The SHAs are on the PR branches, not on `main`: this repo squash-merges, so a
+clone of `main` finds them, if at all, only by their subjects in a squash
+message. The PR number is the durable reference.
+
+The last was written while fixing the one before it, in a commit whose subject
+names the very thing it got wrong.
+
+**So: to claim a class is covered, run the class.** All thirteen fills, not
+the two that already happened to be enforced; both columns separately, not
+one mutation that changes both at once. It is usually a loop.
+
+Five corollaries:
+
+- **A test that derives its expected value from the thing under test cannot see
+  that thing change.** A fill table spelling its expectation as
+  `CONTACT_GAP_CAP` moved with the constant when it was halved, and passed.
+  Write the literal; it is the independent record of what the value should be.
+- **Pin the derived number, not a threshold.** A column with no positive-value
+  coverage at all invites `assert spread.max() > 0.1` as the fix, and that
+  accepts a whole family of wrong answers: a dropped `sqrt` turns a standard
+  deviation into a variance and clears the bar just as easily. Pin the computed
+  value — `== approx(0.3333)` — which distinguishes them. Stated as the weaker
+  fix *rejected*, because that is what happened; no such assertion ever shipped
+  here, and writing it as history would be this same rule broken inside the
+  paragraph that states it.
+- **`.max()` over a column is almost always the wrong reduction for a windowed
+  property.** It finds the row the mutation did not touch: an assertion on the
+  column maximum was identical under both NaN conventions, because the rows at
+  either end had clean windows and supplied it.
+- **A fixture can be accidentally degenerate, and then the assertion compares two
+  identical values.** One put every "fast" sample just past the plausibility
+  ceiling, so all were masked as NaN and mean collapsed onto max; another used a
+  constant-y track to check a *spread* column. This is [the rule that the
+  inputs have to be able to disprove the claim](#the-cold-reviewers-brief)
+  reaching the fixture rather than the assertion — the rule lives there; what
+  is new here is that a fixture you wrote yourself is a place it hides.
+- **Pin the consumer, not the table it reads.** A guard that asserts properties
+  of a data structure does not constrain the code that consumes it, and the
+  distance between the two is where the defect lives: a consumer can ignore the
+  table and re-type the literal. The tell is a guard and its subject living in
+  different artifacts. Ask what the consumer is free to do that the table cannot
+  see, and assert *that* — record what the code did and compare it against what
+  the table says it should have done. **And when a guard needs a third
+  tightening, the finding is its shape, not its tightness.**
+
+**This section has broken the rule it states, while stating it** — repeatedly
+across #545's review rounds, and more than once in a commit that was fixing the
+previous instance. #545's commit history is the record. Keep
+prose like this short: it is read on every lap that spawns, and every sentence
+is a place to be wrong.
+
+**The load-bearing half is the prose, not the testing.** In every instance above
+the mutation was run and the result read correctly; the sentence written
+afterwards widened it into a family. That is a *sibling* of [composing a claim
+before reading the result](RULES.md#measure-what-you-publish) — there the claim
+precedes the run, here it follows a run that was read correctly — and no rule
+about *how* to run mutations reaches either.

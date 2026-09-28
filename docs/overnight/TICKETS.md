@@ -136,7 +136,8 @@ lists the wrong files. Ask it for:
 
 The implementer works alone, in its own worktree, and never sees the rest of the
 run. Give it the ticket, the plan as recorded after the cross-check, `CLAUDE.md`
-and its slot number `k`, and [pass what binds it
+and its slot number `k`, [what a mutation result licenses](BRIEFS.md#a-mutation-result-licenses-a-claim-about-that-mutation-not-about-its-class)
+with its test-writing corollaries, and [pass what binds it
 explicitly](RULES.md#dispatching-subagents). Ask it to:
 
 1. **Set up its own Python environment before anything installs.** A virtualenv
