@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { type Clip, type Player, type ActionType, tagClip, updateClipLabels, trimClip, getClipDownloadUrl } from "@/lib/api";
 import { startCrossOriginDownload } from "@/lib/download";
 import { cn } from "@/lib/utils";
+import { DemoBadge } from "@/components/DemoGame";
 
 const LABEL_OPTIONS = ["spike", "serve", "dig", "set", "block", "not_an_action"];
 
@@ -172,7 +173,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
             className={cn(
               "absolute top-2 right-2 z-10 flex h-7 w-7 items-center justify-center rounded border transition-all duration-150",
               selected
-                ? "bg-brand border-brand text-[#0c0c0e]"
+                ? "bg-brand border-brand text-on-brand"
                 : "bg-black/40 border-white/30 text-transparent hover:border-white/60"
             )}
             aria-label={selected ? "Deselect" : "Select"}
@@ -242,6 +243,16 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
 
           {/* Right: action buttons */}
           <div className="flex flex-wrap items-center justify-end gap-0.5 shrink-0">
+            {/* Demo clips (CF-565): the api refuses download and trim for them
+                with 409, so neither is offered rather than ending in an error.
+                The badge says why, where no game banner is in view (a
+                collection). */}
+            {clip.is_sample && (
+              <span title="Demo clip: download, trim and posting are for your own games">
+                <DemoBadge className="mr-1" />
+              </span>
+            )}
+            {!clip.is_sample && (
             <button
               onClick={handleDownload}
               disabled={downloadLoading}
@@ -252,6 +263,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
               <Download size={9} />
               Download
             </button>
+            )}
 
             <button
               onClick={() => {
@@ -281,6 +293,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
               </button>
             )}
 
+            {!clip.is_sample && (
             <button
               onClick={() => { setTrimming(!trimming); setLabeling(false); }}
               disabled={!canTrim}
@@ -294,6 +307,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
               <ChevronLeft size={9} /><ChevronRight size={9} className="-ml-1" />
               Trim
             </button>
+            )}
 
             {/* Player tag */}
             {tagging ? (

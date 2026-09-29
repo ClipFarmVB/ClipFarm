@@ -56,7 +56,7 @@ vi.mock("@/lib/useMe", () => ({
 vi.mock("@/lib/useIsDesktopLayout", () => ({ useIsDesktopLayout: () => false }));
 vi.mock("@/lib/useBodyScrollLock", () => ({ useBodyScrollLockBelowLg: vi.fn() }));
 
-import { BrandMark } from "@/components/BrandMark";
+import { BrandMark, MARK_MASK_SRC } from "@/components/BrandMark";
 import { Sidebar } from "@/components/Sidebar";
 
 // React 19 wants this set before `act` runs, and prints "The current testing
@@ -96,25 +96,33 @@ describe("BrandMark", () => {
     render();
 
     expect(host.children.length).toBe(2);
-    expect(host.children[0].tagName).toBe("DIV");
+    // A <span>, so the mark stays valid inside phrasing content (CF-573).
+    expect(host.children[0].tagName).toBe("SPAN");
+    expect(host.children[0].textContent).toBe("");
     expect(host.children[1].tagName).toBe("SPAN");
   });
 
   it("spells the wordmark ClipFarm", () => {
     // The mutation that survived the old suite. Exact, not a substring: this is
     // the product's name as the user reads it.
-    expect(render().querySelector("span")?.textContent).toBe("ClipFarm");
+    expect(render().children[1]?.textContent).toBe("ClipFarm");
   });
 
-  it("draws the glyph at 13px", () => {
-    // The other surviving mutation. lucide-react writes `size` straight through
-    // to width/height, so the rendered svg is checkable without knowing which
-    // icon it is — and this survives the CF-248 swap to the real logo, which is
-    // the point of not asserting on `Clapperboard` itself.
-    const svg = render().querySelector("svg");
+  it("draws the logo mark at 26px, in the theme's brand colour", () => {
+    // The other surviving mutation, re-pinned for the real logo (CF-573). The
+    // mark is a mask over `bg-brand`, so its size, its colour and its source
+    // are the three things a careless edit can change without any error.
+    const box = render().children[0] as HTMLSpanElement;
+    const classes = box.className.split(/\s+/);
 
-    expect(svg?.getAttribute("width")).toBe("13");
-    expect(svg?.getAttribute("height")).toBe("13");
+    expect(classes).toContain("h-[26px]");
+    expect(classes).toContain("w-[26px]");
+    expect(classes).toContain("bg-brand");
+    expect(box.style.maskImage || box.style.getPropertyValue("-webkit-mask-image")).toContain(
+      MARK_MASK_SRC,
+    );
+    // Decorative: the wordmark beside it is the accessible name.
+    expect(box.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("styles its hover through an ancestor `group`", () => {
@@ -212,9 +220,8 @@ describe("Sidebar's BrandMark call sites", () => {
 });
 
 describe("Sidebar's brand link destination", () => {
-  // CF-219: `/` is the signed-out landing page. A signed-in user clicking the
-  // brand would otherwise land on the router's cached copy of it, since the
-  // middleware redirect does not run for a prefetched static route.
+  // CF-574: `/` is the landing page for everyone, and the brand link is how
+  // you get back to it, signed in or not.
   function brandHrefs(): (string | null)[] {
     act(() => root.render(<Sidebar />));
     return Array.from(host.querySelectorAll("span"))
@@ -222,9 +229,10 @@ describe("Sidebar's brand link destination", () => {
       .map((s) => s.closest("a")?.getAttribute("href") ?? null);
   }
 
-  it("goes to /games when signed in", () => {
+  it("goes to the landing page when signed in", () => {
+    // CF-574: `/` is open to everyone, and this link is how you get back to it.
     authUser = { id: "u1" };
-    expect(brandHrefs()).toEqual(["/games", "/games"]);
+    expect(brandHrefs()).toEqual(["/", "/"]);
   });
 
   it("goes to the landing page when signed out", () => {

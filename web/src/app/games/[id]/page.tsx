@@ -14,6 +14,7 @@ import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type 
 import { estimateEtaSeconds, formatEta, pushSample, type ProgressSample } from "@/lib/eta";
 import { cn } from "@/lib/utils";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { DemoBadge, DemoBanner } from "@/components/DemoGame";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];
 
@@ -214,9 +215,12 @@ export default function GamePage() {
         </Link>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-[18px] font-semibold text-foreground tracking-tight truncate">
-              {game.title}
-            </h1>
+            <div className="flex min-w-0 items-center gap-2">
+              <h1 className="text-[18px] font-semibold text-foreground tracking-tight truncate">
+                {game.title}
+              </h1>
+              {game.is_sample && <DemoBadge />}
+            </div>
             <p className="mt-0.5 text-[12px] text-muted">
               {game.clip_count ?? clips.length} clip{(game.clip_count ?? clips.length) !== 1 ? "s" : ""}
             </p>
@@ -229,6 +233,8 @@ export default function GamePage() {
           </span>
         </div>
       </div>
+
+      {game.is_sample && <DemoBanner credit={game.sample_credit} />}
 
       {/* Processing state */}
       {(game.status === "queued" || game.status === "processing") && (

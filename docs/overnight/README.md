@@ -22,13 +22,13 @@ not the ones it is not. Every rule lives in exactly one file.
 
 | file | when to read it | ~tokens |
 |---|---|---|
-| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.3k |
+| [`README.md`](./README.md) | this file — the index, the reading protocol, and these figures. Every lap reads it | 2.4k |
 | [`START.md`](./START.md) | once, at the start of a run — mode, scope, what it may push to, capability checks, how work is chosen | 8.3k |
-| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test and its guard, dispatching subagents, the registry and claims, the WIP limit and areas, one credential, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 18.9k |
+| [`RULES.md`](./RULES.md) | **every iteration** — hard rules, evidence, the push test and its guard, dispatching subagents, the registry and claims, the WIP limit and areas, one credential, logging, priority order, the ceiling and the budget, measuring what you publish, repo traps | 19.5k |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR — markers, routing, posting, reading state, terminal labels | 15.3k |
-| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, and how findings are tiered | 5.3k |
-| [`FIX.md`](./FIX.md) | a lap that fixes findings — the fixer, the cycle, the settle bar, choosing an `unsettled` reason | 6.6k |
-| [`TICKETS.md`](./TICKETS.md) | a lap that starts or receives ticket work, and whenever a card needs filing | 7.0k |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round — the cold and semi-cold briefs, how findings are tiered, and what a mutation result licenses | 6.7k |
+| [`FIX.md`](./FIX.md) | a lap that fixes findings — the fixer, the cycle, the settle bar, choosing an `unsettled` reason | 6.7k |
+| [`TICKETS.md`](./TICKETS.md) | a lap that starts or receives ticket work, and whenever a card needs filing | 7.1k |
 | [`REPORTING.md`](./REPORTING.md) | the end of the run | 3.2k |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background — what a night costs, why the machinery is shaped this way | 2.7k |
 
@@ -58,6 +58,10 @@ run that learned it.
   chose not to fix, and `review-only` runs never otherwise open `TICKETS.md`,
   so without this line the instruction to file one points at a file the
   protocol has just told you this lap does not need.
+  **Dispatching an implementer → the last section of `BRIEFS.md`**, [what a
+  mutation result licenses](BRIEFS.md#a-mutation-result-licenses-a-claim-about-that-mutation-not-about-its-class).
+  `TICKETS.md` tells you to pass it on, and a step-3 lap otherwise never opens
+  `BRIEFS.md`; a fixer gets it because `FIX.md`'s "Give it" list names it.
 - **Re-read `RULES.md` in full after any compaction**, and say in the log that
   you did. Compaction is exactly when a half-remembered rule reads like a real
   one.
@@ -65,9 +69,10 @@ run that learned it.
   own log. Two runs have been bitten by acting on a remembered version of a rule
   that had since been amended.
 
-A step-1 lap that only selects costs about 37k tokens of brief instead of 70k;
-one that also spawns a round, about 42k. A step-2 lap is about 33k, a step-3 lap
-about 28k. That is the whole point of the split.
+A step-1 lap that only selects costs about 37k tokens of brief instead of 72k;
+one that also spawns a round, about 44k. A step-2 lap is about 35k, a step-3 lap
+about 29k. That is the whole point of the split. A step-3 lap that dispatches an
+implementer adds one section of `BRIEFS.md` to that, about 1.3k.
 
 **`BRIEFS.md` is what makes the step-2 number work.** Before it, a lap fixing
 findings had to load the whole of `REVIEW.md` to reach the semi-cold brief —
@@ -99,8 +104,10 @@ Two comparisons follow, answering different questions, so each says what it is
 measured on — which is the thing this page gets wrong when it gets anything
 wrong:
 
-- **On today's files.** A step-1 lap that only selects is ~5k cheaper than one
-  that also spawns: exactly `BRIEFS.md`, which only the spawning lap reads.
+- **On today's files.** A step-1 lap that only selects is ~7k cheaper than one
+  that also spawns — the difference of the two rounded lap figures. The whole
+  of it is `BRIEFS.md`, which only the spawning lap reads; the table rounds
+  that file on its own, so the two need not print the same number.
 - **Across the CF-365 split**, at `596755d^` and `596755d`. A *spawning*
   step-1 lap went 26.70k to 28.05k, having gained a file. A select-only lap
   reads the same three files on both sides and went 26.70k to 23.60k.
@@ -120,10 +127,10 @@ lands within a tenth or so rather than exactly.
 CF-275 re-took them, and this is the table a run reads to plan what it can
 afford. **`api/tests/test_overnight_brief.py` now fails when they drift**, so a
 brief edit that moves a file past a tenth reddens CI until this page is
-re-measured (CF-371). It pins the rows, the five lap figures, and the
-select-versus-spawn difference stated below them, on this page only; the
-across-the-split figures above are a different revision and stay unpinned, for
-the reason given with them.
+re-measured (CF-371). It pins the rows, the five lap figures, the
+select-versus-spawn difference stated below them, and the one-section figure
+after them, on this page only; the across-the-split figures above are a
+different revision and stay unpinned, for the reason given with them.
 
 **The rules are not also summarised into a shorter file.** Splitting by phase
 keeps exactly one copy of each rule, with the reasoning that produced it still

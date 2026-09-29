@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { LogoMark } from "@/components/LogoMark";
 import { createClient } from "@/lib/supabase";
 import { safeNextPath } from "@/lib/redirect";
 import { AUTH_ERROR_PARAM, authErrorMessage } from "@/lib/authError";
@@ -84,6 +85,7 @@ function LoginForm() {
       <div className="w-full max-w-[340px]">
         {/* Heading */}
         <div className="mb-7">
+          <LogoMark className="mb-5 h-12 w-12" />
           <h1 className="text-[18px] font-semibold text-foreground">Welcome back</h1>
           <p className="mt-1 text-[13px] text-muted">Log in to your ClipFarm account</p>
         </div>

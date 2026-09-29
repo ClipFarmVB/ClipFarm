@@ -126,6 +126,8 @@ rest of the run. Give it:
 - the findings to fix, read from the round's review as above, and the ones to
   leave alone — anything needing a human decision;
 - `CLAUDE.md`, and [what binds it, passed explicitly](RULES.md#dispatching-subagents);
+- [what a mutation result licenses](BRIEFS.md#a-mutation-result-licenses-a-claim-about-that-mutation-not-about-its-class),
+  with its test-writing corollaries;
 - a free slot number `k`, as an implementer gets one, for the same ports if it
   has to run the app, and written on its `dispatched:` line as `slot=<k>`.
 

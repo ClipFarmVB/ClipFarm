@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { authRedirect } from "./authRoutes";
-import { DEFAULT_NEXT } from "./redirect";
 
 describe("authRedirect", () => {
-  it("sends a signed-in visitor at / into the app", () => {
-    expect(authRedirect("/", true)).toBe(DEFAULT_NEXT);
-    expect(DEFAULT_NEXT).toBe("/games");
+  it("lets a signed-in visitor see the landing page too", () => {
+    // CF-574: the logo links to `/` for everyone, so redirecting a signed-in
+    // visitor off it would leave no way to reach it.
+    expect(authRedirect("/", true)).toBeNull();
   });
 
   it("lets a signed-out visitor see the landing page", () => {

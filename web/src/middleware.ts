@@ -40,15 +40,11 @@ export async function middleware(request: NextRequest) {
   const resolved = new URL(target, url);
   url.pathname = resolved.pathname;
   resolved.searchParams.forEach((value, key) => url.searchParams.set(key, value));
+  // Only a signed-out visitor is redirected now (CF-574 dropped the signed-in
+  // `/` → /games hop). getUser() may still have refreshed or cleared cookies
+  // on `response`, which a redirect replaces — carry them across.
   const redirect = NextResponse.redirect(url);
-
-  // A signed-in visitor to `/` may just have had their session refreshed by
-  // getUser(). Those cookies were written onto `response`, which a redirect
-  // replaces — carry them across or the refreshed token is lost. The signed-out
-  // /login redirect has the same gap; that is a separate fix.
-  if (user) {
-    response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
-  }
+  response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
   return redirect;
 }
 
