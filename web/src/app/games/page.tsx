@@ -7,7 +7,7 @@ import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
 import { deleteGame, renameGame, type Game } from "@/lib/api";
-import { DemoBadge } from "@/components/DemoGame";
+import { GameTitle, deleteAction } from "@/components/DemoGame";
 import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
 
@@ -69,14 +69,10 @@ function GamesContent() {
     }
   }
 
-  async function handleDelete(gameId: string, title: string, isDemo = false) {
-    // Removing the demo game (CF-565) deletes this account's copy only — the
-    // footage is shared and stays — so the confirm says that rather than
-    // warning about losing the user's own work.
-    const question = isDemo
-      ? "Remove the demo game from your Library? Your own games are not affected."
-      : `Delete "${title}" and all its clips? This cannot be undone.`;
-    if (!confirm(question)) return;
+  async function handleDelete(game: Game) {
+    // The demo game (CF-565) is "removed", with its own confirm: see deleteAction.
+    if (!confirm(deleteAction(game).confirm)) return;
+    const gameId = game.id;
     setDeleting(gameId);
     try {
       await deleteGame(gameId);
@@ -232,10 +228,10 @@ function GamesContent() {
                    arrow — the wrong way round for the primary action. Rename
                    now has its own button, as it already does on Collections. */
                 <Link href={`/games/${game.id}`} className="flex min-w-0 w-full items-center gap-2">
-                  <span className="truncate text-[13px] font-medium text-foreground group-hover:text-brand transition-colors">
-                    {game.title}
-                  </span>
-                  {game.is_sample && <DemoBadge />}
+                  <GameTitle
+                    game={game}
+                    className="text-[13px] font-medium text-foreground group-hover:text-brand transition-colors"
+                  />
                 </Link>
               )}
 
@@ -269,13 +265,13 @@ function GamesContent() {
                     <Pencil size={11} />
                   </button>
                   <button
-                    onClick={() => handleDelete(game.id, game.title, game.is_sample === true)}
+                    onClick={() => handleDelete(game)}
                     disabled={deleting === game.id}
                     className="hover-reveal opacity-0 group-hover:opacity-100 flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-30 sm:h-6 sm:w-6"
-                    title={game.is_sample ? "Remove demo game" : "Delete game"}
-                    aria-label={game.is_sample ? "Remove demo game" : "Delete game"}
+                    title={deleteAction(game).label}
+                    aria-label={deleteAction(game).label}
                   >
-                    {game.is_sample ? <X size={12} /> : <Trash2 size={12} />}
+                    {deleteAction(game).isDemo ? <X size={12} /> : <Trash2 size={12} />}
                   </button>
                   <Link
                     href={`/games/${game.id}`}

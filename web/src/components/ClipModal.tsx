@@ -383,6 +383,9 @@ export function ClipModal({
             its two sentences were squeezed into whatever width it had left. */}
         {SOCIAL_ENABLED &&
           ownsClip &&
+          // A demo clip is always private and the api refuses any change to
+          // it (CF-565), so this never applies; said here rather than implied.
+          !clip.is_sample &&
           clip.effective_visibility &&
           clip.effective_visibility !== "private" && (
           <div className="shrink-0 border-t border-border px-3 py-3 sm:px-4">

@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { type Clip, type Player, type ActionType, tagClip, updateClipLabels, trimClip, getClipDownloadUrl } from "@/lib/api";
 import { startCrossOriginDownload } from "@/lib/download";
 import { cn } from "@/lib/utils";
+import { DemoBadge } from "@/components/DemoGame";
 
 const LABEL_OPTIONS = ["spike", "serve", "dig", "set", "block", "not_an_action"];
 
@@ -243,7 +244,14 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
           {/* Right: action buttons */}
           <div className="flex flex-wrap items-center justify-end gap-0.5 shrink-0">
             {/* Demo clips (CF-565): the api refuses download and trim for them
-                with 409, so neither is offered rather than ending in an error. */}
+                with 409, so neither is offered rather than ending in an error.
+                The badge says why, where no game banner is in view (a
+                collection). */}
+            {clip.is_sample && (
+              <span title="Demo clip: download, trim and posting are for your own games">
+                <DemoBadge className="mr-1" />
+              </span>
+            )}
             {!clip.is_sample && (
             <button
               onClick={handleDownload}

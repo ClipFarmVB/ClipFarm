@@ -31,7 +31,7 @@ vi.mock("next/link", () => ({
 
 import { ClipCard } from "@/components/ClipCard";
 import { ClipModal } from "@/components/ClipModal";
-import { DemoBanner, DemoCredit } from "@/components/DemoGame";
+import { DemoBanner, DemoCredit, GameTitle, deleteAction } from "@/components/DemoGame";
 import type { Clip } from "@/lib/api";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -91,6 +91,19 @@ describe("ClipCard on a demo clip", () => {
     expect(labels.some((l) => l.includes("Trim"))).toBe(false);
     // Label stays: relabelling a demo clip is allowed (it writes no Correction).
     expect(labels.some((l) => l.includes("Label"))).toBe(true);
+  });
+
+  it("says it is a demo clip, so the missing buttons have a reason", () => {
+    // In a collection there is no game banner above the card.
+    render(true);
+
+    expect(host.textContent).toContain("Demo");
+  });
+
+  it("shows no Demo badge on an ordinary clip", () => {
+    render(false);
+
+    expect(host.textContent).not.toContain("Demo");
   });
 
   it("still offers both on an ordinary clip", () => {
@@ -153,6 +166,38 @@ describe("DemoCredit", () => {
     act(() => root.render(<DemoCredit credit={null} />));
 
     expect(host.innerHTML).toBe("");
+  });
+});
+
+describe("The Library row's demo markings", () => {
+  it("puts a Demo badge after the demo game's title, and none after an ordinary one", () => {
+    act(() =>
+      root.render(
+        <>
+          <p id="demo"><GameTitle game={{ title: "Demo game · Riverside Hawks", is_sample: true }} /></p>
+          <p id="own"><GameTitle game={{ title: "Varsity vs Lincoln" }} /></p>
+        </>,
+      ),
+    );
+
+    expect(host.querySelector("#demo")?.textContent).toBe("Demo game · Riverside HawksDemo");
+    expect(host.querySelector("#own")?.textContent).toBe("Varsity vs Lincoln");
+  });
+
+  it("offers to remove the demo game, with a confirm about the user's own games", () => {
+    const action = deleteAction({ title: "Demo game · Riverside Hawks", is_sample: true });
+
+    expect(action.label).toBe("Remove demo game");
+    expect(action.confirm).toContain("Your own games are not affected");
+    expect(action.isDemo).toBe(true);
+  });
+
+  it("keeps the permanent-delete warning for an ordinary game", () => {
+    const action = deleteAction({ title: "Varsity vs Lincoln" });
+
+    expect(action.label).toBe("Delete game");
+    expect(action.confirm).toBe('Delete "Varsity vs Lincoln" and all its clips? This cannot be undone.');
+    expect(action.isDemo).toBe(false);
   });
 });
 

@@ -8,9 +8,48 @@ import { cn } from "@/lib/utils";
 /**
  * The demo game's markings (CF-565): the copy of the demo game a new account
  * starts with (CF-220, `is_sample`). Its footage is not the user's own, so the
- * UI says so wherever the game or its clips appear, and credits the footage
- * when the operator has set a credit.
+ * UI says so wherever the game or its clips appear (the Library row, the game
+ * page, the clip card and the clip viewer) and credits the footage when the
+ * operator has set a credit.
  */
+
+/** How the Library offers to delete a game: a demo copy is "removed". */
+export function deleteAction(game: { title: string; is_sample?: boolean }): {
+  label: string;
+  confirm: string;
+  isDemo: boolean;
+} {
+  if (game.is_sample) {
+    // Removing it deletes this account's copy only; the footage is shared and
+    // stays, so the confirm says that instead of warning about lost work.
+    return {
+      label: "Remove demo game",
+      confirm: "Remove the demo game from your Library? Your own games are not affected.",
+      isDemo: true,
+    };
+  }
+  return {
+    label: "Delete game",
+    confirm: `Delete "${game.title}" and all its clips? This cannot be undone.`,
+    isDemo: false,
+  };
+}
+
+/** A game's title, followed by the Demo badge when it is the demo copy. */
+export function GameTitle({
+  game,
+  className,
+}: {
+  game: { title: string; is_sample?: boolean };
+  className?: string;
+}) {
+  return (
+    <>
+      <span className={cn("truncate", className)}>{game.title}</span>
+      {game.is_sample && <DemoBadge />}
+    </>
+  );
+}
 
 /** "Demo" pill, beside a game's title or on a demo clip. */
 export function DemoBadge({ className }: { className?: string }) {
@@ -43,7 +82,7 @@ export function DemoCredit({ credit, className }: { credit: string | null | unde
             href={part.href}
             target="_blank"
             rel="noopener noreferrer"
-            className="break-all text-foreground underline decoration-border-strong underline-offset-2 hover:decoration-brand"
+            className="[overflow-wrap:anywhere] text-foreground underline decoration-border-strong underline-offset-2 hover:decoration-brand"
           >
             {part.text}
           </a>

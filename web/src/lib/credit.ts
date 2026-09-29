@@ -10,10 +10,22 @@
 export type CreditPart = { kind: "text"; text: string } | { kind: "link"; text: string; href: string };
 
 // A candidate is any run of non-space characters that starts like a URL; the
-// scheme check below is what decides. Trailing sentence punctuation is not
-// part of the link.
+// scheme check below is what decides. Trailing sentence punctuation (ASCII,
+// curly quotes and the ellipsis) is not part of the link.
 const CANDIDATE = /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"]+/gi;
-const TRAILING = /[.,;:!?)\]]+$/;
+const TRAILING = /[.,;:!?'"‘’“”…\]]+$/;
+
+/** Trim trailing punctuation, and a `)` only when the URL has no `(` for it. */
+function trimTrailing(raw: string): string {
+  let url = raw.replace(TRAILING, "");
+  while (url.endsWith(")")) {
+    const opens = (url.match(/\(/g) ?? []).length;
+    const closes = (url.match(/\)/g) ?? []).length;
+    if (closes <= opens) break;
+    url = url.slice(0, -1).replace(TRAILING, "");
+  }
+  return url;
+}
 
 function safeHref(raw: string): string | null {
   try {
@@ -32,7 +44,7 @@ export function splitCredit(credit: string | null | undefined): CreditPart[] {
   let last = 0;
   for (const match of text.matchAll(CANDIDATE)) {
     const start = match.index ?? 0;
-    const raw = match[0].replace(TRAILING, "");
+    const raw = trimTrailing(match[0]);
     const href = safeHref(raw);
     if (!href) continue;
     if (start > last) parts.push({ kind: "text", text: text.slice(last, start) });
