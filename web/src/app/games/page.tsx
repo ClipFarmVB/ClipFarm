@@ -6,6 +6,8 @@ import { AlertCircle, ArrowRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
+import { OnboardingPanel } from "@/components/OnboardingPanel";
+import { useAuth } from "@/contexts/AuthContext";
 import { deleteGame, renameGame, type Game } from "@/lib/api";
 import { GameTitle, deleteAction } from "@/components/DemoGame";
 import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
@@ -31,6 +33,7 @@ const STATUS_LABEL: Record<Game["status"], string> = {
 };
 
 function GamesContent() {
+  const { user } = useAuth();
   // Initialise from cache for an instant render — no spinner if data is ready.
   const [games, setGames] = useState<Game[]>(() => getCachedGames() ?? []);
   const [loading, setLoading] = useState(() => getCachedGames() === null);
@@ -147,6 +150,11 @@ function GamesContent() {
           </Button>
         </Link>
       </div>
+
+      {/* sampleGameId: the copied sample game (#220), shown as the example and
+          kept out of the user's progress. Null until wired; a game flagged
+          is_sample is excluded from progress regardless. */}
+      <OnboardingPanel games={games} loading={loading} error={error} userId={user?.id} sampleGameId={null} />
 
       {/* Error */}
       {error && (
@@ -291,9 +299,21 @@ function GamesContent() {
 }
 
 export default function GamesPage() {
+  const { user } = useAuth();
+  // Keyed on the user so an identity change (e.g. another tab signing in as
+  // someone else) remounts the Library instead of keeping the previous
+  // user's list in state. AuthContext has already cleared the module cache by
+  // then, so the remount starts loading. Without this the onboarding panel
+  // judged the old list against the new user and wrote their `done`.
+  //
+  // Signing out also clears the cache, but AuthContext starts no prefetch for
+  // a null user and nothing redirects until the next navigation. So with no
+  // user the Library renders nothing rather than mounting into an
+  // unauthenticated `fetchGames()` whose 401 would fill the page with an error
+  // card. The sidebar already offers "Sign in" in that state.
   return (
     <RequireAuth>
-      <GamesContent />
+      {user && <GamesContent key={user.id} />}
     </RequireAuth>
   );
 }

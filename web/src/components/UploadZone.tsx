@@ -14,39 +14,13 @@ import {
 } from "@/lib/api";
 import { uploadFileToR2 } from "@/lib/upload";
 import { addGameToCache } from "@/lib/gamesCache";
+import {
+  FALLBACK_UPLOAD_CONFIG,
+  formatsLabel,
+  fmtLimit,
+  fmtMinutes,
+} from "@/lib/uploadLimits";
 import { cn } from "@/lib/utils";
-
-// Used only until GET /games/upload-config answers, and as the fallback if it
-// never does — the server's values are the real limits. Before CF-163 these
-// were the limits, and they disagreed with the server's (15 GB here vs a 2 GB
-// cap), so an in-between file was only rejected after the bytes had moved.
-// Keep these in step with api/app/config.py: a fallback above the real cap
-// would reintroduce exactly that failure whenever the config request fails.
-const FALLBACK_CONFIG: UploadConfig = {
-  max_upload_bytes: 8 * 1024 ** 3,
-  allowed_content_types: ["video/mp4", "video/quicktime", "video/x-matroska", "video/webm"],
-  single_put_max_bytes: 100 * 1024 ** 2,
-  part_size_bytes: 100 * 1024 ** 2,
-  url_ttl_seconds: 12 * 3600,
-  // Quota fallbacks are deliberately "nothing used yet": if the config never
-  // arrives we must not invent a limit and block a legitimate upload. The
-  // readout is hidden in that case (see `quotaKnown`), and the server enforces
-  // the real numbers at presign regardless.
-  max_duration_seconds: 4 * 3600,
-  window_hours: 24,
-  max_games_per_window: 5,
-  games_used: 0,
-  games_remaining: 5,
-  max_minutes_per_window: 360,
-  minutes_used: 0,
-  minutes_remaining: 360,
-};
-
-function fmtMinutes(minutes: number): string {
-  const m = Math.max(0, Math.round(minutes));
-  if (m < 60) return `${m} min`;
-  return m % 60 === 0 ? `${m / 60} h` : `${Math.floor(m / 60)} h ${m % 60} min`;
-}
 
 /**
  * Read a video's duration in the browser so an over-long file is caught before
@@ -80,12 +54,6 @@ function fmtRemaining(remainingSec: number): string {
   return `Uploading — about ${Math.round(remainingSec / 60)} min left`;
 }
 
-/** Mirrors quota.fmt_size in the api — change the two together. */
-function fmtLimit(bytes: number): string {
-  const gb = bytes / 1024 ** 3;
-  return gb >= 1 ? `${Number(gb.toFixed(gb < 10 ? 1 : 0))} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
-}
-
 export function UploadZone() {
   const router = useRouter();
   const [dragging, setDragging] = useState(false);
@@ -96,7 +64,7 @@ export function UploadZone() {
   const [progress, setProgress] = useState<number | null>(null);
   const [statusText, setStatusText] = useState("Uploading…");
   const [error, setError] = useState<string | null>(null);
-  const [config, setConfig] = useState<UploadConfig>(FALLBACK_CONFIG);
+  const [config, setConfig] = useState<UploadConfig>(FALLBACK_UPLOAD_CONFIG);
   // Only true once the server's numbers arrived — the fallback's quota figures
   // are placeholders and must never be shown as if they were real.
   const [quotaKnown, setQuotaKnown] = useState(false);
@@ -124,7 +92,7 @@ export function UploadZone() {
 
   const validate = (f: File) => {
     if (!config.allowed_content_types.includes(f.type))
-      return "Unsupported file type. Upload an MP4, MOV, MKV, or WebM.";
+      return `Unsupported file type. Supported formats: ${formatsLabel(config.allowed_content_types)}.`;
     if (f.size > config.max_upload_bytes)
       // Same sentence the server would have returned — see quota.fmt_size.
       return `File is ${fmtLimit(f.size)}; the maximum is ${fmtLimit(config.max_upload_bytes)}.`;
@@ -315,7 +283,7 @@ export function UploadZone() {
             </div>
             <p className="text-[14px] font-medium text-foreground">Drop video here</p>
             <p className="mt-1.5 text-[12px] text-muted">
-              MP4, MOV, MKV, WebM · up to {fmtLimit(config.max_upload_bytes)}
+              {formatsLabel(config.allowed_content_types)} · up to {fmtLimit(config.max_upload_bytes)}
               {` · ${fmtMinutes(config.max_duration_seconds / 60)} max`}
             </p>
             <p className="mt-3 text-[11px] text-subtle">or click to browse</p>
