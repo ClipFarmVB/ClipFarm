@@ -66,7 +66,7 @@ def _game(*, is_sample: bool) -> Game:
     return Game(
         id=uuid.uuid4(),
         owner_id=OWNER,
-        title="Example: Varsity vs Lincoln" if is_sample else "Varsity vs Lincoln",
+        title="Demo: Varsity vs Lincoln" if is_sample else "Varsity vs Lincoln",
         status=GameStatus.ready,
         is_sample=is_sample,
         # A sample carries no source upload; an ordinary game does, so the
@@ -383,7 +383,7 @@ def test_trimming_a_sample_clip_is_refused_with_its_own_message(monkeypatch):
         )
 
     assert exc.value.status_code == 409, "the same status as every other example refusal"
-    assert "Example" in exc.value.detail
+    assert "Demo" in exc.value.detail
     assert "retention" not in exc.value.detail
     assert (clip.start_time, clip.end_time) == (10.0, 18.0)
     celery.send_task.assert_not_called()
@@ -596,7 +596,7 @@ def test_the_copy_takes_the_fields_the_plan_names(monkeypatch):
     assert copy.owner_id == new_owner
     assert copy.is_sample is True
     assert copy.status is GameStatus.ready
-    assert copy.title == "Example: Varsity vs Lincoln"
+    assert copy.title == "Demo: Varsity vs Lincoln", "unset SAMPLE_GAME_TITLE: Demo + source"
     assert copy.raw_video_url is None
     assert copy.condensed_video_url is None
     assert copy.condensed_duration is None, "cleared with the cut it describes"
@@ -750,3 +750,49 @@ def test_a_failing_copy_costs_the_example_not_the_account(monkeypatch, caplog):
     assert db.commits == 1, "the user row still commits"
     assert "could not copy the sample game" in caplog.text
     assert "someone.real@example.com" not in caplog.text
+
+
+# ── The demo's name and credit (CF-220, maintainer request) ─────────────────
+
+
+def test_the_copy_is_named_by_sample_game_title_when_set(monkeypatch):
+    monkeypatch.setattr(settings, "sample_game_title", "  Demo game · Javelin Ottawa  ")
+    assert sample_game.copy_title("[07-04 isolated test] YT vod ~31m") == (
+        "Demo game · Javelin Ottawa"
+    )
+
+
+def test_the_copy_falls_back_to_demo_plus_the_source_title(monkeypatch):
+    monkeypatch.setattr(settings, "sample_game_title", "   ")
+    assert sample_game.copy_title("Varsity vs Lincoln") == "Demo: Varsity vs Lincoln"
+
+
+def test_the_copy_title_fits_the_column(monkeypatch):
+    monkeypatch.setattr(settings, "sample_game_title", "")
+    assert len(sample_game.copy_title("x" * 400)) == 255
+
+
+def _game_out(is_sample: bool):
+    return GameOut(id=uuid.uuid4(), title="t", status=GameStatus.ready,
+                   created_at=NOW, is_sample=is_sample)
+
+
+def test_a_demo_copy_carries_the_configured_credit(monkeypatch):
+    credit = "Footage: Javelin Ottawa — https://www.youtube.com/watch?v=OnkNS1ZJ7gI"
+    monkeypatch.setattr(settings, "sample_game_credit", f"  {credit} ")
+
+    body = _game_out(is_sample=True).model_dump()
+
+    assert body["sample_credit"] == credit
+
+
+def test_an_ordinary_game_never_carries_the_credit(monkeypatch):
+    monkeypatch.setattr(settings, "sample_game_credit", "Footage: Javelin Ottawa")
+
+    assert _game_out(is_sample=False).model_dump()["sample_credit"] is None
+
+
+def test_no_credit_is_sent_when_none_is_configured(monkeypatch):
+    monkeypatch.setattr(settings, "sample_game_credit", "")
+
+    assert _game_out(is_sample=True).model_dump()["sample_credit"] is None

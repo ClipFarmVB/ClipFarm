@@ -56,9 +56,15 @@ from app.models.game import Game, GameStatus
 
 logger = logging.getLogger(__name__)
 
-TITLE_PREFIX = "Example: "
+TITLE_PREFIX = "Demo: "
 # games.title is String(255).
 _TITLE_MAX = 255
+
+
+def copy_title(source_title: str) -> str:
+    """What the demo copy is called: `SAMPLE_GAME_TITLE`, else "Demo: " + source."""
+    configured = settings.sample_game_title.strip()
+    return (configured or TITLE_PREFIX + source_title)[:_TITLE_MAX]
 
 
 def is_sample(game: object) -> bool:
@@ -96,7 +102,7 @@ def assert_not_sample(game: object) -> None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "Example clips can't be posted, and the app doesn't make share "
+                "Demo clips can't be posted, and the app doesn't make share "
                 "or download links for them — upload your own game to publish "
                 "its clips"
             ),
@@ -134,7 +140,7 @@ def assert_not_source(game_id: uuid.UUID) -> None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "This is the example game every new account copies — its "
+                "This is the demo game every new account copies — its "
                 "clips can't be deleted or trimmed while SAMPLE_GAME_ID names it"
             ),
         )
@@ -170,7 +176,7 @@ async def copy_sample_game(db: AsyncSession, user_id: uuid.UUID) -> Game | None:
         )
     ).scalars().all()
     if not source_clips:
-        # An empty "Example: …" game in every new Library shows nothing.
+        # An empty demo game in every new Library shows nothing.
         logger.warning("sample game: source %s has no clips; skipping the copy", source_id)
         return None
 
@@ -179,7 +185,7 @@ async def copy_sample_game(db: AsyncSession, user_id: uuid.UUID) -> Game | None:
     # test_visibility_write_paths_are_declared.py exists to stop.
     copy = Game(
         owner_id=user_id,
-        title=(TITLE_PREFIX + source.title)[:_TITLE_MAX],
+        title=copy_title(source.title),
         status=GameStatus.ready,
         is_sample=True,
         raw_video_url=None,

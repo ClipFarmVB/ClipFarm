@@ -208,7 +208,7 @@ def test_a_new_account_gets_exactly_one_marked_private_copy(pg_db, sources, monk
     assert len(games) == 1
     game = games[0]
     assert game.is_sample is True
-    assert game.title == "Example: " + SOURCE_TITLE
+    assert game.title == "Demo: " + SOURCE_TITLE
     assert game.status == "ready"
     assert game.raw_video_url is None, "a copy has no upload of its own to re-cut from"
     assert game.condensed_video_url is None

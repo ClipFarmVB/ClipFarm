@@ -916,6 +916,14 @@ class Settings(BaseSettings):
     # remove action) is live and the rights to the footage are settled — every
     # new account sees this game.
     sample_game_id: str = ""
+    # What the demo copy is called in a new account's Library. Empty uses
+    # "Demo: " + the source game's title, which is usually an internal name.
+    sample_game_title: str = ""
+    # Credit for the demo footage, returned with every copy as `sample_credit`
+    # for the web to show beside it, e.g. "Footage: Javelin Ottawa —
+    # https://www.youtube.com/watch?v=…". Empty sends none. A credit is not a
+    # licence to the footage: that question is CF-571 (#581).
+    sample_game_credit: str = ""
 
     # ── Anonymous read limits (CF-186, #189) ─────────────────────────────────
     # Seven endpoints answer without a credential. Six are throttled per caller

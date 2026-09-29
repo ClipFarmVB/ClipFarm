@@ -406,7 +406,7 @@ async def trim_clip(
     if sample_game.is_sample(game):
         raise HTTPException(
             status_code=409,
-            detail="Example clips can't be trimmed — upload your own game to trim its clips",
+            detail="Demo clips can't be trimmed — upload your own game to trim its clips",
         )
 
     # Gone once the raw upload passes raw_upload_retention_days (CF-194).
