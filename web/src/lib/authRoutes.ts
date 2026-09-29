@@ -1,5 +1,3 @@
-import { DEFAULT_NEXT } from "@/lib/redirect";
-
 // Routes that require an authenticated session
 // /settings is protected; /u/{handle} deliberately is not — a profile has to be
 // reachable by someone who isn't signed in (or isn't following) for the account
@@ -19,13 +17,12 @@ export function isProtectedPath(pathname: string): boolean {
  * return value is a path plus query, resolved against the request URL by the
  * caller.
  *
- * - `/` is the landing page for signed-out visitors (CF-219). A signed-in user
- *   goes straight to the app rather than through marketing.
+ * - `/` is the landing page, open to everyone (CF-574). It used to send a
+ *   signed-in user to the app, which left no way back to it.
  * - Protected routes send a signed-out visitor to /login, carrying where they
  *   were headed in `?next=`.
  */
 export function authRedirect(pathname: string, signedIn: boolean): string | null {
-  if (pathname === "/" && signedIn) return DEFAULT_NEXT;
   if (!signedIn && isProtectedPath(pathname)) {
     return `/login?next=${encodeURIComponent(pathname)}`;
   }

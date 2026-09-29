@@ -220,9 +220,8 @@ describe("Sidebar's BrandMark call sites", () => {
 });
 
 describe("Sidebar's brand link destination", () => {
-  // CF-219: `/` is the signed-out landing page. A signed-in user clicking the
-  // brand would otherwise land on the router's cached copy of it, since the
-  // middleware redirect does not run for a prefetched static route.
+  // CF-574: `/` is the landing page for everyone, and the brand link is how
+  // you get back to it, signed in or not.
   function brandHrefs(): (string | null)[] {
     act(() => root.render(<Sidebar />));
     return Array.from(host.querySelectorAll("span"))
@@ -230,9 +229,10 @@ describe("Sidebar's brand link destination", () => {
       .map((s) => s.closest("a")?.getAttribute("href") ?? null);
   }
 
-  it("goes to /games when signed in", () => {
+  it("goes to the landing page when signed in", () => {
+    // CF-574: `/` is open to everyone, and this link is how you get back to it.
     authUser = { id: "u1" };
-    expect(brandHrefs()).toEqual(["/games", "/games"]);
+    expect(brandHrefs()).toEqual(["/", "/"]);
   });
 
   it("goes to the landing page when signed out", () => {

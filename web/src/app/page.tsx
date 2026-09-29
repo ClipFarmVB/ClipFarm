@@ -1,17 +1,14 @@
 import type { CSSProperties } from "react";
 import type { Metadata } from "next";
-import Link from "next/link";
-import { ArrowRight } from "lucide-react";
-import { Button } from "@/components/ui/Button";
 import { LogoMark } from "@/components/LogoMark";
 import { DemoVideo } from "@/components/landing/DemoVideo";
 import { MockClipCard, type MockClip } from "@/components/landing/MockClipCard";
 import { SampleOutput } from "@/components/landing/SampleOutput";
-import { SignedInRedirect } from "@/components/landing/SignedInRedirect";
+import { LandingCtas } from "@/components/landing/LandingCtas";
 
-// The landing page for signed-out visitors (CF-219). Signed-in users never see
-// it: the middleware sends them to /games, and SignedInRedirect covers a
-// client-side navigation served from the router cache.
+// The landing page (CF-219). Open to everyone since CF-574: the brand logo
+// links here whether or not you are signed in, and LandingCtas swaps the
+// sign-up buttons for a way back to the library when you are.
 
 // No image here — the social card is CF-248's. This title replaces the root
 // layout's rather than extending it, as the layout sets no template.
@@ -132,30 +129,10 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-function SignUpCtas() {
-  return (
-    <div className="flex flex-wrap items-center gap-3">
-      <Link href="/signup">
-        <Button size="lg">
-          Get started
-          <ArrowRight size={13} />
-        </Button>
-      </Link>
-      <Link href="/login">
-        <Button size="lg" variant="ghost">
-          Log in
-        </Button>
-      </Link>
-    </div>
-  );
-}
-
 // ─── Page ─────────────────────────────────────────────────────────
 export default function HomePage() {
   return (
     <div>
-      <SignedInRedirect />
-
       {/* ── A: Scrolling ticker ─────────────────────────────────── */}
       <div className="-mx-4 overflow-hidden border-b border-border/40 sm:-mx-6 lg:-mx-8" aria-hidden>
         <div className="ticker">
@@ -229,7 +206,7 @@ export default function HomePage() {
               </p>
 
               <div className="landing-fade mt-8" style={{ animationDelay: "0.9s" }}>
-                <SignUpCtas />
+                <LandingCtas />
               </div>
             </div>
 
@@ -305,7 +282,7 @@ export default function HomePage() {
           Create an account, upload a game, and come back to its clips.
         </p>
         <div className="mt-6">
-          <SignUpCtas />
+          <LandingCtas />
         </div>
       </section>
 
