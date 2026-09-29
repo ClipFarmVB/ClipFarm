@@ -104,6 +104,13 @@ export interface Game {
   condensed_video_url?: string | null;
   original_duration?: number | null;
   condensed_duration?: number | null;
+  // A copy of the demo game a new account starts with (CF-220). Its media is
+  // shared with every other copy: removing it deletes rows only, and the api
+  // refuses to publish, share, download or trim its clips (409).
+  is_sample?: boolean;
+  // Credit for the demo footage, frozen onto the copy when it was made. Null
+  // on ordinary games. Operator text that may hold a URL: render as text only.
+  sample_credit?: string | null;
 }
 
 export function getGames(): Promise<Game[]> {
@@ -225,6 +232,9 @@ export interface Clip {
   // False once the game's raw upload has passed its retention window (CF-194):
   // the clip still plays, but it can no longer be re-cut, so trimming is off.
   source_available?: boolean;
+  // The clip belongs to a copy of the demo game (CF-220): post, visibility,
+  // share, download and trim are refused for it, so the UI does not offer them.
+  is_sample?: boolean;
   // The widest tier a post over this clip may take without widening the clip —
   // the clip's own visibility or its game's, resolved server-side (CF-109).
   // Above it, the composer asks for consent to raise the clip along with the

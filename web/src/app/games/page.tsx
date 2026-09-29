@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertCircle, ArrowRight, Pencil, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
 import { deleteGame, renameGame, type Game } from "@/lib/api";
+import { DemoBadge } from "@/components/DemoGame";
 import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
 import { cn } from "@/lib/utils";
 
@@ -68,8 +69,14 @@ function GamesContent() {
     }
   }
 
-  async function handleDelete(gameId: string, title: string) {
-    if (!confirm(`Delete "${title}" and all its clips? This cannot be undone.`)) return;
+  async function handleDelete(gameId: string, title: string, isDemo = false) {
+    // Removing the demo game (CF-565) deletes this account's copy only — the
+    // footage is shared and stays — so the confirm says that rather than
+    // warning about losing the user's own work.
+    const question = isDemo
+      ? "Remove the demo game from your Library? Your own games are not affected."
+      : `Delete "${title}" and all its clips? This cannot be undone.`;
+    if (!confirm(question)) return;
     setDeleting(gameId);
     try {
       await deleteGame(gameId);
@@ -224,10 +231,11 @@ function GamesContent() {
                    rare destructive-feeling thing and opening needed the 32px
                    arrow — the wrong way round for the primary action. Rename
                    now has its own button, as it already does on Collections. */
-                <Link href={`/games/${game.id}`} className="min-w-0 w-full">
-                  <span className="block truncate text-[13px] font-medium text-foreground group-hover:text-brand transition-colors">
+                <Link href={`/games/${game.id}`} className="flex min-w-0 w-full items-center gap-2">
+                  <span className="truncate text-[13px] font-medium text-foreground group-hover:text-brand transition-colors">
                     {game.title}
                   </span>
+                  {game.is_sample && <DemoBadge />}
                 </Link>
               )}
 
@@ -261,13 +269,13 @@ function GamesContent() {
                     <Pencil size={11} />
                   </button>
                   <button
-                    onClick={() => handleDelete(game.id, game.title)}
+                    onClick={() => handleDelete(game.id, game.title, game.is_sample === true)}
                     disabled={deleting === game.id}
                     className="hover-reveal opacity-0 group-hover:opacity-100 flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-30 sm:h-6 sm:w-6"
-                    title="Delete game"
-                    aria-label="Delete game"
+                    title={game.is_sample ? "Remove demo game" : "Delete game"}
+                    aria-label={game.is_sample ? "Remove demo game" : "Delete game"}
                   >
-                    <Trash2 size={12} />
+                    {game.is_sample ? <X size={12} /> : <Trash2 size={12} />}
                   </button>
                   <Link
                     href={`/games/${game.id}`}

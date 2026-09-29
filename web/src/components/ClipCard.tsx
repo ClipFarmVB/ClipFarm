@@ -242,6 +242,9 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
 
           {/* Right: action buttons */}
           <div className="flex flex-wrap items-center justify-end gap-0.5 shrink-0">
+            {/* Demo clips (CF-565): the api refuses download and trim for them
+                with 409, so neither is offered rather than ending in an error. */}
+            {!clip.is_sample && (
             <button
               onClick={handleDownload}
               disabled={downloadLoading}
@@ -252,6 +255,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
               <Download size={9} />
               Download
             </button>
+            )}
 
             <button
               onClick={() => {
@@ -281,6 +285,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
               </button>
             )}
 
+            {!clip.is_sample && (
             <button
               onClick={() => { setTrimming(!trimming); setLabeling(false); }}
               disabled={!canTrim}
@@ -294,6 +299,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
               <ChevronLeft size={9} /><ChevronRight size={9} className="-ml-1" />
               Trim
             </button>
+            )}
 
             {/* Player tag */}
             {tagging ? (

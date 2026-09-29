@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, ChevronLeft, ChevronRight, Link2, Download, Lock, Send } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
+import { DemoBadge } from "@/components/DemoGame";
 import { PostComposerModal } from "@/components/PostComposerModal";
 import { SOCIAL_ENABLED } from "@/lib/features";
 import { needsHandle, useMe } from "@/lib/useMe";
@@ -239,6 +240,13 @@ export function ClipModal({
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
+            {/* Demo clips (CF-565): download, share and post are refused by the
+                api with 409, so the modal marks the clip instead of offering
+                them. */}
+            {clip.is_sample ? (
+              <DemoBadge className="mr-1" />
+            ) : (
+            <>
             <button
               onClick={handleDownload}
               disabled={downloading}
@@ -256,6 +264,8 @@ export function ClipModal({
               <Link2 size={12} />
               Copy link
             </button>
+            </>
+            )}
             <button
               onClick={onClose}
               className="flex h-9 w-9 items-center justify-center rounded-md text-muted hover:text-foreground hover:bg-surface-high transition-colors sm:h-7 sm:w-7"
@@ -305,7 +315,7 @@ export function ClipModal({
           <span className="text-[11px] text-subtle">
             {formatDuration(clip.end_time - clip.start_time)}
           </span>
-          {canPost && (
+          {canPost && !clip.is_sample && (
           <button
             onClick={() => setComposingFor(clip.id)}
             className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-muted hover:bg-surface-high hover:text-foreground transition-colors focus-ring"
