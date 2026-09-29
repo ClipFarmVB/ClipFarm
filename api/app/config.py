@@ -898,7 +898,7 @@ class Settings(BaseSettings):
     # no code change to make.
     public_posting_enabled: bool = False
 
-    # The example game a new account starts with (CF-220). Empty = off, and
+    # The demo game a new account starts with (CF-220). Empty = off, and
     # signup is exactly what it was before this setting existed.
     #
     # Set, it names a `ready` game whose rows are copied to every account
@@ -912,17 +912,19 @@ class Settings(BaseSettings):
     # api over an optional nicety. It is parsed at copy time, and a value that
     # does not parse is logged and skipped, leaving signup untouched.
     #
-    # Do not set it in production until the web half (the example badge and the
+    # Do not set it in production until the web half (the demo badge and the
     # remove action) is live and the rights to the footage are settled — every
     # new account sees this game.
     sample_game_id: str = ""
     # What the demo copy is called in a new account's Library. Empty uses
     # "Demo: " + the source game's title, which is usually an internal name.
     sample_game_title: str = ""
-    # Credit for the demo footage, returned with every copy as `sample_credit`
-    # for the web to show beside it, e.g. "Footage: Javelin Ottawa —
-    # https://www.youtube.com/watch?v=…". Empty sends none. A credit is not a
-    # licence to the footage: that question is CF-571 (#581).
+    # Credit for the demo footage, frozen onto each copy when it is made
+    # (games.sample_credit) and returned as `sample_credit` for the web to show
+    # beside it, e.g. "Footage: <team> — <URL of the original>". Empty stores
+    # none. Changing it later does not rewrite existing copies, which keep the
+    # credit of the footage they play. A credit is not a licence to the
+    # footage: that question is CF-571 (#581).
     sample_game_credit: str = ""
 
     # ── Anonymous read limits (CF-186, #189) ─────────────────────────────────

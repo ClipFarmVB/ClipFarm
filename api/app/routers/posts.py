@@ -153,7 +153,7 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
     if clip is None or game is None or game.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Clip not found")
 
-    # The example game's footage is ours, not the owner's to publish, at any
+    # The demo game's footage is not the owner's to publish, at any
     # tier (CF-220). After ownership, so a stranger still gets the 404.
     sample_game.assert_not_sample(game)
 

@@ -2,9 +2,8 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.config import settings
 from app.models.game import GameStatus
 
 
@@ -34,6 +33,10 @@ class GameOut(BaseModel):
     # A copy of the example game every new account starts with (CF-220), so
     # the client can mark it as an example and offer to remove it.
     is_sample: bool = False
+    # Credit for the demo footage, frozen onto the copy when it was made from
+    # SAMPLE_GAME_CREDIT. Null on every ordinary game. Operator text that may
+    # hold a URL: render it as plain text, never as HTML.
+    sample_credit: str | None = None
 
     @field_validator("is_sample", mode="before")
     @classmethod
@@ -42,14 +45,6 @@ class GameOut(BaseModel):
         # process and not yet flushed reads None here. Only the copier sets it,
         # and it sets True explicitly.
         return False if v is None else v
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def sample_credit(self) -> str | None:
-        """Credit for the demo footage (`SAMPLE_GAME_CREDIT`), on demo copies only."""
-        if not self.is_sample:
-            return None
-        return settings.sample_game_credit.strip() or None
 
 
 class GameCreate(BaseModel):

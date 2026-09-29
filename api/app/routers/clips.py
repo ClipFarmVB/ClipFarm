@@ -294,7 +294,7 @@ async def update_clip_visibility(
     # that is not the one a non-owner should ever see.
     clip, game = await _get_owned_clip(clip_id, user_id, db)
     # Before the tier check, so the answer does not depend on the deployment's
-    # posting flag: the example's footage is not the owner's to publish at any
+    # posting flag: the demo's footage is not the owner's to publish at any
     # tier (CF-220).
     sample_game.assert_not_sample(game)
     publishing.assert_tier_allowed(body.visibility)
@@ -327,9 +327,9 @@ async def update_clip_labels(
     label_1 = user_labels[0] if len(user_labels) > 0 else "not_an_action"
     label_2 = user_labels[1] if len(user_labels) > 1 else None
 
-    # Upsert correction — one row per clip per user. Not for the example game
+    # Upsert correction — one row per clip per user. Not for the demo game
     # (CF-220): the relabel still applies to the owner's copy, but a new
-    # user's opinion of our own footage is not training signal.
+    # user's opinion of the demo footage is not training signal.
     if not sample_game.is_sample(game):
         existing = (await db.execute(
             select(Correction).where(
@@ -394,15 +394,15 @@ async def trim_clip(
     """
     clip, game = await _get_owned_clip(clip_id, user_id, db)
 
-    # A re-cut of the example's source overwrites the clip object every copy
+    # A re-cut of the demo's source overwrites the clip object every copy
     # plays (CF-220).
     sample_game.assert_not_source(game.id)
 
-    # The example game has no source upload of its own to re-cut from, and a
+    # The demo game has no source upload of its own to re-cut from, and a
     # re-cut object under the copy's own key would be orphaned, since deleting
-    # an example removes rows only (CF-220). Its own message,
+    # a demo copy removes rows only (CF-220). Its own message,
     # because "passed its retention window" is not what happened, and 409 like
-    # every other example refusal rather than the retention case's 400.
+    # every other demo refusal rather than the retention case's 400.
     if sample_game.is_sample(game):
         raise HTTPException(
             status_code=409,
@@ -467,13 +467,13 @@ async def delete_clips(
         if game.owner_id != user_id:
             raise HTTPException(status_code=404, detail="One or more clips not found")
     # Whole batch refused, before anything is touched, if any clip is the
-    # example's source: every copy plays its objects (CF-220). Once per game,
+    # demo's source: every copy plays its objects (CF-220). Once per game,
     # not per clip, so a malformed setting logs once rather than N times.
     for game_id in {game.id for _, game in rows}:
         sample_game.assert_not_source(game_id)
 
-    # Delete from R2 (best-effort) and DB. An example clip's objects are
-    # shared by every copy of the example game (CF-220), so for those it is
+    # Delete from R2 (best-effort) and DB. A demo clip's objects are
+    # shared by every copy of the demo game (CF-220), so for those it is
     # the row alone.
     deleted = 0
     for clip, game in rows:
@@ -519,7 +519,7 @@ async def share_clip(
     # Read path (CF-108): anyone who may view the clip may mint a share link.
     clip, game = await _get_viewable_clip(clip_id, viewer_id, db)
     # After the view check, so a viewer who cannot see the clip still gets 404
-    # (CF-220): the app does not offer a share link for the example's footage.
+    # (CF-220): the app does not offer a share link for the demo's footage.
     # Not access control — the owner's clip listings already return the same
     # presigned URL (see sample_game.assert_not_sample).
     sample_game.assert_not_sample(game)
@@ -575,7 +575,7 @@ async def download_clip(
     """
     clip, game = await _get_viewable_clip(clip_id, user_id, db)
     # After the view check, as on /share, so a stranger still gets 404
-    # (CF-220): the app does not offer a download of the example's footage,
+    # (CF-220): the app does not offer a download of the demo's footage,
     # which is not the owner's to pass on. Not access control — the owner's
     # clip listings already return a presigned URL for the same object (see
     # sample_game.assert_not_sample).

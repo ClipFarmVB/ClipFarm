@@ -588,6 +588,9 @@ def test_the_copy_takes_the_fields_the_plan_names(monkeypatch):
     clip.player_id = uuid.uuid4()
     db = _CopyDB(source, [clip])
     monkeypatch.setattr(settings, "sample_game_id", str(source.id))
+    # Pinned so a developer with these in their env still sees the defaults.
+    monkeypatch.setattr(settings, "sample_game_title", "")
+    monkeypatch.setattr(settings, "sample_game_credit", "")
     new_owner = uuid.uuid4()
 
     copy = asyncio.run(sample_game.copy_sample_game(db, new_owner))
@@ -597,6 +600,7 @@ def test_the_copy_takes_the_fields_the_plan_names(monkeypatch):
     assert copy.is_sample is True
     assert copy.status is GameStatus.ready
     assert copy.title == "Demo: Varsity vs Lincoln", "unset SAMPLE_GAME_TITLE: Demo + source"
+    assert copy.sample_credit is None, "unset SAMPLE_GAME_CREDIT: no credit"
     assert copy.raw_video_url is None
     assert copy.condensed_video_url is None
     assert copy.condensed_duration is None, "cleared with the cut it describes"
@@ -753,46 +757,75 @@ def test_a_failing_copy_costs_the_example_not_the_account(monkeypatch, caplog):
 
 
 # ── The demo's name and credit (CF-220, maintainer request) ─────────────────
+#
+# Placeholder names throughout: the real title and credit live only in the
+# deployment's settings, not in this public repository.
 
 
-def test_the_copy_is_named_by_sample_game_title_when_set(monkeypatch):
-    monkeypatch.setattr(settings, "sample_game_title", "  Demo game · Javelin Ottawa  ")
-    assert sample_game.copy_title("[07-04 isolated test] YT vod ~31m") == (
-        "Demo game · Javelin Ottawa"
-    )
+def _copy_with(monkeypatch, *, title="", credit=""):
+    source = _game(is_sample=False)
+    db = _CopyDB(source, [_clip(source)])
+    monkeypatch.setattr(settings, "sample_game_id", str(source.id))
+    monkeypatch.setattr(settings, "sample_game_title", title)
+    monkeypatch.setattr(settings, "sample_game_credit", credit)
+    copy = asyncio.run(sample_game.copy_sample_game(db, uuid.uuid4()))
+    assert copy is not None
+    return copy
+
+
+def test_the_copier_names_the_copy_by_sample_game_title(monkeypatch):
+    # Through copy_sample_game, not just the helper: reverting the copier to
+    # "Demo: " + source must fail here.
+    copy = _copy_with(monkeypatch, title="  Demo game · Riverside Hawks  ")
+
+    assert copy.title == "Demo game · Riverside Hawks"
 
 
 def test_the_copy_falls_back_to_demo_plus_the_source_title(monkeypatch):
-    monkeypatch.setattr(settings, "sample_game_title", "   ")
-    assert sample_game.copy_title("Varsity vs Lincoln") == "Demo: Varsity vs Lincoln"
+    copy = _copy_with(monkeypatch, title="   ")
+
+    assert copy.title == "Demo: Varsity vs Lincoln"
 
 
 def test_the_copy_title_fits_the_column(monkeypatch):
     monkeypatch.setattr(settings, "sample_game_title", "")
     assert len(sample_game.copy_title("x" * 400)) == 255
+    monkeypatch.setattr(settings, "sample_game_title", "y" * 400)
+    assert len(sample_game.copy_title("anything")) == 255
 
 
-def _game_out(is_sample: bool):
-    return GameOut(id=uuid.uuid4(), title="t", status=GameStatus.ready,
-                   created_at=NOW, is_sample=is_sample)
+CREDIT = "Footage: Riverside Hawks — https://www.youtube.com/watch?v=PLACEHOLDER"
 
 
-def test_a_demo_copy_carries_the_configured_credit(monkeypatch):
-    credit = "Footage: Javelin Ottawa — https://www.youtube.com/watch?v=OnkNS1ZJ7gI"
-    monkeypatch.setattr(settings, "sample_game_credit", f"  {credit} ")
+def test_the_copier_freezes_the_credit_onto_the_copy(monkeypatch):
+    copy = _copy_with(monkeypatch, credit=f"  {CREDIT} ")
 
-    body = _game_out(is_sample=True).model_dump()
-
-    assert body["sample_credit"] == credit
+    assert copy.sample_credit == CREDIT
 
 
-def test_an_ordinary_game_never_carries_the_credit(monkeypatch):
-    monkeypatch.setattr(settings, "sample_game_credit", "Footage: Javelin Ottawa")
+def test_a_copy_keeps_its_credit_when_the_setting_changes(monkeypatch):
+    # The credit belongs to the footage the copy plays. Pointing the setting at
+    # a new source, or clearing it, must not rewrite the credit on copies of
+    # the old one.
+    copy = _copy_with(monkeypatch, credit=CREDIT)
+    copy.created_at = NOW  # set by the column default at flush, which _CopyDB skips
+    monkeypatch.setattr(settings, "sample_game_credit", "Footage: someone else")
 
-    assert _game_out(is_sample=False).model_dump()["sample_credit"] is None
+    body = GameOut.model_validate(copy).model_dump()
 
-
-def test_no_credit_is_sent_when_none_is_configured(monkeypatch):
+    assert body["sample_credit"] == CREDIT
     monkeypatch.setattr(settings, "sample_game_credit", "")
+    assert GameOut.model_validate(copy).model_dump()["sample_credit"] == CREDIT
 
-    assert _game_out(is_sample=True).model_dump()["sample_credit"] is None
+
+def test_no_credit_is_frozen_when_none_is_configured(monkeypatch):
+    copy = _copy_with(monkeypatch, credit="   ")
+
+    assert copy.sample_credit is None
+
+
+def test_an_ordinary_game_carries_no_credit(monkeypatch):
+    monkeypatch.setattr(settings, "sample_game_credit", CREDIT)
+    game = GameOut(id=uuid.uuid4(), title="t", status=GameStatus.ready, created_at=NOW)
+
+    assert game.model_dump()["sample_credit"] is None

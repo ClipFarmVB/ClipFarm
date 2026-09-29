@@ -174,7 +174,7 @@ def _games_of(pg_db, uid):
     return _query(
         pg_db,
         "SELECT id, title, status, is_sample, raw_video_url, condensed_video_url, "
-        "visibility, upload_id FROM games WHERE owner_id = :u",
+        "visibility, upload_id, sample_credit FROM games WHERE owner_id = :u",
         u=uid,
     )
 
@@ -200,6 +200,8 @@ def test_a_new_account_gets_exactly_one_marked_private_copy(pg_db, sources, monk
     from app.config import settings
 
     monkeypatch.setattr(settings, "sample_game_id", str(sources["ready"]))
+    monkeypatch.setattr(settings, "sample_game_title", "")
+    monkeypatch.setattr(settings, "sample_game_credit", "Footage: Riverside Hawks")
     uid, email = _new_user()
 
     _provision(pg_db, uid, email)
@@ -209,6 +211,7 @@ def test_a_new_account_gets_exactly_one_marked_private_copy(pg_db, sources, monk
     game = games[0]
     assert game.is_sample is True
     assert game.title == "Demo: " + SOURCE_TITLE
+    assert game.sample_credit == "Footage: Riverside Hawks", "frozen onto the row"
     assert game.status == "ready"
     assert game.raw_video_url is None, "a copy has no upload of its own to re-cut from"
     assert game.condensed_video_url is None

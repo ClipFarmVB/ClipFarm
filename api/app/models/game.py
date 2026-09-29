@@ -80,6 +80,10 @@ class Game(Base):
     is_sample: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=sa_false(), nullable=False
     )
+    # Credit for the footage a copy plays, frozen from SAMPLE_GAME_CREDIT when
+    # the copy is made so it stays with that footage if the setting later
+    # names another source. Null on every game that is not a copy.
+    sample_credit: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

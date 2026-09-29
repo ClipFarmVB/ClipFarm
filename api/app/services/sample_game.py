@@ -1,4 +1,4 @@
-"""The example game a new account starts with (CF-220).
+"""The demo game a new account starts with (CF-220).
 
 A fresh signup used to land on an empty Library, for a product whose value
 takes an upload and a processing run to show. When `SAMPLE_GAME_ID` names a
@@ -11,13 +11,13 @@ set of R2 objects. That is what makes a per-signup copy cheap, and it is also
 why the copies need guards the owner's own games do not:
 
 * the delete paths must not remove those objects (routers/games.py,
-  routers/clips.py) — removing the example is removing rows only;
+  routers/clips.py) — removing the demo is removing rows only;
 * the footage is not the owner's to publish, so raising clip visibility and
   posting are refused — real controls, the copy stays private. `/share` and
   `/download` refuse too, but that only stops the app offering a link; it is
   not access control, since the owner's clips listings already return the
   presigned URLs (`assert_not_sample`);
-* a relabel writes no `Correction`, so our own footage does not become
+* a relabel writes no `Correction`, so the demo footage does not become
   training signal attributed to a stranger;
 * the source game itself cannot be deleted or trimmed while the setting names
   it (`assert_not_source`).
@@ -29,7 +29,7 @@ why the copies need guards the owner's own games do not:
   upload alive in the retention sweep (`sync_referenced_raw_keys`). Null makes
   trim refuse. (A copy's re-cut would not touch the shared clip object: it
   writes under the copy's own game id, `workers/tasks.py::recut_clip_task` —
-  but deleting the example is rows only, so that new object would be orphaned.
+  but deleting the demo is rows only, so that new object would be orphaned.
   Only a re-cut of the *source* overwrites what every copy plays.)
 * `condensed_video_url` — a re-condense of the source replaces that object,
   and a copy pointing at it would silently change or break. `condensed_duration`
@@ -41,7 +41,7 @@ why the copies need guards the owner's own games do not:
 
 Called only from `auth._ensure_user_exists`, inside a savepoint, on the
 request that actually created the user row. It raises freely; the caller
-decides that a failure here costs the example and never the signup.
+decides that a failure here costs the demo and never the signup.
 """
 import logging
 import uuid
@@ -68,7 +68,7 @@ def copy_title(source_title: str) -> str:
 
 
 def is_sample(game: object) -> bool:
-    """Whether `game` is a copy of the example game.
+    """Whether `game` is a copy of the demo game.
 
     `is True`, not truthiness, and through getattr: the routers that call this
     are exercised across the suite with duck-typed game stubs, some of which
@@ -80,11 +80,11 @@ def is_sample(game: object) -> bool:
 
 
 def assert_not_sample(game: object) -> None:
-    """409 for publishing the example game's footage.
+    """409 for publishing the demo game's footage.
 
     Used by `PATCH /clips/{id}/visibility`, `POST /posts`,
-    `GET /clips/{id}/share` and `GET /clips/{id}/download`. The example's
-    footage is ours, copied into the account to show what the product does —
+    `GET /clips/{id}/share` and `GET /clips/{id}/download`. The demo's
+    footage is not theirs: it is copied into the account to show what the product does —
     not the owner's to put in front of anyone else.
 
     What each refusal actually stops differs, and the difference matters to
@@ -120,7 +120,7 @@ def configured_source_id() -> uuid.UUID | None:
         # The value, not an error object: it is our own config, not user data.
         logger.warning(
             "sample game: SAMPLE_GAME_ID is not a UUID (%r); treating the "
-            "example game as off",
+            "demo game as off",
             raw,
         )
         return None
@@ -147,7 +147,7 @@ def assert_not_source(game_id: uuid.UUID) -> None:
 
 
 async def copy_sample_game(db: AsyncSession, user_id: uuid.UUID) -> Game | None:
-    """Add a copy of the configured example game for `user_id` to `db`.
+    """Add a copy of the configured demo game for `user_id` to `db`.
 
     Returns the new game, or None when there is nothing to copy — setting
     empty or malformed, source missing, source not `ready`, or source with no
@@ -188,6 +188,8 @@ async def copy_sample_game(db: AsyncSession, user_id: uuid.UUID) -> Game | None:
         title=copy_title(source.title),
         status=GameStatus.ready,
         is_sample=True,
+        # Frozen here, not read live: see the column (CF-220).
+        sample_credit=settings.sample_game_credit.strip() or None,
         raw_video_url=None,
         upload_id=None,
         condense_requested=False,
