@@ -23,7 +23,7 @@ from app.schemas.clip import (
     ClipTrimRequest,
     ClipVisibilityRequest,
 )
-from app.services import access, publishing, storage
+from app.services import access, publishing, sample_game, storage
 from app.services.ratelimit import POLICIES, rate_limit
 from app.services.filenames import clip_download_filename
 from app.workers.celery_app import celery_app
@@ -112,6 +112,7 @@ def _clip_out(clip: Clip, game: Game, *, player_name: str | None = None) -> Clip
     out.player_name = player_name  # type: ignore[assignment]
     out.source_available = game.raw_video_url is not None
     out.effective_visibility = access.widest_allowed(clip, game)
+    out.is_sample = sample_game.is_sample(game)
     urls = _rewrite_urls(clip)
     out.clip_url = urls["clip_url"]  # type: ignore[assignment]
     out.thumbnail_url = urls["thumbnail_url"]
@@ -292,6 +293,10 @@ async def update_clip_visibility(
     # the 404-not-403 rule the rest of this router keeps, by giving a refusal
     # that is not the one a non-owner should ever see.
     clip, game = await _get_owned_clip(clip_id, user_id, db)
+    # Before the tier check, so the answer does not depend on the deployment's
+    # posting flag: the demo's footage is not the owner's to publish at any
+    # tier (CF-220).
+    sample_game.assert_not_sample(game)
     publishing.assert_tier_allowed(body.visibility)
     clip.visibility = body.visibility
     await db.commit()
@@ -322,29 +327,32 @@ async def update_clip_labels(
     label_1 = user_labels[0] if len(user_labels) > 0 else "not_an_action"
     label_2 = user_labels[1] if len(user_labels) > 1 else None
 
-    # Upsert correction — one row per clip per user
-    existing = (await db.execute(
-        select(Correction).where(
-            Correction.clip_id == clip.id,
-            Correction.user_id == user_id,
-        )
-    )).scalar_one_or_none()
+    # Upsert correction — one row per clip per user. Not for the demo game
+    # (CF-220): the relabel still applies to the owner's copy, but a new
+    # user's opinion of the demo footage is not training signal.
+    if not sample_game.is_sample(game):
+        existing = (await db.execute(
+            select(Correction).where(
+                Correction.clip_id == clip.id,
+                Correction.user_id == user_id,
+            )
+        )).scalar_one_or_none()
 
-    if existing:
-        existing.corrected_label_1 = label_1
-        existing.corrected_label_2 = label_2
-    else:
-        correction = Correction(
-            clip_id=clip.id,
-            user_id=user_id,
-            original_action=clip.action_type,
-            corrected_label_1=label_1,
-            corrected_label_2=label_2,
-            original_confidence=clip.confidence,
-            start_time=clip.start_time,
-            end_time=clip.end_time,
-        )
-        db.add(correction)
+        if existing:
+            existing.corrected_label_1 = label_1
+            existing.corrected_label_2 = label_2
+        else:
+            correction = Correction(
+                clip_id=clip.id,
+                user_id=user_id,
+                original_action=clip.action_type,
+                corrected_label_1=label_1,
+                corrected_label_2=label_2,
+                original_confidence=clip.confidence,
+                start_time=clip.start_time,
+                end_time=clip.end_time,
+            )
+            db.add(correction)
 
     # Update labels on clip (keep "not_an_action" so frontend knows it was explicit)
     if "not_an_action" in body.labels:
@@ -385,6 +393,21 @@ async def trim_clip(
     end_delta:   positive = extend later, negative = shrink from end
     """
     clip, game = await _get_owned_clip(clip_id, user_id, db)
+
+    # A re-cut of the demo's source overwrites the clip object every copy
+    # plays (CF-220).
+    sample_game.assert_not_source(game.id)
+
+    # The demo game has no source upload of its own to re-cut from, and a
+    # re-cut object under the copy's own key would be orphaned, since deleting
+    # a demo copy removes rows only (CF-220). Its own message,
+    # because "passed its retention window" is not what happened, and 409 like
+    # every other demo refusal rather than the retention case's 400.
+    if sample_game.is_sample(game):
+        raise HTTPException(
+            status_code=409,
+            detail="Demo clips can't be trimmed — upload your own game to trim its clips",
+        )
 
     # Gone once the raw upload passes raw_upload_retention_days (CF-194).
     # ClipOut.source_available tells clients this before they try.
@@ -443,11 +466,19 @@ async def delete_clips(
     for _, game in rows:
         if game.owner_id != user_id:
             raise HTTPException(status_code=404, detail="One or more clips not found")
+    # Whole batch refused, before anything is touched, if any clip is the
+    # demo's source: every copy plays its objects (CF-220). Once per game,
+    # not per clip, so a malformed setting logs once rather than N times.
+    for game_id in {game.id for _, game in rows}:
+        sample_game.assert_not_source(game_id)
 
-    # Delete from R2 (best-effort) and DB
+    # Delete from R2 (best-effort) and DB. A demo clip's objects are
+    # shared by every copy of the demo game (CF-220), so for those it is
+    # the row alone.
     deleted = 0
-    for clip, _ in rows:
-        for url in (clip.clip_url, clip.thumbnail_url):
+    for clip, game in rows:
+        urls = [] if sample_game.is_sample(game) else [clip.clip_url, clip.thumbnail_url]
+        for url in urls:
             if not url:
                 continue
             try:
@@ -486,7 +517,12 @@ async def share_clip(
     Content-Disposition: attachment and requires a signed-in caller.
     """
     # Read path (CF-108): anyone who may view the clip may mint a share link.
-    clip, _game = await _get_viewable_clip(clip_id, viewer_id, db)
+    clip, game = await _get_viewable_clip(clip_id, viewer_id, db)
+    # After the view check, so a viewer who cannot see the clip still gets 404
+    # (CF-220): the app does not offer a share link for the demo's footage.
+    # Not access control — the owner's clip listings already return the same
+    # presigned URL (see sample_game.assert_not_sample).
+    sample_game.assert_not_sample(game)
     # NOTE: still a 1h presigned URL even for public clips. CF-108's card flags
     # revisiting this — a public clip's link is meant to be passed around, so a
     # short expiry is user-hostile, while a long one is a bearer token nobody
@@ -538,6 +574,12 @@ async def download_clip(
     accident.
     """
     clip, game = await _get_viewable_clip(clip_id, user_id, db)
+    # After the view check, as on /share, so a stranger still gets 404
+    # (CF-220): the app does not offer a download of the demo's footage,
+    # which is not the owner's to pass on. Not access control — the owner's
+    # clip listings already return a presigned URL for the same object (see
+    # sample_game.assert_not_sample).
+    sample_game.assert_not_sample(game)
 
     # The filename is part of the response, not just decoration: presign_url
     # puts it in the URL's ResponseContentDisposition, in cleartext. So the

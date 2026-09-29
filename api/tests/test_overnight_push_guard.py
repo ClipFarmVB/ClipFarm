@@ -71,8 +71,13 @@ _EMPTY_GLOBAL = tempfile.NamedTemporaryFile(prefix="gitconfig-", delete=False)
 _EMPTY_GLOBAL.close()
 atexit.register(os.unlink, _EMPTY_GLOBAL.name)
 
+# Inherited GIT_* variables are dropped first. Run from the pre-commit hook,
+# git has exported its own for the commit in progress (the index, and from a
+# worktree the git dir), and the commands below then acted on the developer's
+# repository instead of the throwaway one: `checkout -b feat` failed against
+# a real `feat/...` branch there, and the hook refused the commit (CF-220).
 ENV = {
-    **os.environ,
+    **{k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")},
     "GIT_CONFIG_GLOBAL": _EMPTY_GLOBAL.name,
     "GIT_AUTHOR_NAME": "test",
     "GIT_AUTHOR_EMAIL": "test@example.com",
