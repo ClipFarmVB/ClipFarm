@@ -41,12 +41,14 @@ afterEach(() => {
 });
 
 describe("middleware on /", () => {
-  it("redirects a signed-in user to /games", async () => {
+  it("lets a signed-in user see the landing page", async () => {
+    // CF-574: `/` used to redirect a signed-in user to /games, which left no
+    // way back to it once the logo started linking there.
     currentUser = { id: "u1" };
     const res = await middleware(request("/"));
 
-    expect(res.status).toBe(307);
-    expect(getRedirectUrl(res)).toBe(`${APP}/games`);
+    expect(getRedirectUrl(res)).toBeNull();
+    expect(res.headers.get("x-middleware-next")).toBe("1");
   });
 
   it("passes a signed-out visitor through to the landing page", async () => {
@@ -55,17 +57,6 @@ describe("middleware on /", () => {
     expect(getRedirectUrl(res)).toBeNull();
     expect(res.headers.get("x-middleware-next")).toBe("1");
   });
-
-  it("carries refreshed session cookies across the redirect", async () => {
-    currentUser = { id: "u1" };
-    refreshedCookies = [
-      { name: "sb-access-token", value: "fresh", options: { path: "/", httpOnly: true } },
-    ];
-    const res = await middleware(request("/"));
-
-    expect(getRedirectUrl(res)).toBe(`${APP}/games`);
-    expect(res.cookies.get("sb-access-token")?.value).toBe("fresh");
-  });
 });
 
 describe("middleware on protected routes", () => {
@@ -73,6 +64,26 @@ describe("middleware on protected routes", () => {
     const res = await middleware(request("/games/abc"));
 
     expect(getRedirectUrl(res)).toBe(`${APP}/login?next=%2Fgames%2Fabc`);
+  });
+
+  it("carries cookies getUser() set or cleared across the /login redirect", async () => {
+    // CF-567: a dead session is cleared by writing expired cookies through
+    // setAll. A redirect is a fresh response, so without copying them across
+    // the browser keeps presenting the stale session on the next request.
+    refreshedCookies = [
+      { name: "sb-access-token", value: "", options: { path: "/", httpOnly: true, maxAge: 0 } },
+      { name: "sb-refresh-token", value: "fresh", options: { path: "/", httpOnly: true, sameSite: "lax" } },
+    ];
+    const res = await middleware(request("/games/abc"));
+
+    expect(getRedirectUrl(res)).toBe(`${APP}/login?next=%2Fgames%2Fabc`);
+    const cleared = res.cookies.get("sb-access-token");
+    expect(cleared?.value).toBe("");
+    expect(cleared?.maxAge).toBe(0);
+    const refreshed = res.cookies.get("sb-refresh-token");
+    expect(refreshed?.value).toBe("fresh");
+    expect(refreshed?.httpOnly).toBe(true);
+    expect(refreshed?.sameSite).toBe("lax");
   });
 
   it("lets a signed-in user through", async () => {
@@ -84,7 +95,7 @@ describe("middleware on protected routes", () => {
 });
 
 describe("middleware matcher", () => {
-  it("runs on /, so the signed-in redirect can fire", () => {
+  it("runs on /, so a session refresh still happens there", () => {
     expect(unstable_doesMiddlewareMatch({ config, url: "/" })).toBe(true);
   });
 

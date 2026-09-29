@@ -43,10 +43,9 @@ export function Sidebar() {
   // needsHandle() is the same predicate the banner and the API use.
   const hasPublicProfile = Boolean(me?.username) && !needsHandle(me);
 
-  // `/` is the signed-out landing page (CF-219). A signed-in user is redirected
-  // off it by the middleware, but `/` is static and the router serves its
-  // prefetched copy without asking — so the brand link skips the hop.
-  const homeHref = user ? "/games" : "/";
+  // The brand logo goes to the landing page for everyone (CF-574). The
+  // library is the first nav item, one click away.
+  const homeHref = "/";
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
