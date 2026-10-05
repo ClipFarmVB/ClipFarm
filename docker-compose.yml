@@ -202,6 +202,9 @@ services:
       # refinement no-ops and clips keep their ball-trajectory labels. To do
       # real pose work locally, run the worker outside Docker against
       # ml/requirements.txt — every local path is still in the code.
+      # Two games in parallel (CF-65b). Each child decodes its own video, so
+      # this is bounded by RAM, not cores — raise only after watching memory.
+      CELERY_WORKER_CONCURRENCY: "2"
     depends_on:
       redis:
         condition: service_healthy
