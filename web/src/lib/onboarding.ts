@@ -95,6 +95,16 @@ export function useOnboardingRecord(userId: string | undefined): OnboardingSnaps
   );
 }
 
+/**
+ * The demo game copied into this account at signup (CF-220), if it is still in
+ * the Library: the game the api flags `is_sample`. The onboarding panel links
+ * it as the worked example. Null once the user has removed it, or when the api
+ * has no demo game configured.
+ */
+export function sampleGameIdOf(games: readonly Game[]): string | null {
+  return games.find((g) => g.is_sample === true)?.id ?? null;
+}
+
 export interface OnboardingProgress {
   /**
    * The user has a game of their own in the Library that has not failed. A
@@ -111,8 +121,9 @@ export interface OnboardingProgress {
 /**
  * Progress through the walkthrough, from the user's own games only. The sample
  * game is always `ready`; counting it would complete onboarding on first load,
- * and that `done` is stored for good. So a game is excluded by `sampleGameId`
- * or by its own `is_sample` flag, whichever arrives first.
+ * and that `done` is stored for good. So any game flagged `is_sample` is
+ * excluded, as is `sampleGameId` for a caller that passes an id the flag
+ * does not cover.
  */
 export function onboardingProgress(
   games: readonly Game[],

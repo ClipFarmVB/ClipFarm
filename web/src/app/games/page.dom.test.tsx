@@ -102,6 +102,29 @@ describe("the games page", () => {
 
 const panel = () => host.querySelector('section[aria-labelledby="onboarding-heading"]');
 
+describe("Library with the demo game", () => {
+  it("links the demo game from the onboarding panel as the worked example", async () => {
+    authUser = { id: "demo-link" };
+    fetchGames.mockResolvedValue([{ ...game("demo-copy", "ready"), is_sample: true }]);
+    await act(async () => { root.render(<GamesPage />); });
+
+    expect(panel()).not.toBeNull();
+    const links = Array.from(host.querySelectorAll('a[href="/games/demo-copy"]'));
+    expect(links.map((a) => a.textContent)).toContain("See an example");
+  });
+
+  it("shows no example link when the account has no demo game", async () => {
+    // A game the api did not flag must not be linked as the example, so the
+    // list is not empty: an empty one would pass however the id is chosen.
+    authUser = { id: "demo-none" };
+    fetchGames.mockResolvedValue([{ ...game("own-processing", "processing"), is_sample: false }]);
+    await act(async () => { root.render(<GamesPage />); });
+
+    expect(panel()).not.toBeNull();
+    expect(host.textContent).not.toContain("See an example");
+  });
+});
+
 describe("Library across an account switch", () => {
   it("does not mark the new user done from the previous user's games", async () => {
     // User A, with a ready game, has the Library open.
