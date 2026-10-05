@@ -4,7 +4,13 @@
 // own user id rather than relying on a reset between cases.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Game } from "@/lib/api";
-import { onboardingKey, onboardingProgress, readOnboarding, writeOnboarding } from "@/lib/onboarding";
+import {
+  onboardingKey,
+  onboardingProgress,
+  readOnboarding,
+  sampleGameIdOf,
+  writeOnboarding,
+} from "@/lib/onboarding";
 
 function game(id: string, status: Game["status"]): Game {
   return { id, title: id, status, progress: 0, progress_stage: null, created_at: "2026-01-01T00:00:00Z" };
@@ -24,6 +30,18 @@ function fakeStorage(): Storage {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("sampleGameIdOf", () => {
+  it("finds the game the api flags is_sample", () => {
+    const games = [game("own", "ready"), { ...game("demo", "ready"), is_sample: true }];
+    expect(sampleGameIdOf(games)).toBe("demo");
+  });
+
+  it("is null when no game is flagged, including a flag of false", () => {
+    expect(sampleGameIdOf([])).toBeNull();
+    expect(sampleGameIdOf([game("own", "ready"), { ...game("other", "ready"), is_sample: false }])).toBeNull();
+  });
 });
 
 describe("onboarding record", () => {

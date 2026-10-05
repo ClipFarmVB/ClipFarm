@@ -11,6 +11,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { deleteGame, renameGame, type Game } from "@/lib/api";
 import { GameTitle, deleteAction } from "@/components/DemoGame";
 import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
+import { sampleGameIdOf } from "@/lib/onboarding";
 import { cn } from "@/lib/utils";
 
 // `uploading` is filtered out by the api's list endpoint — a game whose video
@@ -151,10 +152,15 @@ function GamesContent() {
         </Link>
       </div>
 
-      {/* sampleGameId: the copied sample game (#220), shown as the example and
-          kept out of the user's progress. Null until wired; a game flagged
-          is_sample is excluded from progress regardless. */}
-      <OnboardingPanel games={games} loading={loading} error={error} userId={user?.id} sampleGameId={null} />
+      {/* The demo game copied in at signup (#220), linked as the worked
+          example and kept out of the user's progress. */}
+      <OnboardingPanel
+        games={games}
+        loading={loading}
+        error={error}
+        userId={user?.id}
+        sampleGameId={sampleGameIdOf(games)}
+      />
 
       {/* Error */}
       {error && (

@@ -95,6 +95,16 @@ export function useOnboardingRecord(userId: string | undefined): OnboardingSnaps
   );
 }
 
+/**
+ * The demo game copied into this account at signup (CF-220), if it is still in
+ * the Library: the game the api flags `is_sample`. The onboarding panel links
+ * it as the worked example. Null once the user has removed it, or when the api
+ * has no demo game configured.
+ */
+export function sampleGameIdOf(games: readonly Game[]): string | null {
+  return games.find((g) => g.is_sample === true)?.id ?? null;
+}
+
 export interface OnboardingProgress {
   /**
    * The user has a game of their own in the Library that has not failed. A
