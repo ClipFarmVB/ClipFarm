@@ -19,10 +19,9 @@ interface OnboardingPanelProps {
   error: string | null;
   userId?: string;
   /**
-   * The copied sample game, used as the worked example and excluded from the
-   * user's own progress. Null until wired (#220): nothing passes it yet, and
-   * the api only sends `is_sample` once #571 lands. A game flagged `is_sample`
-   * is excluded from progress either way.
+   * The demo game copied in at signup, linked as the worked example and
+   * excluded from the user's own progress. The Library passes
+   * `sampleGameIdOf(games)`; null when the account has no demo game.
    */
   sampleGameId?: string | null;
 }

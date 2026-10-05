@@ -121,8 +121,9 @@ export interface OnboardingProgress {
 /**
  * Progress through the walkthrough, from the user's own games only. The sample
  * game is always `ready`; counting it would complete onboarding on first load,
- * and that `done` is stored for good. So a game is excluded by `sampleGameId`
- * or by its own `is_sample` flag, whichever arrives first.
+ * and that `done` is stored for good. So any game flagged `is_sample` is
+ * excluded, as is `sampleGameId` for a caller that passes an id the flag
+ * does not cover.
  */
 export function onboardingProgress(
   games: readonly Game[],

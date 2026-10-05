@@ -114,8 +114,10 @@ describe("Library with the demo game", () => {
   });
 
   it("shows no example link when the account has no demo game", async () => {
+    // A game the api did not flag must not be linked as the example, so the
+    // list is not empty: an empty one would pass however the id is chosen.
     authUser = { id: "demo-none" };
-    fetchGames.mockResolvedValue([]);
+    fetchGames.mockResolvedValue([{ ...game("own-processing", "processing"), is_sample: false }]);
     await act(async () => { root.render(<GamesPage />); });
 
     expect(panel()).not.toBeNull();
