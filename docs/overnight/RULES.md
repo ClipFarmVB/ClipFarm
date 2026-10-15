@@ -377,8 +377,15 @@ ticket](TICKETS.md#working-a-ticket).
   body, review, comment or issue (a `Co-Authored-By` trailer, session link or
   "Generated with Claude Code" line on a commit is fine); prefixes its
   comments; stays inside its scope; claims a mutation result only for the
-  mutations it ran, never for their class unless it ran the whole class; and
-  reports a decision it needs rather than taking it.
+  mutations it ran, never for their class unless it ran the whole class;
+  [claims an artifact changed only by quoting its text from a fetch made after
+  the write](#what-you-claim-about-your-own-actions-is-checked-the-same-way-as-a-number);
+  when a push of its own lands and changes anything the PR body describes,
+  rewrites the body in one pass from the current body — keeping every section
+  the head cannot supply, such as a warning to whoever merges, decisions made
+  or earlier gate output, and rewriting every section that describes the head
+  against the head it pushed, never just the changed lines — and quotes it the
+  same way; and reports a decision it needs rather than taking it.
 
 **When the environment gives no worktree, run one subagent at a time and say so
 in the log and the report.** That is the capability check in
@@ -1176,6 +1183,49 @@ rather than a reviewer that found the error.
 class** — the rule, its evidence and its five test-writing corollaries live in
 [`BRIEFS.md`](BRIEFS.md#a-mutation-result-licenses-a-claim-about-that-mutation-not-about-its-class);
 pass them to every fixer and implementer.
+
+#### What you claim about your own actions is checked the same way as a number
+
+**"Updated the body" is a measured claim: it reports the outcome of a tool
+call.** Publishing it without the call behind it is the defect this section is
+about, on one more surface — and the one surface where re-measuring cannot
+help, because there is no value to re-measure. The run published a false fact
+about what it had done, not a wrong figure (CF-373).
+
+The run of 2026-09-07 did it five times across two PRs. Each time a reply or
+commit message said a PR body had changed, and no update call had been made:
+
+1. #465, round 5 reply — *"Corrected there."* The body was two commits stale.
+2. #465, commit `d899f17` — *"The body now says that."* Same body, still stale.
+3. #466, round 1 reply — a length claim *"fixed in the body"*. Fixed nowhere:
+   not the body, not the test file.
+4. #466, round 6 reply — *"body updated and read back"*. No update call at all.
+
+Every one was found by a later review round, and each cost that round.
+**Instance 4 is why what follows is a mechanism and not an
+intention.** It came two iterations after the run had adopted "read the body
+back after writing it" as its corrective, written that into a PR body, and told
+a reviewer it was doing it. The intention was known, stated in public, and
+skipped. So:
+
+- **No fetch, no claim.** A reply, commit message or comment may say an
+  artifact changed — a PR body, an issue, a comment, a label — only by quoting
+  the artifact's new text from a fetch made *after* the write. "Updated" with
+  no quote is not allowed. The fetch is a step that can be seen to be missing,
+  where an intention cannot, and the quote is checkable: a skipped write
+  surfaces as a missing or wrong quote rather than as a confident sentence.
+- **The agent that pushes rewrites the PR body in one pass against the latest
+  pushed head** — never patched piece by piece. Four of the five claimed
+  incremental edits to a body that had been right at some earlier commit. When
+  a push of its own lands and changes anything the body describes, it starts
+  from the current body, keeps every section the head cannot supply (a warning
+  to whoever merges, decisions made, earlier gate output), rewrites every
+  section that describes the head, then fetches it and quotes it as above. A
+  commit message therefore never reports a body edit: the body is written after
+  the commit it would describe. This binds fixers and implementers only; a body
+  finding at settle time is still fixed and quoted line by line, as [the
+  carve-out](FIX.md#the-cycle-and-the-settle-bar) says, because no round
+  reviews the body after settle, so a whole rewrite there would go unreviewed.
 
 ### Repo traps that have already cost time
 

@@ -149,17 +149,26 @@ Ask it to:
    rejection. Only `push refused` is [routed as
    `latched`](RULES.md#pushing-to-a-branch-that-may-have-moved). Whatever
    happens, it does not rebase, merge or force.
-4. **Reply on the thread saying what changed**, finding by finding — never that a
+4. **If the push reported `pushed` and changed anything the PR body describes,
+   rewrite the body**, as
+   [what binds it](RULES.md#dispatching-subagents) says — the fixer is the
+   agent that pushed, so no one else will.
+   **Then reply on the thread saying what changed**, finding by finding — never that a
    finding is fixed. [Never describe a fix inside the review that found
    it](#the-cycle-and-the-settle-bar); the semi-cold round decides whether it
    closes.
-5. **Report** the new head, which findings it addressed, and the gate's summary
-   lines.
+5. **Report** the new head, which findings it addressed, the gate's summary
+   lines, and any body text it quoted from its read-back.
 
-When it reports, check GitHub for the push and the reply, write its `finished:`
-line, and carry on with the cycle: the semi-cold round against the new head. A
-fixer that reported `head moved` is checked first, as the next paragraph says,
-and only then routed as [below](#when-you-cannot-fix-it-choosing-a-reason).
+When it reports, check GitHub for the push and the reply. Its body rewrite is
+not checked here: a rewrite that did not land leaves a body describing an older
+head, which the cold round that settles the PR [checks against the
+code](BRIEFS.md#the-cold-reviewers-brief) and [the
+carve-out](#the-cycle-and-the-settle-bar) then fixes and quotes from a
+read-back. Then write that `finished:` line, and carry on with the cycle:
+the semi-cold round against the new head. A fixer that reported `head moved` is
+checked first, as the next paragraph says, and only then routed as
+[below](#when-you-cannot-fix-it-choosing-a-reason).
 
 **A fixer that was lost or rate-limited is not simply dispatched again**, and a
 `head moved` report is not taken at its word. Read the PR's head first. If it
@@ -342,8 +351,8 @@ text took, so an unverified body edit and a lost one are indistinguishable.
 (Which call to read a label back with is not obvious — the two that suggest
 themselves both fail, in opposite directions. See
 [what a non-`gh` tool must provide](REVIEW.md#what-a-non-gh-tool-must-provide).)
-Quote the corrected line in the settle comment so the record shows what was
-checked.
+Quote the corrected line from that read-back in the settle comment so the
+record shows what was checked.
 
 ##### When you cannot fix it: choosing a reason
 
