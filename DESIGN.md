@@ -75,9 +75,12 @@ This adds the roles that were missing, so nothing reaches for a palette class.
 | `--cf-on-rank` | `#ffffff` | `#0b0f0f` | Text on a rank fill (score pill) |
 | `--cf-warning` | `#8a5300` | `#e3a53b` | Warnings (quota, expiring source) |
 | `--cf-warning-strong` | `#7a4900` | `#e3a53b` | Warning text on its tint |
+| `--cf-warning-dim` | warning at 10% | warning at 12% | Warning tint (quota banner) |
 | `--cf-danger` | `#b42318` | `#f2786a` | Errors and destructive actions |
 | `--cf-danger-strong` | `#9c1e14` | `#f2786a` | Danger text on its tint |
+| `--cf-danger-dim` | danger at 8% | danger at 12% | Danger tint (error row, failed badge) |
 | `--cf-media` | `#0b0b0b` | `#0b0b0b` | Behind all video and thumbnails |
+| `--cf-on-media` | `#ffffff` | `#ffffff` | **The only text colour on `--cf-media`** |
 
 **Success is the brand colour plus a check icon.** There is no separate green:
 a second green beside the teal reads as the same colour (emerald-400 against the
@@ -91,22 +94,32 @@ as decoration.
 **Tints are fixed.** The only translucent brand/rank/warning/danger fills are
 the `-dim` tokens. No `bg-brand/8`, `/10`, `/20`, `/25`, `/30`.
 
-Contrast, WCAG relative luminance (measured when set):
+**Text on media is `on-media`.** In the light theme `fg`, `muted`, `brand`
+and `rank` all fail text contrast on `--cf-media` (1.14, 3.13, 3.37 and
+3.61:1), so nothing but `on-media` is set directly on it, in either theme. A
+`rank` fill (the score pill) may sit on media: it carries its own `on-rank`
+text, and as a shape it clears 3:1 (3.61 light, 8.25 dark).
+
+Contrast, WCAG relative luminance (measured when set). A tint is composited at
+its stated alpha over `bg` and over `surface`, the two places it can sit:
 
 | Pair | Light | Dark |
 |---|---|---|
 | brand text on bg / surface | 5.46 / 5.04 | 8.77 / 8.32 |
-| brand-strong on brand-dim | 5.67 | 7.09 |
+| brand-strong on brand-dim, over bg / surface | 6.18 / 5.74 | 7.35 / 6.78 |
 | on-brand on brand / brand-hover | 5.83 / 7.49 | 8.77 / 10.66 |
 | rank text on bg / surface | 5.10 / 4.72 | 8.08 / 7.67 |
-| rank-strong on rank-dim | 5.52 | 6.63 |
+| rank-strong on rank-dim, over bg / surface | 5.93 / 5.52 | 6.88 / 6.36 |
 | on-rank on rank | 5.46 | 8.08 |
 | warning text on bg / surface | 5.92 / 5.47 | 8.91 / 8.46 |
-| warning-strong on its tint | 5.72 | 7.22 |
+| warning-strong on warning-dim, over bg / surface | 6.15 / 5.72 | 7.43 / 6.94 |
 | danger text on bg / surface | 6.15 / 5.69 | 7.04 / 6.68 |
-| danger-strong on its tint | 5.96 | 5.85 |
+| danger-strong on danger-dim, over bg / surface | 6.61 / 6.14 | 6.05 / 5.67 |
 | muted on bg / surface | 5.88 / 5.44 | 5.53 / 5.24 |
-| white / brand / rank on media | 19.68 / — / — | — / 8.96 / 8.25 |
+| on-media on media | 19.68 | 19.68 |
+| rank fill on media (shape, 3:1 needed) | 3.61 | 8.25 |
+| rally strip: muted / rank block on bg (shape, 3:1 needed) | 5.88 / 5.10 | 5.53 / 8.08 |
+| rally strip: muted / rank block on surface (shape, 3:1 needed) | 5.44 / 4.72 | 5.24 / 7.67 |
 
 ### Type
 
@@ -204,7 +217,9 @@ rail appears at `lg`, as today.
   started* on the right. A rail holding only "Log in" and "Sign up" reads as
   an unfinished app.
 - **Content width:** 1024px for app pages, 1200px for the game page (the player
-  needs it), 1120px for the landing page.
+  needs it), 1120px for the landing page. Today `web/src/app/layout.tsx` wraps
+  every page in `max-w-5xl` (1024px), so the two wider widths take effect only
+  once that shared wrapper changes; none of the cards below scopes that yet.
 - **One primary action per screen**, a brand-filled `Button` at the right of the
   page header: *Upload* on the Library, *Play top plays* on a game, *Upload* in
   an empty state. Everything else is secondary or ghost.
@@ -226,8 +241,9 @@ class strings. It grows to:
 - `Skeleton`, shaped like the final layout;
 - `MediaTile`: a 16:9 thumbnail on `--cf-media`, the duration bottom-right in
   `caption`, and the play score top-left as a `stat` on a rank pill for Top
-  plays (a plain `stat` otherwise). The action type and timestamp go below it,
-  in `caption`;
+  plays (a plain `stat` otherwise; nothing for an unscored clip). The duration
+  and a plain score are `on-media` text on a small solid `--cf-media` chip, not
+  on the frame itself. The action type and timestamp go below it, in `caption`;
 - `RallyStrip`, the signature element (below).
 
 **Icons:** lucide only, at three sizes: **16** (default), **14** (inline with
@@ -242,25 +258,37 @@ its plays, made visible at a glance. It appears wherever a game does.
 
 - **Data:** each clip's `start_time` and `end_time` against the game's
   `original_duration` (or the last clip's end when that is missing), and its
-  `highlight_score` (0–1).
+  `highlight_score` (0–1, or null: when scoring fails the worker keeps every
+  rally unscored, `api/app/workers/tasks.py`).
 - **Drawing:** each rally is a block at its position, its width its length
-  (minimum 2px), and its height its score (the kept range, 0.5–1.0, maps to
-  35–100% of the bar). Ordinary rallies are `brand` at 45% opacity; Top plays
-  are solid `rank`. The baseline is a 1px `border` line across the full game.
+  (minimum 2px), and its height its score: the game's lowest score draws at
+  35% of the bar and a score of 1.0 at 100%, linearly between (a game whose
+  scores are all equal draws them all at 100%). The scale comes from the
+  game's own scores, never a fixed floor, because the keep threshold
+  (`highlight_score_threshold`, 0.50 by default) is an env setting. An unscored
+  rally draws at 35% as an ordinary rally. Ordinary rallies are solid `muted`;
+  Top plays are solid `rank`, and nothing in the strip is translucent. The
+  baseline is a 1px `border` line across the full game.
 - **Sizes:**
   - game page: 48px tall, full content width, under the player;
   - Library row: 20px tall and 160px wide;
   - landing hero: 64px.
 - **Interaction (game page):** hovering a block shows a tooltip, `Spike · 14:23
-  · Score 94` (`caption`, tabular). Clicking plays that clip. While a clip
+  · Score 94` (`caption`, tabular; `Spike · 14:23` for an unscored rally).
+  Clicking plays that clip. While a clip
   plays, a 2px `fg` playhead marks its position. Arrow keys move between
   rallies, and Enter plays the focused one.
 - **The one deliberate animation:** when a game finishes processing, its
   rallies draw in left to right over `--duration-slow`, once. That is the moment
   the product delivered, so it is the moment that moves.
 
-**Play score** is `round(highlight_score × 100)`. Kept rallies run roughly
-50–100. **Top plays** are a game's five highest scores. Classifier confidence
+**Play score** is `round(highlight_score × 100)`. With the default threshold
+kept rallies run roughly 50–100, but nothing assumes that floor. A clip with no
+score shows no score anywhere (never "Score 0"), sorts after the scored clips
+in time order, and is never a Top play. **Top plays** are a game's five
+highest-scored clips, fewer when it has fewer scored clips, ties going to the
+earlier one; a game with no scored clips has no Top plays and no *Play top
+plays*. Classifier confidence
 is not a headline number: it appears only in the clip viewer, labelled as label
 confidence.
 
@@ -296,17 +324,24 @@ Spike · 14:23  Block · 21:07  …
   on the page pretends to be ready.
 - **Ready:** the rallies draw in (above), the grid fills sorted by play score,
   and *Play top plays* opens the clip viewer on the top play, stepping through
-  the other four with next/previous.
+  the rest of the Top plays with next/previous.
 - **A clip** opens in the viewer on `--cf-media`, with the strip's playhead
   following it. Download and share live there; a demo clip shows its Demo badge
   instead (CF-565).
 
 ## The landing page
 
-Show the product, not a description of it. Real footage depends on rights to the
-demo game's footage being recorded (CF-571, #581). Until then the landing shows
+Show the product, not a description of it. CF-571 (#581) closed on the
+maintainer's decision to show the demo game's footage in the app with credit
+(`SAMPLE_GAME_CREDIT`); no permission from the club or players is recorded, and
+that decision does not say whether the public landing page may show the footage
+too. Until the maintainer records that on CF-582 (#597), the landing shows
 **real data from the demo game** (its rally strip and its clip list with play
 scores and timestamps) and no thumbnails, rather than mock media.
+
+Where that data comes from is also open: the demo game exists only as a copy
+made per signup (CF-220), and no unauthenticated route serves it today. CF-582
+settles the source with the maintainer before building the landing.
 
 - **Top bar** (see Layout). No rail.
 - **Hero:** a `display` headline that only ClipFarm could say, one `body`
