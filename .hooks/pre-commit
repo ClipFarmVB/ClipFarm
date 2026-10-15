@@ -9,11 +9,11 @@
 #   git config core.hooksPath .hooks
 #
 # This file must be executable, or git skips it and commits with no checks at
-# all. It is tracked as mode 100755 (CF-381), so a fresh clone gets the bit;
-# an older clone with core.fileMode=false, or a copy made some other way, may
-# need `chmod +x .hooks/pre-commit`. The
-# only sign is a "hook was ignored because it's not set as executable" hint,
-# which `git config advice.ignoredHook false` silences. Git for Windows runs
+# all. It is tracked as mode 100755 (CF-381), and git writes checked-out files
+# from that index mode, so every clone and pull gets the bit. The only sign of
+# a skipped hook is a "hook was ignored because it's not set as executable"
+# hint, which `git config advice.ignoredHook false` silences. A copy not made
+# by git may need `chmod +x .hooks/pre-commit`. Git for Windows runs
 # hooks by their #! line and ignores the bit, so Windows never shows the
 # problem. api/tests/test_repo_modes.py fails in CI if the mode is lost.
 #
