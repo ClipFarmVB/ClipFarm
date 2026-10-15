@@ -160,11 +160,12 @@ Ask it to:
 5. **Report** the new head, which findings it addressed, the gate's summary
    lines, and any body text it quoted from its read-back.
 
-When it reports, check GitHub for the push and the reply. If it reports a body
-rewrite, fetch the body and confirm the text it quoted is in it; a quote the
-live body lacks is a claim with no fetch behind it, so record it on the
-`finished:` line as an open finding on the body, which the next fixer rewrites
-like any other. Then write that `finished:` line, and carry on with the cycle:
+When it reports, check GitHub for the push and the reply. Its body rewrite is
+not checked here: a rewrite that did not land leaves a body describing an older
+head, which the cold round that settles the PR [checks against the
+code](BRIEFS.md#the-cold-reviewers-brief) and [the
+carve-out](#the-cycle-and-the-settle-bar) then fixes and quotes from a
+read-back. Then write that `finished:` line, and carry on with the cycle:
 the semi-cold round against the new head. A fixer that reported `head moved` is
 checked first, as the next paragraph says, and only then routed as
 [below](#when-you-cannot-fix-it-choosing-a-reason).
