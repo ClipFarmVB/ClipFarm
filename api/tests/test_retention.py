@@ -139,9 +139,15 @@ def test_cutoff_matches_the_configured_window(monkeypatch):
     fakes = _Fakes()
     _install(monkeypatch, fakes, retention_days=30)
 
+    # Bracketed by clock reads taken here rather than compared with the
+    # module-level NOW: NOW is fixed at collection, so a full api run that took
+    # over a minute to reach this test failed it with nothing wrong.
+    before = datetime.now(timezone.utc)
     tasks._sweep_expired_raw_uploads()
+    after = datetime.now(timezone.utc)
 
-    assert abs((fakes.cutoffs[0] - (NOW - timedelta(days=30))).total_seconds()) < 60
+    window = timedelta(days=30)
+    assert before - window <= fakes.cutoffs[0] <= after - window
 
 
 def test_zero_retention_keeps_everything(monkeypatch):
