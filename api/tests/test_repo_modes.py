@@ -3,8 +3,8 @@
 **Why this exists.** Git skips a hook that is not executable. It says so only
 in a one-line hint (silenced by `advice.ignoredHook false`) and the commit
 goes through with nothing run. `.hooks/pre-commit` sat at mode 100644 on
-`main`, so every clone that followed the setup in `CLAUDE.md` had no local
-checks, while `git config core.hooksPath` still printed `.hooks`.
+`main`, so every Linux or macOS clone that followed the setup in `CLAUDE.md`
+had no local checks, while `git config core.hooksPath` still printed `.hooks`.
 
 **Why here and not in the hook.** The hook cannot catch the loss of its own
 bit: once the bit is gone, the hook does not run. So the check lives in a test
