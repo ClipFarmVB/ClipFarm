@@ -324,16 +324,23 @@ def check_upload_allowed(
         # the same function as the charge, so the wording cannot name a rule
         # that was not applied.
         n = f"{requested_minutes:.0f}"
-        if basis == _BASIS_SIZE_NO_DURATION:
-            this_upload = (
-                f"this upload is charged {n} min, estimated from its file size, "
-                "because its length wasn't provided"
+        if basis in (_BASIS_SIZE_NO_DURATION, _BASIS_SIZE_SHORT_DURATION):
+            # The size estimate is clamped to the per-video cap, and reaches it
+            # for any file past ~1.8 GB, which is most full games. Say so:
+            # "charged 240 min, estimated" alone reads as a measured length.
+            if charged_seconds >= limits.max_duration_seconds:
+                charge = (
+                    f"charged the {n} min maximum, which its file-size "
+                    "estimate reaches,"
+                )
+            else:
+                charge = f"charged {n} min, estimated from its file size,"
+            reason = (
+                "its length wasn't provided"
+                if basis == _BASIS_SIZE_NO_DURATION
+                else "its declared length is too short for its size"
             )
-        elif basis == _BASIS_SIZE_SHORT_DURATION:
-            this_upload = (
-                f"this upload is charged {n} min, estimated from its file size, "
-                "because its declared length is too short for its size"
-            )
+            this_upload = f"this upload is {charge} because {reason}"
         elif basis == _BASIS_MAX_NO_DURATION:
             this_upload = (
                 f"this upload is charged the {n} min maximum "
@@ -344,8 +351,12 @@ def check_upload_allowed(
                 f"this upload is charged the {n} min maximum "
                 "because its declared length isn't a positive number"
             )
-        else:
+        elif basis == _BASIS_DECLARED:
             this_upload = f"this video is {n} min"
+        else:
+            # A basis added to `_charge_and_basis` without wording here. Fail
+            # loudly rather than describe its charge as a declared length.
+            raise AssertionError(f"no quota wording for charge basis {basis!r}")
         return 429, (
             f"Upload quota reached: {this_upload} and you "
             f"have {status.minutes_remaining:.0f} min of your "
@@ -384,12 +395,15 @@ async def reserve_upload(
     quota, stream a multi-GB upload, insert the row — the window between them is
     as long as the upload, and N parallel requests from one account all read the
     same "under the cap" and all commit. That is a total bypass of both caps,
-    not an off-by-one, so the reservation is taken *before* any bytes move.
+    not an off-by-one, so the check and the insert are one transaction. With the
+    presigned flow (CF-163) that transaction runs in `complete_upload`, *after*
+    the bytes are already in R2 and have been HEADed and sniffed; a rejection
+    there deletes the stored object rather than preventing the transfer.
 
     `pg_advisory_xact_lock` serialises the read-and-insert per user. It is held
-    only for the statements below, not for the transfer: this commits before
-    the caller touches storage. Contention is per user, so one account hammering
-    the endpoint cannot slow anyone else down.
+    only for the statements below, never across the transfer or the caller's
+    storage calls. Contention is per user, so one account hammering the
+    endpoint cannot slow anyone else down.
 
     **Idempotent per game.** A game already carrying a charge returns that
     charge rather than a second one, which is what makes a double-submit safe:

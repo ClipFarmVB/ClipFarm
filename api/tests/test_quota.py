@@ -281,6 +281,35 @@ def test_quota_message_for_an_implausibly_short_duration_names_the_size_estimate
     assert "this video is" not in message
 
 
+def test_quota_message_for_a_size_estimate_at_the_cap_names_the_maximum():
+    """2 GiB at 1 Mbps is ~286 min, clamped to 240 — most full games land here.
+
+    It used to say "charged 240 min, estimated from its file size", which reads
+    as a measured length rather than the per-video maximum.
+    """
+    for duration, reason in (
+        (None, "because its length wasn't provided"),
+        (1.0, "because its declared length is too short for its size"),
+    ):
+        code, message = upload(
+            status(minutes_used=300.0), duration_seconds=duration, size_bytes=2 * GB
+        )
+        assert code == 429
+        assert (
+            "charged the 240 min maximum, which its file-size estimate reaches, "
+            + reason
+        ) in message
+
+
+def test_quota_message_refuses_to_word_an_unknown_basis(monkeypatch):
+    """A new basis without wording must not pass as a declared length."""
+    monkeypatch.setattr(
+        quota_service, "_charge_and_basis", lambda *_: (LIMITS.max_duration_seconds, "new")
+    )
+    with pytest.raises(AssertionError, match="new"):
+        upload(status(minutes_used=300.0), duration_seconds=None, size_bytes=SIZE_1E9)
+
+
 def test_quota_message_with_nothing_to_go_on_names_the_maximum():
     code, message = upload(
         status(minutes_used=300.0), duration_seconds=None, size_bytes=None

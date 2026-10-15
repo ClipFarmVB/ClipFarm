@@ -241,6 +241,8 @@ async def _sweep_abandoned_uploads(user_id: uuid.UUID, db: AsyncSession) -> None
                 # until the raw-retention sweep's unreferenced pass reclaims it
                 # once it is past the retention window (app/workers/tasks.py,
                 # `_sweep_expired_raw_uploads`) — never, if retention is 0.
+                # That sweep has no scheduler: it runs only after a successful
+                # `process_game`, so an idle deployment keeps the object longer.
                 # Incomplete multipart parts from a failed abort above are
                 # cleared only by the bucket's lifecycle rule (README).
                 try:

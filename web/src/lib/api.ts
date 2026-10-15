@@ -92,11 +92,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface Game {
   id: string;
   title: string;
-  // "uploading" means the row exists but the browser is still PUTting the
-  // video to R2. The Library filters these out server-side, and the upload tab
-  // navigates to the game only after completeUpload returns it `queued`, so a
-  // client sees this status only by fetching the game by id mid-transfer
-  // (e.g. a typed URL). The game page does not poll it.
+  // "uploading" means the row exists but the upload was never completed:
+  // either the browser is still PUTting the video to R2, or the transfer was
+  // abandoned (tab closed) and the row is waiting for the api's sweep, which
+  // removes it only once it is 24h old and only on that owner's next upload —
+  // so it can persist indefinitely. The Library filters these out
+  // server-side, and the upload tab navigates to the game only after
+  // completeUpload returns it `queued`, so a client sees this status only by
+  // fetching the game by id (e.g. a typed URL). The game page does not poll it.
   status: "uploading" | "queued" | "processing" | "ready" | "failed";
   progress: number;
   progress_stage: string | null;
