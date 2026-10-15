@@ -7,10 +7,17 @@ of — nothing runs the image in CI — so this pins what may be set there:
 
 - every key is on `ALLOWED`, each traced to the inference==1.3.3 source that
   reads it (the CF-14 PR quotes file:line) or to the pycuda build;
-- every value is written as a string, because inference parses its flags with
-  a `str2bool` that rejects anything but "true"/"false";
-- nothing raises a log level, which would hide the warnings the ball path
-  should still print (an RF-DETR stack fallback, a failed weight load).
+- every value is written as a string, and every inference flag's value is one
+  inference's `str2bool` accepts: "true" or "false" in any case. Anything else
+  raises InvalidEnvironmentVariableError, a plain Exception, while
+  `inference.core.env` is imported, and ml/pipeline/ball.py catches only
+  ImportError there, so every ball job would fail at cold start;
+- no log level is set high enough to hide warnings the ball path should still
+  print (an RF-DETR stack fallback, a failed weight load), nor to a value
+  inference's logger cannot parse.
+
+This covers the image layer only: env set at runtime (`os.environ`), on a
+function decorator, or through a Modal Secret is not read here.
 
 A static read of the file, stdlib only, so it runs in every api test run
 rather than skipping where Modal or celery is absent.
@@ -23,11 +30,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BALL_IMAGE = REPO_ROOT / "ml" / "modal_app.py"
 
-# The pycuda build's compilers (they predate CF-14), then the inference flags
-# CF-14 sets. Adding a key means adding it here, beside a reason.
-ALLOWED = frozenset({
-    "CC",
-    "CXX",
+# The inference flags CF-14 sets. Each is read in inference/core/env.py as
+# `str2bool(os.getenv(...))`; its reason sits beside it in ml/modal_app.py.
+# Adding a flag means adding it here and its reason there.
+_STR2BOOL_FLAGS = frozenset({
     "DISABLE_VERSION_CHECK",
     "CORE_MODEL_GAZE_ENABLED",
     "CORE_MODEL_SAM_ENABLED",
@@ -47,9 +53,22 @@ ALLOWED = frozenset({
     "DEPTH_ESTIMATION_ENABLED",
 })
 
-# Levels at or below INFO. A key naming a log level may be set only to one of
-# these; WARNING and up would silence the warnings this image must still show.
-_QUIET_ENOUGH = frozenset({"NOTSET", "DEBUG", "INFO"})
+# Plus the pycuda build's compilers, which predate CF-14 and are not flags.
+ALLOWED = frozenset({"CC", "CXX"}) | _STR2BOOL_FLAGS
+
+# What inference/core/utils/environment.py:str2bool accepts from a string,
+# after `.lower()` (lines 45-48). It returns a bool unchanged (39-40), but an
+# env var always arrives as a string, so that branch never applies here.
+_STR2BOOL_ACCEPTS = frozenset({"true", "false"})
+
+# inference defaults to LOG_LEVEL=WARNING (inference/core/env.py:425), which
+# still prints warnings. Only ERROR and above hide them, and ERROR/FATAL also
+# make inference filter onnxruntime's UserWarnings (core/logger.py:24-25).
+_HIDES_WARNINGS = frozenset({"ERROR", "CRITICAL", "FATAL"})
+# Anything else must be a name `logger.setLevel(LOG_LEVEL)` accepts
+# (core/logger.py:162, :170): exact-case `logging` level names only, so a
+# numeric string such as "20" or a lowercase "info" raises ValueError there.
+_SHOWS_WARNINGS = frozenset({"NOTSET", "DEBUG", "INFO", "WARN", "WARNING"})
 
 
 def _image_env_calls(path: Path) -> list[ast.Call]:
@@ -125,7 +144,7 @@ def test_every_ball_image_env_key_is_allowlisted():
 
 def test_every_ball_image_env_value_is_a_string():
     # Modal would stringify a bool, but `True` -> "True" is luck, not a
-    # contract; and inference's str2bool raises on anything not "true"/"false".
+    # contract.
     not_strings = [
         f"line {line}: {key}={value!r}"
         for line, key, value in _image_env(BALL_IMAGE)
@@ -136,15 +155,51 @@ def test_every_ball_image_env_value_is_a_string():
     )
 
 
-def test_no_ball_image_env_key_raises_a_log_level():
-    raised = [
+def test_every_inference_flag_value_parses_with_str2bool():
+    # "0", "no" or "off" read as false to a person, but str2bool raises on
+    # them at import, and ball.py catches only ImportError around that import.
+    unparsable = [
         f"line {line}: {key}={value!r}"
         for line, key, value in _image_env(BALL_IMAGE)
-        if "LOG" in str(key).upper()
-        and "LEVEL" in str(key).upper()
-        and str(value).upper() not in _QUIET_ENOUGH
+        if key in _STR2BOOL_FLAGS
+        and not (isinstance(value, str) and value.lower() in _STR2BOOL_ACCEPTS)
     ]
-    assert not raised, (
-        "the ball image must not raise a log level above INFO — it would hide"
-        f" the warnings the ball path should still print: {raised}"
+    assert not unparsable, (
+        "inference's str2bool accepts only 'true' or 'false' (any case) and"
+        " raises on anything else while inference is imported, which would"
+        f" fail every ball job at cold start: {unparsable}"
+    )
+
+
+def _log_levels(path: Path) -> list[tuple[int, object, str]]:
+    """(line, key, value) for every key naming a log level."""
+    return [
+        (line, key, str(value))
+        for line, key, value in _image_env(path)
+        if "LOG" in str(key).upper() and "LEVEL" in str(key).upper()
+    ]
+
+
+def test_no_ball_image_log_level_hides_warnings():
+    hiding = [
+        f"line {line}: {key}={value!r}"
+        for line, key, value in _log_levels(BALL_IMAGE)
+        if value.upper() in _HIDES_WARNINGS
+    ]
+    assert not hiding, (
+        "the ball image must not set a log level of ERROR or above — it would"
+        f" hide the warnings the ball path should still print: {hiding}"
+    )
+
+
+def test_every_ball_image_log_level_is_one_inference_can_set():
+    unknown = [
+        f"line {line}: {key}={value!r}"
+        for line, key, value in _log_levels(BALL_IMAGE)
+        if value.upper() not in _HIDES_WARNINGS and value not in _SHOWS_WARNINGS
+    ]
+    assert not unknown, (
+        f"a log level here must be one of {sorted(_SHOWS_WARNINGS)}, exactly as"
+        " written: inference passes it to logger.setLevel, which raises on any"
+        f" other string at import: {unknown}"
     )
