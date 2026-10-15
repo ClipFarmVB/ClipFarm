@@ -162,11 +162,12 @@ Ask it to:
 
 When it reports, check GitHub for the push and the reply. If it reports a body
 rewrite, fetch the body and confirm the text it quoted is in it; a quote the
-live body lacks is a claim with no fetch behind it, so say so on the
-`finished:` line and fix the body as [a body finding](#the-cycle-and-the-settle-bar)
-is fixed. Then write its `finished:` line, and carry on with the cycle: the
-semi-cold round against the new head. A fixer that reported `head moved` is checked first, as the next paragraph says,
-and only then routed as [below](#when-you-cannot-fix-it-choosing-a-reason).
+live body lacks is a claim with no fetch behind it, so record it on the
+`finished:` line as an open finding on the body, which the next fixer rewrites
+like any other. Then write that `finished:` line, and carry on with the cycle:
+the semi-cold round against the new head. A fixer that reported `head moved` is
+checked first, as the next paragraph says, and only then routed as
+[below](#when-you-cannot-fix-it-choosing-a-reason).
 
 **A fixer that was lost or rate-limited is not simply dispatched again**, and a
 `head moved` report is not taken at its word. Read the PR's head first. If it

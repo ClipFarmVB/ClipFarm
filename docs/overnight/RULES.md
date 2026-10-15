@@ -1227,8 +1227,7 @@ skipped. So:
   the commit it would describe. This binds fixers and implementers only; a body
   finding at settle time is still fixed and quoted line by line, as [the
   carve-out](FIX.md#the-cycle-and-the-settle-bar) says, because no round
-  reviews the body after settle and a whole rewrite there would put unchecked
-  text into the squash message.
+  reviews the body after settle, so a whole rewrite there would go unreviewed.
 
 ### Repo traps that have already cost time
 
