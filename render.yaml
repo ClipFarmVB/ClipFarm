@@ -245,8 +245,11 @@ services:
       # deliberately NOT in REQUIRED_IN_PRODUCTION: empty leaves signup exactly
       # as before, so a missing value is a quiet feature-off rather than a boot
       # failure. That quietness is the reason these are listed here at all — on
-      # 2026-10-15 the feature was deployed and nobody could see it was off,
-      # because the settings existed nowhere but the dashboard.
+      # 2026-10-15 the feature was deployed with SAMPLE_GAME_ID unset (not here,
+      # not in the dashboard), and an unset value is the one path that logs
+      # nothing (auth.py `_copy_sample_game` returns before it would log), so
+      # nothing showed the demo was off. Listing the keys records that they
+      # exist; it sets no value and warns about none (DEPLOY_RENDER.md step 3).
       #
       # `sync: false` because the values are production data, not config: the
       # id names a row in the production database, and the title and credit are
