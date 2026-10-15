@@ -8,6 +8,14 @@
 # Install for your clone:
 #   git config core.hooksPath .hooks
 #
+# This file must be executable, or git skips it and commits with no checks at
+# all. It is tracked as mode 100755 (CF-381), so a git checkout restores the
+# bit; a copy made some other way may need `chmod +x .hooks/pre-commit`. The
+# only sign is a "hook was ignored because it's not set as executable" hint,
+# which `git config advice.ignoredHook false` silences. Git for Windows runs
+# hooks by their #! line and ignores the bit, so Windows never shows the
+# problem. api/tests/test_repo_modes.py fails in CI if the mode is lost.
+#
 # Requirements: a working Python (see "Locate a working Python" below), with
 # ruff, mypy and pytest installed *into it*, plus npm on PATH. Set
 # CLIPFARM_PYTHON to skip the search and use a specific one. The steps invoke

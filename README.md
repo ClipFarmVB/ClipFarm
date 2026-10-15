@@ -188,6 +188,11 @@ docker compose --env-file .env.docker up --build
 # 3. Enable the pre-commit hook (runs most of what CI runs; api/tests too,
 #    once the dev install under "Tests" below is done)
 git config core.hooksPath .hooks
+#    The hook must be executable or git skips it; the only sign is a
+#    "hook was ignored because it's not set as executable" hint (silenced if
+#    advice.ignoredHook is false). git tracks it as 100755, so a clone gets
+#    the bit; a copy not made by git may need: chmod +x .hooks/pre-commit
+#    Git for Windows runs hooks by their #! line and ignores the bit.
 ```
 
 Tests:
