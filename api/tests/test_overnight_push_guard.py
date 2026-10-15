@@ -207,19 +207,26 @@ def test_a_deleted_branch_stops_the_push(repos):
     assert _git(repos["remote"], "branch", "--list", "feat") == ""
 
 
-def _snapshot(git_dir: pathlib.Path) -> dict:
-    return {str(p.relative_to(git_dir)): p.read_bytes() for p in sorted(git_dir.rglob("*")) if p.is_file()}
+def _snapshot(root: pathlib.Path) -> dict:
+    """Every file and directory under `root`, so a stray empty directory counts too."""
+    return {str(p.relative_to(root)): p.read_bytes() if p.is_file() else None for p in sorted(root.rglob("*"))}
 
 
 def test_an_inherited_git_dir_never_reaches_the_committing_repository(tmp_path, monkeypatch):
     """CF-570. The pre-commit hook runs this suite with git's own variables
     exported for the commit in progress. Stand a sentinel repository in for
     the one committing — with a `feat/...` branch, the shape that made
-    `checkout -b feat` fail there — point every variable git exports to hooks
-    at it, build the fixture and push, and require the sentinel unchanged.
+    `checkout -b feat` fail there — point the seven variables CF-570 names at
+    it, build the fixture and push, and require the sentinel unchanged.
 
-    All seven point at the sentinel, so if the filter ever lets them through
-    again, the damage lands here and not in the developer's repository."""
+    Every inherited `GIT_*` is removed before any git command runs, and the
+    seven are set only once the sentinel exists. So from the first git call on,
+    the only `GIT_DIR` this test can leak is the sentinel's: if the filter ever
+    lets the variables through again, the damage lands here and not in the
+    repository whose hook is running the suite."""
+    for name in [k for k in os.environ if k.upper().startswith("GIT_")]:
+        monkeypatch.delenv(name)
+
     sentinel = tmp_path / "sentinel"
     sentinel.mkdir()
     _git(sentinel, "init", "-q")
@@ -247,7 +254,7 @@ def test_an_inherited_git_dir_never_reaches_the_committing_repository(tmp_path, 
     assert raw.returncode == 0, raw.stderr
     assert os.path.samefile(raw.stdout.strip(), git_dir)
 
-    before = _snapshot(git_dir)
+    before = _snapshot(sentinel)
     work = tmp_path / "work"
     work.mkdir()
     r = _build_repos(work)
@@ -255,7 +262,7 @@ def test_an_inherited_git_dir_never_reaches_the_committing_repository(tmp_path, 
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert _remote_head(r) == r["f"]
-    assert _snapshot(git_dir) == before, "a git command wrote to the inherited GIT_DIR"
+    assert _snapshot(sentinel) == before, "a git command wrote to the inherited GIT_DIR or work tree"
 
 
 def test_a_plain_push_would_have_undone_the_rewind(repos):
