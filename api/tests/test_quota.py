@@ -244,6 +244,62 @@ def test_undeclared_duration_is_refused_once_the_window_is_nearly_full():
     assert "wasn't provided" in message  # tells the client how to fix it
 
 
+# ── the rejection names the rule that priced the upload (CF-306) ─────────────
+#
+# 1e9 bytes at the 1 Mbps assumption is 8000 s, 133 min: under the 240 min
+# per-video cap, so a size-derived charge is distinguishable from the maximum.
+# 300 min already used puts any of these over the 360 min window.
+SIZE_1E9 = 1_000_000_000
+
+
+def test_quota_message_for_a_declared_duration_names_the_video_length():
+    code, message = upload(status(minutes_used=300.0), duration_seconds=5400.0)
+    assert code == 429
+    assert "this video is 90 min" in message
+    assert "estimated" not in message and "maximum" not in message
+
+
+def test_quota_message_for_a_missing_duration_names_the_size_estimate():
+    """It used to say "charged the 133 min maximum" — the maximum is 240."""
+    code, message = upload(
+        status(minutes_used=300.0), duration_seconds=None, size_bytes=SIZE_1E9
+    )
+    assert code == 429
+    assert "charged 133 min, estimated from its file size" in message
+    assert "wasn't provided" in message
+    assert "maximum" not in message
+
+
+def test_quota_message_for_an_implausibly_short_duration_names_the_size_estimate():
+    """It used to say "this video is 133 min" of a claim it had discarded."""
+    code, message = upload(
+        status(minutes_used=300.0), duration_seconds=1.0, size_bytes=SIZE_1E9
+    )
+    assert code == 429
+    assert "charged 133 min, estimated from its file size" in message
+    assert "too short for its size" in message
+    assert "this video is" not in message
+
+
+def test_quota_message_with_nothing_to_go_on_names_the_maximum():
+    code, message = upload(
+        status(minutes_used=300.0), duration_seconds=None, size_bytes=None
+    )
+    assert code == 429
+    assert "charged the 240 min maximum because its length wasn't provided" in message
+
+
+def test_quota_message_for_a_non_positive_duration_without_a_size_names_the_maximum():
+    """It used to say "this video is 240 min" of a declared zero."""
+    code, message = upload(
+        status(minutes_used=300.0), duration_seconds=0.0, size_bytes=None
+    )
+    assert code == 429
+    assert "charged the 240 min maximum" in message
+    assert "isn't a positive number" in message
+    assert "this video is" not in message
+
+
 def test_five_undeclared_uploads_cannot_exceed_the_minute_cap():
     """The regression: walk the window forward charging the default each time."""
     used = 0.0

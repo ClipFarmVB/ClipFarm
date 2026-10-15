@@ -35,7 +35,8 @@ version of it did not hold:
 The api never sees the video's metadata — probing a multi-GB object inside a
 request handler is not affordable — so the duration it acts on at accept time
 is always a claim. `app.workers.tasks` re-probes before any GPU stage, rejects
-over-cap footage there, and calls `settle_upload_charge` with the real number.
+over-cap footage there, and calls `sync_settle_upload_charge` (in
+`app.workers._sync_db`) with the real number.
 """
 from __future__ import annotations
 
@@ -191,6 +192,42 @@ def _duration_from_size(limits: UploadLimits, size_bytes: int | None) -> float:
     return min(size_bytes * 8 / _MIN_PLAUSIBLE_BITRATE_BPS, limits.max_duration_seconds)
 
 
+# Which rule `charge_for` priced an upload by. The rejection message names it,
+# because a charge the client can fix (a missing or implausible length) reads
+# exactly like a genuinely long video otherwise.
+_BASIS_DECLARED = "declared"
+_BASIS_SIZE_NO_DURATION = "size, no duration"
+_BASIS_SIZE_SHORT_DURATION = "size, duration too short"
+_BASIS_MAX_NO_DURATION = "maximum, no duration"
+_BASIS_MAX_UNUSABLE_DURATION = "maximum, duration not positive"
+
+
+def _charge_and_basis(
+    limits: UploadLimits, duration_seconds: float | None, size_bytes: int | None
+) -> tuple[float, str]:
+    """`charge_for`'s number together with the rule that produced it.
+
+    One function so the message cannot drift from the charge: the rejection in
+    `check_upload_allowed` reads the basis from here rather than re-deriving it.
+    """
+    if size_bytes:
+        # The shortest a file this size could possibly be. A claim under it is
+        # not a low estimate, it is a contradiction — treat it as no claim.
+        physical_floor = size_bytes * 8 / _MAX_PLAUSIBLE_BITRATE_BPS
+        if duration_seconds is None:
+            return _duration_from_size(limits, size_bytes), _BASIS_SIZE_NO_DURATION
+        if duration_seconds < physical_floor:
+            return _duration_from_size(limits, size_bytes), _BASIS_SIZE_SHORT_DURATION
+        return duration_seconds, _BASIS_DECLARED
+
+    # No size either (nothing to cross-check against): fall back to the cap.
+    if duration_seconds is None:
+        return limits.max_duration_seconds, _BASIS_MAX_NO_DURATION
+    if duration_seconds <= 0:
+        return limits.max_duration_seconds, _BASIS_MAX_UNUSABLE_DURATION
+    return duration_seconds, _BASIS_DECLARED
+
+
 def charge_for(
     limits: UploadLimits, duration_seconds: float | None, size_bytes: int | None = None
 ) -> float:
@@ -212,21 +249,11 @@ def charge_for(
     Both are answered by falling back to the file's *size*, which is verified,
     rather than to a constant. A claim below what the byte count physically
     allows is impossible, so it is discarded and the size stands in; otherwise
-    the claim is taken at face value. `settle_upload_charge` corrects whatever
-    is left once the worker has actually measured the file.
+    the claim is taken at face value. `sync_settle_upload_charge` (in
+    `app.workers._sync_db`) corrects whatever is left once the worker has
+    actually measured the file.
     """
-    if size_bytes:
-        # The shortest a file this size could possibly be. A claim under it is
-        # not a low estimate, it is a contradiction — treat it as no claim.
-        physical_floor = size_bytes * 8 / _MAX_PLAUSIBLE_BITRATE_BPS
-        if duration_seconds is None or duration_seconds < physical_floor:
-            return _duration_from_size(limits, size_bytes)
-        return duration_seconds
-
-    # No size either (nothing to cross-check against): fall back to the cap.
-    if duration_seconds is None or duration_seconds <= 0:
-        return limits.max_duration_seconds
-    return duration_seconds
+    return _charge_and_basis(limits, duration_seconds, size_bytes)[0]
 
 
 def check_upload_allowed(
@@ -249,7 +276,7 @@ def check_upload_allowed(
     so the stored ContentType is necessarily the value that already passed here.
     The only way it differs is R2 omitting the header, which would be a false
     rejection. Correct advice, but not for the reason once written here — the
-    signature says nothing about the bytes, which is why confirm_upload sniffs
+    signature says nothing about the bytes, which is why complete_upload sniffs
     them (CF-244). A None `duration_seconds` is
     *not* skipped: it is priced from the size instead — see `charge_for`.
 
@@ -288,17 +315,37 @@ def check_upload_allowed(
             "Your quota frees up as earlier uploads age out of the window."
         )
 
-    requested_minutes = charge_for(limits, duration_seconds, size_bytes) / 60.0
+    charged_seconds, basis = _charge_and_basis(limits, duration_seconds, size_bytes)
+    requested_minutes = charged_seconds / 60.0
     if status.minutes_used + requested_minutes > limits.max_minutes_per_window:
-        # Say which of the two it is. An upload charged at the maximum for a
-        # missing duration is otherwise indistinguishable from a genuinely
-        # 4-hour video, and the client can fix one of those.
-        this_upload = (
-            f"this video is {requested_minutes:.0f} min"
-            if duration_seconds is not None
-            else f"this upload is charged the {requested_minutes:.0f} min maximum "
-                 "because its length wasn't provided"
-        )
+        # Say which rule priced it. A charge that stood in for a missing or
+        # implausible length is otherwise indistinguishable from a genuinely
+        # long video, and the client can fix that kind. The basis comes from
+        # the same function as the charge, so the wording cannot name a rule
+        # that was not applied.
+        n = f"{requested_minutes:.0f}"
+        if basis == _BASIS_SIZE_NO_DURATION:
+            this_upload = (
+                f"this upload is charged {n} min, estimated from its file size, "
+                "because its length wasn't provided"
+            )
+        elif basis == _BASIS_SIZE_SHORT_DURATION:
+            this_upload = (
+                f"this upload is charged {n} min, estimated from its file size, "
+                "because its declared length is too short for its size"
+            )
+        elif basis == _BASIS_MAX_NO_DURATION:
+            this_upload = (
+                f"this upload is charged the {n} min maximum "
+                "because its length wasn't provided"
+            )
+        elif basis == _BASIS_MAX_UNUSABLE_DURATION:
+            this_upload = (
+                f"this upload is charged the {n} min maximum "
+                "because its declared length isn't a positive number"
+            )
+        else:
+            this_upload = f"this video is {n} min"
         return 429, (
             f"Upload quota reached: {this_upload} and you "
             f"have {status.minutes_remaining:.0f} min of your "

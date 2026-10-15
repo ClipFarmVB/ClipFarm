@@ -93,8 +93,10 @@ export interface Game {
   id: string;
   title: string;
   // "uploading" means the row exists but the browser is still PUTting the
-  // video to R2. The Library filters these out server-side, so they're only
-  // ever seen by the tab doing the upload.
+  // video to R2. The Library filters these out server-side, and the upload tab
+  // navigates to the game only after completeUpload returns it `queued`, so a
+  // client sees this status only by fetching the game by id mid-transfer
+  // (e.g. a typed URL). The game page does not poll it.
   status: "uploading" | "queued" | "processing" | "ready" | "failed";
   progress: number;
   progress_stage: string | null;
@@ -226,7 +228,8 @@ export interface Clip {
   start_time: number;
   end_time: number;
   clip_url: string;
-  thumbnail_url: string;
+  // Null when the clip has no thumbnail (ClipOut.thumbnail_url is `str | None`).
+  thumbnail_url: string | null;
   labels: string[];
   created_at: string;
   // False once the game's raw upload has passed its retention window (CF-194):
