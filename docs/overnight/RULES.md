@@ -1200,11 +1200,9 @@ commit message said a PR body had changed, and no update call had been made:
 3. #466, round 1 reply — a length claim *"fixed in the body"*. Fixed nowhere:
    not the body, not the test file.
 4. #466, round 6 reply — *"body updated and read back"*. No update call at all.
-5. #466, round 3 reply — *"Corrected in the body"*. Body unchanged.
 
-Every one was found by a later review round, and each cost that round: four of
-the sixteen Mediums across the two PRs, both of which ended `unsettled: ran out
-of rounds`. **Instance 4 is why what follows is a mechanism and not an
+Every one was found by a later review round, and each cost that round.
+**Instance 4 is why what follows is a mechanism and not an
 intention.** It came two iterations after the run had adopted "read the body
 back after writing it" as its corrective, written that into a PR body, and told
 a reviewer it was doing it. The intention was known, stated in public, and
