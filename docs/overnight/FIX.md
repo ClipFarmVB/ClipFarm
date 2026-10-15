@@ -343,7 +343,8 @@ text took, so an unverified body edit and a lost one are indistinguishable.
 themselves both fail, in opposite directions. See
 [what a non-`gh` tool must provide](REVIEW.md#what-a-non-gh-tool-must-provide).)
 Quote the corrected line in the settle comment so the record shows what was
-checked.
+checked. Rewriting the body, and saying that you did, follow [the rule on
+claims about your own actions](RULES.md#what-you-claim-about-your-own-actions-is-checked-the-same-way-as-a-number).
 
 ##### When you cannot fix it: choosing a reason
 
