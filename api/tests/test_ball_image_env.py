@@ -143,8 +143,9 @@ def test_every_ball_image_env_key_is_allowlisted():
 
 
 def test_every_ball_image_env_value_is_a_string():
-    # Modal would stringify a bool, but `True` -> "True" is luck, not a
-    # contract.
+    # Modal does not stringify: `_Image.env` (modal 1.5.1, _image.py:2750-2752)
+    # raises InvalidError on any non-str value when the image is defined, so a
+    # bool fails `modal deploy`. This catches it in CI instead.
     not_strings = [
         f"line {line}: {key}={value!r}"
         for line, key, value in _image_env(BALL_IMAGE)

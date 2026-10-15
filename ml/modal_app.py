@@ -75,8 +75,9 @@ image = (
     # flag is False is never imported, so it can neither fail nor warn. The
     # ball model is a Roboflow RF-DETR object-detection model (CF-33); its
     # entries in ROBOFLOW_MODEL_TYPES are registered unconditionally and none
-    # of these flags gate them. Each flag is parsed by inference's str2bool,
-    # which accepts only the strings "true"/"false" (any case) — not bools.
+    # of these flags gate them. Each flag is parsed by inference's str2bool.
+    # Values must be strings: Modal rejects non-str ENV values, and from a
+    # string str2bool accepts only "true"/"false" (any case).
     #
     # Deliberately NOT used: INFERENCE_WARNINGS_DISABLED and
     # IGNORE_MODEL_DEPENDENCIES_WARNINGS. Both are blanket warning filters,
