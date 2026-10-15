@@ -35,8 +35,14 @@ function fmtDuration(seconds: number): string {
 }
 
 const STATUS_STYLES: Record<Game["status"], string> = {
-  // Reachable only by the tab performing the upload — the api hands back an
-  // `uploading` game while its video is still transferring to R2.
+  // Not expected here: UploadZone navigates to this page only after
+  // completeUpload resolves, by which point the game is `queued`. Reachable
+  // only by a typed URL: mid-transfer, or for an abandoned upload (a tab
+  // closed mid-transfer), whose row stays `uploading` until the api's sweep
+  // removes it — 24h old at the earliest, and only on that owner's next
+  // upload, so possibly never. The entry keeps this map total over
+  // Game["status"]; the page does not poll an `uploading` game, so such a
+  // visit shows a static header for as long as the row lasts.
   uploading:  "text-zinc-500 bg-zinc-500/8 border-zinc-500/20",
   queued:     "text-zinc-500 bg-zinc-500/8 border-zinc-500/20",
   processing: "text-blue-400 bg-blue-500/8 border-blue-500/20",

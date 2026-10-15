@@ -206,8 +206,10 @@ async def get_current_user_id(
     Validate the Supabase JWT from the Authorization header
     and return the user's UUID.
 
-    Falls back to DEV_USER_ID when no auth header is present
-    and no Supabase URL is configured (local dev convenience).
+    Falls back to DEV_USER_ID when no auth header is present only if
+    `settings.debug` is true AND no Supabase URL is configured (local dev
+    convenience). Otherwise a missing header is a 401 — an unconfigured
+    deployment without debug does not get the dev user.
     """
     DEV_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 

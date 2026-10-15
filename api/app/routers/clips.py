@@ -79,8 +79,12 @@ async def _get_owned_clip(
 
 
 def _rewrite_urls(clip: Clip) -> dict[str, str | None]:
-    """Return public R2 URLs directly (bucket has public dev URL enabled).
-    Fall back to presigned URLs if R2 credentials are configured."""
+    """Presigned URLs when R2 is configured; the stored URLs as-is otherwise.
+
+    The configured case is production: the bucket is private, so the stored
+    `{r2_public_url}/{key}` form is not loadable and must be presigned. The
+    stored URL is returned unchanged only when R2 is not configured (local
+    dev), where there is nothing to sign with."""
     if storage.r2_configured():
         return {
             "clip_url": storage.presign_from_stored_url(clip.clip_url, expires_in=3600),
