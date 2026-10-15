@@ -912,9 +912,12 @@ class Settings(BaseSettings):
     # api over an optional nicety. It is parsed at copy time, and a value that
     # does not parse is logged and skipped, leaving signup untouched.
     #
-    # Do not set it in production until the web half (the demo badge and the
-    # remove action) is live and the rights to the footage are settled — every
-    # new account sees this game.
+    # Every new account sees this game, so which footage it names is a recorded
+    # decision, not a config tweak: the current one is on CF-571 (#581), and
+    # changing the source needs it made again. In production the value lives
+    # in the Render dashboard on clipfarm-api (render.yaml declares the key);
+    # clearing it turns the demo off without a log line. README's
+    # `sample_game_id` row has the full set of rules.
     sample_game_id: str = ""
     # What the demo copy is called in a new account's Library. Empty uses
     # "Demo: " + the source game's title, which is usually an internal name.

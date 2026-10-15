@@ -136,16 +136,21 @@ def test_row_is_released_before_the_object_is_deleted(monkeypatch):
 
 
 def test_cutoff_matches_the_configured_window(monkeypatch):
+    """Bracketed by the clock around the sweep, not by the module's NOW.
+
+    NOW is taken when this file is collected, and a full api run now takes over
+    a minute, so a 60s tolerance against it failed whenever this test ran late
+    in the suite. The sweep reads the clock itself; compare against that.
+    """
     fakes = _Fakes()
     _install(monkeypatch, fakes, retention_days=30)
 
-    # Bracketed by the clock around the call, not the import-time NOW: a full
-    # suite can take longer than any fixed tolerance to reach this test.
     before = datetime.now(timezone.utc)
     tasks._sweep_expired_raw_uploads()
     after = datetime.now(timezone.utc)
 
-    assert before - timedelta(days=30) <= fakes.cutoffs[0] <= after - timedelta(days=30)
+    window = timedelta(days=30)
+    assert before - window <= fakes.cutoffs[0] <= after - window
 
 
 def test_zero_retention_keeps_everything(monkeypatch):
