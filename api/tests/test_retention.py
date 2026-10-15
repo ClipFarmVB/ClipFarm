@@ -139,9 +139,13 @@ def test_cutoff_matches_the_configured_window(monkeypatch):
     fakes = _Fakes()
     _install(monkeypatch, fakes, retention_days=30)
 
+    # Bracketed by the clock around the call, not the import-time NOW: a full
+    # suite can take longer than any fixed tolerance to reach this test.
+    before = datetime.now(timezone.utc)
     tasks._sweep_expired_raw_uploads()
+    after = datetime.now(timezone.utc)
 
-    assert abs((fakes.cutoffs[0] - (NOW - timedelta(days=30))).total_seconds()) < 60
+    assert before - timedelta(days=30) <= fakes.cutoffs[0] <= after - timedelta(days=30)
 
 
 def test_zero_retention_keeps_everything(monkeypatch):

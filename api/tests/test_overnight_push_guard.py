@@ -76,19 +76,22 @@ atexit.register(os.unlink, _EMPTY_GLOBAL.name)
 # worktree the git dir), and the commands below then acted on the developer's
 # repository instead of the throwaway one: `checkout -b feat` failed against
 # a real `feat/...` branch there, and the hook refused the commit (CF-220).
-ENV = {
-    **{k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")},
-    "GIT_CONFIG_GLOBAL": _EMPTY_GLOBAL.name,
-    "GIT_AUTHOR_NAME": "test",
-    "GIT_AUTHOR_EMAIL": "test@example.com",
-    "GIT_COMMITTER_NAME": "test",
-    "GIT_COMMITTER_EMAIL": "test@example.com",
-    "GIT_CONFIG_NOSYSTEM": "1",
-}
+# Built per call rather than once at import, so a test can set those variables
+# and see what the commands below actually receive (CF-570).
+def _env() -> dict:
+    return {
+        **{k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")},
+        "GIT_CONFIG_GLOBAL": _EMPTY_GLOBAL.name,
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
 
 
 def _git(cwd, *args) -> str:
-    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=ENV)
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=_env())
     assert r.returncode == 0, f"git {' '.join(args)} failed: {r.stderr}"
     return r.stdout.strip()
 
@@ -102,6 +105,10 @@ def _commit(cwd, name) -> str:
 
 @pytest.fixture
 def repos(tmp_path):
+    return _build_repos(tmp_path)
+
+
+def _build_repos(tmp_path):
     """A remote with branch `feat` at A-B, a human clone, and a fixer that has
     committed F on top of B from a detached checkout — the brief's shape."""
     remote = tmp_path / "remote.git"
@@ -130,7 +137,7 @@ def _run_guard(r):
         cwd=r["fixer"],
         capture_output=True,
         text=True,
-        env={**ENV, "BRANCH": "feat", "STARTED_AT": r["b"]},
+        env={**_env(), "BRANCH": "feat", "STARTED_AT": r["b"]},
     )
 
 
@@ -198,6 +205,57 @@ def test_a_deleted_branch_stops_the_push(repos):
     assert result.returncode != 0
     assert "cannot read the remote head" in result.stdout
     assert _git(repos["remote"], "branch", "--list", "feat") == ""
+
+
+def _snapshot(git_dir: pathlib.Path) -> dict:
+    return {str(p.relative_to(git_dir)): p.read_bytes() for p in sorted(git_dir.rglob("*")) if p.is_file()}
+
+
+def test_an_inherited_git_dir_never_reaches_the_committing_repository(tmp_path, monkeypatch):
+    """CF-570. The pre-commit hook runs this suite with git's own variables
+    exported for the commit in progress. Stand a sentinel repository in for
+    the one committing — with a `feat/...` branch, the shape that made
+    `checkout -b feat` fail there — point every variable git exports to hooks
+    at it, build the fixture and push, and require the sentinel unchanged.
+
+    All seven point at the sentinel, so if the filter ever lets them through
+    again, the damage lands here and not in the developer's repository."""
+    sentinel = tmp_path / "sentinel"
+    sentinel.mkdir()
+    _git(sentinel, "init", "-q")
+    _commit(sentinel, "S")
+    _git(sentinel, "branch", "feat/CF-x")
+    git_dir = sentinel / ".git"
+
+    for name, value in {
+        "GIT_DIR": git_dir,
+        "GIT_WORK_TREE": sentinel,
+        "GIT_INDEX_FILE": git_dir / "index",
+        "GIT_OBJECT_DIRECTORY": git_dir / "objects",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": git_dir / "objects",
+        "GIT_COMMON_DIR": git_dir,
+        "GIT_PREFIX": "sentinel/",
+    }.items():
+        monkeypatch.setenv(name, str(value))
+
+    # The control: git run with the inherited environment as-is does resolve
+    # to the sentinel, so the variables are live and the check below means
+    # something.
+    raw = subprocess.run(
+        ["git", "rev-parse", "--absolute-git-dir"], cwd=tmp_path, capture_output=True, text=True, env=dict(os.environ)
+    )
+    assert raw.returncode == 0, raw.stderr
+    assert os.path.samefile(raw.stdout.strip(), git_dir)
+
+    before = _snapshot(git_dir)
+    work = tmp_path / "work"
+    work.mkdir()
+    r = _build_repos(work)
+    result = _run_guard(r)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _remote_head(r) == r["f"]
+    assert _snapshot(git_dir) == before, "a git command wrote to the inherited GIT_DIR"
 
 
 def test_a_plain_push_would_have_undone_the_rewind(repos):
