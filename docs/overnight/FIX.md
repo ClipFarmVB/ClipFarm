@@ -149,19 +149,23 @@ Ask it to:
    rejection. Only `push refused` is [routed as
    `latched`](RULES.md#pushing-to-a-branch-that-may-have-moved). Whatever
    happens, it does not rebase, merge or force.
-4. **If the push changed anything the PR body describes, rewrite the body**, as
+4. **If the push reported `pushed` and changed anything the PR body describes,
+   rewrite the body**, as
    [what binds it](RULES.md#dispatching-subagents) says — the fixer is the
    agent that pushed, so no one else will.
    **Then reply on the thread saying what changed**, finding by finding — never that a
    finding is fixed. [Never describe a fix inside the review that found
    it](#the-cycle-and-the-settle-bar); the semi-cold round decides whether it
    closes.
-5. **Report** the new head, which findings it addressed, and the gate's summary
-   lines.
+5. **Report** the new head, which findings it addressed, the gate's summary
+   lines, and any body text it quoted from its read-back.
 
-When it reports, check GitHub for the push and the reply, write its `finished:`
-line, and carry on with the cycle: the semi-cold round against the new head. A
-fixer that reported `head moved` is checked first, as the next paragraph says,
+When it reports, check GitHub for the push and the reply. If it reports a body
+rewrite, fetch the body and confirm the text it quoted is in it; a quote the
+live body lacks is a claim with no fetch behind it, so say so on the
+`finished:` line and fix the body as [a body finding](#the-cycle-and-the-settle-bar)
+is fixed. Then write its `finished:` line, and carry on with the cycle: the
+semi-cold round against the new head. A fixer that reported `head moved` is checked first, as the next paragraph says,
 and only then routed as [below](#when-you-cannot-fix-it-choosing-a-reason).
 
 **A fixer that was lost or rate-limited is not simply dispatched again**, and a
@@ -347,15 +351,6 @@ themselves both fail, in opposite directions. See
 [what a non-`gh` tool must provide](REVIEW.md#what-a-non-gh-tool-must-provide).)
 Quote the corrected line from that read-back in the settle comment so the
 record shows what was checked.
-
-**Fix it by rewriting the whole body against the frozen head, not by patching
-the flagged line** — [the rule on claims about your own
-actions](RULES.md#what-you-claim-about-your-own-actions-is-checked-the-same-way-as-a-number)
-applies here unchanged. A flagged line is evidence the body has drifted from the
-head, and patching only that line is the incremental edit behind four of the
-five false body claims that rule cites. The head is frozen, so it is the final
-head that rule writes against, and the rewrite still moves no SHA and spends no
-round.
 
 ##### When you cannot fix it: choosing a reason
 
