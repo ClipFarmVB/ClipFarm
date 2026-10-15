@@ -380,7 +380,9 @@ ticket](TICKETS.md#working-a-ticket).
   mutations it ran, never for their class unless it ran the whole class;
   [claims an artifact changed only by quoting its text from a fetch made after
   the write](#what-you-claim-about-your-own-actions-is-checked-the-same-way-as-a-number);
-  and reports a decision it needs rather than taking it.
+  when a push of its own changes anything the PR body describes, rewrites the
+  whole body against the head it pushed, never just the changed lines, and
+  quotes it the same way; and reports a decision it needs rather than taking it.
 
 **When the environment gives no worktree, run one subagent at a time and say so
 in the log and the report.** That is the capability check in
@@ -1212,11 +1214,14 @@ skipped. So:
   where an intention cannot, and the quote is checkable: a skipped write
   surfaces as a missing or wrong quote rather than as a confident sentence.
 - **The PR body is written whole, last, in one pass against the final head** —
-  never patched piece by piece. Four of the five were incremental edits to a
-  body that had been right at some earlier commit. When a fix changes anything
-  the body describes, rewrite the whole body from the head being pushed, then
-  fetch it and quote it as above. A commit message therefore never reports a
-  body edit: the body is written after the commit it would describe.
+  never patched piece by piece. Four of the five claimed incremental edits to a
+  body that had been right at some earlier commit. The agent that pushes writes
+  it: when its push changes anything the body describes, it rewrites the whole
+  body from the head it pushed, then fetches it and quotes it as above. A body
+  finding at settle time follows the same rule against the frozen head — the
+  whole body, not the flagged line ([the carve-out](FIX.md#the-cycle-and-the-settle-bar)).
+  A commit message therefore never reports a body edit: the body is written
+  after the commit it would describe.
 
 ### Repo traps that have already cost time
 

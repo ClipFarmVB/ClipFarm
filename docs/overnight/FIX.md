@@ -149,7 +149,10 @@ Ask it to:
    rejection. Only `push refused` is [routed as
    `latched`](RULES.md#pushing-to-a-branch-that-may-have-moved). Whatever
    happens, it does not rebase, merge or force.
-4. **Reply on the thread saying what changed**, finding by finding — never that a
+4. **If the push changed anything the PR body describes, rewrite the body**, as
+   [what binds it](RULES.md#dispatching-subagents) says — the fixer is the
+   agent that pushed, so no one else will.
+   **Then reply on the thread saying what changed**, finding by finding — never that a
    finding is fixed. [Never describe a fix inside the review that found
    it](#the-cycle-and-the-settle-bar); the semi-cold round decides whether it
    closes.
@@ -342,9 +345,17 @@ text took, so an unverified body edit and a lost one are indistinguishable.
 (Which call to read a label back with is not obvious — the two that suggest
 themselves both fail, in opposite directions. See
 [what a non-`gh` tool must provide](REVIEW.md#what-a-non-gh-tool-must-provide).)
-Quote the corrected line in the settle comment so the record shows what was
-checked. Rewriting the body, and saying that you did, follow [the rule on
-claims about your own actions](RULES.md#what-you-claim-about-your-own-actions-is-checked-the-same-way-as-a-number).
+Quote the corrected line from that read-back in the settle comment so the
+record shows what was checked.
+
+**Fix it by rewriting the whole body against the frozen head, not by patching
+the flagged line** — [the rule on claims about your own
+actions](RULES.md#what-you-claim-about-your-own-actions-is-checked-the-same-way-as-a-number)
+applies here unchanged. A flagged line is evidence the body has drifted from the
+head, and patching only that line is the incremental edit behind four of the
+five false body claims that rule cites. The head is frozen, so it is the final
+head that rule writes against, and the rewrite still moves no SHA and spends no
+round.
 
 ##### When you cannot fix it: choosing a reason
 
