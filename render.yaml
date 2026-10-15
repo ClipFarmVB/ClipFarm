@@ -241,6 +241,31 @@ services:
       # Bare origins only: scheme://host[:port], nothing after it.
       - key: CORS_ORIGINS             # the web origin(s), comma-separated, e.g. https://clipfarm.ca
         sync: false
+      # The demo game every new account gets a copy of (CF-220). Optional, and
+      # deliberately NOT in REQUIRED_IN_PRODUCTION: empty leaves signup exactly
+      # as before, so a missing value is a quiet feature-off rather than a boot
+      # failure. That quietness is the reason these are listed here at all — on
+      # 2026-10-15 the feature was deployed with SAMPLE_GAME_ID unset (not here,
+      # not in the dashboard), and an unset value is the one path that logs
+      # nothing (auth.py `_copy_sample_game` returns before it would log), so
+      # nothing showed the demo was off. Listing the keys records that they
+      # exist; it sets no value and warns about none (DEPLOY_RENDER.md step 3).
+      #
+      # `sync: false` because the values are production data, not config: the
+      # id names a row in the production database, and the title and credit are
+      # editorial. A Blueprint sync never overwrites them.
+      #
+      # The source game is load-bearing for every copy: they all play its R2
+      # objects. Do not delete, trim, reprocess or re-condense it. The api
+      # refuses the first two while SAMPLE_GAME_ID names it; nothing stops the
+      # others. README's `sample_game_id` row has the full set of rules, and
+      # CF-571 (#581) records the footage decision.
+      - key: SAMPLE_GAME_ID           # a `ready` game's id; empty = off
+        sync: false
+      - key: SAMPLE_GAME_TITLE        # what the copy is called in a new Library
+        sync: false
+      - key: SAMPLE_GAME_CREDIT       # footage credit, shown as plain text
+        sync: false
       - key: REDIS_URL
         fromService: { type: keyvalue, name: clipfarm-redis, property: connectionString }
       - key: CELERY_BROKER_URL
