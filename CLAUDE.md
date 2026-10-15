@@ -8,6 +8,7 @@ what is easy to get wrong. It does **not** re-describe the project — for that:
 | What is this, how does the pipeline work, what lives where | `README.md` — Repository Layout, The Processing Pipeline, Key Concepts |
 | Why the system is shaped this way | `ARCHITECTURE.md` |
 | Running it locally, env vars | `README.md` — Local Development, Configuration |
+| Building or reviewing anything in `web/` that a user sees | `DESIGN.md`: the design direction (tokens, type roles, components, voice) |
 | Evaluating detection / dead-time changes | `ml/eval/README.md` |
 | Deploying | `DEPLOY_RENDER.md` (production, Render), `DEPLOY.md` (backend on a VPS), `DOCKER.md` |
 | Running an unattended `/loop` overnight | `docs/overnight/README.md` — it indexes the brief, which is split by phase |
