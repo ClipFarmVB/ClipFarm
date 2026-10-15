@@ -64,6 +64,60 @@ image = (
     # image doesn't ship — point the pycuda build at gcc/g++ instead.
     .env({"CC": "gcc", "CXX": "g++"})
     .pip_install("inference-models[onnx-cu12]~=0.29.7")
+    # Quiet what `from inference import get_model` (ml/pipeline/ball.py) emits
+    # at cold start (CF-14). Every key below was read from the inference==1.3.3
+    # wheel, not guessed; the PR that added this quotes each file:line.
+    #
+    # The mechanism: inference/models/utils.py imports every optional model
+    # family the moment `get_model` is first touched, each in a try block whose
+    # failure path is `warnings.warn("Your `inference` configuration does not
+    # support <X> model ...", category=ModelDependencyMissing)`. A family whose
+    # flag is False is never imported, so it can neither fail nor warn. The
+    # ball model is a Roboflow RF-DETR object-detection model (CF-33); its
+    # entries in ROBOFLOW_MODEL_TYPES are registered unconditionally and none
+    # of these flags gate them. Each flag is parsed by inference's str2bool,
+    # which accepts only the strings "true"/"false" (any case) — not bools.
+    #
+    # Deliberately NOT used: INFERENCE_WARNINGS_DISABLED and
+    # IGNORE_MODEL_DEPENDENCIES_WARNINGS. Both are blanket warning filters,
+    # and the first also hides InferenceModelsStackMissing — the warning that
+    # the RF-DETR GPU stack failed and inference fell back to its legacy path,
+    # which is exactly the one a broken ball image should still print.
+    # CORE_MODELS_ENABLED=False is not used either: it makes the lazy core-model
+    # imports raise instead, which *adds* the warnings this removes.
+    .env({
+        # inference/core/__init__.py: GETs GitHub's latest-release API on
+        # import and logs "Your inference package version 1.3.3 is out of
+        # date!". The version is pinned on purpose (CF-33), so the line is
+        # never actionable here, and the call is one fewer network hop.
+        "DISABLE_VERSION_CHECK": "True",
+        # inference/core/env.py: InferenceDeprecationWarning "CORE_MODEL_GAZE_
+        # ENABLED is True: POST /gaze/gaze_detection is registered as a
+        # deprecation stub" fires on every import while this is True. It is
+        # about an HTTP route this image never serves. Also skips the Gaze
+        # ModelDependencyMissing warning in models/utils.py.
+        "CORE_MODEL_GAZE_ENABLED": "False",
+        # The rest each gate one ModelDependencyMissing warning in
+        # inference/models/utils.py — "does not support <family> model" — and
+        # the import that triggers it. None of these families is used by ball
+        # tracking, which loads one RF-DETR detector and nothing else; a
+        # missing dependency for any of them cannot affect its output.
+        "CORE_MODEL_SAM_ENABLED": "False",  # Segment Anything (embed)
+        "CORE_MODEL_SAM2_ENABLED": "False",  # Segment Anything 2 (embed)
+        "CORE_MODEL_SAM3_ENABLED": "False",  # SAM3; needs the `sam3` package, absent from this image
+        "CORE_MODEL_CLIP_ENABLED": "False",  # CLIP embeddings
+        "CORE_MODEL_PE_ENABLED": "False",  # Perception Encoder embeddings
+        "CORE_MODEL_TROCR_ENABLED": "False",  # TrOCR text recognition
+        "CORE_MODEL_GROUNDINGDINO_ENABLED": "False",  # open-vocabulary detector
+        "CORE_MODEL_YOLO_WORLD_ENABLED": "False",  # open-vocabulary detector
+        "PALIGEMMA_ENABLED": "False",  # transformers LMM (peft / 4-bit)
+        "FLORENCE2_ENABLED": "False",  # transformers LMM (peft)
+        "QWEN_2_5_ENABLED": "False",  # transformers LMM; builds a BitsAndBytesConfig at import
+        "QWEN_3_ENABLED": "False",  # transformers LMM; builds a BitsAndBytesConfig at import
+        "SMOLVLM2_ENABLED": "False",  # transformers LMM (peft)
+        "MOONDREAM2_ENABLED": "False",  # transformers LMM
+        "DEPTH_ESTIMATION_ENABLED": "False",  # Depth Anything v2/v3
+    })
     .add_local_python_source("ml")
 )
 
