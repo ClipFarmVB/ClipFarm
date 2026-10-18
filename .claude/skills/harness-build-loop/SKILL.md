@@ -59,8 +59,7 @@ Only report what is actually true right now.
   build. Point the user to `/harness-ideate` and do not start. Before
   `hacking starts`: `plan-only`.
 - **Many open loop PRs, none settled** (`harness prs`): `review-only`.
-- **No eligible ticket** (`harness tickets`, tracker `github`; the work-session
-  plan, tracker `skrypt`) **but open loop PRs**: `review-only`.
+- **No eligible ticket** (`harness tickets`) **but open loop PRs**: `review-only`.
 - **Otherwise:** `build`.
 
 **Say which mode, and why, in one line.**

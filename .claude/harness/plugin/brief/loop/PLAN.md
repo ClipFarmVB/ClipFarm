@@ -45,9 +45,6 @@ scope, a gate failure, a rehearsal. **Do not go hunting.**
 - **At most five per lap.** Overflow goes in the status.
 - **Open the body with** `Filed by the harness loop.`
 
-For `tracker: skrypt`, cards are not filed by the loop at all: they are
-listed in the status for a human to add ([`brief/trackers/skrypt.md`](../trackers/skrypt.md)).
-
 ## Re-triage
 
 The backlog is a hypothesis about what matters, and the work teaches things.

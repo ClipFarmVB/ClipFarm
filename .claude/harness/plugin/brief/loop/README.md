@@ -54,8 +54,7 @@ and is never the reviewer.** The work is done by subagents:
 | fixer | acts on findings, human comments, red checks and conflicts | [`FIX.md`](FIX.md#the-fixers-brief) |
 | triager | re-ranks the backlog | [`PLAN.md`](PLAN.md#re-triage) |
 
-**The state lives on GitHub** (and, for profile `tracker: skrypt`, in the
-work-session service): tickets, loop PRs, marker comments, `fix:` replies,
+**The state lives on GitHub**: tickets, loop PRs, marker comments, `fix:` replies,
 round reviews with finding IDs, and review labels or record comments. The run
 log's Now block holds the rest. A lap that starts cold after a compaction
 rebuilds everything from those.

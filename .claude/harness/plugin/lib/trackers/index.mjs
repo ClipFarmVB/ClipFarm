@@ -10,7 +10,6 @@
 // Ticket: { id, title, priority, areas, reason?, why?, worktree?, branch? }.
 // `eligible` is in the order to take it; the orchestrator never reorders it.
 import { githubTracker } from './github.mjs';
-import { skryptTracker } from './skrypt.mjs';
 import { TrackerError } from './common.mjs';
 
 export { TrackerError, fillTicketLine } from './common.mjs';
@@ -18,7 +17,6 @@ export { TrackerError, fillTicketLine } from './common.mjs';
 export function getTracker(ctx) {
   switch (ctx.profile.tracker) {
     case 'github': return githubTracker(ctx);
-    case 'skrypt': return skryptTracker(ctx);
     default: throw new TrackerError(`no adapter for tracker "${ctx.profile.tracker}"`);
   }
 }
