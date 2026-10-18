@@ -1,7 +1,7 @@
 ---
 name: harness-init
-description: (Repo-pinned copy of the harness plugin's init skill, for sessions without the plugin; prefer harness:init where the plugin is installed.) Set up the harness in a repository by writing its profile (.claude/harness/profile.md) from the closest template (solo, hackathon, clipfarm, skrypt), filled in from the repo itself, then validating it. Use when the user wants to use the harness or build loop in a new repo, asks to set up, configure or adopt the harness, or when /harness-build-loop finds no profile.
-argument-hint: "[solo|hackathon|clipfarm|skrypt]"
+description: (Repo-pinned copy of the harness plugin's init skill, for sessions without the plugin; prefer harness:init where the plugin is installed.) Set up the harness in a repository by writing its profile (.claude/harness/profile.md) from the closest template (solo, hackathon, clipfarm), filled in from the repo itself, then validating it. Use when the user wants to use the harness or build loop in a new repo, asks to set up, configure or adopt the harness, or when /harness-build-loop finds no profile.
+argument-hint: "[solo|hackathon|clipfarm]"
 ---
 
 # Set up the harness in this repo
@@ -22,7 +22,6 @@ full.
 
 | the repo | template |
 |---|---|
-| origin is `skrypt-labs/*`, or it has `scripts/work-session.ts` | `skrypt.md` (only skrypt-os and automations are supported by the work-session CLI; for another Skrypt repo, say so and stop) |
 | origin is `ClipFarmVB/ClipFarm` | `clipfarm.md` |
 | it has `hackathon/EVENT.md`, or the user says it is for a hackathon | `hackathon.md` |
 | anything else | `solo.md` |

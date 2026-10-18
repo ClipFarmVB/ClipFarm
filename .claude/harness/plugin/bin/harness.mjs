@@ -31,9 +31,9 @@ const USAGE = `harness <command> [--root DIR] [--run-start UTC]
   merge-check NUM           the merge test, item by item
   base                      the base branch's check runs: green or not
   tickets                   the tracker's eligible work, in order; why others wait; resumable
-  claim ID                  claim a ticket (tracker github: comment + label; skrypt: bootstrap)
-  release ID OUTCOME        give it back (github: label off + released:; skrypt: end session)
-  synced ID [--cwd DIR]     after a push (skrypt: work:session sync; github: nothing)
+  claim ID                  claim a ticket (tracker github: comment + label)
+  release ID OUTCOME        give it back (github: label off + released:)
+  synced ID [--cwd DIR]     after a push (github: nothing)
   ticket-line ID            the line the PR body must carry
   linked                    issues an open PR already closes
   claims                    claimed targets: this run, too recent, orphaned
@@ -309,7 +309,7 @@ function main() {
       return rest[0];
     };
     const ticketId = () => {
-      if (!rest[0]) fail(`${cmd} needs a ticket id (#N, or SK-N for tracker skrypt)`);
+      if (!rest[0]) fail(`${cmd} needs a ticket id (#N)`);
       return rest[0];
     };
     const num = () => {

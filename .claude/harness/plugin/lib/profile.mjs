@@ -11,8 +11,8 @@ export const PROFILE_PATH = '.claude/harness/profile.md';
 export const DEFAULTS = {
   repo: '',                         // owner/name; empty = the checkout's origin
   base: 'main',
-  tracker: 'github',                // github | skrypt
-  'tracker command': '',            // skrypt: how to run work:session (default: the repo's tsx on scripts/work-session.ts)
+  tracker: 'github',                // github
+  'tracker command': '',            // reserved for trackers driven by a CLI
   labels: 'yes',                    // yes | no (record comments only)
   'pr scope': 'loop-label',         // loop-label | loop-body | own
   'loop label': 'loop',
@@ -48,7 +48,7 @@ export const DEFAULTS = {
 };
 
 const ENUMS = {
-  tracker: ['github', 'skrypt'],
+  tracker: ['github'],
   labels: ['yes', 'no'],
   'pr scope': ['loop-label', 'loop-body', 'own'],
   'merge policy': ['auto', 'human'],
@@ -104,10 +104,6 @@ export function parseProfile(text) {
   }
   if (out.labels === 'no' && out['pr scope'] === 'loop-label') {
     throw new ProfileError('labels: no needs pr scope loop-body or own (a loop-label scope needs labels)');
-  }
-  if (out.tracker === 'skrypt' && out['merge policy'] === 'auto') {
-    // docs/epics/autonomous-harness.md: unattended work is drafts first.
-    throw new ProfileError('tracker skrypt: merge policy must be human (unattended Skrypt work is drafts first)');
   }
   out['all harness paths'] = [...CORE_HARNESS_PATHS, ...out['harness paths']];
   return out;

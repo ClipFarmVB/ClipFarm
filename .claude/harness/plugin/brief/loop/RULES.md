@@ -190,13 +190,13 @@ Claims mirror the registry in the tracker, so a lost log does not lose them.
   and, where the tracker makes one, the worktree and branch the work must use.
 - **On every dispatch after the first, claim again.** For GitHub that
   re-stamps the claim comment, so its `updated_at` is when work was last handed
-  out; for Skrypt the bootstrap converges on the same session.
+  out.
 - **Release: `harness release ID OUTCOME`**, and mirror the line in the log.
 - **A ticket's claim ends when its PR opens**: `harness release ID "PR #n"`.
   From then on the open PR is what stops it being selected (`harness tickets`
   leaves it out).
 - **After every push to a ticket's PR: `harness synced ID --cwd WORKTREE`.**
-  Where the tracker tracks the head (Skrypt Context), this re-checks it;
+  Where the tracker tracks the head, this re-checks it;
   elsewhere it does nothing.
 - **Never check this run's own claims with a label-filtered query.** Label
   searches lag writes by seconds. Use the registry, or read the target's

@@ -127,5 +127,5 @@ then:
 
 For GitHub, the labels are what keep the ticket from being dispatched again;
 a reason held only in memory would not survive a compaction. Trackers without
-labels (Skrypt) list these under **Needs you** in the status instead, and the
+labels list these under **Needs you** in the status instead, and the
 loop keeps them in the Now block so it does not claim them again this run.
