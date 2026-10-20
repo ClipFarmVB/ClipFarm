@@ -16,6 +16,8 @@ rather than a ball track: a track that yields a segment of exactly two
 contacts on demand is much harder to construct than the two contacts, and the
 gates are what is under test, not find_contacts.
 """
+import logging
+
 import pytest
 
 from ml.eval.contact_cliff import Ladder, report
@@ -452,3 +454,118 @@ def test_a_fixture_with_no_dump_is_read_from_its_ball_cache(tmp_path, monkeypatc
     assert [p.frame for p in track.positions] == [0, 1, 2, 3, 4]
     # The cache's own confidence, forwarded as read (CF-420), not a default.
     assert pos[2] == {"time": 2 / 3, "x": 20.0, "y": 5.0, "confidence": 0.9}
+
+
+# ── main: the ON + SOFT column, end to end (R7-M1) ───────────────────────────
+#
+# Everything above hands `report()` ladders built by hand, so nothing ran the
+# column `main` builds — and three mutations to it passed the suite: the soft
+# column run without `soft_scale`, the `--exponent` override dropped (so
+# `--exponent 0.75` printed the e=0.5 run under a header naming e=0.5's
+# scale), and the module constant left patched after the run. These run
+# `main` on a synthetic 1080p track and check the column against
+# find_contacts / contacts_to_rallies called directly at that exponent.
+
+SOFT_HEIGHT = 1080  # full scale 3.0; the hit floor is 240 * 3**e px/s
+
+# Leg speeds in frame-heights/s. The hit floor is 0.667 fh/s at e=1, 0.507 at
+# e=0.75 and 0.385 at e=0.5, and a junction gates on the faster of its two
+# legs — so the 0.60-0.60 junction is admitted from e=0.75 down and the
+# 0.45-0.45 ones only from e=0.5: switch on, e=0.75 and e=0.5 find 6, 7 and 9
+# contacts, three different sets.
+SOFT_LEG_SPEEDS_FHPS = (0.80, 0.45, 0.45, 0.80, 0.60, 0.60, 0.90, 0.45, 0.45, 0.80)
+SOFT_LEG_DIRECTIONS = ((1.0, 0.0), (-0.6, 0.8), (0.6, -0.8), (-1.0, 0.0),
+                       (0.8, 0.6), (-0.8, -0.6), (1.0, 0.0), (-0.6, 0.8),
+                       (0.6, -0.8), (-1.0, 0.0))
+
+
+def _soft_track() -> B.TrackedBall:
+    positions = []
+    x = y = 0.5 * SOFT_HEIGHT
+    t, frame = 0.0, 0
+    for speed, (dx, dy) in zip(SOFT_LEG_SPEEDS_FHPS, SOFT_LEG_DIRECTIONS):
+        v = speed * SOFT_HEIGHT
+        for _ in range(5):
+            positions.append(B.BallPosition(frame=frame, time=round(t, 4), x=x, y=y,
+                                            confidence=0.8))
+            x += dx * v * 0.33
+            y += dy * v * 0.33
+            t += 0.33
+            frame += 10
+    return B.TrackedBall(positions=positions)
+
+
+def _run_main(monkeypatch, capsys, argv: list[str]) -> tuple[str, B.TrackedBall, float]:
+    """`contact_cliff.main(argv)` on the synthetic track; its stdout."""
+    from types import SimpleNamespace
+
+    import ml.eval.contact_cliff as CC
+
+    track = _soft_track()
+    duration = track.positions[-1].time + 5.0
+    fx = SimpleNamespace(test_id="synthetic", duration=duration, raw={})
+    monkeypatch.setattr(CC, "load_track", lambda _id: (track, [], SOFT_HEIGHT, fx))
+    try:
+        CC.main(argv)
+    finally:
+        logging.disable(logging.NOTSET)  # main() disables INFO process-wide
+    return capsys.readouterr().out, track, duration
+
+
+def _column(text: str, label: str) -> tuple[int, int, int]:
+    """(scale ON, ON + SOFT, scale OFF) from the three-column row `label`."""
+    line = next(row for row in text.splitlines() if row.startswith(label))
+    on, soft, off = line[34:].split()[:3]
+    return int(on), int(soft), int(off)
+
+
+@pytest.mark.parametrize("exponent", [0.75, 0.5])
+def test_main_soft_column_is_find_contacts_at_the_requested_exponent(
+        monkeypatch, capsys, exponent):
+    text, track, duration = _run_main(monkeypatch, capsys,
+                                      ["synthetic", "--exponent", str(exponent)])
+
+    with monkeypatch.context() as m:
+        m.setattr(B, "CONTACT_SOFT_SCALE_EXPONENT", exponent)
+        contacts = B.find_contacts(track, frame_height=SOFT_HEIGHT, soft_scale=True)
+    rallies = B.contacts_to_rallies(contacts, duration, SOFT_HEIGHT)
+    full = B.find_contacts(track, frame_height=SOFT_HEIGHT)
+    assert len(contacts) != len(full), "the case cannot tell soft from switch-on"
+
+    assert _column(text, "contacts found")[1] == len(contacts), text
+    assert _column(text, "RALLIES EMITTED")[1] == len(rallies), text
+    # The header names the scale that run gated on, not the module default's.
+    assert f"ON + SOFT gates at scale {3.0 ** exponent:.2f}" in text, text
+
+
+def test_main_soft_columns_differ_by_exponent_and_match_their_own(monkeypatch, capsys):
+    """R7-M1's silent case: `--exponent 0.75` printing the e=0.5 numbers."""
+    texts = {e: _run_main(monkeypatch, capsys, ["synthetic", "--exponent", str(e)])[0]
+             for e in (0.75, 0.5)}
+    track = _soft_track()
+    expected = {}
+    for e in (0.75, 0.5):
+        with monkeypatch.context() as m:
+            m.setattr(B, "CONTACT_SOFT_SCALE_EXPONENT", e)
+            expected[e] = len(B.find_contacts(track, frame_height=SOFT_HEIGHT,
+                                              soft_scale=True))
+    assert expected[0.75] != expected[0.5], "the case cannot tell the exponents apart"
+
+    got = {e: _column(t, "contacts found")[1] for e, t in texts.items()}
+    assert got == expected
+    # The other two columns do not depend on the exponent.
+    assert _column(texts[0.75], "contacts found")[::2] == _column(
+        texts[0.5], "contacts found")[::2]
+
+
+def test_main_restores_the_module_exponent(monkeypatch, capsys):
+    """`main` patches the module constant for the soft run; anything after it
+    — a second call in-process, or the next test — must see the shipped value."""
+    before = B.CONTACT_SOFT_SCALE_EXPONENT
+    _run_main(monkeypatch, capsys, ["synthetic", "--exponent", "0.75"])
+    assert B.CONTACT_SOFT_SCALE_EXPONENT == before
+    # And a run with no --exponent uses that value, header and column alike.
+    text, track, _ = _run_main(monkeypatch, capsys, ["synthetic"])
+    contacts = B.find_contacts(track, frame_height=SOFT_HEIGHT, soft_scale=True)
+    assert _column(text, "contacts found")[1] == len(contacts), text
+    assert f"ON + SOFT gates at scale {3.0 ** before:.2f}" in text, text
