@@ -153,7 +153,7 @@ describe("needsHandle", () => {
     // The sidebar and the settings hint both link to /u/{handle}, which 404s
     // for a generated handle. `Boolean(username) && !needsHandle(me)` is the
     // condition both use — a truthiness check on username alone sends a
-    // backfilled user to "No one is using @alice".
+    // backfilled user to a "Profile not found" page.
     const linkable = (me: api.Me | null) =>
       Boolean(me?.username) && !needsHandle(me);
 

@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { type Clip, type Player, type ActionType, tagClip, updateClipLabels, trimClip, getClipDownloadUrl } from "@/lib/api";
 import { startCrossOriginDownload } from "@/lib/download";
 import { cn } from "@/lib/utils";
+import { DemoBadge } from "@/components/DemoGame";
 
 const LABEL_OPTIONS = ["spike", "serve", "dig", "set", "block", "not_an_action"];
 
@@ -21,6 +22,7 @@ interface ClipCardProps {
 
 export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSelect, onSave }: ClipCardProps) {
   const [tagging, setTagging] = useState(false);
+  const [tagLoading, setTagLoading] = useState(false);
   const [labeling, setLabeling] = useState(false);
   const [trimming, setTrimming] = useState(false);
   const [localPlayerName, setLocalPlayerName] = useState(clip.player_name);
@@ -62,9 +64,32 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
   }
 
   async function handleTag(playerId: string) {
-    setTagging(false);
-    const updated = await tagClip(clip.id, playerId);
-    setLocalPlayerName(updated.player_name);
+    if (tagLoading) return;
+    setTagLoading(true);
+    try {
+      const updated = await tagClip(clip.id, playerId);
+      setLocalPlayerName(updated.player_name);
+      // The channel `handleToggleLabel` and `handleTrim` already use, and both
+      // call sites already pass. Without it the parent's `clips[]` keeps the
+      // stale `player_name`, so ClipModal for the same clip shows no player
+      // (CF-304). `tagClip` returns the whole Clip, so this is the same
+      // one-liner as its siblings — not a second channel for the same thing.
+      // Known, out of scope: the tag reaches ClipModal only until the next
+      // label change or trim on that clip, whose responses carry a null
+      // `player_name` that their own `onUpdate` writes back (CF-566, #574).
+      // The card itself keeps it.
+      onUpdate?.(updated);
+    } catch (e) {
+      // `alert`, matching `handleDownload` above. Previously the select closed
+      // and the failure vanished (CF-304). The two mutations below were the
+      // same defect in a quieter form — one silent, one console-only — and are
+      // fixed in the same change, so all three handlers now answer a failed
+      // write the same way.
+      alert(e instanceof Error ? e.message : "Could not tag this clip.");
+    } finally {
+      setTagLoading(false);
+      setTagging(false);
+    }
   }
 
   async function handleToggleLabel(label: string) {
@@ -94,8 +119,11 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
       setLocalConfidence(updated.confidence);
       onUpdate?.(updated);
     } catch (err) {
-      console.error("Label update failed:", err);
+      // The rollback below is visible; the REASON was not. A label that snaps
+      // back with nothing said reads as the UI refusing the edit rather than
+      // the write failing, so the user retries the same click (CF-304).
       setLocalLabels(prev);
+      alert(err instanceof Error ? err.message : "Could not update the labels.");
     } finally {
       setLabelLoading(false);
     }
@@ -109,7 +137,9 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
       setLocalEnd(updated.end_time);
       onUpdate?.(updated);
     } catch (err) {
-      console.error("Trim failed:", err);
+      // Nothing was shown at all here: the clip kept its old bounds and the
+      // only record of the failure was the devtools console (CF-304).
+      alert(err instanceof Error ? err.message : "Could not trim this clip.");
     } finally {
       setTrimLoading(false);
     }
@@ -143,7 +173,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
             className={cn(
               "absolute top-2 right-2 z-10 flex h-7 w-7 items-center justify-center rounded border transition-all duration-150",
               selected
-                ? "bg-brand border-brand text-[#0c0c0e]"
+                ? "bg-brand border-brand text-on-brand"
                 : "bg-black/40 border-white/30 text-transparent hover:border-white/60"
             )}
             aria-label={selected ? "Deselect" : "Select"}
@@ -213,6 +243,16 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
 
           {/* Right: action buttons */}
           <div className="flex flex-wrap items-center justify-end gap-0.5 shrink-0">
+            {/* Demo clips (CF-565): the api refuses download and trim for them
+                with 409, so neither is offered rather than ending in an error.
+                The badge says why, where no game banner is in view (a
+                collection). */}
+            {clip.is_sample && (
+              <span title="Demo clip: download, trim and posting are for your own games">
+                <DemoBadge className="mr-1" />
+              </span>
+            )}
+            {!clip.is_sample && (
             <button
               onClick={handleDownload}
               disabled={downloadLoading}
@@ -223,6 +263,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
               <Download size={9} />
               Download
             </button>
+            )}
 
             <button
               onClick={() => {
@@ -252,6 +293,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
               </button>
             )}
 
+            {!clip.is_sample && (
             <button
               onClick={() => { setTrimming(!trimming); setLabeling(false); }}
               disabled={!canTrim}
@@ -265,20 +307,60 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
               <ChevronLeft size={9} /><ChevronRight size={9} className="-ml-1" />
               Trim
             </button>
+            )}
 
             {/* Player tag */}
             {tagging ? (
+              /* `disabled` pairs with `handleTag`'s `if (tagLoading) return`, so
+                 a second choice cannot be made and then dropped in silence —
+                 the failure this change exists to remove, reintroduced one
+                 layer up. `handleDownload` and `handleToggleLabel` pair their
+                 guards the same way; `handleTrim` has no re-entry guard at all
+                 and relies on `disabled={trimLoading}` alone.
+
+                 The `onBlur` checks `tagLoading` because this element is
+                 focused (`autoFocus`) at the moment it becomes disabled, and
+                 the HTML focus fixup rule can blur it for that reason alone.
+                 An unguarded handler would then close the dropdown on a blur
+                 the user did not perform.
+
+                 **What is not established is whether that actually happens, and
+                 an earlier version of this comment asserted it did.** Two
+                 things are measured: jsdom implements no focus fixup at all, so
+                 no test here can reach the question; and React disables its
+                 event system for the commit's mutation phase, so a fixup blur
+                 dispatched synchronously with the `disabled` write would not
+                 reach this handler even in principle. Whether a browser instead
+                 defers that blur to a later task — where React is listening
+                 again — is the part nobody here has run a browser to answer.
+
+                 So the guard is kept for being correct under both answers
+                 rather than for a behaviour anyone has seen. Under the
+                 deferred answer it is what keeps the disabled state visible;
+                 under the synchronous one it changes nothing.
+
+                 It does mean blur cannot close this while a write is in
+                 flight. `handleTag`'s `finally` closes it on either outcome, so
+                 the only way to be stuck is a request that never settles —
+                 which would equally leave `handleDownload` spinning and the
+                 label and trim controls disabled. That exposure is the file's,
+                 not this guard's, and a timeout for one control would be the
+                 odd one out. */
               <select
                 autoFocus
-                className="min-h-8 rounded border border-border bg-surface-high px-2 py-1 text-[10px] text-foreground focus:outline-none"
-                onBlur={() => setTagging(false)}
+                disabled={tagLoading}
+                aria-busy={tagLoading}
+                className="min-h-8 rounded border border-border bg-surface-high px-2 py-1 text-[10px] text-foreground focus:outline-none disabled:opacity-50"
+                onBlur={() => {
+                  if (!tagLoading) setTagging(false);
+                }}
                 onChange={(e) => handleTag(e.target.value)}
                 defaultValue=""
               >
                 <option value="" disabled>Player…</option>
                 {players.map((p) => (
                   <option key={p.id} value={p.id}>
-                    #{p.jersey_number} {p.name}
+                    {p.jersey_number != null ? `#${p.jersey_number} ` : ""}{p.name}
                   </option>
                 ))}
               </select>

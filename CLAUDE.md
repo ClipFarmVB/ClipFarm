@@ -54,7 +54,12 @@ tsc and vitest for `web/`.
 
   Nothing does this for you, so a clone that skips it commits with no local
   checks at all and only finds out on the PR. `git config core.hooksPath`
-  printing nothing means you are in that state.
+  printing nothing means you are in that state. Printing a path is not proof
+  the hook runs, though: it must also be executable, or git skips it and the
+  commit goes through. The only tell is git's "hook was ignored because it's
+  not set as executable" hint, silenced if `advice.ignoredHook` is off. A copy
+  not made by git may need `chmod +x .hooks/pre-commit`. Git for Windows runs
+  hooks by their `#!` line and ignores the bit.
 - **The hook picks its own Python; don't assume `python` works.** It probes
   `python`, then `py`, then `python3`, and uses the first that both runs *and*
   has the tooling in it — on Windows the Microsoft Store ships `python`/`python3`

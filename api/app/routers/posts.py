@@ -13,7 +13,7 @@ from app.models.game import Game
 from app.models.post import Post
 from app.models.user import User
 from app.schemas.post import PostAuthor, PostCreate, PostOut, PostPlayback, PostUpdate
-from app.services import access, handles, publishing, storage
+from app.services import access, handles, publishing, sample_game, storage
 from app.services.ratelimit import POLICIES, rate_limit
 
 logger = logging.getLogger(__name__)
@@ -152,6 +152,10 @@ async def create_post(body: PostCreate, user_id: UserId, db: DB):
     # own footage, even if you can see someone else's.
     if clip is None or game is None or game.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Clip not found")
+
+    # The demo game's footage is not the owner's to publish, at any
+    # tier (CF-220). After ownership, so a stranger still gets the 404.
+    sample_game.assert_not_sample(game)
 
     # The post's own tier, whether or not the clip has to move for it: a public
     # post over an already-public clip is still public posting.

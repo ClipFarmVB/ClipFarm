@@ -276,6 +276,47 @@ describe("clearGamesCache — identity change (CF-299)", () => {
   });
 });
 
+describe("prefetchGames — the fire-and-forget rejection (CF-304)", () => {
+  it("does not leave the prefetch rejecting unhandled when nobody awaits it", async () => {
+    // AuthContext calls prefetchGames() and never awaits the result. With the
+    // API down that rethrow was an unhandled rejection on EVERY page load,
+    // unless the user happened to land on /games and attach the page's catch.
+    const { getGames, cache } = await load();
+    let reject!: (e: unknown) => void;
+    getGames.mockReturnValueOnce(
+      new Promise<Game[]>((_, r) => {
+        reject = r;
+      }),
+    );
+    cache.prefetchGames();
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      reject(new Error("network"));
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+
+    expect(unhandled).toEqual([]);
+  });
+
+  it("still rejects for a caller that does attach", async () => {
+    // The other half, and the reason the fix is `p.catch(() => {})` on a second
+    // branch rather than swallowing inside the chain: /games does
+    // `getInflightGames() ?? fetchGames()` and renders `e.message`. Marking the
+    // rejection handled must not take the error away from that page.
+    const { getGames, cache } = await load();
+    getGames.mockRejectedValueOnce(new Error("network"));
+    cache.prefetchGames();
+
+    await expect(cache.getInflightGames()).rejects.toThrow("network");
+  });
+});
+
 describe("clearGamesCache — the orphaned fetch (CF-299)", () => {
   it("does not leave the dropped promise rejecting unhandled", async () => {
     // After the clear nothing awaits the old chain — getInflightGames() is null

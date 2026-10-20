@@ -24,10 +24,37 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
  * are exactly the ones that drifted: an over-quota video upload reported a
  * clean sentence while the 2 MB avatar cap still showed
  * `API error 413: {"detail":"..."}`.
+ *
+ * **The fallback is bounded, and that started mattering with CF-304.** When
+ * the body is not our JSON — a proxy or CDN 502, which is an HTML page — the
+ * fallback carries the whole body. That was tolerable while these strings
+ * reached `console.error`; the error paths fixed in CF-304 put them in an
+ * `alert()` and on the profile page, where a kilobyte of markup is an
+ * unreadable wall and the status line at the front scrolls out of reach.
+ * So a body that is not JSON is cut by `errorFallback` below, and one that
+ * opens as markup is dropped entirely: it has nothing in it for the person
+ * reading.
  */
 async function throwApiError(res: Response): Promise<never> {
   const text = await res.text();
-  throw new Error(apiErrorMessage(text, `API error ${res.status}: ${text}`));
+  throw new Error(apiErrorMessage(text, errorFallback(res.status, text)));
+}
+
+const _MAX_FALLBACK_BODY = 200;
+
+/**
+ * The bounded fallback `throwApiError` uses when the body is not our JSON.
+ *
+ * Markup is dropped rather than cut: a proxy's HTML page has nothing in it for
+ * a reader, and the one useful token is the status. Anything else is truncated
+ * and visibly marked, so a wall of text cannot push the status out of view.
+ */
+function errorFallback(status: number, text: string): string {
+  const body = text.trim();
+  if (!body || body.startsWith("<")) return `API error ${status}`;
+  return body.length > _MAX_FALLBACK_BODY
+    ? `API error ${status}: ${body.slice(0, _MAX_FALLBACK_BODY)}…`
+    : `API error ${status}: ${body}`;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -65,9 +92,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface Game {
   id: string;
   title: string;
-  // "uploading" means the row exists but the browser is still PUTting the
-  // video to R2. The Library filters these out server-side, so they're only
-  // ever seen by the tab doing the upload.
+  // "uploading" means the row exists but the upload was never completed:
+  // either the browser is still PUTting the video to R2, or the transfer was
+  // abandoned (tab closed) and the row is waiting for the api's sweep, which
+  // removes it only once it is 24h old and only on that owner's next upload —
+  // so it can persist indefinitely. The Library filters these out
+  // server-side, and the upload tab navigates to the game only after
+  // completeUpload returns it `queued`, so a client sees this status only by
+  // fetching the game by id (e.g. a typed URL). The game page does not poll it.
   status: "uploading" | "queued" | "processing" | "ready" | "failed";
   progress: number;
   progress_stage: string | null;
@@ -77,6 +109,13 @@ export interface Game {
   condensed_video_url?: string | null;
   original_duration?: number | null;
   condensed_duration?: number | null;
+  // A copy of the demo game a new account starts with (CF-220). Its media is
+  // shared with every other copy: removing it deletes rows only, and the api
+  // refuses to publish, share, download or trim its clips (409).
+  is_sample?: boolean;
+  // Credit for the demo footage, frozen onto the copy when it was made. Null
+  // on ordinary games. Operator text that may hold a URL: render as text only.
+  sample_credit?: string | null;
 }
 
 export function getGames(): Promise<Game[]> {
@@ -192,12 +231,16 @@ export interface Clip {
   start_time: number;
   end_time: number;
   clip_url: string;
-  thumbnail_url: string;
+  // Null when the clip has no thumbnail (ClipOut.thumbnail_url is `str | None`).
+  thumbnail_url: string | null;
   labels: string[];
   created_at: string;
   // False once the game's raw upload has passed its retention window (CF-194):
   // the clip still plays, but it can no longer be re-cut, so trimming is off.
   source_available?: boolean;
+  // The clip belongs to a copy of the demo game (CF-220): post, visibility,
+  // share, download and trim are refused for it, so the UI does not offer them.
+  is_sample?: boolean;
   // The widest tier a post over this clip may take without widening the clip —
   // the clip's own visibility or its game's, resolved server-side (CF-109).
   // Above it, the composer asks for consent to raise the clip along with the

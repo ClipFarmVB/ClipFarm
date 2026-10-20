@@ -898,6 +898,38 @@ class Settings(BaseSettings):
     # no code change to make.
     public_posting_enabled: bool = False
 
+    # The demo game a new account starts with (CF-220). Empty = off, and
+    # signup is exactly what it was before this setting existed.
+    #
+    # Set, it names a `ready` game whose rows are copied to every account
+    # provisioned afterwards (services/sample_game.py). The copies point at the
+    # SAME R2 objects as the source — nothing is duplicated — so the source game
+    # is shared media: deleting, reprocessing, trimming or re-condensing it
+    # changes or breaks every copy. It belongs to a dedicated internal account
+    # for that reason.
+    #
+    # A str, not a UUID: a malformed value must not refuse the boot of the whole
+    # api over an optional nicety. It is parsed at copy time, and a value that
+    # does not parse is logged and skipped, leaving signup untouched.
+    #
+    # Every new account sees this game, so which footage it names is a recorded
+    # decision, not a config tweak: the current one is on CF-571 (#581), and
+    # changing the source needs it made again. In production the value lives
+    # in the Render dashboard on clipfarm-api (render.yaml declares the key);
+    # clearing it turns the demo off without a log line. README's
+    # `sample_game_id` row has the full set of rules.
+    sample_game_id: str = ""
+    # What the demo copy is called in a new account's Library. Empty uses
+    # "Demo: " + the source game's title, which is usually an internal name.
+    sample_game_title: str = ""
+    # Credit for the demo footage, frozen onto each copy when it is made
+    # (games.sample_credit) and returned as `sample_credit` for the web to show
+    # beside it, e.g. "Footage: <team> — <URL of the original>". Empty stores
+    # none. Changing it later does not rewrite existing copies, which keep the
+    # credit of the footage they play. A credit is not a licence to the
+    # footage: that question is CF-571 (#581).
+    sample_game_credit: str = ""
+
     # ── Anonymous read limits (CF-186, #189) ─────────────────────────────────
     # Seven endpoints answer without a credential. Six are throttled per caller
     # (see services/ratelimit.py for the two exposures and the fail-open

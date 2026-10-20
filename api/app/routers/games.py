@@ -23,7 +23,7 @@ from app.schemas.game import (
     UploadPart,
     UploadTicket,
 )
-from app.services import access, quota, storage
+from app.services import access, quota, sample_game, storage
 from app.services.ratelimit import POLICIES, rate_limit
 from app.services.filenames import condensed_download_filename
 from app.workers.tasks import process_game_task
@@ -58,7 +58,7 @@ VIDEO_SIGNATURE_BYTES = 64
 MIN_CONTAINER_BYTES = 16
 # The least a sniff can work with: one ISO-BMFF box header (4-byte size, 4-byte
 # type). Below it there is nothing to read, so a header this short is treated as
-# an unreadable probe rather than as a verdict — see confirm_upload.
+# an unreadable probe rather than as a verdict — see complete_upload.
 MIN_SNIFFABLE_BYTES = 8
 _EBML_MAGIC = b"\x1a\x45\xdf\xa3"
 
@@ -235,8 +235,16 @@ async def _sweep_abandoned_uploads(user_id: uuid.UUID, db: AsyncSession) -> None
                         game.id, exc_info=True,
                     )
             if key:
-                # This row is the only record of the key. Deleting it without
-                # the object would strand the object unreferenced and billed.
+                # The delete is attempted first because this row is the
+                # object's only live reference. If it fails, the row is still
+                # deleted below and the object is left unreferenced and billed
+                # until the raw-retention sweep's unreferenced pass reclaims it
+                # once it is past the retention window (app/workers/tasks.py,
+                # `_sweep_expired_raw_uploads`) — never, if retention is 0.
+                # That sweep has no scheduler: it runs only after a successful
+                # `process_game`, so an idle deployment keeps the object longer.
+                # Incomplete multipart parts from a failed abort above are
+                # cleared only by the bucket's lifecycle rule (README).
                 try:
                     await run_in_threadpool(storage.delete_file, key)
                 except Exception:
@@ -521,9 +529,13 @@ async def complete_upload(
     # The size charged is the real object's, not the declared one. The duration
     # is still a claim — nothing here decodes the video — but it is the claim
     # made *before* the transfer, and the worker settles it against the probe.
-    # Read what we need off the row before reserving: reserve_upload commits,
-    # which expires `game`, and a lazy reload on attribute access is not safe
-    # on the async session.
+    # Read what we need off the row before reserving. Not because of the
+    # commit — the session is built with `expire_on_commit=False`
+    # (app/database.py), so a commit expires nothing — but because a rejected
+    # reservation calls `db.rollback()`, which does expire `game`, and an
+    # expired attribute read lazy-reloads, which is not safe on the async
+    # session. Nothing reads `game` after that rollback today; this keeps a
+    # future read on the rejection path from tripping over it.
     declared_duration = game.declared_duration
     raw_url = game.raw_video_url
     condense = game.condense_requested
@@ -662,19 +674,25 @@ async def delete_game(game_id: uuid.UUID, user_id: UserId, db: DB):
     game = await db.get(Game, game_id)
     if not game or game.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Game not found")
+    # The source of the example game: every copy plays its objects (CF-220).
+    sample_game.assert_not_source(game.id)
 
     # Collect all R2 keys to delete (clips + thumbnails + raw video)
     clips_result = await db.execute(select(Clip).where(Clip.game_id == game_id))
     clips = clips_result.scalars().all()
 
     r2_keys: list[str] = []
-    for clip in clips:
-        for url in (clip.clip_url, clip.thumbnail_url):
+    # A copy of the example game owns none of its media — its clips point at
+    # the source game's objects, which every other copy plays too (CF-220).
+    # Deleting it is how the owner dismisses the example: rows only.
+    if not sample_game.is_sample(game):
+        for clip in clips:
+            for url in (clip.clip_url, clip.thumbnail_url):
+                if url:
+                    r2_keys.append(urlparse(url).path.lstrip("/"))
+        for url in (game.raw_video_url, game.condensed_video_url):
             if url:
                 r2_keys.append(urlparse(url).path.lstrip("/"))
-    for url in (game.raw_video_url, game.condensed_video_url):
-        if url:
-            r2_keys.append(urlparse(url).path.lstrip("/"))
 
     # A delete during an in-flight upload: abort the multipart so its uploaded
     # parts stop being billed. Parts are invisible to delete_object — only an

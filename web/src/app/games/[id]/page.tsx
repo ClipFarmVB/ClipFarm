@@ -14,6 +14,7 @@ import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type 
 import { estimateEtaSeconds, formatEta, pushSample, type ProgressSample } from "@/lib/eta";
 import { cn } from "@/lib/utils";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { DemoBadge, DemoBanner } from "@/components/DemoGame";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];
 
@@ -34,8 +35,14 @@ function fmtDuration(seconds: number): string {
 }
 
 const STATUS_STYLES: Record<Game["status"], string> = {
-  // Reachable only by the tab performing the upload — the api hands back an
-  // `uploading` game while its video is still transferring to R2.
+  // Not expected here: UploadZone navigates to this page only after
+  // completeUpload resolves, by which point the game is `queued`. Reachable
+  // only by a typed URL: mid-transfer, or for an abandoned upload (a tab
+  // closed mid-transfer), whose row stays `uploading` until the api's sweep
+  // removes it — 24h old at the earliest, and only on that owner's next
+  // upload, so possibly never. The entry keeps this map total over
+  // Game["status"]; the page does not poll an `uploading` game, so such a
+  // visit shows a static header for as long as the row lasts.
   uploading:  "text-zinc-500 bg-zinc-500/8 border-zinc-500/20",
   queued:     "text-zinc-500 bg-zinc-500/8 border-zinc-500/20",
   processing: "text-blue-400 bg-blue-500/8 border-blue-500/20",
@@ -214,9 +221,12 @@ export default function GamePage() {
         </Link>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-[18px] font-semibold text-foreground tracking-tight truncate">
-              {game.title}
-            </h1>
+            <div className="flex min-w-0 items-center gap-2">
+              <h1 className="text-[18px] font-semibold text-foreground tracking-tight truncate">
+                {game.title}
+              </h1>
+              {game.is_sample && <DemoBadge />}
+            </div>
             <p className="mt-0.5 text-[12px] text-muted">
               {game.clip_count ?? clips.length} clip{(game.clip_count ?? clips.length) !== 1 ? "s" : ""}
             </p>
@@ -229,6 +239,8 @@ export default function GamePage() {
           </span>
         </div>
       </div>
+
+      {game.is_sample && <DemoBanner credit={game.sample_credit} />}
 
       {/* Processing state */}
       {(game.status === "queued" || game.status === "processing") && (
