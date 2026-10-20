@@ -144,11 +144,24 @@ def load(test_id: str = DEFAULT_FIXTURE):
     track = B.TrackedBall(positions=[
         # frame/confidence are output-only in find_contacts; reconstructing
         # frame from time is exact at fixed fps and never feeds the logic.
+        # The 1.0 stays as the fallback for a dump written before CF-420, which
+        # carries no confidence at all — harmless here precisely because
+        # find_contacts never reads it.
         B.BallPosition(frame=int(round(p["time"] * fps)), time=p["time"],
-                       x=p["x"], y=p["y"], confidence=1.0)
+                       x=p["x"], y=p["y"], confidence=p.get("confidence", 1.0))
         for p in d["positions"]
     ])
-    positions = [{"time": p["time"], "x": p["x"], "y": p["y"]} for p in d["positions"]]
+    # Forward confidence only where the dump actually has it. Today this dict
+    # reaches only bridge_windows_by_motion, which reads time/x/y, but it is the
+    # producer shape compute_features takes, and the 1.0 above must not leak
+    # into it: a fabricated 1.0 is indistinguishable from a measured one and
+    # would train a column on invented data if this dict ever fed CF-393's
+    # trainer. Omitting the key leaves compute_features' documented fill and
+    # its missing-confidence warning, both of which say the dump predates CF-420.
+    positions = [
+        {k: p[k] for k in ("time", "x", "y", "confidence") if k in p}
+        for p in d["positions"]
+    ]
     return track, positions, d["frame_height"], load_deadtime_fixture(test_id)
 
 
