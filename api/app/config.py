@@ -783,6 +783,19 @@ class Settings(BaseSettings):
     # rallies are real, needs CF-375 (#475)'s labelled 1080p fixture before
     # this or any default moves.
     ball_contact_soft_scale_enabled: bool = False
+    # CF-229 (#233): drop ball detections that dwell at a fixed object the
+    # tracker has locked onto (ball.drop_static_sites), after the ball cache
+    # loads and before contacts, rallies and the condense stage. Track-level,
+    # so it reaches every consumer of the track — both halves of the condense
+    # path included — and off returns the track object untouched.
+    #
+    # Ships False. On test4 it takes the stationary share of samples from 56%
+    # to ~8%, which is the precondition for scaling SEG_MAX_SPEED_PXPS (PR B
+    # of #233). The trade it carries — a ball held still for a serve at a spot
+    # the tracker also parks on is dropped with it, and the guarded builder's
+    # abstain reads a thinner track — is measured only on unlabelled 1080p
+    # rally counts and five dead-time fixtures; see the PR before enabling it.
+    ball_static_site_filter_enabled: bool = False
     # Which keep-window builder the condense stage uses. A failure *inside* the
     # guarded builder falls back to "rules", so a feature mismatch degrades the
     # condense rather than failing the run. Note the fallback is within-builder

@@ -226,6 +226,9 @@ def config_snapshot() -> dict:
             # sets at heights between 360p and the >1440p clamp. Elsewhere —
             # switch off, 360p, past the clamp — the two runs are identical.
             "ball_contact_soft_scale_enabled": settings.ball_contact_soft_scale_enabled,
+            # CF-229's static-site filter changes the track every consumer
+            # reads, so two rows on either side of it are different inputs.
+            "ball_static_site_filter_enabled": settings.ball_static_site_filter_enabled,
         }
         fields = getattr(type(settings), "model_fields", None) or getattr(type(settings), "__fields__", {})
         app_snap.update({
@@ -441,7 +444,7 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     from app.services import storage as s3
     from app.workers.tasks import _track_ball_cached
     from ml.pipeline.audio import compute_audio_energy, score_cheers
-    from ml.pipeline.ball import contacts_to_rallies, find_contacts
+    from ml.pipeline.ball import contacts_to_rallies, filter_static_sites, find_contacts
     from ml.pipeline.score import score_highlights
 
     fixture = load_fixture(test_id)
@@ -471,6 +474,11 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         # without r2_key a miss goes straight to local tracking, which the eval
         # image has no ML runtime for, so it raises BallRuntimeUnavailable.
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
+        # CF-229: where process_game_task applies it — after the cache,
+        # before contacts (and, on the deadtime path, the positions).
+        tracker = filter_static_sites(
+            tracker, frame_h, enabled=settings.ball_static_site_filter_enabled,
+        )
         # normalize: this mode reads every other production knob off `settings`
         # (the gate threshold below, the condense_* tunables on the deadtime
         # path), so reading the CF-174 switch from anywhere else would score a
@@ -558,10 +566,23 @@ def refuse_contact_scale_mismatch(path: Path, snapshot: dict) -> None:
     --contact-scale flag, which does not read BALL_CONTACT_SCALE_ENABLED; the
     snapshot does. Without this, switch-on windows record under a switch-off row.
     A file with no "contact_scale", or a host without the app settings, passes.
+
+    CF-229's "static_site_filter" ("on"/"off", from --static-site-filter) is
+    checked the same way against BALL_STATIC_SITE_FILTER_ENABLED, and passes
+    on the same terms when either side does not carry it.
     """
     data = json.loads(path.read_text(encoding="utf-8"))
-    recorded = data.get("contact_scale") if isinstance(data, dict) else None
     app = snapshot.get("app.config")
+    site = data.get("static_site_filter") if isinstance(data, dict) else None
+    if site is not None and app and "ball_static_site_filter_enabled" in app:
+        expected_site = "on" if app["ball_static_site_filter_enabled"] else "off"
+        if site != expected_site:
+            raise SystemExit(
+                f"{path}: windows were scored with the static-site filter {site!r}, but "
+                f"this run's settings snapshot is {expected_site!r} - set "
+                f"BALL_STATIC_SITE_FILTER_ENABLED to match, or the row is mislabelled"
+            )
+    recorded = data.get("contact_scale") if isinstance(data, dict) else None
     if recorded is None or not app or "ball_contact_scale_enabled" not in app:
         return
     if not app["ball_contact_scale_enabled"]:
@@ -604,7 +625,7 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
     from app.config import settings
     from app.services import storage as s3
     from app.workers.tasks import _track_ball_cached
-    from ml.pipeline.ball import find_contacts
+    from ml.pipeline.ball import filter_static_sites, find_contacts
     from ml.pipeline.dead_time import (
         Abstained,
         active_windows_from_contacts,
@@ -641,6 +662,11 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         # Pass r2_key for the Modal path, as in _run_offline above; the cache
         # lookup itself keys on the file's md5 and sample_every.
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
+        # CF-229: where process_game_task applies it — after the cache,
+        # before contacts (and, on the deadtime path, the positions).
+        tracker = filter_static_sites(
+            tracker, frame_h, enabled=settings.ball_static_site_filter_enabled,
+        )
         # Same reason as the highlight path: every condense knob below comes
         # from `settings`, so this one must too, or an offline row scores a
         # detector production is not running.

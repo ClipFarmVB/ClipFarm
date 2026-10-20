@@ -72,9 +72,12 @@ SWITCH_SETTINGS = {"condense_mode"}
 # motion bridge, which is why drift here would move every swept number.
 # `ball_contact_soft_scale_enabled` (CF-376) is mirrored as SOFT_SCALE and reaches
 # find_contacts only — the bridge keeps the full scale in production too.
+# `ball_static_site_filter_enabled` (CF-229) is mirrored as STATIC_SITE_FILTER and
+# is applied where the track loads, so it reaches every consumer at once.
 NON_CONDENSE_TO_MIRROR = {
     "ball_contact_scale_enabled": "NORMALIZE",
     "ball_contact_soft_scale_enabled": "SOFT_SCALE",
+    "ball_static_site_filter_enabled": "STATIC_SITE_FILTER",
 }
 # The keyword each mirrored setting arrives as, per callee. SOFT_SCALE is not
 # passed to the bridge on purpose, so it is listed for find_contacts only.
@@ -305,4 +308,52 @@ def test_the_settings_consumers_hand_find_contacts_both_switches(module_py):
         )
         assert kwargs.get("soft_scale") == "settings.ball_contact_soft_scale_enabled", (
             f"{module_py.name}:{call.lineno} find_contacts without CF-376's soft flag"
+        )
+
+
+def _calls(module_py: Path, callee: str, within: str | None = None) -> list[ast.Call]:
+    """Calls to `callee` (bare or attribute) in a module, or in one function of it."""
+    tree = ast.parse(module_py.read_text(encoding="utf-8"))
+    if within is not None:
+        tree = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == within)
+    return [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name | ast.Attribute)
+        and (n.func.id if isinstance(n.func, ast.Name) else n.func.attr) == callee
+    ]
+
+
+# CF-229: the static-site filter is track-level, so its mirror is applied where
+# the track loads rather than at each find_contacts call. Every loader has to
+# apply it, or a tool reading that loader scores the unfiltered track while
+# the mirror says otherwise.
+@pytest.mark.parametrize("module_py, func", [
+    (TUNE_PY, "load"),
+    (TUNE_PY, "load_track"),
+    (REPO / "ml" / "eval" / "deadtime_variants.py", "load_game"),
+], ids=lambda v: v if isinstance(v, str) else v.name)
+def test_every_track_loader_applies_the_static_site_mirror(module_py, func):
+    calls = _calls(module_py, "apply_static_site_filter", within=func)
+    assert len(calls) == 1, f"{module_py.name}:{func} does not apply the static-site filter"
+    kwargs = {k.arg: ast.unparse(k.value) for k in calls[0].keywords if k.arg}
+    # tune_contacts' loaders take a per-call override that falls back to the
+    # mirror; load_game reads deadtime_variants' own binding of it, which is
+    # what visualize_deadtime --static-site-filter flips.
+    expected = "STATIC_SITE_FILTER" if func == "load_game" else "static_site_filter"
+    assert kwargs.get("enabled") == expected
+
+
+@pytest.mark.parametrize("module_py, count", [
+    (REPO / "ml" / "eval" / "harness.py", 2),
+    (REPO / "ml" / "eval" / "diagnose_detection.py", 1),
+], ids=lambda v: v.name if isinstance(v, Path) else str(v))
+def test_the_settings_consumers_filter_static_sites_by_the_setting(module_py, count):
+    """CF-229: each offline path filters the cached track by the setting, by value."""
+    calls = _calls(module_py, "filter_static_sites")
+    assert len(calls) == count, f"{module_py.name} filters {len(calls)} tracks, expected {count}"
+    for call in calls:
+        kwargs = {k.arg: ast.unparse(k.value) for k in call.keywords if k.arg}
+        assert kwargs.get("enabled") == "settings.ball_static_site_filter_enabled", (
+            f"{module_py.name}:{call.lineno} filter_static_sites without the CF-229 setting"
         )

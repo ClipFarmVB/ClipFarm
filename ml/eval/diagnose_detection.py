@@ -79,7 +79,7 @@ def main() -> None:
     from app.config import settings
     from app.services import storage as s3
     from app.workers.tasks import _track_ball_cached
-    from ml.pipeline.ball import find_contacts
+    from ml.pipeline.ball import filter_static_sites, find_contacts
 
     fx = load_deadtime_fixture(args.test)
     r2_key = fx.raw["source_r2_key"]
@@ -101,8 +101,16 @@ def main() -> None:
         # Reads the CF-174 switch from `settings` rather than mirroring it:
         # this tool already imports the app to reach R2, so it is on the same
         # footing as harness.py and not on tune_contacts'.
+        #
+        # CF-229's static-site filter reaches find_contacts as it does in
+        # production, but `tracker` itself stays raw: it is what gets dumped
+        # below, and every loader of that dump (tune_contacts.load) applies the
+        # filter itself, so filtering it here would apply it twice.
         contacts = find_contacts(
-            tracker, frame_height=frame_h,
+            filter_static_sites(
+                tracker, frame_h, enabled=settings.ball_static_site_filter_enabled,
+            ),
+            frame_height=frame_h,
             normalize=settings.ball_contact_scale_enabled,
             soft_scale=settings.ball_contact_soft_scale_enabled,
         )
