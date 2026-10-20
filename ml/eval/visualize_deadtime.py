@@ -584,8 +584,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    apply_contact_scale(args.contact_scale)
-    logging.disable(logging.INFO)
+    # Restored on the way out, as tune_contacts.main does: the position is for
+    # this run only, and a leftover one would become the next in-process run's
+    # "settings mirror" default and the position every later load_game reads.
+    saved = (dv.NORMALIZE, dv.SOFT_SCALE)
+    previous = logging.root.manager.disable
+    try:
+        apply_contact_scale(args.contact_scale)
+        logging.disable(logging.INFO)
+        _ladder(args)
+    finally:
+        dv.NORMALIZE, dv.SOFT_SCALE = saved
+        logging.disable(previous)
+
+
+def _ladder(args: argparse.Namespace) -> None:
     games = [load_game(tid) for tid in TEST_IDS]
     all_results: dict[str, dict[str, tuple[list[Interval], DeadTimeSignals]]] = {}
     for g in games:

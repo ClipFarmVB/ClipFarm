@@ -8,6 +8,7 @@ measured with.
 `load_game` and `v0_shipped` actually read — a flag that parsed and changed
 nothing would label switch-ON figures as switch-OFF ones.
 """
+import logging
 import sys
 from pathlib import Path
 
@@ -55,12 +56,46 @@ def test_contact_scale_reaches_what_load_game_reads(monkeypatch, position, norma
     assert seen == [(normalize, soft)]
 
 
-def test_the_default_is_the_mirror_and_moves_nothing(monkeypatch):
-    monkeypatch.setattr(dv, "NORMALIZE", dv.NORMALIZE)
-    monkeypatch.setattr(dv, "SOFT_SCALE", dv.SOFT_SCALE)
-    before = (dv.NORMALIZE, dv.SOFT_SCALE)
+@pytest.mark.parametrize("normalize, soft, position", [
+    (False, False, "off"),
+    (True, False, "on"),
+    (True, True, "soft"),
+])
+def test_the_default_is_the_mirror_and_moves_nothing(monkeypatch, normalize, soft, position):
+    # Each mirror state in turn, so a default hard-coded to any one position
+    # fails on the other two rather than passing while the mirror matches it.
+    monkeypatch.setattr(dv, "NORMALIZE", normalize)
+    monkeypatch.setattr(dv, "SOFT_SCALE", soft)
+    assert vd.parse_args([]).contact_scale == position
     vd.apply_contact_scale(vd.parse_args([]).contact_scale)
-    assert (dv.NORMALIZE, dv.SOFT_SCALE) == before
+    assert (dv.NORMALIZE, dv.SOFT_SCALE) == (normalize, soft)
+
+
+def test_a_second_run_in_process_starts_from_the_mirror(monkeypatch):
+    # No monkeypatch on the globals: main() itself has to put them back, or the
+    # second run's default is the first run's --contact-scale.
+    original = (dv.NORMALIZE, dv.SOFT_SCALE)
+    original_disable = logging.root.manager.disable
+    # The first run has to move off the mirror, or a leak would be invisible.
+    first, first_globals = ("soft", (True, True)) if original != (True, True) else ("off", (False, False))
+    seen = []
+
+    def fake_load_game(test_id):
+        seen.append((dv.NORMALIZE, dv.SOFT_SCALE))
+        raise _Loaded
+
+    monkeypatch.setattr(vd, "load_game", fake_load_game)
+    try:
+        with pytest.raises(_Loaded):
+            vd.main(["--contact-scale", first])
+        with pytest.raises(_Loaded):
+            vd.main([])
+        assert seen == [first_globals, original]
+        assert (dv.NORMALIZE, dv.SOFT_SCALE) == original
+        assert logging.root.manager.disable == original_disable
+    finally:
+        dv.NORMALIZE, dv.SOFT_SCALE = original
+        logging.disable(original_disable)
 
 
 def test_an_unknown_position_is_refused():

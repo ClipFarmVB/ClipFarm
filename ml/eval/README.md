@@ -227,6 +227,10 @@ read, so read the column that matches the deployment first.
 > (`mode=guarded`) reproduce every figure published at `42b582f` exactly, so the
 > other two columns differ because the switch moved, not the environment.
 > `soft` is the switch on plus CF-376's `ball_contact_soft_scale_enabled`.
+> `13180a3` is a commit on the CF-391 branch, which `main` squash-merged, so
+> it does not resolve from `main`; the figures were measured there and the
+> merge left them unchanged, since nothing on the branch after it touched the
+> ladder's code or its inputs.
 
 Each cell is `rules` → `guarded`, dead time removed then live play cut.
 
@@ -345,7 +349,8 @@ python -m ml.eval.visualize_deadtime --contact-scale off --dump-windows DIR
 ```
 
 `--contact-scale` sets `deadtime_variants.NORMALIZE` / `SOFT_SCALE` for that
-run only; the `tune_contacts` mirror stays pinned to the app defaults.
+run only — `main()` puts them back on return, so a second in-process call starts
+from the mirror again; the `tune_contacts` mirror stays pinned to the app defaults.
 
 The HTML is **gitignored** — it is ~1MB of inline SVG that would re-churn its
 whole diff on every run. Regenerate it rather than looking for it in git, and
