@@ -144,14 +144,12 @@ def _reversal_game(test_id: str, frame_height: int, speed_fhps: float):
     return track, dicts, frame_height, fx
 
 
-def test_the_switch_reaches_scoring(monkeypatch, capsys):
+def test_the_switch_reaches_scoring():
     """At 1080p a 0.4 fh/s reversal is 432 px/s: over the unscaled 240 floor
     (switch off) and under the 3x-scaled 720 (switch on); soft at e=0.5 gates
     at ~416, so it passes again. Three positions, two different contact
     counts — a switch that never reached `score_setting` would print one."""
     games = {t: _reversal_game(t, 1080, 0.4) for t in ("g1", "g2")}
-    monkeypatch.setattr(TC, "load_track", lambda tid: games[tid])
-    monkeypatch.setattr(TC, "CANDIDATES", {"hit 220": {"CONTACT_HIT_SPEED_PXPS": 220.0}})
     hits = {}
     for switch in ("off", "on", "soft"):
         normalize, soft = TC.LOO_SWITCHES[switch]
@@ -229,5 +227,81 @@ def test_bad_loo_arguments_fail_loudly(argv, monkeypatch):
         TC.main(argv)
 
 
-def test_the_default_switch_is_the_shipping_setting():
-    assert TC.LOO_SWITCHES[TC.default_loo_switch()] == (TC.NORMALIZE, TC.SOFT_SCALE and TC.NORMALIZE)
+@pytest.mark.parametrize("normalize, soft, expected", [
+    (False, False, "off"), (True, False, "on"), (True, True, "soft"), (False, True, "off")])
+def test_the_default_switch_names_the_mirrored_setting(normalize, soft, expected, monkeypatch):
+    """#609 R4-N1 / R5-N4: written out per mirror position rather than as the
+    function's own expression, so a wrong mapping fails. NORMALIZE/SOFT_SCALE
+    are held to app.config's defaults by test_eval_condense_settings.py."""
+    monkeypatch.setattr(TC, "NORMALIZE", normalize)
+    monkeypatch.setattr(TC, "SOFT_SCALE", soft)
+    assert TC.default_loo_switch() == expected
+
+
+# ── #609 R5: the utility's seconds, the held-out lines, the hit bound ──────
+
+def test_dead_sec_is_the_dead_time_removed_in_seconds(monkeypatch):
+    """#609 R5-M1. The utility subtracts seconds of play from `dead_sec`, so
+    `dead_sec` has to be seconds too, not `dead_removed_pct`'s 0-1 fraction.
+    The builders are pinned to known windows: 120s with play at 29-36 is 113s
+    dead; keeping 20-40 leaves 13s of it, so 100s removed, and keeping 25-50
+    leaves 18s, so 95s. As a fraction those read 0.88 and 0.84, and every
+    candidate's utility collapses to `-4 x live`."""
+    from ml.eval import deadtime_variants as dv
+
+    monkeypatch.setattr(TC, "bridge_windows_by_motion", lambda *a, **k: [(20.0, 40.0)])
+    monkeypatch.setattr(dv, "v5_guarded", lambda game: [(25.0, 50.0)])
+    r = TC.score_setting(_reversal_game("g1", 360, 1.0), normalize=True, soft_scale=False)
+    assert r["rules"]["live"] == 0.0 and r["guarded"]["live"] == 0.0
+    assert r["rules"]["dead_sec"] == pytest.approx(100.0)
+    assert r["guarded"]["dead_sec"] == pytest.approx(95.0)
+    assert TC.loo_utility(r["rules"]) == pytest.approx(100.0)
+
+
+def _scored(hit: int, live: float, dead_sec: float) -> dict:
+    m = dict(dead=0.5, live=live, recall=0.9, dead_sec=dead_sec)
+    return dict(hit=hit, spans=9, scale=1.0, rules=m, guarded=dict(m))
+
+
+def test_the_held_out_lines_print_the_picks_cell_and_shippings(monkeypatch, capsys):
+    """#609 R5-M2 and R5-N1. "hit 220" beats shipping on every game, so it is
+    the pick for each held-out turn, and every cell differs — the `picked` line
+    must carry the pick's cell for that game and `shipping` shipping's, or the
+    report says "no transfer" whatever was picked. The guard g3 is given a
+    utility that would swamp the U column if it were summed in."""
+    cells = {
+        TC.SHIPPING_LABEL: {"g1": _scored(1, 30.0, 10.0), "g2": _scored(2, 40.0, 20.0),
+                            "g3": _scored(3, 0.0, 9000.0)},
+        "hit 220": {"g1": _scored(4, 0.0, 300.0), "g2": _scored(5, 0.0, 400.0),
+                    "g3": _scored(6, 0.0, 9000.0)},
+    }
+    names = {(): TC.SHIPPING_LABEL, (("CONTACT_HIT_SPEED_PXPS", 220.0),): "hit 220"}
+
+    def fake_score(game, *, normalize, soft_scale, overrides):
+        return cells[names[tuple(sorted(overrides.items()))]][game[3].test_id]
+
+    monkeypatch.setattr(TC, "load_track", lambda tid: _reversal_game(tid, 360, 1.0))
+    monkeypatch.setattr(TC, "score_setting", fake_score)
+    monkeypatch.setattr(TC, "CANDIDATES", {"hit 220": {"CONTACT_HIT_SPEED_PXPS": 220.0}})
+    monkeypatch.setattr(TC, "LOO_GUARDS", ("g3",))
+    TC.main(["--loo", "--switch", "on", "g1", "g2"])
+    lines = capsys.readouterr().out.splitlines()
+
+    for builder in ("rules", "guarded"):
+        start = lines.index(f"-- {builder}: leave-one-game-out (cost {TC.LIVE_CUT_COST:g}:1) --")
+        for k, held in enumerate(("g1", "g2")):
+            block = lines[start + 1 + 3 * k: start + 4 + 3 * k]
+            assert block[0].split() == ["held", "out", held, "trained", "pick:", "hit", "220"]
+            assert block[1] == f"    picked   {TC._loo_cell(cells['hit 220'][held], builder)}"
+            assert block[2] == (
+                f"    shipping {TC._loo_cell(cells[TC.SHIPPING_LABEL][held], builder)}")
+    # U over the tuned games only: shipping 10 - 120 + 20 - 160, hit 220 300 + 400.
+    u = {ln.split()[0]: ln.rsplit("U=", 1)[1].strip() for ln in lines if "U=" in ln
+         and ln.startswith((TC.SHIPPING_LABEL, "hit 220"))}
+    assert u == {TC.SHIPPING_LABEL: "-250", "hit": "700"}
+
+
+@pytest.mark.parametrize("t, hit", [(28.9, 0), (29.0, 1), (36.0, 1), (36.1, 0)])
+def test_rallies_hit_counts_a_contact_on_either_end_of_a_span(t, hit):
+    """#609 R5-N2: the span is closed at both ends, as `_sweep`'s count is."""
+    assert TC._rallies_hit([(29.0, 36.0)], [{"time": t}]) == hit
