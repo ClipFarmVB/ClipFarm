@@ -375,7 +375,10 @@ class TestTheCF174KillSwitchReachesTheBridge:
             "_build_condense_windows stopped passing normalize= to the bridge, "
             "so the kill switch no longer reaches the condense half"
         )
-        return seen
+        # A copy, not `seen` itself: a second call in the same test wraps this
+        # spy, so the live dict would keep updating and compare equal to any
+        # later capture (R9-M1).
+        return dict(seen)
 
     def test_on_scales_the_bridge_with_frame_height(self, monkeypatch):
         seen = self._bridge_threshold(monkeypatch, enabled=True, frame_height=1080)

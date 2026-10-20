@@ -244,6 +244,40 @@ class TestScoreSettingRestoresConstants:
         assert overrides == self.OVERRIDES
 
 
+class TestScoreSettingWiresTheBridge:
+    """R9-M2: the rules column is contacts joined by `bridge_windows_by_motion`,
+    and that bridge takes the row's `normalize` and never `soft_scale` — the
+    combination the flag ships. Forcing `normalize=True` there turned the
+    "switch off" row's test2 rules cell from 9.5% into 23.4% dead removed with
+    every other test green, in the table that picks the production position.
+    The spy sits on tune_contacts' own name, the one `score_setting` calls."""
+
+    @pytest.mark.parametrize("row", TC.EXPONENT_AXIS, ids=[r[0] for r in TC.EXPONENT_AXIS])
+    def test_the_bridge_takes_the_rows_normalize_and_no_soft_scale(self, monkeypatch, row):
+        _label, normalize, soft, exponent = row
+        calls: list[dict] = []
+        real = TC.bridge_windows_by_motion
+
+        def spy(windows, positions, **kw):
+            calls.append(dict(kw))
+            # Dropped before the real call so a forwarded soft_scale fails on
+            # the assertion below, not on today's signature rejecting it — the
+            # bridge growing that keyword is exactly the case to catch.
+            kw.pop("soft_scale", None)
+            return real(windows, positions, **kw)
+        monkeypatch.setattr(TC, "bridge_windows_by_motion", spy)
+
+        TC.score_setting(_loaded(), normalize=normalize, soft_scale=soft, exponent=exponent)
+
+        assert len(calls) == 1, f"the rules path bridged {len(calls)} times"
+        kw = calls[0]
+        assert "soft_scale" not in kw, "soft_scale reached the bridge"
+        assert kw.get("normalize") is normalize, (
+            f"the bridge got normalize={kw.get('normalize')!r} on a "
+            f"normalize={normalize} row")
+        assert kw.get("frame_height") == HEIGHT
+
+
 class TestTheAxisHoldsNoDuplicateRow:
     """CF-309's rule for SWEEPS — a row that re-scores the baseline under a
     knob's name is a hidden repeat — applied to EXPONENT_AXIS, which SWEEPS'
