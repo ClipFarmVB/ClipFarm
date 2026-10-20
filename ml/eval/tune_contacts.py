@@ -31,6 +31,14 @@ so it also runs on test1.
 
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts test2 --exponents
 
+`--loo` (CF-103, #116) is the multi-fixture mode: named candidate configs
+scored on several labelled games at once, then leave-one-game-out — each tuned
+game held out in turn and scored with the config picked on the others — for
+both condense builders, at either switch position or with soft on. Usage and
+the fixture roles are with LOO_FIXTURES below.
+
+  python -m ml.eval.tune_contacts --loo --switch off|on|soft
+
 An optional fixture id selects which dump to sweep; it defaults to test1. Each
 needs its own `{test_id}_ball_track.json` from diagnose_detection.py — the
 tuner reads a dump, never a video, so a fixture with no dump mounted fails at
@@ -50,6 +58,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from collections.abc import Mapping
 from typing import Any
 
 from ml.eval.harness import RESULTS_DIR, load_deadtime_fixture
@@ -247,7 +256,7 @@ EXPONENT_AXIS: tuple[tuple[str, bool, bool, float | None], ...] = (
 
 def score_setting(loaded, *, normalize: bool, soft_scale: bool,
                   exponent: float | None = None,
-                  overrides: dict[str, float] | None = None) -> dict[str, Any]:
+                  overrides: Mapping[str, float | int] | None = None) -> dict[str, Any]:
     """Contacts, rallies, and both condense builders' dead-time numbers for one
     contact setting on one loaded fixture (`load_track`'s return).
 
@@ -284,11 +293,15 @@ def score_setting(loaded, *, normalize: bool, soft_scale: bool,
             rallies=len(rallies),
             scale=gate_scale(frame_h, normalize=normalize, soft_scale=soft_scale,
                              exponent=exponent),
+            # `--loo`'s columns (CF-103): labelled spans holding a contact, out of.
+            hit=_rallies_hit(fx.keep, contacts),
+            spans=len(fx.keep),
         )
         for name, windows in (("rules", rules), ("guarded", guarded)):
             s = evaluate_deadtime(fx.keep, windows, fx.duration)
             out[name] = dict(dead=s.dead_removed_pct, live=s.live_removed_sec,
-                             recall=s.kept_play_pct)
+                             recall=s.kept_play_pct,
+                             dead_sec=(s.dead_removed_pct or 0.0) * s.human_dead_sec)
     finally:
         for k, v in saved.items():
             setattr(B, k, v)
@@ -321,6 +334,205 @@ def exponent_sweep(test_id: str) -> None:
             cols.append("%s %5.0fs %s" % (_pct(m["dead"]), m["live"], _pct(m["recall"])))
         print("%-18s %6.2f %5d %5d %5d | %-24s | %-24s" % (
             label, r["scale"], r["contacts"], r["segments"], r["rallies"], *cols))
+
+
+# ── CF-103 (#116): multi-fixture leave-one-game-out (`--loo`) ───────────────
+#
+# Owen's stage-2 tooling, carried onto this module's structure (#609). The
+# sweep above scores one fixture, and the #116 write-up said why that is not
+# enough: tuning against one hour of one match fits that match's noise, which
+# is why stage 1 shipped one knob instead of five. With several labelled games a
+# candidate can be *chosen on some and scored on one it never saw*: for each
+# tuned game in turn, pick the best config by utility on the others, then report
+# how that pick does on the held-out one. A config that only wins on the game it
+# was fitted to is overfitting, and this mode is what shows it.
+#
+# Fixtures split into two roles:
+#   LOO_FIXTURES  tuned on, and each takes a turn as the held-out game.
+#   LOO_GUARDS    scored and printed, never optimized against. test3's gym uses
+#                 balls the tracker barely sees (CF-171), so a config that
+#                 "fixes" it is admitting noise; test5 is held out from every
+#                 condense design and padding-limited (see its fixture note).
+#
+# Every candidate is scored through `score_setting`, so each row carries both
+# condense builders — `rules` and the `guarded` builder production ships — and
+# the pick is made per builder. `--switch` selects the contact setting:
+# `off`/`on` are the two `ball_contact_scale_enabled` positions and `soft` is
+# on + CF-376's soft scale at the module exponent. It defaults to the setting
+# NORMALIZE/SOFT_SCALE mirror, i.e. what the app ships.
+#
+#   python -m ml.eval.tune_contacts --loo                     # shipping setting
+#   python -m ml.eval.tune_contacts --loo --switch off
+#   python -m ml.eval.tune_contacts --loo --switch soft
+#   python -m ml.eval.tune_contacts --loo --knob CONTACT_HIT_SPEED_PXPS
+#   python -m ml.eval.tune_contacts --loo test2 test4         # tune on these
+#
+# `--knob NAME` replaces CANDIDATES with that knob's SWEEPS values, one row
+# each. Positional ids replace LOO_FIXTURES; the guards stay. Each fixture is
+# read through `load_track`, so test1 runs off its R2 ball cache.
+#
+# Read the px/s labels as REFERENCE (360p) values, as everywhere in this file
+# (CF-174): on a 1080p fixture with the switch on, "hit 220" applies 660.
+
+LOO_FIXTURES: tuple[str, ...] = ("test1", "test2", "test4")
+LOO_GUARDS: tuple[str, ...] = ("test3", "test5")
+
+# 1s of wrongly cut play costs this many seconds of kept dead time. The repo
+# posture (CF-46): keeping some dead time beats cutting play.
+LIVE_CUT_COST = 4.0
+
+# The contact settings `--switch` names: (normalize, soft_scale).
+LOO_SWITCHES: dict[str, tuple[bool, bool]] = {
+    "off": (False, False),
+    "on": (True, False),
+    "soft": (True, True),
+}
+
+# Whole configurations, for the question a single-knob sweep cannot answer:
+# does a second knob still transfer to a game it was not fitted on? The shipping
+# row is computed, not listed, so it tracks ball.py; and, as for SWEEPS
+# (CF-309), no entry may pin a knob at its shipping default — that row would be
+# the shipping row again under another name. `test_tune_contacts_loo.py` holds
+# both. These are CF-103 stage 2's candidates less the ones that pinned 240,
+# which is the default; "hit 240 + resid 180" is therefore "resid 180".
+CANDIDATES: dict[str, dict[str, float | int]] = {
+    "hit 220": {"CONTACT_HIT_SPEED_PXPS": 220.0},
+    "resid 180": {"CONTACT_RESIDUAL_MIN_PXPS": 180.0},
+    "hit 220 + resid 180": {"CONTACT_HIT_SPEED_PXPS": 220.0,
+                            "CONTACT_RESIDUAL_MIN_PXPS": 180.0},
+    "hit 220 + segmed 40": {"CONTACT_HIT_SPEED_PXPS": 220.0,
+                            "SEG_MIN_MEDIAN_SPEED_PXPS": 40.0},
+}
+
+SHIPPING_LABEL = "shipping"
+
+
+def _rallies_hit(spans, contacts: list[dict]) -> int:
+    """How many labelled spans contain at least one contact — the #116 metric.
+
+    Keep-windows are anchored on contacts, so a rally with none is invisible to
+    the condense stage and is cut whole. The same count `_sweep`'s `rally`
+    column makes, over the same `sorted(fx.keep)`.
+    """
+    times = sorted(c["time"] for c in contacts)
+    hit = i = 0
+    for a, b in sorted(spans):
+        while i < len(times) and times[i] < a:
+            i += 1
+        hit += 1 if (i < len(times) and times[i] <= b) else 0
+    return hit
+
+
+def loo_utility(builder: dict[str, Any]) -> float:
+    """Dead seconds removed, minus LIVE_CUT_COST per second of play cut."""
+    return builder["dead_sec"] - LIVE_CUT_COST * builder["live"]
+
+
+def loo_configs(knob: str | None = None) -> dict[str, dict[str, float | int]]:
+    """The rows `--loo` scores, shipping first."""
+    rows: dict[str, dict[str, float | int]] = {SHIPPING_LABEL: {}}
+    if knob is None:
+        rows.update(CANDIDATES)
+    else:
+        if knob not in SWEEPS:
+            raise SystemExit(f"--knob {knob}: not in SWEEPS ({sorted(SWEEPS)})")
+        rows.update({f"{knob}={v:g}": {knob: v} for v in SWEEPS[knob]})
+    return rows
+
+
+def loo_table(loaded: dict[str, Any], configs: dict[str, dict[str, float | int]], *,
+              normalize: bool, soft_scale: bool) -> dict[str, dict[str, dict[str, Any]]]:
+    """{config: {test_id: score_setting(...)}} for every config on every game."""
+    return {
+        name: {tid: score_setting(game, normalize=normalize, soft_scale=soft_scale,
+                                  overrides=dict(cfg))
+               for tid, game in loaded.items()}
+        for name, cfg in configs.items()
+    }
+
+
+def loo_picks(table: dict[str, dict[str, dict[str, Any]]], tuned: list[str],
+              builder: str) -> list[tuple[str, str]]:
+    """(held-out id, config picked on the others) for each tuned game.
+
+    Ties go to the earlier config, so the shipping row (first) wins a tie and a
+    candidate has to beat it, not match it.
+    """
+    picks = []
+    for held in tuned:
+        train = [t for t in tuned if t != held]
+        pick = max(table, key=lambda n: sum(loo_utility(table[n][t][builder]) for t in train))
+        picks.append((held, pick))
+    return picks
+
+
+def _loo_cell(r: dict[str, Any], builder: str) -> str:
+    m = r[builder]
+    return "%3d/%-3d %5.0fs %s %s" % (r["hit"], r["spans"], m["live"],
+                                      _pct(m["dead"]), _pct(m["recall"]))
+
+
+def loo_report(tuned: list[str], guards: list[str], *, switch: str,
+               knob: str | None = None) -> None:
+    """Print `--loo`: every config on every game, then the held-out picks."""
+    normalize, soft = LOO_SWITCHES[switch]
+    if len(tuned) < 2:
+        raise SystemExit("--loo needs >= 2 tuned fixtures")
+    ids = list(tuned) + [g for g in guards if g not in tuned]
+    loaded = {tid: load_track(tid) for tid in ids}
+    configs = loo_configs(knob)
+    table = loo_table(loaded, configs, normalize=normalize, soft_scale=soft)
+
+    print(f"CF-103 leave-one-game-out, switch {switch} "
+          f"(normalize={normalize}, soft_scale={soft}); "
+          f"tuned on {tuned}, guarded by {[g for g in ids if g not in tuned]}")
+    for tid in ids:
+        _, positions, frame_h, fx = loaded[tid]
+        role = "tuned" if tid in tuned else "guard"
+        scale = gate_scale(frame_h, normalize=normalize, soft_scale=soft)
+        print(f"  {tid:8s} {role}  frame_height={frame_h:5d}  scale {scale:.2f}  "
+              f"{len(positions):5d} ball positions  {len(fx.keep):3d} labelled spans")
+    width = 28
+    for builder in ("rules", "guarded"):
+        print(f"\n-- {builder}: rally-hit / live-lost / dead-rm / recall; "
+              f"U = dead s removed - {LIVE_CUT_COST:g} x live s lost, tuned games --")
+        print("%-38s | %s" % ("config", " | ".join(f"{t:^{width}s}" for t in ids)))
+        for name in configs:
+            cells = " | ".join(f"{_loo_cell(table[name][t], builder):{width}s}" for t in ids)
+            u = sum(loo_utility(table[name][t][builder]) for t in tuned)
+            print("%-38s | %s | U=%7.0f" % (name, cells, u))
+        print(f"\n-- {builder}: leave-one-game-out (cost {LIVE_CUT_COST:g}:1) --")
+        for held, pick in loo_picks(table, tuned, builder):
+            print(f"  held out {held:8s} trained pick: {pick}")
+            print(f"    picked   {_loo_cell(table[pick][held], builder)}")
+            print(f"    shipping {_loo_cell(table[SHIPPING_LABEL][held], builder)}")
+
+
+def default_loo_switch() -> str:
+    """The `--switch` naming what NORMALIZE/SOFT_SCALE mirror — the app default."""
+    return next(k for k, v in LOO_SWITCHES.items() if v == (NORMALIZE, SOFT_SCALE))
+
+
+def _loo_main(args: list[str]) -> None:
+    """`--loo [--switch off|on|soft] [--knob NAME] [fixture ...]`."""
+    switch, knob, ids = default_loo_switch(), None, []
+    it = iter(args)
+    for a in it:
+        if a in ("--switch", "--knob"):
+            value = next(it, None)
+            if value is None:
+                raise SystemExit(f"{a} needs a value")
+            if a == "--switch":
+                if value not in LOO_SWITCHES:
+                    raise SystemExit(f"--switch {value}: one of {sorted(LOO_SWITCHES)}")
+                switch = value
+            else:
+                knob = value
+        elif a.startswith("--"):
+            raise SystemExit(f"--loo: unknown option {a}")
+        else:
+            ids.append(a)
+    loo_report(ids or list(LOO_FIXTURES), list(LOO_GUARDS), switch=switch, knob=knob)
 
 
 def _row(label: str, r: dict, total_rallies: int) -> str:
@@ -399,6 +611,15 @@ def _baseline_note(test_id: str) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     args = sys.argv[1:] if argv is None else argv
+    # `--loo` (CF-103) is its own mode with its own arguments; see LOO_FIXTURES.
+    if "--loo" in args:
+        previous = logging.root.manager.disable
+        logging.disable(logging.INFO)
+        try:
+            _loo_main([a for a in args if a != "--loo"])
+        finally:
+            logging.disable(previous)
+        return
     # `--exponents` (CF-376) prints the soft-scale axis instead of the sweep.
     exponents = "--exponents" in args
     args = [a for a in args if a != "--exponents"]
