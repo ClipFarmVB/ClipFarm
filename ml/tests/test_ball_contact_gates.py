@@ -3,10 +3,14 @@ Structural facts about find_contacts' speed gates (CF-103, #116).
 
 The #116 threshold sweep concluded that CONTACT_RESIDUAL_RATIO and
 CONTACT_HIT_SPEED_PXPS "aren't inert, they're masked by the residual floor". The
-multi-fixture re-run (ml/eval/tune_contacts.py) showed that was only half right:
+multi-fixture re-run (`tune_contacts --loo`) showed that was only half right:
 one of them really does move contacts once the floor is down, while
 CONTACT_RESIDUAL_RATIO is a no-op for a reason that lives in the *shape* of its
 condition rather than in any fixture. Those reasons are what this file pins.
+
+Relative to whatever CONTACT_HIT_SPEED_PXPS ships, never a value of it: the
+stage-2 proposal to lower it to 220 was superseded by CF-376's soft scale
+(#613), and a test naming a number would have to move with every retune.
 
 (A third gate, MIN_SPEED_PXPS, was pinned here as subsumed-but-live. CF-174
 went further and removed it as dead code — mutation-checked — so the class that
@@ -58,20 +62,21 @@ def struck_track(speed_pxps: float, frame_height: int = 360,
 
 class TestHitSpeedGate:
     def test_gate_rejects_a_ball_slower_than_the_threshold(self):
-        """The gate that CF-103 stage 2 retuned: below it, no contact at all."""
+        """The gate CF-103 stage 2 swept: below it, no contact at all."""
         assert find_contacts(struck_track(CONTACT_HIT_SPEED_PXPS * 0.4), frame_height=360) == []
         assert len(find_contacts(struck_track(CONTACT_HIT_SPEED_PXPS * 2.0), frame_height=360)) == 1
 
     def test_lowering_the_gate_admits_a_previously_rejected_hit(self, restore_constants):
         """
-        Directional guard for the 240 -> 220 change. A hit just under the old
-        threshold is exactly the population that move recovered: on the labeled
-        fixtures it was 4 whole rallies that had been producing zero contacts.
+        The knob is live once the residual floor is down: a hit just under the
+        shipping threshold — its residual well clear of the floor, so the hit
+        gate alone rejects it — comes back when the gate drops below it. That
+        is the population a lower gate recovers, and the reason the knob is in
+        SWEEPS and the LOO candidates at all.
         """
-        marginal = struck_track(230.0)
-        ball.CONTACT_HIT_SPEED_PXPS = 240.0
+        marginal = struck_track(CONTACT_HIT_SPEED_PXPS * 0.96)
         assert find_contacts(marginal, frame_height=360) == []
-        ball.CONTACT_HIT_SPEED_PXPS = 220.0
+        ball.CONTACT_HIT_SPEED_PXPS = CONTACT_HIT_SPEED_PXPS * 0.92
         assert len(find_contacts(marginal, frame_height=360)) == 1
 
 
