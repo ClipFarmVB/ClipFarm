@@ -60,6 +60,17 @@ def rally(frame_height: int, step: float = 0.33, per_leg: int = 5) -> TrackedBal
     return TrackedBall(positions=positions)
 
 
+def reversal(frame_height: int, speed_pxps: float) -> TrackedBall:
+    """One straight leg out and back at `speed_pxps`: a single redirect, so the
+    track holds exactly one candidate contact, gated at that speed."""
+    positions, x = [], 0.2 * frame_height
+    for i in range(16):
+        positions.append(BallPosition(frame=i, time=i * 0.33, x=x, y=0.5 * frame_height,
+                                      confidence=0.8))
+        x += (1.0 if i < 8 else -1.0) * speed_pxps * 0.33
+    return TrackedBall(positions=positions)
+
+
 def run(frame_height: int, **kw) -> str:
     """find_contacts output as bytes-comparable JSON."""
     return json.dumps(find_contacts(rally(frame_height), frame_height=frame_height, **kw),
@@ -110,10 +121,27 @@ class TestNoOpWhereTheScaleIsOne:
         assert run(0, soft_scale=True) == run(0)
 
     def test_past_the_clamp_point(self, monkeypatch):
-        """The revert is decided on the full scale, before softening."""
-        monkeypatch.setattr(ball, "CONTACT_SOFT_SCALE_EXPONENT", 0.25)
-        assert _scale_for(2160, log=False) == 1.0
-        assert run(2160, soft_scale=True) == run(2160)
+        """The revert is decided on the full scale, before softening.
+
+        The probe leg sits between the unscaled floor and the floor a gate
+        would use if softening ran *before* the clamp (2160/360 = 6.0, raised
+        to the patched 0.25, is ~1.57, which never reaches the cap and so never
+        reverts). Correct code admits it either way; softening first would
+        reject it with the flag on."""
+        exponent = 0.25
+        monkeypatch.setattr(ball, "CONTACT_SOFT_SCALE_EXPONENT", exponent)
+        height = 2160
+        assert _scale_for(height, log=False) == 1.0
+        unscaled_floor = ball.CONTACT_HIT_SPEED_PXPS
+        soft_first_floor = ball.CONTACT_HIT_SPEED_PXPS * (
+            height / ball.REFERENCE_FRAME_HEIGHT) ** exponent
+        speed = (unscaled_floor + soft_first_floor) / 2
+        assert unscaled_floor < speed < soft_first_floor
+        track = reversal(height, speed)
+        hard = find_contacts(track, frame_height=height)
+        assert len(hard) == 1, "the probe must clear the reverted gate"
+        assert find_contacts(track, frame_height=height, soft_scale=True) == hard
+        assert run(height, soft_scale=True) == run(height)
 
     def test_with_the_cf174_switch_off(self, monkeypatch):
         """The flag only has an effect while ball_contact_scale_enabled is on."""
@@ -166,15 +194,17 @@ class TestOnChangesWhichContactsExistNotWhatTheyAreCalled:
 
     def test_below_360p_soft_is_stricter_not_looser(self):
         """Documented in ball.py: the softened scale sits nearer 1.0 on both
-        sides, so under 360p the gates rise. 180 px/s at 240p clears the full
-        floor (160) and not the softened one (~196)."""
+        sides, so under 360p the gates rise. The probe speed sits midway between
+        the full 240p floor and the softened one (160 and ~196 px/s at today's
+        240 px/s constant), derived from the constant so a retune keeps it
+        between them."""
         height = 240
-        assert _scale_for(height, log=False) < 1.0
-        positions, x = [], 0.2 * height
-        for i in range(16):
-            positions.append(BallPosition(frame=i, time=i * 0.33, x=x, y=0.5 * height,
-                                          confidence=0.8))
-            x += (1.0 if i < 8 else -1.0) * 180.0 * 0.33
-        track = TrackedBall(positions=positions)
+        full = _scale_for(height, log=False)
+        assert full < 1.0
+        full_floor = ball.CONTACT_HIT_SPEED_PXPS * full
+        soft_floor = ball.CONTACT_HIT_SPEED_PXPS * full ** ball.CONTACT_SOFT_SCALE_EXPONENT
+        speed = (full_floor + soft_floor) / 2
+        assert full_floor < speed < soft_floor
+        track = reversal(height, speed)
         assert len(find_contacts(track, frame_height=height)) == 1
         assert find_contacts(track, frame_height=height, soft_scale=True) == []

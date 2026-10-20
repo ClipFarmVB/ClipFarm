@@ -245,10 +245,12 @@ MAX_VALIDATED_FRAME_HEIGHT = 1080   # tallest footage CF-174 was measured on
 #
 # CF-376 (#476): with `soft_scale=True` (settings.ball_contact_soft_scale_enabled,
 # default False) find_contacts gates on _scale_for(...) ** CONTACT_SOFT_SCALE_EXPONENT
-# instead. The full scale cost 1080p two thirds of its rallies — contacts on
-# the four real 1080p tracks fell 852 -> 248 and rallies 96 -> 32, 51 of the 64
-# lost at the MIN_RALLY_CONTACTS count gate — because both floors (hit speed
-# and residual) bind together, so softening one alone recovers little.
+# instead. On the four unlabelled 1080p tracks the full scale cut emitted
+# contacts 852 -> 248 and emitted rallies 96 -> 32, 51 of that 64 difference at
+# the MIN_RALLY_CONTACTS count gate. Those are counts of what the detector
+# emits, not recall: neither column is known to be real rallies. Both floors
+# (hit speed and residual) bind together, so softening one alone lifts the
+# emitted count little.
 #
 # What the flag does to the floor, in frame-heights/s: it no longer stays at
 # 0.667. At exponent e it is 0.667 * (h/360) ** (e - 1), so at 0.5 it is 0.385
@@ -265,6 +267,10 @@ MAX_VALIDATED_FRAME_HEIGHT = 1080   # tallest footage CF-174 was measured on
 #   - the action labels: classify_contact_action keeps dividing by the full
 #     scale, so the flag changes which contacts exist and never what a given
 #     contact is called.
+#
+# So the >1440p contact/bridge asymmetry noted above still stands with the flag
+# on, unresolved and unchanged: past the clamp the flag is a no-op and it never
+# touches the bridge. It stays the CF-229 interim.
 #
 # Below 360p the full scale is under 1.0 and the softened one sits closer to
 # 1.0, i.e. the flag makes sub-360p gates *stricter*. No fixture is below 360p

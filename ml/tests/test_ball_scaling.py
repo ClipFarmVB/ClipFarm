@@ -867,9 +867,10 @@ class TestWithTheSoftFlagOn:
             h: ball.CONTACT_HIT_SPEED_PXPS * self.soft_scale(h) / h
             for h in (360, 720, 1080, 1440)
         }
-        assert floors[360] == pytest.approx(240 / 360)
+        at_360 = ball.CONTACT_HIT_SPEED_PXPS / 360
+        assert floors[360] == pytest.approx(at_360)
         assert floors[1080] == pytest.approx(
-            (240 / 360) * 3.0 ** (ball.CONTACT_SOFT_SCALE_EXPONENT - 1))
+            at_360 * 3.0 ** (ball.CONTACT_SOFT_SCALE_EXPONENT - 1))
         assert floors[360] > floors[720] > floors[1080] > floors[1440]
 
     def test_every_band_is_at_least_as_wide_as_the_full_scales(self):

@@ -274,3 +274,35 @@ class TestGuardedDefaultsMatchProduction:
     def test_condense_mode_default_is_a_known_mode(self):
         mode = _settings_defaults()["condense_mode"]
         assert mode in {"rules", "guarded"}, f"unknown condense_mode default {mode!r}"
+
+
+# The eval modules that read the switches straight off app.config.settings
+# rather than through a tune_contacts mirror, so neither the mirror test above
+# nor api/tests' worker AST test can see them. Dropping `soft_scale=` from one
+# of these is silent: harness.config_snapshot would still record the flag as
+# on for a run that gated with it off.
+SETTINGS_CONSUMERS = (
+    REPO / "ml" / "eval" / "harness.py",
+    REPO / "ml" / "eval" / "diagnose_detection.py",
+)
+
+
+@pytest.mark.parametrize("module_py", SETTINGS_CONSUMERS, ids=lambda p: p.name)
+def test_the_settings_consumers_hand_find_contacts_both_switches(module_py):
+    """CF-376: each find_contacts call passes both switches, by value."""
+    tree = ast.parse(module_py.read_text(encoding="utf-8"))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name | ast.Attribute)
+        and (n.func.id if isinstance(n.func, ast.Name) else n.func.attr) == "find_contacts"
+    ]
+    assert calls, f"{module_py.name} no longer calls find_contacts"
+    for call in calls:
+        kwargs = {k.arg: ast.unparse(k.value) for k in call.keywords if k.arg}
+        assert kwargs.get("normalize") == "settings.ball_contact_scale_enabled", (
+            f"{module_py.name}:{call.lineno} find_contacts without the CF-174 switch"
+        )
+        assert kwargs.get("soft_scale") == "settings.ball_contact_soft_scale_enabled", (
+            f"{module_py.name}:{call.lineno} find_contacts without CF-376's soft flag"
+        )

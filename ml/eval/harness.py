@@ -221,8 +221,10 @@ def config_snapshot() -> dict:
             # two rows on opposite sides of this switch describe different
             # detectors while looking directly comparable.
             "ball_contact_scale_enabled": settings.ball_contact_scale_enabled,
-            # CF-376's softening of that scale, for the same reason: on and off
-            # are different contact sets at every height above 360p.
+            # CF-376's softening of that scale, for the same reason: while the
+            # CF-174 switch above is on, flag on and off are different contact
+            # sets at heights between 360p and the >1440p clamp. Elsewhere —
+            # switch off, 360p, past the clamp — the two runs are identical.
             "ball_contact_soft_scale_enabled": settings.ball_contact_soft_scale_enabled,
         }
         fields = getattr(type(settings), "model_fields", None) or getattr(type(settings), "__fields__", {})

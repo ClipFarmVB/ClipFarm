@@ -777,8 +777,8 @@ class Settings(BaseSettings):
     # 1080p, this runs softened contacts joined by a full-scale bridge — a new
     # combination, measured in the CF-376 PR on unlabelled fixtures only.
     #
-    # Ships False. On four real 1080p tracks it lifts rallies 32 -> 76 with the
-    # switch on (switch off: 96), and under the guarded builder it removes less
+    # Ships False. On four unlabelled 1080p tracks it lifts emitted rallies
+    # 32 -> 76 with the switch on (switch off: 96), and under the guarded builder it removes less
     # dead time while cutting less live play; that trade, and whether the extra
     # rallies are real, needs CF-375 (#475)'s labelled 1080p fixture before
     # this or any default moves.
