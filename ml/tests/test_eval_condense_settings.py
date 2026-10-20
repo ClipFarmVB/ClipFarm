@@ -70,7 +70,18 @@ SWITCH_SETTINGS = {"condense_mode"}
 # the coverage test above cannot see them. `ball_contact_scale_enabled` (CF-174)
 # is mirrored as tune_contacts.NORMALIZE and reaches both find_contacts and the
 # motion bridge, which is why drift here would move every swept number.
-NON_CONDENSE_TO_MIRROR = {"ball_contact_scale_enabled": "NORMALIZE"}
+# `ball_contact_soft_scale_enabled` (CF-376) is mirrored as SOFT_SCALE and reaches
+# find_contacts only — the bridge keeps the full scale in production too.
+NON_CONDENSE_TO_MIRROR = {
+    "ball_contact_scale_enabled": "NORMALIZE",
+    "ball_contact_soft_scale_enabled": "SOFT_SCALE",
+}
+# The keyword each mirrored setting arrives as, per callee. SOFT_SCALE is not
+# passed to the bridge on purpose, so it is listed for find_contacts only.
+SWITCH_KWARGS = {
+    "find_contacts": ("normalize", "soft_scale"),
+    "bridge_windows_by_motion": ("normalize",),
+}
 
 
 def _settings_defaults() -> dict[str, object]:
@@ -219,10 +230,11 @@ class TestTuneContactsMatchesProduction:
         assert calls, f"{module_py.name} no longer calls {callee}"
         for call in calls:
             kwargs = {k.arg for k in call.keywords if k.arg}
-            assert "normalize" in kwargs, (
-                f"{module_py.name} calls {callee} at line {call.lineno} without "
-                "normalize=, so that half of the run ignores the CF-174 switch"
-            )
+            for kwarg in SWITCH_KWARGS[callee]:
+                assert kwarg in kwargs, (
+                    f"{module_py.name} calls {callee} at line {call.lineno} without "
+                    f"{kwarg}=, so that half of the run ignores the switch it carries"
+                )
 
     def test_every_condense_setting_is_covered(self):
         """A new condense_* knob should be mapped here, not silently skipped."""

@@ -23,6 +23,14 @@ the tuner's and the table says so. Re-recording also needs the R2 ball caches
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts test2
 
+`--exponents` (CF-376, #476) prints the soft-scale axis instead of the sweep:
+switch off, switch on, and on + soft at each exponent in EXPONENT_AXIS, with
+rally counts and dead-time numbers for both condense builders. It reads the
+dump if there is one and the fixture's R2 ball cache otherwise (`load_track`),
+so it also runs on test1.
+
+  docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts test2 --exponents
+
 An optional fixture id selects which dump to sweep; it defaults to test1. Each
 needs its own `{test_id}_ball_track.json` from diagnose_detection.py — the
 tuner reads a dump, never a video, so a fixture with no dump mounted fails at
@@ -67,6 +75,11 @@ BRIDGE: dict[str, Any] = dict(speed_pxps=150.0, fast_fraction=0.35, max_bridge_s
 # configuration nothing runs. Held to the app default by
 # test_eval_condense_settings.py.
 NORMALIZE: bool = True
+# CF-376's soft flag (app.config `ball_contact_soft_scale_enabled`), mirrored for
+# the same reason and held to the app default the same way. It reaches
+# find_contacts only: production gives the bridge the full scale, so this does
+# too. Read only while NORMALIZE is on — off, the scale is already 1.0.
+SOFT_SCALE: bool = False
 
 TUNABLES = (
     "CONTACT_RESIDUAL_RATIO", "CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_HIT_SPEED_PXPS",
@@ -152,6 +165,146 @@ def load(test_id: str = DEFAULT_FIXTURE):
     return track, positions, d["frame_height"], load_deadtime_fixture(test_id)
 
 
+def load_track(test_id: str = DEFAULT_FIXTURE):
+    """`load`, falling back to the fixture's R2 ball cache when there is no dump.
+
+    test1 has no `_ball_track.json` dump, so `load` fails on it. Its track is in
+    `ball_caches/` under the fixture's `source_video_md5`, which is where
+    `deadtime_variants.load_game` reads it from; the frame height comes from the
+    fixture's `source_frame_height` the same way. A dump, when present, still
+    wins, so every fixture that `load` could already read is read unchanged.
+    """
+    if (RESULTS_DIR / f"{test_id}_ball_track.json").exists():
+        return load(test_id)
+    # Lazy: deadtime_variants imports this module.
+    from ml.eval.deadtime_variants import BALL_CACHE_DIR
+
+    fx = load_deadtime_fixture(test_id)
+    md5 = fx.raw.get("source_video_md5")
+    cache = BALL_CACHE_DIR / f"{md5}.json"
+    if not md5 or not cache.exists():
+        raise SystemExit(
+            f"{test_id}: no {test_id}_ball_track.json dump and no ball cache "
+            f"{cache.name} (see ml/eval/README.md)"
+        )
+    raw = json.loads(cache.read_text(encoding="utf-8"))["positions"]
+    track = B.TrackedBall(positions=[B.BallPosition(**p) for p in raw])
+    positions = [{"time": p["time"], "x": p["x"], "y": p["y"]} for p in raw]
+    return track, positions, int(fx.raw.get("source_frame_height", 1080)), fx
+
+
+def gate_scale(frame_h: int, *, normalize: bool, soft_scale: bool,
+               exponent: float | None = None) -> float:
+    """The scale find_contacts actually gates on, for a table header.
+
+    `_scale_for` alone is the full CF-174 scale, which is not the number in
+    force once CF-376's soft flag is on. `exponent` defaults to the module's.
+    """
+    scale = B._scale_for(frame_h, log=False, normalize=normalize)
+    if soft_scale and scale != 1.0:
+        e = B.CONTACT_SOFT_SCALE_EXPONENT if exponent is None else exponent
+        scale = scale ** e
+    return scale
+
+
+# CF-376 (#476): the exponent axis. Each row is one contact setting —
+# (label, normalize, soft_scale, exponent) — scored on the rules path this tool
+# already replays AND on the guarded path (`deadtime_variants.v5_guarded`, which
+# calls the builder production ships). `exponent` None is the module constant.
+# Soft at 1.0 is the "switch on" row again by construction (x ** 1.0 == x); it
+# is kept as the control that says so.
+#
+# Kept apart from SWEEPS: these are not ball-constant overrides, and SWEEPS'
+# guards (no value equal to the default, a pinned key set) are about those.
+EXPONENT_AXIS: tuple[tuple[str, bool, bool, float | None], ...] = (
+    ("switch off", False, False, None),
+    ("switch on", True, False, None),
+    ("on + soft e=1", True, True, 1.0),
+    ("on + soft e=0.75", True, True, 0.75),
+    ("on + soft e=0.5", True, True, 0.5),
+    ("on + soft e=0.25", True, True, 0.25),
+)
+
+
+def score_setting(loaded, *, normalize: bool, soft_scale: bool,
+                  exponent: float | None = None,
+                  overrides: dict[str, float] | None = None) -> dict[str, Any]:
+    """Contacts, rallies, and both condense builders' dead-time numbers for one
+    contact setting on one loaded fixture (`load_track`'s return).
+
+    The bridge gets `normalize` and not `soft_scale`, as in production: soft
+    contacts joined by a full-scale bridge is the combination the flag ships.
+    `overrides` sets ball constants for the duration of the call, as
+    `_sweep`'s `score` does, and both are restored on the way out.
+    """
+    from ml.eval import deadtime_variants as dv
+
+    track, positions, frame_h, fx = loaded
+    overrides = dict(overrides or {})
+    if exponent is not None:
+        overrides["CONTACT_SOFT_SCALE_EXPONENT"] = exponent
+    saved = {k: getattr(B, k) for k in overrides}
+    try:
+        for k, v in overrides.items():
+            setattr(B, k, v)
+        contacts = B.find_contacts(track, frame_height=frame_h, normalize=normalize,
+                                   soft_scale=soft_scale)
+    finally:
+        for k, v in saved.items():
+            setattr(B, k, v)
+
+    rallies = B.contacts_to_rallies(contacts, fx.duration, frame_h)
+    rules = active_windows_from_contacts(
+        [{"time": c["time"]} for c in contacts], fx.duration, **COND)
+    rules = bridge_windows_by_motion(rules, positions, frame_height=frame_h,
+                                     normalize=normalize, **BRIDGE)
+    game = dv.Game(
+        test_id=fx.test_id, video_file="", duration=fx.duration, frame_height=frame_h,
+        positions=positions, contacts=contacts, human_keep=sorted(fx.keep), raw=fx.raw,
+    )
+    guarded = dv.v5_guarded(game)
+    out: dict[str, Any] = dict(
+        contacts=len(contacts),
+        segments=len(B.contact_segments(contacts)),
+        rallies=len(rallies),
+        scale=gate_scale(frame_h, normalize=normalize, soft_scale=soft_scale,
+                         exponent=exponent),
+    )
+    for name, windows in (("rules", rules), ("guarded", guarded)):
+        s = evaluate_deadtime(fx.keep, windows, fx.duration)
+        out[name] = dict(dead=s.dead_removed_pct, live=s.live_removed_sec,
+                         recall=s.kept_play_pct)
+    return out
+
+
+def _pct(x: float | None) -> str:
+    return "     -" if x is None else f"{100 * x:5.1f}%"
+
+
+def exponent_sweep(test_id: str) -> None:
+    """Print EXPONENT_AXIS for one fixture: `tune_contacts <id> --exponents`.
+
+    Rally counts on an unlabelled fixture say how many rallies the detector
+    emits, not whether they are real; the dead-time columns are scored against
+    the fixture's human in-play spans.
+    """
+    loaded = load_track(test_id)
+    frame_h = loaded[2]
+    print(f"{test_id}: frame_height={frame_h}, CF-376 exponent axis "
+          "(dead-rm / live-lost / recall per condense builder)\n")
+    print("%-18s %6s %5s %5s %5s | %-24s | %-24s" % (
+        "setting", "scale", "cont", "segs", "rally",
+        "rules  dead  live recall", "guarded dead live recall"))
+    for label, normalize, soft, exponent in EXPONENT_AXIS:
+        r = score_setting(loaded, normalize=normalize, soft_scale=soft, exponent=exponent)
+        cols = []
+        for name in ("rules", "guarded"):
+            m = r[name]
+            cols.append("%s %5.0fs %s" % (_pct(m["dead"]), m["live"], _pct(m["recall"])))
+        print("%-18s %6.2f %5d %5d %5d | %-24s | %-24s" % (
+            label, r["scale"], r["contacts"], r["segments"], r["rallies"], *cols))
+
+
 def _row(label: str, r: dict, total_rallies: int) -> str:
     """One results line. The rally denominator comes from the fixture.
 
@@ -228,6 +381,9 @@ def _baseline_note(test_id: str) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     args = sys.argv[1:] if argv is None else argv
+    # `--exponents` (CF-376) prints the soft-scale axis instead of the sweep.
+    exponents = "--exponents" in args
+    args = [a for a in args if a != "--exponents"]
     test_id = args[0] if args else DEFAULT_FIXTURE
 
     # Restored on the way out: main() takes an argument now, so it is callable
@@ -236,7 +392,10 @@ def main(argv: list[str] | None = None) -> None:
     previous = logging.root.manager.disable
     logging.disable(logging.INFO)
     try:
-        _sweep(test_id)
+        if exponents:
+            exponent_sweep(test_id)
+        else:
+            _sweep(test_id)
     finally:
         logging.disable(previous)
 
@@ -250,7 +409,8 @@ def _sweep(test_id: str) -> None:
         for k, v in defaults.items():
             setattr(B, k, overrides.get(k, v))
         try:
-            contacts = B.find_contacts(track, frame_height=frame_h, normalize=NORMALIZE)
+            contacts = B.find_contacts(track, frame_height=frame_h, normalize=NORMALIZE,
+                                       soft_scale=SOFT_SCALE)
             w = active_windows_from_contacts(
                 [{"time": c["time"]} for c in contacts], fx.duration, **COND)
             w = bridge_windows_by_motion(w, positions, frame_height=frame_h,
@@ -278,10 +438,11 @@ def _sweep(test_id: str) -> None:
     # into the middle of the results table, on exactly the fixtures this tool was
     # extended to cover. classify_contact_action passes log=False for the same
     # reason.
-    scale = B._scale_for(frame_h, log=False, normalize=NORMALIZE)
+    scale = gate_scale(frame_h, normalize=NORMALIZE, soft_scale=SOFT_SCALE)
     units = ("labels below are effective px/s" if scale == 1.0
              else "labels below are REFERENCE px/s — multiply by the scale")
-    print(f"fixture frame_height={frame_h} -> CF-174 threshold scale {scale:.2f}"
+    soft = " (CF-376 soft)" if SOFT_SCALE and scale != 1.0 else ""
+    print(f"fixture frame_height={frame_h} -> CF-174 threshold scale {scale:.2f}{soft}"
           f"  ({units})\n")
     print("%-34s %5s %5s %8s %8s %9s %9s %9s" % (
         "config", "cont", "win", "rally", "live-lost", "dead-rm", "recall", "condense"))

@@ -402,3 +402,52 @@ def test_a_360p_fixture_draws_no_conclusion_at_all():
     assert "No conclusion available from this fixture" in text
     assert "costs no rallies" not in text
     assert "CF-375" in text, "and it names the card that fixes the gap"
+
+
+def test_the_soft_column_sits_between_on_and_off_and_gets_its_own_verdict():
+    """CF-376's third column. Both scaled columns are judged against OFF."""
+    on = ladder([2, 3])
+    soft = ladder([3, 3])
+    off = ladder([3, 3, 3])
+    text = report(on, off, 1080, 3.0, soft=soft, soft_scale=1.73)
+
+    header = next(line for line in text.splitlines() if "ON + SOFT" in line and "OFF" in line)
+    assert header.index("scale ON") < header.index("ON + SOFT") < header.index("scale OFF")
+    assert "gates at scale 1.73" in text
+    assert "Scaling costs 2 rallies" in text
+    assert "Soft scaling costs 1 rally" in text
+
+
+def test_a_360p_fixture_says_all_three_columns_are_one_run():
+    lad = ladder([3, 4])
+    text = report(lad, lad, 360, 1.0, soft=lad, soft_scale=1.0)
+    assert "the three columns below are the same run" in text
+    assert "No conclusion available from this fixture" in text
+    assert "Soft scaling" not in text
+
+
+def test_a_fixture_with_no_dump_is_read_from_its_ball_cache(tmp_path, monkeypatch):
+    """test1 has no `_ball_track.json`; `load_track` reads the R2 cache the
+    fixture's md5 names, with the fixture's declared frame height."""
+    import json
+
+    import ml.eval.deadtime_variants as dv
+    import ml.eval.tune_contacts as TC
+    from ml.eval.harness import DeadFixture
+
+    results, caches = tmp_path / "results", tmp_path / "caches"
+    results.mkdir()
+    caches.mkdir()
+    positions = [{"frame": i, "time": i / 3, "x": 10.0 * i, "y": 5.0, "confidence": 0.9}
+                 for i in range(5)]
+    (caches / "abc.json").write_text(json.dumps({"positions": positions}))
+    fx = DeadFixture(test_id="t", keep=[(0.0, 1.0)], duration=2.0,
+                     raw={"source_video_md5": "abc", "source_frame_height": 360})
+    monkeypatch.setattr(TC, "RESULTS_DIR", results)
+    monkeypatch.setattr(dv, "BALL_CACHE_DIR", caches)
+    monkeypatch.setattr(TC, "load_deadtime_fixture", lambda _id: fx)
+
+    track, pos, frame_h, got = TC.load_track("t")
+    assert frame_h == 360 and got is fx
+    assert [p.frame for p in track.positions] == [0, 1, 2, 3, 4]
+    assert pos[2] == {"time": 2 / 3, "x": 20.0, "y": 5.0}
