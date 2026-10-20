@@ -537,8 +537,7 @@ class TestProducersForwardConfidence:
     behaviourally in TestLoadersForwardTheSourceValue below.
 
     Parsed rather than grepped, per CF-279: a regex over these lines loses to
-    reformatting, and all five sites are already spelled differently from one
-    another.
+    reformatting.
     """
 
     ROOT = Path(__file__).resolve().parents[2]
