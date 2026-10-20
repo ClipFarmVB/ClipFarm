@@ -25,7 +25,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ml.eval.harness import load_deadtime_fixture
-from ml.eval.tune_contacts import BRIDGE, COND, NORMALIZE, SOFT_SCALE
+from ml.eval.tune_contacts import (
+    BRIDGE,
+    COND,
+    NORMALIZE,
+    SOFT_SCALE,
+    STATIC_SITE_FILTER,
+    apply_static_site_filter,
+)
 from ml.pipeline.ball import BallPosition, TrackedBall, find_contacts
 from ml.pipeline.dead_time import (
     Interval,
@@ -75,15 +82,20 @@ def load_game(test_id: str) -> Game:
         raise SystemExit(f"{test_id}: ball cache {cache} missing (see ml/eval/README.md)")
     positions = json.loads(cache.read_text())["positions"]
     tracker = TrackedBall(positions=[BallPosition(**p) for p in positions])
+    # CF-229: this module's own binding of the mirror, as NORMALIZE is, so
+    # visualize_deadtime --static-site-filter can flip it for one run.
+    tracker, dicts = apply_static_site_filter(
+        tracker,
+        [{"time": p["time"], "x": p["x"], "y": p["y"], "confidence": p["confidence"]}
+         for p in positions],
+        frame_h, enabled=STATIC_SITE_FILTER,
+    )
     return Game(
         test_id=test_id,
         video_file=fx.raw.get("source_video_file", f"{test_id}.mp4"),
         duration=fx.duration,
         frame_height=frame_h,
-        positions=[
-            {"time": p["time"], "x": p["x"], "y": p["y"], "confidence": p["confidence"]}
-            for p in positions
-        ],
+        positions=dicts,
         contacts=find_contacts(tracker, frame_height=frame_h, normalize=NORMALIZE,
                                soft_scale=SOFT_SCALE),
         human_keep=sorted(fx.keep),

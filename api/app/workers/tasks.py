@@ -1157,10 +1157,20 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             ball_positions: list[dict] = []
             if _os.environ.get("ROBOFLOW_API_KEY"):
                 try:
-                    from ml.pipeline.ball import find_contacts, contacts_to_rallies
+                    from ml.pipeline.ball import (
+                        contacts_to_rallies, filter_static_sites, find_contacts,
+                    )
                     tracker   = _track_ball_cached(
                         local_video, tmp, sample_every=sample_every, r2_key=r2_key,
                         video_md5=video_md5, on_progress=progress.update,
+                    )
+                    # CF-229: after the cache, before anything reads the track,
+                    # so contacts and the condense stage's positions below see
+                    # the same one. Off returns `tracker` itself. See
+                    # settings.ball_static_site_filter_enabled.
+                    tracker   = filter_static_sites(
+                        tracker, _frame_h,
+                        enabled=_cfg.ball_static_site_filter_enabled,
                     )
                     contacts  = find_contacts(
                         tracker, frame_height=_frame_h,

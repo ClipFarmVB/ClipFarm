@@ -89,6 +89,12 @@ NORMALIZE: bool = True
 # find_contacts only: production gives the bridge the full scale, so this does
 # too. Read only while NORMALIZE is on — off, the scale is already 1.0.
 SOFT_SCALE: bool = False
+# CF-229's static-site filter (app.config `ball_static_site_filter_enabled`),
+# mirrored and held to the app default the same way. It is track-level, so it
+# is applied where the track loads — `load`, `load_track` and
+# deadtime_variants.load_game — and every consumer downstream of those sees it,
+# as every consumer of the track does in production.
+STATIC_SITE_FILTER: bool = False
 
 TUNABLES = (
     "CONTACT_RESIDUAL_RATIO", "CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_HIT_SPEED_PXPS",
@@ -160,7 +166,7 @@ def padding_label(pb: float, pa: float, mg: float) -> str:
     return f"pad {pb:g}/{pa:g} merge {mg:g}"
 
 
-def load(test_id: str = DEFAULT_FIXTURE):
+def load(test_id: str = DEFAULT_FIXTURE, *, static_site_filter: bool | None = None):
     d = json.loads((RESULTS_DIR / f"{test_id}_ball_track.json").read_text(encoding="utf-8"))
     fps = d["fps"]
     track = B.TrackedBall(positions=[
@@ -184,10 +190,32 @@ def load(test_id: str = DEFAULT_FIXTURE):
         {k: p[k] for k in ("time", "x", "y", "confidence") if k in p}
         for p in d["positions"]
     ]
+    track, positions = apply_static_site_filter(
+        track, positions, d["frame_height"], enabled=static_site_filter)
     return track, positions, d["frame_height"], load_deadtime_fixture(test_id)
 
 
-def load_track(test_id: str = DEFAULT_FIXTURE):
+def apply_static_site_filter(track, positions: list[dict], frame_h: int, *,
+                             enabled: bool | None = None):
+    """CF-229's filter on a loaded track and its position dicts, kept in step.
+
+    `enabled=None` reads the STATIC_SITE_FILTER mirror at call time, so a tool
+    that flips the mirror for one run (visualize_deadtime) is honoured. Off
+    returns both arguments untouched — the same objects — which is what keeps
+    every number this module printed before the filter existed unchanged.
+
+    `positions` is index-aligned with `track.positions` (both loaders build
+    them from the same list), so the dicts follow the positions that survive.
+    """
+    on = STATIC_SITE_FILTER if enabled is None else enabled
+    filtered = B.filter_static_sites(track, frame_h, enabled=on)
+    if filtered is track:
+        return track, positions
+    kept = {id(p) for p in filtered.positions}
+    return filtered, [d for p, d in zip(track.positions, positions) if id(p) in kept]
+
+
+def load_track(test_id: str = DEFAULT_FIXTURE, *, static_site_filter: bool | None = None):
     """`load`, falling back to the fixture's R2 ball cache when there is no dump.
 
     test1 has no `_ball_track.json` dump, so `load` fails on it. Its track is in
@@ -197,7 +225,11 @@ def load_track(test_id: str = DEFAULT_FIXTURE):
     wins, so every fixture that `load` could already read is read unchanged.
     """
     if (RESULTS_DIR / f"{test_id}_ball_track.json").exists():
-        return load(test_id)
+        # Forwarded only when set, so a one-argument stand-in for `load` (the
+        # tests swap one in) keeps working; unset, `load` reads the mirror.
+        if static_site_filter is None:
+            return load(test_id)
+        return load(test_id, static_site_filter=static_site_filter)
     # Lazy: deadtime_variants imports this module.
     from ml.eval.deadtime_variants import BALL_CACHE_DIR
 
@@ -218,7 +250,10 @@ def load_track(test_id: str = DEFAULT_FIXTURE):
         {"time": p["time"], "x": p["x"], "y": p["y"], "confidence": p["confidence"]}
         for p in raw
     ]
-    return track, positions, int(fx.raw.get("source_frame_height", 1080)), fx
+    frame_h = int(fx.raw.get("source_frame_height", 1080))
+    track, positions = apply_static_site_filter(
+        track, positions, frame_h, enabled=static_site_filter)
+    return track, positions, frame_h, fx
 
 
 def gate_scale(frame_h: int, *, normalize: bool, soft_scale: bool,

@@ -413,6 +413,28 @@ because the row above that line looks exactly like an answer.
 It is an instrument. It changes no threshold — the fix is #233's, and that card
 is assigned.
 
+### The static-site filter (CF-229, ships off)
+
+`ball.drop_static_sites` is #233's first half: it drops detections that dwell at
+a fixed object, after the ball cache loads and before contacts, rallies and the
+condense stage. It is behind `ball_static_site_filter_enabled` (default
+`False`), mirrored for the eval tools as `tune_contacts.STATIC_SITE_FILTER` and
+applied where they load a track (`load`, `load_track`, `load_game`), so with it
+off every number in this README is unchanged. To measure it on:
+
+```bash
+python -m ml.eval.track_quality test4 --static-site-filter on
+python -m ml.eval.visualize_deadtime --static-site-filter on   # any --contact-scale
+```
+
+`--dump-windows` records the position as `"static_site_filter"`, and
+`harness --windows-json` refuses a dump whose position disagrees with
+`BALL_STATIC_SITE_FILTER_ENABLED`, as it does for the contact scale. The
+measurements and the open trade-offs (held serves, the guarded builder's
+abstain margin on test4) are in the PR that added it; the rally counts there
+are from unlabelled 1080p fixtures and are evidence for the flag, not for a
+default.
+
 ## Measuring the MIN_RALLY_CONTACTS cliff (CF-376)
 
 CF-174 scaled the contact **speed** thresholds by `frame_height / 360` and left

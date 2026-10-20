@@ -562,17 +562,20 @@ def apply_contact_scale(position: str) -> None:
 
 
 def dump_windows(out_dir: Path, test_id: str, key: str, windows: list[Interval],
-                 contact_scale: str) -> Path:
+                 contact_scale: str, static_site_filter: str = "off") -> Path:
     """
     Write one variant's keep-windows as {"keep": [{start, end}]}, the shape
     harness --windows-json reads, rounded to 3dp as the harness's own
     --dump-windows rounds them. The position they were scored at rides along as
-    "contact_scale", which the harness checks against its settings snapshot.
+    "contact_scale", which the harness checks against its settings snapshot;
+    CF-229's filter position rides along as "static_site_filter", checked the
+    same way.
     """
     path = out_dir / f"{test_id}_{key}.json"
     keep = [{"start": round(a, 3), "end": round(b, 3)} for a, b in windows]
-    path.write_text(json.dumps({"contact_scale": contact_scale, "keep": keep}, indent=2) + "\n",
-                    encoding="utf-8")
+    body = {"contact_scale": contact_scale, "static_site_filter": static_site_filter,
+            "keep": keep}
+    path.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
     return path
 
 
@@ -581,6 +584,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--contact-scale", choices=CONTACT_SCALE_POSITIONS, default=mirror_position(),
                     help="side of the CF-174 switch to score: off, on, or on with CF-376's "
                          "soft flag (default: the settings mirror, currently %(default)s)")
+    ap.add_argument("--static-site-filter", choices=("off", "on"),
+                    default="on" if dv.STATIC_SITE_FILTER else "off",
+                    help="CF-229's static-site filter on the loaded tracks (default: the "
+                         "settings mirror, currently %(default)s)")
     ap.add_argument("--dump-windows", type=Path, metavar="DIR",
                     help=f"also write {BASELINE}'s and {SHIPPING}'s keep-windows to "
                          f"DIR/{{test}}_{{{BASELINE}|{SHIPPING}}}.json, for harness --windows-json")
@@ -593,14 +600,15 @@ def main(argv: list[str] | None = None) -> None:
     # level; the globals are this script's addition): the position is for
     # this run only, and a leftover one would become the next in-process run's
     # "settings mirror" default and the position every later load_game reads.
-    saved = (dv.NORMALIZE, dv.SOFT_SCALE)
+    saved = (dv.NORMALIZE, dv.SOFT_SCALE, dv.STATIC_SITE_FILTER)
     previous = logging.root.manager.disable
     try:
         apply_contact_scale(args.contact_scale)
+        dv.STATIC_SITE_FILTER = args.static_site_filter == "on"
         logging.disable(logging.INFO)
         _ladder(args)
     finally:
-        dv.NORMALIZE, dv.SOFT_SCALE = saved
+        dv.NORMALIZE, dv.SOFT_SCALE, dv.STATIC_SITE_FILTER = saved
         logging.disable(previous)
 
 
@@ -622,10 +630,11 @@ def _ladder(args: argparse.Namespace) -> None:
         args.dump_windows.mkdir(parents=True, exist_ok=True)
         for tid in TEST_IDS:
             for key in (BASELINE, SHIPPING):
-                dump_windows(args.dump_windows, tid, key, all_results[tid][key][0], args.contact_scale)
+                dump_windows(args.dump_windows, tid, key, all_results[tid][key][0],
+                             args.contact_scale, args.static_site_filter)
         print(f"Dumped {BASELINE}/{SHIPPING} keep-windows -> {args.dump_windows}\n")
 
-    print(f"Contact scale: {args.contact_scale}\n")
+    print(f"Contact scale: {args.contact_scale}  static-site filter: {args.static_site_filter}\n")
 
     print(f"Headline net covers {'+'.join(COMPARABLE)}; "
           f"{'+'.join(EXCLUDED_FROM_TOTALS)} are shown but excluded from it "

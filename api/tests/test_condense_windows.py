@@ -430,3 +430,47 @@ def test_the_worker_hands_find_contacts_both_switches():
         kwargs = {k.arg: ast.unparse(k.value) for k in call.keywords if k.arg}
         assert kwargs.get("normalize") == "_cfg.ball_contact_scale_enabled"
         assert kwargs.get("soft_scale") == "_cfg.ball_contact_soft_scale_enabled"
+
+
+def test_the_worker_filters_static_sites_before_anything_reads_the_track():
+    """
+    CF-229: process_game_task applies `ball_static_site_filter_enabled` to the
+    cached track once, rebinding `tracker`, before the find_contacts call that
+    reads it — so contacts and the condense stage's positions, which are both
+    read off `tracker` afterwards, see the same track. Dropping `enabled=`
+    would not even run (it is required), but reading the wrong setting, or
+    filtering into a name nothing reads, would be silent.
+    """
+    import ast
+
+    tasks_py = Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks.py"
+    tree = ast.parse(tasks_py.read_text(encoding="utf-8"))
+    assigns = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Name) and n.value.func.id == "filter_static_sites"
+    ]
+    assert len(assigns) == 1, "tasks.py should filter the ball track exactly once"
+    (assign,) = assigns
+    assert [ast.unparse(t) for t in assign.targets] == ["tracker"]
+    call = assign.value
+    assert ast.unparse(call.args[0]) == "tracker"
+    kwargs = {k.arg: ast.unparse(k.value) for k in call.keywords if k.arg}
+    assert kwargs.get("enabled") == "_cfg.ball_static_site_filter_enabled"
+
+    finds = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        and n.func.id == "find_contacts"
+    ]
+    assert finds and all(ast.unparse(f.args[0]) == "tracker" for f in finds)
+    assert all(assign.lineno < f.lineno for f in finds), (
+        "find_contacts runs before the static-site filter, so it reads the unfiltered track"
+    )
+
+
+def test_the_static_site_filter_ships_off():
+    """CF-229: the flag is evidence-gathering only; flipping it is a decision."""
+    from app.config import Settings
+
+    assert Settings.model_fields["ball_static_site_filter_enabled"].default is False

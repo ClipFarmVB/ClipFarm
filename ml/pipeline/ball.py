@@ -131,6 +131,42 @@ SEG_MAX_SPEED_PXPS        = 1200.0  # px/s: faster displacement = track hop, spl
 SEG_MIN_POSITIONS         = 4       # segments shorter than this are junk (hops/flicker)
 SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/spare balls
 
+# ── Static-site filter config (CF-229) ────────────────────────────────────────
+# The lock-on the block above blames: on test4 the tracker spends ~56% of its
+# samples parked on three fixed points in the frame — one alone holds 1283 of
+# 3663 positions across the whole 20 minutes. `drop_static_sites` removes
+# detections at such a SITE after the ball cache loads and before segmentation,
+# so contacts, rallies and the condense stage never see them. It runs on cached
+# positions and never inside `track_ball`, so the cached track is unchanged and
+# TRACKING_CACHE_VERSION does not move.
+#
+# A position is dropped only when BOTH hold:
+#
+#   * it sits at a recurring site — at least STATIC_SITE_MIN_POSITIONS
+#     detections anywhere in the video lie within STATIC_SITE_RADIUS_PX of it,
+#     and those detections span at least STATIC_SITE_MIN_SPAN_SEC. A fixed
+#     object is detected at one spot for minutes; a ball held for a serve is
+#     still for a few seconds, and the server's hand is not at the same few
+#     pixels serve after serve. That span is what keeps held serves.
+#   * it is part of a run of at least STATIC_SITE_MIN_RUN consecutive track
+#     positions that all sit at such a site — a dwell, not a single site hit
+#     interleaved with real flight. Dropping the single hits as well took test4
+#     to 1.6% stationary, but cost 16 -> 7 rallies there and 71 -> 56 on 360p
+#     test1, and thinned test4's track until the guarded condense builder
+#     abstained. Runs alone: 7.7%, 16 -> 17 and 71 -> 73. (Unlabelled 1080p
+#     rally counts; evidence for the flag, not for a default.)
+#
+# Off by default (settings.ball_static_site_filter_enabled). The radius is in
+# REFERENCE_FRAME_HEIGHT pixels and scales by frame_height / 360 at use — a
+# plain geometric ratio, not _scale_for: the CF-174 kill switch and its >1440p
+# clamp are about px/s gates, and a locked-on detection's jitter in pixels
+# grows with the frame regardless of either. The counts and the run are in
+# positions at the pipeline's ~3 samples/s (sample_every = round(fps / 3)).
+STATIC_SITE_RADIUS_PX     = 6.0    # px at 360p: detector jitter around a fixed object
+STATIC_SITE_MIN_POSITIONS = 30     # detections at the spot before it is a site (~10s of dwell)
+STATIC_SITE_MIN_SPAN_SEC  = 120.0  # s: first-to-last at the spot; a held serve lasts seconds
+STATIC_SITE_MIN_RUN       = 5      # consecutive positions at a site before they are dropped
+
 # ── Contact detection config ──────────────────────────────────────────────────
 # A contact is a deviation from ballistic (free-fall) flight. Raw angle/speed
 # thresholds misfire badly at coarse sampling: gravity alone bends the
@@ -822,6 +858,115 @@ def _scale_for(frame_height: int, *, log: bool = True, normalize: bool = True) -
     return scale
 
 
+def _static_site_radius(frame_height: int) -> float:
+    """STATIC_SITE_RADIUS_PX in this video's pixels (frame_height / 360).
+
+    An unknown height (<= 0) falls back to the 360p radius and says so, as
+    _scale_for does for the contact gates: on 1080p footage that radius is a
+    third of what it should be, so the filter under-fires rather than over-fires.
+    """
+    if frame_height <= 0:
+        logger.warning(
+            "static-site filter without a frame height — assuming %.0fpx tracking "
+            "space; the %.0fpx site radius will be too small on taller footage",
+            REFERENCE_FRAME_HEIGHT, STATIC_SITE_RADIUS_PX,
+        )
+        return STATIC_SITE_RADIUS_PX
+    return STATIC_SITE_RADIUS_PX * frame_height / REFERENCE_FRAME_HEIGHT
+
+
+def drop_static_sites(positions: list[BallPosition], frame_height: int) -> list[BallPosition]:
+    """
+    The track without its dwells at fixed objects (CF-229).
+
+    A position goes when it sits at a recurring site and inside a run of at
+    least STATIC_SITE_MIN_RUN consecutive site positions; see the static-site
+    config block for both rules and the measurements behind them. Everything
+    else is returned as the same objects, in the same order, so a track with no
+    site comes back equal to the one that went in.
+
+    "Recurring site" is decided per position, by the detections within the
+    scaled radius of it: there are no site centroids to drift, and a dense site
+    straddling a grid line is still one site. The grid only bounds the search —
+    a cell is the radius wide, so every neighbour is in the 3x3 block around it.
+    """
+    n = len(positions)
+    if n < STATIC_SITE_MIN_POSITIONS:
+        return list(positions)
+
+    radius = _static_site_radius(frame_height)
+    t = np.array([p.time for p in positions])
+    x = np.array([p.x for p in positions])
+    y = np.array([p.y for p in positions])
+
+    cells: dict[tuple[int, int], list[int]] = {}
+    for i in range(n):
+        cells.setdefault((int(x[i] // radius), int(y[i] // radius)), []).append(i)
+    grid = {k: np.asarray(v) for k, v in cells.items()}
+
+    at_site = np.zeros(n, dtype=bool)
+    for (cx, cy), members in grid.items():
+        block = [grid[k] for k in ((cx + dx, cy + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+                 if k in grid]
+        candidates = np.concatenate(block)
+        if len(candidates) < STATIC_SITE_MIN_POSITIONS:
+            continue
+        for i in members:
+            near = candidates[np.hypot(x[candidates] - x[i], y[candidates] - y[i]) <= radius]
+            if (len(near) >= STATIC_SITE_MIN_POSITIONS
+                    and t[near].max() - t[near].min() >= STATIC_SITE_MIN_SPAN_SEC):
+                at_site[i] = True
+
+    # Only dwells go: a lone site hit between two real samples stays, because
+    # dropping it measured worse (see the config block).
+    drop = np.zeros(n, dtype=bool)
+    i = 0
+    while i < n:
+        if not at_site[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and at_site[j + 1]:
+            j += 1
+        if j - i + 1 >= STATIC_SITE_MIN_RUN:
+            drop[i:j + 1] = True
+        i = j + 1
+
+    kept = [p for p, d in zip(positions, drop) if not d]
+    logger.info(
+        "Static-site filter: %d of %d positions at a site, %d dropped as dwells "
+        "(radius %.1fpx)",
+        int(at_site.sum()), n, n - len(kept), radius,
+    )
+    return kept
+
+
+def filter_static_sites(
+    tracker: TrackedBall, frame_height: int, *, enabled: bool,
+) -> TrackedBall:
+    """
+    `tracker` with drop_static_sites applied when `enabled`, else `tracker` itself.
+
+    Every consumer goes through this rather than branching on the flag itself,
+    so off is the identical object and cannot drift from `main`. `enabled` is
+    required, not defaulted, so a new call site has to say which side it is on
+    — production passes settings.ball_static_site_filter_enabled.
+
+    A failure inside the filter returns the unfiltered track and logs it: the
+    filter is a refinement, and the track without it is exactly what every run
+    used before it existed. Losing the ball stage to it would send the run to
+    the pose-first fallback, which is the far worse outcome.
+    """
+    if not enabled:
+        return tracker
+    try:
+        kept = drop_static_sites(tracker.positions, frame_height)
+    except Exception:
+        logger.warning("static-site filter failed — using the unfiltered track", exc_info=True)
+        return tracker
+    return TrackedBall(positions=kept, misses=tracker.misses)
+
+
 def _segment_track(positions: list[BallPosition]) -> list[list[BallPosition]]:
     """
     Split the raw track into coherent single-ball segments.
@@ -1265,6 +1410,7 @@ def detect_contacts(
     *,
     normalize: bool = True,
     soft_scale: bool = False,
+    static_site_filter: bool = False,
 ) -> list[dict]:
     """
     Full pipeline: detect ball -> track trajectory -> find contacts.
@@ -1292,7 +1438,9 @@ def detect_contacts(
     reachable from the worker and unreachable from the module's own documented
     entry point, and a caller reproducing a rolled-back production could not.
     soft_scale forwards CF-376's flag (`settings.ball_contact_soft_scale_enabled`)
-    for the same reason.
+    for the same reason, and static_site_filter forwards CF-229's
+    (`settings.ball_static_site_filter_enabled`), applied to the track before
+    find_contacts as the worker applies it.
 
     api_key defaults to the ROBOFLOW_API_KEY environment variable.
     sample_every: run inference every N frames (higher = faster, less precise).
@@ -1307,6 +1455,7 @@ def detect_contacts(
     # two different ways.
     frame_height = _read_frame_height(video_path)
     tracker  = track_ball(video_path, key, sample_every=sample_every)
+    tracker  = filter_static_sites(tracker, frame_height, enabled=static_site_filter)
     contacts = find_contacts(
         tracker, frame_height, normalize=normalize, soft_scale=soft_scale,
     )
@@ -1320,6 +1469,7 @@ def detect_rallies(
     *,
     normalize: bool = True,
     soft_scale: bool = False,
+    static_site_filter: bool = False,
 ) -> list[dict]:
     """
     Full pipeline: detect ball -> track -> contacts -> rally clip boundaries.
@@ -1331,7 +1481,8 @@ def detect_rallies(
     every contact was `unknown` and `action` here was whatever contacts_to_rallies
     makes of a uniform label set. It now passes the decoded height, which both
     scales the contact gates and switches on classification, and forwards
-    `normalize` and `soft_scale` for the same reason detect_contacts does.
+    `normalize`, `soft_scale` and `static_site_filter` for the same reason
+    detect_contacts does.
     """
     key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
     if not key:
@@ -1348,6 +1499,7 @@ def detect_rallies(
     video_duration = total_frames / fps
 
     tracker  = track_ball(video_path, key, sample_every=sample_every)
+    tracker  = filter_static_sites(tracker, frame_height, enabled=static_site_filter)
     contacts = find_contacts(
         tracker, frame_height, normalize=normalize, soft_scale=soft_scale,
     )
