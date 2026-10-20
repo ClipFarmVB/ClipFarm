@@ -906,9 +906,15 @@ class TestWithTheSoftFlagOn:
             classify_contact_action(track.positions, 8, 1080, normalize=True))
 
     def test_switch_off_overrides_the_flag(self):
-        track = rally_track(1080, 0.4)
-        assert find_contacts(track, frame_height=1080, normalize=False, soft_scale=True) == (
-            find_contacts(track, frame_height=1080, normalize=False))
+        """The probe sits between the unscaled floor and the softened one, so
+        softening with the switch off would drop it."""
+        track = rally_track(1080, 0.3)
+        assert ball.CONTACT_HIT_SPEED_PXPS < 0.3 * 1080 < (
+            ball.CONTACT_HIT_SPEED_PXPS * self.soft_scale(1080))
+        off = find_contacts(track, frame_height=1080, normalize=False)
+        assert len(off) == 1, "the probe must clear the unscaled gate"
+        assert find_contacts(track, frame_height=1080, soft_scale=True) == []
+        assert find_contacts(track, frame_height=1080, normalize=False, soft_scale=True) == off
 
     @pytest.mark.parametrize("entry", ["detect_contacts", "detect_rallies"])
     @pytest.mark.parametrize("soft_scale", [True, False])

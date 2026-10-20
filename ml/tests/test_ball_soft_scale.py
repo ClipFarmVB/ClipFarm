@@ -144,11 +144,23 @@ class TestNoOpWhereTheScaleIsOne:
         assert run(height, soft_scale=True) == run(height)
 
     def test_with_the_cf174_switch_off(self, monkeypatch):
-        """The flag only has an effect while ball_contact_scale_enabled is on."""
+        """The flag only has an effect while ball_contact_scale_enabled is on.
+
+        The probe leg sits between the unscaled floor and the softened one, so
+        softening with the switch off would reject it."""
         monkeypatch.setattr(ball, "CONTACT_SOFT_SCALE_EXPONENT", 0.25)
         for height in (720, 1080, 1440):
             assert run(height, normalize=False, soft_scale=True) == run(
                 height, normalize=False)
+            unscaled_floor = ball.CONTACT_HIT_SPEED_PXPS
+            soft_floor = unscaled_floor * _scale_for(height, log=False) ** 0.25
+            speed = (unscaled_floor + soft_floor) / 2
+            track = reversal(height, speed)
+            off = find_contacts(track, frame_height=height, normalize=False)
+            assert len(off) == 1, "the probe must clear the unscaled gate"
+            assert find_contacts(track, frame_height=height, soft_scale=True) == []
+            assert find_contacts(track, frame_height=height, normalize=False,
+                                 soft_scale=True) == off
 
     def test_360p_track_is_the_same_set_the_ticket_measured(self):
         """test1 (360p) is unmoved by construction; the pin is the property

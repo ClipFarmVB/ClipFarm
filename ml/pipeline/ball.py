@@ -666,8 +666,8 @@ def _scale_for(frame_height: int, *, log: bool = True, normalize: bool = True) -
     CF-376's soft flag is off, which is the default. With the flag on,
     find_contacts raises this to CONTACT_SOFT_SCALE_EXPONENT and the floor
     drops (0.385 fh/s at 1080p at 0.5), and the warning branch below then
-    quantifies a band wider than the one in force; find_contacts logs the
-    softened gates itself.
+    quantifies a band narrower than the one in force — it overstates the
+    floor; find_contacts logs the softened gates itself.
 
     log=False asks the same question without the commentary, for callers that
     run per contact rather than per video (classify_contact_action). Every
@@ -945,7 +945,8 @@ def find_contacts(
         # operator's choice, and this runs once per video.
         logger.info(
             "soft contact scale (CF-376): gates at scale %.3f = %.3f ** %.2f, "
-            "hit_speed %.0f / residual_min %.0f px/s",
+            "hit_speed %.0f / residual_min %.0f px/s; a frame_height warning "
+            "above quotes the full-scale band, which is narrower than this one",
             scale, full_scale, CONTACT_SOFT_SCALE_EXPONENT,
             CONTACT_HIT_SPEED_PXPS * scale, CONTACT_RESIDUAL_MIN_PXPS * scale,
         )

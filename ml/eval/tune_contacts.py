@@ -249,31 +249,30 @@ def score_setting(loaded, *, normalize: bool, soft_scale: bool,
             setattr(B, k, v)
         contacts = B.find_contacts(track, frame_height=frame_h, normalize=normalize,
                                    soft_scale=soft_scale)
+        rallies = B.contacts_to_rallies(contacts, fx.duration, frame_h)
+        rules = active_windows_from_contacts(
+            [{"time": c["time"]} for c in contacts], fx.duration, **COND)
+        rules = bridge_windows_by_motion(rules, positions, frame_height=frame_h,
+                                         normalize=normalize, **BRIDGE)
+        game = dv.Game(
+            test_id=fx.test_id, video_file="", duration=fx.duration, frame_height=frame_h,
+            positions=positions, contacts=contacts, human_keep=sorted(fx.keep), raw=fx.raw,
+        )
+        guarded = dv.v5_guarded(game)
+        out: dict[str, Any] = dict(
+            contacts=len(contacts),
+            segments=len(B.contact_segments(contacts)),
+            rallies=len(rallies),
+            scale=gate_scale(frame_h, normalize=normalize, soft_scale=soft_scale,
+                             exponent=exponent),
+        )
+        for name, windows in (("rules", rules), ("guarded", guarded)):
+            s = evaluate_deadtime(fx.keep, windows, fx.duration)
+            out[name] = dict(dead=s.dead_removed_pct, live=s.live_removed_sec,
+                             recall=s.kept_play_pct)
     finally:
         for k, v in saved.items():
             setattr(B, k, v)
-
-    rallies = B.contacts_to_rallies(contacts, fx.duration, frame_h)
-    rules = active_windows_from_contacts(
-        [{"time": c["time"]} for c in contacts], fx.duration, **COND)
-    rules = bridge_windows_by_motion(rules, positions, frame_height=frame_h,
-                                     normalize=normalize, **BRIDGE)
-    game = dv.Game(
-        test_id=fx.test_id, video_file="", duration=fx.duration, frame_height=frame_h,
-        positions=positions, contacts=contacts, human_keep=sorted(fx.keep), raw=fx.raw,
-    )
-    guarded = dv.v5_guarded(game)
-    out: dict[str, Any] = dict(
-        contacts=len(contacts),
-        segments=len(B.contact_segments(contacts)),
-        rallies=len(rallies),
-        scale=gate_scale(frame_h, normalize=normalize, soft_scale=soft_scale,
-                         exponent=exponent),
-    )
-    for name, windows in (("rules", rules), ("guarded", guarded)):
-        s = evaluate_deadtime(fx.keep, windows, fx.duration)
-        out[name] = dict(dead=s.dead_removed_pct, live=s.live_removed_sec,
-                         recall=s.kept_play_pct)
     return out
 
 
