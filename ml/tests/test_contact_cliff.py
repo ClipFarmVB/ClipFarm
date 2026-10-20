@@ -450,4 +450,5 @@ def test_a_fixture_with_no_dump_is_read_from_its_ball_cache(tmp_path, monkeypatc
     track, pos, frame_h, got = TC.load_track("t")
     assert frame_h == 360 and got is fx
     assert [p.frame for p in track.positions] == [0, 1, 2, 3, 4]
-    assert pos[2] == {"time": 2 / 3, "x": 20.0, "y": 5.0}
+    # The cache's own confidence, forwarded as read (CF-420), not a default.
+    assert pos[2] == {"time": 2 / 3, "x": 20.0, "y": 5.0, "confidence": 0.9}
