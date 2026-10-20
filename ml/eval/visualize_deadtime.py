@@ -18,13 +18,21 @@ present in the repo while they were being written.
 Usage:
   python -m ml.eval.visualize_deadtime
   # -> ml/eval/results/deadtime_visualization.html
+
+  # CF-391: score one side of the CF-174 switch, and keep the shipping rows'
+  # windows so the harness can record them (--windows-json reads these back).
+  python -m ml.eval.visualize_deadtime --contact-scale off --dump-windows DIR
+  # -> DIR/{test}_v0.json, DIR/{test}_v5.json
 """
 from __future__ import annotations
 
+import argparse
 import html
+import json
 import logging
 from pathlib import Path
 
+import ml.eval.deadtime_variants as dv
 from ml.eval.deadtime_variants import VARIANTS, Game, load_game
 from ml.eval.metrics import DeadTimeSignals, evaluate_deadtime, subtract, union
 from ml.eval.tune_contacts import COND
@@ -511,7 +519,58 @@ def build_html(games: list[Game], all_results: dict) -> str:
     return "\n".join(parts)
 
 
-def main() -> None:
+CONTACT_SCALE_POSITIONS = ("off", "on", "soft")
+
+
+def mirror_position() -> str:
+    """Where deadtime_variants' copy of the CF-174 / CF-376 mirror points now."""
+    if not dv.NORMALIZE:
+        return "off"
+    return "soft" if dv.SOFT_SCALE else "on"
+
+
+def apply_contact_scale(position: str) -> None:
+    """
+    Point the ladder at one side of the CF-174 switch for this run.
+
+    Set on deadtime_variants, the module load_game and v0_shipped read them
+    from, and not on tune_contacts: its NORMALIZE / SOFT_SCALE are the settings
+    mirror test_eval_condense_settings.py holds to the app defaults. `soft` is
+    the switch on plus CF-376's flag — the flag is read only while the switch is
+    on, so `off` clears it rather than leaving a value nothing reads.
+    """
+    if position not in CONTACT_SCALE_POSITIONS:
+        raise ValueError(f"contact scale {position!r} not in {CONTACT_SCALE_POSITIONS}")
+    dv.NORMALIZE = position != "off"
+    dv.SOFT_SCALE = position == "soft"
+
+
+def dump_windows(out_dir: Path, test_id: str, key: str, windows: list[Interval]) -> Path:
+    """
+    Write one variant's keep-windows as {"keep": [{start, end}]}, the shape
+    harness --windows-json reads, rounded to 3dp as the harness's own
+    --dump-windows rounds them.
+    """
+    path = out_dir / f"{test_id}_{key}.json"
+    keep = [{"start": round(a, 3), "end": round(b, 3)} for a, b in windows]
+    path.write_text(json.dumps({"keep": keep}, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Score the condense ladder against every dead-time fixture.")
+    ap.add_argument("--contact-scale", choices=CONTACT_SCALE_POSITIONS, default=mirror_position(),
+                    help="side of the CF-174 switch to score: off, on, or on with CF-376's "
+                         "soft flag (default: the settings mirror, currently %(default)s)")
+    ap.add_argument("--dump-windows", type=Path, metavar="DIR",
+                    help=f"also write {BASELINE}'s and {SHIPPING}'s keep-windows to "
+                         f"DIR/{{test}}_{{{BASELINE}|{SHIPPING}}}.json, for harness --windows-json")
+    return ap.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    apply_contact_scale(args.contact_scale)
     logging.disable(logging.INFO)
     games = [load_game(tid) for tid in TEST_IDS]
     all_results: dict[str, dict[str, tuple[list[Interval], DeadTimeSignals]]] = {}
@@ -525,6 +584,15 @@ def main() -> None:
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(build_html(games, all_results), encoding="utf-8")
     print(f"Wrote {OUT_PATH}\n")
+
+    if args.dump_windows:
+        args.dump_windows.mkdir(parents=True, exist_ok=True)
+        for tid in TEST_IDS:
+            for key in (BASELINE, SHIPPING):
+                dump_windows(args.dump_windows, tid, key, all_results[tid][key][0])
+        print(f"Dumped {BASELINE}/{SHIPPING} keep-windows -> {args.dump_windows}\n")
+
+    print(f"Contact scale: {args.contact_scale}\n")
 
     print(f"Headline net covers {'+'.join(COMPARABLE)}; "
           f"{'+'.join(EXCLUDED_FROM_TOTALS)} are shown but excluded from it "
