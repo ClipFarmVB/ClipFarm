@@ -4,6 +4,7 @@ from typing import Annotated
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,8 +21,10 @@ from app.schemas.clip import (
     ClipOut,
     ClipTagRequest,
     ClipTrimRequest,
+    ClipVisibilityRequest,
 )
-from app.services import access, storage
+from app.services import access, publishing, sample_game, storage
+from app.services.ratelimit import POLICIES, rate_limit
 from app.services.filenames import clip_download_filename
 from app.workers.celery_app import celery_app
 
@@ -32,6 +35,10 @@ router = APIRouter(tags=["clips"])
 DB = Annotated[AsyncSession, Depends(get_db)]
 # Read paths accept a signed-out viewer; writes keep get_current_user_id.
 ViewerId = Annotated[uuid.UUID | None, Depends(get_optional_user_id)]
+# /clips/{id}/download is the one read that does not (CF-186) — see its
+# docstring. Spelled as an alias beside the others rather than inlined, matching
+# games.py and posts.py.
+UserId = Annotated[uuid.UUID, Depends(get_current_user_id)]
 
 
 async def _get_viewable_clip(
@@ -72,8 +79,12 @@ async def _get_owned_clip(
 
 
 def _rewrite_urls(clip: Clip) -> dict[str, str | None]:
-    """Return public R2 URLs directly (bucket has public dev URL enabled).
-    Fall back to presigned URLs if R2 credentials are configured."""
+    """Presigned URLs when R2 is configured; the stored URLs as-is otherwise.
+
+    The configured case is production: the bucket is private, so the stored
+    `{r2_public_url}/{key}` form is not loadable and must be presigned. The
+    stored URL is returned unchanged only when R2 is not configured (local
+    dev), where there is nothing to sign with."""
     if storage.r2_configured():
         return {
             "clip_url": storage.presign_from_stored_url(clip.clip_url, expires_in=3600),
@@ -105,13 +116,18 @@ def _clip_out(clip: Clip, game: Game, *, player_name: str | None = None) -> Clip
     out.player_name = player_name  # type: ignore[assignment]
     out.source_available = game.raw_video_url is not None
     out.effective_visibility = access.widest_allowed(clip, game)
+    out.is_sample = sample_game.is_sample(game)
     urls = _rewrite_urls(clip)
     out.clip_url = urls["clip_url"]  # type: ignore[assignment]
     out.thumbnail_url = urls["thumbnail_url"]
     return out
 
 
-@router.get("/games/{game_id}/clips", response_model=list[ClipOut])
+@router.get(
+    "/games/{game_id}/clips",
+    response_model=list[ClipOut],
+    dependencies=[Depends(rate_limit(POLICIES["games_clips"]))],
+)
 async def list_clips(
     game_id: uuid.UUID,
     db: DB,
@@ -124,6 +140,17 @@ async def list_clips(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 50,
 ):
+    """Clips in one game, visibility-scoped (CF-108).
+
+    **Anonymous exposure B (CF-186, #189): UUID-keyed content, throttled.**
+    Takes a game id, so it cannot be walked; the exposure is load rather than
+    enumeration. 60/min per signed-in user, or per client address when there
+    is none — deliberately the same number as `GET /games/{id}`. The detail
+    page fetches this route once the game is ready and again each time its
+    filters settle. The filter sliders change on every step, so the page
+    debounces them (`useDebouncedValue`); without that, one drag could spend
+    this whole budget and the page would throttle itself.
+    """
     # The game itself must be viewable, else 404 (indistinguishable from a
     # game that doesn't exist — see access.assert_can_view_game).
     # Take the return value: assert_can_view_game 404s a None game and hands
@@ -140,7 +167,26 @@ async def list_clips(
     )
 
     if action_type:
-        types = [ActionType(t.strip()) for t in action_type.split(",") if t.strip()]
+        types = []
+        try:
+            for raw in action_type.split(","):
+                token = raw.strip()
+                if token:
+                    types.append(ActionType(token))
+        except ValueError as exc:
+            # FastAPI would have produced a 422 had the parameter been typed as
+            # the enum; it is a plain `str` so the comma-separated form works,
+            # which moves the validation here. Siblings in this router raise 400
+            # for their own body validation, but this one is a query-parameter
+            # failure and 422 is what the framework layer returns for those.
+            # Names the offending value, not the exception: `str(ValueError)`
+            # here is "'spke' is not a valid ActionType", which hands a client
+            # the internal class name for nothing.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid action_type '{token}'. Must be from: "
+                       f"{sorted(t.value for t in ActionType)}",
+            ) from exc
         if types:
             q = q.where(Clip.action_type.in_(types))
 
@@ -205,6 +251,63 @@ async def tag_clip(
 VALID_LABELS = {"spike", "serve", "dig", "set", "block", "not_an_action"}
 
 
+@router.patch("/clips/{clip_id}/visibility", response_model=ClipOut)
+async def update_clip_visibility(
+    clip_id: uuid.UUID,
+    body: ClipVisibilityRequest,
+    db: DB,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+):
+    """Set who may read this clip (CF-109b, #398).
+
+    **The write path that did not exist.** Until this, no endpoint anywhere set
+    `Clip.visibility` or `Game.visibility`, so every clip resolved to `private`
+    and the composer could only ever offer "Only me" — a user could publish a
+    post, but only to themselves. This makes the tier writable. Whether an
+    owner may *set* `public` is `PUBLIC_POSTING_ENABLED`'s call; `followers` is
+    accepted, but reaches nobody but the owner until the follow graph
+    (`access.is_follower`, CF-110) lands.
+
+    `api/tests/test_no_visibility_write_path.py` enforced the absence of a
+    write path and is deleted by this change, which is where the
+    ordering decision it was protecting gets recorded. **Deleted, not dropped**:
+    `api/tests/test_visibility_write_paths_are_declared.py` keeps the same
+    `app/`-wide scan and names this function as one of exactly two that may
+    write the column, so a third path fails in the diff that adds it.
+
+    **The clip's own tier, never the game's.** Raising the game would publish
+    every clip in it, which is precisely the silent side effect `create_post`'s
+    409 exists to prevent; the card decided this shape. A public clip inside a
+    private game is a supported state — reachable by direct link and through a
+    collection, while `GET /games/{id}/clips` still 404s, because an override
+    publishes *that clip* and not the right to enumerate its game.
+
+    Owner-only, through the same `_get_owned_clip` gate as every other write
+    here. Narrowing is allowed and takes effect immediately for anything that
+    has not already been handed a presigned URL — a link minted before the
+    change keeps working until it expires, which is the revocation window
+    `/share` documents and not something this endpoint can close.
+
+    See `services/publishing.py` for why `public` is gated apart from
+    `followers`.
+    """
+    # Ownership FIRST, then the tier. The other order answers a stranger with
+    # "public posting is turned off on this deployment", which is a fact about
+    # the deployment handed to someone who has no business here — and it breaks
+    # the 404-not-403 rule the rest of this router keeps, by giving a refusal
+    # that is not the one a non-owner should ever see.
+    clip, game = await _get_owned_clip(clip_id, user_id, db)
+    # Before the tier check, so the answer does not depend on the deployment's
+    # posting flag: the demo's footage is not the owner's to publish at any
+    # tier (CF-220).
+    sample_game.assert_not_sample(game)
+    publishing.assert_tier_allowed(body.visibility)
+    clip.visibility = body.visibility
+    await db.commit()
+    await db.refresh(clip)
+    return _clip_out(clip, game)
+
+
 @router.patch("/clips/{clip_id}/labels", response_model=ClipOut)
 async def update_clip_labels(
     clip_id: uuid.UUID,
@@ -228,29 +331,32 @@ async def update_clip_labels(
     label_1 = user_labels[0] if len(user_labels) > 0 else "not_an_action"
     label_2 = user_labels[1] if len(user_labels) > 1 else None
 
-    # Upsert correction — one row per clip per user
-    existing = (await db.execute(
-        select(Correction).where(
-            Correction.clip_id == clip.id,
-            Correction.user_id == user_id,
-        )
-    )).scalar_one_or_none()
+    # Upsert correction — one row per clip per user. Not for the demo game
+    # (CF-220): the relabel still applies to the owner's copy, but a new
+    # user's opinion of the demo footage is not training signal.
+    if not sample_game.is_sample(game):
+        existing = (await db.execute(
+            select(Correction).where(
+                Correction.clip_id == clip.id,
+                Correction.user_id == user_id,
+            )
+        )).scalar_one_or_none()
 
-    if existing:
-        existing.corrected_label_1 = label_1
-        existing.corrected_label_2 = label_2
-    else:
-        correction = Correction(
-            clip_id=clip.id,
-            user_id=user_id,
-            original_action=clip.action_type,
-            corrected_label_1=label_1,
-            corrected_label_2=label_2,
-            original_confidence=clip.confidence,
-            start_time=clip.start_time,
-            end_time=clip.end_time,
-        )
-        db.add(correction)
+        if existing:
+            existing.corrected_label_1 = label_1
+            existing.corrected_label_2 = label_2
+        else:
+            correction = Correction(
+                clip_id=clip.id,
+                user_id=user_id,
+                original_action=clip.action_type,
+                corrected_label_1=label_1,
+                corrected_label_2=label_2,
+                original_confidence=clip.confidence,
+                start_time=clip.start_time,
+                end_time=clip.end_time,
+            )
+            db.add(correction)
 
     # Update labels on clip (keep "not_an_action" so frontend knows it was explicit)
     if "not_an_action" in body.labels:
@@ -291,6 +397,21 @@ async def trim_clip(
     end_delta:   positive = extend later, negative = shrink from end
     """
     clip, game = await _get_owned_clip(clip_id, user_id, db)
+
+    # A re-cut of the demo's source overwrites the clip object every copy
+    # plays (CF-220).
+    sample_game.assert_not_source(game.id)
+
+    # The demo game has no source upload of its own to re-cut from, and a
+    # re-cut object under the copy's own key would be orphaned, since deleting
+    # a demo copy removes rows only (CF-220). Its own message,
+    # because "passed its retention window" is not what happened, and 409 like
+    # every other demo refusal rather than the retention case's 400.
+    if sample_game.is_sample(game):
+        raise HTTPException(
+            status_code=409,
+            detail="Demo clips can't be trimmed — upload your own game to trim its clips",
+        )
 
     # Gone once the raw upload passes raw_upload_retention_days (CF-194).
     # ClipOut.source_available tells clients this before they try.
@@ -349,17 +470,25 @@ async def delete_clips(
     for _, game in rows:
         if game.owner_id != user_id:
             raise HTTPException(status_code=404, detail="One or more clips not found")
+    # Whole batch refused, before anything is touched, if any clip is the
+    # demo's source: every copy plays its objects (CF-220). Once per game,
+    # not per clip, so a malformed setting logs once rather than N times.
+    for game_id in {game.id for _, game in rows}:
+        sample_game.assert_not_source(game_id)
 
-    # Delete from R2 (best-effort) and DB
+    # Delete from R2 (best-effort) and DB. A demo clip's objects are
+    # shared by every copy of the demo game (CF-220), so for those it is
+    # the row alone.
     deleted = 0
-    for clip, _ in rows:
-        for url in (clip.clip_url, clip.thumbnail_url):
+    for clip, game in rows:
+        urls = [] if sample_game.is_sample(game) else [clip.clip_url, clip.thumbnail_url]
+        for url in urls:
             if not url:
                 continue
             try:
                 key = urlparse(url).path.lstrip("/")
                 if key:
-                    storage.delete_file(key)
+                    await run_in_threadpool(storage.delete_file, key)
             except Exception:
                 logger.warning("R2 delete failed for clip %s", clip.id, exc_info=True)
         await db.delete(clip)
@@ -369,14 +498,35 @@ async def delete_clips(
     return {"deleted": deleted}
 
 
-@router.get("/clips/{clip_id}/share")
+@router.get(
+    "/clips/{clip_id}/share",
+    dependencies=[Depends(rate_limit(POLICIES["share"]))],
+)
 async def share_clip(
     clip_id: uuid.UUID,
     db: DB,
     viewer_id: ViewerId = None,
 ):
+    """A playable URL for a clip a viewer may see (CF-108).
+
+    **Anonymous exposure B (CF-186, #189): UUID-keyed content, throttled
+    loosely — 120/min, the most generous budget here.** #189 makes the point
+    directly: a per-caller limit *over-throttles* this route, because traffic
+    on a deliberately public clip is the success case and not the attack. The
+    limit is present to bound the presign cost, not to discourage sharing.
+
+    It stays anonymous, unlike its sibling `/download`. The two presign the
+    same object and differ in authorization and in one response header: this
+    one plays inline and is meant to be passed around; that one carries
+    Content-Disposition: attachment and requires a signed-in caller.
+    """
     # Read path (CF-108): anyone who may view the clip may mint a share link.
-    clip, _game = await _get_viewable_clip(clip_id, viewer_id, db)
+    clip, game = await _get_viewable_clip(clip_id, viewer_id, db)
+    # After the view check, so a viewer who cannot see the clip still gets 404
+    # (CF-220): the app does not offer a share link for the demo's footage.
+    # Not access control — the owner's clip listings already return the same
+    # presigned URL (see sample_game.assert_not_sample).
+    sample_game.assert_not_sample(game)
     # NOTE: still a 1h presigned URL even for public clips. CF-108's card flags
     # revisiting this — a public clip's link is meant to be passed around, so a
     # short expiry is user-hostile, while a long one is a bearer token nobody
@@ -388,7 +538,7 @@ async def share_clip(
 async def download_clip(
     clip_id: uuid.UUID,
     db: DB,
-    viewer_id: ViewerId = None,
+    user_id: UserId,
 ):
     """The same object as /share, under a name a human can read (CF-100).
 
@@ -398,22 +548,49 @@ async def download_clip(
     together would mean one caller's query parameter deciding whether the other
     caller's link plays or downloads.
 
-    Authorization is /share's, via the same helper — downloading is a read, and
-    the deliberate asymmetry access.py documents (a public clip inside a private
-    game is reachable by direct link) applies here for the same reason.
+    **Anonymous exposure B (CF-186, #189): THIS ROUTE REQUIRES AUTH.** That is
+    a decision about who may ask for the attachment URL, not a bound on what
+    leaves the bucket. `/share` and the post reads presign this same object for
+    any caller who may view the clip, and a presigned URL is fetched from R2
+    for its whole hour without touching the API, so neither a credential here
+    nor a per-caller limit anywhere bounds a distributed pull of a leaked link;
+    only visibility (who may mint one) and the expiry do. Requiring a
+    credential costs nothing in the product, because every surface that offers
+    a download already sits behind the web app's auth (ClipCard and ClipModal
+    render only on /games/* and /collections/*, both gated).
+
+    **So its authorization deliberately diverges from /share's**, which it used
+    to share via the same helper. The asymmetry access.py documents — a public
+    clip inside a private game is reachable by direct link — still holds here,
+    but now only for a viewer who is signed in. Do not re-merge the two routes
+    on the grounds that they are "the same read".
+
+    Not rate limited on top of that: a signed-in caller is outside the
+    anonymous surface #189 is about, and a limiter that fails open
+    (services/ratelimit.py) would add a failure mode without adding a
+    guarantee. Bounding how often a minted clip URL is fetched — from this
+    route, /share or the post reads alike — wants a quota or the stable,
+    visibility-checking URL routers/posts.py describes, and it is not what #189
+    asked for.
 
     Same 3600s expiry as /share, deliberately: that expiry is an open question
     flagged there, and answering it differently in two places would settle it by
     accident.
     """
-    clip, game = await _get_viewable_clip(clip_id, viewer_id, db)
+    clip, game = await _get_viewable_clip(clip_id, user_id, db)
+    # After the view check, as on /share, so a stranger still gets 404
+    # (CF-220): the app does not offer a download of the demo's footage,
+    # which is not the owner's to pass on. Not access control — the owner's
+    # clip listings already return a presigned URL for the same object (see
+    # sample_game.assert_not_sample).
+    sample_game.assert_not_sample(game)
 
     # The filename is part of the response, not just decoration: presign_url
     # puts it in the URL's ResponseContentDisposition, in cleartext. So the
     # question is not only "may this viewer have the bytes" but "may they have
     # these strings" — a different question, answered in access.py alongside
     # the asymmetry that makes the two differ. CF-101's zip needs the same gate.
-    identify = access.can_identify(viewer_id, game)
+    identify = access.can_identify(user_id, game)
 
     # Explicit fetch, not clip.player: the relationship is not eagerly loaded
     # anywhere, and touching it here would lazy-load inside the event loop and

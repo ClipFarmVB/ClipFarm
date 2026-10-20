@@ -1,90 +1,85 @@
 """
-Multi-fixture threshold sweep for `find_contacts` (CF-103, #116).
+Threshold sweep for CF-103 (#116), driven off a dumped ball track.
 
-Replays the whole condense chain — find_contacts -> active_windows_from_contacts
--> bridge_windows_by_motion -> evaluate_deadtime — against every dead-time
-fixture, so a candidate threshold costs a few seconds, no video download and no
-container. Ball positions come from the committed-by-hand ball caches in
-`ml/eval/ball_caches/` (see `ml/eval/README.md` for how to populate them).
+Replays the whole chain — find_contacts -> active_windows_from_contacts ->
+bridge_windows_by_motion -> evaluate_deadtime — against the dead-time fixture,
+so a candidate threshold costs a few seconds and no video download. Requires
+only the dump from diagnose_detection.py, which the container mounts.
 
-**Read every px/s label below as a REFERENCE (360p) value, not an effective
-one (CF-174).** `CONTACT_HIT_SPEED_PXPS` and `CONTACT_RESIDUAL_MIN_PXPS` are
-multiplied by `ball._scale_for(frame_height)` at use, and
-`SEG_MAX_SPEED_PXPS` additionally feeds that function's cap — so a row sweeping
-it moves the clamp underneath itself. At 360p the scale is exactly 1.0 and
-label == effective, which is why the pinned baseline reproduces; on a 1080p
-fixture a row reading `CONTACT_HIT_SPEED_PXPS=360` is applying 1080. Each game's
-scale is printed beside its frame height below.
+Step 0 prints the sweep's own baseline row, and beneath it the last recorded
+run for that fixture with the tag and commit it came from. That is context, not
+a pass/fail check: nothing here verifies the recorded run describes the
+configuration you are on. Restoring step 0 to a trustworthy control is CF-416
+(#547), and it needs more than a fresh row. The newest recorded run is the
+`rules` figure (ml/eval/README.md's CF-187 table: 56.2% dead, 176s live), its
+`app.config` snapshot carries no `condense_mode` at all, and this tool replays
+`active_windows_from_contacts` + `bridge_windows_by_motion` — the `rules` path
+— while `condense_mode` has shipped `guarded` since CF-187. So a row
+re-recorded at app defaults would match step 0 LESS, not more. Either this tool
+scores the shipping builder, or "shipping defaults" here means
+the tuner's and the table says so. Re-recording also needs the R2 ball caches
+(#511).
 
   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
+  docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts test2
+
+`--exponents` (CF-376, #476) prints the soft-scale axis instead of the sweep:
+switch off, switch on, and on + soft at each exponent in EXPONENT_AXIS, with
+rally counts and dead-time numbers for both condense builders. It reads the
+dump if there is one and the fixture's R2 ball cache otherwise (`load_track`),
+so it also runs on test1.
+
+  docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts test2 --exponents
+
+An optional fixture id selects which dump to sweep; it defaults to test1. Each
+needs its own `{test_id}_ball_track.json` from diagnose_detection.py — the
+tuner reads a dump, never a video, so a fixture with no dump mounted fails at
+load rather than silently sweeping the wrong one.
+
 CF-174 — read the labels as REFERENCE (360p) values, not effective ones. The
 two px/s tunables (CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS) are
 multiplied by ball._scale_for(frame_height) at use, and
 SEG_MAX_SPEED_PXPS additionally feeds that function's cap, so a row sweeping it
 moves the clamp underneath itself. The default fixture is test1 at 360p, where
-the scale is exactly 1.0 and label == effective, which is why the pinned
-baseline still reproduces; on the 1080p fixtures a row reading
+the scale is exactly 1.0 and label == effective, so a row's label is the number
+actually applied; on the 1080p fixtures a row reading
 "CONTACT_HIT_SPEED_PXPS=360" is applying 1080. main() prints the active scale.
-
-**Why it sweeps several games.** The first pass of this tool scored one video,
-and the #116 write-up said so plainly: tuning five thresholds against a single
-hour of one match fits that match's noise. Only `CONTACT_RESIDUAL_MIN_PXPS`
-shipped (#118) for exactly that reason. CF-173 added test2/test3/test4, so a
-candidate can now be *chosen on some games and scored on a game it never saw* —
-which is what `--loo` does. A knob that only wins on the game it was fitted to
-is overfitting, and this is the tool that shows it. (The protocol came from
-CF-173's trainer, which was closed unmerged — the discipline outlived it.)
-
-Fixtures split into two roles:
-  --fixtures  tuned on, and each takes a turn as the held-out validation game.
-  --guards    scored and printed, never optimized against. test3 is the default
-              guard: its gym uses non-Mikasa balls the tracker barely sees
-              (CF-171), so it is a *tracking* failure, not a threshold one.
-              A knob change that appears to "fix" test3 is admitting noise.
-
-Usage:
-  python -m ml.eval.tune_contacts                       # every knob, then LOO
-  python -m ml.eval.tune_contacts --knob CONTACT_HIT_SPEED_PXPS \
-      --values 240 230 220 210 200                      # fine sweep of one knob
-  python -m ml.eval.tune_contacts --candidates          # LOO over the named CANDIDATES
-  python -m ml.eval.tune_contacts --fixtures test2 test4 --guards test1 test3
 """
 from __future__ import annotations
 
-import argparse
 import json
 import logging
-from dataclasses import dataclass
-from pathlib import Path
+import sys
 from typing import Any
 
-from ml.eval.harness import EVAL_DIR, DeadFixture, load_deadtime_fixture
-from ml.eval.metrics import DeadTimeSignals, evaluate_deadtime, union
+from ml.eval.harness import RESULTS_DIR, load_deadtime_fixture
+from ml.eval.metrics import evaluate_deadtime
 from ml.pipeline import ball as B
 from ml.pipeline.dead_time import active_windows_from_contacts, bridge_windows_by_motion
 
-BALL_CACHE_DIR = EVAL_DIR / "ball_caches"
+DEFAULT_FIXTURE = "test1"
 
-# Production condense settings. These are a hand copy of the app.config defaults
-# — this tool runs with no app installed — and ml/tests/test_eval_condense_settings.py
-# fails the build if the two drift, so keep them as plain dict(...) literals.
-# Annotated Any, not inferred: the values are mixed — min_contacts is an int and
-# the rest are floats — and ml/eval/deadtime_variants.py and visualize_deadtime.py
-# (CF-187) both splat these into callees that require that int. Without the
-# annotation mypy infers dict[str, float] here and fails at their call sites, not
-# at this one.
+# Production condense settings for the rule-based path (condense_mode="rules"),
+# as recorded in the baseline result row. Annotated Any because the values are
+# mixed — min_contacts is an int, and an inferred dict[str, float] makes every
+# **COND call site a type error. test_eval_condense_settings.py holds these to
+# the app.config defaults.
 COND: dict[str, Any] = dict(gap_seconds=10.0, pad_before=5.0, pad_after=4.0,
-            min_contacts=1, merge_gap_seconds=5.0)
+                            min_contacts=1, merge_gap_seconds=5.0)
 BRIDGE: dict[str, Any] = dict(speed_pxps=150.0, fast_fraction=0.35, max_bridge_seconds=20.0)
-
-# 1s of wrongly cut play costs this many seconds of kept dead time. Matches the
-# repo posture (CF-46): keeping some dead time beats cutting play.
-LIVE_CUT_COST = 4.0
-
-# Fixtures worth tuning on. test3 is excluded by default — see the module
-# docstring; its fixture note records the tracking failure in full.
-DEFAULT_FIXTURES = ("test1", "test2", "test4")
-DEFAULT_GUARDS = ("test3",)
+# The CF-174 kill switch (app.config `ball_contact_scale_enabled`), mirrored the
+# same way and for the same reason as COND/BRIDGE: this tool runs on a dumped
+# track with no app installed, so it cannot read `settings`. It reaches both
+# find_contacts and the motion bridge, exactly as production wires it — a sweep
+# scored with the two halves on different sides of the switch would describe a
+# configuration nothing runs. Held to the app default by
+# test_eval_condense_settings.py.
+NORMALIZE: bool = True
+# CF-376's soft flag (app.config `ball_contact_soft_scale_enabled`), mirrored for
+# the same reason and held to the app default the same way. It reaches
+# find_contacts only: production gives the bridge the full scale, so this does
+# too. Read only while NORMALIZE is on — off, the scale is already 1.0.
+SOFT_SCALE: bool = False
 
 TUNABLES = (
     "CONTACT_RESIDUAL_RATIO", "CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_HIT_SPEED_PXPS",
@@ -92,373 +87,439 @@ TUNABLES = (
     "SEG_MIN_MEDIAN_SPEED_PXPS", "SEG_MAX_SPEED_PXPS", "MAX_SAMPLE_GAP_SEC",
 )
 
-# Values swept when no --knob is given. Ranges bracket the shipping value on both
-# sides: a sweep that only loosens can't tell "this knob is too tight" from
-# "loosening always helps the recall half of the metric".
-SWEEPS: dict[str, tuple] = {
-    "CONTACT_HIT_SPEED_PXPS":    (300.0, 240.0, 220.0, 200.0, 180.0, 150.0, 120.0),
-    "CONTACT_RESIDUAL_MIN_PXPS": (360.0, 300.0, 240.0, 180.0, 120.0),
-    "CONTACT_RESIDUAL_RATIO":    (0.70, 0.50, 0.35, 0.25, 0.15),
-    "SEG_MIN_POSITIONS":         (5, 4, 3),
-    "SEG_MIN_MEDIAN_SPEED_PXPS": (90.0, 60.0, 40.0, 20.0),
-    "SEG_MAX_SPEED_PXPS":        (900.0, 1200.0, 1800.0, 2400.0),
-    "MIN_CONTACT_SPACING":       (0.8, 0.6, 0.4, 0.3),
-    "MAX_SAMPLE_GAP_SEC":        (0.8, 1.0, 1.5, 2.0),
+# The swept values per knob, and the combined rows, as data rather than as
+# literals inside main(). Hoisted for CF-309: a value equal to the shipping
+# default re-scores the baseline under another name, and `test_tune_contacts_sweep.py`
+# can only assert that if it can read the values.
+#
+# This drifts silently and has: the tuple below held 240.0 from the days when
+# `ball.CONTACT_RESIDUAL_MIN_PXPS` was 480, and CF-103 moving the default to
+# 240 turned that row into a second copy of the baseline without touching this
+# file. The test now fails instead of the table quietly repeating itself.
+SWEEPS: dict[str, tuple[float | int, ...]] = {
+    "CONTACT_RESIDUAL_MIN_PXPS": (360.0, 180.0, 120.0),
+    "CONTACT_RESIDUAL_RATIO": (0.35, 0.25, 0.15),
+    "CONTACT_HIT_SPEED_PXPS": (180.0, 120.0, 90.0),
+    "SEG_MIN_POSITIONS": (3, 2),
+    "SEG_MIN_MEDIAN_SPEED_PXPS": (40.0, 20.0, 0.0),
+    "MIN_CONTACT_SPACING": (0.4, 0.3),
 }
 
-# Whole configurations, for the question a single-knob sweep cannot answer:
-# does adding a *second* knob still transfer to a game it was not fitted on?
-# Each knob sweeps well alone, so the temptation is to stack the winners — and
-# stacking is where a three-game fit starts describing three gyms rather than
-# volleyball. --candidates runs the same leave-one-game-out over these, so the
-# stack has to earn its place on held-out footage.
+# The combined rows, each a full override set. `CONTACT_RESIDUAL_MIN_PXPS=240`
+# used to be pinned in every one of these; it is the shipping default now, so
+# `score()` applied it as a no-op and "combo: resid 240 + hit 120" was an
+# alias for the CONTACT_HIT_SPEED_PXPS=120 row already printed above it. Both
+# the pin and that row are gone — the remaining two are genuine combinations.
 #
-# This is the record of what CF-103 stage 2 considered and rejected: the two
-# stacks below beat hit-220 alone by under 1% of total utility while fitting a
-# second threshold to three games, and the resid-180 stack also lifts the test3
-# guard (5 -> 6 of 32) on footage whose tracking is broken — contacts appearing
-# where the ball is barely seen is noise being admitted, not a fix.
+# Dict *literals*, not `dict(...)` calls. The test imports these tables, so a
+# call would run fine — but it also compares the literal it reads here against
+# what the module ends up bound to, and `ast.literal_eval` cannot evaluate a
+# call node. Writing the values out keeps the file readable as the table it is.
+COMBOS: tuple[tuple[str, dict[str, float | int]], ...] = (
+    ("combo: hit 120 + ratio 0.25",
+     {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25}),
+    ("combo: + seg 3/40",
+     {"CONTACT_HIT_SPEED_PXPS": 120.0, "CONTACT_RESIDUAL_RATIO": 0.25,
+      "SEG_MIN_POSITIONS": 3, "SEG_MIN_MEDIAN_SPEED_PXPS": 40.0}),
+)
+
+
+# Stage 2's padding rows, hoisted for the same reason as the two tables above:
+# the guard compares every row the tuner prints against the tables, and a row
+# it cannot account for is the finding. These are `COND` overrides, not ball
+# constants, so they live apart from SWEEPS.
 #
-# Every knob is pinned explicitly, including ones at their shipping value, so
-# these rows keep meaning the same configuration when a default moves.
-CANDIDATES: dict[str, dict] = {
-    "pre-stage2 (hit 240)": {"CONTACT_HIT_SPEED_PXPS": 240.0},
-    "hit 220":              {"CONTACT_HIT_SPEED_PXPS": 220.0},
-    "hit 240 + resid 180":  {"CONTACT_HIT_SPEED_PXPS": 240.0,
-                             "CONTACT_RESIDUAL_MIN_PXPS": 180.0},
-    "hit 220 + resid 180":  {"CONTACT_HIT_SPEED_PXPS": 220.0,
-                             "CONTACT_RESIDUAL_MIN_PXPS": 180.0},
-    "hit 220 + segmed 40":  {"CONTACT_HIT_SPEED_PXPS": 220.0,
-                             "SEG_MIN_MEDIAN_SPEED_PXPS": 40.0},
-}
+# Row 0 is the current COND padding, on purpose: it is stage 2's anchor, the
+# best combo scored at today's pad/merge, so every row below it reads as a
+# change from that. It therefore repeats the last combo row above it — the one
+# named exception to "no swept value equals its default", kept because it is
+# the reference and not an accidental copy the way `=240` was.
+# `test_the_padding_anchor_is_the_current_COND` holds it to COND so the anchor
+# follows the defaults instead of drifting.
+PADDING: tuple[tuple[float, float, float], ...] = (
+    (5.0, 4.0, 5.0), (4.0, 3.0, 3.0), (3.0, 2.0, 3.0),
+    (3.0, 2.0, 2.0), (2.0, 1.5, 2.0), (2.0, 1.0, 1.0),
+)
+
+BASELINE_LABEL = "BASELINE (shipping defaults)"
 
 
-# ── fixtures + scoring ─────────────────────────────────────────────────────
+def padding_label(pb: float, pa: float, mg: float) -> str:
+    """The label for one padding row. Shared so the guard cannot spell it
+    differently from the tuner and call the difference a finding. `:g`, as for
+    the knob labels, because `:.0f` printed 2.5 and 2.0 both as `2`."""
+    return f"pad {pb:g}/{pa:g} merge {mg:g}"
 
-def load_ball_cache(fixture: DeadFixture, cache_dir: Path = BALL_CACHE_DIR) -> tuple[list[dict], int]:
+
+def load(test_id: str = DEFAULT_FIXTURE):
+    d = json.loads((RESULTS_DIR / f"{test_id}_ball_track.json").read_text(encoding="utf-8"))
+    fps = d["fps"]
+    track = B.TrackedBall(positions=[
+        # frame/confidence are output-only in find_contacts; reconstructing
+        # frame from time is exact at fixed fps and never feeds the logic.
+        # The 1.0 stays as the fallback for a dump written before CF-420, which
+        # carries no confidence at all — harmless here precisely because
+        # find_contacts never reads it.
+        B.BallPosition(frame=int(round(p["time"] * fps)), time=p["time"],
+                       x=p["x"], y=p["y"], confidence=p.get("confidence", 1.0))
+        for p in d["positions"]
+    ])
+    # Forward confidence only where the dump actually has it. Today this dict
+    # reaches only bridge_windows_by_motion, which reads time/x/y, but it is the
+    # producer shape compute_features takes, and the 1.0 above must not leak
+    # into it: a fabricated 1.0 is indistinguishable from a measured one and
+    # would train a column on invented data if this dict ever fed CF-393's
+    # trainer. Omitting the key leaves compute_features' documented fill and
+    # its missing-confidence warning, both of which say the dump predates CF-420.
+    positions = [
+        {k: p[k] for k in ("time", "x", "y", "confidence") if k in p}
+        for p in d["positions"]
+    ]
+    return track, positions, d["frame_height"], load_deadtime_fixture(test_id)
+
+
+def load_track(test_id: str = DEFAULT_FIXTURE):
+    """`load`, falling back to the fixture's R2 ball cache when there is no dump.
+
+    test1 has no `_ball_track.json` dump, so `load` fails on it. Its track is in
+    `ball_caches/` under the fixture's `source_video_md5`, which is where
+    `deadtime_variants.load_game` reads it from; the frame height comes from the
+    fixture's `source_frame_height` the same way. A dump, when present, still
+    wins, so every fixture that `load` could already read is read unchanged.
     """
-    The fixture's ball track and the tracking space it was produced in.
+    if (RESULTS_DIR / f"{test_id}_ball_track.json").exists():
+        return load(test_id)
+    # Lazy: deadtime_variants imports this module.
+    from ml.eval.deadtime_variants import BALL_CACHE_DIR
 
-    A fixture missing `source_frame_height` would silently score against 360p
-    thresholds on 1080p footage (CF-174), so that is an error, not a default.
-    """
-    frame_height = fixture.raw.get("source_frame_height")
-    if not frame_height:
-        raise SystemExit(f"{fixture.test_id}: fixture needs source_frame_height (tracking-space px)")
-    md5 = fixture.raw["source_video_md5"]
-    path = cache_dir / f"{md5}.json"
-    if not path.exists():
-        raise SystemExit(
-            f"{fixture.test_id}: ball cache {path} missing — download "
-            f"ball-cache/{md5}-*.json from R2 (see ml/eval/README.md)"
-        )
-    return json.loads(path.read_text(encoding="utf-8"))["positions"], int(frame_height)
-
-
-@dataclass
-class Game:
-    test_id: str
-    fixture: DeadFixture
-    frame_height: int
-    tracker: B.TrackedBall
-    positions: list[dict]      # {time, x, y} dicts, as bridge_windows_by_motion wants
-    rallies: list[tuple[float, float]]   # merged in-play spans, for the rally-hit count
-
-
-def load_game(test_id: str, cache_dir: Path = BALL_CACHE_DIR) -> Game:
     fx = load_deadtime_fixture(test_id)
-    raw, frame_height = load_ball_cache(fx, cache_dir)
-    return Game(
-        test_id=test_id,
-        fixture=fx,
-        frame_height=frame_height,
-        tracker=B.TrackedBall(positions=[B.BallPosition(**p) for p in raw]),
-        positions=[{"time": p["time"], "x": p["x"], "y": p["y"]} for p in raw],
-        rallies=union(fx.keep),
+    md5 = fx.raw.get("source_video_md5")
+    cache = BALL_CACHE_DIR / f"{md5}.json"
+    if not md5 or not cache.exists():
+        raise SystemExit(
+            f"{test_id}: no {test_id}_ball_track.json dump and no ball cache "
+            f"{cache.name} (see ml/eval/README.md)"
+        )
+    raw = json.loads(cache.read_text(encoding="utf-8"))["positions"]
+    track = B.TrackedBall(positions=[B.BallPosition(**p) for p in raw])
+    # The cache carries confidence (BallPosition(**p) above needs it), so it is
+    # forwarded as read, the way deadtime_variants.load_game reads the same
+    # cache (CF-420).
+    positions = [
+        {"time": p["time"], "x": p["x"], "y": p["y"], "confidence": p["confidence"]}
+        for p in raw
+    ]
+    return track, positions, int(fx.raw.get("source_frame_height", 1080)), fx
+
+
+def gate_scale(frame_h: int, *, normalize: bool, soft_scale: bool,
+               exponent: float | None = None) -> float:
+    """The scale find_contacts actually gates on, for a table header.
+
+    `_scale_for` alone is the full CF-174 scale, which is not the number in
+    force once CF-376's soft flag is on. `exponent` defaults to the module's.
+    """
+    scale = B._scale_for(frame_h, log=False, normalize=normalize)
+    if soft_scale and scale != 1.0:
+        e = B.CONTACT_SOFT_SCALE_EXPONENT if exponent is None else exponent
+        scale = scale ** e
+    return scale
+
+
+# CF-376 (#476): the exponent axis. Each row is one contact setting —
+# (label, normalize, soft_scale, exponent) — scored on the rules path this tool
+# already replays AND on the guarded path (`deadtime_variants.v5_guarded`, which
+# calls the builder production ships). `exponent` None is the module constant.
+# Soft at 1.0 is the "switch on" row again by construction (x ** 1.0 == x); it
+# is kept as the control that says so.
+#
+# Kept apart from SWEEPS: these are not ball-constant overrides, and SWEEPS'
+# guards (no value equal to the default, a pinned key set) are about those.
+EXPONENT_AXIS: tuple[tuple[str, bool, bool, float | None], ...] = (
+    ("switch off", False, False, None),
+    ("switch on", True, False, None),
+    ("on + soft e=1", True, True, 1.0),
+    ("on + soft e=0.75", True, True, 0.75),
+    ("on + soft e=0.5", True, True, 0.5),
+    ("on + soft e=0.25", True, True, 0.25),
+)
+
+
+def score_setting(loaded, *, normalize: bool, soft_scale: bool,
+                  exponent: float | None = None,
+                  overrides: dict[str, float] | None = None) -> dict[str, Any]:
+    """Contacts, rallies, and both condense builders' dead-time numbers for one
+    contact setting on one loaded fixture (`load_track`'s return).
+
+    The bridge gets `normalize` and not `soft_scale`, as in production: soft
+    contacts joined by a full-scale bridge is the combination the flag ships.
+    `overrides` sets ball constants for the duration of the call, as
+    `_sweep`'s `score` does, and both are restored on the way out.
+    """
+    from ml.eval import deadtime_variants as dv
+
+    track, positions, frame_h, fx = loaded
+    overrides = dict(overrides or {})
+    if exponent is not None:
+        overrides["CONTACT_SOFT_SCALE_EXPONENT"] = exponent
+    saved = {k: getattr(B, k) for k in overrides}
+    try:
+        for k, v in overrides.items():
+            setattr(B, k, v)
+        contacts = B.find_contacts(track, frame_height=frame_h, normalize=normalize,
+                                   soft_scale=soft_scale)
+        rallies = B.contacts_to_rallies(contacts, fx.duration, frame_h)
+        rules = active_windows_from_contacts(
+            [{"time": c["time"]} for c in contacts], fx.duration, **COND)
+        rules = bridge_windows_by_motion(rules, positions, frame_height=frame_h,
+                                         normalize=normalize, **BRIDGE)
+        game = dv.Game(
+            test_id=fx.test_id, video_file="", duration=fx.duration, frame_height=frame_h,
+            positions=positions, contacts=contacts, human_keep=sorted(fx.keep), raw=fx.raw,
+        )
+        guarded = dv.v5_guarded(game)
+        out: dict[str, Any] = dict(
+            contacts=len(contacts),
+            segments=len(B.contact_segments(contacts)),
+            rallies=len(rallies),
+            scale=gate_scale(frame_h, normalize=normalize, soft_scale=soft_scale,
+                             exponent=exponent),
+        )
+        for name, windows in (("rules", rules), ("guarded", guarded)):
+            s = evaluate_deadtime(fx.keep, windows, fx.duration)
+            out[name] = dict(dead=s.dead_removed_pct, live=s.live_removed_sec,
+                             recall=s.kept_play_pct)
+    finally:
+        for k, v in saved.items():
+            setattr(B, k, v)
+    return out
+
+
+def _pct(x: float | None) -> str:
+    return "     -" if x is None else f"{100 * x:5.1f}%"
+
+
+def exponent_sweep(test_id: str) -> None:
+    """Print EXPONENT_AXIS for one fixture: `tune_contacts <id> --exponents`.
+
+    Rally counts on an unlabelled fixture say how many rallies the detector
+    emits, not whether they are real; the dead-time columns are scored against
+    the fixture's human in-play spans.
+    """
+    loaded = load_track(test_id)
+    frame_h = loaded[2]
+    print(f"{test_id}: frame_height={frame_h}, CF-376 exponent axis "
+          "(dead-rm / live-lost / recall per condense builder)\n")
+    print("%-18s %6s %5s %5s %5s | %-24s | %-24s" % (
+        "setting", "scale", "cont", "segs", "rally",
+        "rules  dead  live recall", "guarded dead live recall"))
+    for label, normalize, soft, exponent in EXPONENT_AXIS:
+        r = score_setting(loaded, normalize=normalize, soft_scale=soft, exponent=exponent)
+        cols = []
+        for name in ("rules", "guarded"):
+            m = r[name]
+            cols.append("%s %5.0fs %s" % (_pct(m["dead"]), m["live"], _pct(m["recall"])))
+        print("%-18s %6.2f %5d %5d %5d | %-24s | %-24s" % (
+            label, r["scale"], r["contacts"], r["segments"], r["rallies"], *cols))
+
+
+def _row(label: str, r: dict, total_rallies: int) -> str:
+    """One results line. The rally denominator comes from the fixture.
+
+    It was `126` — test1's rally count — inlined in the format string, which was
+    invisible while test1 was the only fixture this could run on and wrong for
+    every other one the moment it could (CF-174, CF-309).
+    """
+    return "%-34s %5d %5d %4d/%-3d %7.0fs %8.1f%% %8.1f%% %8.1f%%" % (
+        label, r["contacts"], r["windows"], r["hit"], total_rallies,
+        r["live"], 100 * r["dead"], 100 * r["recall"], 100 * r["cond"])
+
+
+def _last_recorded_run(test_id: str) -> dict | None:
+    """The newest row in the fixture's results file, or None.
+
+    **Deliberately not filtered by whether it describes what is running.** An
+    earlier version of this function tried: it compared the row's snapshot of
+    the ball constants, then also the condense settings this tool mirrors. It
+    lasted two review rounds, and each found more inputs the numbers depend on
+    and the predicate missed — `condense_mode` selects a different window builder
+    entirely, the bridge knobs are a third set, and an absent snapshot section
+    matched vacuously. Deciding "does this row describe today's configuration"
+    means enumerating every input to the figures, and getting it wrong produces
+    a *wrong* pin, which is worse than none: step 0's rule tells the operator to
+    distrust everything below an unmatched baseline.
+
+    So this no longer claims. It reports what was last recorded and what it was
+    recorded against, and leaves the comparison to the reader. Making step 0 a
+    trustworthy control again is CF-416 (#547), which is open and owns exactly
+    that — and what it needs is the module docstring's answer, not a matcher
+    bolted on here. Not simply a re-recorded row either: see there for why a row
+    taken at app defaults would match step 0 less, not more.
+    """
+    path = RESULTS_DIR / f"{test_id}_deadtime.jsonl"
+    if not path.exists():
+        return None
+    last = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            last = json.loads(line)
+        except json.JSONDecodeError:
+            continue        # a crashed append leaves a partial last line
+    return last
+
+
+def _baseline_note(test_id: str) -> str:
+    """Context for the step-0 row — explicitly not a pass/fail pin."""
+    row = _last_recorded_run(test_id)
+    if row is None:
+        return f"  ^ no recorded run for {test_id}\n"
+    d = row.get("deadtime") or {}
+    # `is not None`, not `in`: two of these three are *legitimately* null in a
+    # well-formed row. metrics.py returns None for dead_removed_pct when the
+    # fixture has no human dead time and for kept_play_pct when it has no human
+    # keep time, and harness._round passes None through on purpose, so the key
+    # is present and the value is not a number. A presence-only guard let that
+    # row reach `100 * None`, and this note is printed before the first sweep
+    # row -- a malformed record has to degrade the note, not kill the run.
+    if not all(d.get(k) is not None
+               for k in ("live_removed_sec", "dead_removed_pct", "kept_play_pct")):
+        return f"  ^ last recorded run for {test_id} has no dead-time metrics\n"
+    return (
+        "  ^ last recorded run (%s, %s): %.0fs live-lost, %.1f%% dead-rm, "
+        "%.1f%% recall\n"
+        "    NOT a pass/fail check — whether that run describes your "
+        "configuration is not verified here (#547).\n"
+        % (row.get("version_tag", "?"), row.get("git_commit", "?"),
+           d["live_removed_sec"], 100 * d["dead_removed_pct"],
+           100 * d["kept_play_pct"])
     )
 
 
-@dataclass
-class Result:
-    contacts: int
-    keep: list[tuple[float, float]]     # the condense keep-windows this config produced
-    rallies_hit: int
-    rallies_total: int
-    signals: DeadTimeSignals
+def main(argv: list[str] | None = None) -> None:
+    args = sys.argv[1:] if argv is None else argv
+    # `--exponents` (CF-376) prints the soft-scale axis instead of the sweep.
+    exponents = "--exponents" in args
+    args = [a for a in args if a != "--exponents"]
+    test_id = args[0] if args else DEFAULT_FIXTURE
 
-    @property
-    def dead_removed_sec(self) -> float:
-        return (self.signals.dead_removed_pct or 0.0) * self.signals.human_dead_sec
-
-    @property
-    def utility(self) -> float:
-        """Dead seconds removed, minus LIVE_CUT_COST per second of play cut."""
-        return self.dead_removed_sec - LIVE_CUT_COST * self.signals.live_removed_sec
-
-
-def utility(signals: DeadTimeSignals) -> float:
-    """Same trade as Result.utility, for callers holding only the signals."""
-    dead_removed_sec = (signals.dead_removed_pct or 0.0) * signals.human_dead_sec
-    return dead_removed_sec - LIVE_CUT_COST * signals.live_removed_sec
-
-
-def _rallies_hit(rallies: list[tuple[float, float]], contacts: list[dict]) -> int:
-    """
-    How many labeled rallies contain at least one contact.
-
-    This is the #116 metric: keep-windows are anchored on contacts, so a rally
-    with zero contacts is invisible to the condense stage and gets cut whole. It
-    localizes a regression the seconds-based signals blur — losing one long rally
-    and trimming thirty short ones cost the same live seconds but are very
-    different bugs.
-    """
-    times = sorted(c["time"] for c in contacts)
-    hit = i = 0
-    for start, end in rallies:
-        while i < len(times) and times[i] < start:
-            i += 1
-        if i < len(times) and times[i] <= end:
-            hit += 1
-    return hit
-
-
-def score(game: Game, overrides: dict | None = None) -> Result:
-    """Run the condense chain with `overrides` patched over ball.py's constants."""
-    overrides = overrides or {}
-    unknown = set(overrides) - set(TUNABLES)
-    if unknown:
-        raise SystemExit(f"not tunable: {sorted(unknown)} (known: {sorted(TUNABLES)})")
-
-    saved = {k: getattr(B, k) for k in TUNABLES}
-    for key, value in overrides.items():
-        setattr(B, key, value)
+    # Restored on the way out: main() takes an argument now, so it is callable
+    # rather than only a __main__ entry point, and a global logging level it
+    # never puts back leaks into whatever called it.
+    previous = logging.root.manager.disable
+    logging.disable(logging.INFO)
     try:
-        contacts = B.find_contacts(game.tracker, frame_height=game.frame_height)
-        # Spelled out rather than **COND/**BRIDGE: the dicts are untyped literals
-        # (test_eval_condense_settings.py parses them), so splatting them loses
-        # min_contacts' int-ness.
-        windows = active_windows_from_contacts(
-            [{"time": c["time"]} for c in contacts], game.fixture.duration,
-            gap_seconds=COND["gap_seconds"], pad_before=COND["pad_before"],
-            pad_after=COND["pad_after"], min_contacts=int(COND["min_contacts"]),
-            merge_gap_seconds=COND["merge_gap_seconds"],
-        )
-        windows = bridge_windows_by_motion(
-            windows, game.positions, frame_height=game.frame_height,
-            speed_pxps=BRIDGE["speed_pxps"], fast_fraction=BRIDGE["fast_fraction"],
-            max_bridge_seconds=BRIDGE["max_bridge_seconds"],
-        )
-        return Result(
-            contacts=len(contacts),
-            keep=windows,
-            rallies_hit=_rallies_hit(game.rallies, contacts),
-            rallies_total=len(game.rallies),
-            signals=evaluate_deadtime(game.fixture.keep, windows, game.fixture.duration),
-        )
+        if exponents:
+            exponent_sweep(test_id)
+        else:
+            _sweep(test_id)
     finally:
-        for key, value in saved.items():
-            setattr(B, key, value)
+        logging.disable(previous)
 
 
-# ── reporting ──────────────────────────────────────────────────────────────
+def _sweep(test_id: str) -> None:
+    track, positions, frame_h, fx = load(test_id)
+    defaults = {k: getattr(B, k) for k in TUNABLES}
+    rallies = sorted(fx.keep)
 
-CELL_W = 31
+    def score(**overrides):
+        for k, v in defaults.items():
+            setattr(B, k, overrides.get(k, v))
+        try:
+            contacts = B.find_contacts(track, frame_height=frame_h, normalize=NORMALIZE,
+                                       soft_scale=SOFT_SCALE)
+            w = active_windows_from_contacts(
+                [{"time": c["time"]} for c in contacts], fx.duration, **COND)
+            w = bridge_windows_by_motion(w, positions, frame_height=frame_h,
+                                         normalize=NORMALIZE, **BRIDGE)
+            s = evaluate_deadtime(fx.keep, w, fx.duration)
+            times = sorted(c["time"] for c in contacts)
+            hit = i = 0
+            for a, b in rallies:
+                while i < len(times) and times[i] < a:
+                    i += 1
+                hit += 1 if (i < len(times) and times[i] <= b) else 0
+            return dict(contacts=len(contacts), windows=len(w), hit=hit,
+                        live=s.live_removed_sec, dead=s.dead_removed_pct,
+                        recall=s.kept_play_pct, cond=s.condense_ratio)
+        finally:
+            for k, v in defaults.items():
+                setattr(B, k, v)
 
+    def show(label, r):
+        print(_row(label, r, len(rallies)))
 
-def _cell(r: Result) -> str:
-    s = r.signals
-    return (f"{r.rallies_hit:3d}/{r.rallies_total:<3d} {s.live_removed_sec:5.0f}s "
-            f"{100 * (s.dead_removed_pct or 0.0):5.1f}% {100 * (s.kept_play_pct or 0.0):5.1f}%")
+    # log=False: this is the per-run *label* for the table below, not a second
+    # opinion on the video. Left logging on, it reprints _scale_for's multi-line
+    # 1080p warning — which find_contacts already emits on every scored row —
+    # into the middle of the results table, on exactly the fixtures this tool was
+    # extended to cover. classify_contact_action passes log=False for the same
+    # reason.
+    scale = gate_scale(frame_h, normalize=NORMALIZE, soft_scale=SOFT_SCALE)
+    units = ("labels below are effective px/s" if scale == 1.0
+             else "labels below are REFERENCE px/s — multiply by the scale")
+    soft = " (CF-376 soft)" if SOFT_SCALE and scale != 1.0 else ""
+    print(f"fixture frame_height={frame_h} -> CF-174 threshold scale {scale:.2f}{soft}"
+          f"  ({units})\n")
+    print("%-34s %5s %5s %8s %8s %9s %9s %9s" % (
+        "config", "cont", "win", "rally", "live-lost", "dead-rm", "recall", "condense"))
+    show(BASELINE_LABEL, score())
+    print(_baseline_note(test_id))
 
+    # `%g` rather than a per-knob format, now that one table holds a mix of
+    # floats and ints. It reproduces the labels the earlier per-knob `%.0f`
+    # and bare `{v}` formats printed, byte-for-byte, for every value swept.
+    #
+    # Byte-exact for these values, not label-stable in general: `%g` truncates
+    # to six significant digits and switches to scientific notation at 1e6, so
+    # a future swept 0.1234567 would print a label that no longer identifies
+    # the value it scored.
+    for name in ("CONTACT_RESIDUAL_MIN_PXPS", "CONTACT_RESIDUAL_RATIO",
+                 "CONTACT_HIT_SPEED_PXPS"):
+        for v in SWEEPS[name]:
+            show(f"{name}={v:g}", score(**{name: v}))
+        print()
+    for name in ("SEG_MIN_POSITIONS", "SEG_MIN_MEDIAN_SPEED_PXPS"):
+        for v in SWEEPS[name]:
+            show(f"{name}={v:g}", score(**{name: v}))
+    print()
+    for v in SWEEPS["MIN_CONTACT_SPACING"]:
+        show(f"MIN_CONTACT_SPACING={v:g}", score(MIN_CONTACT_SPACING=v))
+    print()
+    # Most promising single knobs, combined.
+    for label, overrides in COMBOS:
+        show(label, score(**overrides))
 
-def _header(games: list[Game]) -> str:
-    cols = " | ".join(f"{g.test_id:^{CELL_W}s}" for g in games)
-    sub = " | ".join(f"{'rally    live   dead%  recall':{CELL_W}s}" for _ in games)
-    return f"{'config':38s} | {cols}\n{'':38s} | {sub}"
-
-
-def _row(label: str, games: list[Game], results: dict[str, Result], tuned: list[Game]) -> str:
-    cells = " | ".join(_cell(results[g.test_id]) for g in games)
-    total = sum(results[g.test_id].utility for g in tuned)
-    return f"{label:38s} | {cells} | U={total:7.0f}"
-
-
-def sweep_knob(knob: str, values, games: list[Game], tuned: list[Game]) -> dict:
-    """Score every value of one knob on every game. Returns {value: {test_id: Result}}."""
-    return {v: {g.test_id: score(g, {knob: v}) for g in games} for v in values}
-
-
-def report_sweep(knob: str, values, table: dict, games: list[Game], tuned: list[Game]) -> None:
-    print(f"\n-- {knob} (shipping {getattr(B, knob):g}) --")
-    for v in values:
-        mark = "  <- shipping" if v == getattr(B, knob) else ""
-        print(_row(f"  {knob}={v:g}{mark}", games, table[v], tuned))
-
-
-def report_marginals(knob: str, values, table: dict, tuned: list[Game]) -> None:
-    """
-    What each step along the sweep actually buys, summed over the tuned games.
-
-    This is the knee argument #118 used for the residual floor, made explicit:
-    once a step stops recovering rallies while still shedding dead time, the
-    extra contacts are false positives and the sweep has gone past the knee.
-    """
-    print(f"\n-- {knob}: marginal cost of each step --")
-    print(f"  {'step':>17} {'rallies':>9} {'live saved':>12} {'dead lost':>11}   dead lost per rally")
-    for a, b in zip(values, values[1:]):
-        gained = sum(table[b][g.test_id].rallies_hit - table[a][g.test_id].rallies_hit for g in tuned)
-        saved = sum(table[a][g.test_id].signals.live_removed_sec
-                    - table[b][g.test_id].signals.live_removed_sec for g in tuned)
-        lost = sum(table[a][g.test_id].dead_removed_sec - table[b][g.test_id].dead_removed_sec
-                   for g in tuned)
-        per = f"{lost / gained:.0f}s" if gained else "-- (no rally recovered)"
-        print(f"  {a:7g} -> {b:<6g} {gained:+9d} {saved:11.0f}s {lost:10.0f}s   {per}")
-
-
-def report_loo(knob: str, values, table: dict, tuned: list[Game]) -> None:
-    """
-    Leave-one-game-out: pick the value on the other games, score it on this one.
-
-    Every number printed under "held out" comes from footage the choice never
-    saw. With three games this is a weak test — but it is the difference between
-    "this value wins on the video it was fitted to" and "this value transfers",
-    and #116 shipped one knob instead of five precisely because nothing could
-    tell those apart yet.
-    """
-    print(f"\n-- {knob}: leave-one-game-out (cost {LIVE_CUT_COST:g}:1) --")
-    if len(tuned) < 2:
-        print("  needs >= 2 tuned fixtures; skipped")
-        return
-    for held in tuned:
-        train = [g for g in tuned if g is not held]
-        pick = max(values, key=lambda v: sum(table[v][g.test_id].utility for g in train))
-        chosen, shipping = table[pick][held.test_id], table[getattr(B, knob)][held.test_id]
-        print(f"  held out {held.test_id:8s} trained pick {knob}={pick:g}")
-        print(f"    picked   {_cell(chosen)}   condense {100 * (chosen.signals.condense_ratio or 0.0):5.1f}%")
-        print(f"    shipping {_cell(shipping)}   condense {100 * (shipping.signals.condense_ratio or 0.0):5.1f}%")
-
-
-def dump_windows(games: list[Game], out_dir: Path, config: str | None = None) -> None:
-    """
-    Write each game's keep-windows in `--windows-json` shape.
-
-    Closes the loop the results log needs. `harness --offline` derives the same
-    windows from the R2 ball-cache, but it wants the worker container, the app
-    config and a video download; this path replays the identical chain off the
-    committed fixtures, so a threshold change can be recorded in
-    results/{test_id}_deadtime.jsonl from a laptop. The windows match --offline
-    because both call the same find_contacts -> dead_time.py functions with the
-    drift-guarded COND/BRIDGE settings above.
-
-    `config` names a CANDIDATES entry instead of the shipping constants, which is
-    how a superseded configuration still gets its own row: without it the log
-    jumps straight from the last recorded state to the current one and credits a
-    single change with everything in between.
-    """
-    overrides = CANDIDATES[config] if config else {}
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for game in games:
-        result = score(game, overrides)
-        path = out_dir / f"{game.test_id}_keep.json"
-        path.write_text(json.dumps(
-            {"keep": [{"start": round(a, 3), "end": round(b, 3)} for a, b in result.keep]},
-            indent=2,
-        ) + "\n", encoding="utf-8")
-        print(f"{game.test_id}: {result.contacts} contacts -> {len(result.keep)} windows -> {path}")
-
-
-def report_candidates(games: list[Game], tuned: list[Game]) -> None:
-    """Score every named CANDIDATES config, then leave-one-game-out across them."""
-    table = {name: {g.test_id: score(g, cfg) for g in games} for name, cfg in CANDIDATES.items()}
-    # Computed, not named in CANDIDATES: the shipping row must track ball.py's
-    # current constants, so it stays the right comparison after a default moves.
-    shipping = {g.test_id: score(g) for g in games}
-
-    print("\n" + _header(games))
-    print(_row("  SHIPPING DEFAULTS", games, shipping, tuned))
-    for name in CANDIDATES:
-        print(_row(f"  {name}", games, table[name], tuned))
-
-    print(f"\n-- candidates: leave-one-game-out (cost {LIVE_CUT_COST:g}:1) --")
-    if len(tuned) < 2:
-        print("  needs >= 2 tuned fixtures; skipped")
-        return
-    names = list(CANDIDATES)
-    for held in tuned:
-        train = [g for g in tuned if g is not held]
-        pick = max(names, key=lambda n: sum(table[n][g.test_id].utility for g in train))
-        chosen, ship = table[pick][held.test_id], shipping[held.test_id]
-        print(f"  held out {held.test_id:8s} trained pick {pick}")
-        print(f"    picked   {_cell(chosen)}   condense {100 * (chosen.signals.condense_ratio or 0.0):5.1f}%")
-        print(f"    shipping {_cell(ship)}   condense {100 * (ship.signals.condense_ratio or 0.0):5.1f}%")
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--fixtures", nargs="+", default=list(DEFAULT_FIXTURES),
-                    help="fixtures to tune and cross-validate on")
-    ap.add_argument("--guards", nargs="+", default=list(DEFAULT_GUARDS),
-                    help="fixtures scored but never optimized against")
-    ap.add_argument("--ball-cache-dir", type=Path, default=BALL_CACHE_DIR)
-    ap.add_argument("--knob", choices=sorted(TUNABLES),
-                    help="sweep only this knob (default: every knob in SWEEPS)")
-    ap.add_argument("--values", nargs="+", type=float,
-                    help="values for --knob, replacing the built-in range")
-    ap.add_argument("--candidates", action="store_true",
-                    help="skip the knob sweeps; cross-validate the named CANDIDATES configs")
-    ap.add_argument("--dump-windows", type=Path, metavar="DIR",
-                    help="skip the sweeps; write each fixture's shipping-config keep-windows to "
-                         "DIR/{test_id}_keep.json, ready for "
-                         "`harness --mode deadtime --windows-json` to score and record")
-    ap.add_argument("--config", choices=sorted(CANDIDATES),
-                    help="with --dump-windows: dump this CANDIDATES config instead of the "
-                         "shipping constants")
-    args = ap.parse_args()
-
-    if args.config and not args.dump_windows:
-        ap.error("--config applies to --dump-windows")
-
-    if args.values and not args.knob:
-        ap.error("--values needs --knob")
-    if args.candidates and args.knob:
-        ap.error("--candidates sweeps whole configs; drop --knob")
-    logging.disable(logging.INFO)   # find_contacts logs a line per call; 40 calls of it drowns the tables
-
-    tuned = [load_game(t, args.ball_cache_dir) for t in args.fixtures]
-    guards = [load_game(t, args.ball_cache_dir) for t in args.guards]
-    games = tuned + guards
-    if not tuned:
-        ap.error("--fixtures must name at least one fixture")
-
-    print(f"tuned on {[g.test_id for g in tuned]}, guarded by {[g.test_id for g in guards]}")
-    for g in games:
-        role = "guard" if g in guards else "tuned"
-        print(f"  {g.test_id:8s} {role:5s} {g.fixture.duration:7.0f}s  frame_h={g.frame_height:5d}  "
-              f"{len(g.positions):5d} ball positions  {len(g.rallies):3d} labeled rallies")
-
-    if args.dump_windows:
-        dump_windows(games, args.dump_windows, args.config)
-        return
-
-    if args.candidates:
-        report_candidates(games, tuned)
-        return
-
-    knobs = ({args.knob: tuple(args.values) if args.values else SWEEPS[args.knob]}
-             if args.knob else SWEEPS)
-
-    print("\n" + _header(games))
-    print(_row("SHIPPING DEFAULTS", games, {g.test_id: score(g) for g in games}, tuned))
-
-    for knob, values in knobs.items():
-        # A value the sweep omits leaves report_loo with no shipping row to
-        # compare against, so pin it in and keep the range ordered.
-        values = tuple(sorted({*values, getattr(B, knob)}, reverse=True))
-        table = sweep_knob(knob, values, games, tuned)
-        report_sweep(knob, values, table, games, tuned)
-        if len(values) > 1:
-            report_marginals(knob, values, table, tuned)
-            report_loo(knob, values, table, tuned)
+    # Stage 2: recovering the condense ratio. Better contact recall pushes the
+    # run up against the padding ceiling (pad 5/4 + merge 5 absorbs every dead
+    # gap <= 14s), so re-sweep padding on top of the best contact settings.
+    # The last combo, read rather than re-typed. This was a fourth hand-written
+    # duplicate of the same override set, and a copy is how the no-op
+    # `CONTACT_RESIDUAL_MIN_PXPS=240` pin came to survive in four places.
+    # Copied on the way out all the same: `COMBOS[-1][1]` is a module-level
+    # dict, and handing it to a function by reference where the old code built
+    # a fresh one is a class of bug for the sake of nothing.
+    #
+    # `[-1]` is positional and load-bearing: stage 2 sweeps padding on top of
+    # the FULLEST combo, which is the last one because the table is written
+    # cumulatively, so the order is part of the table's meaning rather than its
+    # presentation. `test_the_combos_are_written_cumulatively` enforces it,
+    # so a reordered table fails that test rather than re-basing stage 2.
+    best = dict(COMBOS[-1][1])
+    print("\n-- padding sweep, on top of the full best contact combo --")
+    global COND
+    keep_cond = dict(COND)
+    try:
+        for pb, pa, mg in PADDING:
+            COND = dict(keep_cond, pad_before=pb, pad_after=pa, merge_gap_seconds=mg)
+            show(padding_label(pb, pa, mg), score(**best))
+    finally:
+        # Restored on the failure path too: a raise inside the loop would
+        # otherwise leave this module global on the last swept value. `score`
+        # already guards the ball constants this way, and `main` the logging
+        # level; this was the one sweep still restoring only on success.
+        COND = keep_cond
 
 
 if __name__ == "__main__":

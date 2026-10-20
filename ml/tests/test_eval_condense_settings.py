@@ -18,11 +18,22 @@ import ast
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 REPO = Path(__file__).resolve().parents[2]
 CONFIG_PY = REPO / "api" / "app" / "config.py"
 TUNE_PY = REPO / "ml" / "eval" / "tune_contacts.py"
+# Every eval module that consumes the NORMALIZE mirror. deadtime_variants
+# imports it from tune_contacts, so a check that scanned only the file the
+# constant is *declared* in could not see the consumer that drops it — which
+# is exactly what happened: v0_shipped, the baseline every v1..v5 is scored
+# against, passed it to find_contacts and not to the bridge.
+MIRROR_CONSUMERS = (
+    TUNE_PY,
+    REPO / "ml" / "eval" / "deadtime_variants.py",
+)
 DEAD_TIME_PY = REPO / "ml" / "pipeline" / "dead_time.py"
 
 # tune_contacts constant -> the app.config setting it copies.
@@ -54,6 +65,23 @@ GUARD_TO_KWARG = {
 # rule-based path only. Listed here so the coverage test stays a conscious
 # checkpoint for every new condense_* knob.
 SWITCH_SETTINGS = {"condense_mode"}
+
+# Settings outside the condense_ prefix that the eval tooling still copies, so
+# the coverage test above cannot see them. `ball_contact_scale_enabled` (CF-174)
+# is mirrored as tune_contacts.NORMALIZE and reaches both find_contacts and the
+# motion bridge, which is why drift here would move every swept number.
+# `ball_contact_soft_scale_enabled` (CF-376) is mirrored as SOFT_SCALE and reaches
+# find_contacts only — the bridge keeps the full scale in production too.
+NON_CONDENSE_TO_MIRROR = {
+    "ball_contact_scale_enabled": "NORMALIZE",
+    "ball_contact_soft_scale_enabled": "SOFT_SCALE",
+}
+# The keyword each mirrored setting arrives as, per callee. SOFT_SCALE is not
+# passed to the bridge on purpose, so it is listed for find_contacts only.
+SWITCH_KWARGS = {
+    "find_contacts": ("normalize", "soft_scale"),
+    "bridge_windows_by_motion": ("normalize",),
+}
 
 
 def _settings_defaults() -> dict[str, object]:
@@ -112,6 +140,21 @@ def _tune_constant(name: str) -> dict[str, object]:
     raise AssertionError(f"{name} not found in {TUNE_PY.name}")
 
 
+def _tune_scalar(name: str) -> object:
+    """The scalar literal assigned to a module-level constant in tune_contacts.py."""
+    tree = ast.parse(TUNE_PY.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+            return ast.literal_eval(value)
+    raise AssertionError(f"{name} not found in {TUNE_PY.name}")
+
+
 class TestTuneContactsMatchesProduction:
     def test_condense_window_settings_match(self):
         settings = _settings_defaults()
@@ -133,6 +176,65 @@ class TestTuneContactsMatchesProduction:
                 f"tune_contacts BRIDGE[{key!r}]={bridge[key]} but "
                 f"app.config {setting}={settings[setting]}"
             )
+
+    def test_non_condense_mirrors_match(self):
+        """
+        `ball_contact_scale_enabled` is copied into tune_contacts the same way
+        COND and BRIDGE are, but it carries no `condense_` prefix, so the
+        coverage test below cannot see it and would not notice it drifting.
+
+        Drift here is worse than on a condense knob, not better: the switch
+        moves the contact gates *and* the bridge, so a tuner mirroring the wrong
+        value re-scores every row of every sweep against a detector production
+        is not running.
+        """
+        settings = _settings_defaults()
+        for setting, constant in NON_CONDENSE_TO_MIRROR.items():
+            assert setting in settings, f"app.config lost {setting!r}"
+            assert _tune_scalar(constant) == settings[setting], (
+                f"tune_contacts {constant}={_tune_scalar(constant)} but "
+                f"app.config {setting}={settings[setting]}"
+            )
+
+    @pytest.mark.parametrize("module_py", MIRROR_CONSUMERS, ids=lambda p: p.name)
+    @pytest.mark.parametrize("callee", ["find_contacts", "bridge_windows_by_motion"])
+    def test_the_switch_reaches_both_halves_of_the_condense_path(self, module_py, callee):
+        """
+        The mirrored value is only worth pinning if it is actually passed to
+        every consumer. CF-174's switch is one setting precisely so the contact
+        gates and the motion bridge cannot land on opposite sides of it, and the
+        eval mirrors are where that wiring is easiest to drop — nothing else in
+        this suite would notice, because both tools need a ball track from R2 to
+        run at all.
+
+        Parametrized over the *modules*, not just the callees, because the first
+        version of this test scanned only `tune_contacts` — the file the constant
+        is declared in — and therefore could not see `deadtime_variants.v0_shipped`
+        passing the mirror to its contacts and not to its bridge. A test whose
+        docstring claims both halves are covered has to check both files, or it
+        is the same class of unverified claim it exists to catch.
+
+        Asserted over the parsed call rather than a source substring: a
+        substring check passes or fails on formatting, and two earlier versions
+        of this idea in the CF-174 branch were replaced for exactly that. This
+        reads the keyword off the AST, so rewrapping the call is invisible and
+        dropping the argument is not.
+        """
+        tree = ast.parse(module_py.read_text(encoding="utf-8"))
+        calls = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name | ast.Attribute)
+            and (n.func.id if isinstance(n.func, ast.Name) else n.func.attr) == callee
+        ]
+        assert calls, f"{module_py.name} no longer calls {callee}"
+        for call in calls:
+            kwargs = {k.arg for k in call.keywords if k.arg}
+            for kwarg in SWITCH_KWARGS[callee]:
+                assert kwarg in kwargs, (
+                    f"{module_py.name} calls {callee} at line {call.lineno} without "
+                    f"{kwarg}=, so that half of the run ignores the switch it carries"
+                )
 
     def test_every_condense_setting_is_covered(self):
         """A new condense_* knob should be mapped here, not silently skipped."""
@@ -172,3 +274,35 @@ class TestGuardedDefaultsMatchProduction:
     def test_condense_mode_default_is_a_known_mode(self):
         mode = _settings_defaults()["condense_mode"]
         assert mode in {"rules", "guarded"}, f"unknown condense_mode default {mode!r}"
+
+
+# The eval modules that read the switches straight off app.config.settings
+# rather than through a tune_contacts mirror, so neither the mirror test above
+# nor api/tests' worker AST test can see them. Dropping `soft_scale=` from one
+# of these is silent: harness.config_snapshot would still record the flag as
+# on for a run that gated with it off.
+SETTINGS_CONSUMERS = (
+    REPO / "ml" / "eval" / "harness.py",
+    REPO / "ml" / "eval" / "diagnose_detection.py",
+)
+
+
+@pytest.mark.parametrize("module_py", SETTINGS_CONSUMERS, ids=lambda p: p.name)
+def test_the_settings_consumers_hand_find_contacts_both_switches(module_py):
+    """CF-376: each find_contacts call passes both switches, by value."""
+    tree = ast.parse(module_py.read_text(encoding="utf-8"))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name | ast.Attribute)
+        and (n.func.id if isinstance(n.func, ast.Name) else n.func.attr) == "find_contacts"
+    ]
+    assert calls, f"{module_py.name} no longer calls find_contacts"
+    for call in calls:
+        kwargs = {k.arg: ast.unparse(k.value) for k in call.keywords if k.arg}
+        assert kwargs.get("normalize") == "settings.ball_contact_scale_enabled", (
+            f"{module_py.name}:{call.lineno} find_contacts without the CF-174 switch"
+        )
+        assert kwargs.get("soft_scale") == "settings.ball_contact_soft_scale_enabled", (
+            f"{module_py.name}:{call.lineno} find_contacts without CF-376's soft flag"
+        )

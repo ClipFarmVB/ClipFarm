@@ -2,12 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertCircle, ArrowRight, Pencil, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
+import { OnboardingPanel } from "@/components/OnboardingPanel";
+import { useAuth } from "@/contexts/AuthContext";
 import { deleteGame, renameGame, type Game } from "@/lib/api";
+import { GameTitle, deleteAction } from "@/components/DemoGame";
 import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
+import { sampleGameIdOf } from "@/lib/onboarding";
 import { cn } from "@/lib/utils";
 
 // `uploading` is filtered out by the api's list endpoint — a game whose video
@@ -30,6 +34,7 @@ const STATUS_LABEL: Record<Game["status"], string> = {
 };
 
 function GamesContent() {
+  const { user } = useAuth();
   // Initialise from cache for an instant render — no spinner if data is ready.
   const [games, setGames] = useState<Game[]>(() => getCachedGames() ?? []);
   const [loading, setLoading] = useState(() => getCachedGames() === null);
@@ -59,13 +64,19 @@ function GamesContent() {
         updateGamesCache(next);
         return next;
       });
-    } catch {
-      // silently revert — title stays as original in state since we didn't optimistically update
+    } catch (e) {
+      // The comment said "silently revert" and then admitted in the same
+      // breath that there is nothing to revert. So the rename simply failed
+      // and said nothing (CF-304's class, one file over). `alert`, matching
+      // `handleDelete` below.
+      alert(e instanceof Error ? e.message : "Could not rename the game.");
     }
   }
 
-  async function handleDelete(gameId: string, title: string) {
-    if (!confirm(`Delete "${title}" and all its clips? This cannot be undone.`)) return;
+  async function handleDelete(game: Game) {
+    // The demo game (CF-565) is "removed", with its own confirm: see deleteAction.
+    if (!confirm(deleteAction(game).confirm)) return;
+    const gameId = game.id;
     setDeleting(gameId);
     try {
       await deleteGame(gameId);
@@ -123,7 +134,9 @@ function GamesContent() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-[18px] font-semibold text-foreground tracking-tight">Library</h1>
-          {!loading && (
+          {/* `!error` for the same reason the empty state has it: a failed
+              load must not say "No games yet" (CF-304). */}
+          {!loading && !error && (
             <p className="mt-0.5 text-[12px] text-muted">
               {games.length === 0
                 ? "No games yet"
@@ -138,6 +151,16 @@ function GamesContent() {
           </Button>
         </Link>
       </div>
+
+      {/* The demo game copied in at signup (#220), linked as the worked
+          example and kept out of the user's progress. */}
+      <OnboardingPanel
+        games={games}
+        loading={loading}
+        error={error}
+        userId={user?.id}
+        sampleGameId={sampleGameIdOf(games)}
+      />
 
       {/* Error */}
       {error && (
@@ -218,10 +241,11 @@ function GamesContent() {
                    rare destructive-feeling thing and opening needed the 32px
                    arrow — the wrong way round for the primary action. Rename
                    now has its own button, as it already does on Collections. */
-                <Link href={`/games/${game.id}`} className="min-w-0 w-full">
-                  <span className="block truncate text-[13px] font-medium text-foreground group-hover:text-brand transition-colors">
-                    {game.title}
-                  </span>
+                <Link href={`/games/${game.id}`} className="flex min-w-0 w-full items-center gap-2">
+                  <GameTitle
+                    game={game}
+                    className="text-[13px] font-medium text-foreground group-hover:text-brand transition-colors"
+                  />
                 </Link>
               )}
 
@@ -255,13 +279,13 @@ function GamesContent() {
                     <Pencil size={11} />
                   </button>
                   <button
-                    onClick={() => handleDelete(game.id, game.title)}
+                    onClick={() => handleDelete(game)}
                     disabled={deleting === game.id}
                     className="hover-reveal opacity-0 group-hover:opacity-100 flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-30 sm:h-6 sm:w-6"
-                    title="Delete game"
-                    aria-label="Delete game"
+                    title={deleteAction(game).label}
+                    aria-label={deleteAction(game).label}
                   >
-                    <Trash2 size={12} />
+                    {deleteAction(game).isDemo ? <X size={12} /> : <Trash2 size={12} />}
                   </button>
                   <Link
                     href={`/games/${game.id}`}
@@ -281,9 +305,21 @@ function GamesContent() {
 }
 
 export default function GamesPage() {
+  const { user } = useAuth();
+  // Keyed on the user so an identity change (e.g. another tab signing in as
+  // someone else) remounts the Library instead of keeping the previous
+  // user's list in state. AuthContext has already cleared the module cache by
+  // then, so the remount starts loading. Without this the onboarding panel
+  // judged the old list against the new user and wrote their `done`.
+  //
+  // Signing out also clears the cache, but AuthContext starts no prefetch for
+  // a null user and nothing redirects until the next navigation. So with no
+  // user the Library renders nothing rather than mounting into an
+  // unauthenticated `fetchGames()` whose 401 would fill the page with an error
+  // card. The sidebar already offers "Sign in" in that state.
   return (
     <RequireAuth>
-      <GamesContent />
+      {user && <GamesContent key={user.id} />}
     </RequireAuth>
   );
 }

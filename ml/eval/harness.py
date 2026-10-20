@@ -54,17 +54,34 @@ _SNAPSHOT_MODULES = ("ml.pipeline.ball", "ml.pipeline.score")
 # ── timestamp / fixture loading ────────────────────────────────────────────
 
 def parse_timestamp(value: str | int | float) -> float:
-    """Accept mm:ss, hh:mm:ss, or raw seconds → float seconds."""
+    """Accept mm:ss, hh:mm:ss, or raw seconds → float seconds.
+
+    One leading sign applies to the whole timestamp, not just its first field:
+    `-0:30` is -30s, where applying the sign to `-0` alone gave +30 and hid a
+    negative time from every `start < 0` check. A leading `+` is accepted the
+    same way (`+0:30` is 30s), as it was before the sign handling existed. The
+    fields after the first are base-60 digits, so a sign on them or a value of
+    60 or more (`0:62`, a slip for `0:26`) is a typo, and raises rather than
+    scoring at the wrong time. So does a second leading sign (`--5`).
+    """
     if isinstance(value, (int, float)):
         return float(value)
-    parts = [float(p) for p in str(value).split(":")]
-    if len(parts) == 1:
-        return parts[0]
-    if len(parts) == 2:
-        return parts[0] * 60 + parts[1]
-    if len(parts) == 3:
-        return parts[0] * 3600 + parts[1] * 60 + parts[2]
-    raise ValueError(f"Unrecognized timestamp: {value!r}")
+    text = str(value).strip()
+    sign = -1.0 if text.startswith("-") else 1.0
+    fields = (text[1:] if text.startswith(("-", "+")) else text).split(":")
+    if len(fields) > 3:
+        raise ValueError(f"Unrecognized timestamp: {value!r}")
+    if fields[0].strip().startswith(("-", "+")):
+        raise ValueError(f"More than one leading sign on timestamp: {value!r}")
+    if any(f.strip().startswith(("-", "+")) for f in fields[1:]):
+        raise ValueError(f"Signed field inside timestamp: {value!r}")
+    parts = [float(p) for p in fields]
+    if not all(0 <= p < 60 for p in parts[1:]):
+        raise ValueError(f"Minutes/seconds field out of range: {value!r}")
+    total = 0.0
+    for p in parts:
+        total = total * 60 + p
+    return sign * total
 
 
 @dataclass
@@ -198,6 +215,17 @@ def config_snapshot() -> dict:
         app_snap = {
             "highlight_score_threshold": settings.highlight_score_threshold,
             "clip_verify_enabled": settings.clip_verify_enabled,
+            # Named rather than caught by the condense_ prefix below, because it
+            # is not a condense knob and would otherwise never reach a row:
+            # CF-174's scaling moves both the contact gates and the bridge, so
+            # two rows on opposite sides of this switch describe different
+            # detectors while looking directly comparable.
+            "ball_contact_scale_enabled": settings.ball_contact_scale_enabled,
+            # CF-376's softening of that scale, for the same reason: while the
+            # CF-174 switch above is on, flag on and off are different contact
+            # sets at heights between 360p and the >1440p clamp. Elsewhere —
+            # switch off, 360p, past the clamp — the two runs are identical.
+            "ball_contact_soft_scale_enabled": settings.ball_contact_soft_scale_enabled,
         }
         fields = getattr(type(settings), "model_fields", None) or getattr(type(settings), "__fields__", {})
         app_snap.update({
@@ -343,8 +371,10 @@ def _require_r2_key(raw: dict, test_id: str) -> str:
             "python -m ml.eval.visualize_deadtime, which reads ml/eval/ball_caches/."
         )
     return r2_key
+
+
 def _assert_declared_frame_height(
-    fixture, frame_h: int, test_id: str, r2_key: str, mode: str
+    fixture: Fixture | DeadFixture, frame_h: int, test_id: str, r2_key: str, mode: str
 ) -> None:
     """
     Refuse to score if the decoded source is not the height the fixture declares.
@@ -362,7 +392,23 @@ def _assert_declared_frame_height(
 
     Opt-in per fixture: absent `source_frame_height` skips the check rather than
     failing, so fixtures written before the key existed still run.
+
+    A non-positive height is handled first and separately. OpenCV reports 0 for
+    a container it cannot decode — a truncated download, a missing codec — and
+    that is a broken *file*, not a re-labelled one. Reported as a mismatch it
+    reads as "the source is not what the fixture says" and sends the operator to
+    re-upload or re-label a video that is fine; the deadtime path has said so
+    since CF-98, and the highlight path only reached this helper at all once
+    test1.json gained the key.
     """
+    if frame_h <= 0:
+        flag = "--windows-json" if mode == "deadtime" else "--clips-json"
+        raise SystemExit(
+            f"Offline {mode}: OpenCV read a frame height of {frame_h} from "
+            f"{r2_key}. That is a decode failure, not a fixture mismatch — the "
+            "download is probably truncated or its codec is unavailable here. "
+            f"Check the file plays locally, or score a dumped list with {flag}."
+        )
     declared = fixture.raw.get("source_frame_height")
     if declared is None or int(declared) == frame_h:
         return
@@ -378,7 +424,9 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     """
     Re-run the detection + scoring stages against the fixture's source video,
     mirroring process_game_task stages 0-2. Ball positions load from the R2
-    cache (free unless model/sample-rate changed), so no re-tracking. Returns
+    cache when an entry exists for the video, model, sample rate and
+    TRACKING_CACHE_VERSION; a miss — every video, after a version bump —
+    re-tracks. Returns
     (pre_gate = all scored rallies, post_gate = those above the gate).
 
     Runs impure edges (R2, ffmpeg, cv2, app config) behind lazy imports — must
@@ -418,11 +466,20 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         audio = compute_audio_energy(str(local))
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
-        # Pass r2_key: without it the ball-cache lookup and the Modal GPU path are
-        # both skipped, so a mode documented as "no re-tracking" would silently
-        # fall through to a ~30-minute local CPU re-track.
+        # Pass r2_key: the Modal path needs it (`_will_attempt_modal`). The cache
+        # lookup does not — it keys on the file's md5 and sample_every — but
+        # without r2_key a miss goes straight to local tracking, which the eval
+        # image has no ML runtime for, so it raises BallRuntimeUnavailable.
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
-        contacts = find_contacts(tracker, frame_height=frame_h)
+        # normalize: this mode reads every other production knob off `settings`
+        # (the gate threshold below, the condense_* tunables on the deadtime
+        # path), so reading the CF-174 switch from anywhere else would score a
+        # detector production is not running whenever it is off.
+        contacts = find_contacts(
+            tracker, frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
+            soft_scale=settings.ball_contact_soft_scale_enabled,
+        )
         detections = contacts_to_rallies(contacts, duration, frame_h)
         if audio is not None:
             detections = score_cheers(detections, *audio)
@@ -497,7 +554,8 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
     """
     Derive the condense keep-windows from the fixture's source video, mirroring
     process_game_task's stage-5 condense path (dead_time.py). Ball positions load
-    from the R2 cache (free unless model/sample-rate changed), so no re-tracking.
+    from the R2 cache when an entry exists for the video, model, sample rate and
+    TRACKING_CACHE_VERSION; a miss — every video, after a version bump — re-tracks.
 
     Follows `condense_mode`, so this scores the builder production actually runs
     rather than a fixed one — the whole point of the offline path is that its
@@ -543,18 +601,10 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
 
-        # A container OpenCV cannot decode reports 0 here, and every guarded
-        # speed threshold is normalized by frame height — so the builder would
-        # raise ValueError several frames of stack away from the cause. This
-        # function's other bad-input paths all exit with instructions; so does
-        # this one.
-        if frame_h <= 0:
-            raise SystemExit(
-                f"Offline deadtime: OpenCV read a frame height of {frame_h} from "
-                f"{r2_key}. Its codec is probably unavailable in this environment "
-                "— check the file plays locally, or score a dumped keep-window "
-                "list with --windows-json instead."
-            )
+        # The frame_h <= 0 check that used to sit here moved into
+        # _assert_declared_frame_height below, which runs on both offline paths
+        # rather than only this one.
+        #
         # Prefer the fixture's declared duration (the same value that anchors the
         # dead-time complement); fall back to the decoded frame count.
         duration = fixture.duration or (n_frames / fps)
@@ -562,10 +612,17 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         _assert_declared_frame_height(fixture, frame_h, test_id, r2_key, "deadtime")
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
-        # Pass r2_key so the ball-cache lookup hits; without it this silently
-        # falls through to a ~30-minute local CPU re-track (see _run_offline).
+        # Pass r2_key for the Modal path, as in _run_offline above; the cache
+        # lookup itself keys on the file's md5 and sample_every.
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
-        contacts = find_contacts(tracker, frame_height=frame_h)
+        # Same reason as the highlight path: every condense knob below comes
+        # from `settings`, so this one must too, or an offline row scores a
+        # detector production is not running.
+        contacts = find_contacts(
+            tracker, frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
+            soft_scale=settings.ball_contact_soft_scale_enabled,
+        )
 
         pre_bridge = active_windows_from_contacts(
             contacts, duration,
@@ -577,12 +634,14 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         )
         # Mirrors what process_game_task keeps for the condense stage.
         positions = [
-            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+            {"time": p.time, "x": p.x, "y": p.y, "confidence": p.confidence}
+            for p in tracker.positions
         ]
 
         mode = settings.condense_mode
-        # Offline mode is the ball-cache path by design ("no re-tracking"). No
-        # ball signal at all means the cache is empty; the production fallback
+        # Offline mode is the ball-cache path by design (it replays cached
+        # tracks, and re-tracks on a miss). No ball signal at all means the track
+        # is empty, whether cached or re-tracked; the production fallback
         # is a ~30-min pose-first CPU re-detect, which this mode deliberately
         # does not run. Fail loudly rather than score that as the model's output.
         #
@@ -606,6 +665,7 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
             fast_fraction=settings.condense_bridge_fast_fraction,
             max_bridge_seconds=settings.condense_bridge_max_seconds,
             frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
         )
 
         if mode == "rules":

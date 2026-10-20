@@ -13,6 +13,8 @@ compose `db` service is enough) or take LOCK_TEST_DATABASE_URL, which is what CI
 sets for its throwaway server; they skip only when there is no database at all.
 """
 import ast
+import itertools
+import logging
 import pathlib
 import socket
 import struct
@@ -664,7 +666,7 @@ class _DbDown(Exception):
     """Stands in for the database being unreachable *from the handler*."""
 
 
-def _drive_failing_task(monkeypatch, exists, set_status, progress=None):
+def _drive_failing_task(monkeypatch, exists, set_status, progress=None, lock_class=None):
     """Run `process_game_task` in-process with its DB helpers stubbed.
 
     The helpers are imported *inside* the task body, so patching
@@ -679,6 +681,12 @@ def _drive_failing_task(monkeypatch, exists, set_status, progress=None):
     reached its retry decision. Exhausting the retries makes the outcome
     readable: reaching `self.retry` surfaces the original `_PipelineBoom`,
     while failing to reach it surfaces whatever escaped the handler.
+
+    `lock_class` swaps the `GameLock` stand-in, defaulting to `_FakeLock` so
+    callers that do not pass one are unaffected. Note that `released`, which
+    this returns, is closed over by `_FakeLock` alone — a caller passing its
+    own class reads its own record, which is why the lock-probe tests below
+    assert on their own event list rather than on `released`.
     """
     import sys
     import types
@@ -707,7 +715,7 @@ def _drive_failing_task(monkeypatch, exists, set_status, progress=None):
     def _boom(*a, **k):
         raise _PipelineBoom("pipeline failed")
 
-    monkeypatch.setattr(locks, "GameLock", _FakeLock)
+    monkeypatch.setattr(locks, "GameLock", lock_class or _FakeLock)
     monkeypatch.setattr(_sync_db, "sync_game_exists", exists)
     monkeypatch.setattr(_sync_db, "sync_set_game_status", set_status)
     monkeypatch.setattr(_sync_db, "sync_set_game_progress", progress or _boom)
@@ -901,6 +909,210 @@ def test_a_failed_write_after_losing_the_lock_keeps_the_original_LockLost(monkey
     assert isinstance(result.result, LockLost), (
         f"expected the original LockLost to survive, got {result.result!r} — a "
         "failure while marking the row loses the reason the game was abandoned"
+    )
+
+
+def _probe_recorder(probe_acquire=True):
+    """A `GameLock` stand-in that records *which instance* did what.
+
+    Both the job lock and the probe inside `_mark_failed_if_lock_free` come out
+    of the same patched `GameLock`, so a recorder that cannot tell them apart
+    reads the job lock's releases as the probe's. Instance 0 is the job lock and
+    instance 1 is the probe: `tasks.py` builds exactly two `GameLock`s (`:891`
+    and `:926`) and the job lock is always the earlier of the two, since the
+    probe is reached only from inside the task that lock guards. That
+    distinction is load-bearing twice over.
+
+    It is what makes the assertions mean anything: on the LockLost path the job
+    lock is released before the probe runs *and* again in the outer `finally`,
+    so an untagged event list ends with a release however the probe behaved. A
+    naive "something was released" or "the last event is a release" passes with
+    the probe's own `release` deleted.
+
+    And it is what makes the tests writable at all: a uniform `acquire()`
+    returning False fails the *job* lock, and the task returns "already being
+    processed elsewhere" without ever reaching the probe. Only the probe's
+    acquire may misbehave.
+
+    Pass an exception *instance* as `probe_acquire` to make the probe raise.
+    """
+    events: list[tuple[int, str]] = []
+    counter = itertools.count()
+
+    class _RecordingLock:
+        def __init__(self, *a, **k):
+            self.n = next(counter)
+
+        def acquire(self):
+            events.append((self.n, "acquire"))
+            if self.n == 0:
+                return True
+            if isinstance(probe_acquire, BaseException):
+                raise probe_acquire
+            return probe_acquire
+
+        def release(self):
+            events.append((self.n, "release"))
+
+        def still_held(self):
+            return True
+
+    return _RecordingLock, events
+
+
+def _lose_the_lock(*a, **k):
+    """A `progress` that drives the task into `_mark_failed_if_lock_free`."""
+    from app.workers.locks import LockLost
+
+    raise LockLost("another worker took the lock")
+
+
+def _probe_events(events):
+    """Only what the probe did — instance 0 is the job lock."""
+    return [e for e in events if e[0] == 1]
+
+
+def test_the_failed_write_happens_while_the_probe_is_still_held(monkeypatch):
+    """The invariant the docstring states, asserted as *ordering*.
+
+    `_mark_failed_if_lock_free` takes the lock to prove the game is not in
+    flight, and writes while still holding it "so the fact it establishes
+    cannot lapse between the check and the write". A test that only checks the
+    write happened cannot see a `release` moved above it — the write still
+    lands, on a game another worker may by then own, which is the outcome the
+    docstring calls worse than the problem it solves.
+
+    So this asserts the probe's own three events are exactly `acquire`,
+    `write`, `release`, adjacent and in that order. Adjacency is the point: a
+    release between the acquire and the write is precisely the lapse.
+    """
+    lock_class, events = _probe_recorder()
+
+    def exists(_gid):
+        return True
+
+    def set_status(_gid, status, **kw):
+        if status == "failed":
+            events.append((1, "write"))
+
+    _drive_failing_task(
+        monkeypatch, exists, set_status,
+        progress=_lose_the_lock, lock_class=lock_class,
+    )
+
+    assert _probe_events(events) == [(1, "acquire"), (1, "write"), (1, "release")], (
+        f"the probe's sequence was {_probe_events(events)} — the `failed` write "
+        "must happen between the probe's acquire and its release, or the proof "
+        "that no other worker holds the game has lapsed before the write lands"
+    )
+
+
+def test_the_probe_is_released_even_when_the_failed_write_raises(monkeypatch):
+    """The `finally`, pinned against the probe rather than against any release.
+
+    The job lock is released twice on this path — once before the probe, once
+    in the outer `finally` — so asserting that *a* release happened passes with
+    the probe's own deleted, and the probe leaks its lock on every failed write.
+    """
+    lock_class, events = _probe_recorder()
+
+    def exists(_gid):
+        return True
+
+    def set_status(_gid, status, **kw):
+        if status == "failed":
+            events.append((1, "write"))
+            raise _DbDown("unreachable while marking failed")
+
+    _drive_failing_task(
+        monkeypatch, exists, set_status,
+        progress=_lose_the_lock, lock_class=lock_class,
+    )
+
+    assert (1, "release") in _probe_events(events), (
+        f"the probe's sequence was {_probe_events(events)} — a write that "
+        "raises must still release the probe, or a lost lock leaves the game "
+        "locked against every future run"
+    )
+
+
+def test_a_probe_that_cannot_take_the_lock_writes_nothing(monkeypatch):
+    """`if not probe.acquire(): return` — the guard, not its consequence.
+
+    A False acquire means another worker holds the game *right now*. Stamping
+    `failed` over it is the case the docstring singles out as worse than a row
+    left in `processing`, and nothing else in the suite fails if the guard is
+    deleted: the write goes out and every test still passes.
+    """
+    lock_class, events = _probe_recorder(probe_acquire=False)
+
+    def exists(_gid):
+        return True
+
+    def set_status(_gid, status, **kw):
+        if status == "failed":
+            events.append((1, "write"))
+
+    _drive_failing_task(
+        monkeypatch, exists, set_status,
+        progress=_lose_the_lock, lock_class=lock_class,
+    )
+
+    # The control, before the negative: a bare "it did not write" also passes
+    # when the probe never ran at all. Deleting the `_mark_failed_if_lock_free`
+    # call site (`tasks.py:1442`) — the CF-184 stranding regression — leaves
+    # this test green without it.
+    assert (1, "acquire") in _probe_events(events), (
+        f"the probe's sequence was {_probe_events(events)} — the probe never "
+        "ran, so this test cannot say anything about what it wrote"
+    )
+    assert (1, "write") not in _probe_events(events), (
+        "the probe could not take the lock, so another worker owns this game — "
+        "writing `failed` stamps over a live run"
+    )
+
+
+def test_a_probe_that_cannot_answer_writes_nothing_and_says_so(monkeypatch, caplog):
+    """The "cannot answer, leave it alone" path — CF-280's third bullet.
+
+    Measured, on two separate mutations: neutering the probe's handler to
+    `except Exception: pass` (so an unanswerable probe falls *through* to the
+    write) and deleting its `logger.warning` while keeping the `return` each
+    leave the whole suite green without this test. Note it is the `return`
+    inside the handler that prevents the write, not the `except` itself —
+    removing the handler makes the exception propagate instead, which is a
+    third behaviour and not what "falls through" means.
+
+    A probe that raises is exactly the case where the run knows *least* about
+    who owns the game, so writing anyway is the worst available answer, and a
+    silent `return` is indistinguishable from never having tried.
+    """
+    lock_class, events = _probe_recorder(probe_acquire=RuntimeError("lock db down"))
+
+    def exists(_gid):
+        return True
+
+    def set_status(_gid, status, **kw):
+        if status == "failed":
+            events.append((1, "write"))
+
+    with caplog.at_level(logging.WARNING):
+        _drive_failing_task(
+            monkeypatch, exists, set_status,
+            progress=_lose_the_lock, lock_class=lock_class,
+        )
+
+    assert (1, "acquire") in _probe_events(events), (
+        f"the probe's sequence was {_probe_events(events)} — the probe never "
+        "ran, so this test cannot say anything about what it wrote"
+    )
+    assert (1, "write") not in _probe_events(events), (
+        "the probe raised, so nothing is known about who holds this game — "
+        "writing `failed` guesses, and the docstring says leave the row alone"
+    )
+    assert any("Could not probe the lock" in r.message for r in caplog.records), (
+        "a probe that cannot answer must say so — silently leaving the row "
+        "alone is indistinguishable from never having tried"
     )
 
 
@@ -1438,4 +1650,63 @@ def test_no_module_outside_sync_db_writes_error_message_directly():
     assert not offenders, (
         f"{offenders} writes error_message outside _sync_db.py, bypassing the clamp — "
         "go through sync_set_game_status/sync_note_game_error instead"
+    )
+
+
+# CF-366: the overnight brief points at the guard above, and used to do it by
+# line number — which drifted twice before anyone noticed. It now quotes the
+# skip message instead, which only resolves while that exact text is reachable
+# by a plain grep from either side. Four ordinary edits break that quietly:
+# rewording the message here, shortening it here, reflowing the paragraph there
+# so the quote wraps across a line, and lengthening the quote there so it no
+# longer names what this file says. The first draft of the doc change shipped
+# with the quote wrapped, and `grep` in `docs/` then found nothing at all.
+_SKIP_MESSAGE = "the lock test database is not reachable"
+_BRIEF = pathlib.Path(__file__).resolve().parents[2] / "docs" / "overnight" / "TICKETS.md"
+
+
+def test_the_brief_can_still_grep_its_way_to_the_skip_guard():
+    """The brief's citation of the `pg_locks` guard must survive a grep, both ways.
+
+    `docs/overnight/TICKETS.md` tells a run how to tell an absent Postgres from
+    a real failure, and quotes this fixture's skip message so the reference does
+    not depend on a line number. Nothing else keeps the two in contact: the doc
+    is prose, and prose reflows.
+
+    Both sides are pinned against one literal, and the doc side by **equality**
+    with the text between its backticks rather than by containment — a quote
+    that has grown a word still contains this string while naming something no
+    `grep` of the code will find, which is the drift this exists to stop, one
+    remove out.
+    """
+    skips = [
+        line
+        for line in pathlib.Path(__file__).read_text(encoding="utf-8").splitlines()
+        if "pytest.skip(" in line and _SKIP_MESSAGE in line
+    ]
+    assert skips, (
+        f"no pytest.skip() in this file carries {_SKIP_MESSAGE!r} any more. The "
+        "brief quotes that text verbatim to reach the pg_locks guard without a "
+        "line number, so rewording or shortening the message strands the "
+        "citation (CF-366, #450). Update docs/overnight/TICKETS.md and "
+        "_SKIP_MESSAGE together. Matching on the skip call rather than on the "
+        "file keeps the constant above from satisfying this by itself."
+    )
+
+    assert _BRIEF.exists(), (
+        f"{_BRIEF} is gone. The brief quotes the pg_locks skip message to cite "
+        "that guard (CF-366, #450); if the file moved, point _BRIEF at it."
+    )
+    # Odd-indexed pieces of a backtick split are the spans *inside* backticks.
+    quoted = [
+        span
+        for line in _BRIEF.read_text(encoding="utf-8").splitlines()
+        for span in line.split("`")[1::2]
+    ]
+    assert _SKIP_MESSAGE in quoted, (
+        f"docs/overnight/TICKETS.md no longer quotes exactly {_SKIP_MESSAGE!r} "
+        "between backticks on one line. Either the quote was edited, or the "
+        "paragraph was reflowed so it wraps — both read fine and both are "
+        "invisible to the grep the citation exists to support (CF-366, #450). "
+        "Requote it on one line, or cite the guard some other way that greps."
     )

@@ -26,6 +26,11 @@ carries production's 1-CPU limit since CF-241:
 
   docker compose --env-file .env.docker run --rm --no-deps eval \
     python -m ml.eval.diagnose_detection --test test1
+
+On a branch that bumps `ball.TRACKING_CACHE_VERSION`, before its `modal deploy`,
+add `-e MODAL_TOKEN_ID= -e MODAL_TOKEN_SECRET=` (see the comment beside that
+constant): with Modal configured, a cache miss would store the deployed code's
+track under the new key.
 """
 from __future__ import annotations
 
@@ -60,14 +65,18 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--test", default="test1", help="fixture id (default test1)")
     ap.add_argument("--dump", type=Path, default=None,
-                    help="write positions+contacts JSON here "
-                         "(default results/{test}_ball_track.json)")
+                    help="write positions+contacts JSON here. Default is "
+                         "ml/eval/results/{test}_ball_track.json, which is "
+                         "where tune_contacts and contact_cliff read from; a "
+                         "RELATIVE path here resolves against the image's "
+                         "WORKDIR (/app/api) and they will not find it")
     args = ap.parse_args()
 
     import tempfile
 
     import cv2
 
+    from app.config import settings
     from app.services import storage as s3
     from app.workers.tasks import _track_ball_cached
     from ml.pipeline.ball import find_contacts
@@ -89,7 +98,14 @@ def main() -> None:
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
-        contacts = find_contacts(tracker, frame_height=frame_h)
+        # Reads the CF-174 switch from `settings` rather than mirroring it:
+        # this tool already imports the app to reach R2, so it is on the same
+        # footing as harness.py and not on tune_contacts'.
+        contacts = find_contacts(
+            tracker, frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
+            soft_scale=settings.ball_contact_soft_scale_enabled,
+        )
 
     pos_times = sorted(p.time for p in tracker.positions)
     con_times = sorted(float(c["time"]) for c in contacts)
@@ -150,7 +166,10 @@ def main() -> None:
         "fps": fps,
         "sample_every": sample_every,
         "frame_height": frame_h,
-        "positions": [{"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions],
+        "positions": [
+            {"time": p.time, "x": p.x, "y": p.y, "confidence": p.confidence}
+            for p in tracker.positions
+        ],
         "contacts": [{"time": float(c["time"])} for c in contacts],
     }, indent=1) + "\n", encoding="utf-8")
     print(f"\nDumped track -> {dump}  (iterate on find_contacts locally from this)")

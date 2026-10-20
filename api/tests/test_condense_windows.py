@@ -340,3 +340,93 @@ class TestTheClearIsActuallyGatedOnTheVerdict:
         assert _maybe_clear_previous_condensed(
             "game-5", [], ball_ok=True, built_by="guarded", _require_lock=lambda: None,
         ) is True
+
+
+class TestTheCF174KillSwitchReachesTheBridge:
+    """
+    `ball_contact_scale_enabled` gates find_contacts *and* the condense motion
+    bridge, and this is the wiring for the second half.
+
+    It is one setting on purpose. The lever exists for incident response, so off
+    has to mean `main`'s condense behaviour; gating only the contacts would leave
+    the bridge scaled and hand an operator `main`'s contacts joined at 3x — a
+    third combination nothing has ever scored, and the worst possible thing to
+    discover mid-incident. Nothing else in this suite would notice the kwarg
+    being dropped: the bridge is reached through two layers of builder.
+    """
+
+    def _bridge_threshold(self, monkeypatch, *, enabled, frame_height):
+        """The speed_pxps bridge_windows_by_motion is actually reached with."""
+        import ml.pipeline.dead_time as dt
+        seen = {}
+        real = dt.bridge_windows_by_motion
+
+        def spy(windows, positions, **kw):
+            seen.update(kw)
+            return real(windows, positions, **kw)
+
+        monkeypatch.setattr(dt, "bridge_windows_by_motion", spy)
+        monkeypatch.setattr(settings, "ball_contact_scale_enabled", enabled)
+        _build_condense_windows(
+            "rules", contacts_at(12.0, 15.0, 18.0, 70.0), track(),
+            DURATION, frame_height, settings,
+        )
+        assert "normalize" in seen, (
+            "_build_condense_windows stopped passing normalize= to the bridge, "
+            "so the kill switch no longer reaches the condense half"
+        )
+        # A copy, not `seen` itself: a second call in the same test wraps this
+        # spy, so the live dict would keep updating and compare equal to any
+        # later capture (R9-M1).
+        return dict(seen)
+
+    def test_on_scales_the_bridge_with_frame_height(self, monkeypatch):
+        seen = self._bridge_threshold(monkeypatch, enabled=True, frame_height=1080)
+        assert seen["normalize"] is True
+        assert seen["frame_height"] == 1080
+
+    def test_off_hands_the_bridge_mains_unscaled_threshold(self, monkeypatch):
+        seen = self._bridge_threshold(monkeypatch, enabled=False, frame_height=1080)
+        assert seen["normalize"] is False
+        # The height is still passed; `normalize=False` is what stops it being
+        # used, so the two halves cannot disagree about which video this is.
+        assert seen["frame_height"] == 1080
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_the_soft_flag_does_not_reach_the_bridge(self, monkeypatch, enabled):
+        """
+        CF-376's `ball_contact_soft_scale_enabled` softens the contact gates
+        and nothing else: the bridge keeps the full scale, so it is handed the
+        same arguments whichever way the soft flag is set. Soft contacts joined
+        by a full-scale bridge is the combination that flag ships, measured on
+        unlabelled fixtures in its PR.
+        """
+        monkeypatch.setattr(settings, "ball_contact_soft_scale_enabled", False)
+        baseline = self._bridge_threshold(monkeypatch, enabled=enabled, frame_height=1080)
+        monkeypatch.setattr(settings, "ball_contact_soft_scale_enabled", True)
+        soft = self._bridge_threshold(monkeypatch, enabled=enabled, frame_height=1080)
+        assert "soft_scale" not in soft
+        assert soft == baseline
+
+
+def test_the_worker_hands_find_contacts_both_switches():
+    """
+    process_game_task is the one production caller of find_contacts, and the
+    soft flag is a keyword with a False default, so dropping it there is silent
+    — the flag would read as set and change nothing. Asserted on the parsed
+    call, as test_eval_condense_settings does for the eval mirrors.
+    """
+    import ast
+
+    tasks_py = Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks.py"
+    tree = ast.parse(tasks_py.read_text(encoding="utf-8"))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        and n.func.id == "find_contacts"
+    ]
+    assert calls, "tasks.py no longer calls find_contacts"
+    for call in calls:
+        kwargs = {k.arg: ast.unparse(k.value) for k in call.keywords if k.arg}
+        assert kwargs.get("normalize") == "_cfg.ball_contact_scale_enabled"
+        assert kwargs.get("soft_scale") == "_cfg.ball_contact_soft_scale_enabled"

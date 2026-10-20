@@ -89,7 +89,11 @@ it reads no thread setting — but it is a real subprocess, so measure with it i
 mind.
 
 ```bash
-# Offline: replay detection + scoring from the R2 ball-cache (no re-tracking).
+# Offline: replay detection + scoring from the R2 ball-cache. A cache miss
+# re-tracks on Modal when it is configured — every video, after a
+# TRACKING_CACHE_VERSION bump. On a branch that bumps the version, before its
+# `modal deploy`, add `-e MODAL_TOKEN_ID= -e MODAL_TOKEN_SECRET=` so a miss fails
+# instead of caching the deployed (old) code's track under the new key.
 docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev-parse --short HEAD) \
   eval python -m ml.eval.harness --test test1 --version my-change --offline
 
@@ -117,6 +121,17 @@ docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev
 - Dead-time extras: `--audit-limit N` caps each divergence list (0 = all), and
   `--dump-windows` on an `--offline` run saves the derived windows so a later
   re-score needs no container and no download.
+
+> **A recorded row describes the tree it was run against, not the current one,
+> and the `git_commit` field is how you tell.** The CF-174 rows tagged
+> `cf174-review-fixes` were recorded at `29a83a5`; their `config_snapshot`
+> still lists `MIN_SPEED_PXPS: 120.0`, a constant that branch later deleted, so
+> the rows are visibly older than the head that ships them. Nothing has since
+> changed the shipping path *for those fixtures* — all three are ≤1080p, the
+> later commits move only the >1440p clamp, logging, comments and tests, and
+> `ball_contact_scale_enabled` defaults on — but that is an **argument that they
+> would reproduce, not a re-run**: re-recording needs the R2 ball caches. Read a
+> row against its own `git_commit` before comparing it to anything.
 
 `--clips-json` input shape:
 ```json
@@ -146,7 +161,10 @@ A dead-time case is a **separate label pass** into
 [`fixtures/README_deadtime.md`](fixtures/README_deadtime.md). Do not reuse the
 highlight fixture's `clips` list.
 
-The trap worth stating here, because nothing errors when you hit it: `keep_tiers`
+The trap worth stating here, because the harness does not error when you hit it
+(the fixture tests catch it when the fixture is committed, unless it is a copied
+clip list with no highlight sibling to compare against, or with its clip times
+edited): `keep_tiers`
 selects which tiers count as **ball-in-play**, and that is a wider set than
 "highlight-worthy" — `M`/`C`/`N` are all live ball (a failed serve is still play
 the condense stage must keep), while only `B` (break) and `O` (camera outlier)
@@ -179,51 +197,6 @@ wrong — so copy the dead-time format rather than adapting the highlight one.
 **content MD5**, not `game_id` — game rows get deleted; the hash identifies the
 exact bytes forever and matches the ball-cache key.
 
-## Tuning the contact thresholds (CF-103)
-
-`find_contacts` decides where keep-windows can anchor, so its thresholds set the
-ceiling on dead-time recall — a rally with zero contacts is invisible to condense
-and gets cut whole. `tune_contacts.py` replays the entire condense chain off the
-ball caches, so a candidate threshold costs seconds, no container and no video.
-
-```bash
-python -m ml.eval.tune_contacts                                  # every knob, then LOO
-python -m ml.eval.tune_contacts --knob CONTACT_HIT_SPEED_PXPS    # one knob, built-in range
-python -m ml.eval.tune_contacts --knob CONTACT_HIT_SPEED_PXPS --values 240 230 220 210
-python -m ml.eval.tune_contacts --candidates                     # whole configs, cross-validated
-```
-
-Same **leave-one-game-out** discipline as the trainer, and for the same reason:
-the first pass of this tool scored one video, and #116 shipped a single knob
-rather than five because nothing could distinguish "this threshold is wrong" from
-"this value fits that gym's noise". Fixtures now split into two roles —
-`--fixtures` are tuned on and take turns being held out, `--guards` are scored and
-never optimized against. `test3` is a guard by default: its tracking is broken
-(CF-171), so a knob that appears to improve it is admitting noise, not contacts.
-
-Two reading habits this tool is built around, both learned the hard way:
-
-- **Sweep both directions.** A range that only loosens cannot tell a mis-set
-  threshold from one where loosening always helps the recall half of the metric.
-  `CONTACT_HIT_SPEED_PXPS` is trustworthy partly because tightening it to 300
-  costs 30 rallies.
-- **Read the marginal table, not the totals.** Past the knee a knob keeps adding
-  contacts while recovering no further rallies — that is false positives
-  accumulating, and it is what the per-step "dead lost per rally" column shows.
-
-Recording a run needs no container either — dump the windows, then score them:
-
-```bash
-python -m ml.eval.tune_contacts --dump-windows /tmp/keep
-python -m ml.eval.harness --mode deadtime --test test1 --version my-change \
-    --windows-json /tmp/keep/test1_keep.json
-```
-
-`--config <name>` dumps a named `CANDIDATES` configuration instead of the
-shipping constants, which is how a superseded setting still gets its own row
-rather than letting one change absorb the credit for everything before it.
-
-## Retraining the learned condenser (CF-173)
 ## Which condense builder runs (CF-187)
 
 `condense_mode` in `app.config` picks the keep-window builder, and every mode
@@ -260,6 +233,35 @@ condenses, and that trade is the thing to look at before touching its tunables:
 `visualize_deadtime.py`. test1 is a different labeler on 360p-space footage and
 test3 is a game the ball tracker cannot follow, so both measure something other
 than which builder is better.
+
+Those five cache keys predate CF-231. The key now ends in `-v{N}`
+(`ball.TRACKING_CACHE_VERSION`), so `_track_ball_cached` no longer finds any of
+them: a run that reaches it on those fixtures misses the cache, and re-tracks on
+Modal when it is configured or raises when it is not, until caches exist under
+the new key.
+
+> **Every figure above is stale on the 1080p fixtures as of CF-174 — both
+> columns, not just `rules`.** Two separate reasons, and the second one is easy
+> to miss:
+>
+> - `rules` was measured before `bridge_windows_by_motion` took a `frame_height`,
+>   so `v0` bridged 1080p footage at a 360p threshold — 150 px/s where production
+>   now runs 450.
+> - **Both** builders consume `game.contacts`, and `deadtime_variants.load_game`
+>   builds those with `find_contacts(tracker, frame_height=frame_h)`. CF-174
+>   scales `CONTACT_HIT_SPEED_PXPS` and `CONTACT_RESIDUAL_MIN_PXPS` inside that
+>   call — 240 → 720 on the 1080p fixtures — so `guarded`'s windows move too,
+>   even though it never touches the bridge.
+>
+> test1 is the exception on both counts: it is 360p, so the scale is exactly 1.0.
+> Everything else — test2, test3, test4, test5, in either column — is a
+> pre-CF-174 number, and the **+533s vs +134s net below is computed from two
+> stale columns**, so read it as the last measured comparison rather than the
+> current one. Re-running the ladder moves the `rules` figures toward *more* dead
+> time removed and more live play cut, because fewer gaps clear the higher bar;
+> the direction on `guarded` is not predictable from the threshold alone.
+> Regenerating needs the R2 ball caches, so these figures stand as the last
+> measured ones until someone has them.
 
 Strictly better on one, a paid trade on three, an abstain on one. At the 4:1
 live-cut exchange rate the harness and trainer share, that nets **+533s against
@@ -342,19 +344,145 @@ test4); every other column is held out and is starred in the summary. test5 is
 the strongest of those — it was labeled after the variants were written, so it
 could not have shaped them even indirectly.
 
-Four of the features (`contacts_5s`, `contacts_15s`, `since_contact`,
-`until_contact`) are derived from `find_contacts`, so **a contact-threshold change
-stales the committed weights** — they describe a contact distribution that no
-longer exists. Retrain before flipping `validated`, and treat a weights file
-whose `git_commit` predates the last `ml/pipeline/ball.py` threshold change as
-unfit regardless of what its LOGO numbers say.
+## Is the tracker following the ball? (CF-229)
+
+CF-174 normalized the contact px/s thresholds by frame height and could not do
+the same for the segmentation ones. `ml/pipeline/ball.py` records why, and the
+reason is not a property of those constants: **roughly half of test4's samples
+sit at ~0 px/s, because the detector is locked onto something that is not the
+ball.** Scaling `SEG_MAX_SPEED_PXPS` merges those stationary detections into
+the ball's own segments, whose median then falls under the held/spare-ball
+filter, and the fixture collapses to zero contacts.
+
+So both segmentation constants are pinned by one upstream defect, and
+[#233](https://github.com/ClipFarmVB/ClipFarm/issues/233)'s acceptance is a
+number about it. `track_quality.py` prints that number:
+
+```bash
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.diagnose_detection --test test4
+
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.track_quality test4
+```
+
+Leave `--dump` off the first command. Its default,
+`ml/eval/results/test4_ball_track.json`, is where `track_quality` reads; a
+relative `--dump` path resolves against the eval container's working directory
+(`/app/api`) and lands somewhere the second command never looks.
+
+It reports the speed distribution in px/s and in frame-heights/s, the fraction
+of samples that are effectively stationary, and what the segmentation ceiling
+splits today against what a scaled one would split — so the trade is visible
+rather than described.
+
+**It cannot tell you about `MAX_JUMP_PX`.** That threshold picks among the
+detections a frame returned, during tracking, and a dump holds only the ones
+that won. Answering it needs a re-track. The tool says so in its own output,
+because the row above that line looks exactly like an answer.
+
+It is an instrument. It changes no threshold — the fix is #233's, and that card
+is assigned.
+
+## Measuring the MIN_RALLY_CONTACTS cliff (CF-376)
+
+CF-174 scaled the contact **speed** thresholds by `frame_height / 360` and left
+`MIN_RALLY_CONTACTS = 3` an absolute count. A rally that drops from 3 detected
+contacts to 2 is therefore not shortened — it is discarded whole, and
+production saw 34 clips become 11 on the same ball cache.
+
+`contact_cliff.py` prints the population that gate is deleting, off the same
+dumped track `tune_contacts` reads, in three columns: the CF-174 switch on, the
+switch on with CF-376's soft flag (`find_contacts(soft_scale=True)`, the gate
+scale raised to `ball.CONTACT_SOFT_SCALE_EXPONENT`, or to `--exponent`), and the
+switch off. A fixture with no dump — test1 — is read from its R2 ball cache
+under the fixture's `source_video_md5` instead (`tune_contacts.load_track`):
+
+```bash
+# The dump first, if you do not have it already: the tool reads a dumped track
+# and never a video, and results/{test_id}_ball_track.json is gitignored, so a
+# fresh clone has none. `tune_contacts` needs the same file.
+#
+# No --dump flag: the default is already harness.RESULTS_DIR, which is where
+# tune_contacts.load reads from. A relative path here would resolve against
+# the image's WORKDIR (/app/api, from Dockerfile.api; the eval service sets no
+# working_dir), so `--dump results/...` writes to /app/api/results/ and the
+# next command dies with FileNotFoundError looking in /app/ml/eval/results/.
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.diagnose_detection --test test2
+
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.contact_cliff test2
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.contact_cliff test2 --exponent 0.75
+```
+
+Read it on a **1080p** fixture (test2-test5). On test1 the scale is exactly
+1.0, so the three columns are the same run and the report says so — that is the
+gap CF-375 (#475) exists to close, not evidence that there is no cliff. The soft
+column is identical there by construction too (`1.0 ** e == 1.0`).
+
+The soft flag's whole trade, rally counts and both condense builders' dead-time
+numbers per exponent, is `tune_contacts --exponents`:
+
+```bash
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.tune_contacts test2 --exponents
+```
+
+It prints switch off, switch on, and switch on + soft at e ∈ {1, 0.75, 0.5,
+0.25}, each scored on the rules path this tool replays and on the guarded one
+(`deadtime_variants.v5_guarded`, the builder production ships). Soft at e=1 is
+the switch-on row again by construction and is there as the control. The rally
+column is a count on unlabelled footage — it says how many rallies the detector
+emits, not whether they are real.
+
+The ladder separates two gates: `MIN_RALLY_CONTACTS` deletes segments with too
+few contacts, and `MIN_RALLY_DURATION` (2.0s) then deletes what is left if the
+clip is too short.
+
+**Expect the duration channel to read zero, and read that as a result rather
+than as luck.** A rally spans `min(video_duration, last + POST_PLAY_PAD) −
+max(0, first − PRE_RALLY_PAD)`. The clamp and the pre-roll split independently,
+giving four cases:
+
+| | span | floor |
+|---|---|---|
+| unclamped, `first ≤ 2` | `last + 2.5` | 2.5 |
+| unclamped, `first > 2` | `(last − first) + 4.5` | 4.5 |
+| clamped, `first ≤ 2` | `video_duration` (flat in `first`) | `video_duration` |
+| clamped, `first > 2` | `video_duration − first + 2` | **2.0** |
+
+Only the last row approaches the gate: there the span moves one-for-one with the
+first contact and bottoms out at exactly 2.0s, for a rally whose first contact
+lands on the final frame. So for contacts inside the video the floor is
+`MIN_RALLY_DURATION` itself and the gate's `>=` is what keeps that case.
+
+Measured over 300,000 random in-video triples at durations from 2s to 4000s:
+minimum span 2.0, no case below the gate. Only a video shorter than 2s trips
+it, and the fixtures run 300s to 3660s. So tightening contact detection cannot
+trip this gate, and a zero here is not "this fixture happened to miss it".
+
+That is worth having measured: it retires the possibility that some of the loss
+belongs to the duration gate, and it is a property of the constants, so it stops
+holding the moment a pad or the gate moves. The last line also counts the
+rallies sitting at exactly 3 contacts, which is the population one detection
+away from the count gate.
+
+It measures and decides nothing. The candidate fix #476 led to is the soft
+flag (`BALL_CONTACT_SOFT_SCALE_ENABLED`), which ships off.
 
 ## Files
 ```
 metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
 harness.py             fixture load, model-clip acquisition, report, results append
 diagnose_detection.py  why a rally was missed: BLIND / SPARSE / GATED breakdown
-tune_contacts.py       sweep find_contacts tunables across the fixtures, LOGO-validated (CF-103)
+tune_contacts.py       sweep find_contacts tunables over a dumped ball track;
+                       --exponents for the CF-376 soft-scale axis
+track_quality.py       is the tracker following the ball? the lock-on fraction
+                       CF-229's acceptance is written in (#233)
+contact_cliff.py       how many rallies MIN_RALLY_CONTACTS deletes under CF-174
+                       scaling: switch on, on + soft, off (CF-376)
 deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187)
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 fixtures/              one JSON per test case (ground truth)

@@ -44,6 +44,57 @@ MAX_JUMP_PX  = 300        # max pixels a ball can move between sampled frames
                           # position are treated as a different object
 MAX_MISS     = 5          # max consecutive missed frames before track is reset
 
+# Bump this when a change alters the TRACK a given video produces.
+#
+# `_ball_cache_key` in the worker used to key cached tracks on the video's md5,
+# the model and sample_every, and nothing else — so a change to how tracking
+# works left every existing cache entry looking valid, and the next run of an
+# already-processed video silently replayed a track built by the OLD code. On a
+# tuning change that is a wrong answer nobody can see; on a re-measure it is
+# worse, because the numbers come back unchanged and read as "no effect". This
+# constant is now the key's fourth component, so bumping it changes every key.
+#
+# CF-231 (#238) names this as a prerequisite for downscaling the tracking
+# input, and says CF-229 (#233) has the same one for scaling MAX_JUMP_PX and
+# that whichever lands first should do it. So it is done here, once, ahead of
+# both.
+#
+# WHAT COUNTS AS SUCH A CHANGE: anything that shapes the positions `track_ball`
+# emits. MODEL_ID is already in the key. SAMPLE_EVERY is NOT: the key holds the
+# per-video `sample_every` argument, and this constant survives as the
+# denominator of `max_jump`, so moving it changes every track under unchanged
+# keys. This therefore covers SAMPLE_EVERY, MIN_CONF, MAX_JUMP_PX, MAX_MISS, the
+# tracking code `test_ball_cache_version.py` fingerprints, and any new tracking
+# input — a downscale among them — once it is added there. A helper `track_ball`
+# starts calling is not covered until it is. It deliberately does NOT cover the
+# segmentation or contact constants: the cache holds raw positions and those run
+# afterwards, so folding them in would throw away every cached track for a
+# change that cannot move one.
+#
+# A bump ships with `modal deploy ml/modal_app.py`, and the Modal deploy goes
+# FIRST. When Modal is configured the worker tracks there
+# (`_track_ball_cached`), looking the function up by name at call time and
+# caching whatever comes back under its own key; that image bundles `ml` when
+# it is deployed. Release the worker first and it writes a track built by the
+# OLD code under the NEW key — the stale track this exists to prevent, under a
+# key nothing will ever invalidate. Deploying Modal first keeps the mismatch on
+# the OLD key, which the worker release then orphans. The cost is the window
+# between the two: until the worker release, the old worker can process live
+# games with NEW-code tracks, and caches them under the OLD key — which a worker
+# rollback, or an eval run from a pre-bump checkout, would read afterwards.
+#
+# The same exposure exists before any release. `ml.eval.harness --offline` and
+# `diagnose_detection` build the key from the checkout's own `ml`, and when
+# Modal is configured they track on the deployed Modal app — so running either
+# from a branch that bumps this, before its Modal deploy, caches an OLD-code
+# track under the NEW key. Until that deploy, run them with MODAL_TOKEN_ID and
+# MODAL_TOKEN_SECRET unset: a cache miss then falls to local tracking, which the
+# eval image cannot run, so it raises and caches nothing.
+#
+# `test_ball_cache_version.py` fails if a fingerprinted input moves and this
+# does not, so bumping it is a decision rather than something to remember.
+TRACKING_CACHE_VERSION = 1
+
 # ── Track segmentation config ─────────────────────────────────────────────────
 # The raw track is a chimera: _pick_active hops between the game ball, spare
 # balls, and false detections (measured: 23% of consecutive positions jump
@@ -99,38 +150,6 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 # video keeps growing. Further down the contact count still climbs with
 # rallies-hit flat, i.e. only false positives are being added.
 #
-# CONTACT_HIT_SPEED_PXPS was the other half of the same mis-calibration, and it
-# was invisible until the floor came down: while the floor sat at 480 the sweep
-# returned an identical 214 contacts at every hit-speed value tried, so the first
-# pass concluded the knob did nothing. It is now 220, down from 240 — scored on
-# test1/test2/test4 with leave-one-game-out (CF-103 stage 2), so each number
-# below comes from a game the value was not chosen on:
-#
-#   held out   rallies with >= 1 contact      live play wrongly cut
-#   test1      101 -> 103 of 126              176s -> 147s
-#   test2       20 ->  22 of 27                31s ->  16s
-#   test4       26 ->  26 of 46                89s ->  89s
-#
-# 220 is the knee, by the same argument that picked the floor: 220 -> 200
-# recovers zero further rallies while shedding another 75s of dead-time removal,
-# i.e. past this point the extra contacts are false positives. Going the other
-# way is far worse than the gain — 240 -> 300 loses 30 rallies — which is what
-# says this threshold was set too high rather than merely arbitrarily.
-#
-# The cost is real and lands on dead-time removal: 56.2% -> 55.3% on test1,
-# 54.4% -> 50.4% on test2. Same trade CF-46 and #118 took deliberately — a
-# condensed game missing whole rallies is worse than one that runs longer.
-#
-# One neighbouring knob measured as a no-op, worth knowing before touching it.
-# (There were two. The other, MIN_SPEED_PXPS, was subsumed by this gate at every
-# value CF-103 swept; CF-174 then removed it outright — see the note below the
-# scaling paragraph.)
-#   - CONTACT_RESIDUAL_RATIO is inert *downward* only. max(floor, ratio × speed)
-#     picks the ratio term on 9.7% of test1's candidate triples and 0% of
-#     test2/test4/test3's, and on none of them does it reject a contact the floor
-#     had already passed — so lowering it is measurably a no-op, while raising it
-#     above 0.5 does cut contacts. Not dead code; a one-sided knob.
-#
 # Measured on the dead-time metric only. find_contacts feeds a second consumer:
 # tasks.py runs it through contacts_to_rallies for highlight clips, where
 # MIN_RALLY_CONTACTS gates at 3 — so the extra contacts can lift marginal 1-2
@@ -138,10 +157,8 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 # score it with the CF-55 highlight mode against results/test1.jsonl before
 # tuning this further.
 #
-# Re-tune by scoring, not by inspecting a trajectory. Runs on a laptop off the
-# committed fixtures + ball caches — no container, no video download:
-#   python -m ml.eval.tune_contacts --knob CONTACT_HIT_SPEED_PXPS
-#   python -m ml.eval.tune_contacts --candidates
+# Re-tune by scoring, not by inspecting a trajectory:
+#   docker compose --env-file .env.docker run --rm --no-deps eval python -m ml.eval.tune_contacts
 #
 # CF-174: the two px/s constants below are scaled by
 # frame_height / REFERENCE_FRAME_HEIGHT at use (see _scale_for). px/s is frame-rate
@@ -164,36 +181,41 @@ SEG_MIN_MEDIAN_SPEED_PXPS = 60.0    # px/s: near-stationary segments are held/sp
 REFERENCE_FRAME_HEIGHT    = 360.0   # tracking space the px/s constants below assume
 CONTACT_RESIDUAL_RATIO    = 0.50    # residual must exceed this fraction of ball speed
 CONTACT_RESIDUAL_MIN_PXPS = 240.0   # ...and this absolute floor (px/s, above noise)
-CONTACT_HIT_SPEED_PXPS    = 220.0   # px/s: a real hit has speed on at least one side
+CONTACT_HIT_SPEED_PXPS    = 240.0   # px/s: a real hit has speed on at least one side
 MIN_CONTACT_SPACING       = 0.6     # seconds: debounce — one hit can't fire twice
 MAX_SAMPLE_GAP_SEC        = 1.0     # skip triples spanning a detection gap
-# The scale factor is capped so the scaled hit-speed floor cannot reach
-# SEG_MAX_SPEED_PXPS. _segment_track splits any pair faster than that ceiling,
-# so speed inside a segment is always below it — once CONTACT_HIT_SPEED_PXPS *
-# scale meets it the two constraints are disjoint and find_contacts returns
-# nothing at all. Unclamped that lands at ~1964p, and phones shoot 2160p.
+# The scale factor is capped so no scaled floor can reach SEG_MAX_SPEED_PXPS.
+# _segment_track splits any pair faster than that ceiling, so speed inside a
+# segment is always below it — once a scaled floor meets it the two constraints
+# are disjoint and find_contacts returns nothing at all. Unclamped that lands at
+# 1800p, and phones shoot 2160p.
+#
+# "No scaled floor", not "the hit-speed floor": CONTACT_RESIDUAL_MIN_PXPS is
+# multiplied by the same scale and gates the same samples, so the cap is taken
+# against whichever of the two is larger. They are equal today, which is exactly
+# why this is easy to get wrong — deriving the cap from CONTACT_HIT_SPEED_PXPS
+# alone reads as correct and silently stops protecting the moment they diverge.
+# They have diverged before: the committed `baseline` row in
+# ml/eval/results/test1_deadtime.jsonl carries CONTACT_RESIDUAL_MIN_PXPS = 480,
+# where the residual floor crosses the ceiling at 1080p — inside the range this
+# PR ships as validated, and under a clamp that would not have fired.
 #
 # Read the cap as damage control, NOT as 4K support. It moves the floor and
 # cannot move the ceiling, so the admissible band keeps closing with resolution:
 #
-#     360p   floor 0.611  ceiling 3.333 frame-heights/s   band 5.45x
-#     720p   floor 0.611  ceiling 1.667                   band 2.73x
-#    1080p   floor 0.611  ceiling 1.111                   band 1.82x
-#    1440p   floor 0.611  ceiling 0.833                   band 1.36x
-#    1571p   floor 0.611  ceiling 0.764                   band 1.25x  <- clamp
+#     360p   floor 0.667  ceiling 3.333 frame-heights/s   band 5.00x
+#     720p   floor 0.667  ceiling 1.667                   band 2.50x
+#    1080p   floor 0.667  ceiling 1.111                   band 1.67x
+#    1440p   floor 0.667  ceiling 0.833                   band 1.25x  <- clamp
 #
 # Every row above ships. What the cap would give past the clamp point does not,
 # and is listed only because it is the reason for the row under it:
 #
 #    2160p   floor 0.444  ceiling 0.556  (frozen scale)   band 1.25x  rejected
-#    2160p   floor 0.102  ceiling 0.556  (unscaled)       band 5.45x  shipped
-#
-# Recomputed for CF-103's 220 px/s floor. The unclamped collision moves 1800p ->
-# ~1964p and the clamp point 1440p -> ~1571p, so the bands widen slightly and
-# 1440p now scales normally instead of sitting on the clamp. Shape unchanged.
+#    2160p   floor 0.111  ceiling 0.556  (unscaled)       band 5.00x  shipped
 #
 # Read the rejected row carefully: the floor drops to 0.444. Below the clamp the
-# scale tracks resolution and the floor stays put at the validated 0.611 while
+# scale tracks resolution and the floor stays put at the validated 0.667 while
 # only the ceiling closes — degradation, but in the right direction. Past the
 # clamp the scale is frozen under a growing frame, so the whole band slides
 # below where real play lives (0.3-0.9 fh/s). Measured on real tracks: at 2160p
@@ -202,12 +224,64 @@ MAX_SAMPLE_GAP_SEC        = 1.0     # skip triples spanning a detection gap
 #
 # _scale_for therefore returns 1.0 above the clamp point rather than the capped
 # value — the shipped row, i.e. pre-CF-174 behaviour, which over-fires but is
-# never narrower, so no resolution regresses against `main`. That is an interim,
-# not a fix: the real one is scaling SEG_MAX_SPEED_PXPS, blocked on the tracking
-# pollution documented above (CF-229), after which the clamp is unnecessary
-# entirely.
+# never narrower, so *above the clamp point* these gates do not regress against
+# `main`. Read "never narrower" as scoped to that range and to contact detection,
+# because it is false in both other directions. Below the clamp the gates are
+# deliberately narrower than `main` — the floor is 240 px/s unscaled and 480/720/
+# 960 at 720p/1080p/1440p — which is the entire change, not a regression; the
+# warning branch in _scale_for says the same thing about the range between the
+# validated ceiling and the clamp. And it does not reach the condense
+# path: dead_time.bridge_windows_by_motion scales unconditionally, so above the
+# clamp the pipeline joins `main`'s contact set with a 6x-tighter bridge. See the
+# asymmetry note in that function. That is an interim, not a fix: the real one is
+# scaling SEG_MAX_SPEED_PXPS, blocked on the tracking pollution documented above
+# (CF-229), after which the clamp is unnecessary entirely.
 CONTACT_SPEED_CEILING_FRAC = 0.80   # cap scaled contact speeds at this × SEG_MAX_SPEED_PXPS
 MAX_VALIDATED_FRAME_HEIGHT = 1080   # tallest footage CF-174 was measured on
+#
+# Everything above describes the CF-174 scale as it ships: switch on, CF-376's
+# soft flag off. The band table, "the floor stays put at 0.667" and the clamp
+# reasoning are all statements about the FULL scale, frame_height / 360.
+#
+# CF-376 (#476): with `soft_scale=True` (settings.ball_contact_soft_scale_enabled,
+# default False) find_contacts gates on _scale_for(...) ** CONTACT_SOFT_SCALE_EXPONENT
+# instead. On the four unlabelled 1080p tracks the full scale cut emitted
+# contacts 852 -> 248 and emitted rallies 96 -> 32, 51 of that 64 difference at
+# the MIN_RALLY_CONTACTS count gate. Those are counts of what the detector
+# emits, not recall: neither column is known to be real rallies. Both floors
+# (hit speed and residual) bind together, so softening one alone lifts the
+# emitted count little.
+#
+# What the flag does to the floor, in frame-heights/s: it no longer stays at
+# 0.667. At exponent e it is 0.667 * (h/360) ** (e - 1), so at 0.5 it is 0.385
+# at 1080p and 0.471 at 720p; the floor still rises in pixels with resolution,
+# just slower than the frame does. The ceiling is untouched, so every band in
+# the table above gets wider, never narrower.
+#
+# Three things it leaves alone, by construction rather than by care:
+#   - 360p, an unknown height, and everything past the clamp point, where
+#     _scale_for returns exactly 1.0 and 1.0 ** e == 1.0.
+#   - the clamp decision, which _scale_for takes on the full scale. A softened
+#     scale is smaller than the full one wherever the full one exceeds 1.0, so
+#     the cap's invariant (no scaled floor reaches the ceiling) still holds.
+#   - the action labels: classify_contact_action keeps dividing by the full
+#     scale, so the flag changes which contacts exist and never what a given
+#     contact is called.
+#
+# So the >1440p contact/bridge asymmetry noted above still stands with the flag
+# on, unresolved and unchanged: past the clamp the flag is a no-op and it never
+# touches the bridge. It stays the CF-229 interim.
+#
+# Below 360p the full scale is under 1.0 and the softened one sits closer to
+# 1.0, i.e. the flag makes sub-360p gates *stricter*. No fixture is below 360p
+# and none of this was measured there; it is noted because "soft" here means
+# "nearer to unscaled" on both sides, not "looser".
+#
+# 0.5 is from an unlabelled sweep (see the CF-376 PR): rally counts on test2-5
+# and dead-time numbers under both condense builders, at e in {1, .75, .5, .25}.
+# It is read only while the flag is on, and it is not a validated value — that
+# needs CF-375 (#475)'s labelled 1080p fixture.
+CONTACT_SOFT_SCALE_EXPONENT = 0.5
 # Legacy thresholds — still used by fuse_with_ball_contacts "strong contact" check
 CONTACT_ANGLE_DEG   = 25.0  # minimum direction change (degrees)
 CONTACT_SPEED_RATIO = 0.35  # speed change fraction
@@ -482,6 +556,8 @@ def classify_contact_action(
     positions: list[BallPosition],
     i: int,
     frame_height: int,
+    *,
+    normalize: bool = True,
 ) -> tuple[str, float]:
     """
     Classify a volleyball action from ball trajectory at contact index i.
@@ -489,11 +565,14 @@ def classify_contact_action(
     Uses the velocity vectors immediately before and after the contact point,
     plus the ball's height in the frame, to determine what kind of hit occurred.
 
-    frame_height is required, not decorative: it normalizes both the contact
-    height and the velocities into REFERENCE_FRAME_HEIGHT space, so the same
-    physical hit gets the same label at any resolution (CF-174) — up to the
-    clamp point, past which _scale_for reverts to unscaled and this reverts with
-    it. The labels there are `main`'s, not normalized ones; see _scale_for.
+    frame_height is required, not decorative, and it does two separate jobs. It
+    divides the contact height into a frame fraction, which it always did and
+    which was already resolution-independent; CF-174 added the second job,
+    normalizing the velocities into REFERENCE_FRAME_HEIGHT space so the same
+    physical hit gets the same label at any resolution — up to the clamp point,
+    past which _scale_for reverts to unscaled and the velocity half reverts with
+    it. The labels there are `main`'s, not normalized ones; see _scale_for. The
+    y_frac half is unaffected by the clamp, having never been scaled.
 
     In image coordinates Y increases downward:
       vy > 0  = ball falling
@@ -530,11 +609,22 @@ def classify_contact_action(
     # gate reverts to unscaled and admits from 240 px/s native while a true
     # ratio would still divide by 6, landing the entire admissible band inside
     # SET — every 4K rally labelled "set" with empty labels and a flat 0.58 into
-    # score.py. Whatever space the gate admitted a contact in, the classifier
-    # judges it in: one policy, so the two halves cannot disagree about what a
-    # px/s means. Above the clamp that means `main`'s labels, which is the same
-    # trade the gate makes there and is recorded on CF-229.
-    to_ref    = 1.0 / _scale_for(frame_height, log=False)
+    # score.py. So the invariant is the shared clamp revert: the gate and the
+    # classifier both take _scale_for's answer, so they revert to unscaled at
+    # the same height and cannot disagree about which side of the clamp a video
+    # is on. Above the clamp that means `main`'s labels, which is the same trade
+    # the gate makes there and is recorded on CF-229.
+    #
+    # It is not "the classifier divides by whatever the gate multiplied by".
+    # CF-376's soft flag gates on _scale_for ** CONTACT_SOFT_SCALE_EXPONENT and
+    # this still divides by the full _scale_for, deliberately: the flag decides
+    # which contacts exist, and a contact admitted under both settings keeps the
+    # label it had. The cost is that the softened gate now admits slower hits
+    # at 1080p than the full one did — down to ~0.385 frame-heights/s — and
+    # the new ones are judged in the full reference space, the same space every
+    # other 1080p contact is judged in. The alternative, dividing by the
+    # softened scale, would relabel contacts the flag did not add.
+    to_ref    = 1.0 / _scale_for(frame_height, log=False, normalize=normalize)
     sp_before = np.hypot(*v_before) * to_ref
     sp_after  = np.hypot(*v_after)  * to_ref
     vy_before = v_before[1] * to_ref
@@ -566,15 +656,35 @@ def classify_contact_action(
     return "unknown", 0.42
 
 
-def _scale_for(frame_height: int, *, log: bool = True) -> float:
+def _scale_for(frame_height: int, *, log: bool = True, normalize: bool = True) -> float:
     """
     Multiplier turning the module's 360p-tuned px/s constants into thresholds
     for footage of this height (CF-174).
+
+    This always returns the FULL scale, and every "the floor holds at 0.667
+    frame-heights/s" below is a statement about gating on it — true while
+    CF-376's soft flag is off, which is the default. With the flag on,
+    find_contacts raises this to CONTACT_SOFT_SCALE_EXPONENT and the floor
+    drops (0.385 fh/s at 1080p at 0.5), and the warning branch below then
+    quantifies a band narrower than the one in force — it overstates the
+    floor; find_contacts logs the softened gates itself.
 
     log=False asks the same question without the commentary, for callers that
     run per contact rather than per video (classify_contact_action). Every
     caller must get its scale from here: the one thing worse than a wrong scale
     is two halves of the pipeline disagreeing about it.
+
+    normalize=False returns 1.0 unconditionally — `main`'s behaviour, gate and
+    labels together. It is the off position of the CF-174 kill switch
+    (`BALL_CONTACT_SCALE_ENABLED`, threaded from tasks.py), and it exists
+    because this change moves highlight selection on all non-360p footage with
+    no ground truth to measure that against: MIN_RALLY_CONTACTS gates hard at 3,
+    so a rally that loses a contact leaves highlights entirely. Without a switch
+    the only response to that showing up in production is a code deploy, unlike
+    every neighbouring condense knob. It runs through here rather than at the
+    call sites so the gate and the classifier cannot end up on opposite sides of
+    it. Silent, not warned: an operator who set it meant it, and this is called
+    once per contact.
 
     frame_height <= 0 means the caller did not know it; fall back to the
     reference (no scaling, i.e. pre-CF-174 behaviour) and say so, because
@@ -588,14 +698,18 @@ def _scale_for(frame_height: int, *, log: bool = True) -> float:
                                       still right, the ceiling is closing in
       past the clamp point            return 1.0, i.e. pre-CF-174 behaviour
 
-    The clamp point is where CONTACT_HIT_SPEED_PXPS * scale would reach
-    CONTACT_SPEED_CEILING_FRAC of SEG_MAX_SPEED_PXPS. Freezing the scale there
+    The clamp point is where the *larger* scaled floor — max of
+    CONTACT_HIT_SPEED_PXPS and CONTACT_RESIDUAL_MIN_PXPS, both of which carry
+    this scale — would reach CONTACT_SPEED_CEILING_FRAC of SEG_MAX_SPEED_PXPS. Freezing the scale there
     keeps the two gates from becoming disjoint, but a frozen scale under a
     growing frame is not a weaker normalization — it is the wrong one, and it
     ends up narrower than no normalization at all. So past that height this
     reverts rather than extrapolating; see the comment at the return for why
     that is the honest interim rather than a fix.
     """
+    if not normalize:
+        return 1.0
+
     if frame_height <= 0:
         if log:
             logger.warning(
@@ -606,7 +720,16 @@ def _scale_for(frame_height: int, *, log: bool = True) -> float:
         return 1.0
 
     scale        = frame_height / REFERENCE_FRAME_HEIGHT
-    max_scale    = CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS / CONTACT_HIT_SPEED_PXPS
+    # max(), not CONTACT_HIT_SPEED_PXPS: both floors scale, so the cap has to be
+    # taken against the one that reaches the ceiling first. See the config block.
+    #
+    # Named once and used by the clamp *and* by both log branches below. Deriving
+    # the cap correctly and then describing the band from the hit speed alone
+    # would leave the messages understating the live floor by 2x at the historical
+    # CONTACT_RESIDUAL_MIN_PXPS = 480 the committed baseline row carries — in the
+    # lines whose entire job is telling an operator which numbers are in force.
+    ref_floor    = max(CONTACT_HIT_SPEED_PXPS, CONTACT_RESIDUAL_MIN_PXPS)
+    max_scale    = CONTACT_SPEED_CEILING_FRAC * SEG_MAX_SPEED_PXPS / ref_floor
     clamp_height = max_scale * REFERENCE_FRAME_HEIGHT
 
     if frame_height > clamp_height:
@@ -622,8 +745,21 @@ def _scale_for(frame_height: int, *, log: bool = True) -> float:
         #
         # Unscaled thresholds at 2160p give a band of 0.111-0.556 fh/s. Also
         # wrong, and over-firing rather than silent — but strictly wider, and it
-        # is what `main` does today, so this cannot be a regression at any
-        # resolution. Reverting is the honest interim until SEG_MAX_SPEED_PXPS
+        # is what `main` does today, so *this gate* cannot be a regression at any
+        # resolution.
+        #
+        # That claim stops at find_contacts; it is not a claim about the condense
+        # path. dead_time.bridge_windows_by_motion scales unconditionally, and
+        # correctly so (one-sided threshold, no ceiling to collide with), which
+        # means above this clamp point the pipeline runs `main`'s contact set
+        # joined by a 6x-tightened bridge at 2160p: fewer gaps bridged, windows
+        # `main` joined left split. That pairing is new in CF-174 and is measured
+        # nowhere — every dead-time fixture is 1080p or shorter. It tightens
+        # rather than widens, which is the safer direction, but it is a real
+        # behaviour change at the resolution phones shoot. Measuring it needs a
+        # 4K fixture and is its own card.
+        #
+        # Reverting is the honest interim until SEG_MAX_SPEED_PXPS
         # can scale (CF-229) and the clamp stops being needed at all.
         #
         # The discontinuity at this height is real and deliberate: thresholds
@@ -644,11 +780,11 @@ def _scale_for(frame_height: int, *, log: bool = True) -> float:
                 "(%.0f-%.0f px/s). Contact detection is not normalized at this "
                 "resolution; scaling SEG_MAX_SPEED_PXPS is the fix (CF-229).",
                 frame_height, clamp_height,
-                CONTACT_HIT_SPEED_PXPS * max_scale / frame_height,
+                ref_floor * max_scale / frame_height,
                 SEG_MAX_SPEED_PXPS / frame_height,
-                CONTACT_HIT_SPEED_PXPS / frame_height,
+                ref_floor / frame_height,
                 SEG_MAX_SPEED_PXPS / frame_height,
-                CONTACT_HIT_SPEED_PXPS, SEG_MAX_SPEED_PXPS,
+                ref_floor, SEG_MAX_SPEED_PXPS,
             )
         return 1.0
 
@@ -664,18 +800,24 @@ def _scale_for(frame_height: int, *, log: bool = True) -> float:
         # leaves 1.666x: the same footage in every practical sense), so there is
         # nothing here to page anyone about. The height past which normalizing
         # is actively worse than not is the clamp point, handled above.
-        floor = CONTACT_HIT_SPEED_PXPS * scale
+        floor = ref_floor * scale
         if log:
             logger.warning(
                 "frame_height %d is above the %dp CF-174 was measured on. Contact "
                 "detection admits only %.3f-%.3f frame-heights/s here (%.0f-%.0f "
-                "px/s, a %.2fx band vs 5.00x at %.0fp) because SEG_MAX_SPEED_PXPS "
+                "px/s, a %.2fx band vs %.2fx at %.0fp) because SEG_MAX_SPEED_PXPS "
                 "does not scale; this height is unmeasured and contacts get scarcer "
                 "as the band closes. Scaling the ceiling is the real fix (CF-229).",
                 frame_height, MAX_VALIDATED_FRAME_HEIGHT,
                 floor / frame_height, SEG_MAX_SPEED_PXPS / frame_height,
                 floor, SEG_MAX_SPEED_PXPS,
-                SEG_MAX_SPEED_PXPS / floor, REFERENCE_FRAME_HEIGHT,
+                SEG_MAX_SPEED_PXPS / floor,
+                # Derived, not literal: this is the reference band, and it moves
+                # whenever either constant is tuned (CF-103 lowers the floor to
+                # 220 and it becomes 5.45x). It is the one number in this line a
+                # reader cannot cross-check against the others.
+                SEG_MAX_SPEED_PXPS / ref_floor,
+                REFERENCE_FRAME_HEIGHT,
             )
     return scale
 
@@ -752,7 +894,10 @@ def _estimate_gravity(segments: list[list[BallPosition]]) -> float:
     return max(float(np.median(accels)), 0.0)
 
 
-def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
+def find_contacts(
+    tracker: TrackedBall, frame_height: int = 0, *, normalize: bool = True,
+    soft_scale: bool = False,
+) -> list[dict]:
     """
     Find player contacts: deviations from ballistic flight within coherent
     track segments.
@@ -772,23 +917,62 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
     Omitting it assumes REFERENCE_FRAME_HEIGHT and warns — on 1080p footage
     that silently over-fires the detector.
 
+    normalize=False turns the CF-174 scaling off and restores `main`'s gate and
+    `main`'s labels, while frame_height keeps doing its unscaled job (the
+    classifier's frame fraction). It is a runtime kill switch, not a tuning
+    knob — see _scale_for — and it defaults to on: production passes
+    settings.ball_contact_scale_enabled, which ships True.
+
+    soft_scale=True (CF-376, settings.ball_contact_soft_scale_enabled, ships
+    False) gates on _scale_for(...) ** CONTACT_SOFT_SCALE_EXPONENT instead of
+    the full scale — both floors together. It has no effect while normalize is
+    False, at 360p, at an unknown height, or past the clamp point, because
+    _scale_for returns exactly 1.0 there. The classifier keeps the full scale,
+    so the flag changes which contacts are found, not what they are called. See
+    CONTACT_SOFT_SCALE_EXPONENT.
+
     Returns list of {time, frame, x, y, angle_change, speed_change,
     speed_before, speed_after, residual, action, action_confidence}.
     """
-    scale = _scale_for(frame_height)
+    # The clamp and its revert are decided on the full scale, inside
+    # _scale_for; softening is applied to the answer, after that decision.
+    scale = _scale_for(frame_height, normalize=normalize)
+    if soft_scale and scale != 1.0:
+        full_scale = scale
+        scale = full_scale ** CONTACT_SOFT_SCALE_EXPONENT
+        # _scale_for's warning above 1080p quantifies the FULL-scale band, so
+        # say what is actually gating. Info, not warning: the flag is an
+        # operator's choice, and this runs once per video.
+        logger.info(
+            "soft contact scale (CF-376): gates at scale %.3f = %.3f ** %.2f, "
+            "hit_speed %.0f / residual_min %.0f px/s; a frame_height warning "
+            "above quotes the full-scale band, which is narrower than this one",
+            scale, full_scale, CONTACT_SOFT_SCALE_EXPONENT,
+            CONTACT_HIT_SPEED_PXPS * scale, CONTACT_RESIDUAL_MIN_PXPS * scale,
+        )
     hit_speed     = CONTACT_HIT_SPEED_PXPS * scale
     residual_min  = CONTACT_RESIDUAL_MIN_PXPS * scale
 
     segments = _segment_track(tracker.positions)
     if not segments:
-        # Every segment was rejected as flicker or near-stationary. Downstream
-        # this looks identical to "no ball in the video" and condense then cuts
-        # everything, so name the filter that ate the track.
-        logger.warning(
-            "find_contacts: _segment_track kept no segments from %d positions "
-            "(SEG_MIN_POSITIONS=%d, SEG_MIN_MEDIAN_SPEED_PXPS=%.0f, both unscaled)",
-            len(tracker.positions), SEG_MIN_POSITIONS, SEG_MIN_MEDIAN_SPEED_PXPS,
-        )
+        # Both routes here look identical downstream — no contacts, condense
+        # then cuts everything — so the log has to separate them, and blaming
+        # the filters for a rejection that never happened sends the operator
+        # tuning SEG_* at a tracking outage. _segment_track returns [] for an
+        # empty position list before any threshold is consulted.
+        if not tracker.positions:
+            logger.warning(
+                "find_contacts: the track is empty (0 positions) — the ball was "
+                "never detected, so nothing reached the segmentation filters"
+            )
+        else:
+            # Every segment was rejected as flicker or near-stationary, so name
+            # the filter that ate the track.
+            logger.warning(
+                "find_contacts: _segment_track kept no segments from %d positions "
+                "(SEG_MIN_POSITIONS=%d, SEG_MIN_MEDIAN_SPEED_PXPS=%.0f, both unscaled)",
+                len(tracker.positions), SEG_MIN_POSITIONS, SEG_MIN_MEDIAN_SPEED_PXPS,
+            )
         return []
 
     g_px = _estimate_gravity(segments)
@@ -830,7 +1014,7 @@ def find_contacts(tracker: TrackedBall, frame_height: int = 0) -> list[dict]:
             speed_change = abs(speed_after - speed_before) / max(speed_before, 1e-6)
 
             action, action_conf = (
-                classify_contact_action(seg, i, frame_height)
+                classify_contact_action(seg, i, frame_height, normalize=normalize)
                 if frame_height > 0
                 else ("unknown", 0.42)
             )
@@ -943,26 +1127,24 @@ def _make_rally(seg: list[dict], video_duration: float, frame_height: int = 0) -
     }
 
 
-def contacts_to_rallies(
-    contacts: list[dict],
-    video_duration: float,
-    frame_height: int,
-) -> list[dict]:
+def contact_segments(contacts: list[dict]) -> list[list[dict]]:
     """
-    Convert a contact list into rally clip boundaries.
+    Steps 1 and 2 of contacts_to_rallies: group contacts into candidate rally
+    segments, before either noise gate has been applied.
 
-    Algorithm:
-      1. Group contacts by time gap: a new segment starts when the gap to the
-         previous contact exceeds RALLY_GAP_SECONDS.
-      2. Segments longer than MAX_CLIP_DURATION are subdivided on their largest
-         internal gaps so each sub-clip stays under the cap.
-      3. Each segment becomes one clip:
-           rally_start = first_contact.time - PRE_RALLY_PAD  (>= 0)
-           rally_end   = last_contact.time  + POST_PLAY_PAD  (<= video_duration)
-      4. Clips shorter than MIN_RALLY_DURATION are discarded as noise.
+    Split out of contacts_to_rallies rather than copied (CF-376). The question
+    that card asks — how many rallies land in the 2-contact band that
+    MIN_RALLY_CONTACTS deletes — is a question about *these* lists, and it can
+    only be answered by the grouping production actually runs. A second copy in
+    ml/eval would answer it about a different pipeline, and would answer it
+    wrongly the first time either copy was tuned.
 
-    Returns list of dicts compatible with generate_clips():
-      {start, end, action, confidence, labels}
+    Grouping is by time gap (RALLY_GAP_SECONDS), then long groups are
+    subdivided on their largest internal gaps so each stays under
+    MAX_CLIP_DURATION. Neither gate below is applied here: the returned lists
+    include the 1- and 2-contact segments, which is the whole point.
+
+    Returns segments in no particular order; contacts_to_rallies sorts them.
     """
     if not contacts:
         return []
@@ -1006,6 +1188,35 @@ def contacts_to_rallies(
                     split_idx = i
             pending.append(seg[:split_idx])
             pending.append(seg[split_idx:])
+
+    return final_segments
+
+
+def contacts_to_rallies(
+    contacts: list[dict],
+    video_duration: float,
+    frame_height: int,
+) -> list[dict]:
+    """
+    Convert a contact list into rally clip boundaries.
+
+    Algorithm:
+      1. Group contacts by time gap: a new segment starts when the gap to the
+         previous contact exceeds RALLY_GAP_SECONDS.
+      2. Segments longer than MAX_CLIP_DURATION are subdivided on their largest
+         internal gaps so each sub-clip stays under the cap.
+      3. Each segment becomes one clip:
+           rally_start = first_contact.time - PRE_RALLY_PAD  (>= 0)
+           rally_end   = last_contact.time  + POST_PLAY_PAD  (<= video_duration)
+      4. Clips shorter than MIN_RALLY_DURATION are discarded as noise.
+
+    Returns list of dicts compatible with generate_clips():
+      {start, end, action, confidence, labels}
+    """
+    if not contacts:
+        return []
+
+    final_segments = contact_segments(contacts)
 
     # ── 3 & 4. Build rally windows, discard noise ─────────────────────────────
     rallies: list[dict] = []
@@ -1051,12 +1262,37 @@ def detect_contacts(
     video_path: str,
     api_key: str | None = None,
     sample_every: int = SAMPLE_EVERY,
+    *,
+    normalize: bool = True,
+    soft_scale: bool = False,
 ) -> list[dict]:
     """
     Full pipeline: detect ball -> track trajectory -> find contacts.
 
     Returns list of contact dicts with keys:
-      time, frame, x, y, angle_change, speed_change
+      time, frame, x, y, angle_change, speed_change, residual,
+      speed_before, speed_after, action, action_confidence
+
+    **`action` changed here in CF-174, and not only as a threshold shift.** This
+    used to call find_contacts with no frame height, which disables trajectory
+    classification outright: every contact came back `("unknown", 0.42)`. It now
+    reads the height from the video, so contacts carry real labels — `spike`,
+    `dig`, `set` and the rest — normalized into REFERENCE_FRAME_HEIGHT space.
+
+    A caller that treated `action` as a constant, or that never saw the key
+    because the old docstring did not list it, gets different output from the
+    same video. Nothing in this repo calls this function today (the worker uses
+    find_contacts directly), which is why the change is safe to make rather than
+    a reason not to document it: the module header offers this as the public
+    entry point, so the next caller arrives through here.
+
+    normalize forwards the CF-174 kill switch
+    (`settings.ball_contact_scale_enabled`). Defaulted rather than required so
+    existing callers are unaffected, but present: without it the switch is
+    reachable from the worker and unreachable from the module's own documented
+    entry point, and a caller reproducing a rolled-back production could not.
+    soft_scale forwards CF-376's flag (`settings.ball_contact_soft_scale_enabled`)
+    for the same reason.
 
     api_key defaults to the ROBOFLOW_API_KEY environment variable.
     sample_every: run inference every N frames (higher = faster, less precise).
@@ -1065,8 +1301,15 @@ def detect_contacts(
     if not key:
         raise ValueError("ROBOFLOW_API_KEY not set and api_key not provided")
 
+    # Read the height before tracking, as detect_rallies does. Reading it after
+    # reopened a file track_ball had just finished with, for a property that
+    # cannot have changed — and left the two entry points doing the same job
+    # two different ways.
+    frame_height = _read_frame_height(video_path)
     tracker  = track_ball(video_path, key, sample_every=sample_every)
-    contacts = find_contacts(tracker, _read_frame_height(video_path))
+    contacts = find_contacts(
+        tracker, frame_height, normalize=normalize, soft_scale=soft_scale,
+    )
     return contacts
 
 
@@ -1074,12 +1317,21 @@ def detect_rallies(
     video_path: str,
     api_key: str | None = None,
     sample_every: int = SAMPLE_EVERY,
+    *,
+    normalize: bool = True,
+    soft_scale: bool = False,
 ) -> list[dict]:
     """
     Full pipeline: detect ball -> track -> contacts -> rally clip boundaries.
 
     Returns list of rally dicts ready for generate_clips():
       {start, end, action, confidence, labels}
+
+    Same CF-174 change as detect_contacts: this used to pass no frame height, so
+    every contact was `unknown` and `action` here was whatever contacts_to_rallies
+    makes of a uniform label set. It now passes the decoded height, which both
+    scales the contact gates and switches on classification, and forwards
+    `normalize` and `soft_scale` for the same reason detect_contacts does.
     """
     key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
     if not key:
@@ -1096,6 +1348,8 @@ def detect_rallies(
     video_duration = total_frames / fps
 
     tracker  = track_ball(video_path, key, sample_every=sample_every)
-    contacts = find_contacts(tracker, frame_height)
+    contacts = find_contacts(
+        tracker, frame_height, normalize=normalize, soft_scale=soft_scale,
+    )
     rallies  = contacts_to_rallies(contacts, video_duration, frame_height)
     return rallies

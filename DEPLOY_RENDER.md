@@ -51,7 +51,8 @@ you have real users or the no-backups risk becomes unacceptable.
    env group. Apply.
 
 ### 3. Fill the secrets
-Every env var marked `sync: false` must be pasted in the dashboard. Sources:
+Every env var marked `sync: false` must be pasted in the dashboard, except the
+ones listed below as optional. Sources:
 
 > ⚠️ **`sync: false` keys do not appear in the env group until you add them.**
 > Render only creates keys that carry a literal `value:`; a `sync: false` key is
@@ -100,6 +101,7 @@ Every env var marked `sync: false` must be pasted in the dashboard. Sources:
 **`clipfarm-api`:**
 - `API_BASE_URL` → this service's public URL (set after step 4, or its custom domain)
 - `CORS_ORIGINS` → the web origin(s), comma-separated, e.g. `https://clipfarm.ca`. Checked at startup since **CF-172** — it has a localhost default, so unset it does not error, it silently CORS-blocks the whole frontend. Since **CF-235** the *shape* of each entry is checked too, and the boot is refused for a value that is set but cannot work: a bare `*` (which with credentials on is a genuine cross-origin leak, not untidiness), and anything a browser can never send as an `Origin` — a trailing slash or path, upper case, `user:password@`, a wildcard host like `https://*.clipfarm.ca`, a default or padded port. Write bare origins: `scheme://host[:port]`, nothing else.
+- `SAMPLE_GAME_ID`, `SAMPLE_GAME_TITLE`, `SAMPLE_GAME_CREDIT` → **optional**, the exception to "must be pasted" above: the demo game copied into every new account (CF-220). `SAMPLE_GAME_ID` is the id of a `ready` game on the dedicated internal account; the title and credit are editorial text. Not in `REQUIRED_IN_PRODUCTION`, so the boot never asks for them — and an unset `SAMPLE_GAME_ID` turns the demo off **without a log line**, which is how it went unnoticed on 2026-10-15. The footage decision is CF-571 (#581); README's `sample_game_id` row has the rules for the source game (never delete, trim, reprocess or re-condense it while copies exist).
 
 **`clipfarm-worker`:**
 - `ROBOFLOW_API_KEY` → Roboflow → Settings → API Keys

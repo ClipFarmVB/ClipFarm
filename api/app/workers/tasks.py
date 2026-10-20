@@ -231,6 +231,11 @@ def _build_condense_windows(
             # and dead time survives the bridge. CF-187 moved this call in here;
             # the frame height it needs is already a parameter of this function.
             frame_height=frame_height,
+            # The same kill switch find_contacts gets. Both halves of the
+            # condense path move together: off must mean `main`'s condense
+            # behaviour, not `main`'s contacts joined by a scaled bridge, which
+            # is a combination nothing has measured.
+            normalize=settings.ball_contact_scale_enabled,
         )
     return windows, built_by
 
@@ -321,9 +326,32 @@ def _track_ball_modal(local_video: Path, r2_key: str, sample_every: int, on_prog
 
 
 def _ball_cache_key(video_md5: str, sample_every: int) -> str:
-    from ml.pipeline.ball import MODEL_ID
+    """Where a video's tracked positions live in R2.
+
+    Four components, and the fourth is the one that is easy to leave out.
+    The video, the model and the sample rate all obviously change the track;
+    so does every other tracking input, and none of those were represented —
+    so a change to how tracking works left every cached entry looking valid,
+    and the next run of an already-processed video replayed a track built by
+    the old code. On a tuning change that is a wrong answer nobody can see; on
+    a re-measure it is worse, because the numbers come back unchanged and read
+    as "no effect".
+
+    `ball.TRACKING_CACHE_VERSION` is that fourth component. Its own comment
+    says what counts as a reason to bump it, and a test fails if one of those
+    reasons moves and the version does not.
+
+    **Bumping it orphans every existing entry rather than overwriting one.**
+    That is the intent — the old tracks stay readable for a comparison — but it
+    means the next run of every video re-tracks, which on Modal is real money
+    and real minutes. Bump it because the track changed, not to be safe.
+    """
+    from ml.pipeline.ball import MODEL_ID, TRACKING_CACHE_VERSION
     model_slug = MODEL_ID.replace("/", "-")
-    return f"ball-cache/{video_md5}-{model_slug}-s{sample_every}.json"
+    return (
+        f"ball-cache/{video_md5}-{model_slug}"
+        f"-s{sample_every}-v{TRACKING_CACHE_VERSION}.json"
+    )
 
 
 def _track_ball_cached(
@@ -337,10 +365,15 @@ def _track_ball_cached(
     """
     Ball tracking with an R2-backed cache keyed by video content hash.
 
-    Tracking a 22-min video takes ~30 min on CPU; the positions only depend
-    on the video bytes, the model version, and the sample rate — so re-runs
-    of the same footage (re-uploads, pipeline tuning) load cached positions
-    in seconds instead. Cache failures fall through to normal tracking.
+    Tracking a 22-min video takes ~30 min on CPU; the positions depend on the
+    video bytes, the model version, the sample rate and TRACKING_CACHE_VERSION
+    — so re-runs of the same footage (re-uploads, pipeline tuning) load cached
+    positions in seconds instead. Cache failures fall through to normal
+    tracking.
+
+    The version is the component that is NOT derived from the inputs: the other
+    three cannot see a change to how tracking works, so it is bumped by hand
+    when one lands (CF-231). Nothing reclaims the orphaned generation.
 
     When Modal is configured, tracking itself runs on a GPU worker (CF-11)
     instead of locally on CPU; Modal failures fall back to local CPU tracking
@@ -799,7 +832,16 @@ def _sweep_expired_raw_uploads() -> None:
     if not stale:
         return
 
-    failed = s3.delete_files(stale)
+    try:
+        failed = s3.delete_files(stale)
+    except Exception as exc:
+        logger.warning(
+            "Raw-upload retention: released %d row(s), but the delete of up to "
+            "%d object(s) failed — leaving them for the next sweep (%s)",
+            released, len(stale), exc,
+        )
+        return
+
     if failed:
         # Not lost: they stay unreferenced and past the cutoff, so the next
         # sweep finds them again.
@@ -1120,14 +1162,27 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         local_video, tmp, sample_every=sample_every, r2_key=r2_key,
                         video_md5=video_md5, on_progress=progress.update,
                     )
-                    contacts  = find_contacts(tracker, frame_height=_frame_h)
+                    contacts  = find_contacts(
+                        tracker, frame_height=_frame_h,
+                        # CF-174 kill switch: False is `main`'s thresholds and
+                        # labels. The one contact set feeds both highlights and
+                        # condense, so this is read once here rather than per
+                        # consumer — two consumers on different scales would be
+                        # worse than either scale. See settings.ball_contact_scale_enabled.
+                        normalize=_cfg.ball_contact_scale_enabled,
+                        # CF-376: soften that scale. Contacts only — the bridge
+                        # in _build_condense_windows keeps the full scale. See
+                        # settings.ball_contact_soft_scale_enabled.
+                        soft_scale=_cfg.ball_contact_soft_scale_enabled,
+                    )
                     detections = contacts_to_rallies(contacts, video_duration, _frame_h)
                     ball_ok   = True
                     ball_contacts = contacts
                     # Kept for the condense stage's motion bridge (CF-46).
                     if condense:
                         ball_positions = [
-                            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+                            {"time": p.time, "x": p.x, "y": p.y, "confidence": p.confidence}
+                            for p in tracker.positions
                         ]
                     logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
                 except Exception as err:

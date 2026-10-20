@@ -208,8 +208,11 @@ def _origin_problems(origin: str) -> list[str]:
             "this as an Origin; retype the value rather than editing it"
         )
 
-    # Everything below parses the entry with backslashes REMOVED, and the
-    # backslash itself is reported from the raw entry by the check further down.
+    # The backslash is reported from the RAW entry, by the `if "\\" in origin:`
+    # check under the next paragraph. Everything that PARSES the entry after
+    # that parses it with backslashes removed — cleaned once, at `cleaned = ...`,
+    # rather than per-check. Checks that test the raw string instead say so
+    # where they do; `?` and `#` are the ones that still do.
     #
     # A previous version cleaned the value for the PORT checks only, via a
     # second `urlsplit`, and left every other check reading the raw parse. Three
@@ -225,9 +228,10 @@ def _origin_problems(origin: str) -> list[str]:
         # origin", with nothing telling the operator what to delete.
         #
         # Browsers treat `\\` as `/` (WHATWG URL), so `https://x.ca\\evil.com`
-        # is sent as Origin `https://x.ca` and the entry matches nothing.
-        # urlsplit does not agree — it leaves the backslash in the netloc, which
-        # is why nothing caught it before CF-235. No legitimate origin has one.
+        # is sent as Origin `https://x.ca` and the entry matches nothing — the
+        # same silent outage as the tab this function already catches. urlsplit
+        # does not agree — it leaves the backslash in the netloc, which is why
+        # nothing caught it before CF-235. No legitimate origin has one.
         invisible_problem.append(
             "contains a backslash — browsers read it as `/`, so this is sent as "
             "the part before it and matches no Origin header"
@@ -289,12 +293,6 @@ def _origin_problems(origin: str) -> list[str]:
     # — and the second was accepted, then handed to Starlette's exact-string
     # compare, where it matches nothing. Neither character can appear in an
     # Origin header at all, so testing the raw entry costs no precision.
-    # A backslash is included because browsers treat it as `/` (WHATWG URL), so
-    # `https://x.ca\\evil.com` is sent as Origin `https://x.ca` and the entry
-    # matches nothing — the same silent outage as the tab this function already
-    # catches. urlsplit does NOT agree with browsers here: it leaves the
-    # backslash in the netloc, so the entry was accepted. No legitimate origin
-    # contains one.
     if parts.path or "?" in origin or "#" in origin:
         problems.append(
             "an Origin is scheme://host[:port] with nothing after it; a trailing "
@@ -742,6 +740,49 @@ class Settings(BaseSettings):
     condense_bridge_speed_pxps: float = 150.0   # px/s at 360p; scaled at use
     condense_bridge_fast_fraction: float = 0.35  # bridge when ≥ this fraction of samples are fast
     condense_bridge_max_seconds: float = 20.0   # never bridge gaps longer than this
+    # CF-174 kill switch. False restores `main`'s unscaled contact thresholds and
+    # `main`'s action labels — both, because the gate and the classifier have to
+    # agree about what a px/s means. It ships True; this exists because the
+    # scaling moves highlight selection on every non-360p upload and there is no
+    # ground truth at those resolutions to measure that against. MIN_RALLY_CONTACTS
+    # gates hard at 3, so a rally that drops from 3 contacts to 2 leaves highlights
+    # entirely, and 1080p is what the app uploads. Unlike the condense knobs above,
+    # the alternative to a setting here is a code deploy.
+    #
+    # A switch, not a knob: it takes the whole scaling out, and turning it off on a
+    # non-360p deployment restores a detector this PR argues is measurably wrong for
+    # that footage.
+    #
+    # It reaches BOTH halves of the pipeline CF-174 touched — find_contacts (and,
+    # through it, classify_contact_action) and the condense motion bridge. That is
+    # the point of it being one setting: off is `main`'s behaviour, which is the
+    # half with measured evidence behind it. Gating only the contacts would leave
+    # the bridge at 3x on a 1080p upload, i.e. a third combination nothing has ever
+    # scored — the worst thing for a lever whose whole job is incident response.
+    #
+    # It does not reach the >1440p clamp in ball._scale_for, which is already
+    # `main`'s behaviour there; see the asymmetry note in bridge_windows_by_motion
+    # for what the two halves do above that height while the switch is on.
+    ball_contact_scale_enabled: bool = True
+    # CF-376 (#476): soften the CF-174 contact scale instead of taking it whole.
+    # On, find_contacts gates on scale ** ball.CONTACT_SOFT_SCALE_EXPONENT (0.5)
+    # rather than frame_height / 360 — at 1080p both floors go from 3.0x to
+    # 1.73x (720 -> 416 px/s). It only has an effect while
+    # ball_contact_scale_enabled is on: with that off the scale is already 1.0,
+    # and so it stays. It is also a no-op at 360p and past the >1440p clamp.
+    #
+    # Contacts only. Action labels keep the full scale (the flag changes which
+    # contacts exist, not what one is called), and the condense motion bridge in
+    # dead_time.bridge_windows_by_motion keeps the full scale too. So on, at
+    # 1080p, this runs softened contacts joined by a full-scale bridge — a new
+    # combination, measured in the CF-376 PR on unlabelled fixtures only.
+    #
+    # Ships False. On four unlabelled 1080p tracks it lifts emitted rallies
+    # 32 -> 76 with the switch on (switch off: 96), and under the guarded builder it removes less
+    # dead time while cutting less live play; that trade, and whether the extra
+    # rallies are real, needs CF-375 (#475)'s labelled 1080p fixture before
+    # this or any default moves.
+    ball_contact_soft_scale_enabled: bool = False
     # Which keep-window builder the condense stage uses. A failure *inside* the
     # guarded builder falls back to "rules", so a feature mismatch degrades the
     # condense rather than failing the run. Note the fallback is within-builder
@@ -856,6 +897,104 @@ class Settings(BaseSettings):
     r2_secret_access_key: str = ""
     r2_bucket_name: str = "clipfarm"
     r2_public_url: str = ""
+
+    # Whether an owner may set a clip or a post to `public` (CF-109b, #398).
+    #
+    # OFF by default, and that is a product decision rather than a stub — see
+    # services/publishing.py for the argument in full. Short version: `public`
+    # puts youth-sports footage in front of signed-out strangers and anything
+    # that crawls a link, which is what wants terms of service (CF-75/CF-88)
+    # and a report and takedown path (CF-116). `followers` needs no moderation
+    # surface, because its audience is approved one by one — but until the
+    # follow graph (CF-110) lands it reaches nobody but the owner, so with this
+    # off every accepted tier is owner-only in practice. Both tiers are built
+    # and tested; this decides which the API accepts.
+    #
+    # A write gate only: no read consults it, so turning it off withdraws
+    # nothing already `public`.
+    #
+    # Turning it on is one environment variable, so the day those land there is
+    # no code change to make.
+    public_posting_enabled: bool = False
+
+    # The demo game a new account starts with (CF-220). Empty = off, and
+    # signup is exactly what it was before this setting existed.
+    #
+    # Set, it names a `ready` game whose rows are copied to every account
+    # provisioned afterwards (services/sample_game.py). The copies point at the
+    # SAME R2 objects as the source — nothing is duplicated — so the source game
+    # is shared media: deleting, reprocessing, trimming or re-condensing it
+    # changes or breaks every copy. It belongs to a dedicated internal account
+    # for that reason.
+    #
+    # A str, not a UUID: a malformed value must not refuse the boot of the whole
+    # api over an optional nicety. It is parsed at copy time, and a value that
+    # does not parse is logged and skipped, leaving signup untouched.
+    #
+    # Every new account sees this game, so which footage it names is a recorded
+    # decision, not a config tweak: the current one is on CF-571 (#581), and
+    # changing the source needs it made again. In production the value lives
+    # in the Render dashboard on clipfarm-api (render.yaml declares the key);
+    # clearing it turns the demo off without a log line. README's
+    # `sample_game_id` row has the full set of rules.
+    sample_game_id: str = ""
+    # What the demo copy is called in a new account's Library. Empty uses
+    # "Demo: " + the source game's title, which is usually an internal name.
+    sample_game_title: str = ""
+    # Credit for the demo footage, frozen onto each copy when it is made
+    # (games.sample_credit) and returned as `sample_credit` for the web to show
+    # beside it, e.g. "Footage: <team> — <URL of the original>". Empty stores
+    # none. Changing it later does not rewrite existing copies, which keep the
+    # credit of the footage they play. A credit is not a licence to the
+    # footage: that question is CF-571 (#581).
+    sample_game_credit: str = ""
+
+    # ── Anonymous read limits (CF-186, #189) ─────────────────────────────────
+    # Seven endpoints answer without a credential. Six are throttled per caller
+    # (see services/ratelimit.py for the two exposures and the fail-open
+    # posture); GET /clips/{id}/download is the seventh and requires auth
+    # instead. All limits are per minute. The two enumerable routes key on the
+    # client address even for a signed-in caller (`Policy.by_address`); the rest
+    # key on the signed-in caller and fall back to the client
+    # address when there is no user.
+    #
+    # A switch, not a knob: the alternative to `rate_limit_enabled` is a code
+    # deploy while the incident is happening.
+    rate_limit_enabled: bool = True
+    # THE NUMBER OF REVERSE PROXIES IN FRONT OF THIS PROCESS, and the setting
+    # most likely to be wrong, because it is silent in both directions.
+    #
+    # uvicorn's own --forwarded-allow-ips defaults to 127.0.0.1 and
+    # scripts/render-start-api.sh passes nothing, so on Render `request.client`
+    # is the platform router for every request on Earth. Left at 0 there, the
+    # whole internet shares one bucket and the limiter throttles every reader
+    # at once — strictly worse than no limiter, and green in every local test.
+    # Set too high, a caller picks their own bucket by sending their own
+    # X-Forwarded-For.
+    #
+    # 0 is right for a direct-to-uvicorn run (docker compose, local dev). Render
+    # sets 1 in render.yaml; any VPS with Caddy or nginx in front wants 1 too
+    # (DEPLOY.md).
+    rate_limit_trusted_proxy_hops: int = Field(default=0, ge=0)
+    # Exposure A — handle-keyed enumeration. A wordlist walk needs thousands of
+    # hits, so 30/min puts a 10k-name list at ~5.5h per identity while a human
+    # reading profiles issues one call per profile.
+    rate_limit_profile_per_minute: int = Field(default=30, ge=1)
+    rate_limit_user_posts_per_minute: int = Field(default=30, ge=1)
+    # Exposure B — UUID-keyed content. The game pair is sized by the detail
+    # page: it polls GET /games/{id} every 5s while processing (12/min per open
+    # tab), and fetches GET /games/{id}/clips once the game is ready and again
+    # each time its filters settle. The filters are debounced, so a slider
+    # drag costs one clips request rather than one per step.
+    rate_limit_game_per_minute: int = Field(default=60, ge=1)
+    rate_limit_games_clips_per_minute: int = Field(default=60, ge=1)
+    # Loosest deliberately: #189 notes a per-IP limit over-throttles /share,
+    # where traffic on a deliberately public clip is the success case. Present
+    # to bound the presign cost, not to discourage sharing. /posts/{id} is
+    # matched to it — also UUID-keyed, so also a load bound rather than an
+    # anti-enumeration one.
+    rate_limit_share_per_minute: int = Field(default=120, ge=1)
+    rate_limit_post_per_minute: int = Field(default=120, ge=1)
 
     # Redis / Celery
     redis_url: str = "redis://localhost:6379/0"
@@ -1107,7 +1246,31 @@ def _boot_error(exc: ValidationError) -> str:
     the module already had a helper for.
 
     Model-validator errors have an empty `loc` and already name their variable
-    in the message, so they are left alone.
+    in the message, so they get no name prefix from us.
+
+    What they do get is pydantic's own `Value error, `, which it puts in front
+    of the message of anything a validator raised as a `ValueError`. That lands
+    in the middle of a line whose whole job is to be read by whoever is staring
+    at a failed deploy, and it says nothing the operator can act on. Strip it.
+
+    Keyed on `type == "value_error"` rather than on the text, and applied with
+    `removeprefix`, so an error carrying no such prefix is untouched either way.
+    Every other pydantic error type keeps its message verbatim: a
+    `literal_error` reads `CONDENSE_MODE: Input should be 'rules' or 'guarded'`
+    and has no prefix to remove. An `assert` in a validator produces
+    `assertion_error` with `Assertion failed, ` instead, and is deliberately not
+    stripped — `config.py` has no such validator, and inventing a second case
+    for code that does not exist is how the pattern below would start to drift.
+
+    The empty remainder is guarded, and the guard is defensive rather than
+    load-bearing today: `raise ValueError("")` renders as exactly
+    `Value error, `, and stripping that would compose
+    `Configuration is not usable: ` with nothing after it — a boot failure that
+    names no problem. Nothing here produces it: this file's two model
+    validators raise from three sites, and all three pass non-empty text, so
+    the case is unreachable through any accepted setting. It is guarded anyway because the
+    cost is one condition and the failure is a boot message that says nothing;
+    the test for it constructs the error, since no env var can.
     """
     problems = []
     for error in exc.errors():
@@ -1120,6 +1283,10 @@ def _boot_error(exc: ValidationError) -> str:
             # Better the raw path than nothing.
             name = ".".join(str(part) for part in location)
         message = str(error["msg"])
+        if error["type"] == "value_error":
+            stripped = message.removeprefix("Value error, ")
+            if stripped:
+                message = stripped
         problems.append(f"{name}: {message}" if name else message)
     return "Configuration is not usable: " + "; ".join(problems)
 

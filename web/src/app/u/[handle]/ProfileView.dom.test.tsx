@@ -1,0 +1,182 @@
+// @vitest-environment jsdom
+//
+// CF-109b item 3 (#398): the profile must not tell a stranger the opposite of
+// what the API does.
+//
+// `users.is_private` governs whether following needs approval and NOTHING else
+// — `services/access.py` argues that at length and
+// `test_account_privacy_does_not_clamp_post_visibility` pins it on the API
+// side. So a private account's `public` post is deliberately readable by
+// anyone, and `GET /posts?username=` serves it.
+//
+// This page used to render "This account is private. Follow to see their
+// clips." INSTEAD of the grid, which meant the web reassured a stranger that
+// the content was gone while the API went on serving it. That is the worse of
+// the two ways to be wrong, and it contradicted both the settings copy and this
+// file's own docstring — the comment saying "hiding the grid entirely would
+// contradict the API" sat inside the branch hiding the grid entirely.
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const getProfile = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/api", () => ({ getProfile }));
+vi.mock("@/contexts/AuthContext", () => ({
+  useAuth: () => ({ user: { id: "stranger" }, loading: false }),
+}));
+vi.mock("@/lib/useMe", () => ({ useMe: () => ({ id: "stranger" }) }));
+// A marker, not the real grid: what is under test is whether the page renders
+// it at all, not what it renders.
+vi.mock("./PostGrid", () => ({
+  PostGrid: ({ handle }: { handle: string }) => <div data-grid={handle} />,
+}));
+
+import { ProfileView } from "./ProfileView";
+
+const profile = (isPrivate: boolean) => ({
+  id: "u1",
+  username: "alice",
+  display_name: "Alice",
+  bio: null,
+  avatar_url: null,
+  is_private: isPrivate,
+  username_is_generated: false,
+});
+
+let host: HTMLDivElement;
+let root: Root;
+
+beforeEach(() => {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+});
+
+afterEach(() => {
+  act(() => root.unmount());
+  host.remove();
+  vi.clearAllMocks();
+});
+
+async function render(isPrivate: boolean) {
+  getProfile.mockResolvedValue(profile(isPrivate));
+  await act(async () => {
+    root.render(<ProfileView handle="alice" />);
+  });
+}
+
+function grid() {
+  return host.querySelector("[data-grid]");
+}
+
+describe("a failed load (CF-304)", () => {
+  async function renderFailure(message: string) {
+    getProfile.mockRejectedValue(new Error(message));
+    await act(async () => {
+      root.render(<ProfileView handle="alice" />);
+    });
+  }
+
+  it("does not tell the visitor the handle is free", async () => {
+    // This branch rendered "No one is using @alice" for ANY failure, so a 500
+    // or a dropped connection asserted the availability of a handle that may
+    // well be taken.
+    await renderFailure("Internal Server Error");
+
+    expect(host.textContent).not.toContain("No one is using");
+  });
+
+  it("shows the server's own answer for a handle that does not exist", async () => {
+    // The common failure, and the one an earlier version of this fix REGRESSED
+    // by sending it to copy written for a server fault. `getProfile` is
+    // `Promise<Profile>` and a missing handle is a 404, so it rejects with the
+    // API's `detail` — there is no resolved-null case to branch on.
+    await renderFailure("Profile not found");
+
+    expect(host.textContent).toContain("Profile not found");
+    expect(host.textContent).not.toContain("No one is using");
+  });
+
+  it("does not throw inside its own catch when the rejection is not an Error", async () => {
+    // Asserting the rendered text would NOT catch this: `setError(undefined)`
+    // still renders "Please try again.", because the paragraph is
+    // `{error ?? …}`. The first version of this test did exactly that and
+    // passed against the unguarded code.
+    //
+    // The difference a `null` rejection makes is that `e.message` throws
+    // *inside* the catch, so the chain rejects with nobody left to handle it.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      getProfile.mockRejectedValue(null);
+      await act(async () => {
+        root.render(<ProfileView handle="alice" />);
+      });
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+
+    expect(unhandled).toEqual([]);
+    expect(host.textContent).toContain("Please try again.");
+  });
+
+  it("distinguishes the two failures by what it shows, not by asserting either", async () => {
+    // States the contract directly: the two failures must not render the same
+    // text.
+    //
+    // **It is not load-bearing, and the sentence that said it was is gone.**
+    // That sentence claimed a fix collapsing both into one fixed message would
+    // pass everything above it. Running that mutation says otherwise — the
+    // preceding test fails too, because it asserts the server's own words. So
+    // this is a second, more direct way to fail on the same regression, kept
+    // because the regression it names is one this PR already shipped once, and
+    // an assertion that says what it means is worth a duplicate here.
+    await renderFailure("Profile not found");
+    const notFound = host.textContent;
+    act(() => root.unmount());
+    host.remove();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await renderFailure("Internal Server Error");
+
+    expect(host.textContent).not.toBe(notFound);
+  });
+});
+
+describe("a private account seen by a stranger", () => {
+  it("still renders the grid, because the account flag does not gate content", async () => {
+    // Nothing leaks: `getUserPosts` filters by visibility in SQL for the asking
+    // viewer, so a stranger sees the public posts and no others — today, none.
+    await render(true);
+    expect(grid()).not.toBeNull();
+  });
+
+  it("says the account is private as a notice rather than in place of the grid", async () => {
+    await render(true);
+    expect(host.textContent).toContain("This account is private");
+    expect(grid()).not.toBeNull();
+  });
+
+  it("does not tell a stranger to follow, because following does not exist", async () => {
+    // There is no follows table and no follows router; `is_follower` returns
+    // False unconditionally until CF-110. This sentence was the only "Follow"
+    // call to action anywhere in web/src, so it pointed at nothing -- and it
+    // restated the model this card exists to correct, on the page above the
+    // grid. The settings screen in this same change says "isn't built yet";
+    // this is that standard applied to the second surface.
+    await render(true);
+    expect(host.textContent).not.toMatch(/Follow to see/i);
+    expect(host.textContent).toContain("following isn't built yet");
+    expect(host.textContent).toContain("not who can see its clips");
+  });
+
+  it("says nothing about privacy for a public account", async () => {
+    await render(false);
+    expect(host.textContent).not.toContain("This account is private");
+    expect(grid()).not.toBeNull();
+  });
+});

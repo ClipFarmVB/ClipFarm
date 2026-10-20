@@ -265,6 +265,22 @@ class TestInvarianceBreaksDownAbove1080p:
         assert "found nothing" in caplog.text
         assert "hit_speed" in caplog.text
 
+    def test_an_empty_track_is_not_blamed_on_the_segment_filters(self, caplog):
+        """
+        The third route to zero, and the one the other two messages must not be
+        confused with: no ball was ever detected. _segment_track returns [] for
+        an empty position list *before* consulting any threshold, so naming
+        SEG_MIN_POSITIONS and SEG_MIN_MEDIAN_SPEED_PXPS here sends an operator
+        tuning the segmenter at a Roboflow outage — the precise mix-up the
+        message above exists to prevent.
+        """
+        import logging
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
+            assert find_contacts(TrackedBall(positions=[]), frame_height=1080) == []
+        assert "the track is empty" in caplog.text
+        assert "SEG_MIN_POSITIONS" not in caplog.text
+        assert "SEG_MIN_MEDIAN_SPEED_PXPS" not in caplog.text
+
     def test_an_empty_return_names_the_segment_filter_when_that_is_the_cause(self, caplog):
         """
         The other way to reach zero: 1.5 fh/s at 2160p is above the fixed
@@ -314,6 +330,69 @@ class TestPastTheClampPointItRevertsRatherThanExtrapolating:
         )
         unclamped = collision_fh / REFERENCE_FRAME_HEIGHT
         assert ball.CONTACT_HIT_SPEED_PXPS * unclamped >= SEG_MAX_SPEED_PXPS
+
+    def test_the_cap_is_taken_against_the_larger_of_the_two_scaled_floors(self, monkeypatch):
+        """
+        CONTACT_RESIDUAL_MIN_PXPS scales identically to CONTACT_HIT_SPEED_PXPS
+        and gates the same samples, so the clamp has to be derived from
+        whichever reaches SEG_MAX_SPEED_PXPS first.
+
+        The two are equal today, which is what makes this invisible: deriving
+        the cap from the hit speed alone passes every other test in this file.
+        They have been unequal — the committed `baseline` row carries
+        CONTACT_RESIDUAL_MIN_PXPS = 480 — and at that value the residual floor
+        crosses the ceiling at 1080p, inside the validated range and below the
+        clamp, so nothing would have stopped it.
+
+        Asserted as the invariant the config block states, not as an arithmetic
+        restatement of the line: sweep every height, and wherever _scale_for is
+        still applying a scale, neither floor may reach the ceiling. Deriving
+        the clamp from one constant moves the clamp point out to 1440p, so the
+        sweep walks straight through 1080p at scale 3.0 and catches it — which
+        a check that stopped at the *correct* clamp point would not.
+        """
+        monkeypatch.setattr(ball, "CONTACT_RESIDUAL_MIN_PXPS", 480.0)
+        still_scaling = 0
+        for height in range(360, 2161, 60):
+            scale = _scale_for(height, log=False)
+            if scale == 1.0:
+                continue  # reverted to `main`; the invariant is not claimed there
+            still_scaling += 1
+            for name in ("CONTACT_HIT_SPEED_PXPS", "CONTACT_RESIDUAL_MIN_PXPS"):
+                assert getattr(ball, name) * scale < SEG_MAX_SPEED_PXPS, (
+                    f"{name} scaled by {scale:.2f} at {height}p reaches the "
+                    f"{SEG_MAX_SPEED_PXPS:.0f} px/s segmentation ceiling — the "
+                    "two gates are disjoint there and find_contacts returns nothing"
+                )
+        assert still_scaling > 1, "the sweep never reached a scaled height"
+
+    @pytest.mark.parametrize("height,level", [(1200, "warning"), (2160, "error")])
+    def test_both_log_branches_quantify_from_the_floor_actually_in_force(
+        self, caplog, monkeypatch, height, level,
+    ):
+        """
+        The messages exist to tell an operator which numbers are live, so they
+        have to be derived the same way the clamp is: from whichever floor
+        reaches the ceiling first, not from CONTACT_HIT_SPEED_PXPS alone.
+
+        Inert while both constants are 240 — which is exactly why it was missed
+        when max_scale was fixed one line above these branches. At the
+        CONTACT_RESIDUAL_MIN_PXPS = 480 the committed baseline row carries, a
+        hit-speed-only message understates the live floor by 2x, in the line
+        whose stated job is naming what is in force.
+        """
+        import logging
+        monkeypatch.setattr(ball, "CONTACT_RESIDUAL_MIN_PXPS", 480.0)
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
+            _scale_for(height)
+        assert caplog.records, f"expected a {level} at {height}p"
+        text = caplog.text
+        # 480 is the floor in force; 240 is the one a hit-speed-only message
+        # would print. Both appear as "%.0f px/s" in these lines.
+        assert "480" in text, (
+            f"the {level} at {height}p does not mention the 480 px/s floor that "
+            "is actually gating — it is quantifying from CONTACT_HIT_SPEED_PXPS"
+        )
 
     def test_past_the_clamp_point_reverts_to_unscaled(self):
         assert _scale_for(2160) == 1.0
@@ -604,3 +683,275 @@ class TestLazyOpenCV:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+class TestTheScalingHasARuntimeKillSwitch:
+    """
+    CF-174 moves highlight selection on every non-360p upload, and there is no
+    ground truth at those resolutions to measure that against —
+    MIN_RALLY_CONTACTS gates hard at 3, so a rally that loses a contact leaves
+    highlights entirely. `settings.ball_contact_scale_enabled` makes the
+    response a restart rather than a deploy.
+
+    What these pin is that the switch is *whole*: off is `main` everywhere the
+    scale reaches, and the gate and the classifier cannot land on opposite
+    sides of it.
+    """
+
+    def test_off_is_the_identity_scale_at_every_resolution(self):
+        for height in (*RESOLUTIONS, 1440, 2160):
+            assert _scale_for(height, normalize=False) == 1.0
+
+    def test_off_is_silent(self, caplog):
+        """An operator who set it meant it, and _scale_for runs per contact."""
+        import logging
+        with caplog.at_level(logging.WARNING, logger="ml.pipeline.ball"):
+            _scale_for(2160, normalize=False)
+            _scale_for(0, normalize=False)
+        assert caplog.text == ""
+
+    def test_off_reproduces_mains_contacts_at_1080p(self):
+        """
+        The switch has to actually change something, and the something has to be
+        `main`'s answer — not a third behaviour. 0.4 fh/s at 1080p is 432 px/s:
+        over the unscaled 240 floor and under the scaled 720 one, so it is
+        exactly the sample the scaling newly rejects.
+        """
+        track = rally_track(1080, 0.4)
+        assert find_contacts(track, frame_height=1080) == []
+        off = find_contacts(track, frame_height=1080, normalize=False)
+        assert off, "normalize=False should restore main's more permissive gate"
+        # `main`'s answer, reached by `main`'s route: unscaled means the gate
+        # reads raw pixels, so the comparison track is the one carrying the same
+        # *pixel* speed at the reference height (scale exactly 1.0), not the
+        # physically-equivalent one.
+        same_pixel_motion = rally_track(360, 0.4 * 1080 / 360)
+        assert len(off) == len(find_contacts(same_pixel_motion, frame_height=360))
+
+    def test_off_takes_the_classifier_with_it(self):
+        """
+        The gate and the classifier must not disagree about what a px/s means.
+        With the scaling off, a 1080p hit is judged in raw pixels — so it gets
+        the label `main` gives it, which is the label the *unnormalized* 360p
+        pixel motion would get, not the physically-equivalent one.
+
+        0.4 fh/s at 1080p is 432 px/s, which reads as 144 px/s in reference
+        space: inside SET's 45-240 band normalized, outside it unscaled. That is
+        the degenerate 1080p labelling this PR set out to fix, so it is the right
+        thing for the switch to hand back.
+        """
+        i = 8
+        positions = rally_track(1080, 0.4).positions
+        normalized = classify_contact_action(positions, i, 1080)
+        off = classify_contact_action(positions, i, 1080, normalize=False)
+        assert off != normalized, (
+            "if these agree the classifier is not on the switch at all"
+        )
+        # And it is `main`'s label specifically. rally_track puts the ball at
+        # y = 0.5 * height, so a 360p track carrying the *same pixel* speed
+        # (0.9 x 1080 = 972 px/s = 2.7 fh/s at 360p) has an identical y_frac and
+        # identical velocities — which is exactly what the unscaled classifier
+        # sees on the 1080p footage.
+        same_pixel_motion_at_the_reference = rally_track(360, 0.4 * 1080 / 360)
+        assert off == classify_contact_action(
+            same_pixel_motion_at_the_reference.positions, i, 360,
+        )
+
+    def test_the_switch_reaches_the_classifier_through_find_contacts(self, caplog):
+        """
+        The gate/classifier promise has to survive the *plumbing*, not just the
+        two helpers in isolation.
+
+        `_scale_for` is the single policy, but nothing forces find_contacts to
+        hand it the flag: `normalize` has a True default at every layer, so
+        dropping `normalize=normalize` from the classify_contact_action call is
+        silent — mypy is happy, and the other four cases in this class still
+        pass, because they call the helpers directly. What comes out is exactly
+        the split the design exists to prevent: `main`'s gate admitting a
+        contact that the normalized classifier then judges in reference space.
+
+        1440p, 0.2 -> 0.45 frame-heights/s, redirected downward high in frame.
+        Unscaled that is a hard drive — `main` calls it a spike at 0.88.
+        Normalized it divides by 4.0 into the SET band and comes back "set" at
+        0.58. Same contact, same trajectory, opposite half of the policy.
+
+        Non-reference height on purpose: at 360p the scale is exactly 1.0 and
+        the two policies agree by construction, so a 360p case would pass
+        against the broken version.
+        """
+        import logging
+        height = 1440
+        positions = physical_track(height, 0.2, 0.45)
+
+        with caplog.at_level(logging.CRITICAL, logger="ml.pipeline.ball"):
+            contacts = find_contacts(
+                TrackedBall(positions=positions), frame_height=height, normalize=False,
+            )
+        assert len(contacts) == 1, "the unscaled gate should admit this contact"
+
+        labelled = (contacts[0]["action"], contacts[0]["action_confidence"])
+        assert labelled == classify_contact_action(positions, 4, height, normalize=False)
+        assert labelled != classify_contact_action(positions, 4, height, normalize=True), (
+            "the two policies must disagree here, or this case cannot see the split"
+        )
+
+    def test_on_is_the_default_everywhere(self):
+        """
+        The switch ships True: omitting it must not quietly disable the change
+        this card exists to make.
+        """
+        track = rally_track(1080, 0.4)
+        assert find_contacts(track, frame_height=1080) == []
+        assert classify_contact_action(track.positions, 8, 1080) == (
+            classify_contact_action(track.positions, 8, 1080, normalize=True)
+        )
+
+
+class TestThePublicEntryPointsForwardTheSwitch:
+    """
+    `detect_contacts` and `detect_rallies` are what the module header offers as
+    the way in. The switch reaching the worker but not them would make a
+    rolled-back production impossible to reproduce through the documented API —
+    the one thing someone opens these for during an incident.
+
+    Nothing calls them today, which is why this was a nit rather than a bug, and
+    also why nothing else in the suite would notice the argument being dropped.
+    """
+
+    @pytest.mark.parametrize("entry", ["detect_contacts", "detect_rallies"])
+    @pytest.mark.parametrize("normalize", [True, False])
+    def test_normalize_reaches_find_contacts(self, monkeypatch, entry, normalize):
+        seen = {}
+
+        def fake_find_contacts(tracker, frame_height=0, **kw):
+            seen["frame_height"] = frame_height
+            seen["normalize"] = kw.get("normalize", "NOT PASSED")
+            return []
+
+        monkeypatch.setattr(ball, "find_contacts", fake_find_contacts)
+        monkeypatch.setattr(ball, "track_ball",
+                            lambda *a, **k: TrackedBall(positions=[]))
+        monkeypatch.setattr(ball, "_read_frame_height", lambda *a, **k: 1080)
+        monkeypatch.setattr(ball, "contacts_to_rallies", lambda *a, **k: [])
+        # detect_rallies reads fps/frames/height from cv2 directly.
+        fake_cv2 = types.SimpleNamespace(
+            CAP_PROP_FPS=5, CAP_PROP_FRAME_COUNT=7, CAP_PROP_FRAME_HEIGHT=4,
+            VideoCapture=lambda *_: types.SimpleNamespace(
+                get=lambda prop: {5: 30.0, 7: 900.0, 4: 1080.0}[prop],
+                release=lambda: None,
+            ),
+        )
+        monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+
+        getattr(ball, entry)("video.mp4", api_key="k", normalize=normalize)
+
+        assert seen["normalize"] is normalize, (
+            f"{entry} did not forward normalize={normalize} to find_contacts "
+            f"(saw {seen['normalize']!r})"
+        )
+        assert seen["frame_height"] == 1080, (
+            f"{entry} stopped passing a real frame height, which also disables "
+            "action classification"
+        )
+
+
+class TestWithTheSoftFlagOn:
+    """
+    CF-376's soft flag, against the invariants this file pins for the full
+    scale. Every case above runs with the flag off (its default) and stays as
+    it was; these say which of those claims survive the flag and which it
+    moves on purpose.
+
+    Forcing the flag on across the cases above fails exactly two of them,
+    test_off_reproduces_mains_contacts_at_1080p and
+    test_on_is_the_default_everywhere: both assert that 0.4 fh/s at 1080p is
+    rejected, and that is the sample the flag exists to admit (432 px/s, over
+    the softened 416 floor). test_an_empty_return_names_the_gates_that_rejected_everything
+    still passes, by a margin worth knowing: 0.3 fh/s at 1440p against a
+    softened floor of 0.333.
+    """
+
+    @staticmethod
+    def soft_scale(height):
+        return _scale_for(height, log=False) ** ball.CONTACT_SOFT_SCALE_EXPONENT
+
+    def test_the_floor_no_longer_holds_at_0667(self):
+        """What the flag does to the band table: the floor in frame-heights/s
+        falls as resolution rises, and the ceiling does not move."""
+        floors = {
+            h: ball.CONTACT_HIT_SPEED_PXPS * self.soft_scale(h) / h
+            for h in (360, 720, 1080, 1440)
+        }
+        at_360 = ball.CONTACT_HIT_SPEED_PXPS / 360
+        assert floors[360] == pytest.approx(at_360)
+        assert floors[1080] == pytest.approx(
+            at_360 * 3.0 ** (ball.CONTACT_SOFT_SCALE_EXPONENT - 1))
+        assert floors[360] > floors[720] > floors[1080] > floors[1440]
+
+    def test_every_band_is_at_least_as_wide_as_the_full_scales(self):
+        for h in range(360, 2161, 60):
+            assert self.soft_scale(h) <= _scale_for(h, log=False)
+
+    def test_the_cap_still_holds_against_the_larger_floor(self, monkeypatch):
+        """The invariant of test_the_cap_is_taken_against_the_larger_of_the_two_scaled_floors,
+        on the softened scale. The clamp is decided on the full one."""
+        monkeypatch.setattr(ball, "CONTACT_RESIDUAL_MIN_PXPS", 480.0)
+        for height in range(360, 2161, 60):
+            full = _scale_for(height, log=False)
+            if full == 1.0:
+                continue
+            soft = full ** ball.CONTACT_SOFT_SCALE_EXPONENT
+            for name in ("CONTACT_HIT_SPEED_PXPS", "CONTACT_RESIDUAL_MIN_PXPS"):
+                assert getattr(ball, name) * soft < SEG_MAX_SPEED_PXPS
+
+    def test_the_clamp_revert_is_shared(self):
+        """Past the clamp both scales are 1.0, so flag on and off agree there."""
+        for h in (int(CLAMP_HEIGHT) + 1, 2160, 2880):
+            assert self.soft_scale(h) == 1.0
+            track = rally_track(h, 0.3)
+            assert find_contacts(track, frame_height=h, soft_scale=True) == (
+                find_contacts(track, frame_height=h))
+
+    def test_soft_admits_what_full_rejects_and_labels_it_on_the_full_scale(self):
+        track = rally_track(1080, 0.4)
+        assert find_contacts(track, frame_height=1080) == []
+        soft = find_contacts(track, frame_height=1080, soft_scale=True)
+        assert len(soft) == 1
+        assert (soft[0]["action"], soft[0]["action_confidence"]) == (
+            classify_contact_action(track.positions, 8, 1080, normalize=True))
+
+    def test_switch_off_overrides_the_flag(self):
+        """The probe sits between the unscaled floor and the softened one, so
+        softening with the switch off would drop it."""
+        track = rally_track(1080, 0.3)
+        assert ball.CONTACT_HIT_SPEED_PXPS < 0.3 * 1080 < (
+            ball.CONTACT_HIT_SPEED_PXPS * self.soft_scale(1080))
+        off = find_contacts(track, frame_height=1080, normalize=False)
+        assert len(off) == 1, "the probe must clear the unscaled gate"
+        assert find_contacts(track, frame_height=1080, soft_scale=True) == []
+        assert find_contacts(track, frame_height=1080, normalize=False, soft_scale=True) == off
+
+    @pytest.mark.parametrize("entry", ["detect_contacts", "detect_rallies"])
+    @pytest.mark.parametrize("soft_scale", [True, False])
+    def test_the_entry_points_forward_soft_scale(self, monkeypatch, entry, soft_scale):
+        seen = {}
+
+        def fake_find_contacts(tracker, frame_height=0, **kw):
+            seen["soft_scale"] = kw.get("soft_scale", "NOT PASSED")
+            return []
+
+        monkeypatch.setattr(ball, "find_contacts", fake_find_contacts)
+        monkeypatch.setattr(ball, "track_ball", lambda *a, **k: TrackedBall(positions=[]))
+        monkeypatch.setattr(ball, "_read_frame_height", lambda *a, **k: 1080)
+        monkeypatch.setattr(ball, "contacts_to_rallies", lambda *a, **k: [])
+        fake_cv2 = types.SimpleNamespace(
+            CAP_PROP_FPS=5, CAP_PROP_FRAME_COUNT=7, CAP_PROP_FRAME_HEIGHT=4,
+            VideoCapture=lambda *_: types.SimpleNamespace(
+                get=lambda prop: {5: 30.0, 7: 900.0, 4: 1080.0}[prop],
+                release=lambda: None,
+            ),
+        )
+        monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+
+        getattr(ball, entry)("video.mp4", api_key="k", soft_scale=soft_scale)
+        assert seen["soft_scale"] is soft_scale
