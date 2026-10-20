@@ -371,13 +371,17 @@ def exponent_sweep(test_id: str) -> None:
 # each. Positional ids replace LOO_FIXTURES; the guards stay. Each fixture is
 # read through `load_track`, so test1 runs off its R2 ball cache.
 #
-# Read the px/s labels as REFERENCE (360p) values that the fixture's scale
-# multiplies (CF-174): on a 1080p fixture with the switch on, "hit 220" applies
-# 660. The header's scale is the one at shipping constants. A row whose override
-# moves `_scale_for`'s clamp — raising CONTACT_RESIDUAL_MIN_PXPS to 360 puts it
-# at 960p, so a 1080p fixture runs unscaled — gets a "scale applied" line under
-# it naming the scale each game actually ran at, which is `score_setting`'s own
-# `scale`, computed inside the override. Its labels are px/s at that scale.
+# Only two px/s labels are REFERENCE (360p) values that the fixture's scale
+# multiplies (CF-174): CONTACT_HIT_SPEED_PXPS ("hit") and
+# CONTACT_RESIDUAL_MIN_PXPS ("resid"). On a 1080p fixture with the switch on,
+# "hit 220" applies 660. SEG_MIN_MEDIAN_SPEED_PXPS ("segmed") is never scaled
+# (ball.py's segmentation block says why), so "segmed 40" applies 40 px/s at
+# every height, whatever the scale says. The header's scale is the one at
+# shipping constants. A row whose override moves `_scale_for`'s clamp — raising
+# CONTACT_RESIDUAL_MIN_PXPS to 360 puts it at 960p, so a 1080p fixture runs
+# unscaled — gets a "scale applied" line under it naming the scale each game
+# actually ran at, which is `score_setting`'s own `scale`, computed inside the
+# override. Its hit/resid labels are px/s at that scale.
 
 LOO_FIXTURES: tuple[str, ...] = ("test1", "test2", "test4")
 LOO_GUARDS: tuple[str, ...] = ("test3", "test5")

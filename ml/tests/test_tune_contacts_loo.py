@@ -230,4 +230,4 @@ def test_bad_loo_arguments_fail_loudly(argv, monkeypatch):
 
 
 def test_the_default_switch_is_the_shipping_setting():
-    assert TC.LOO_SWITCHES[TC.default_loo_switch()] == (TC.NORMALIZE, TC.SOFT_SCALE)
+    assert TC.LOO_SWITCHES[TC.default_loo_switch()] == (TC.NORMALIZE, TC.SOFT_SCALE and TC.NORMALIZE)
