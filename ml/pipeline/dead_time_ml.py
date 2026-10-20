@@ -162,11 +162,18 @@ def compute_features(
     #   ml/eval/diagnose_detection.py    ml/eval/deadtime_variants.py
     #   ml/eval/tune_contacts.py         (as far as the dump it reads carries it)
     #
-    # TestProducersForwardConfidence in ml/tests/test_dead_time_ml.py parses all
-    # five and fails if one stops forwarding the source's value — drops the key
-    # or writes a constant in its place — because the loss is silent here: 0.0
-    # is also these columns' documented empty-window fill, so "not supplied" and
-    # "no samples in this window" are indistinguishable once inside the matrix.
+    # Two test classes in ml/tests/test_dead_time_ml.py pin this, and neither
+    # covers every case alone. TestProducersForwardConfidence parses all five
+    # and fails if one drops the key; for the four that build a dict literal
+    # (tasks, harness, diagnose_detection, deadtime_variants) it also fails if
+    # the value is a constant rather than the source's field. tune_contacts
+    # builds its dict from a key tuple, which has no value to scan, so a
+    # constant there passes that class: only TestLoadersForwardTheSourceValue,
+    # which runs tune_contacts.load and deadtime_variants.load_game on
+    # synthetic input, catches it. Both are needed because the loss is silent
+    # here: 0.0 is also these columns' documented empty-window fill, so "not
+    # supplied" and "no samples in this window" are indistinguishable once
+    # inside the matrix.
     #
     # The warning below therefore no longer describes the normal state. Nothing
     # outside ml/tests calls compute_features yet; its first real caller will be

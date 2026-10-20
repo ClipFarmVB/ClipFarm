@@ -55,7 +55,7 @@ class Game:
     video_file: str
     duration: float
     frame_height: int
-    positions: list[dict]       # {"time", "x", "y"} ball-track samples
+    positions: list[dict]       # {"time", "x", "y", "confidence"} ball-track samples
     contacts: list[dict]        # find_contacts() output
     human_keep: list[Interval]
     raw: dict
