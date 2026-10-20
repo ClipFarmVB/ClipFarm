@@ -1,7 +1,7 @@
 """CF-103 (#116): `tune_contacts --loo`, the multi-fixture leave-one-game-out mode.
 
-Two halves. The CANDIDATES table gets CF-309's guards — the same ones
-`test_tune_contacts_sweep.py` holds SWEEPS and COMBOS to — because a candidate
+Two halves. The CANDIDATES table gets three of CF-309's guards — no default
+pinned, only declared tunables, no two rows the same run — because a candidate
 pinning a knob at its shipping default re-scores the shipping row under another
 name, and the shipping row is already printed first. And the LOO machinery is
 run on synthetic games, no fixture or cache, with each case built to be able
@@ -173,6 +173,45 @@ def test_the_cli_prints_both_builders_and_every_held_out_game(monkeypatch, capsy
     assert "held out g3" not in out, "a guard was optimized against"
     for name in TC.loo_configs():
         assert name in out
+
+
+def test_a_row_that_ran_unscaled_is_not_labelled_with_the_header_scale(monkeypatch, capsys):
+    """#609 R1-M1. The header's scale is computed at shipping constants, outside
+    any override. `CONTACT_RESIDUAL_MIN_PXPS=360` moves `_scale_for`'s clamp to
+    960p, so at 1080p that row runs unscaled under a header reading 3.00. The
+    row must say the scale it actually ran at; rows that kept the header's
+    scale must not be flagged, or the note means nothing."""
+    games = {t: _reversal_game(t, 1080, 0.4) for t in ("g1", "g2")}
+    monkeypatch.setattr(TC, "load_track", lambda tid: games[tid])
+    monkeypatch.setattr(TC, "LOO_GUARDS", ())
+    TC.main(["--loo", "--switch", "on", "--knob", "CONTACT_RESIDUAL_MIN_PXPS", "g1", "g2"])
+    lines = capsys.readouterr().out.splitlines()
+    assert any("g1" in ln and "scale 3.00" in ln for ln in lines), "header moved"
+    reverted = "CONTACT_RESIDUAL_MIN_PXPS=360"
+    rows = [i for i, ln in enumerate(lines)
+            if ln.startswith((TC.SHIPPING_LABEL, "CONTACT_RESIDUAL_MIN_PXPS="))]
+    assert len(rows) == 2 * len(TC.loo_configs("CONTACT_RESIDUAL_MIN_PXPS"))
+    for i in rows:
+        note = lines[i + 1] if i + 1 < len(lines) else ""
+        if lines[i].startswith(reverted + " "):
+            assert note.strip() == "^ scale applied: g1 1.00, g2 1.00", lines[i]
+        else:
+            assert not note.lstrip().startswith("^"), lines[i]
+
+
+def test_a_repeated_tuned_id_is_not_two_games(monkeypatch):
+    """#609 R1-N1: `--loo g1 g1` would hold g1 out against an empty training
+    set, where every config ties at U=0 and shipping prints as the pick."""
+    monkeypatch.setattr(TC, "load_track", lambda tid: _reversal_game(tid, 360, 1.0))
+    with pytest.raises(SystemExit):
+        TC.main(["--loo", "g1", "g1"])
+
+
+def test_soft_without_normalize_defaults_to_off(monkeypatch):
+    """#609 R1-N2: soft is ignored while normalize is off."""
+    monkeypatch.setattr(TC, "NORMALIZE", False)
+    monkeypatch.setattr(TC, "SOFT_SCALE", True)
+    assert TC.default_loo_switch() == "off"
 
 
 def test_scoring_restores_the_ball_constants(monkeypatch):

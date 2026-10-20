@@ -371,8 +371,13 @@ def exponent_sweep(test_id: str) -> None:
 # each. Positional ids replace LOO_FIXTURES; the guards stay. Each fixture is
 # read through `load_track`, so test1 runs off its R2 ball cache.
 #
-# Read the px/s labels as REFERENCE (360p) values, as everywhere in this file
-# (CF-174): on a 1080p fixture with the switch on, "hit 220" applies 660.
+# Read the px/s labels as REFERENCE (360p) values that the fixture's scale
+# multiplies (CF-174): on a 1080p fixture with the switch on, "hit 220" applies
+# 660. The header's scale is the one at shipping constants. A row whose override
+# moves `_scale_for`'s clamp — raising CONTACT_RESIDUAL_MIN_PXPS to 360 puts it
+# at 960p, so a 1080p fixture runs unscaled — gets a "scale applied" line under
+# it naming the scale each game actually ran at, which is `score_setting`'s own
+# `scale`, computed inside the override. Its labels are px/s at that scale.
 
 LOO_FIXTURES: tuple[str, ...] = ("test1", "test2", "test4")
 LOO_GUARDS: tuple[str, ...] = ("test3", "test5")
@@ -466,6 +471,19 @@ def loo_picks(table: dict[str, dict[str, dict[str, Any]]], tuned: list[str],
     return picks
 
 
+def loo_scale_note(row: dict[str, dict[str, Any]], header: dict[str, float]) -> str:
+    """Empty when every game in `row` ran at its header scale; otherwise the
+    scale each game actually ran at, for the line printed under the row.
+
+    The header scale is computed at shipping constants, outside any override, so
+    a row whose override moves the clamp would otherwise sit under a scale it
+    never ran at (#609 R1-M1).
+    """
+    if all(abs(row[t]["scale"] - header[t]) < 5e-3 for t in header):
+        return ""
+    return "scale applied: " + ", ".join(f"{t} {row[t]['scale']:.2f}" for t in header)
+
+
 def _loo_cell(r: dict[str, Any], builder: str) -> str:
     m = r[builder]
     return "%3d/%-3d %5.0fs %s %s" % (r["hit"], r["spans"], m["live"],
@@ -476,8 +494,10 @@ def loo_report(tuned: list[str], guards: list[str], *, switch: str,
                knob: str | None = None) -> None:
     """Print `--loo`: every config on every game, then the held-out picks."""
     normalize, soft = LOO_SWITCHES[switch]
+    # A repeated id would leave its held-out turn an empty training set.
+    tuned = list(dict.fromkeys(tuned))
     if len(tuned) < 2:
-        raise SystemExit("--loo needs >= 2 tuned fixtures")
+        raise SystemExit("--loo needs >= 2 distinct tuned fixtures")
     ids = list(tuned) + [g for g in guards if g not in tuned]
     loaded = {tid: load_track(tid) for tid in ids}
     configs = loo_configs(knob)
@@ -486,12 +506,14 @@ def loo_report(tuned: list[str], guards: list[str], *, switch: str,
     print(f"CF-103 leave-one-game-out, switch {switch} "
           f"(normalize={normalize}, soft_scale={soft}); "
           f"tuned on {tuned}, guarded by {[g for g in ids if g not in tuned]}")
+    header: dict[str, float] = {}
     for tid in ids:
         _, positions, frame_h, fx = loaded[tid]
         role = "tuned" if tid in tuned else "guard"
-        scale = gate_scale(frame_h, normalize=normalize, soft_scale=soft)
-        print(f"  {tid:8s} {role}  frame_height={frame_h:5d}  scale {scale:.2f}  "
+        header[tid] = gate_scale(frame_h, normalize=normalize, soft_scale=soft)
+        print(f"  {tid:8s} {role}  frame_height={frame_h:5d}  scale {header[tid]:.2f}  "
               f"{len(positions):5d} ball positions  {len(fx.keep):3d} labelled spans")
+    print("  (scale at shipping constants; a row that ran at another one says so)")
     width = 28
     for builder in ("rules", "guarded"):
         print(f"\n-- {builder}: rally-hit / live-lost / dead-rm / recall; "
@@ -501,6 +523,9 @@ def loo_report(tuned: list[str], guards: list[str], *, switch: str,
             cells = " | ".join(f"{_loo_cell(table[name][t], builder):{width}s}" for t in ids)
             u = sum(loo_utility(table[name][t][builder]) for t in tuned)
             print("%-38s | %s | U=%7.0f" % (name, cells, u))
+            note = loo_scale_note(table[name], header)
+            if note:
+                print(f"  ^ {note}")
         print(f"\n-- {builder}: leave-one-game-out (cost {LIVE_CUT_COST:g}:1) --")
         for held, pick in loo_picks(table, tuned, builder):
             print(f"  held out {held:8s} trained pick: {pick}")
@@ -509,8 +534,12 @@ def loo_report(tuned: list[str], guards: list[str], *, switch: str,
 
 
 def default_loo_switch() -> str:
-    """The `--switch` naming what NORMALIZE/SOFT_SCALE mirror — the app default."""
-    return next(k for k, v in LOO_SWITCHES.items() if v == (NORMALIZE, SOFT_SCALE))
+    """The `--switch` naming what NORMALIZE/SOFT_SCALE mirror — the app default.
+
+    Soft is ignored while normalize is off, so (False, True) is `off`.
+    """
+    setting = (NORMALIZE, SOFT_SCALE and NORMALIZE)
+    return next(k for k, v in LOO_SWITCHES.items() if v == setting)
 
 
 def _loo_main(args: list[str]) -> None:

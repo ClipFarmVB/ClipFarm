@@ -1,12 +1,16 @@
 """
 Structural facts about find_contacts' speed gates (CF-103, #116).
 
-The #116 threshold sweep concluded that CONTACT_RESIDUAL_RATIO and
-CONTACT_HIT_SPEED_PXPS "aren't inert, they're masked by the residual floor". The
-multi-fixture re-run (`tune_contacts --loo`) showed that was only half right:
-one of them really does move contacts once the floor is down, while
-CONTACT_RESIDUAL_RATIO is a no-op for a reason that lives in the *shape* of its
-condition rather than in any fixture. Those reasons are what this file pins.
+The #116 threshold sweep concluded that CONTACT_HIT_SPEED_PXPS "isn't inert,
+it's masked by the residual floor". This file pins the live half of that: once
+the floor is down, the hit gate alone decides a marginal hit.
+
+CONTACT_RESIDUAL_RATIO is deliberately not pinned as inert. Its threshold is
+max(floor, ratio x speed_before), so it binds whenever speed_before exceeds
+floor / ratio, and lowering it does admit contacts on fast balls: on the
+fixtures with the switch off, and on a fast 360p ball. It looks flat only with
+the switch on at 1080p, where the scaled floor puts the binding speed past
+SEG_MAX_SPEED_PXPS — a fact about the shipping setting, not about the condition.
 
 Relative to whatever CONTACT_HIT_SPEED_PXPS ships, never a value of it: the
 stage-2 proposal to lower it to 220 was superseded by CF-376's soft scale
@@ -16,9 +20,10 @@ stage-2 proposal to lower it to 220 was superseded by CF-376's soft scale
 went further and removed it as dead code — mutation-checked — so the class that
 covered it is gone; test_ball_scaling.py now pins its absence instead.)
 
-Worth having as tests and not only as comments, because both facts silently
-invert the meaning of a sweep: a knob that cannot move is easy to mistake for a
-knob that is correctly set, and that mistake is what shipped the 480 floor.
+Worth having as a test and not only as a comment, because a masked knob
+silently inverts the meaning of a sweep: a knob that cannot move is easy to
+mistake for a knob that is correctly set, and that mistake is what shipped the
+480 floor.
 
 ml/pipeline/ball.py imports OpenCV lazily, so this runs with numpy alone —
 matching what the ml/tests CI job installs.
@@ -78,25 +83,6 @@ class TestHitSpeedGate:
         assert find_contacts(marginal, frame_height=360) == []
         ball.CONTACT_HIT_SPEED_PXPS = CONTACT_HIT_SPEED_PXPS * 0.92
         assert len(find_contacts(marginal, frame_height=360)) == 1
-
-
-class TestResidualRatioIsOneSided:
-    """
-    max(floor, ratio x speed_before) means the ratio only ever *raises* the
-    threshold. Lowering it below the shipping 0.5 is a measured no-op on all four
-    fixtures; raising it removes contacts. The #116 sweep saw the flat half and
-    read it as masking.
-    """
-
-    @pytest.mark.parametrize("ratio", [0.50, 0.35, 0.25, 0.15, 0.0])
-    def test_lowering_the_ratio_changes_nothing(self, restore_constants, ratio):
-        ball.CONTACT_RESIDUAL_RATIO = ratio
-        contacts = find_contacts(struck_track(0.9 * 360), frame_height=360)
-        assert [c["time"] for c in contacts] == [8 * 0.33]
-
-    def test_raising_the_ratio_does_reject_a_contact(self, restore_constants):
-        ball.CONTACT_RESIDUAL_RATIO = 4.0
-        assert find_contacts(struck_track(0.9 * 360), frame_height=360) == []
 
 
 if __name__ == "__main__":
