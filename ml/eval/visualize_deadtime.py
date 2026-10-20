@@ -18,13 +18,21 @@ present in the repo while they were being written.
 Usage:
   python -m ml.eval.visualize_deadtime
   # -> ml/eval/results/deadtime_visualization.html
+
+  # CF-391: score one side of the CF-174 switch, and keep the shipping rows'
+  # windows so the harness can record them (--windows-json reads these back).
+  python -m ml.eval.visualize_deadtime --contact-scale off --dump-windows DIR
+  # -> DIR/{test}_v0.json, DIR/{test}_v5.json
 """
 from __future__ import annotations
 
+import argparse
 import html
+import json
 import logging
 from pathlib import Path
 
+import ml.eval.deadtime_variants as dv
 from ml.eval.deadtime_variants import VARIANTS, Game, load_game
 from ml.eval.metrics import DeadTimeSignals, evaluate_deadtime, subtract, union
 from ml.eval.tune_contacts import COND
@@ -47,8 +55,9 @@ TUNED_ON = ("test2", "test4")   # the rest are held out — see module docstring
 # Both are still rendered and still scored — they are the regression cases that
 # make those failures visible. They are kept out of the *headline* net, which is
 # the number quoted as "builder A beats builder B by N seconds". Counting them
-# there folds a labeling artifact and a tracker failure into that claim: on this
-# ladder they supply 404s of the 937s gap between v0 and v5.
+# there folds a labeling artifact and a tracker failure into that claim: at
+# 13180a3 (CF-391) they supply 582s of the 839s all-five gap between v0 and v5
+# with the CF-174 switch on, 408s of 807s with it off, 470s of 672s with soft.
 EXCLUDED_FROM_TOTALS = ("test1", "test3")
 COMPARABLE = tuple(t for t in TEST_IDS if t not in EXCLUDED_FROM_TOTALS)
 
@@ -124,9 +133,9 @@ def padding_ceiling(game: Game) -> DeadTimeSignals:
     survives regardless of how good the ball model gets.
 
     Two things it does NOT bound, both of which show up in the table:
-      - variants that cut real play — v4 removes 90.6% of test3's dead time
-        against a 23.2% ceiling by cutting 162s of rally, so read this against
-        the live-cut column, never alone;
+      - variants that cut real play — v4 removes 95.7% of test3's dead time
+        against a 23.2% ceiling by cutting 190s of rally (CF-174 switch on;
+        90.8% / 161s off), so read this against the live-cut column, never alone;
       - variants that change the pads. v4/v5 — the latter being the shipping
         default — shrink them to 3/2 with merge 3 (an 8s budget against the
         rules path's 14s), which raises their own ceiling.
@@ -366,6 +375,19 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
             f"<td class='n b'>{comparable_net:+.0f}s</td>"
             f"<td class='n ho'>{total_net:+.0f}s</td></tr>"
         )
+    # The two shares the held-out note quotes, computed rather than written in:
+    # they move with --contact-scale, and a typed-in figure was right for one
+    # position only.
+    def _net(tid: str, key: str) -> float:
+        return net_seconds(all_results[tid][key][1])
+
+    lead = EXCLUDED_FROM_TOTALS[0]
+    held_ship = sum(_net(t, SHIPPING) for t in held_out)
+    held_gain = sum(_net(t, SHIPPING) - _net(t, BASELINE) for t in held_out)
+    excl_gain = sum(_net(t, SHIPPING) - _net(t, BASELINE)
+                    for t in held_out if t in EXCLUDED_FROM_TOTALS)
+    lead_share = f"{_net(lead, SHIPPING) / held_ship:.0%}" if held_ship else "n/a"
+    excl_share = f"{excl_gain / held_gain:.0%}" if held_gain else "n/a"
     heads = "".join(
         f"<th class='n{' ho' if tid not in TUNED_ON else ''}' colspan='2'>{tid}"
         f"{'' if tid in TUNED_ON else ' *'}</th>"
@@ -399,8 +421,8 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
       <b>test5</b> is the strongest of them: it was labeled after the variants were written,
       so it could not have shaped them even indirectly. Held-out and comparable are
       separate axes and the <b>held-out net</b> mixes them: two of its three fixtures are
-      also the two excluded above, and they dominate it — test1 alone supplies 89% of
-      {SHIPPING}'s held-out net, and together the two supply 82% of {SHIPPING}'s gain
+      also the two excluded above, and they dominate it — {lead} alone supplies {lead_share} of
+      {SHIPPING}'s held-out net, and together the two supply {excl_share} of {SHIPPING}'s gain
       over {BASELINE} <i>within the held-out net</i> (both percentages are of that
       column, not of the headline). Unfitted is not the same as comparable; test5 is
       the only fixture that is both.</p>
@@ -489,12 +511,14 @@ TOOLTIP_JS = """
 """
 
 
-def build_html(games: list[Game], all_results: dict) -> str:
+def build_html(games: list[Game], all_results: dict, contact_scale: str) -> str:
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'>",
-        "<title>Dead-time: rule-based variants vs human</title>",
+        f"<title>Dead-time: rule-based variants vs human (contact scale {contact_scale})</title>",
         f"<style>{CSS}</style></head><body>",
         "<h1>Condense variants vs human labels</h1>",
+        f"<p class='meta'>Contact scale: <code>{contact_scale}</code> "
+        "(<code>--contact-scale</code>; the CF-174 switch and CF-376's soft flag).</p>",
         "<p class='sub'>Ground truth is the in-play spans; dead time is the complement. "
         "Both ends of the ladder ship from <code>ml/pipeline/dead_time.py</code>: "
         "<code>v0</code> is <code>condense_mode=\"rules\"</code> and "
@@ -511,8 +535,76 @@ def build_html(games: list[Game], all_results: dict) -> str:
     return "\n".join(parts)
 
 
-def main() -> None:
-    logging.disable(logging.INFO)
+CONTACT_SCALE_POSITIONS = ("off", "on", "soft")
+
+
+def mirror_position() -> str:
+    """Where deadtime_variants' copy of the CF-174 / CF-376 mirror points now."""
+    if not dv.NORMALIZE:
+        return "off"
+    return "soft" if dv.SOFT_SCALE else "on"
+
+
+def apply_contact_scale(position: str) -> None:
+    """
+    Point the ladder at one side of the CF-174 switch for this run.
+
+    Set on deadtime_variants, the module load_game and v0_shipped read them
+    from, and not on tune_contacts: its NORMALIZE / SOFT_SCALE are the settings
+    mirror test_eval_condense_settings.py holds to the app defaults. `soft` is
+    the switch on plus CF-376's flag — the flag is read only while the switch is
+    on, so `off` clears it rather than leaving a value nothing reads.
+    """
+    if position not in CONTACT_SCALE_POSITIONS:
+        raise ValueError(f"contact scale {position!r} not in {CONTACT_SCALE_POSITIONS}")
+    dv.NORMALIZE = position != "off"
+    dv.SOFT_SCALE = position == "soft"
+
+
+def dump_windows(out_dir: Path, test_id: str, key: str, windows: list[Interval],
+                 contact_scale: str) -> Path:
+    """
+    Write one variant's keep-windows as {"keep": [{start, end}]}, the shape
+    harness --windows-json reads, rounded to 3dp as the harness's own
+    --dump-windows rounds them. The position they were scored at rides along as
+    "contact_scale", which the harness checks against its settings snapshot.
+    """
+    path = out_dir / f"{test_id}_{key}.json"
+    keep = [{"start": round(a, 3), "end": round(b, 3)} for a, b in windows]
+    path.write_text(json.dumps({"contact_scale": contact_scale, "keep": keep}, indent=2) + "\n",
+                    encoding="utf-8")
+    return path
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Score the condense ladder against every dead-time fixture.")
+    ap.add_argument("--contact-scale", choices=CONTACT_SCALE_POSITIONS, default=mirror_position(),
+                    help="side of the CF-174 switch to score: off, on, or on with CF-376's "
+                         "soft flag (default: the settings mirror, currently %(default)s)")
+    ap.add_argument("--dump-windows", type=Path, metavar="DIR",
+                    help=f"also write {BASELINE}'s and {SHIPPING}'s keep-windows to "
+                         f"DIR/{{test}}_{{{BASELINE}|{SHIPPING}}}.json, for harness --windows-json")
+    return ap.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    # Restored on the way out (tune_contacts.main restores only the logging
+    # level; the globals are this script's addition): the position is for
+    # this run only, and a leftover one would become the next in-process run's
+    # "settings mirror" default and the position every later load_game reads.
+    saved = (dv.NORMALIZE, dv.SOFT_SCALE)
+    previous = logging.root.manager.disable
+    try:
+        apply_contact_scale(args.contact_scale)
+        logging.disable(logging.INFO)
+        _ladder(args)
+    finally:
+        dv.NORMALIZE, dv.SOFT_SCALE = saved
+        logging.disable(previous)
+
+
+def _ladder(args: argparse.Namespace) -> None:
     games = [load_game(tid) for tid in TEST_IDS]
     all_results: dict[str, dict[str, tuple[list[Interval], DeadTimeSignals]]] = {}
     for g in games:
@@ -523,8 +615,17 @@ def main() -> None:
         }
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_text(build_html(games, all_results), encoding="utf-8")
+    OUT_PATH.write_text(build_html(games, all_results, args.contact_scale), encoding="utf-8")
     print(f"Wrote {OUT_PATH}\n")
+
+    if args.dump_windows:
+        args.dump_windows.mkdir(parents=True, exist_ok=True)
+        for tid in TEST_IDS:
+            for key in (BASELINE, SHIPPING):
+                dump_windows(args.dump_windows, tid, key, all_results[tid][key][0], args.contact_scale)
+        print(f"Dumped {BASELINE}/{SHIPPING} keep-windows -> {args.dump_windows}\n")
+
+    print(f"Contact scale: {args.contact_scale}\n")
 
     print(f"Headline net covers {'+'.join(COMPARABLE)}; "
           f"{'+'.join(EXCLUDED_FROM_TOTALS)} are shown but excluded from it "
