@@ -55,8 +55,9 @@ TUNED_ON = ("test2", "test4")   # the rest are held out — see module docstring
 # Both are still rendered and still scored — they are the regression cases that
 # make those failures visible. They are kept out of the *headline* net, which is
 # the number quoted as "builder A beats builder B by N seconds". Counting them
-# there folds a labeling artifact and a tracker failure into that claim: on this
-# ladder they supply 404s of the 937s gap between v0 and v5.
+# there folds a labeling artifact and a tracker failure into that claim: at
+# 13180a3 (CF-391) they supply 582s of the 839s all-five gap between v0 and v5
+# with the CF-174 switch on, 408s of 807s with it off, 470s of 672s with soft.
 EXCLUDED_FROM_TOTALS = ("test1", "test3")
 COMPARABLE = tuple(t for t in TEST_IDS if t not in EXCLUDED_FROM_TOTALS)
 
@@ -132,9 +133,9 @@ def padding_ceiling(game: Game) -> DeadTimeSignals:
     survives regardless of how good the ball model gets.
 
     Two things it does NOT bound, both of which show up in the table:
-      - variants that cut real play — v4 removes 90.6% of test3's dead time
-        against a 23.2% ceiling by cutting 162s of rally, so read this against
-        the live-cut column, never alone;
+      - variants that cut real play — v4 removes 95.7% of test3's dead time
+        against a 23.2% ceiling by cutting 190s of rally (CF-174 switch on;
+        90.8% / 161s off), so read this against the live-cut column, never alone;
       - variants that change the pads. v4/v5 — the latter being the shipping
         default — shrink them to 3/2 with merge 3 (an 8s budget against the
         rules path's 14s), which raises their own ceiling.
@@ -374,6 +375,19 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
             f"<td class='n b'>{comparable_net:+.0f}s</td>"
             f"<td class='n ho'>{total_net:+.0f}s</td></tr>"
         )
+    # The two shares the held-out note quotes, computed rather than written in:
+    # they move with --contact-scale, and a typed-in figure was right for one
+    # position only.
+    def _net(tid: str, key: str) -> float:
+        return net_seconds(all_results[tid][key][1])
+
+    lead = EXCLUDED_FROM_TOTALS[0]
+    held_ship = sum(_net(t, SHIPPING) for t in held_out)
+    held_gain = sum(_net(t, SHIPPING) - _net(t, BASELINE) for t in held_out)
+    excl_gain = sum(_net(t, SHIPPING) - _net(t, BASELINE)
+                    for t in held_out if t in EXCLUDED_FROM_TOTALS)
+    lead_share = f"{_net(lead, SHIPPING) / held_ship:.0%}" if held_ship else "n/a"
+    excl_share = f"{excl_gain / held_gain:.0%}" if held_gain else "n/a"
     heads = "".join(
         f"<th class='n{' ho' if tid not in TUNED_ON else ''}' colspan='2'>{tid}"
         f"{'' if tid in TUNED_ON else ' *'}</th>"
@@ -407,8 +421,8 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
       <b>test5</b> is the strongest of them: it was labeled after the variants were written,
       so it could not have shaped them even indirectly. Held-out and comparable are
       separate axes and the <b>held-out net</b> mixes them: two of its three fixtures are
-      also the two excluded above, and they dominate it — test1 alone supplies 89% of
-      {SHIPPING}'s held-out net, and together the two supply 82% of {SHIPPING}'s gain
+      also the two excluded above, and they dominate it — {lead} alone supplies {lead_share} of
+      {SHIPPING}'s held-out net, and together the two supply {excl_share} of {SHIPPING}'s gain
       over {BASELINE} <i>within the held-out net</i> (both percentages are of that
       column, not of the headline). Unfitted is not the same as comparable; test5 is
       the only fixture that is both.</p>

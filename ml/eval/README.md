@@ -130,8 +130,12 @@ docker compose --env-file .env.docker run --rm --no-deps -e GIT_COMMIT=$(git rev
 > changed the shipping path *for those fixtures* — all three are ≤1080p, the
 > later commits move only the >1440p clamp, logging, comments and tests, and
 > `ball_contact_scale_enabled` defaults on — but that is an **argument that they
-> would reproduce, not a re-run**: re-recording needs the R2 ball caches. Read a
-> row against its own `git_commit` before comparing it to anything.
+> would reproduce, not a re-run**. The local ball caches
+> (`ml/eval/ball_caches/{source_video_md5}.json`) are enough to re-score the
+> condense builders without R2 — the `CF-391-*` rows were recorded that way, via
+> `visualize_deadtime --dump-windows` and `--windows-json` — though re-running
+> `--offline` itself still needs the video. Read a row against its own
+> `git_commit` before comparing it to anything.
 
 `--clips-json` input shape:
 ```json
@@ -207,92 +211,104 @@ lives in `ml/pipeline/dead_time.py`:
 | `rules` | `active_windows_from_contacts` + `bridge_windows_by_motion` | the CF-46 path; still the fallback when `guarded` raises |
 | `guarded` | `active_windows_guarded` | **the default.** Speed-gated contacts, motion anchors, tight pads, and an abstain when the ball track is too sparse |
 
-The guarded path became the default on the fixture numbers below, not on a
-clean sweep — it buys dead time with live play on three of the four it
-condenses, and that trade is the thing to look at before touching its tunables:
+`guarded` became the default on the fixture numbers measured at `42b582f`, not
+on a clean sweep. Those numbers are the **switch-off** column below: they
+reproduce exactly with the CF-174 switch (`ball_contact_scale_enabled`) off, and
+not with it on. So they describe production's current stop-gap
+(`BALL_CONTACT_SCALE_ENABLED=false`) and not the code default, which is on.
+Which builder looks better on live play depends on which side of that switch you
+read, so read the column that matches the deployment first.
 
-> **Measured at `42b582f`, after the NaN change**, from the five R2 ball caches
-> (`ball-cache/{md5}-volleyball-ball-tracking-0eo7r-3-s{N}.json`, `s10` except
-> test4's `s20`), two consecutive runs byte-identical. The control is what makes
-> them trustworthy: `v0` (`mode=rules`) reproduces its documented figures
-> exactly on four of five fixtures, so a `v5` difference is the builder having
-> changed, not the environment. The fifth is test5, whose `rules` baseline is
-> **9.6%, not the 4.6%** published until now — a doc error independent of this
-> card, corrected below.
+> **Measured at `13180a3` (CF-391)** with
+> `python -m ml.eval.visualize_deadtime --contact-scale {off,on,soft}`, from the
+> five local ball caches `ml/eval/ball_caches/{source_video_md5}.json` (CF-390).
+> Each position was run twice and the two runs' dumped windows and HTML were
+> byte-identical. The control: switch off, `v0` (`mode=rules`) and `v5`
+> (`mode=guarded`) reproduce every figure published at `42b582f` exactly, so the
+> other two columns differ because the switch moved, not the environment.
+> `soft` is the switch on plus CF-376's `ball_contact_soft_scale_enabled`.
 
-| fixture | dead removed | live cut | |
+Each cell is `rules` → `guarded`, dead time removed then live play cut.
+
+| fixture | switch off (production today) | switch on (code default) | switch on + soft |
 |---|---|---|---|
-| test1*† | 56.2% → **58.4%** | 176s → **126s** | strictly better |
-| test2 | 9.5% → **50.8%** | 2s → 12s | +10s of play for 41 points of dead time |
-| test3*† | 76.5% → 0.0% | 118s → **0s** | abstains rather than cut 118s of rally |
-| test4 | 44.2% → **73.3%** | 83s → 100s | +17s of play for 29 points of dead time |
-| test5* | 9.6% → **49.8%** | 0s → 20s | +20s of play for 40 points of dead time |
+| test1*† | 56.2% → **58.4%** · 176s → **126s** | 56.2% → **58.4%** · 176s → **126s** | 56.2% → **58.4%** · 176s → **126s** |
+| test2 | 9.5% → **50.8%** · 2s → 12s | 54.4% → **54.9%** · 31s → **14s** | 40.6% → **53.4%** · 6s → 13s |
+| test3*† | 76.5% → 0.0% · 118s → **0s** | 92.8% → 0.0% · 178s → **0s** | 86.5% → 0.0% · 144s → **0s** |
+| test4 | 44.2% → **73.3%** · 83s → 100s | 62.9% → **81.0%** · 89s → 115s | 49.5% → **74.7%** · 84s → 102s |
+| test5* | 9.6% → **49.8%** · 0s → 20s | 50.4% → **57.2%** · 76s → **51s** | 30.5% → **50.2%** · 14s → 28s |
+| live cut, comparable three | 85s → 132s (**+47s**) | 196s → 180s (**−16s**) | 104s → 143s (**+39s**) |
+| net, comparable three | +134s → **+533s** | +201s → **+458s** | +315s → **+517s** |
+| net, all five | +633s → +1440s | +527s → +1366s | +752s → +1424s |
 
 `* = held out while the variants were tuned.`
 `† = excluded from the headline net` — see `EXCLUDED_FROM_TOTALS` in
 `visualize_deadtime.py`. test1 is a different labeler on 360p-space footage and
 test3 is a game the ball tracker cannot follow, so both measure something other
-than which builder is better.
+than which builder is better. test1 is also 360p, where the CF-174 scale is
+exactly 1.0, which is why its row is the same in all three columns.
 
-Those five cache keys predate CF-231. The key now ends in `-v{N}`
+The `42b582f` run read the R2 caches
+(`ball-cache/{md5}-volleyball-ball-tracking-0eo7r-3-s{N}.json`, `s10` except
+test4's `s20`). Those keys predate CF-231. The key now ends in `-v{N}`
 (`ball.TRACKING_CACHE_VERSION`), so `_track_ball_cached` no longer finds any of
 them: a run that reaches it on those fixtures misses the cache, and re-tracks on
 Modal when it is configured or raises when it is not, until caches exist under
-the new key.
+the new key. The ladder above does not reach it — `visualize_deadtime` reads
+the local caches only.
 
-> **Every figure above is stale on the 1080p fixtures as of CF-174 — both
-> columns, not just `rules`.** Two separate reasons, and the second one is easy
-> to miss:
->
-> - `rules` was measured before `bridge_windows_by_motion` took a `frame_height`,
->   so `v0` bridged 1080p footage at a 360p threshold — 150 px/s where production
->   now runs 450.
-> - **Both** builders consume `game.contacts`, and `deadtime_variants.load_game`
->   builds those with `find_contacts(tracker, frame_height=frame_h)`. CF-174
->   scales `CONTACT_HIT_SPEED_PXPS` and `CONTACT_RESIDUAL_MIN_PXPS` inside that
->   call — 240 → 720 on the 1080p fixtures — so `guarded`'s windows move too,
->   even though it never touches the bridge.
->
-> test1 is the exception on both counts: it is 360p, so the scale is exactly 1.0.
-> Everything else — test2, test3, test4, test5, in either column — is a
-> pre-CF-174 number, and the **+533s vs +134s net below is computed from two
-> stale columns**, so read it as the last measured comparison rather than the
-> current one. Re-running the ladder moves the `rules` figures toward *more* dead
-> time removed and more live play cut, because fewer gaps clear the higher bar;
-> the direction on `guarded` is not predictable from the threshold alone.
-> Regenerating needs the R2 ball caches, so these figures stand as the last
-> measured ones until someone has them.
+The results rows for these runs are in `results/test{n}_deadtime.jsonl`, scored
+from the dumped `v5` windows through `--windows-json`: `CF-391-rebaseline`
+(switch on), `CF-391-rebaseline-scale-off` and `CF-391-rebaseline-soft`, each
+with a `config_snapshot` showing the switch and flag it was run under. `v0` is
+the control and has no row.
 
-Strictly better on one, a paid trade on three, an abstain on one. At the 4:1
-live-cut exchange rate the harness and trainer share, that nets **+533s against
-`rules`' +134s** over the three comparable fixtures. Counting all five gives
-+1440s against +633s, and that larger figure is the misleading one: test1 and
-test3 supply most of the gap, and both are excluded from cross-game comparison.
+**Net, at the 4:1 live-cut exchange rate the harness and trainer share.**
+`guarded` beats `rules` over the three comparable fixtures at every position:
+by 399s with the switch off (+533s against +134s), 257s with it on (+458s
+against +201s), and 202s with the soft flag (+517s against +315s). Counting all
+five widens every gap, and that larger figure is the misleading one: test1 and
+test3 supply most of it, and both are excluded from cross-game comparison.
 
-**Read the live-play column before the net.** On the three comparable fixtures
-`rules` cuts 85s of live play and `guarded` cuts 132s — 47s *more*, on the axis
-this repo protects, on every one of them. The net still favours `guarded` by a
-wide margin, but it does so entirely by buying that play back with dead time at
-4:1.
+**Read the live-play column before the net, and read it per position.** The
+live-play trade that justified the default holds with the switch off and with
+the soft flag, and does not hold with the switch on:
 
-**That trade was taken deliberately, and it is worth knowing it was a call
-rather than a result.** The dead-time win is large and consistent — every fixture
-it condenses improves, three of them by 29-41 points — and 4:1 is the rate this
-repo's own harness and trainer score against. So `guarded` ships as the default
-on the judgement that the win is worth 47s more play across those three games.
-The numbers above do not make that decision by themselves; a different weighting
-of live play would read them the other way and reach for `CONDENSE_MODE=rules`.
+- **Switch off:** `rules` cuts 85s of live play on the comparable three and
+  `guarded` cuts 132s, 47s *more*, on each of the three. `guarded`'s net lead
+  comes entirely from buying that play back with dead time at 4:1.
+- **Switch on:** `rules` cuts 196s and `guarded` 180s, 16s *less*. `guarded`
+  cuts less on test2 (31s → 14s) and test5 (76s → 51s) and removes more dead
+  time on both, so it is better on both axes there. test4 is the only paid
+  trade left (89s → 115s for 18 points of dead time). The cost is on the other
+  side: `rules` now removes nearly as much dead time on test2 (54.4% against
+  54.9%), so `guarded`'s lead there is the live-play saving and little else.
+- **Switch on + soft:** between the two. `guarded` cuts 39s more than `rules`
+  (104s → 143s), more on each of the three, for 13-25 points of dead time.
+
+**At switch off — production today — the trade was taken deliberately, and it
+is worth knowing it was a call rather than a result.** The dead-time win there
+is large and consistent — every fixture it condenses improves, three of them by
+29-41 points — and 4:1 is the rate this repo's own harness and trainer score
+against. So `guarded` ships on the judgement that the win is worth 47s more
+play across those three games. The numbers do not make that decision by
+themselves; a different weighting of live play would read them the other way
+and reach for `CONDENSE_MODE=rules`. With the switch on there is no such trade
+to weigh on the comparable three in total, only on test4.
 
 What should reopen it: a real game where the extra cut lands inside a rally
 anyone notices, or any change that widens the trades further (raising the gate or
 anchor speeds does exactly that). The known local-vs-global anchor limitation in
 `motion_anchor_windows` is the likeliest source of the first.
 
-**On the comparable fixtures `v4` and `v5` score identically (+533s each).**
-Their only difference is the abstain, and the abstain fires only on test3. The
-shipping default's one advantage over the aggressive rung is therefore evidenced
-by a single excluded fixture — worth knowing before treating `min_track_rate` as
-settled.
+**On the comparable fixtures `v4` and `v5` score identically at every
+position** (+533s, +458s and +517s). Their only difference is the abstain, and
+the abstain fires only on test3. The shipping default's one advantage over the
+aggressive rung is therefore evidenced by a single excluded fixture — worth
+knowing before treating `min_track_rate` as settled. With the switch on, `v3`
+(the harm-first rung, which keeps the `rules` pads) nets +459s on the comparable
+three, one second ahead of `v5`; whether that should change the default is
+#611's question, not this table's.
 
 **Abstaining is a real outcome, not a failure.** Below
 `condense_guard_min_track_rate` usable speed samples/s the builder returns one
@@ -322,7 +338,14 @@ timeline.
 
 ```bash
 python -m ml.eval.visualize_deadtime   # -> results/deadtime_visualization.html
+
+# One side of the CF-174 switch (default: the settings mirror), keeping the
+# v0/v5 windows as {test}_{v0|v5}.json for harness --windows-json (CF-391).
+python -m ml.eval.visualize_deadtime --contact-scale off --dump-windows DIR
 ```
+
+`--contact-scale` sets `deadtime_variants.NORMALIZE` / `SOFT_SCALE` for that
+run only; the `tune_contacts` mirror stays pinned to the app defaults.
 
 The HTML is **gitignored** — it is ~1MB of inline SVG that would re-churn its
 whole diff on every run. Regenerate it rather than looking for it in git, and
@@ -335,8 +358,9 @@ Two things to read carefully, because both invert a number's meaning:
   `rules` pads with *zero* live cut. It bounds `v0`–`v3`. It does **not** bound
   `v4`/`v5`, which shrink the pads to 3/2 with merge 3 — an 8s budget against the
   14s one — so they clear it legitimately rather than by cutting play.
-- **A variant can beat the ceiling by cutting real play.** `v4` removes 90.6% of
-  test3's dead time against a 23.2% ceiling by cutting 162s of rally. Read the
+- **A variant can beat the ceiling by cutting real play.** `v4` removes 90.8% of
+  test3's dead time against a 23.2% ceiling by cutting 161s of rally with the
+  CF-174 switch off, and 95.7% by cutting 190s with it on (CF-391). Read the
   dead-removed column against the live-cut column, never alone.
 
 `TUNED_ON` marks which fixtures the variants were designed against (test2 and

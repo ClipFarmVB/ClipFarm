@@ -792,31 +792,29 @@ class Settings(BaseSettings):
     #   "rules"    the two blocks above: contacts + motion bridge (CF-46)
     #   "guarded"  speed-gated contacts + motion anchors + tight pads, abstaining
     #              when the ball track is too sparse to judge (CF-187)
-    # Default is "guarded". Measured at 42b582f from the R2 ball caches, with
-    # mode=rules reproducing its documented figures exactly on four of five
-    # fixtures as a control (the fifth, test5's 9.6% rules baseline, was a
-    # long-standing doc error and is corrected).
+    # Default is "guarded". Re-measured at 13180a3 (CF-391) on all five fixtures
+    # at each position of ball_contact_scale_enabled above; the full table is in
+    # ml/eval/README.md. The figures it was chosen on (42b582f) are the
+    # switch-OFF column, which is production's stop-gap today.
     #
-    # Dead time: it removes more on all four it condenses (+2.2 points on test1,
-    # +41 test2, +29 test4, +40 test5). Live play: it cuts 50s LESS than "rules"
-    # on test1 and more on the other three (2s->12s, 83s->100s, 0s->20s), and on
-    # the fifth it abstains rather than cut 118s of rally.
+    # Net at the harness' 4:1 live-cut exchange rate, over the three fixtures
+    # comparable across games, "guarded" vs "rules": +533s vs +134s with the
+    # switch off, +458s vs +201s with it on, +517s vs +315s with the soft flag.
+    # Counting all five widens every gap, and that is the misleading figure:
+    # test1 and test3 supply most of it and their own fixture notes exclude them
+    # from cross-game comparison.
     #
-    # Net at the harness' 4:1 live-cut exchange rate: +533s vs +134s over the
-    # three fixtures comparable across games. Counting all five gives +1440s vs
-    # +633s, and that larger figure is the misleading one: test1 and test3 supply
-    # most of the gap and their own fixture notes exclude them from cross-game
-    # comparison. Three of the five were held out while it was tuned.
-    #
-    # Worth reading past the net: across those three comparable fixtures "rules"
-    # cuts 85s of live play and "guarded" cuts 132s, so the default cuts 47s more
-    # of the thing this repo protects and buys it back with dead time at 4:1.
-    # That trade was taken deliberately — the dead-time win is large and holds on
-    # every fixture it condenses, and 4:1 is the rate this repo's own harness
-    # scores against — but it was a judgement, not something the numbers decided.
-    # Weigh live play more heavily and CONDENSE_MODE=rules is the reasonable
-    # read. Raising the gate or anchor speeds widens the trade further, which is
-    # the change that should reopen the question — see ml/eval/README.md.
+    # Worth reading past the net, because live play reads differently per side of
+    # the switch. Off: "rules" cuts 85s of live play on those three and "guarded"
+    # 132s, so the default cuts 47s more of the thing this repo protects and buys
+    # it back with dead time at 4:1. On: 196s vs 180s, "guarded" cuts 16s less.
+    # Soft: 104s vs 143s, 39s more. Where the trade exists it was taken
+    # deliberately — the dead-time win holds on every fixture it condenses, and
+    # 4:1 is the rate this repo's own harness scores against — but it was a
+    # judgement, not something the numbers decided. Weigh live play more heavily
+    # and CONDENSE_MODE=rules is the reasonable read at switch off. Raising the
+    # gate or anchor speeds widens the trade further, which is the change that
+    # should reopen the question — see ml/eval/README.md.
     # Literal, not str: an unknown value here (CONDENSE_MODE=Guarded) would
     # otherwise load fine and silently run "rules" forever behind one warning
     # per game. Note what "fail at load" means for an operator: Settings is
