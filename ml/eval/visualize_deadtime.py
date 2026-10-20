@@ -511,12 +511,14 @@ TOOLTIP_JS = """
 """
 
 
-def build_html(games: list[Game], all_results: dict) -> str:
+def build_html(games: list[Game], all_results: dict, contact_scale: str) -> str:
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'>",
-        "<title>Dead-time: rule-based variants vs human</title>",
+        f"<title>Dead-time: rule-based variants vs human (contact scale {contact_scale})</title>",
         f"<style>{CSS}</style></head><body>",
         "<h1>Condense variants vs human labels</h1>",
+        f"<p class='meta'>Contact scale: <code>{contact_scale}</code> "
+        "(<code>--contact-scale</code>; the CF-174 switch and CF-376's soft flag).</p>",
         "<p class='sub'>Ground truth is the in-play spans; dead time is the complement. "
         "Both ends of the ladder ship from <code>ml/pipeline/dead_time.py</code>: "
         "<code>v0</code> is <code>condense_mode=\"rules\"</code> and "
@@ -559,15 +561,18 @@ def apply_contact_scale(position: str) -> None:
     dv.SOFT_SCALE = position == "soft"
 
 
-def dump_windows(out_dir: Path, test_id: str, key: str, windows: list[Interval]) -> Path:
+def dump_windows(out_dir: Path, test_id: str, key: str, windows: list[Interval],
+                 contact_scale: str) -> Path:
     """
     Write one variant's keep-windows as {"keep": [{start, end}]}, the shape
     harness --windows-json reads, rounded to 3dp as the harness's own
-    --dump-windows rounds them.
+    --dump-windows rounds them. The position they were scored at rides along as
+    "contact_scale", which the harness checks against its settings snapshot.
     """
     path = out_dir / f"{test_id}_{key}.json"
     keep = [{"start": round(a, 3), "end": round(b, 3)} for a, b in windows]
-    path.write_text(json.dumps({"keep": keep}, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps({"contact_scale": contact_scale, "keep": keep}, indent=2) + "\n",
+                    encoding="utf-8")
     return path
 
 
@@ -584,7 +589,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    # Restored on the way out, as tune_contacts.main does: the position is for
+    # Restored on the way out (tune_contacts.main restores only the logging
+    # level; the globals are this script's addition): the position is for
     # this run only, and a leftover one would become the next in-process run's
     # "settings mirror" default and the position every later load_game reads.
     saved = (dv.NORMALIZE, dv.SOFT_SCALE)
@@ -609,14 +615,14 @@ def _ladder(args: argparse.Namespace) -> None:
         }
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_text(build_html(games, all_results), encoding="utf-8")
+    OUT_PATH.write_text(build_html(games, all_results, args.contact_scale), encoding="utf-8")
     print(f"Wrote {OUT_PATH}\n")
 
     if args.dump_windows:
         args.dump_windows.mkdir(parents=True, exist_ok=True)
         for tid in TEST_IDS:
             for key in (BASELINE, SHIPPING):
-                dump_windows(args.dump_windows, tid, key, all_results[tid][key][0])
+                dump_windows(args.dump_windows, tid, key, all_results[tid][key][0], args.contact_scale)
         print(f"Dumped {BASELINE}/{SHIPPING} keep-windows -> {args.dump_windows}\n")
 
     print(f"Contact scale: {args.contact_scale}\n")

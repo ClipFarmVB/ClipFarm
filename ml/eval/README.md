@@ -230,7 +230,7 @@ read, so read the column that matches the deployment first.
 > `13180a3` is a commit on the CF-391 branch, which `main` squash-merged, so
 > it does not resolve from `main`; the figures were measured there and the
 > merge left them unchanged, since nothing on the branch after it touched the
-> ladder's code or its inputs.
+> ladder's builders, scoring or inputs.
 
 Each cell is `rules` → `guarded`, dead time removed then live play cut.
 

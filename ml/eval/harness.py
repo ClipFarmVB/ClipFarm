@@ -550,6 +550,32 @@ def load_windows_json(path: Path) -> list[Interval]:
     return [(parse_timestamp(w["start"]), parse_timestamp(w["end"])) for w in items]
 
 
+def refuse_contact_scale_mismatch(path: Path, snapshot: dict) -> None:
+    """
+    Refuse a windows file whose recorded contact-scale position is not the one
+    this row's config_snapshot will carry (CF-391). visualize_deadtime
+    --dump-windows writes the position it scored as "contact_scale", from its
+    --contact-scale flag, which does not read BALL_CONTACT_SCALE_ENABLED; the
+    snapshot does. Without this, switch-on windows record under a switch-off row.
+    A file with no "contact_scale", or a host without the app settings, passes.
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    recorded = data.get("contact_scale") if isinstance(data, dict) else None
+    app = snapshot.get("app.config")
+    if recorded is None or not app or "ball_contact_scale_enabled" not in app:
+        return
+    if not app["ball_contact_scale_enabled"]:
+        expected = "off"
+    else:
+        expected = "soft" if app.get("ball_contact_soft_scale_enabled") else "on"
+    if recorded != expected:
+        raise SystemExit(
+            f"{path}: windows were scored at contact scale {recorded!r}, but this run's "
+            f"settings snapshot is {expected!r} - set BALL_CONTACT_SCALE_ENABLED / "
+            f"BALL_CONTACT_SOFT_SCALE_ENABLED to match, or the row is mislabelled"
+        )
+
+
 def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval], str, str]:
     """
     Derive the condense keep-windows from the fixture's source video, mirroring
@@ -885,6 +911,7 @@ def main() -> None:
     if args.mode == "deadtime":
         if args.windows_json:
             model_keep = load_windows_json(args.windows_json)
+            refuse_contact_scale_mismatch(args.windows_json, config_snapshot())
             run_deadtime(
                 args.test, args.version, model_keep,
                 record=not args.no_record, audit_limit=args.audit_limit,
