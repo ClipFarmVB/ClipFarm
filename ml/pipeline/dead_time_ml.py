@@ -163,14 +163,17 @@ def compute_features(
     #   ml/eval/tune_contacts.py         (as far as the dump it reads carries it)
     #
     # TestProducersForwardConfidence in ml/tests/test_dead_time_ml.py parses all
-    # five and fails if one stops, because the loss is silent here: 0.0 is also
-    # these columns' documented empty-window fill, so "not supplied" and "no
-    # samples in this window" are indistinguishable once inside the matrix.
+    # five and fails if one stops forwarding the source's value — drops the key
+    # or writes a constant in its place — because the loss is silent here: 0.0
+    # is also these columns' documented empty-window fill, so "not supplied" and
+    # "no samples in this window" are indistinguishable once inside the matrix.
     #
-    # The warning below therefore no longer describes the normal state. It now
-    # means a producer regressed, or the track came from a dump written before
-    # CF-420 — tune_contacts reads one of those and omits the key rather than
-    # inventing a value, so this fires as the signal to regenerate it.
+    # The warning below therefore no longer describes the normal state. Nothing
+    # outside ml/tests calls compute_features yet; its first real caller will be
+    # CF-393's trainer. Once that exists, the warning means whatever fed it lost
+    # the field: a regressed producer, or a track dumped before CF-420. Today the
+    # five producers' dicts reach only dead_time.py's builders and motion bridge
+    # (and diagnose_detection's dump file), none of which reads `confidence`.
     if positions and not any("confidence" in p for p in positions):
         logger.warning(
             "no ball-track sample carries 'confidence' — mean_conf_3s and "

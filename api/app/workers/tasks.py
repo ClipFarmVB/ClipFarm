@@ -1178,7 +1178,7 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     if condense:
                         ball_positions = [
                             {"time": p.time, "x": p.x, "y": p.y, "confidence": p.confidence}
-                    for p in tracker.positions
+                            for p in tracker.positions
                         ]
                     logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
                 except Exception as err:

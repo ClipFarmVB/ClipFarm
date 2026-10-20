@@ -151,12 +151,13 @@ def load(test_id: str = DEFAULT_FIXTURE):
                        x=p["x"], y=p["y"], confidence=p.get("confidence", 1.0))
         for p in d["positions"]
     ])
-    # Forward confidence only where the dump actually has it. This dict DOES
-    # feed compute_features, so the 1.0 above must not leak into it: a
-    # fabricated 1.0 is indistinguishable from a measured one and would train
-    # a column on invented data. Omitting the key leaves the documented fill
-    # and lets the missing-confidence warning fire, which is the honest signal
-    # that the dump predates CF-420 and should be regenerated.
+    # Forward confidence only where the dump actually has it. Today this dict
+    # reaches only bridge_windows_by_motion, which reads time/x/y, but it is the
+    # producer shape compute_features takes, and the 1.0 above must not leak
+    # into it: a fabricated 1.0 is indistinguishable from a measured one and
+    # would train a column on invented data if this dict ever fed CF-393's
+    # trainer. Omitting the key leaves compute_features' documented fill and
+    # its missing-confidence warning, both of which say the dump predates CF-420.
     positions = [
         {k: p[k] for k in ("time", "x", "y", "confidence") if k in p}
         for p in d["positions"]

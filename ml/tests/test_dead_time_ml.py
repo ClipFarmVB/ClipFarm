@@ -4,17 +4,21 @@ Feature extraction for the learned dead-time builder (CF-392).
 No conftest.py exists anywhere in this repo, so every file in ml/tests puts the
 project root on sys.path itself. Matching test_dead_time.py.
 """
+import ast
 import inspect
 import json
 import math
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from ml.eval import deadtime_variants as dv  # noqa: E402
+from ml.eval import tune_contacts as tc  # noqa: E402
 from ml.pipeline import dead_time as dt  # noqa: E402
 from ml.pipeline.dead_time_ml import (  # noqa: E402
     CONTACT_GAP_CAP,
@@ -513,7 +517,7 @@ class TestNaNConventions:
 
 
 class TestProducersForwardConfidence:
-    """Every producer of the position-dict shape must carry `confidence`.
+    """Every producer of the position-dict shape must forward `confidence`.
 
     This is a source-level guard on purpose. The columns it protects fail
     SILENTLY: `compute_features` reads `p.get("confidence", 0.0)`, and 0.0 is
@@ -523,6 +527,14 @@ class TestProducersForwardConfidence:
     shape changes, and the trainer (CF-393) would fit those coefficients
     against a dead column. That is the CF-420 defect exactly, and it survived
     until a review round went looking at the producers.
+
+    Present is not enough: a producer that writes `"confidence": 1.0` carries
+    the key and still yields a constant column, on invented data rather than
+    a dead one. So where the dict is a literal, the value must READ the
+    source's field (`p.confidence` / `p["confidence"]`) — not a constant, and
+    not a `.get` with a default that invents one. tune_contacts' key-tuple
+    comprehension has no value expression to inspect, so its value is pinned
+    behaviourally in TestLoadersForwardTheSourceValue below.
 
     Parsed rather than grepped, per CF-279: a regex over these lines loses to
     reformatting, and all five sites are already spelled differently from one
@@ -540,31 +552,47 @@ class TestProducersForwardConfidence:
 
     @staticmethod
     def _key_sets(path):
-        """Every literal listing of position-dict keys in the file.
+        """Every literal listing of position-dict keys in the file, as
+        (keys, the value node for "confidence" or None).
 
         Two spellings, because the producers genuinely use both: a dict literal
         (`{"time": ..., "x": ...}`) in four of them, and a key tuple driving a
         comprehension (`{k: p[k] for k in ("time", ...) if k in p}`) in
-        tune_contacts, which forwards only what its dump holds.
+        tune_contacts, which forwards only what its dump holds. A tuple has no
+        value to return, so it comes back as None.
         """
-        import ast
         tree = ast.parse(path.read_text(encoding="utf-8"))
         out = []
         for node in ast.walk(tree):
+            value = None
             if isinstance(node, ast.Dict):
-                keys = {k.value for k in node.keys
-                        if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+                keys = set()
+                for k, v in zip(node.keys, node.values):
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                        keys.add(k.value)
+                        if k.value == "confidence":
+                            value = v
             elif isinstance(node, ast.Tuple):
                 keys = {e.value for e in node.elts
                         if isinstance(e, ast.Constant) and isinstance(e.value, str)}
             else:
                 continue
             if {"time", "x", "y"} <= keys:
-                out.append(keys)
+                out.append((keys, value))
         return out
 
+    @staticmethod
+    def _reads_the_field(node):
+        """`p.confidence` or `p["confidence"]`: the source's own value."""
+        if isinstance(node, ast.Attribute):
+            return node.attr == "confidence"
+        if isinstance(node, ast.Subscript):
+            return (isinstance(node.slice, ast.Constant)
+                    and node.slice.value == "confidence")
+        return False
+
     @pytest.mark.parametrize("rel", PRODUCERS)
-    def test_the_position_dict_carries_confidence(self, rel):
+    def test_the_position_dict_forwards_confidence(self, rel):
         path = self.ROOT / rel
         assert path.exists(), f"{rel} moved — this guard now protects nothing"
         key_sets = self._key_sets(path)
@@ -573,12 +601,70 @@ class TestProducersForwardConfidence:
             "producing position dicts — in which case drop it from PRODUCERS — "
             "or it now builds them dynamically, which this guard cannot see."
         )
-        for keys in key_sets:
+        for keys, value in key_sets:
             assert "confidence" in keys, (
                 f"{rel} builds a position dict without 'confidence'. Two of the "
                 "thirteen columns would go constant at 0.0, which is also their "
                 "empty-window fill, so nothing would fail loudly. See CF-420."
             )
+            if value is not None:
+                assert self._reads_the_field(value), (
+                    f"{rel} writes 'confidence' as `{ast.unparse(value)}` instead "
+                    "of reading the source's field. A constant or an invented "
+                    "default carries the key and still yields a constant column, "
+                    "on data nobody measured. See CF-420."
+                )
+
+
+class TestLoadersForwardTheSourceValue:
+    """The two eval loaders, run on a synthetic source.
+
+    The source scan above cannot pin these values: tune_contacts spells its
+    dict as a key-tuple comprehension, and both loaders read a file whose
+    contents decide what the dict holds. The values differ per sample, so a
+    constant in either loader cannot match them by accident.
+    """
+
+    CONF = [0.11, 0.37, 0.52, 0.68, 0.93, 0.24]
+
+    def _samples(self, *, with_confidence):
+        out = []
+        for i, c in enumerate(self.CONF):
+            p = {"frame": i * 6, "time": i * 0.2, "x": 100.0 + 40.0 * i, "y": 180.0}
+            if with_confidence:
+                p["confidence"] = c
+            out.append(p)
+        return out
+
+    def _dump(self, monkeypatch, tmp_path, *, with_confidence):
+        positions = [{k: v for k, v in p.items() if k != "frame"}
+                     for p in self._samples(with_confidence=with_confidence)]
+        (tmp_path / "synthetic_ball_track.json").write_text(json.dumps(
+            {"fps": 30.0, "frame_height": H, "positions": positions}))
+        monkeypatch.setattr(tc, "RESULTS_DIR", tmp_path)
+        monkeypatch.setattr(tc, "load_deadtime_fixture", lambda _id: None)
+
+    def test_deadtime_variants_forwards_the_cache_value(self, monkeypatch, tmp_path):
+        (tmp_path / "abc.json").write_text(
+            json.dumps({"positions": self._samples(with_confidence=True)}))
+        monkeypatch.setattr(dv, "BALL_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(dv, "load_deadtime_fixture", lambda _id: SimpleNamespace(
+            raw={"source_video_md5": "abc", "source_frame_height": H},
+            duration=2.0, keep=[]))
+        game = dv.load_game("synthetic")
+        assert [p["confidence"] for p in game.positions] == self.CONF
+
+    def test_tune_contacts_forwards_the_dump_value(self, monkeypatch, tmp_path):
+        self._dump(monkeypatch, tmp_path, with_confidence=True)
+        _, positions, _, _ = tc.load("synthetic")
+        assert [p["confidence"] for p in positions] == self.CONF
+
+    def test_tune_contacts_omits_what_a_pre_cf420_dump_lacks(self, monkeypatch, tmp_path):
+        """No `confidence` in the dump means none in the dict — not the 1.0
+        its BallPosition falls back to, which would read as measured."""
+        self._dump(monkeypatch, tmp_path, with_confidence=False)
+        _, positions, _, _ = tc.load("synthetic")
+        assert positions and not any("confidence" in p for p in positions)
 
 
 class TestConfidenceColumnsReadTheField:
