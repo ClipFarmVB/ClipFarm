@@ -104,6 +104,7 @@ def main() -> None:
         contacts = find_contacts(
             tracker, frame_height=frame_h,
             normalize=settings.ball_contact_scale_enabled,
+            soft_scale=settings.ball_contact_soft_scale_enabled,
         )
 
     pos_times = sorted(p.time for p in tracker.positions)

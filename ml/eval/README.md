@@ -391,8 +391,12 @@ CF-174 scaled the contact **speed** thresholds by `frame_height / 360` and left
 contacts to 2 is therefore not shortened — it is discarded whole, and
 production saw 34 clips become 11 on the same ball cache.
 
-`contact_cliff.py` prints the population that gate is deleting, both switch
-positions side by side, off the same dumped track `tune_contacts` reads:
+`contact_cliff.py` prints the population that gate is deleting, off the same
+dumped track `tune_contacts` reads, in three columns: the CF-174 switch on, the
+switch on with CF-376's soft flag (`find_contacts(soft_scale=True)`, the gate
+scale raised to `ball.CONTACT_SOFT_SCALE_EXPONENT`, or to `--exponent`), and the
+switch off. A fixture with no dump — test1 — is read from its R2 ball cache
+under the fixture's `source_video_md5` instead (`tune_contacts.load_track`):
 
 ```bash
 # The dump first, if you do not have it already: the tool reads a dumped track
@@ -409,11 +413,29 @@ docker compose --env-file .env.docker run --rm --no-deps eval \
 
 docker compose --env-file .env.docker run --rm --no-deps eval \
   python -m ml.eval.contact_cliff test2
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.contact_cliff test2 --exponent 0.75
 ```
 
-Read it on a **1080p** fixture (test2/test4). On test1 the scale is exactly
-1.0, so the two columns are the same run and the report says so — that is the
-gap CF-375 (#475) exists to close, not evidence that there is no cliff.
+Read it on a **1080p** fixture (test2-test5). On test1 the scale is exactly
+1.0, so the three columns are the same run and the report says so — that is the
+gap CF-375 (#475) exists to close, not evidence that there is no cliff. The soft
+column is identical there by construction too (`1.0 ** e == 1.0`).
+
+The soft flag's whole trade, rally counts and both condense builders' dead-time
+numbers per exponent, is `tune_contacts --exponents`:
+
+```bash
+docker compose --env-file .env.docker run --rm --no-deps eval \
+  python -m ml.eval.tune_contacts test2 --exponents
+```
+
+It prints switch off, switch on, and switch on + soft at e ∈ {1, 0.75, 0.5,
+0.25}, each scored on the rules path this tool replays and on the guarded one
+(`deadtime_variants.v5_guarded`, the builder production ships). Soft at e=1 is
+the switch-on row again by construction and is there as the control. The rally
+column is a count on unlabelled footage — it says how many rallies the detector
+emits, not whether they are real.
 
 The ladder separates two gates: `MIN_RALLY_CONTACTS` deletes segments with too
 few contacts, and `MIN_RALLY_DURATION` (2.0s) then deletes what is left if the
@@ -447,18 +469,20 @@ holding the moment a pad or the gate moves. The last line also counts the
 rallies sitting at exactly 3 contacts, which is the population one detection
 away from the count gate.
 
-It measures and decides nothing; the fix is the second deliverable on #476.
+It measures and decides nothing. The candidate fix #476 led to is the soft
+flag (`BALL_CONTACT_SOFT_SCALE_ENABLED`), which ships off.
 
 ## Files
 ```
 metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
 harness.py             fixture load, model-clip acquisition, report, results append
 diagnose_detection.py  why a rally was missed: BLIND / SPARSE / GATED breakdown
-tune_contacts.py       sweep find_contacts tunables over a dumped ball track
+tune_contacts.py       sweep find_contacts tunables over a dumped ball track;
+                       --exponents for the CF-376 soft-scale axis
 track_quality.py       is the tracker following the ball? the lock-on fraction
                        CF-229's acceptance is written in (#233)
 contact_cliff.py       how many rallies MIN_RALLY_CONTACTS deletes under CF-174
-                       scaling, both switch positions (CF-376)
+                       scaling: switch on, on + soft, off (CF-376)
 deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187)
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 fixtures/              one JSON per test case (ground truth)

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ml.eval.harness import load_deadtime_fixture
-from ml.eval.tune_contacts import BRIDGE, COND, NORMALIZE
+from ml.eval.tune_contacts import BRIDGE, COND, NORMALIZE, SOFT_SCALE
 from ml.pipeline.ball import BallPosition, TrackedBall, find_contacts
 from ml.pipeline.dead_time import (
     Interval,
@@ -84,7 +84,8 @@ def load_game(test_id: str) -> Game:
             {"time": p["time"], "x": p["x"], "y": p["y"], "confidence": p["confidence"]}
             for p in positions
         ],
-        contacts=find_contacts(tracker, frame_height=frame_h, normalize=NORMALIZE),
+        contacts=find_contacts(tracker, frame_height=frame_h, normalize=NORMALIZE,
+                               soft_scale=SOFT_SCALE),
         human_keep=sorted(fx.keep),
         raw=fx.raw,
     )

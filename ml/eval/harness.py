@@ -221,6 +221,11 @@ def config_snapshot() -> dict:
             # two rows on opposite sides of this switch describe different
             # detectors while looking directly comparable.
             "ball_contact_scale_enabled": settings.ball_contact_scale_enabled,
+            # CF-376's softening of that scale, for the same reason: while the
+            # CF-174 switch above is on, flag on and off are different contact
+            # sets at heights between 360p and the >1440p clamp. Elsewhere —
+            # switch off, 360p, past the clamp — the two runs are identical.
+            "ball_contact_soft_scale_enabled": settings.ball_contact_soft_scale_enabled,
         }
         fields = getattr(type(settings), "model_fields", None) or getattr(type(settings), "__fields__", {})
         app_snap.update({
@@ -473,6 +478,7 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         contacts = find_contacts(
             tracker, frame_height=frame_h,
             normalize=settings.ball_contact_scale_enabled,
+            soft_scale=settings.ball_contact_soft_scale_enabled,
         )
         detections = contacts_to_rallies(contacts, duration, frame_h)
         if audio is not None:
@@ -615,6 +621,7 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         contacts = find_contacts(
             tracker, frame_height=frame_h,
             normalize=settings.ball_contact_scale_enabled,
+            soft_scale=settings.ball_contact_soft_scale_enabled,
         )
 
         pre_bridge = active_windows_from_contacts(

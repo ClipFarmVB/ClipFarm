@@ -1170,6 +1170,10 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         # consumer — two consumers on different scales would be
                         # worse than either scale. See settings.ball_contact_scale_enabled.
                         normalize=_cfg.ball_contact_scale_enabled,
+                        # CF-376: soften that scale. Contacts only — the bridge
+                        # in _build_condense_windows keeps the full scale. See
+                        # settings.ball_contact_soft_scale_enabled.
+                        soft_scale=_cfg.ball_contact_soft_scale_enabled,
                     )
                     detections = contacts_to_rallies(contacts, video_duration, _frame_h)
                     ball_ok   = True

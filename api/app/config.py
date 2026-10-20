@@ -764,6 +764,25 @@ class Settings(BaseSettings):
     # `main`'s behaviour there; see the asymmetry note in bridge_windows_by_motion
     # for what the two halves do above that height while the switch is on.
     ball_contact_scale_enabled: bool = True
+    # CF-376 (#476): soften the CF-174 contact scale instead of taking it whole.
+    # On, find_contacts gates on scale ** ball.CONTACT_SOFT_SCALE_EXPONENT (0.5)
+    # rather than frame_height / 360 — at 1080p both floors go from 3.0x to
+    # 1.73x (720 -> 416 px/s). It only has an effect while
+    # ball_contact_scale_enabled is on: with that off the scale is already 1.0,
+    # and so it stays. It is also a no-op at 360p and past the >1440p clamp.
+    #
+    # Contacts only. Action labels keep the full scale (the flag changes which
+    # contacts exist, not what one is called), and the condense motion bridge in
+    # dead_time.bridge_windows_by_motion keeps the full scale too. So on, at
+    # 1080p, this runs softened contacts joined by a full-scale bridge — a new
+    # combination, measured in the CF-376 PR on unlabelled fixtures only.
+    #
+    # Ships False. On four unlabelled 1080p tracks it lifts emitted rallies
+    # 32 -> 76 with the switch on (switch off: 96), and under the guarded builder it removes less
+    # dead time while cutting less live play; that trade, and whether the extra
+    # rallies are real, needs CF-375 (#475)'s labelled 1080p fixture before
+    # this or any default moves.
+    ball_contact_soft_scale_enabled: bool = False
     # Which keep-window builder the condense stage uses. A failure *inside* the
     # guarded builder falls back to "rules", so a feature mismatch degrades the
     # condense rather than failing the run. Note the fallback is within-builder
