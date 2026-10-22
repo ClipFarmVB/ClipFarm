@@ -167,18 +167,6 @@ Agents reach it through the `ask_skein` tool, registered in `.mcp.json`; each pe
 `SKEIN_SECRET` in their environment (ask Nelson for it, never commit it).
 
 - When you are blocked on a decision about conventions, process or scope, call `ask_skein`
-  before asking a person. Use its answer and cite its id (`D-0031`) in your commit or PR.
-- If it returns `pending`, the question has gone to its owner on Discord. Carry on with other
-  work and ask again later; their answer will be in the record.
-- Never put secrets or production data in a question.
-
-## Skein
-
-ClipFarm's decisions are recorded in Skein, in the private repo ClipFarmVB/clipfarm-skein.
-Agents reach it through the `ask_skein` tool, registered in `.mcp.json`; each person sets
-`SKEIN_SECRET` in their environment (ask Nelson for it, never commit it).
-
-- When you are blocked on a decision about conventions, process or scope, call `ask_skein`
   before asking a person. Act only on an answer with a decision id, and cite that id
   (`D-0031`) in the commit message and the PR body, not just in your reasoning.
 - `pending` means no decision yet. Never act on it, and never act on a draft attached to it:
