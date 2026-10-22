@@ -5,32 +5,23 @@ The team writes and changes this file; Skein only reads it.
 
 Format: two lists in plain words. Anything not covered by either list goes to a person.
 
-Drafted by `skein init` on 2026-10-22: the first list is the topics the drafted decisions cover,
-the second is the usual always-a-person list plus anything the drafts flagged. Edit freely.
+Drafted by `skein init` on 2026-10-22, narrow on purpose. The first list holds only the kinds of
+convention the drafted decisions cover, and Skein settles them only from confirmed entries.
+The second list always holds what follows, whatever the drafts say. A draft covering a topic
+never puts it on the first list; the team widens that list, init does not.
 
 ## Skein may settle
 
-- Review process.
-- Testing.
-- Version control.
-- Pipeline tuning.
-- Caching.
-- Module boundaries.
-- Dependencies.
-- Pipeline stages.
-- Video encoding.
-- Naming.
-- Test setup.
-- Logging.
+- Formatting: whitespace, line length, import order, what the formatter and linter enforce.
+- File layout: where new files and modules go.
+- API shape: status codes, error shapes, pagination, field naming.
 
 ## Always a person
 
-- Releases, deploys, and anything that changes what users see in production.
-- Deleting or removing anything people depend on: routes, tables, columns, files, data.
-- Security: secrets, access, permissions, authentication.
-- Customer or personal data: what is collected, stored, logged or shared.
-- Money: pricing, billing, payments, spend on services.
-- Migrations (from the drafted decisions).
-- Uploads (from the drafted decisions).
-- Storage (from the drafted decisions).
-- Security access (from the drafted decisions).
+- Tuning, thresholds, and model or detection defaults.
+- Dependencies and licensing.
+- Migrations, deploys, and anything touching shared infrastructure.
+- Security and access.
+- Users' data.
+- Money.
+- Deleting things.

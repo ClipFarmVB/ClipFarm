@@ -1,55 +1,97 @@
 # Skein install notes
 
-A first draft of ClipFarm's three Skein files, made by `skein init` on 2026-10-22 from main at
-4571f2c, for Saturday's install. Nothing here is decided yet: every entry in `decisions.md` is
-`Decided by: draft` with `Confirmed: no`, and every handle in `owners.md` is blank. On Saturday
-the team corrects the draft, confirms what is right, deletes what isn't, and fills in owners.
+A second draft of ClipFarm's three Skein files, made by the fixed `skein init` on 2026-10-22
+from main at 4571f2c, for Saturday's install. Nothing here is decided yet: every entry in
+`decisions.md` is `Decided by: draft` with `Confirmed: no`, and every handle in `owners.md` is
+blank. On Saturday the team corrects the draft, confirms what is right, deletes what isn't, and
+fills in owners.
+
+The record lives on the `skein` branch, never on main: the Skein server commits and pushes
+`skein/decisions.md` there after every answer, so branch protection and review never stand
+between an answer and the record. This PR targets `skein`; merging it lands the draft there.
+
+## What changed since the first draft
+
+The first draft's review found five problems. This run:
+
+1. Reads only what git tracks (`git ls-files`), so the two `.pytest_cache` READMEs the first
+   run cited cannot be read, and never reads any file whose name looks like a secret
+   (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `credentials*`, `secrets*`), tracked or not.
+   ClipFarm's tracked `.env.docker.example` was not read.
+2. Starts the boundary narrow. "Skein may settle" holds only the kinds of convention the draft
+   covers (formatting, file layout, API shape here; no naming rule made the cut). "Always a
+   person" holds tuning and thresholds, dependencies and licensing, migrations and deploys,
+   security, users' data, money and deleting things, whatever the drafts say. The first
+   draft had "Pipeline tuning", "Dependencies" and "Migrations" on the safe list; they are
+   gone. The team widens the list; init does not.
+3. Selects by importance, not read order. Each candidate is scored: firm wording (must,
+   never, always, don't), a rule reviewers repeated across PRs, a rule that gates work; a
+   PR-template checklist item ranks last; ties go to the newer source. 151 candidates, top 30
+   kept. The score and reason for each kept entry is in the run summary below, and each
+   entry's `Why` ends with its sources and the date each last changed.
+4. Says what may be edited. Drafts may be edited or deleted freely; a confirmed entry is never
+   edited or deleted, only overridden by a newer entry that cites it, and Skein stops reading
+   the overridden one.
+5. Ignores Ollienel777 for owner hints (`--ignore-reviewer Ollienel777`): that account gave 14
+   of the 27 approvals on the PRs read, most of them through the agent loop, so it would have
+   been the hint on every topic. The remaining hints name OwenChen07 and chessdudeo7.
+
+Also new: a PR that touched only `.claude/` is dropped entirely, review text included, so the
+agent loop's own review rules stay out. A few still slipped in through PRs that touched both
+loop files and team code (D-0022 and D-0023 look like loop rules); delete them on Saturday.
 
 ## What init read, and what it did not
 
 ```
-excluded, never read: .claude, node_modules, .git, docs/overnight
-read: 11 docs, 4 config files, 0 CODEOWNERS rules, 180 merged PRs (101 reviews, 10 review comments)
-decisions.md: 30 draft entries (24 from docs, 6 from PR reviews, 0 from config), 5 dropped for no citation
-boundary.md: 12 may-settle topics, 9 always-a-person lines
-owners.md: 16 topics, 3 with a GitHub hint, every handle blank
+excluded, never read: .claude, node_modules, .git, docs/overnight; untracked files and secret-shaped names never read
+read: 9 docs, 4 config files, 0 CODEOWNERS rules, 180 merged PRs (98 reviews, 10 review comments)
+decisions.md: 30 draft entries (3 from docs, 27 from PR reviews, 0 from config), 121 more found and left out, 0 dropped for no citation
+boundary.md: 3 may-settle lines, 7 always-a-person lines
+owners.md: 19 topics, 3 with a GitHub hint, every handle blank
+approvals by account: Ollienel777 14, OwenChen07 7, Kunyuan1 5, chessdudeo7 1 (27 in all; ignored for hints: Ollienel777)
 ```
 
-- `.claude/` was never read. Neither was `docs/overnight/`: it is the agent loop's operating
-  manual, not the team's conventions, and in an earlier run it filled the open questions
-  below with the loop's own rules.
-- All 180 merged PRs were read. Review text is thin (101 reviews, 10 inline comments), so most
-  entries still come from `CLAUDE.md`, `ARCHITECTURE.md`, the PR template and the README; six
-  come from PR reviews and cite the PR.
-- There is no CODEOWNERS file. The three GitHub hints in `owners.md` name who approved the
-  PRs those entries cite; treat them as suggestions.
-- Init found 161 citable decisions and kept the first 30. Some overlap (pre-commit checks,
-  migrations); merge them on the call. ClipFarm has far more than ten citable decisions; the
-  work is pruning, not finding.
+- Scoring favours review-enforced rules, so 27 of 30 entries now cite a PR; the first draft
+  had 24 from docs. The CLAUDE.md and ARCHITECTURE.md conventions are mostly in the 121 left
+  out; if the team wants them, the call is where to add them, confirmed on the spot.
+- There is no CODEOWNERS file, and review text is thin (98 reviews, 10 inline comments).
+- Kept, best first (score: reason):
+  - Run ml tests in CI (7: firm wording, repeated across 2 PRs, gates work, newest 2026-10-20)
+  - Migration chain must have one head (7: firm wording, repeated across 2 PRs, gates work, 2026-08-28)
+  - Run pre-commit checks before PR (7: firm wording, repeated across 2 PRs, gates work, 2026-07-10)
+  - Rebuild stale PRs without squashing (6: firm wording, repeated across 3 PRs, 2026-08-30)
+  - Acquire lock after abandoned check (5), Probe Python by running it (5), Keep shallow
+    healthz for Render (5), Re-read visibility section after #481 (5), Name unmeasured risks
+    in code (5), Scrub passwords in every rendering (5), Gate debug hooks behind
+    settings.debug (5), Rebase onto main before merging (5), Keep CPU fallback for Modal (5)
+  - Compare pre-gate and post-gate (4), Do not promise erasure yet (4), Do not add root
+    pyproject.toml (4)
+  - Fourteen more at 3: each firm or review-enforced, one source, dated 2026-09-29 to 2026-10-20.
+- Left out, highest first: Never expose generated usernames publicly (3), Keep group class on
+  BrandMark parents (3), Re-derive clip visibility on reads (3), Never return known-stale
+  cached data (3), Velocity thresholds in px/second (3), Keep public player names on clips (3),
+  Download authorization reuses share check (3), Keep one visibility ranking ladder (3), Never
+  force-push PR branches (3), No nit commits after settling (3), and 111 more.
 
 ## Patterns init saw but could not cite
 
-Init found 83; it prints the first 15. Each is a question for the team, not a rule.
+Init found 66; the first 15. Each is a question for the team, not a rule.
 
-- Whether migrations need a separate reviewer or approval step beyond flagging them in the PR.
-- Which pre-commit checks apply to which files when only some tools are relevant.
-- Whether the deterministic `condensed/{game_id}.mp4` R2 key may ever change, since retries
-  rely on overwriting it.
-- Whether the claude-review check should become a required status check, since skipped runs
-  report success.
-- Whether detection or pipeline changes need an explicit reviewer sign-off.
-- Whether agents may run `modal deploy` themselves; the README shows the commands but not who
-  runs them.
-- Whether the CF-224 OOM repro overlay should be run by agents or only by people on
-  production-sized machines.
-- Whether the per-file lint ignores apply to tests and scripts outside `app/` and `alembic/`.
-- Whether the 120-character limit applies to non-Python files in the api project.
-- Whether the Ultralytics pretrained weights' AGPL terms bind a hosted deployment.
-- Whether pushing an image to Modal's infrastructure counts as conveying a GPL ffmpeg.
-- Whether the volleyball ball-tracking weights permit commercial use (Roboflow license lookup).
-- Whether players and teams rows should get a deletion path; they hold names tied to footage.
-- Whether a generated handle should be deleted or kept when a user leaves.
-- Whether the email column should update when the Supabase email changes.
+- Whether pre-commit checks (ruff, mypy, eslint, tsc) must pass before opening a PR is implied by the checklist but not stated outright.
+- Whether pipeline changes must be validated against a cached trajectory or test video is offered as a checkbox option, not a clear requirement.
+- Whether the inference package pin to 1.3.3 must be kept if ML dependencies are re-added.
+- Whether the 1 speed sample per second abstain threshold is a fixed rule or a tunable.
+- Whether an agent may run alembic upgrade head against a local database without asking.
+- Whether sprint assignment on project cards may ever be automated.
+- Whether production CORS origins may ever include a wildcard entry is not stated outright beyond the config check.
+- Whether the python3 versus python interpreter rule applies to agent-run commands is not stated clearly.
+- Whether the linter and formatter must be run before committing is not stated in this material.
+- Whether the Roboflow ball-tracking weights volleyball-ball-tracking-0eo7r/3 are licensed for commercial use; the audit left this open.
+- Whether shipping a Modal image containing a GPL ffmpeg counts as conveying, which the audit flagged but did not resolve.
+- Whether a new copyleft dependency needs review or sign-off before it is added.
+- Whether players and teams should gain a deletion path, and how, is not stated as a rule.
+- Whether the Roboflow inference package reports usage to Roboflow is not verified in the material.
+- Whether ruff itself must be pinned to a specific version in CI.
 
 ## The three questions to settle first
 
@@ -58,7 +100,8 @@ Init found 83; it prints the first 15. Each is a question for the team, not a ru
    pipeline changes and deploys need a specific person.
 2. **What may an agent run against shared infrastructure?** Supabase migrations, `modal
    deploy`, the OOM repro and pushing images are described in the docs but never ruled on.
-   Decide which are always a person, and put them in `boundary.md`.
+   They sit under "Always a person" now; decide whether any of them may ever be settled from
+   the record.
 3. **Who owns licensing and user-data calls?** GPL ffmpeg in images, the Ultralytics and
    Roboflow weights, and what happens to a deleted user's data come up repeatedly with no
    owner. Decide whether they gate a deploy and who answers.

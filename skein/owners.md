@@ -4,29 +4,32 @@ Who decides what, when a question has to go to a person. The team writes this fi
 Skein only reads it.
 
 Format: one line per topic, `- topic: @handle`, and one `- default: @handle` for everything else.
-Handles are Slack usernames.
+Handles are usernames in the team's chat (Slack or Discord), not display names.
 
 Drafted by `skein init` on 2026-10-22: one line per topic in the drafted decisions, handles blank.
 Where the repo showed who approves or owns the cited files, that is noted under the line as a
-GitHub name, which is a hint, not a Slack handle. Fill in every handle and the default.
+GitHub name, which is a hint, not a chat handle. Fill in every handle and the default.
 
 - review process: @
-- testing: @
-  (Ollienel777 approved most of the cited PRs on GitHub)
-- version control: @
+  (OwenChen07 approved most of the cited PRs on GitHub)
 - migrations: @
-- pipeline tuning: @
-- caching: @
-- module boundaries: @
-- dependencies: @
-- uploads: @
-- storage: @
-- pipeline stages: @
-- video encoding: @
-- naming: @
-  (Ollienel777 approved most of the cited PRs on GitHub)
-- test setup: @
+- worker concurrency: @
+- developer tooling: @
+- deploys: @
+  (chessdudeo7 approved most of the cited PRs on GitHub)
+- error reporting: @
+- debug hooks: @
+- pipeline fallback: @
+  (OwenChen07 approved most of the cited PRs on GitHub)
+- eval harness: @
+- users data: @
+- packaging config: @
 - logging: @
-  (Ollienel777 approved most of the cited PRs on GitHub)
-- security access: @
+- layering: @
+- user provisioning: @
+- dependencies: @
+- api errors: @
+- clip downloads: @
+- configuration secrets: @
+- pre commit checks: @
 - default: @
