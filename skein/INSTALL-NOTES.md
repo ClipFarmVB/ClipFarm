@@ -9,52 +9,56 @@ the team corrects the draft, confirms what is right, deletes what isn't, and fil
 
 ```
 excluded, never read: .claude, node_modules, .git, docs/overnight
-read: 9 docs, 4 config files, 0 CODEOWNERS rules, 0 merged PRs (0 reviews, 0 review comments)
-note: gh pr list failed
-decisions.md: 30 draft entries (30 from docs, 0 from PR reviews, 0 from config), 0 dropped for no citation
-boundary.md: 15 may-settle topics, 7 always-a-person lines
-owners.md: 17 topics, 0 with a GitHub hint, every handle blank
+read: 11 docs, 4 config files, 0 CODEOWNERS rules, 180 merged PRs (101 reviews, 10 review comments)
+decisions.md: 30 draft entries (24 from docs, 6 from PR reviews, 0 from config), 5 dropped for no citation
+boundary.md: 12 may-settle topics, 9 always-a-person lines
+owners.md: 16 topics, 3 with a GitHub hint, every handle blank
 ```
 
 - `.claude/` was never read. Neither was `docs/overnight/`: it is the agent loop's operating
   manual, not the team's conventions, and in an earlier run it filled the open questions
   below with the loop's own rules.
-- Merged PR reviews are missing from this draft. Reading them through `gh` failed in the last two
-  runs (an earlier run read all 180 merged PRs: 101 reviews, 10 review comments, and kept one
-  entry from them). Rerun with `--exclude docs/overnight --force` before Saturday to add them.
-- There is no CODEOWNERS file, so `owners.md` has no hints at all.
-- Init found 75 citable decisions in the docs and kept the first 30. Most cite `CLAUDE.md` and
-  `ARCHITECTURE.md`. Some overlap (migrations, the tracking cache version); merge them on the
-  call. So ClipFarm has well over ten citable decisions; the work is pruning, not finding.
+- All 180 merged PRs were read. Review text is thin (101 reviews, 10 inline comments), so most
+  entries still come from `CLAUDE.md`, `ARCHITECTURE.md`, the PR template and the README; six
+  come from PR reviews and cite the PR.
+- There is no CODEOWNERS file. The three GitHub hints in `owners.md` name who approved the
+  PRs those entries cite; treat them as suggestions.
+- Init found 161 citable decisions and kept the first 30. Some overlap (pre-commit checks,
+  migrations); merge them on the call. ClipFarm has far more than ten citable decisions; the
+  work is pruning, not finding.
 
 ## Patterns init saw but could not cite
 
-Init found 30; it prints the first 15. Each is a question for the team, not a rule.
+Init found 83; it prints the first 15. Each is a question for the team, not a rule.
 
-- Whether migration or env var changes need a named reviewer or separate sign-off.
-- Who approves production migrations and deploys.
-- Whether the 100 MiB multipart threshold is a fixed rule or a tunable.
-- Whether polling may be replaced by WebSockets or SSE later.
-- Whether an agent may run `alembic upgrade head` against Supabase when a person has not asked.
-- Whether `highlight_score_threshold` changes need an eval run before merging.
-- Whether a new api test may skip when its optional import is missing.
-- Whether the E402 exception should extend to other worker modules.
-- Whether to push Docker images to a registry, given a GPL ffmpeg in a distributed image.
-- Whether to check the Roboflow ball-tracking weights' license before relying on that model.
-- Whether the Modal pose image, which bundles GPL ffmpeg, needs a license review before deploys.
-- Whether a deleted user's `upload_events` should cascade or be kept.
-- Whether clips inside other owners' collections survive a user's deletion.
-- Whether the inference package reports usage to Roboflow (not verified).
-- Whether the live R2 bucket has the 7-day multipart abort rule (not verified).
+- Whether migrations need a separate reviewer or approval step beyond flagging them in the PR.
+- Which pre-commit checks apply to which files when only some tools are relevant.
+- Whether the deterministic `condensed/{game_id}.mp4` R2 key may ever change, since retries
+  rely on overwriting it.
+- Whether the claude-review check should become a required status check, since skipped runs
+  report success.
+- Whether detection or pipeline changes need an explicit reviewer sign-off.
+- Whether agents may run `modal deploy` themselves; the README shows the commands but not who
+  runs them.
+- Whether the CF-224 OOM repro overlay should be run by agents or only by people on
+  production-sized machines.
+- Whether the per-file lint ignores apply to tests and scripts outside `app/` and `alembic/`.
+- Whether the 120-character limit applies to non-Python files in the api project.
+- Whether the Ultralytics pretrained weights' AGPL terms bind a hosted deployment.
+- Whether pushing an image to Modal's infrastructure counts as conveying a GPL ffmpeg.
+- Whether the volleyball ball-tracking weights permit commercial use (Roboflow license lookup).
+- Whether players and teams rows should get a deletion path; they hold names tied to footage.
+- Whether a generated handle should be deleted or kept when a user leaves.
+- Whether the email column should update when the Supabase email changes.
 
 ## The three questions to settle first
 
-1. **Who approves what?** No reviewer rule is written down, and there is no CODEOWNERS file.
-   Name an owner for each `owners.md` topic and a default, and say whether migrations, env vars
-   and deploys need a specific person.
-2. **What may an agent run against shared infrastructure?** Running migrations on Supabase,
-   `modal deploy`, and pushing images are described in the docs but never ruled on. Decide
-   which are always a person, and put them in `boundary.md`.
-3. **Who owns licensing calls?** GPL ffmpeg in the Modal image, the Roboflow weights and the
-   ultralytics terms come up repeatedly with no owner. Decide whether they block a deploy and
-   who answers.
+1. **Who approves what?** No reviewer rule is written down and there is no CODEOWNERS file.
+   Name an owner for each `owners.md` topic and a default, and say whether migrations,
+   pipeline changes and deploys need a specific person.
+2. **What may an agent run against shared infrastructure?** Supabase migrations, `modal
+   deploy`, the OOM repro and pushing images are described in the docs but never ruled on.
+   Decide which are always a person, and put them in `boundary.md`.
+3. **Who owns licensing and user-data calls?** GPL ffmpeg in images, the Ultralytics and
+   Roboflow weights, and what happens to a deleted user's data come up repeatedly with no
+   owner. Decide whether they gate a deploy and who answers.

@@ -11,20 +11,22 @@ Where the repo showed who approves or owns the cited files, that is noted under 
 GitHub name, which is a hint, not a Slack handle. Fill in every handle and the default.
 
 - review process: @
-- testing checks: @
-- migrations: @
-- file uploads: @
-- ml tuning: @
-- caching: @
-- code structure: @
-- storage keys: @
-- error handling: @
-- storage access: @
-- database access: @
-- storage reliability: @
-- dependencies: @
-- naming: @
-- logging: @
-- api errors: @
 - testing: @
+  (Ollienel777 approved most of the cited PRs on GitHub)
+- version control: @
+- migrations: @
+- pipeline tuning: @
+- caching: @
+- module boundaries: @
+- dependencies: @
+- uploads: @
+- storage: @
+- pipeline stages: @
+- video encoding: @
+- naming: @
+  (Ollienel777 approved most of the cited PRs on GitHub)
+- test setup: @
+- logging: @
+  (Ollienel777 approved most of the cited PRs on GitHub)
+- security access: @
 - default: @

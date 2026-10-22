@@ -11,20 +11,17 @@ the second is the usual always-a-person list plus anything the drafts flagged. E
 ## Skein may settle
 
 - Review process.
-- Testing checks.
-- File uploads.
-- Ml tuning.
-- Caching.
-- Code structure.
-- Storage keys.
-- Error handling.
-- Database access.
-- Storage reliability.
-- Dependencies.
-- Naming.
-- Logging.
-- Api errors.
 - Testing.
+- Version control.
+- Pipeline tuning.
+- Caching.
+- Module boundaries.
+- Dependencies.
+- Pipeline stages.
+- Video encoding.
+- Naming.
+- Test setup.
+- Logging.
 
 ## Always a person
 
@@ -34,4 +31,6 @@ the second is the usual always-a-person list plus anything the drafts flagged. E
 - Customer or personal data: what is collected, stored, logged or shared.
 - Money: pricing, billing, payments, spend on services.
 - Migrations (from the drafted decisions).
-- Storage access (from the drafted decisions).
+- Uploads (from the drafted decisions).
+- Storage (from the drafted decisions).
+- Security access (from the drafted decisions).
