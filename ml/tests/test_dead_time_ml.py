@@ -295,12 +295,62 @@ class TestWeightsContract:
 
 
 
-    def test_there_is_no_committed_weights_file_yet(self):
-        """Pins the docstring's claim. When CF-393 commits one, this fails and
-        the docstring gets rewritten with it."""
+class TestCommittedWeights:
+    """The file CF-393 committed, read as the contract CF-394 will consume.
+
+    Replaces the old `test_there_is_no_committed_weights_file_yet`, which pinned
+    the docstring's "no weights file yet" — both changed together.
+    """
+
+    REQUIRED = ("features", "feature_version", "scaling", "context", "coef",
+                "intercept", "threshold", "trained_on", "git_commit", "folds",
+                "context_variants", "validated")
+    FIXTURES = Path(__file__).resolve().parents[1] / "eval" / "fixtures"
+
+    @pytest.fixture
+    def weights(self):
         from ml.pipeline.dead_time_ml import WEIGHTS_PATH
 
-        assert not WEIGHTS_PATH.exists()
+        return load_weights(WEIGHTS_PATH)
+
+    def test_it_loads_unvalidated_at_the_current_version(self, weights):
+        """Committing is not enabling: CF-395 is the only thing that may flip it."""
+        assert weights["validated"] is False
+        assert weights["feature_version"] == FEATURE_VERSION
+
+    def test_every_required_key_is_present(self, weights):
+        missing = [k for k in self.REQUIRED if k not in weights]
+        assert not missing
+        assert "trained_at" not in weights, "a timestamp breaks byte-identical reruns"
+
+    def test_the_coefficients_fit_the_recorded_context(self, weights):
+        lags = weights["context"]["lags"]
+        assert len(weights["coef"]) == len(FEATURE_NAMES) * (1 + len(lags))
+        assert weights["context"]["edge"] == "replicate"
+        assert weights["scaling"]["rule"] == "per_video_robust"
+
+    def test_the_folds_cover_all_five_fixtures(self, weights):
+        ids = ["test1", "test2", "test3", "test4", "test5"]
+        assert [f["held_out"] for f in weights["folds"]] == ids
+        for variant in weights["context_variants"].values():
+            assert [f["held_out"] for f in variant["folds"]] == ids
+
+    def test_the_shipped_threshold_is_the_median_fold_threshold(self, weights):
+        assert weights["threshold"] == float(np.median(
+            [f["threshold"] for f in weights["folds"]]))
+
+    def test_the_trained_on_md5s_are_the_fixtures(self, weights):
+        for entry in weights["trained_on"]:
+            fx = json.loads(
+                (self.FIXTURES / f"{entry['test_id']}_deadtime.json").read_text())
+            assert entry["source_video_md5"] == fx["source_video_md5"]
+
+    def test_it_runs_through_predict_in_play(self, weights):
+        feats = compute_features(track([t * 0.5 for t in range(40)], step=10.0),
+                                 [{"time": 5.0}], 30.0, H)
+        probs = predict_in_play(feats, weights)
+        assert probs.shape == (30,)
+        assert np.all((probs >= 0.0) & (probs <= 1.0))
 
 
 class TestRobustScale:
