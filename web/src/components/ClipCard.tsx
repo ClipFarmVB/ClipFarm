@@ -159,17 +159,12 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
       isDiscarded && "opacity-35"
     )}>
       {/* Thumbnail */}
-      <div
-        className="relative aspect-video cursor-pointer bg-surface-high overflow-hidden"
-        onClick={() => {
-          if (onToggleSelect) onToggleSelect(clip.id);
-          else onPlay(clip);
-        }}
-      >
+      <div className="relative aspect-video bg-surface-high overflow-hidden">
         {/* Selection checkbox */}
         {onToggleSelect && (
           <button
-            onClick={(e) => { e.stopPropagation(); onToggleSelect(clip.id); }}
+            type="button"
+            onClick={() => onToggleSelect(clip.id)}
             className={cn(
               "absolute top-2 right-2 z-10 flex h-7 w-7 items-center justify-center rounded border transition-all duration-150",
               selected
@@ -197,8 +192,52 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
           </div>
         )}
 
-        {/* Play overlay */}
-        <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/35 transition-colors duration-200">
+        {/* The open target covers the frame (CF-273). A sibling button rather
+            than `role="button"` + tabIndex on this div: the selection checkbox
+            above is a real <button>, and a role="button" wrapping it is the
+            same nested-interactive defect in ARIA form — #307 tried that and
+            reverted it. Being a real button is also what lets the clip modal's
+            focus trap hand focus back here on close.
+
+            It sits at z-0, below the checkbox (z-10) and below the collection
+            page's Remove button (z-10, outside this card), and everything
+            painted over it is `pointer-events-none` so clicks land here.
+
+            In select mode it toggles, as the old div did, but only as a mouse
+            convenience: out of the tab order and hidden from assistive tech,
+            because the checkbox is the keyboard path. Its mousedown is
+            cancelled there too, so a click cannot leave focus on a hidden,
+            unnamed control. Outside select mode it is one tab stop per card,
+            deliberately.
+
+            Opening focuses the button before playing. Chrome and Firefox
+            already focus a clicked button, but WebKit (Safari, iOS) does not,
+            and without this a mouse or tap open there leaves the modal's trap
+            holding <body>, with nothing to hand focus back to on close. A
+            programmatic focus after a pointer event does not match
+            :focus-visible, so mouse users get no ring from it. */}
+        <button
+          type="button"
+          onMouseDown={onToggleSelect ? (e) => e.preventDefault() : undefined}
+          onClick={(e) => {
+            if (onToggleSelect) {
+              onToggleSelect(clip.id);
+              return;
+            }
+            e.currentTarget.focus();
+            onPlay(clip);
+          }}
+          aria-label={onToggleSelect ? undefined : `Play ${localAction} clip`}
+          tabIndex={onToggleSelect ? -1 : undefined}
+          aria-hidden={onToggleSelect ? true : undefined}
+          className="peer/play absolute inset-0 z-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand"
+        />
+
+        {/* Play overlay. Keyboard focus on the play button reveals it the way
+            hover does — keyed to that button (peer), not group-focus-within,
+            which would also light it up for the checkbox and the footer's
+            Download and Label buttons, none of which play anything. */}
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/35 peer-focus-visible/play:bg-black/35 peer-focus-visible/play:*:opacity-100 peer-focus-visible/play:*:scale-100 transition-colors duration-200">
           <div className="hover-reveal opacity-0 group-hover:opacity-100 scale-90 group-hover:scale-100 transition-all duration-200">
             <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white/15 backdrop-blur-sm border border-white/20">
               <Play size={16} className="text-white fill-white ml-0.5" />
@@ -207,7 +246,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
         </div>
 
         {/* Action badges */}
-        <div className="absolute top-2 left-2 flex flex-wrap gap-1">
+        <div className="pointer-events-none absolute top-2 left-2 flex flex-wrap gap-1">
           {isDiscarded ? (
             <Badge label="removed" action="unknown" />
           ) : displayLabels.length > 0 ? (
@@ -220,7 +259,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
         </div>
 
         {/* Duration */}
-        <span className="absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white/90 tabular-nums backdrop-blur-sm">
+        <span className="pointer-events-none absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white/90 tabular-nums backdrop-blur-sm">
           {formatDuration(duration)}
         </span>
       </div>

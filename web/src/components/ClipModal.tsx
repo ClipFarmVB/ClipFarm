@@ -59,13 +59,15 @@ export function ClipModal({
   // focus moves into the dialog on open and Tab cycles inside it rather than
   // walking into the grid behind the backdrop.
   //
-  // It does NOT return focus to the clip card on close, which is the one thing
-  // CF-227 asks for and does not get. The trap does call restoreFocusTo — it
-  // just has nothing to restore to: the card's thumbnail is a bare
-  // `<div onClick>` (ClipCard.tsx), so clicking it leaves activeElement on
-  // <body>, and that is what gets captured and handed back. Tracked as
-  // CF-273 (#308); until that lands, closing a clip leaves focus at the top of
-  // the page rather than near the clip.
+  // On close, focus returns to the card's play button (CF-273, #308): the trap
+  // captures activeElement on open and hands it back, and the thumbnail is a
+  // real <button> now rather than a bare `<div onClick>`. Safari does not
+  // focus a button on mouse click or tap (see useFocusTrap.ts), so the card
+  // focuses its own button before calling onPlay, and the trap captures it in
+  // every engine. One limit remains: after ←/→ navigation, focus returns to
+  // the card that OPENED the modal, not the one now showing — fixing that
+  // needs an opener ref per clip passed in from the grid, a follow-up rather
+  // than part of CF-273.
   //
   // No onEscape — the handler below already owns Escape for this overlay, and
   // passing it here too would close the modal twice.

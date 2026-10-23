@@ -255,3 +255,125 @@ describe("a player with no jersey number (CF-304)", () => {
     expect(options).toContain("#7 Bob");
   });
 });
+
+// CF-273 (#308): opening a clip used to be a bare `<div onClick>` with the
+// selection checkbox nested inside it — no focus, no Enter/Space, so the grid's
+// primary action had no keyboard path at all. It is now a sibling `<button>`
+// covering the frame. These pin what that buys: a real, focusable control, no
+// interactive element inside another, and select mode routing keyboard users
+// to the checkbox alone. Focus coming back on close is in
+// ClipCard.focus.dom.test.tsx, which needs a different `@/lib/api` mock.
+describe("opening a clip from the grid (CF-273)", () => {
+  async function renderCard(props: {
+    onPlay?: (c: Clip) => void;
+    onToggleSelect?: (id: string) => void;
+  }) {
+    await act(async () => {
+      root.render(
+        <ClipCard
+          clip={clip}
+          players={players}
+          onPlay={props.onPlay ?? (() => {})}
+          onToggleSelect={props.onToggleSelect}
+        />,
+      );
+    });
+  }
+
+  function playButton(): HTMLButtonElement {
+    const b = host.querySelector<HTMLButtonElement>('button[aria-label="Play spike clip"]');
+    if (!b) throw new Error("no play button");
+    return b;
+  }
+
+  async function click(el: Element) {
+    await act(async () => {
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  it("is a focusable button that plays the clip once", async () => {
+    const onPlay = vi.fn();
+    await renderCard({ onPlay });
+    const b = playButton();
+
+    expect(b.type).toBe("button");
+    expect(b.tabIndex).toBe(0);
+    b.focus();
+    expect(document.activeElement).toBe(b);
+
+    await click(b);
+    expect(onPlay).toHaveBeenCalledTimes(1);
+    expect(onPlay).toHaveBeenCalledWith(clip);
+  });
+
+  it("carries a focus ring for keyboard focus", async () => {
+    // jsdom does not evaluate :focus-visible, so the class is what can be
+    // checked here; the ring itself was checked in the running app.
+    await renderCard({});
+    expect(playButton().className).toContain("focus-visible:outline-brand");
+  });
+
+  it("nests no interactive element inside another", async () => {
+    // Both modes: select mode is the one that renders the checkbox, which is
+    // what sat inside the old clickable div.
+    await renderCard({});
+    expect(host.querySelectorAll("button button, button a, [role=button] button")).toHaveLength(0);
+    await renderCard({ onToggleSelect: () => {} });
+    expect(host.querySelectorAll("button button, button a, [role=button] button")).toHaveLength(0);
+  });
+
+  it("in select mode, the checkbox toggles once and does not play", async () => {
+    const onPlay = vi.fn();
+    const onToggleSelect = vi.fn();
+    await renderCard({ onPlay, onToggleSelect });
+    const checkbox = host.querySelector<HTMLButtonElement>('button[aria-label="Select"]');
+    if (!checkbox) throw new Error("no checkbox");
+
+    expect(checkbox.type).toBe("button");
+    await click(checkbox);
+    expect(onToggleSelect).toHaveBeenCalledTimes(1);
+    expect(onToggleSelect).toHaveBeenCalledWith("clip-1");
+    expect(onPlay).not.toHaveBeenCalled();
+  });
+
+  it("in select mode, the frame toggles on click but is out of the tab order", async () => {
+    // A mouse convenience, as the old div was. The checkbox is the keyboard
+    // path; a second focusable control doing the same thing would be a
+    // redundant tab stop and a duplicate for a screen reader.
+    const onPlay = vi.fn();
+    const onToggleSelect = vi.fn();
+    await renderCard({ onPlay, onToggleSelect });
+    expect(host.querySelector('button[aria-label^="Play"]')).toBeNull();
+    const frame = host.querySelector<HTMLButtonElement>('button[aria-hidden="true"]');
+    if (!frame) throw new Error("no frame button");
+
+    expect(frame.tabIndex).toBe(-1);
+    await click(frame);
+    expect(onToggleSelect).toHaveBeenCalledTimes(1);
+    expect(onPlay).not.toHaveBeenCalled();
+  });
+
+  it("in select mode, a mousedown on the frame cannot take focus", async () => {
+    // tabIndex=-1 keeps it out of the tab order but a click would still focus
+    // it, leaving focus on a hidden, unnamed button. Cancelling the mousedown
+    // is what stops that in a browser; jsdom only reports it.
+    await renderCard({ onToggleSelect: vi.fn() });
+    const frame = host.querySelector<HTMLButtonElement>('button[aria-hidden="true"]');
+    if (!frame) throw new Error("no frame button");
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    act(() => {
+      frame.dispatchEvent(down);
+    });
+    expect(down.defaultPrevented).toBe(true);
+  });
+
+  it("outside select mode, a mousedown on the play button is left alone", async () => {
+    await renderCard({});
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    act(() => {
+      playButton().dispatchEvent(down);
+    });
+    expect(down.defaultPrevented).toBe(false);
+  });
+});
