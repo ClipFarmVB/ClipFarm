@@ -7,7 +7,7 @@ import { AlertCircle, ArrowLeft, FolderOpen, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { ClipCardSkeleton } from "@/components/ui/Skeleton";
 import { ClipCard } from "@/components/ClipCard";
-import { ClipModal } from "@/components/ClipModal";
+import { ClipModal, mergeClipFields } from "@/components/ClipModal";
 import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import {
   getCollections,
@@ -184,9 +184,9 @@ function CollectionContent() {
           onClose={() => setActiveClipIndex(null)}
           onPrev={activeClipIndex > 0 ? () => setActiveClipIndex((i) => i! - 1) : undefined}
           onNext={activeClipIndex < clips.length - 1 ? () => setActiveClipIndex((i) => i! + 1) : undefined}
-          onUpdate={(updated) =>
-            setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
-          }
+          // Merged onto the row as it is when the write lands, by id: a write
+          // can settle after another on the same clip, or after ← →.
+          onUpdate={(id, fields) => setClips((prev) => mergeClipFields(prev, id, fields))}
           // The edit bar (CF-272), as the card offered it here before. Known
           // gap, unchanged by the move: a collection can hold another owner's
           // clip, whose edit the api refuses with 404.

@@ -95,6 +95,24 @@ describe("the card's action row (CF-272)", () => {
     expect(footerLabels().some((l) => l.includes("Maya Okafor"))).toBe(false);
   });
 
+  it("gives the player a line of its own, not a slot in the action row", async () => {
+    // In a four-column grid at 1280 and 1440 the confidence, the timestamp and
+    // Download + Save fill the row, and a name squeezed in beside them got 0px
+    // and showed only its icon (CF-272 round 1). jsdom does no layout, so this
+    // pins the structure that avoids it: the name shares no row with the
+    // actions. The rendered card at those widths is the real check.
+    await act(async () => {
+      root.render(
+        <ClipCard clip={{ ...clip, player_name: "Maya Okafor" }} onPlay={() => {}} onSave={() => {}} />,
+      );
+    });
+    const name = [...host.querySelectorAll("span")].find((s) => s.textContent === "Maya Okafor")!;
+    const actionRow = [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Save")!
+      .parentElement!.parentElement!;
+
+    expect(actionRow.contains(name)).toBe(false);
+  });
+
   it("renders from the row it is given, so an edit made in the modal reaches it", async () => {
     // The card used to copy the clip into `local*` state on mount, so a change
     // the page made to its row afterwards — which is now the only way the

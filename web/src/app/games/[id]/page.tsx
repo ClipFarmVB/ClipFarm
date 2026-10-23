@@ -6,7 +6,7 @@ import Link from "next/link";
 import { AlertCircle, ArrowLeft, CheckSquare, Download, Scissors, Square, Trash2, X } from "lucide-react";
 import { ClipCardSkeleton } from "@/components/ui/Skeleton";
 import { ClipCard } from "@/components/ClipCard";
-import { ClipModal } from "@/components/ClipModal";
+import { ClipModal, mergeClipFields } from "@/components/ClipModal";
 import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -521,9 +521,9 @@ export default function GamePage() {
           onClose={() => setActiveClipIndex(null)}
           onPrev={activeClipIndex > 0 ? () => setActiveClipIndex((i) => i! - 1) : undefined}
           onNext={activeClipIndex < clips.length - 1 ? () => setActiveClipIndex((i) => i! + 1) : undefined}
-          onUpdate={(updated) =>
-            setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
-          }
+          // Merged onto the row as it is when the write lands, by id: a write
+          // can settle after another on the same clip, or after ← →.
+          onUpdate={(id, fields) => setClips((prev) => mergeClipFields(prev, id, fields))}
           // The roster turns on the modal's edit bar — Label, Trim and the
           // player tag, which used to sit on the card (CF-272).
           players={players}

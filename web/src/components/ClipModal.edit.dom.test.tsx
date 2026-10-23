@@ -6,13 +6,15 @@
 //
 // - the CF-304 behaviours that used to be pinned on the card (a failed write is
 //   said, the tag select locks while its write is out, jersey-less names);
-// - edits reach the page's row as the fields that changed, merged onto that
-//   row, not the PATCH echo — whose freshly presigned `clip_url` would restart
-//   the video — except a trim, which really changes the media;
+// - edits reach the page as the fields that changed, which the page merges by
+//   id onto its row as it is when the write lands — not the PATCH echo, whose
+//   freshly presigned `clip_url` would restart the video (a trim excepted,
+//   which really changes the media), and not a copy of the clip from before;
 // - everything is keyed to the clip, so ← → closes a panel and a write that
 //   settles late lands on its own clip, not the one now showing;
-// - ← → leave the tag select alone, and focus comes back to Tag after tagging.
-import { act, useState, type ComponentProps } from "react";
+// - ← → leave the tag select alone, a key only picks a player while Enter
+//   tags, and focus comes back to Tag after tagging.
+import { act, useEffect, useState, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -34,7 +36,7 @@ vi.mock("@/lib/useMe", () => ({
 vi.mock("@/lib/download", () => ({ startCrossOriginDownload: vi.fn() }));
 vi.mock("@/components/PostComposerModal", () => ({ PostComposerModal: () => null }));
 
-import { ClipModal } from "@/components/ClipModal";
+import { ClipModal, mergeClipFields } from "@/components/ClipModal";
 import type { Clip, Player } from "@/lib/api";
 
 function makeClip(over: Partial<Clip> = {}): Clip {
@@ -123,6 +125,38 @@ function press(key: string) {
   });
 }
 
+/** A keydown on the element itself, as a key pressed while it has focus. */
+function keyOn(el: Element, key: string) {
+  act(() => {
+    el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  });
+}
+
+/** What the game page's `clips[]` held at its last render. */
+let gridRows: Clip[] = [];
+
+/**
+ * The game page reduced to what the modal touches: a `clips[]` it owns, an
+ * index for ← →, and `onUpdate` merged by id the way the page merges it.
+ */
+function Grid({ initial }: { initial: Clip[] }) {
+  const [clips, setClips] = useState(initial);
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    gridRows = clips;
+  });
+  return (
+    <ClipModal
+      clip={clips[i]}
+      onClose={() => {}}
+      players={players}
+      onPrev={i > 0 ? () => setI(i - 1) : undefined}
+      onNext={i < clips.length - 1 ? () => setI(i + 1) : undefined}
+      onUpdate={(id, fields) => setClips((prev) => mergeClipFields(prev, id, fields))}
+    />
+  );
+}
+
 function select(): HTMLSelectElement | null {
   return document.querySelector("select");
 }
@@ -173,31 +207,26 @@ describe("tagging a player", () => {
     expect(options).toContain("#7 Bob");
   });
 
-  it("hands the parent its own row with the new player, not the echo", async () => {
-    // The echo's re-signed `clip_url` would restart the video; the row keeps
-    // its labels and URL and takes the tag.
-    const shown = makeClip({ labels: ["dig"] });
+  it("hands the parent the new player, not the echo", async () => {
+    // The echo's re-signed `clip_url` would restart the video; only the tag's
+    // own fields go to the page, which merges them onto its row.
     tagClip.mockResolvedValue(echo({ player_id: "p2", player_name: "Bob" }));
     const onUpdate = vi.fn();
-    await mount({ clip: shown, onUpdate });
+    await mount({ clip: makeClip({ labels: ["dig"] }), onUpdate });
 
     await click(button("Tag player"));
     await choose(select()!, "p2");
 
     expect(tagClip).toHaveBeenCalledWith("clip-1", "p2");
     expect(onUpdate).toHaveBeenCalledTimes(1);
-    expect(onUpdate.mock.calls[0][0]).toEqual({ ...shown, player_id: "p2", player_name: "Bob" });
+    expect(onUpdate).toHaveBeenCalledWith("clip-1", { player_id: "p2", player_name: "Bob" });
   });
 
   it("closes the select and puts focus back on the tag control", async () => {
     // Without the hand-back the select unmounts under focus and it drops to
     // <body>, so the next Tab starts from the top of the page.
     tagClip.mockResolvedValue(echo({ player_id: "p2", player_name: "Bob" }));
-    function Page() {
-      const [clip, setClip] = useState(makeClip());
-      return <ClipModal clip={clip} onClose={() => {}} players={players} onUpdate={setClip} />;
-    }
-    await act(async () => root.render(<Page />));
+    await act(async () => root.render(<Grid initial={[makeClip()]} />));
 
     await click(button("Tag player"));
     expect(document.activeElement).toBe(select());
@@ -205,6 +234,77 @@ describe("tagging a player", () => {
 
     expect(select()).toBeNull();
     expect(document.activeElement).toBe(button("Bob"));
+  });
+
+  it("does not pull focus to the Tag control of the clip the user moved to", async () => {
+    // The hand-back is for the clip whose write settled. Once → has moved on,
+    // focus is wherever the user put it on the next clip, and stays there.
+    let resolve!: (c: Clip) => void;
+    tagClip.mockReturnValue(new Promise<Clip>((r) => { resolve = r; }));
+    await act(async () =>
+      root.render(<Grid initial={[makeClip(), makeClip({ id: "clip-2", action_type: "serve" })]} />),
+    );
+
+    await click(button("Tag player"));
+    await choose(select()!, "p2");
+    await click(document.querySelector('[aria-label="Next clip"]')!);
+    const label = button("Label")!;
+    act(() => label.focus());
+
+    await act(async () => resolve(echo({ player_id: "p2", player_name: "Bob" })));
+    expect(document.activeElement).toBe(label);
+  });
+
+  it("only picks on an arrow key; Enter tags with the pick", async () => {
+    // On a closed <select> ↓ fires `change`. Tagging on it put the first player
+    // on the roster on the clip the moment a keyboard user started browsing.
+    tagClip.mockResolvedValue(echo({ player_id: "p1", player_name: "Alice" }));
+    const onUpdate = vi.fn();
+    await mount({ onUpdate });
+
+    await click(button("Tag player"));
+    const s = select()!;
+    keyOn(s, "ArrowDown");
+    await choose(s, "p1");
+    expect(tagClip).not.toHaveBeenCalled();
+    expect(document.getElementById("clip-edit-tag-hint")?.textContent).toBe("Enter to tag");
+    expect(s.getAttribute("aria-describedby")).toBe("clip-edit-tag-hint");
+
+    await act(async () => {
+      s.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(tagClip).toHaveBeenCalledTimes(1);
+    expect(tagClip).toHaveBeenCalledWith("clip-1", "p1");
+    expect(onUpdate).toHaveBeenCalledWith("clip-1", { player_id: "p1", player_name: "Alice" });
+  });
+
+  it("drops a keyed pick when focus leaves the select without Enter", async () => {
+    await mount();
+    await click(button("Tag player"));
+    const s = select()!;
+    keyOn(s, "ArrowDown");
+    await choose(s, "p1");
+
+    await act(async () => {
+      s.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(select()).toBeNull();
+    expect(tagClip).not.toHaveBeenCalled();
+  });
+
+  it("tags at once on a pick from the open list, even after arrow keys", async () => {
+    // The pointer path: a mousedown opens the list, so the pick that follows
+    // is a deliberate one, whatever keys came before it.
+    tagClip.mockResolvedValue(echo({ player_id: "p2", player_name: "Bob" }));
+    await mount();
+    await click(button("Tag player"));
+    const s = select()!;
+    keyOn(s, "ArrowDown");
+    await act(async () => {
+      s.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+    await choose(s, "p2");
+    expect(tagClip).toHaveBeenCalledWith("clip-1", "p2");
   });
 
   it("locks the select while the write is in flight, and a blur cannot close it", async () => {
@@ -254,27 +354,31 @@ describe("labelling", () => {
   });
 
   it("seeds nothing from an unknown call", async () => {
+    // "unknown" has no chip, so what the panel shows cannot tell a seeded
+    // "unknown" from none; the write after a toggle can.
+    updateClipLabels.mockResolvedValue(echo({ labels: ["dig"], action_type: "dig" }));
     await mount({ clip: makeClip({ action_type: "unknown", confidence: 0.4 }) });
     await click(button("Label"));
     for (const l of ["spike", "serve", "dig", "set", "block", "Not an action"]) {
       expect(pressed(l)).toBe(false);
     }
+
+    await click(button("dig"));
+    expect(updateClipLabels).toHaveBeenCalledWith("clip-1", ["dig"]);
   });
 
-  it("adds to the seeded label, and hands the parent its own row with the new labels", async () => {
-    const shown = makeClip({ player_name: "Bob" });
+  it("adds to the seeded label, and hands the parent only the label fields", async () => {
     updateClipLabels.mockResolvedValue(
       echo({ labels: ["spike", "dig"], action_type: "spike", confidence: 0.93, player_name: null }),
     );
     const onUpdate = vi.fn();
-    await mount({ clip: shown, onUpdate });
+    await mount({ clip: makeClip({ player_name: "Bob" }), onUpdate });
 
     await click(button("Label"));
     await click(button("dig"));
 
     expect(updateClipLabels).toHaveBeenCalledWith("clip-1", ["spike", "dig"]);
-    expect(onUpdate.mock.calls[0][0]).toEqual({
-      ...shown,
+    expect(onUpdate).toHaveBeenCalledWith("clip-1", {
       labels: ["spike", "dig"],
       action_type: "spike",
       confidence: 0.93,
@@ -305,56 +409,76 @@ describe("labelling", () => {
     let releaseLabels!: (c: Clip) => void;
     updateClipLabels.mockReturnValue(new Promise<Clip>((r) => { releaseLabels = r; }));
     tagClip.mockResolvedValue(echo({ player_id: "p2", player_name: "Bob" }));
-    // What the page's row holds after each update, as the page would splice it.
-    const rows = vi.fn();
-    function Page() {
-      const [clip, setClip] = useState(makeClip());
-      return (
-        <ClipModal
-          clip={clip}
-          onClose={() => {}}
-          players={players}
-          onUpdate={(c) => { rows(c); setClip(c); }}
-        />
-      );
-    }
-    const latest = () => rows.mock.lastCall![0] as Clip;
-    await act(async () => root.render(<Page />));
+    await act(async () => root.render(<Grid initial={[makeClip()]} />));
 
     await click(button("Label"));
     await click(button("dig"));
     await click(button("Tag player"));
     await choose(select()!, "p2");
-    expect(latest().player_name).toBe("Bob");
+    expect(gridRows[0].player_name).toBe("Bob");
 
     await act(async () =>
       releaseLabels(echo({ labels: ["spike", "dig"], action_type: "spike", confidence: 0.93, player_name: null })),
     );
-    expect(rows).toHaveBeenCalledTimes(2);
-    expect(latest().labels).toEqual(["spike", "dig"]);
-    expect(latest().player_name).toBe("Bob");
-    expect(latest().clip_url).toBe("https://example.test/c.mp4");
+    expect(gridRows[0].labels).toEqual(["spike", "dig"]);
+    expect(gridRows[0].player_name).toBe("Bob");
+    expect(gridRows[0].clip_url).toBe("https://example.test/c.mp4");
+  });
+
+  it("does not undo a label when a trim settles after the user moved on", async () => {
+    // A re-cut is slow. Label the clip while it runs, press →, and the trim
+    // lands with the dialog on the next clip: it must merge onto the page's
+    // row for its own clip as that row is now, with the label, not onto the
+    // copy it started from — or the card loses the badge and the next toggle
+    // on this clip writes a label set without it back to the server.
+    let releaseTrim!: (c: Clip) => void;
+    trimClip.mockReturnValue(new Promise<Clip>((r) => { releaseTrim = r; }));
+    updateClipLabels.mockResolvedValue(
+      echo({ labels: ["spike", "dig"], action_type: "spike", confidence: 0.93 }),
+    );
+    await act(async () =>
+      root.render(<Grid initial={[makeClip(), makeClip({ id: "clip-2", action_type: "serve" })]} />),
+    );
+
+    await click(button("Trim"));
+    const end = document.querySelector('[aria-label="End of clip"]')!;
+    await click([...end.querySelectorAll("button")].find((b) => b.textContent === "+2s"));
+    await click(button("Label"));
+    await click(button("dig"));
+    expect(gridRows[0].labels).toEqual(["spike", "dig"]);
+
+    await click(document.querySelector('[aria-label="Next clip"]')!);
+    await act(async () => releaseTrim(echo({ start_time: 10, end_time: 20 })));
+    expect(gridRows[0].labels).toEqual(["spike", "dig"]);
+    expect(gridRows[0].end_time).toBe(20);
+    expect(gridRows[1].end_time).toBe(18);
+
+    await click(document.querySelector('[aria-label="Previous clip"]')!);
+    // Not pinned here whether the panel opened on this clip is still open.
+    if (!document.getElementById("clip-edit-label")) await click(button("Label"));
+    expect(pressed("dig")).toBe(true);
+    await click(button("set"));
+    expect(updateClipLabels).toHaveBeenLastCalledWith("clip-1", ["dig", "set"]);
   });
 });
 
 describe("trimming", () => {
   it("re-cuts, and takes the trim's new bounds and media", async () => {
     // The one edit that really changes the video, so its URL is taken.
-    const shown = makeClip({ player_name: "Bob", labels: ["dig"] });
     trimClip.mockResolvedValue(echo({ start_time: 8, end_time: 18, player_name: null }));
     const onUpdate = vi.fn();
-    await mount({ clip: shown, onUpdate });
+    await mount({ clip: makeClip({ player_name: "Bob", labels: ["dig"] }), onUpdate });
 
     await click(button("Trim"));
     const start = document.querySelector('[aria-label="Start of clip"]')!;
     await click([...start.querySelectorAll("button")].find((b) => b.textContent === "−2s"));
 
     expect(trimClip).toHaveBeenCalledWith("clip-1", -2, 0);
-    expect(onUpdate.mock.calls[0][0]).toEqual({
-      ...shown,
+    expect(onUpdate).toHaveBeenCalledWith("clip-1", {
       start_time: 8,
       end_time: 18,
       clip_url: "https://example.test/re-signed.mp4",
+      thumbnail_url: "https://example.test/c.jpg",
     });
   });
 
@@ -402,7 +526,7 @@ describe("moving to another clip", () => {
       release(echo({ labels: ["spike", "dig"], action_type: "spike", confidence: 0.93 })),
     );
     expect(onUpdate).toHaveBeenCalledTimes(1);
-    expect(onUpdate.mock.calls[0][0].id).toBe("clip-1");
+    expect(onUpdate.mock.calls[0][0]).toBe("clip-1");
     expect(pressed("serve")).toBe(true);
   });
 });

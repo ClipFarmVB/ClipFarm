@@ -33,10 +33,16 @@ interface ClipModalProps {
   onClose: () => void;
   onPrev?: () => void;
   onNext?: () => void;
-  /** Hand the parent the clip's row with this dialog's change applied, so
+  /** Hand the parent the fields this dialog changed on the clip `id`, so
    *  nothing behind it keeps rendering the old state — the grid's badges and
-   *  player, the composer's ceiling and the undo control below all read it. */
-  onUpdate?: (clip: Clip) => void;
+   *  player, the composer's ceiling and the undo control below all read it.
+   *
+   *  The fields, not a whole row: the parent merges them onto its own row for
+   *  that id (`{ ...row, ...fields }`, CF-272). A write can settle after the
+   *  user has moved to another clip, or after another write on the same clip
+   *  has landed, and a row built here from a copy of the clip would carry that
+   *  copy's stale fields back over the newer ones. */
+  onUpdate?: (id: string, fields: Partial<Clip>) => void;
   /** The roster the player tag picks from. Passing it is also what turns on
    *  the edit bar — Label, Trim and the player tag (CF-272): a caller that
    *  passes no roster gets a player with no editing, which is what a caller
@@ -85,28 +91,30 @@ export function ClipModal({
   // kind: a slot would forget clip A's write the moment one started on clip B,
   // and ← back to A would offer its controls again mid-write.
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
+  // The same set, readable before the next render: the tag select can see an
+  // Enter and a `change` for one pick in the same task, and the state above is
+  // still the render's copy for both.
+  const busyRef = useRef<Set<string>>(new Set());
   const isBusy = (write: EditWrite) => busy.has(`${write}:${clip.id}`);
   function markBusy(write: EditWrite, id: string, on: boolean) {
-    setBusy((prev) => {
-      const next = new Set(prev);
-      if (on) next.add(`${write}:${id}`);
-      else next.delete(`${write}:${id}`);
-      return next;
-    });
+    if (on) busyRef.current.add(`${write}:${id}`);
+    else busyRef.current.delete(`${write}:${id}`);
+    setBusy(new Set(busyRef.current));
   }
   // The labels shown while a label write is out, per clip.
   const [pendingLabels, setPendingLabels] = useState<Record<string, string[]>>({});
-  // The clip as the parent last rendered it. A write settles onto THIS when it
-  // is still the clip on screen, not onto the copy captured at click time, so
-  // two writes in flight on one clip (a tag during a label change) do not
-  // undo each other's field.
-  const clipRef = useRef(clip);
-  useEffect(() => {
-    clipRef.current = clip;
-  });
-  // Set when a tag write settles, so the Tag button takes focus back as it
-  // remounts in place of the select; otherwise focus drops to <body>.
-  const refocusTagRef = useRef(false);
+  // The clip id whose tag write just settled, so its Tag button takes focus
+  // back as it remounts in place of the select; otherwise focus drops to
+  // <body>. An id, not a flag: a write that settles after ← → must not pull
+  // focus to the Tag button of the clip now showing.
+  const refocusTagFor = useRef<string | null>(null);
+  // Whether the tag select's value last moved by a key. On a closed <select>
+  // ↑ ↓ ← → and type-ahead change the option and fire `change`, so a keyboard
+  // user browsing the roster would tag whichever player the first press lands
+  // on. A keyed change therefore only picks; Enter commits it. A pointer pick
+  // from the open list commits at once, as it always has.
+  const tagKeyedRef = useRef(false);
+  const [tagPicked, setTagPicked] = useState(false);
 
   // CF-194: the raw upload is deleted after its retention window, and a re-cut
   // reads from it. Undefined means an older payload without the field — treat
@@ -127,15 +135,9 @@ export function ClipModal({
     shownLabels.includes("not_an_action") ||
     (clip.action_type === "unknown" && clip.confidence === 0);
 
-  /** Apply `fields` to the freshest copy of `target` the parent has given. */
-  function settle(target: Clip, fields: Partial<Clip>) {
-    const base = clipRef.current.id === target.id ? clipRef.current : target;
-    onUpdate?.({ ...base, ...fields });
-  }
-
   async function handleToggleLabel(label: string) {
     const target = clip;
-    if (busy.has(`label:${target.id}`)) return;
+    if (busyRef.current.has(`label:${target.id}`)) return;
     let next: string[];
     if (label === "not_an_action") {
       next = ["not_an_action"];
@@ -155,10 +157,11 @@ export function ClipModal({
     markBusy("label", target.id, true);
     try {
       const updated = await updateClipLabels(target.id, next);
-      // The fields this write changed, onto the row the page already has — not
-      // the PATCH echo, whose freshly presigned `clip_url` would restart the
-      // video under the user's cursor (the same hazard the undo below avoids).
-      settle(target, {
+      // The fields this write changed, for the page to merge onto its row —
+      // not the PATCH echo, whose freshly presigned `clip_url` would restart
+      // the video under the user's cursor (the same hazard the undo below
+      // avoids), and whose other fields may predate a write that landed since.
+      onUpdate?.(target.id, {
         labels: updated.labels,
         action_type: updated.action_type,
         confidence: updated.confidence,
@@ -179,13 +182,13 @@ export function ClipModal({
 
   async function handleTrim(startDelta: number, endDelta: number) {
     const target = clip;
-    if (busy.has(`trim:${target.id}`)) return;
+    if (busyRef.current.has(`trim:${target.id}`)) return;
     markBusy("trim", target.id, true);
     try {
       const updated = await trimClip(target.id, startDelta, endDelta);
       // Unlike a label or a tag, a trim really changes the media, so the new
       // `clip_url` and thumbnail are taken and the player reloads.
-      settle(target, {
+      onUpdate?.(target.id, {
         start_time: updated.start_time,
         end_time: updated.end_time,
         clip_url: updated.clip_url,
@@ -200,20 +203,26 @@ export function ClipModal({
 
   async function handleTag(playerId: string) {
     const target = clip;
-    if (busy.has(`tag:${target.id}`)) return;
+    if (!playerId || busyRef.current.has(`tag:${target.id}`)) return;
     markBusy("tag", target.id, true);
     try {
       const updated = await tagClip(target.id, playerId);
       // Through the parent, so the grid's card and this header both show the
       // new name (CF-304 item 3).
-      settle(target, { player_id: updated.player_id, player_name: updated.player_name });
+      onUpdate?.(target.id, { player_id: updated.player_id, player_name: updated.player_name });
     } catch (e) {
       alert(e instanceof Error ? e.message : "Could not tag this clip.");
     } finally {
       markBusy("tag", target.id, false);
-      refocusTagRef.current = true;
+      refocusTagFor.current = target.id;
       setTaggingFor((current) => (current === target.id ? null : current));
     }
+  }
+
+  function openTagSelect() {
+    tagKeyedRef.current = false;
+    setTagPicked(false);
+    setTaggingFor(clip.id);
   }
 
   // Auto-play when clip changes
@@ -312,12 +321,17 @@ export function ClipModal({
   // content-sized card, and with the edit bar and an open panel a 75vh video
   // overflowed a 720px-tall window and painted over the controls. Summed from
   // what is rendered: backdrop padding, header and footer always; the edit bar,
-  // an open panel and the undo section when present. Generous rather than
-  // exact — the cost of over-reserving is a slightly smaller video, the cost
-  // of under-reserving is the overflow, which `overflow-hidden` on the video's
-  // box then turns into a crop rather than an overlap.
+  // an open panel, the trim panel's "Re-cutting clip…" line and the undo
+  // section when present. Generous rather than exact — the cost of
+  // over-reserving is a slightly smaller video, the cost of under-reserving is
+  // the overflow, which `overflow-hidden` on the video's box then turns into a
+  // crop rather than an overlap.
   const chromeRem =
-    7.75 + (canEdit ? 3 : 0) + (canEdit && panel ? 3.75 : 0) + (showUndo ? 6 : 0);
+    7.75 +
+    (canEdit ? 3 : 0) +
+    (canEdit && panel ? 3.75 : 0) +
+    (canEdit && panel === "trim" && isBusy("trim") ? 1.5 : 0) +
+    (showUndo ? 6 : 0);
 
   // Keyboard navigation
   useEffect(() => {
@@ -349,9 +363,10 @@ export function ClipModal({
       // player has focus, whether the user Tabbed to it or clicked it.
       if (document.activeElement === videoRef.current) return;
       // The same for the player-tag select (CF-272): on a closed <select>, ←
-      // and → change the chosen option, which here fires the tag write. Taking
-      // them for navigation as well would tag the clip AND move off it. Only
-      // the arrows — Escape above still closes from the select.
+      // and → change the chosen option, which here picks a player for Enter
+      // to commit. Taking them for navigation as well would pick one AND move
+      // off the clip. Only the arrows — Escape above still closes from the
+      // select.
       const active = document.activeElement;
       if (active instanceof HTMLSelectElement || active instanceof HTMLInputElement) return;
       if (e.key === "ArrowLeft")  onPrev?.();
@@ -529,7 +544,9 @@ export function ClipModal({
                 type="button"
                 onClick={() => setPanelFor(panel === "label" ? null : { id: clip.id, panel: "label" })}
                 aria-expanded={panel === "label"}
-                aria-controls="clip-edit-label"
+                // Only while the panel is mounted: an id naming nothing is a
+                // dangling reference.
+                aria-controls={panel === "label" ? "clip-edit-label" : undefined}
                 className={cn(editButton, panel === "label" ? "bg-brand/8 text-brand" : "text-muted hover:bg-surface-high hover:text-foreground")}
               >
                 <Tag size={12} />
@@ -543,7 +560,7 @@ export function ClipModal({
                   onClick={() => setPanelFor(panel === "trim" ? null : { id: clip.id, panel: "trim" })}
                   disabled={!canTrim}
                   aria-expanded={canTrim ? panel === "trim" : undefined}
-                  aria-controls={canTrim ? "clip-edit-trim" : undefined}
+                  aria-controls={canTrim && panel === "trim" ? "clip-edit-trim" : undefined}
                   title={canTrim ? undefined : "Source video expired — this clip can no longer be re-cut"}
                   className={cn(
                     editButton,
@@ -561,17 +578,45 @@ export function ClipModal({
                    choice cannot be made and then dropped in silence; `onBlur`
                    checks the same flag so a blur during the write cannot close
                    the select out from under it. Both carried over from
-                   ClipCard, whose comment on this control has the long form. */
+                   ClipCard, whose comment on this control has the long form.
+
+                   A key that moves the closed select's value only picks a
+                   player (see `tagKeyedRef`); Enter tags with the pick, and
+                   leaving the select without it drops the pick. A mouse or
+                   touch pick from the open list tags at once — that is already
+                   a deliberate choice, and a mousedown clears the key flag. */
+                <>
                 <select
                   autoFocus
                   aria-label="Tag a player"
+                  aria-describedby={tagPicked ? "clip-edit-tag-hint" : undefined}
                   disabled={isBusy("tag")}
                   aria-busy={isBusy("tag")}
                   className="h-9 rounded-md border border-border bg-surface-high px-2 text-[11px] text-foreground focus-ring disabled:opacity-50 sm:h-8"
                   onBlur={() => {
-                    if (!busy.has(`tag:${clip.id}`)) setTaggingFor(null);
+                    if (!busyRef.current.has(`tag:${clip.id}`)) setTaggingFor(null);
                   }}
-                  onChange={(e) => handleTag(e.target.value)}
+                  onMouseDown={() => {
+                    tagKeyedRef.current = false;
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      if (e.currentTarget.value) {
+                        e.preventDefault();
+                        handleTag(e.currentTarget.value);
+                      }
+                      return;
+                    }
+                    // Not with Alt: Alt+↓ opens the list, it does not pick.
+                    if (e.altKey) return;
+                    if (e.key.startsWith("Arrow") || TAG_PAGING_KEYS.has(e.key) || (e.key.length === 1 && e.key !== " ")) {
+                      tagKeyedRef.current = true;
+                    }
+                  }}
+                  onChange={(e) => {
+                    if (tagKeyedRef.current) setTagPicked(true);
+                    else handleTag(e.target.value);
+                  }}
                   defaultValue=""
                 >
                   <option value="" disabled>
@@ -583,16 +628,26 @@ export function ClipModal({
                     </option>
                   ))}
                 </select>
+                {tagPicked && !isBusy("tag") && (
+                  <span id="clip-edit-tag-hint" className="px-1 text-[11px] text-subtle">
+                    Enter to tag
+                  </span>
+                )}
+                </>
               ) : (
                 <button
                   type="button"
                   ref={(el) => {
-                    if (el && refocusTagRef.current) {
-                      refocusTagRef.current = false;
-                      el.focus();
+                    // Taken once either way: on the clip whose write settled
+                    // it refocuses, and on any other clip it is dropped, so
+                    // coming back to that clip later does not steal focus.
+                    if (el && refocusTagFor.current !== null) {
+                      const settledOn = refocusTagFor.current;
+                      refocusTagFor.current = null;
+                      if (settledOn === clip.id) el.focus();
                     }
                   }}
-                  onClick={() => setTaggingFor(clip.id)}
+                  onClick={openTagSelect}
                   title="Tag a player"
                   className={cn(editButton, "max-w-[14rem] text-muted hover:bg-surface-high hover:text-foreground")}
                 >
@@ -708,8 +763,8 @@ export function ClipModal({
                 regardless of where focus sits, and that claim was false.
 
                 CF-272 adds a second such state: the edit bar's player-tag
-                select keeps ← → too, for the same reason. Also reached only by
-                a deliberate move, so the hint is left as it is. */}
+                select keeps ← → too, because they move its pick. Also reached
+                only by a deliberate move, so the hint is left as it is. */}
             {(onPrev || onNext) && (
               <>
                 <span>← →  navigate</span>
@@ -770,12 +825,11 @@ export function ClipModal({
                 setNarrowErrorFor(null);
                 try {
                   const updated = await setClipVisibility(target.id, "private");
-                  // The new tier on the row the page already has, not the PATCH
-                  // echo: that response carries no `player_name`, and with R2 a
-                  // freshly presigned `clip_url`, so swapping it in dropped the
-                  // tagged player from the header and restarted the video.
-                  onUpdate?.({
-                    ...target,
+                  // The new tier for the page's row, not the PATCH echo: that
+                  // response carries no `player_name`, and with R2 a freshly
+                  // presigned `clip_url`, so swapping it in dropped the tagged
+                  // player from the header and restarted the video.
+                  onUpdate?.(target.id, {
                     effective_visibility: updated.effective_visibility ?? "private",
                   });
                 } catch (e) {
@@ -820,7 +874,7 @@ export function ClipModal({
           // clip on its game's page" and then the control is nowhere until a
           // reload — the promise unreachable in exactly the flow that makes it.
           onPosted={(raisedClipTo) => {
-            if (raisedClipTo) onUpdate?.({ ...clip, effective_visibility: raisedClipTo });
+            if (raisedClipTo) onUpdate?.(clip.id, { effective_visibility: raisedClipTo });
           }}
         />
       )}
@@ -828,6 +882,16 @@ export function ClipModal({
     document.body
   );
 }
+
+/** What a page does with `onUpdate`: the changed fields onto its row for `id`,
+ *  as that row is when the write lands. Use it with a functional `setClips`,
+ *  so a write that settles late merges onto the newest row, not a closure's. */
+export function mergeClipFields(clips: Clip[], id: string, fields: Partial<Clip>): Clip[] {
+  return clips.map((c) => (c.id === id ? { ...c, ...fields } : c));
+}
+
+// Keys besides the arrows that move a closed <select>'s value.
+const TAG_PAGING_KEYS = new Set(["Home", "End", "PageUp", "PageDown"]);
 
 // The edit bar's buttons, sized like the header's: 36px on a phone.
 const editButton =

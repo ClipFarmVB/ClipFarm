@@ -169,11 +169,9 @@ export function ClipCard({ clip, onPlay, selected, onToggleSelect, onSave }: Cli
       {/* Card footer */}
       <div className="px-2.5 py-2">
         <div className="flex items-center justify-between gap-1">
-          {/* Left: confidence, timestamp and the tagged player. The player is
-              read-only here — tagging is in the clip modal (CF-272) — and it
-              truncates first, so a long name cannot push the actions out:
-              `flex-1` (basis 0) gives this column only the width the actions
-              leave, rather than sharing the squeeze with them. */}
+          {/* Left: confidence and timestamp. `flex-1` (basis 0) gives this
+              column only the width the actions leave, rather than sharing the
+              squeeze with them. */}
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <span className={cn(
               "text-[11px] font-semibold tabular-nums",
@@ -184,12 +182,6 @@ export function ClipCard({ clip, onPlay, selected, onToggleSelect, onSave }: Cli
               {confidencePct}%
             </span>
             <span className="shrink-0 text-[10px] text-subtle tabular-nums">{formatTimestamp(clip.start_time)}</span>
-            {clip.player_name && (
-              <span className="flex min-w-0 items-center gap-1 text-[10px] text-muted" title={clip.player_name}>
-                <User size={9} className="shrink-0" />
-                <span className="truncate">{clip.player_name}</span>
-              </span>
-            )}
           </div>
 
           {/* Right: action buttons. No `shrink-0`: held at max-content width
@@ -230,6 +222,19 @@ export function ClipCard({ clip, onPlay, selected, onToggleSelect, onSave }: Cli
             )}
           </div>
         </div>
+
+        {/* The tagged player, read-only — tagging is in the clip modal
+            (CF-272). A line of its own under the row, not a third item in it:
+            in a four-column grid at 1280 and 1440 the confidence, timestamp
+            and the two actions take the whole row, and a name squeezed in
+            beside them got 0px and showed only its icon. Here it has the
+            card's width and truncates only when it is longer than that. */}
+        {clip.player_name && (
+          <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-muted" title={clip.player_name}>
+            <User size={9} className="shrink-0" />
+            <span className="truncate">{clip.player_name}</span>
+          </div>
+        )}
       </div>
     </div>
   );
