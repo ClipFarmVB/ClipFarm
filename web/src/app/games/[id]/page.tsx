@@ -527,6 +527,9 @@ export default function GamePage() {
           // The roster turns on the modal's edit bar — Label, Trim and the
           // player tag, which used to sit on the card (CF-272).
           players={players}
+          // How long the source is, so a trim past its end is expected to
+          // come back cut short at it (CF-272).
+          sourceDuration={game?.original_duration}
           // Every game reachable here is the viewer's own. `GET /games/{id}` is
           // visibility-scoped rather than owner-only, but no write path exists
           // for a game's visibility — `test_visibility_write_paths_are_declared`

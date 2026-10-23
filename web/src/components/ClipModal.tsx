@@ -59,6 +59,11 @@ interface ClipModalProps {
    *  deliberately cross-owner (`list_collection_clips` spans owners), so it
    *  passes nothing and the control stays hidden there. */
   ownsClip?: boolean;
+  /** The length, in seconds, of the source video the clip is cut from, where
+   *  the page knows it (`Game.original_duration`). A trim's re-cut stops at
+   *  the end of the source although the api keeps the end it was asked for,
+   *  so this is what tells the dialog how long a cut past that end will be. */
+  sourceDuration?: number | null;
 }
 
 export function ClipModal({
@@ -69,6 +74,7 @@ export function ClipModal({
   onUpdate,
   players,
   ownsClip = false,
+  sourceDuration,
 }: ClipModalProps) {
   const videoRef  = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -81,8 +87,9 @@ export function ClipModal({
   // action row clipped them. All of their state is keyed to a clip id, for the
   // reason `narrowingFor` below is: ← → swap the clip under this dialog, and a
   // panel, a busy flag or an optimistic label belongs to the clip it was
-  // opened on. Keyed, a panel closes itself on navigation and a write that
-  // settles late cannot mark the next clip busy or repaint its labels.
+  // opened on. Keyed, a panel is hidden on navigation (and shown again on ←
+  // back to its clip) and a write that settles late cannot mark the next clip
+  // busy or repaint its labels.
   const canEdit = players !== undefined;
   const [panelFor, setPanelFor] = useState<{ id: string; panel: EditPanel } | null>(null);
   const panel = panelFor?.id === clip.id ? panelFor.panel : null;
@@ -127,14 +134,24 @@ export function ClipModal({
   const [tagPicked, setTagPicked] = useState(false);
   const tagSelectRef = useRef<HTMLSelectElement | null>(null);
   // A trim's re-cut, per clip: "waiting" while it is polled for, "stale" once
-  // the dialog has stopped looking and the player still holds the old cut.
+  // the dialog has stopped looking without seeing it land — which a re-cut
+  // that came out as long as the cut before it can also cause, so the line
+  // shown for it says only that a reload shows the new cut.
   const [recut, setRecut] = useState<Record<string, RecutState>>({});
   const recutState = recut[clip.id] ?? null;
   // Stops the poll for a clip, per clip id.
   const recutWatch = useRef(new Map<string, () => void>());
-  // The length of the cut the player holds for a clip, per clip id; see
+  // The cut the player holds for a clip while a trim's re-cut is outstanding,
+  // per clip id: the stretch of the source it covers and its length; see
   // `handleTrim`.
-  const recutBaseline = useRef(new Map<string, number>());
+  const recutHeld = useRef(new Map<string, HeldCut>());
+  // Per clip id, what the storage object is known to hold and what it will
+  // hold next; see `watchRecut`.
+  const recutChain = useRef(new Map<string, RecutChain>());
+  // Where a cut asked to end at `end` actually ends: ffmpeg stops at the end
+  // of the source, and the api clamps only the start (CF-272 R5-M1).
+  const cutEnd = (end: number) =>
+    sourceDuration != null && sourceDuration > 0 ? Math.min(end, sourceDuration) : end;
 
   // CF-194: the raw upload is deleted after its retention window, and a re-cut
   // reads from it. Undefined means an older payload without the field — treat
@@ -203,14 +220,20 @@ export function ClipModal({
   async function handleTrim(startDelta: number, endDelta: number) {
     const target = clip;
     if (busyRef.current.has(`trim:${target.id}`)) return;
-    // What the player has loaded for this clip, measured before anything
-    // changes — the length a re-cut has to differ from to be told apart. Kept
-    // across trims until a re-cut lands, because until then the player still
-    // holds the cut it opened with, however many trims are queued behind it.
-    if (!recutBaseline.current.has(target.id)) {
+    // What the player has loaded for this clip, taken before anything changes:
+    // the stretch of the source it covers, and its length as measured — what
+    // a re-cut has to differ from to be told apart. Kept across trims until a
+    // re-cut lands, because until then the player still holds the cut it
+    // opened with, however many trims are queued behind it.
+    if (!recutHeld.current.has(target.id)) {
       const v = videoRef.current;
       const loaded = v && Number.isFinite(v.duration) && v.duration > 0 ? v.duration : null;
-      recutBaseline.current.set(target.id, loaded ?? target.end_time - target.start_time);
+      const end = cutEnd(target.end_time);
+      recutHeld.current.set(target.id, {
+        start: target.start_time,
+        end,
+        length: loaded ?? end - target.start_time,
+      });
     }
     markBusy("trim", target.id, true);
     try {
@@ -234,21 +257,45 @@ export function ClipModal({
    *  media. Nothing in the api says when a re-cut finishes, and the object's
    *  URL does not change, so the signal is the cut's length: each poll mints a
    *  fresh URL (an already-fetched one may be answered from the HTTP cache)
-   *  and reads that video's duration, and a length matching the trimmed bounds
-   *  is the new cut. A trim that leaves the length the player already has (one
-   *  step out, one back) cannot be told apart that way, and is reported as
-   *  not ready rather than guessed at. Reporting only: a failed poll is
-   *  retried, and giving up leaves the playing cut and the new bounds as they
-   *  are. */
+   *  and reads that video's duration.
+   *
+   *  Each trim queues a re-cut, and they overwrite the object in turn, so the
+   *  object steps through one length per trim: `pending` is that sequence, and
+   *  a reading that differs from the last one is matched against it, dropping
+   *  the steps it has passed. The last step reached is the new cut. That is
+   *  what tells a shift (Start +2s, then End +2s) apart, whose new cut is as
+   *  long as the old: the first re-cut's shorter length is seen on the way.
+   *
+   *  The length expected is that of the cut ffmpeg makes, which ends at the
+   *  end of the source (`cutEnd`). Where the page does not know the source's
+   *  length, a reading shorter than the last step and matching none is taken
+   *  as that step cut short by the source's end.
+   *
+   *  A trim that asks for the stretch the player already holds — one step out
+   *  and one back, or Start −2s at 0:00, which the api clamps — has nothing to
+   *  swap in, and ends the watch with nothing to say. Reporting only: a failed
+   *  poll is retried, and giving up leaves the playing cut and the new bounds
+   *  as they are, with a line saying a reload shows the new cut. */
   function watchRecut(id: string, reply: Clip) {
     recutWatch.current.get(id)?.();
-    const expected = reply.end_time - reply.start_time;
-    const baseline = recutBaseline.current.get(id) ?? expected;
-    if (Math.abs(expected - baseline) < RECUT_TOLERANCE_S) {
-      recutWatch.current.delete(id);
-      setRecutFor(id, "stale");
+    recutWatch.current.delete(id);
+    const start = reply.start_time;
+    const end = cutEnd(reply.end_time);
+    const expected = end - start;
+    const held = recutHeld.current.get(id) ?? { start, end, length: expected };
+    if (near(start, held.start) && near(end, held.end)) {
+      recutHeld.current.delete(id);
+      recutChain.current.delete(id);
+      setRecutFor(id, null);
       return;
     }
+    const chain = recutChain.current.get(id) ?? { last: held.length, pending: [] };
+    // Not a step of its own when it gives the object the length the step
+    // before it does — two trims past the end of the source both cut to it,
+    // and the second re-cut cannot be seen landing on top of the first.
+    const lastStep = chain.pending[chain.pending.length - 1];
+    if (lastStep === undefined || !near(lastStep, expected)) chain.pending.push(expected);
+    recutChain.current.set(id, chain);
     setRecutFor(id, "waiting");
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -263,9 +310,18 @@ export function ClipModal({
         const { url } = await getClipShareUrl(id);
         const length = await probeDuration(url);
         if (cancelled) return;
-        if (Math.abs(length - expected) < RECUT_TOLERANCE_S) {
+        if (!near(length, chain.last)) {
+          const reached = chain.pending.findIndex((p) => near(p, length));
+          if (reached >= 0) chain.pending.splice(0, reached + 1);
+          else if (!(sourceDuration != null && sourceDuration > 0) && length < chain.pending[chain.pending.length - 1]) {
+            chain.pending = [];
+          }
+          chain.last = length;
+        }
+        if (chain.pending.length === 0) {
           recutWatch.current.delete(id);
-          recutBaseline.current.delete(id);
+          recutHeld.current.delete(id);
+          recutChain.current.delete(id);
           setRecutFor(id, null);
           // The URL the probe just read the new cut from, and the thumbnail
           // the worker uploaded with it.
@@ -337,7 +393,9 @@ export function ClipModal({
 
   // Auto-play when the clip changes, and when a trim's re-cut is swapped in.
   useEffect(() => {
-    videoRef.current?.play();
+    // A new load interrupts a play() still pending, which rejects it; that is
+    // not an error worth surfacing.
+    videoRef.current?.play()?.catch(() => {});
   }, [clip.id, clip.clip_url]);
 
   useEffect(() => () => clearTimeout(tagKeyTimer.current), []);
@@ -852,7 +910,7 @@ export function ClipModal({
                   {isBusy("trim") || recutState === "waiting"
                     ? "Re-cutting… the player shows the old cut until it’s ready"
                     : recutState === "stale"
-                      ? "The new cut isn’t ready yet. Reload to see it."
+                      ? "Couldn’t confirm the new cut here. Reload to see it."
                       : ""}
                 </p>
               </div>
@@ -1022,6 +1080,26 @@ export function mergeClipFields(clips: Clip[], id: string, fields: Partial<Clip>
 }
 
 type RecutState = "waiting" | "stale";
+
+/** The cut the player holds: the stretch of the source it covers, and its
+ *  length. */
+interface HeldCut {
+  start: number;
+  end: number;
+  length: number;
+}
+
+/** The storage object's length as last read, and the lengths the re-cuts
+ *  still queued for it will give it, in order. */
+interface RecutChain {
+  last: number;
+  pending: number[];
+}
+
+/** Two lengths or times the same within what a re-encode drifts by. */
+function near(a: number, b: number): boolean {
+  return Math.abs(a - b) < RECUT_TOLERANCE_S;
+}
 
 // Watching for a trim's re-cut (see `watchRecut`). A re-cut downloads the
 // game's source and re-encodes the clip, so it takes seconds to minutes; five
