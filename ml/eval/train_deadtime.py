@@ -177,10 +177,14 @@ def fit_on(games: Sequence[TrainGame], lags: Sequence[int],
             "context": context_rule(list(lags)), "columns": list(columns)}
 
 
-def probabilities(game: TrainGame, model: dict, *, smooth: bool = True) -> np.ndarray:
-    """Through `predict_in_play` — the shared inference, not a local copy."""
+def probabilities(game: TrainGame, model: dict) -> np.ndarray:
+    """Through `predict_in_play` — the shared inference, not a local copy.
+
+    Always the raw sigmoid: AUC is computed on it, and `decode_windows` does
+    its own smoothing, so a smoothed trace here would be smoothed twice.
+    """
     idx = _columns(model["columns"])
-    return predict_in_play(game.features[:, idx], model, smooth=smooth)
+    return predict_in_play(game.features[:, idx], model, smooth=False)
 
 
 def score(game: TrainGame, raw: np.ndarray, threshold: float) -> DeadTimeSignals:
@@ -198,7 +202,7 @@ def pick_threshold(games: Sequence[TrainGame], model: dict) -> float:
     included — because a threshold has to work on whatever it is given. Ties go
     to the lower threshold (strict >), as on the branch.
     """
-    raw = [probabilities(g, model, smooth=False) for g in games]
+    raw = [probabilities(g, model) for g in games]
     best_thr, best_u = THRESHOLDS[0], -np.inf
     for thr in THRESHOLDS:
         u = sum(net_seconds(score(g, p, thr)) for g, p in zip(games, raw))
@@ -248,7 +252,7 @@ def run_fold(held: TrainGame, train: Sequence[TrainGame], lags: Sequence[int],
     model = fit_on(train, lags)
     thr = pick_threshold(train, model)
     transitions: dict | None = None
-    raw = probabilities(held, model, smooth=False)
+    raw = probabilities(held, model)
     if decoder == "hmm":
         transitions = fit_transitions([g.y for g in train])
         sig = score_hmm(held, raw, transitions)
@@ -315,7 +319,7 @@ def ablation(games: Sequence[TrainGame], lags: Sequence[int]) -> dict[str, dict[
         per_game: dict[str, float | None] = {}
         for held in games:
             model = fit_on([g for g in games if g is not held], lags, cols)
-            per_game[held.test_id] = auc(probabilities(held, model, smooth=False), held.y)
+            per_game[held.test_id] = auc(probabilities(held, model), held.y)
         out[name] = per_game
     return out
 

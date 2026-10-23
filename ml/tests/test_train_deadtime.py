@@ -235,6 +235,16 @@ def test_hmm_transitions_are_fitted_on_the_training_games_only(games, monkeypatc
     assert seen == [sum(len(g.y) for g in games if g is not held) for held in games]
 
 
+def test_probabilities_is_the_raw_trace(games, fast_fit):
+    """`decode_windows` smooths for itself, so the trainer's traces must be
+    the raw sigmoid, never a smoothed one."""
+    model = TD.fit_on(games[:2], ())
+    feats = games[2].features[:, TD._columns(model["columns"])]
+    raw = dml.predict_in_play(feats, model, smooth=False)
+    np.testing.assert_array_equal(TD.probabilities(games[2], model), raw)
+    assert not np.allclose(raw, dml.predict_in_play(feats, model))
+
+
 def test_hmm_folds_are_scored_through_the_shared_dispatch(games, monkeypatch, fast_fit):
     """The held-out windows come from `decode_windows` on the RAW trace with
     the fold's own transitions — the call the builder makes."""
@@ -242,10 +252,9 @@ def test_hmm_folds_are_scored_through_the_shared_dispatch(games, monkeypatch, fa
     calls: list[tuple[str, bool, dict]] = []
     real_decode, real_probs = TD.decode_windows, TD.probabilities
 
-    def spy_probs(game, model, *, smooth=True):
-        out = real_probs(game, model, smooth=smooth)
-        if not smooth:
-            unsmoothed.append(out)
+    def spy_probs(game, model):
+        out = real_probs(game, model)
+        unsmoothed.append(out)
         return out
 
     def spy_decode(raw, model, duration):
@@ -274,10 +283,9 @@ def test_threshold_folds_are_scored_through_the_shared_dispatch(games, monkeypat
     scored: list[list] = []
     real_decode, real_probs, real_eval = TD.decode_windows, TD.probabilities, TD.evaluate_deadtime
 
-    def spy_probs(game, model, *, smooth=True):
-        out = real_probs(game, model, smooth=smooth)
-        if not smooth:
-            unsmoothed.append(out)
+    def spy_probs(game, model):
+        out = real_probs(game, model)
+        unsmoothed.append(out)
         return out
 
     def spy_decode(raw, model, duration):
@@ -357,6 +365,40 @@ def test_main_writes_the_decoder_choose_decoder_picks(games, fast_fit, monkeypat
     TD.main([])
     assert len(written) == 1 and written[0]["decoder"] == winner
     assert written[0] == TD.train(games, "abc1234", winner)[0]
+
+
+@pytest.mark.parametrize("variant", list(TD.VARIANTS))
+def test_main_hands_choose_decoder_each_decoders_shipped_variant_folds(
+        games, fast_fit, monkeypatch, variant):
+    """The shipping rule is only as good as its inputs: each decoder's own
+    held-out folds for the variant it ships — not the other variant's, nor
+    one decoder's twice. The variant is forced, once per name, so a main that
+    pinned either variant's folds would hand over the wrong ones here."""
+    by_id = {g.test_id: g for g in games}
+    seen: list[tuple] = []
+    real_choose = TD.choose_decoder
+    monkeypatch.setattr(TD.dv, "load_game", lambda t: by_id[t])
+    monkeypatch.setattr(TD, "prepare", lambda g: g)
+    monkeypatch.setattr(TD, "git_commit", lambda: "abc1234")
+    monkeypatch.setattr(TD, "choose_variant", lambda vf: variant)
+
+    def spy(thr, hmm):
+        seen.append((thr, hmm))
+        return real_choose(thr, hmm)
+
+    monkeypatch.setattr(TD, "choose_decoder", spy)
+    monkeypatch.setattr(TD, "write", lambda w: None)
+    TD.main([])
+
+    expected = {d: TD.train(games, "abc1234", d)[1]["variant_folds"] for d in TD.DECODERS}
+    assert len(seen) == 1
+    thr, hmm = seen[0]
+    assert thr == expected["threshold"][variant]
+    assert hmm == expected["hmm"][variant]
+    # The case can fail: every other candidate differs from the right one.
+    candidates = [vf for d in TD.DECODERS for vf in expected[d].values()]
+    assert sum(c == thr for c in candidates) == 1
+    assert sum(c == hmm for c in candidates) == 1
 
 
 def test_main_with_a_named_decoder_writes_that_one(games, fast_fit, monkeypatch):
