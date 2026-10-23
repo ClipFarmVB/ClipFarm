@@ -353,4 +353,27 @@ describe("opening a clip from the grid (CF-273)", () => {
     expect(onToggleSelect).toHaveBeenCalledTimes(1);
     expect(onPlay).not.toHaveBeenCalled();
   });
+
+  it("in select mode, a mousedown on the frame cannot take focus", async () => {
+    // tabIndex=-1 keeps it out of the tab order but a click would still focus
+    // it, leaving focus on a hidden, unnamed button. Cancelling the mousedown
+    // is what stops that in a browser; jsdom only reports it.
+    await renderCard({ onToggleSelect: vi.fn() });
+    const frame = host.querySelector<HTMLButtonElement>('button[aria-hidden="true"]');
+    if (!frame) throw new Error("no frame button");
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    act(() => {
+      frame.dispatchEvent(down);
+    });
+    expect(down.defaultPrevented).toBe(true);
+  });
+
+  it("outside select mode, a mousedown on the play button is left alone", async () => {
+    await renderCard({});
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    act(() => {
+      playButton().dispatchEvent(down);
+    });
+    expect(down.defaultPrevented).toBe(false);
+  });
 });

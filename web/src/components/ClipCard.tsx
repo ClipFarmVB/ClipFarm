@@ -205,13 +205,27 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
 
             In select mode it toggles, as the old div did, but only as a mouse
             convenience: out of the tab order and hidden from assistive tech,
-            because the checkbox is the keyboard path. Outside select mode it
-            is one tab stop per card, deliberately. */}
+            because the checkbox is the keyboard path. Its mousedown is
+            cancelled there too, so a click cannot leave focus on a hidden,
+            unnamed control. Outside select mode it is one tab stop per card,
+            deliberately.
+
+            Opening focuses the button before playing. Chrome and Firefox
+            already focus a clicked button, but WebKit (Safari, iOS) does not,
+            and without this a mouse or tap open there leaves the modal's trap
+            holding <body>, with nothing to hand focus back to on close. A
+            programmatic focus after a pointer event does not match
+            :focus-visible, so mouse users get no ring from it. */}
         <button
           type="button"
-          onClick={() => {
-            if (onToggleSelect) onToggleSelect(clip.id);
-            else onPlay(clip);
+          onMouseDown={onToggleSelect ? (e) => e.preventDefault() : undefined}
+          onClick={(e) => {
+            if (onToggleSelect) {
+              onToggleSelect(clip.id);
+              return;
+            }
+            e.currentTarget.focus();
+            onPlay(clip);
           }}
           aria-label={onToggleSelect ? undefined : `Play ${localAction} clip`}
           tabIndex={onToggleSelect ? -1 : undefined}

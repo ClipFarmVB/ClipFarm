@@ -118,4 +118,27 @@ describe("closing a clip returns focus to its card (CF-273)", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(document.activeElement).toBe(opener);
   });
+
+  it("lands back on it after a click that did not focus it, as in Safari", () => {
+    // WebKit does not focus a button on click or tap, and neither does jsdom
+    // on a synthetic click, so a click with focus still on <body> is that
+    // case. The card focuses its button itself before playing; without that,
+    // the trap captures <body> and the last line fails.
+    act(() => root.render(<Grid />));
+    const opener = host.querySelector<HTMLButtonElement>('button[aria-label="Play spike clip"]');
+    if (!opener) throw new Error("no play button");
+    opener.getClientRects = () => [{}] as unknown as DOMRectList;
+
+    expect(document.activeElement).toBe(document.body);
+    act(() => {
+      opener.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog!.contains(document.activeElement)).toBe(true);
+
+    press("Escape");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
 });
