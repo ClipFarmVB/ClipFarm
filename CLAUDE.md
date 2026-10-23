@@ -159,3 +159,21 @@ Two behaviours that look like bugs and are not:
 To re-review after changes, use `workflow_dispatch` with the PR number. GitHub's
 "Re-run jobs" replays the workflow file as it was at the triggering commit, so it
 will not pick up later edits.
+
+## Skein
+
+ClipFarm's decisions are recorded in Skein, in the private repo ClipFarmVB/clipfarm-skein.
+Agents reach it through the `ask_skein` tool, registered in `.mcp.json`; each person sets
+`SKEIN_SECRET` in their environment (ask Nelson for it, never commit it).
+
+- When you are blocked on a decision about conventions, process or scope, call `ask_skein`
+  before asking a person. Act only on an answer with a decision id, and cite that id
+  (`D-0031`) in the commit message and the PR body, not just in your reasoning.
+- `pending` means no decision yet. Never act on it, and never act on a draft attached to it:
+  drafts are guesses until a person confirms them. The question has gone to its owner on
+  Discord. In an unattended run, park the item with the `needs-decision` label citing the
+  pending id, and move on; interactively, carry on with other work and ask again later.
+- Tuning and detection defaults, dependencies and licensing, migrations and deploys, security,
+  users' data, money and deleting things always go to a person. In an unattended run, don't ask
+  Skein about them; use `needs-decision` directly.
+- Never put secrets or production data in a question.
