@@ -86,6 +86,25 @@ describe("the card's action row (CF-272)", () => {
     expect(row.className).not.toContain("shrink-0");
   });
 
+  it("lets the actions wrap below the meta instead of painting over it", async () => {
+    // Round 3: with the meta column at `flex-1` (basis 0) and an unshrinkable
+    // timestamp, a 176px card in the four-column grid at 1024 printed
+    // "1:02:00" across Download. Measured in a browser from 375 to 1440; what
+    // jsdom can pin is the structure: the footer row wraps, the meta column is
+    // content-sized, and the timestamp truncates as a last resort.
+    await act(async () => {
+      root.render(<ClipCard clip={{ ...clip, start_time: 3720 }} onPlay={() => {}} onSave={() => {}} />);
+    });
+    const stamp = [...host.querySelectorAll("span")].find((s) => s.textContent === "1:02:00")!;
+    const meta = stamp.parentElement!;
+    const footerRow = meta.parentElement!;
+
+    expect(footerRow.className.split(" ")).toContain("flex-wrap");
+    expect(meta.className.split(" ")).not.toContain("flex-1");
+    expect(stamp.className.split(" ")).toContain("truncate");
+    expect(stamp.className.split(" ")).not.toContain("shrink-0");
+  });
+
   it("shows the tagged player, as text rather than a control", async () => {
     await act(async () => {
       root.render(<ClipCard clip={{ ...clip, player_name: "Maya Okafor" }} onPlay={() => {}} />);

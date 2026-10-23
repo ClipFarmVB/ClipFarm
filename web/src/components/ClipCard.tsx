@@ -168,26 +168,31 @@ export function ClipCard({ clip, onPlay, selected, onToggleSelect, onSave }: Cli
 
       {/* Card footer */}
       <div className="px-2.5 py-2">
-        <div className="flex items-center justify-between gap-1">
-          {/* Left: confidence and timestamp. `flex-1` (basis 0) gives this
-              column only the width the actions leave, rather than sharing the
-              squeeze with them. */}
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+        {/* Wraps: where the card is too narrow for the meta and the actions
+            side by side (the four-column grid from 1024 to about 1260), the
+            actions drop to a line of their own rather than the two painting
+            over each other. Both are content-sized, so neither is squeezed
+            while they fit on one line. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-1 gap-y-0.5">
+          {/* Left: confidence and timestamp. The timestamp still truncates, for
+              a card too narrow even for this column on a line of its own. */}
+          <div className="flex min-w-0 items-center gap-2">
             <span className={cn(
-              "text-[11px] font-semibold tabular-nums",
+              "shrink-0 text-[11px] font-semibold tabular-nums",
               confidencePct >= 80 ? "text-emerald-400"
               : confidencePct >= 60 ? "text-amber-400"
               : "text-muted"
             )}>
               {confidencePct}%
             </span>
-            <span className="shrink-0 text-[10px] text-subtle tabular-nums">{formatTimestamp(clip.start_time)}</span>
+            <span className="min-w-0 truncate text-[10px] text-subtle tabular-nums">{formatTimestamp(clip.start_time)}</span>
           </div>
 
           {/* Right: action buttons. No `shrink-0`: held at max-content width
               it could not wrap, and the card's overflow-hidden clipped
-              whatever did not fit (CF-272). */}
-          <div className="flex flex-wrap items-center justify-end gap-0.5">
+              whatever did not fit (CF-272). `ml-auto` keeps it right-aligned
+              when it has wrapped onto its own line. */}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-0.5">
             {/* Demo clips (CF-565): the api refuses download for them with
                 409, so it is not offered rather than ending in an error. The
                 badge says why, where no game banner is in view (a

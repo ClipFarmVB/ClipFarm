@@ -19,6 +19,7 @@ import {
   updateClipLabels,
 } from "@/lib/api";
 import { startCrossOriginDownload } from "@/lib/download";
+import { probeDuration } from "@/lib/mediaDuration";
 import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 import { useFocusTrap } from "@/lib/useFocusTrap";
 import { cn } from "@/lib/utils";
@@ -108,13 +109,32 @@ export function ClipModal({
   // <body>. An id, not a flag: a write that settles after ← → must not pull
   // focus to the Tag button of the clip now showing.
   const refocusTagFor = useRef<string | null>(null);
-  // Whether the tag select's value last moved by a key. On a closed <select>
+  // Whether a `change` now arriving was made by a key. On a closed <select>
   // ↑ ↓ ← → and type-ahead change the option and fire `change`, so a keyboard
   // user browsing the roster would tag whichever player the first press lands
-  // on. A keyed change therefore only picks; Enter commits it. A pointer pick
-  // from the open list commits at once, as it always has.
+  // on. A keyed change therefore only picks; Enter commits it. A pick from the
+  // open list commits at once, as it always has.
+  //
+  // Set on the keydown and cleared at the end of that task: a key that moves
+  // a closed select fires its `change` within the keydown's own default
+  // action, before any timer can run, while a pick from the open list comes
+  // later in a task of its own. Not cleared by a mousedown alone, which the
+  // list does not always deliver — on macOS ↓ opens the native menu rather
+  // than moving the value, and a click in that menu never reaches the select,
+  // so a flag that waited for a mousedown dropped that pick on blur.
   const tagKeyedRef = useRef(false);
+  const tagKeyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [tagPicked, setTagPicked] = useState(false);
+  const tagSelectRef = useRef<HTMLSelectElement | null>(null);
+  // A trim's re-cut, per clip: "waiting" while it is polled for, "stale" once
+  // the dialog has stopped looking and the player still holds the old cut.
+  const [recut, setRecut] = useState<Record<string, RecutState>>({});
+  const recutState = recut[clip.id] ?? null;
+  // Stops the poll for a clip, per clip id.
+  const recutWatch = useRef(new Map<string, () => void>());
+  // The length of the cut the player holds for a clip, per clip id; see
+  // `handleTrim`.
+  const recutBaseline = useRef(new Map<string, number>());
 
   // CF-194: the raw upload is deleted after its retention window, and a re-cut
   // reads from it. Undefined means an older payload without the field — treat
@@ -183,23 +203,107 @@ export function ClipModal({
   async function handleTrim(startDelta: number, endDelta: number) {
     const target = clip;
     if (busyRef.current.has(`trim:${target.id}`)) return;
+    // What the player has loaded for this clip, measured before anything
+    // changes — the length a re-cut has to differ from to be told apart. Kept
+    // across trims until a re-cut lands, because until then the player still
+    // holds the cut it opened with, however many trims are queued behind it.
+    if (!recutBaseline.current.has(target.id)) {
+      const v = videoRef.current;
+      const loaded = v && Number.isFinite(v.duration) && v.duration > 0 ? v.duration : null;
+      recutBaseline.current.set(target.id, loaded ?? target.end_time - target.start_time);
+    }
     markBusy("trim", target.id, true);
     try {
       const updated = await trimClip(target.id, startDelta, endDelta);
-      // Unlike a label or a tag, a trim really changes the media, so the new
-      // `clip_url` and thumbnail are taken and the player reloads.
-      onUpdate?.(target.id, {
-        start_time: updated.start_time,
-        end_time: updated.end_time,
-        clip_url: updated.clip_url,
-        thumbnail_url: updated.thumbnail_url,
-      });
+      // The bounds only. The api answers before the re-cut runs (it is queued
+      // to a worker), and the re-cut overwrites the same storage object, so the
+      // echo's `clip_url` is a fresh signature over the OLD cut: taking it
+      // reloaded the player onto the old video at 0:00, paused, while the
+      // footer showed the new bounds. The media is swapped by `watchRecut`
+      // once the new cut is actually there.
+      onUpdate?.(target.id, { start_time: updated.start_time, end_time: updated.end_time });
+      watchRecut(target.id, updated);
     } catch (err) {
       alert(err instanceof Error ? err.message : "Could not trim this clip.");
     } finally {
       markBusy("trim", target.id, false);
     }
   }
+
+  /** Polls until the re-cut for `id` has landed, then hands the page its new
+   *  media. Nothing in the api says when a re-cut finishes, and the object's
+   *  URL does not change, so the signal is the cut's length: each poll mints a
+   *  fresh URL (an already-fetched one may be answered from the HTTP cache)
+   *  and reads that video's duration, and a length matching the trimmed bounds
+   *  is the new cut. A trim that leaves the length the player already has (one
+   *  step out, one back) cannot be told apart that way, and is reported as
+   *  not ready rather than guessed at. Reporting only: a failed poll is
+   *  retried, and giving up leaves the playing cut and the new bounds as they
+   *  are. */
+  function watchRecut(id: string, reply: Clip) {
+    recutWatch.current.get(id)?.();
+    const expected = reply.end_time - reply.start_time;
+    const baseline = recutBaseline.current.get(id) ?? expected;
+    if (Math.abs(expected - baseline) < RECUT_TOLERANCE_S) {
+      recutWatch.current.delete(id);
+      setRecutFor(id, "stale");
+      return;
+    }
+    setRecutFor(id, "waiting");
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = Date.now() + RECUT_GIVE_UP_MS;
+    const stop = () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    recutWatch.current.set(id, stop);
+    const poll = async () => {
+      try {
+        const { url } = await getClipShareUrl(id);
+        const length = await probeDuration(url);
+        if (cancelled) return;
+        if (Math.abs(length - expected) < RECUT_TOLERANCE_S) {
+          recutWatch.current.delete(id);
+          recutBaseline.current.delete(id);
+          setRecutFor(id, null);
+          // The URL the probe just read the new cut from, and the thumbnail
+          // the worker uploaded with it.
+          onUpdate?.(id, { clip_url: url, thumbnail_url: reply.thumbnail_url });
+          return;
+        }
+      } catch {
+        // A failed poll is a missed reading, not a failed trim; try again.
+      }
+      if (cancelled) return;
+      if (Date.now() >= deadline) {
+        recutWatch.current.delete(id);
+        setRecutFor(id, "stale");
+        return;
+      }
+      timer = setTimeout(poll, RECUT_POLL_MS);
+    };
+    timer = setTimeout(poll, RECUT_FIRST_POLL_MS);
+  }
+
+  function setRecutFor(id: string, state: RecutState | null) {
+    setRecut((r) => {
+      const rest = { ...r };
+      if (state) rest[id] = state;
+      else delete rest[id];
+      return rest;
+    });
+  }
+
+  // Stop polling with the dialog. A re-cut still running then shows on the
+  // next load of the page.
+  useEffect(() => {
+    const watches = recutWatch.current;
+    return () => {
+      for (const stop of watches.values()) stop();
+      watches.clear();
+    };
+  }, []);
 
   async function handleTag(playerId: string) {
     const target = clip;
@@ -214,7 +318,13 @@ export function ClipModal({
       alert(e instanceof Error ? e.message : "Could not tag this clip.");
     } finally {
       markBusy("tag", target.id, false);
-      refocusTagFor.current = target.id;
+      // Only if focus is still where the write left it — on the select, or
+      // dropped to <body> by a browser that blurs a control as it disables.
+      // A user who has moved on to another control keeps their place.
+      const active = document.activeElement;
+      if (!active || active === document.body || active === tagSelectRef.current) {
+        refocusTagFor.current = target.id;
+      }
       setTaggingFor((current) => (current === target.id ? null : current));
     }
   }
@@ -225,10 +335,12 @@ export function ClipModal({
     setTaggingFor(clip.id);
   }
 
-  // Auto-play when clip changes
+  // Auto-play when the clip changes, and when a trim's re-cut is swapped in.
   useEffect(() => {
     videoRef.current?.play();
-  }, [clip.id]);
+  }, [clip.id, clip.clip_url]);
+
+  useEffect(() => () => clearTimeout(tagKeyTimer.current), []);
 
   // Prevents the background page from jumping when the modal opens or closes.
   useBodyScrollLock(true);
@@ -321,16 +433,17 @@ export function ClipModal({
   // content-sized card, and with the edit bar and an open panel a 75vh video
   // overflowed a 720px-tall window and painted over the controls. Summed from
   // what is rendered: backdrop padding, header and footer always; the edit bar,
-  // an open panel, the trim panel's "Re-cutting clip…" line and the undo
-  // section when present. Generous rather than exact — the cost of
-  // over-reserving is a slightly smaller video, the cost of under-reserving is
-  // the overflow, which `overflow-hidden` on the video's box then turns into a
-  // crop rather than an overlap.
+  // an open panel, the trim panel's status line (always laid out, so it does
+  // not resize the video as a re-cut starts and ends) and the undo section
+  // when present. Generous rather than exact — the cost of over-reserving is a
+  // slightly smaller video, the cost of under-reserving is the overflow, which
+  // `overflow-hidden` on the video's box then turns into a crop rather than an
+  // overlap.
   const chromeRem =
     7.75 +
     (canEdit ? 3 : 0) +
     (canEdit && panel ? 3.75 : 0) +
-    (canEdit && panel === "trim" && isBusy("trim") ? 1.5 : 0) +
+    (canEdit && panel === "trim" ? 1.5 : 0) +
     (showUndo ? 6 : 0);
 
   // Keyboard navigation
@@ -582,11 +695,12 @@ export function ClipModal({
 
                    A key that moves the closed select's value only picks a
                    player (see `tagKeyedRef`); Enter tags with the pick, and
-                   leaving the select without it drops the pick. A mouse or
-                   touch pick from the open list tags at once — that is already
-                   a deliberate choice, and a mousedown clears the key flag. */
+                   leaving the select without it drops the pick. A pick from
+                   the open list tags at once — that is already a deliberate
+                   choice. */
                 <>
                 <select
+                  ref={tagSelectRef}
                   autoFocus
                   aria-label="Tag a player"
                   aria-describedby={tagPicked ? "clip-edit-tag-hint" : undefined}
@@ -611,6 +725,10 @@ export function ClipModal({
                     if (e.altKey) return;
                     if (e.key.startsWith("Arrow") || TAG_PAGING_KEYS.has(e.key) || (e.key.length === 1 && e.key !== " ")) {
                       tagKeyedRef.current = true;
+                      clearTimeout(tagKeyTimer.current);
+                      tagKeyTimer.current = setTimeout(() => {
+                        tagKeyedRef.current = false;
+                      }, 0);
                     }
                   }}
                   onChange={(e) => {
@@ -672,12 +790,17 @@ export function ClipModal({
                       key={label}
                       type="button"
                       aria-pressed={active}
-                      disabled={isBusy("label")}
+                      // `aria-disabled`, not `disabled`: the chip just pressed
+                      // is focused, and a browser blurs a control as it
+                      // disables, dropping focus to <body> for the length of
+                      // the write. `handleToggleLabel`'s busy check is what
+                      // refuses the second press.
+                      aria-disabled={isBusy("label") || undefined}
                       onClick={() => handleToggleLabel(label)}
                       className={cn(
                         // Sentence case for "Not an action"; `capitalize`
                         // would title-case every word of it.
-                        "h-9 rounded-md px-3 text-[11px] font-medium transition-colors focus-ring disabled:opacity-40 sm:h-8",
+                        "h-9 rounded-md px-3 text-[11px] font-medium transition-colors focus-ring aria-disabled:cursor-default aria-disabled:opacity-40 sm:h-8",
                         !isNotAction && "capitalize",
                         active && isNotAction
                           ? "bg-red-500/10 text-red-400 ring-1 ring-red-500/20"
@@ -716,11 +839,22 @@ export function ClipModal({
                     onStep={handleTrim}
                   />
                 </div>
-                {isBusy("trim") && (
-                  <p className="mt-1.5 text-center text-[11px] text-brand animate-pulse" role="status">
-                    Re-cutting clip…
-                  </p>
-                )}
+                {/* Always in the layout, empty when idle, so the line coming
+                    and going does not resize the video on every step. */}
+                <p
+                  role="status"
+                  className={cn(
+                    "mt-1.5 min-h-4 text-center text-[11px] leading-4",
+                    recutState === "stale" && !isBusy("trim") ? "text-muted" : "text-brand",
+                    (isBusy("trim") || recutState === "waiting") && "animate-pulse",
+                  )}
+                >
+                  {isBusy("trim") || recutState === "waiting"
+                    ? "Re-cutting… the player shows the old cut until it’s ready"
+                    : recutState === "stale"
+                      ? "The new cut isn’t ready yet. Reload to see it."
+                      : ""}
+                </p>
               </div>
             )}
           </div>
@@ -804,13 +938,10 @@ export function ClipModal({
             A section of its own below the footer, not an item in the footer's
             row: that row is a single non-wrapping flex line, and the button and
             its two sentences were squeezed into whatever width it had left. */}
-        {SOCIAL_ENABLED &&
-          ownsClip &&
-          // A demo clip is always private and the api refuses any change to
-          // it (CF-565), so this never applies; said here rather than implied.
-          !clip.is_sample &&
-          clip.effective_visibility &&
-          clip.effective_visibility !== "private" && (
+        {/* `showUndo` holds the conditions. A demo clip is always private
+            and the api refuses any change to it (CF-565), so this never
+            applies to one; said here rather than implied. */}
+        {showUndo && (
           <div className="shrink-0 border-t border-border px-3 py-3 sm:px-4">
             <button
               type="button"
@@ -890,6 +1021,17 @@ export function mergeClipFields(clips: Clip[], id: string, fields: Partial<Clip>
   return clips.map((c) => (c.id === id ? { ...c, ...fields } : c));
 }
 
+type RecutState = "waiting" | "stale";
+
+// Watching for a trim's re-cut (see `watchRecut`). A re-cut downloads the
+// game's source and re-encodes the clip, so it takes seconds to minutes; five
+// minutes without it is treated as "not this session". The tolerance is well
+// under a 2s trim step and well over a re-encode's drift from its bounds.
+const RECUT_FIRST_POLL_MS = 3_000;
+const RECUT_POLL_MS = 5_000;
+const RECUT_GIVE_UP_MS = 5 * 60_000;
+const RECUT_TOLERANCE_S = 0.5;
+
 // Keys besides the arrows that move a closed <select>'s value.
 const TAG_PAGING_KEYS = new Set(["Home", "End", "PageUp", "PageDown"]);
 
@@ -918,9 +1060,12 @@ function TrimEdge({
           <button
             key={label}
             type="button"
-            disabled={disabled}
+            // `aria-disabled` rather than `disabled`, so focus stays on the
+            // step just pressed (see the label chips); `handleTrim`'s busy
+            // check refuses a step while one is out.
+            aria-disabled={disabled || undefined}
             onClick={() => onStep(d[0], d[1])}
-            className="h-9 min-w-11 rounded-md bg-surface-high px-2.5 text-[11px] font-medium text-muted tabular-nums transition-colors hover:bg-surface-hover hover:text-foreground focus-ring disabled:opacity-40 sm:h-8"
+            className="h-9 min-w-11 rounded-md bg-surface-high px-2.5 text-[11px] font-medium text-muted tabular-nums transition-colors hover:bg-surface-hover hover:text-foreground focus-ring aria-disabled:cursor-default aria-disabled:opacity-40 sm:h-8"
           >
             {label}
           </button>

@@ -8,8 +8,10 @@
 //   said, the tag select locks while its write is out, jersey-less names);
 // - edits reach the page as the fields that changed, which the page merges by
 //   id onto its row as it is when the write lands — not the PATCH echo, whose
-//   freshly presigned `clip_url` would restart the video (a trim excepted,
-//   which really changes the media), and not a copy of the clip from before;
+//   freshly presigned `clip_url` would restart the video, and not a copy of
+//   the clip from before. A trim's echo is no exception: the api answers it
+//   before the background re-cut runs, so its URL still serves the old cut,
+//   and the media is swapped only once the new cut is there;
 // - everything is keyed to the clip, so ← → closes a panel and a write that
 //   settles late lands on its own clip, not the one now showing;
 // - ← → leave the tag select alone, a key only picks a player while Enter
@@ -21,14 +23,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const tagClip = vi.hoisted(() => vi.fn());
 const updateClipLabels = vi.hoisted(() => vi.fn());
 const trimClip = vi.hoisted(() => vi.fn());
+const getClipShareUrl = vi.hoisted(() => vi.fn());
+const probeDuration = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({
   tagClip,
   updateClipLabels,
   trimClip,
   getClipDownloadUrl: vi.fn(),
-  getClipShareUrl: vi.fn(),
+  getClipShareUrl,
   setClipVisibility: vi.fn(),
 }));
+// jsdom loads no media, so the re-cut's length is whatever a test says.
+vi.mock("@/lib/mediaDuration", () => ({ probeDuration }));
 vi.mock("@/lib/useMe", () => ({
   useMe: () => null,
   needsHandle: () => false,
@@ -130,6 +136,31 @@ function keyOn(el: Element, key: string) {
   act(() => {
     el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
   });
+}
+
+/** A key that moves a closed select: the browser fires its `change` inside
+ *  the keydown's default action, in the same task. */
+async function keyPick(s: HTMLSelectElement, key: string, value: string) {
+  await act(async () => {
+    s.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    s.value = value;
+    s.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+/** Let the task the last event ran in end, and its timers with it. */
+async function nextTask() {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
+function chip(label: string): HTMLButtonElement {
+  return button(label)!;
+}
+
+function busyChip(label: string): boolean {
+  return chip(label).getAttribute("aria-disabled") === "true";
 }
 
 /** What the game page's `clips[]` held at its last render. */
@@ -264,8 +295,7 @@ describe("tagging a player", () => {
 
     await click(button("Tag player"));
     const s = select()!;
-    keyOn(s, "ArrowDown");
-    await choose(s, "p1");
+    await keyPick(s, "ArrowDown", "p1");
     expect(tagClip).not.toHaveBeenCalled();
     expect(document.getElementById("clip-edit-tag-hint")?.textContent).toBe("Enter to tag");
     expect(s.getAttribute("aria-describedby")).toBe("clip-edit-tag-hint");
@@ -282,14 +312,45 @@ describe("tagging a player", () => {
     await mount();
     await click(button("Tag player"));
     const s = select()!;
-    keyOn(s, "ArrowDown");
-    await choose(s, "p1");
+    await keyPick(s, "ArrowDown", "p1");
 
     await act(async () => {
       s.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     });
     expect(select()).toBeNull();
     expect(tagClip).not.toHaveBeenCalled();
+  });
+
+  it("tags at once on a pick from a list a key opened, with no mousedown", async () => {
+    // macOS: ↓ on a closed select opens the native menu instead of moving the
+    // value, and a click in that menu sends the select no mousedown. The pick
+    // arrives as a `change` in a later task, and must count as a pick from the
+    // list, not as the key — or the next blur drops it. Windows has the same
+    // shape for ↓ and then Alt+↓.
+    tagClip.mockResolvedValue(echo({ player_id: "p2", player_name: "Bob" }));
+    await mount();
+    await click(button("Tag player"));
+    const s = select()!;
+    keyOn(s, "ArrowDown");
+    await nextTask();
+    await choose(s, "p2");
+    expect(tagClip).toHaveBeenCalledWith("clip-1", "p2");
+  });
+
+  it("does not take focus back from a control the user moved to on the same clip", async () => {
+    // R3-N1: a mouse pick, then the user clicks Label while the write is out.
+    let resolve!: (c: Clip) => void;
+    tagClip.mockReturnValue(new Promise<Clip>((r) => { resolve = r; }));
+    await act(async () => root.render(<Grid initial={[makeClip()]} />));
+
+    await click(button("Tag player"));
+    await choose(select()!, "p2");
+    const label = button("Label")!;
+    act(() => label.focus());
+
+    await act(async () => resolve(echo({ player_id: "p2", player_name: "Bob" })));
+    expect(select()).toBeNull();
+    expect(document.activeElement).toBe(label);
   });
 
   it("tags at once on a pick from the open list, even after arrow keys", async () => {
@@ -395,12 +456,38 @@ describe("labelling", () => {
     await click(button("Label"));
     await click(button("dig"));
     expect(pressed("dig")).toBe(true);
-    expect(button("dig")!.disabled).toBe(true);
+    expect(busyChip("dig")).toBe(true);
 
     await act(async () => reject(new Error("Clip is no longer available")));
     expect(alert).toHaveBeenCalledWith("Clip is no longer available");
     expect(pressed("dig")).toBe(false);
     expect(pressed("spike")).toBe(true);
+  });
+
+  it("keeps the pressed chip focusable while its write is out, and refuses a second press", async () => {
+    // R3-M2: a `disabled` chip is blurred by the browser as it disables, so
+    // focus fell to <body> and the next Tab started at the header. jsdom does
+    // no focus fixup, so what is pinned is that the chip is never `disabled`
+    // and that the busy check, not the attribute, refuses the second press.
+    let release!: (c: Clip) => void;
+    updateClipLabels.mockReturnValue(new Promise<Clip>((r) => { release = r; }));
+    await mount();
+    await click(button("Label"));
+    const dig = chip("dig");
+    act(() => dig.focus());
+
+    await click(dig);
+    expect(dig.disabled).toBe(false);
+    expect(busyChip("dig")).toBe(true);
+    expect(document.activeElement).toBe(dig);
+    await click(chip("set"));
+    expect(updateClipLabels).toHaveBeenCalledTimes(1);
+
+    await act(async () =>
+      release(echo({ labels: ["spike", "dig"], action_type: "spike", confidence: 0.93 })),
+    );
+    expect(busyChip("dig")).toBe(false);
+    expect(document.activeElement).toBe(dig);
   });
 
   it("does not undo a tag that landed while the label write was out", async () => {
@@ -463,23 +550,109 @@ describe("labelling", () => {
 });
 
 describe("trimming", () => {
-  it("re-cuts, and takes the trim's new bounds and media", async () => {
-    // The one edit that really changes the video, so its URL is taken.
+  function step(edge: "Start" | "End", label: "−2s" | "+2s") {
+    const group = document.querySelector(`[aria-label="${edge} of clip"]`)!;
+    return [...group.querySelectorAll("button")].find((b) => b.textContent === label);
+  }
+
+  function video(): HTMLVideoElement {
+    return document.querySelector("video")!;
+  }
+
+  function status(): string {
+    return document.querySelector("#clip-edit-trim [role=status]")?.textContent ?? "";
+  }
+
+  it("takes the new bounds and keeps playing the cut it has", async () => {
+    // R3-C1: the api answers a trim before its re-cut runs, and the re-cut
+    // overwrites the same object, so the echo's re-signed URL serves the OLD
+    // cut. Taking it reloaded the player onto that, at 0:00 and paused.
     trimClip.mockResolvedValue(echo({ start_time: 8, end_time: 18, player_name: null }));
+    getClipShareUrl.mockReturnValue(new Promise(() => {}));
     const onUpdate = vi.fn();
     await mount({ clip: makeClip({ player_name: "Bob", labels: ["dig"] }), onUpdate });
 
     await click(button("Trim"));
-    const start = document.querySelector('[aria-label="Start of clip"]')!;
-    await click([...start.querySelectorAll("button")].find((b) => b.textContent === "−2s"));
+    await click(step("Start", "−2s"));
 
     expect(trimClip).toHaveBeenCalledWith("clip-1", -2, 0);
-    expect(onUpdate).toHaveBeenCalledWith("clip-1", {
-      start_time: 8,
-      end_time: 18,
-      clip_url: "https://example.test/re-signed.mp4",
-      thumbnail_url: "https://example.test/c.jpg",
-    });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(onUpdate).toHaveBeenCalledWith("clip-1", { start_time: 8, end_time: 18 });
+    expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+    expect(status()).toContain("the player shows the old cut");
+  });
+
+  it("swaps in the re-cut once it has landed, and plays it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      trimClip.mockResolvedValue(echo({ start_time: 10, end_time: 20, thumbnail_url: "https://example.test/t2.jpg" }));
+      getClipShareUrl
+        .mockResolvedValueOnce({ url: "https://example.test/poll-1.mp4" })
+        .mockResolvedValueOnce({ url: "https://example.test/poll-2.mp4" });
+      // The old 8s cut on the first poll, the new 10s one on the second.
+      probeDuration.mockResolvedValueOnce(8.02).mockResolvedValueOnce(10.01);
+      await act(async () => root.render(<Grid initial={[makeClip()]} />));
+
+      await click(button("Trim"));
+      await click(step("End", "+2s"));
+      expect(gridRows[0].end_time).toBe(20);
+      expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+      expect(probeDuration).toHaveBeenCalledWith("https://example.test/poll-1.mp4");
+      expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+
+      const played = vi.mocked(HTMLMediaElement.prototype.play).mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-2.mp4");
+      expect(gridRows[0].thumbnail_url).toBe("https://example.test/t2.jpg");
+      expect(vi.mocked(HTMLMediaElement.prototype.play).mock.calls.length).toBeGreaterThan(played);
+      expect(status()).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says the new cut is not ready rather than guessing, once it stops looking", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      trimClip.mockResolvedValue(echo({ start_time: 10, end_time: 20 }));
+      getClipShareUrl.mockResolvedValue({ url: "https://example.test/poll.mp4" });
+      probeDuration.mockResolvedValue(8);
+      const onUpdate = vi.fn();
+      await mount({ onUpdate });
+
+      await click(button("Trim"));
+      await click(step("End", "+2s"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(6 * 60_000); });
+
+      expect(onUpdate).toHaveBeenCalledTimes(1); // the bounds, never media
+      expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+      expect(status()).toContain("Reload to see it");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps focus on the step just pressed while the trim is out", async () => {
+    // R3-M2, for the steppers: see the label chip's test.
+    let release!: (c: Clip) => void;
+    trimClip.mockReturnValue(new Promise<Clip>((r) => { release = r; }));
+    getClipShareUrl.mockReturnValue(new Promise(() => {}));
+    await mount();
+    await click(button("Trim"));
+    const plus = step("End", "+2s")!;
+    act(() => plus.focus());
+
+    await click(plus);
+    expect(plus.disabled).toBe(false);
+    expect(plus.getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(plus);
+    await click(plus);
+    expect(trimClip).toHaveBeenCalledTimes(1);
+
+    await act(async () => release(echo({ start_time: 10, end_time: 20 })));
+    expect(document.activeElement).toBe(plus);
   });
 
   it("says a trim failed rather than silently keeping the old bounds", async () => {
@@ -513,12 +686,12 @@ describe("moving to another clip", () => {
     await mount({ onUpdate });
     await click(button("Label"));
     await click(button("dig"));
-    expect(button("dig")!.disabled).toBe(true); // the premise: clip-1's write is out
+    expect(busyChip("dig")).toBe(true); // the premise: clip-1's write is out
 
     const second = makeClip({ id: "clip-2", action_type: "serve" });
     await mount({ clip: second, onUpdate });
     await click(button("Label"));
-    expect(button("dig")!.disabled).toBe(false);
+    expect(busyChip("dig")).toBe(false);
     expect(pressed("dig")).toBe(false);
     expect(pressed("serve")).toBe(true);
 
@@ -533,8 +706,9 @@ describe("moving to another clip", () => {
 
 describe("the keyboard", () => {
   it("leaves ← → to the tag select while it has focus", async () => {
-    // On a closed <select> the arrows change the option, which fires the tag
-    // write; navigating as well would tag the clip and move off it.
+    // On a closed <select> the arrows change the option, which picks a player
+    // for Enter to tag; navigating as well would pick one and move off the
+    // clip.
     const onNext = vi.fn();
     const onPrev = vi.fn();
     await mount({ onNext, onPrev });
