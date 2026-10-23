@@ -175,6 +175,18 @@ commit it).
   ticket, PRs. If a person is at the chat and you would ask them anyway, call it with
   `wait_seconds: 0` and `notify: false`. Act only on an answer with a decision id, and cite
   that id (`D-0031`) in the commit message and the PR body, not just in your reasoning.
+- Go-ahead and confirmation questions are questions for Skein too: "start the run now?",
+  "proceed with X?", "continue to the next ticket?", "OK to open the PR?". Call `ask_skein`
+  before asking Nelson, the same way as for any other question, at the chat or unattended.
+- When a standing rule in the record covers the situation (for example D-0035: start a
+  planned ticket Nelson named once the PR it waits on merges), act on it without asking and
+  cite its id in the run report. Act on a rule only when every one of its conditions holds;
+  if you are unsure it applies, ask Skein rather than stretch it.
+- Never route Claude Code's tool-permission prompts through Skein: approving a command, a file
+  write or a tool. Those are the harness's safety checks, not decisions, and Skein never
+  stands in for them. If a permission check blocks a step, name the exact command or tool in
+  the run report so Nelson can decide whether to allow it; never change permission settings
+  yourself.
 - When `ask_skein` returns `pending` and you then ask the person in chat, record their reply
   with `record_skein_answer`: the pending id, their words or the option letter they chose,
   and their chat handle (Nelson's is `ollienel777`). Never pass your own answer or a summary
