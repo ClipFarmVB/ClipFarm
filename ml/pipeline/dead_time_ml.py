@@ -522,8 +522,9 @@ def predict_in_play(features: np.ndarray, weights: dict, *, smooth: bool = True)
     vector with the wrong layout. The scaling and edge rule are the code's, so
     weights whose recorded `"scaling"` or context edge/layout differ from them
     are refused (`check_preparation`) rather than silently mis-scaled.
-    `smooth=False` returns the raw sigmoid, which
-    is what held-out AUC is computed on; the windows use the smoothed trace.
+    `smooth=False` returns the raw sigmoid, which is what held-out AUC is
+    computed on and what `decode_windows` takes — it smooths for the
+    threshold decoder itself, and the hmm decoder reads the raw trace.
     """
     check_preparation(weights)
     lags = list(weights.get("context", {}).get("lags", []))

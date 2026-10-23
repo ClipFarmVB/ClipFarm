@@ -249,7 +249,10 @@ def test_hmm_folds_are_scored_through_the_shared_dispatch(games, monkeypatch, fa
         return out
 
     def spy_decode(raw, model, duration):
-        calls.append((model["decoder"], any(raw is o for o in unsmoothed), model["hmm"]))
+        # The threshold pick goes through the dispatch too; only the hmm
+        # calls are the held-out scoring this test is about.
+        if model["decoder"] == "hmm":
+            calls.append((model["decoder"], any(raw is o for o in unsmoothed), model["hmm"]))
         return real_decode(raw, model, duration)
 
     monkeypatch.setattr(TD, "probabilities", spy_probs)
@@ -258,6 +261,53 @@ def test_hmm_folds_are_scored_through_the_shared_dispatch(games, monkeypatch, fa
     assert [c[0] for c in calls] == ["hmm"] * len(games)
     assert all(c[1] for c in calls), "a smoothed trace reached the hmm"
     assert [c[2] for c in calls] == [f["hmm"] for f in folds]
+
+
+def test_threshold_folds_are_scored_through_the_shared_dispatch(games, monkeypatch, fast_fit):
+    """Every threshold window the trainer scores — the pick over the training
+    games and the held-out fold — is what `decode_windows` returns on the RAW
+    trace: the call the builder makes. Scoring a smoothed trace, or thresholding
+    without the dispatch, would tune and report windows the builder never ships."""
+    assert TD.decode_windows is dml.decode_windows
+    unsmoothed: list[np.ndarray] = []    # kept alive, so identity is meaningful
+    decoded: list[tuple[bool, float, list]] = []
+    scored: list[list] = []
+    real_decode, real_probs, real_eval = TD.decode_windows, TD.probabilities, TD.evaluate_deadtime
+
+    def spy_probs(game, model, *, smooth=True):
+        out = real_probs(game, model, smooth=smooth)
+        if not smooth:
+            unsmoothed.append(out)
+        return out
+
+    def spy_decode(raw, model, duration):
+        out = real_decode(raw, model, duration)
+        decoded.append((any(raw is o for o in unsmoothed), model["threshold"], out))
+        return out
+
+    def spy_eval(keep, windows, duration):
+        scored.append(windows)
+        return real_eval(keep, windows, duration)
+
+    monkeypatch.setattr(TD, "probabilities", spy_probs)
+    monkeypatch.setattr(TD, "decode_windows", spy_decode)
+    monkeypatch.setattr(TD, "evaluate_deadtime", spy_eval)
+    held, train = games[1], [g for g in games if g is not games[1]]
+    fold = TD.run_fold(held, train, ())
+
+    assert len(scored) == len(TD.THRESHOLDS) * len(train) + 1
+    assert len(decoded) == len(scored)
+    for windows, (from_raw, _, out) in zip(scored, decoded):
+        assert windows is out, "a threshold window was scored without the dispatch"
+        assert from_raw, "a smoothed trace reached the threshold dispatch"
+    assert [d[1] for d in decoded[:-1]] == [t for t in TD.THRESHOLDS for _ in train]
+    assert decoded[-1][1] == fold["threshold"]
+
+    # And the held-out windows are the builder's for these weights.
+    model = TD.fit_on(train, ())
+    raw = dml.predict_in_play(held.features, model, smooth=False)
+    weights = {**model, "decoder": "threshold", "threshold": fold["threshold"]}
+    assert scored[-1] == real_decode(raw, weights, held.duration)
 
 
 def _scored(net: dict[str, float], live: dict[str, float]) -> list[dict]:

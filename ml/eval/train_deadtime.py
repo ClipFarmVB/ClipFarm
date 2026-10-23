@@ -80,7 +80,6 @@ from ml.pipeline.dead_time_ml import (
     design_matrix,
     fit_transitions,
     predict_in_play,
-    windows_from_probability,
 )
 from ml.pipeline.intervals import Interval
 
@@ -184,8 +183,11 @@ def probabilities(game: TrainGame, model: dict, *, smooth: bool = True) -> np.nd
     return predict_in_play(game.features[:, idx], model, smooth=smooth)
 
 
-def score(game: TrainGame, smoothed: np.ndarray, threshold: float) -> DeadTimeSignals:
-    windows = windows_from_probability(smoothed, threshold, game.duration)
+def score(game: TrainGame, raw: np.ndarray, threshold: float) -> DeadTimeSignals:
+    """Through `decode_windows` — the builder's dispatch — on the raw trace, so
+    the threshold windows scored here are the ones the builder ships."""
+    windows = decode_windows(raw, {"decoder": "threshold", "threshold": threshold},
+                             game.duration)
     return evaluate_deadtime(game.human_keep, windows, game.duration)
 
 
@@ -196,10 +198,10 @@ def pick_threshold(games: Sequence[TrainGame], model: dict) -> float:
     included — because a threshold has to work on whatever it is given. Ties go
     to the lower threshold (strict >), as on the branch.
     """
-    smoothed = [probabilities(g, model) for g in games]
+    raw = [probabilities(g, model, smooth=False) for g in games]
     best_thr, best_u = THRESHOLDS[0], -np.inf
     for thr in THRESHOLDS:
-        u = sum(net_seconds(score(g, p, thr)) for g, p in zip(games, smoothed))
+        u = sum(net_seconds(score(g, p, thr)) for g, p in zip(games, raw))
         if u > best_u:
             best_u, best_thr = u, thr
     return best_thr
@@ -246,11 +248,12 @@ def run_fold(held: TrainGame, train: Sequence[TrainGame], lags: Sequence[int],
     model = fit_on(train, lags)
     thr = pick_threshold(train, model)
     transitions: dict | None = None
+    raw = probabilities(held, model, smooth=False)
     if decoder == "hmm":
         transitions = fit_transitions([g.y for g in train])
-        sig = score_hmm(held, probabilities(held, model, smooth=False), transitions)
+        sig = score_hmm(held, raw, transitions)
     else:
-        sig = score(held, probabilities(held, model), thr)
+        sig = score(held, raw, thr)
     g = held.guarded
     fold: dict = {"held_out": held.test_id, "threshold": round(thr, 2)}
     if transitions is not None:
@@ -260,7 +263,7 @@ def run_fold(held: TrainGame, train: Sequence[TrainGame], lags: Sequence[int],
         "dead_removed_pct": _r(sig.dead_removed_pct or 0.0),
         "live_cut_sec": _r(sig.live_removed_sec),
         "net_sec": _r(net_seconds(sig)),
-        "auc": _r(auc(probabilities(held, model, smooth=False), held.y)),
+        "auc": _r(auc(raw, held.y)),
         "guarded_dead_removed_pct": _r(g.dead_removed_pct or 0.0),
         "guarded_live_cut_sec": _r(g.live_removed_sec),
         "guarded_net_sec": _r(net_seconds(g)),
