@@ -123,6 +123,30 @@ def _clip_out(clip: Clip, game: Game, *, player_name: str | None = None) -> Clip
     return out
 
 
+async def _player_name(clip: Clip, db: AsyncSession) -> str | None:
+    """The name tagged on a clip, for a write path's echo (CF-566).
+
+    The label, trim and visibility handlers echoed a ClipOut with no name, so a
+    tagged clip came back `player_name: null` and the client, which replaces its
+    copy with the response, dropped the tag until the next reload.
+
+    A bare id lookup with no ownership filter, on purpose — the same rule
+    `list_clips` applies (CF-263): whoever may see the clip may see the name
+    tagged on it. The reasoning is in services/access.py and
+    test_public_player_name.py pins it. Rows tagged before CF-234 can point at
+    another tenant's player; the listing shows that name, so the echo does too,
+    rather than a write blanking what a reload would show. Do not "fix" this into
+    an owned-player check without changing `list_clips` with it.
+
+    `db.get` rather than a `select`: it is one row by primary key, and the
+    stand-in sessions the router's unit tests use answer `get` but not
+    `execute`."""
+    if clip.player_id is None:
+        return None
+    player = await db.get(Player, clip.player_id)
+    return player.name if player else None
+
+
 @router.get(
     "/games/{game_id}/clips",
     response_model=list[ClipOut],
@@ -305,7 +329,7 @@ async def update_clip_visibility(
     clip.visibility = body.visibility
     await db.commit()
     await db.refresh(clip)
-    return _clip_out(clip, game)
+    return _clip_out(clip, game, player_name=await _player_name(clip, db))
 
 
 @router.patch("/clips/{clip_id}/labels", response_model=ClipOut)
@@ -375,7 +399,7 @@ async def update_clip_labels(
     await db.commit()
     await db.refresh(clip)
 
-    return _clip_out(clip, game)
+    return _clip_out(clip, game, player_name=await _player_name(clip, db))
 
 
 TRIM_STEP = 2.0  # seconds
@@ -444,7 +468,7 @@ async def trim_clip(
         args=[str(clip.id), str(clip.game_id), game.raw_video_url, new_start, new_end],
     )
 
-    return _clip_out(clip, game)
+    return _clip_out(clip, game, player_name=await _player_name(clip, db))
 
 
 @router.post("/clips/delete")
