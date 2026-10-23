@@ -11,7 +11,8 @@ changed where the epic (CF-389) says to:
 - **The baseline is `guarded`** — `deadtime_variants.v5_guarded`, the shipping
   builder — not CF-173's contacts + bridge path.
 - **Per-video robust scaling** (`dead_time_ml.robust_scale`) replaces the global
-  mean/std, and the rule is recorded in the weights file.
+  mean/std, and the rule is recorded in the weights file (`dead_time_ml.SCALING`,
+  which `load_weights` and `predict_in_play` check against the code).
 - **Two context variants** — the windowed aggregates alone, and those plus
   lagged copies at ±1/±3/±5s. The one with the higher summed held-out net over
   the comparable fixtures ships; both are reported.
@@ -61,8 +62,10 @@ from ml.pipeline.dead_time_ml import (
     CONTEXT_LAGS,
     FEATURE_NAMES,
     FEATURE_VERSION,
+    SCALING,
     WEIGHTS_PATH,
     compute_features,
+    context_rule,
     design_matrix,
     predict_in_play,
     windows_from_probability,
@@ -81,13 +84,6 @@ THRESHOLDS: tuple[float, ...] = tuple(round(0.35 + 0.05 * i, 2) for i in range(1
 VARIANTS: dict[str, tuple[int, ...]] = {
     "none": (),
     "lags_1_3_5": CONTEXT_LAGS,
-}
-
-SCALING = {
-    "rule": "per_video_robust",
-    "center": "median",
-    "range": "p90-p10",
-    "zero_range": "max-min, then divide_by_1",
 }
 
 # The epic's ablation, over the 13 position-track columns. "base" is what the
@@ -166,8 +162,8 @@ def fit_on(games: Sequence[TrainGame], lags: Sequence[int],
     X = np.vstack([design_matrix(g.features[:, idx], list(lags)) for g in games])
     y = np.concatenate([g.y for g in games])
     coef, intercept = fit_logistic(X, y)
-    return {"coef": coef, "intercept": intercept, "context": {"lags": list(lags)},
-            "columns": list(columns)}
+    return {"coef": coef, "intercept": intercept, "scaling": dict(SCALING),
+            "context": context_rule(list(lags)), "columns": list(columns)}
 
 
 def probabilities(game: TrainGame, model: dict, *, smooth: bool = True) -> np.ndarray:
@@ -281,14 +277,6 @@ def git_commit() -> str:
     return out or "unknown"
 
 
-def _context(lags: Sequence[int]) -> dict:
-    return {
-        "lags": list(lags),
-        "edge": "replicate",
-        "layout": "base columns, then one block of all of them per lag, in lags order",
-    }
-
-
 def train(games: Sequence[TrainGame], commit: str) -> tuple[dict, dict]:
     """LOO both variants, pick one, fit it on everything. Returns (weights, report).
 
@@ -305,7 +293,7 @@ def train(games: Sequence[TrainGame], commit: str) -> tuple[dict, dict]:
         "features": list(FEATURE_NAMES),
         "feature_version": FEATURE_VERSION,
         "scaling": dict(SCALING),
-        "context": _context(lags),
+        "context": context_rule(list(lags)),
         "coef": [_r(c) for c in model["coef"]],
         "intercept": _r(model["intercept"]),
         "threshold": round(threshold, 2),
@@ -315,7 +303,7 @@ def train(games: Sequence[TrainGame], commit: str) -> tuple[dict, dict]:
         "folds": folds,
         "context_variants": {
             name: {
-                "context": _context(VARIANTS[name]),
+                "context": context_rule(list(VARIANTS[name])),
                 "comparable_net_sec": _r(comparable_net(vf)),
                 "folds": vf,
             }

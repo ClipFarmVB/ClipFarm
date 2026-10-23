@@ -27,8 +27,10 @@ from ml.pipeline.dead_time_ml import (  # noqa: E402
     FAST_SPEED_FH,
     FEATURE_NAMES,
     FEATURE_VERSION,
+    SCALING,
     add_context,
     compute_features,
+    context_rule,
     load_weights,
     predict_in_play,
     robust_scale,
@@ -256,6 +258,8 @@ class TestWeightsContract:
         data = {
             "features": FEATURE_NAMES,
             "feature_version": FEATURE_VERSION,
+            "scaling": dict(SCALING),
+            "context": context_rule([]),
             "validated": True,
             "trained_on": "synthetic",
         }
@@ -287,6 +291,48 @@ class TestWeightsContract:
         )
         with pytest.raises(ValueError):
             load_weights(p)
+
+    @pytest.mark.parametrize("field,value", [
+        ("zero_range", "divide_by_1"),
+        ("range", "p75-p25"),
+        ("rule", "global_standard"),
+    ])
+    def test_a_different_scaling_rule_is_refused(self, tmp_path, field, value):
+        """R3-M1: the column count cannot see a scaling change; this record can."""
+        p = self._write(tmp_path, scaling={**SCALING, field: value})
+        with pytest.raises(ValueError, match="scaled by"):
+            load_weights(p)
+
+    def test_a_missing_scaling_record_is_refused(self, tmp_path):
+        p = self._write(tmp_path)
+        data = json.loads(p.read_text())
+        del data["scaling"]
+        p.write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="scaled by"):
+            load_weights(p)
+
+    def test_a_different_context_edge_is_refused(self, tmp_path):
+        p = self._write(tmp_path, context={**context_rule([]), "edge": "zero"})
+        with pytest.raises(ValueError, match="context"):
+            load_weights(p)
+
+    def test_the_record_describes_what_robust_scale_does(self):
+        """
+        The record is a literal, so it moves only when someone moves it. Change
+        it with `robust_scale` (median, p10-p90, then max - min, then 1 — pinned
+        in TestRobustScale), and the committed weights stop loading until they
+        are retrained.
+        """
+        assert SCALING == {
+            "rule": "per_video_robust",
+            "center": "median",
+            "range": "p90-p10",
+            "zero_range": "max-min, then divide_by_1",
+        }
+        assert context_rule([-1, 1]) == {
+            "lags": [-1, 1], "edge": "replicate",
+            "layout": "base columns, then one block of all of them per lag, in lags order",
+        }
 
     def test_unvalidated_weights_load_but_warn(self, tmp_path, caplog):
         p = self._write(tmp_path, validated=False)
@@ -327,14 +373,21 @@ class TestCommittedWeights:
     def test_the_coefficients_fit_the_recorded_context(self, weights):
         lags = weights["context"]["lags"]
         assert len(weights["coef"]) == len(FEATURE_NAMES) * (1 + len(lags))
-        assert weights["context"]["edge"] == "replicate"
-        assert weights["scaling"]["rule"] == "per_video_robust"
+        assert weights["context"] == context_rule(lags)
+        assert weights["scaling"] == SCALING
 
     def test_the_folds_cover_all_five_fixtures(self, weights):
         ids = ["test1", "test2", "test3", "test4", "test5"]
         assert [f["held_out"] for f in weights["folds"]] == ids
         for variant in weights["context_variants"].values():
             assert [f["held_out"] for f in variant["folds"]] == ids
+
+    def test_the_top_level_folds_are_the_shipped_variants(self, weights):
+        """R3-N6: the chosen variant's folds are stored twice; they must agree."""
+        chosen = [v for v in weights["context_variants"].values()
+                  if v["context"] == weights["context"]]
+        assert len(chosen) == 1
+        assert chosen[0]["folds"] == weights["folds"]
 
     def test_the_shipped_threshold_is_the_median_fold_threshold(self, weights):
         assert weights["threshold"] == float(np.median(
@@ -417,14 +470,27 @@ class TestPredictInPlay:
     def test_a_coef_of_the_wrong_width_is_refused(self):
         feats = np.zeros((10, len(FEATURE_NAMES)))
         w = {"coef": [0.0] * len(FEATURE_NAMES), "intercept": 0.0,
-             "context": {"lags": [-1, 1]}}
+             "scaling": SCALING, "context": context_rule([-1, 1])}
         with pytest.raises(ValueError, match="coefficients"):
+            predict_in_play(feats, w)
+
+    def test_weights_scaled_another_way_are_refused(self):
+        """R3-M1: a dict that bypassed `load_weights` is checked here too."""
+        feats = np.zeros((10, len(FEATURE_NAMES)))
+        w = {"coef": [0.0] * len(FEATURE_NAMES), "intercept": 0.0,
+             "scaling": {**SCALING, "zero_range": "divide_by_1"},
+             "context": context_rule([])}
+        with pytest.raises(ValueError, match="scaled by"):
+            predict_in_play(feats, w)
+        w = {**w, "scaling": SCALING, "context": {"lags": []}}
+        with pytest.raises(ValueError, match="context"):
             predict_in_play(feats, w)
 
     def test_unsmoothed_is_the_sigmoid_of_the_scaled_matrix(self):
         feats = np.random.default_rng(1).normal(size=(20, len(FEATURE_NAMES)))
         coef = np.linspace(-1, 1, len(FEATURE_NAMES))
-        w = {"coef": coef.tolist(), "intercept": 0.25, "context": {"lags": []}}
+        w = {"coef": coef.tolist(), "intercept": 0.25, "scaling": SCALING,
+             "context": context_rule([])}
         expected = 1 / (1 + np.exp(-(robust_scale(feats) @ coef + 0.25)))
         np.testing.assert_allclose(predict_in_play(feats, w, smooth=False), expected)
         assert predict_in_play(feats, w).shape == (20,)
@@ -433,7 +499,7 @@ class TestPredictInPlay:
     def test_a_video_shorter_than_the_smoothing_kernel_keeps_its_length(self, n):
         feats = np.random.default_rng(2).normal(size=(n, len(FEATURE_NAMES)))
         w = {"coef": [0.1] * len(FEATURE_NAMES), "intercept": 0.0,
-             "context": {"lags": []}}
+             "scaling": SCALING, "context": context_rule([])}
         assert predict_in_play(feats, w).shape == (n,)
         assert smooth_probability(np.ones(n)).shape == (n,)
 

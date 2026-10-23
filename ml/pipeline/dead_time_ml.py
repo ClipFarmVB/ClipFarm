@@ -333,6 +333,7 @@ def load_weights(path: Path = WEIGHTS_PATH) -> dict:
             f"deadtime weights at {path} are feature_version "
             f"{data.get('feature_version')}, code expects {FEATURE_VERSION} — retrain"
         )
+    check_preparation(data, f"deadtime weights at {path}")
     if not data.get("validated"):
         logger.warning(
             "deadtime weights at %s are NOT validated (trained on %s) — "
@@ -347,6 +348,46 @@ def load_weights(path: Path = WEIGHTS_PATH) -> dict:
 # Shared by the trainer and, later, the builder (CF-394), so the two cannot
 # prepare a matrix differently. The weights file records the rule each one
 # applies ("scaling", "context"); these functions are that rule.
+#
+# SCALING and the context's edge/layout are that record, kept beside the code
+# they describe. `load_weights` and `predict_in_play` refuse a weights dict
+# whose record differs, so a change to `robust_scale` or `add_context` that
+# updates its record here also refuses the committed weights until they are
+# retrained; the column count alone cannot catch it. FEATURE_VERSION plays the
+# same part for the features. Change the record whenever the rule changes.
+SCALING = {
+    "rule": "per_video_robust",
+    "center": "median",
+    "range": "p90-p10",
+    "zero_range": "max-min, then divide_by_1",
+}
+CONTEXT_EDGE = "replicate"
+CONTEXT_LAYOUT = "base columns, then one block of all of them per lag, in lags order"
+
+
+def context_rule(lags: tuple[int, ...] | list[int]) -> dict:
+    """The `"context"` record for a model prepared with `lags`."""
+    return {"lags": list(lags), "edge": CONTEXT_EDGE, "layout": CONTEXT_LAYOUT}
+
+
+def check_preparation(weights: dict, where: str = "deadtime weights") -> None:
+    """
+    Refuse weights whose recorded `"scaling"` or `"context"` rule is not the one
+    `robust_scale` and `add_context` apply. A missing record is refused too: a
+    coef vector with no record of its preparation cannot be trusted to match.
+    """
+    if weights.get("scaling") != SCALING:
+        raise ValueError(
+            f"{where} were scaled by {weights.get('scaling')}, code scales by "
+            f"{SCALING} — retrain"
+        )
+    context = weights.get("context") or {}
+    rule = {k: context.get(k) for k in ("edge", "layout")}
+    expected = {"edge": CONTEXT_EDGE, "layout": CONTEXT_LAYOUT}
+    if rule != expected:
+        raise ValueError(
+            f"{where} were given context {rule}, code builds {expected} — retrain"
+        )
 
 def robust_scale(features: np.ndarray) -> np.ndarray:
     """
@@ -432,9 +473,13 @@ def predict_in_play(features: np.ndarray, weights: dict, *, smooth: bool = True)
 
     Applies the weights file's own preparation — per-video robust scaling, then
     the lags in `weights["context"]["lags"]` — so a caller cannot pair a coef
-    vector with the wrong layout. `smooth=False` returns the raw sigmoid, which
+    vector with the wrong layout. The scaling and edge rule are the code's, so
+    weights whose recorded `"scaling"` or context edge/layout differ from them
+    are refused (`check_preparation`) rather than silently mis-scaled.
+    `smooth=False` returns the raw sigmoid, which
     is what held-out AUC is computed on; the windows use the smoothed trace.
     """
+    check_preparation(weights)
     lags = list(weights.get("context", {}).get("lags", []))
     X = design_matrix(features, lags)
     coef = np.asarray(weights["coef"], dtype=np.float64)
