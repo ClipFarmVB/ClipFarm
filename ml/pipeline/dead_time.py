@@ -18,6 +18,10 @@ Two keep-window builders ship here (`condense_mode` picks between them):
   "guarded"  active_windows_guarded (CF-187) — the default: contacts are
              speed-gated, sustained motion opens windows of its own, pads are
              tight, and a track too sparse to judge abstains instead of guessing
+
+A third mode, "learned", lives in `ml/pipeline/dead_time_ml.py`
+(`active_windows_learned`, CF-394) and falls back to "guarded" whenever it
+declines or fails.
 """
 from __future__ import annotations
 

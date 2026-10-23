@@ -150,6 +150,65 @@ def _condense_verdict_is_confident(windows, *, ball_ok: bool) -> bool:
     return ball_ok and not isinstance(windows, Abstained)
 
 
+def _learned_condense_windows(
+    contacts: list[dict],
+    positions: list[dict],
+    duration: float,
+    frame_height: int,
+    settings: "Settings",
+) -> list[tuple[float, float]] | None:
+    """
+    The learned builder's windows (CF-394), or None when the chain should go on
+    to "guarded".
+
+    None for *any* exception, the import included: the learned builder lives in
+    its own module, so unlike the guarded → rules link an import failure here
+    still leaves "guarded" standing. A refusal the builder makes by design —
+    unvalidated weights, a track too sparse to judge — is logged at INFO, since
+    with today's committed weights it is every game; anything else is a broken
+    builder and logs at WARNING. Either way exactly one line, and neither log
+    call can break condense.
+
+    The weights path is read off the module at call time rather than bound at
+    import, so a test (or an operator's patched build) pointing WEIGHTS_PATH at
+    another file is what actually loads.
+    """
+    try:
+        from ml.pipeline import dead_time_ml
+    except Exception as import_err:
+        _log_learned_fallback(import_err, declined=False)
+        return None
+    try:
+        weights = dead_time_ml.load_weights(dead_time_ml.WEIGHTS_PATH, warn_unvalidated=False)
+        return dead_time_ml.active_windows_learned(
+            contacts, positions, duration, frame_height,
+            weights=weights,
+            min_track_rate=settings.condense_guard_min_track_rate,
+        )
+    except dead_time_ml.LearnedBuilderDeclined as declined_err:
+        _log_learned_fallback(declined_err, declined=True)
+    except Exception as learned_err:
+        _log_learned_fallback(learned_err, declined=False)
+    return None
+
+
+def _log_learned_fallback(err: Exception, *, declined: bool) -> None:
+    """One line for the learned → guarded fallback. Never raises: reporting
+    must never break processing (CLAUDE.md → Code posture)."""
+    try:
+        if declined:
+            logger.info(
+                "Condense mode 'learned' declined (%s) — using guarded windows", err,
+            )
+        else:
+            logger.warning(
+                "Condense mode 'learned' failed (%s: %s) — using guarded windows",
+                type(err).__name__, err,
+            )
+    except Exception:
+        pass
+
+
 def _build_condense_windows(
     mode: str,
     contacts: list[dict],
@@ -163,7 +222,14 @@ def _build_condense_windows(
     actually produced them (for logging — the requested mode may not be the one
     that ran).
 
-    Anything that goes wrong *inside* a non-default builder — feature drift, a
+    The builders chain, one link per mode: "learned" → "guarded" → "rules".
+    "learned" (CF-394) falls back to "guarded" on any exception — its import,
+    unvalidated weights, a contract mismatch, a sparse track — logging one line
+    (`_learned_condense_windows`); from "guarded" the chain continues exactly
+    as below. `built_by` names the builder that produced the windows, never the
+    one that was asked for.
+
+    Anything that goes wrong *inside* the guarded builder — feature drift, a
     missing frame height, an unknown mode name — falls back to "rules" with a
     warning, because a degraded condense beats a failed run. The scope is worth
     being precise about: both builders come from the same module import below, so
@@ -178,6 +244,8 @@ def _build_condense_windows(
     anchored a window, which is a real verdict of "no play here". Reading that as
     a failure would rebuild the windows from the very contacts the gate rejected
     — the junk the mode exists to remove. Only an exception means "fall back".
+    The same holds one link up: `[]` from the learned builder is its verdict
+    and ships as one, rather than being handed on to "guarded".
     """
     from ml.pipeline.dead_time import (
         active_windows_from_contacts,
@@ -187,7 +255,15 @@ def _build_condense_windows(
 
     windows: list[tuple[float, float]] | None = None
     built_by = mode
-    if mode != "rules":
+    if mode == "learned":
+        windows = _learned_condense_windows(
+            contacts, positions, duration, frame_height, settings,
+        )
+        if windows is None:
+            # The next link. Reassigned rather than branched on, so an unknown
+            # mode below still means only what was passed in.
+            mode = built_by = "guarded"
+    if windows is None and mode != "rules":
         try:
             if mode == "guarded":
                 windows = active_windows_guarded(

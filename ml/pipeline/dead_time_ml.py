@@ -1,20 +1,25 @@
 """
-Per-second in-play features for a learned dead-time builder (CF-392).
+Per-second in-play features and the learned dead-time builder (CF-392, CF-394).
 
 One row per whole second of the game, describing the ball track around that
 second: how densely it is tracked, how fast the ball is moving, how close the
-nearest contacts are, and where in the frame the ball sits. A learned builder
-scores those rows; this module only produces them.
+nearest contacts are, and where in the frame the ball sits. The learned builder
+scores those rows.
 
-**Scope.** Features, the weights contract, and the numpy helpers that turn a
-feature matrix into keep-windows: `robust_scale`, `add_context`,
-`predict_in_play` and `windows_from_probability` (CF-393). The trainer
-(`ml/eval/train_deadtime.py`) and a future builder both call these, so the two
-cannot prepare a matrix differently. A weights file now exists
-(`deadtime_ml_weights.json`, CF-393) and is **unvalidated** — `"validated":
-false` until CF-395 applies the epic's bar. Nothing in the pipeline reads it:
-there is deliberately no `active_windows_from_ml` and no `condense_mode` wiring
-here; that is CF-394.
+**Scope.** Features, the weights contract, the numpy helpers that turn a
+feature matrix into keep-windows — `robust_scale`, `add_context`,
+`predict_in_play` and `windows_from_probability` (CF-393) — and the builder
+that chains them, `active_windows_learned` (CF-394). The trainer
+(`ml/eval/train_deadtime.py`) and the builder both call the same helpers, so
+the two cannot prepare a matrix differently.
+
+The weights file (`deadtime_ml_weights.json`, CF-393) is **unvalidated** —
+`"validated": false` until CF-395 applies the epic's bar — and the builder
+refuses unvalidated weights unless its caller passes `allow_unvalidated=True`.
+Production reaches it only through `condense_mode="learned"`, which is not the
+default, and never passes that flag; the condense stage falls back to
+`guarded` instead. The eval ladder's `v6` passes it, so the weights can be
+scored before they are validated.
 
 Ported from the CF-173 branch and changed in two ways to match current main:
 
@@ -63,7 +68,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ml.pipeline.dead_time import speed_samples
+from ml.pipeline.dead_time import speed_samples, track_is_usable
 from ml.pipeline.intervals import Interval, merge_intervals
 
 logger = logging.getLogger(__name__)
@@ -308,7 +313,48 @@ def compute_features(
     return feats
 
 
-def load_weights(path: Path = WEIGHTS_PATH) -> dict:
+class LearnedBuilderDeclined(ValueError):
+    """`active_windows_learned` will not judge this game, by design.
+
+    Distinct from a failure so the condense stage can log it as the expected
+    fallback it is (INFO) rather than as a broken builder (WARNING). Both fall
+    back to `guarded` the same way; only the log level differs. A ValueError so
+    a caller that only knows "the builder raised" still treats it as one.
+    """
+
+
+class UnvalidatedWeightsError(LearnedBuilderDeclined):
+    """The weights match the contract but carry `"validated": false`, and the
+    caller did not pass `allow_unvalidated=True`."""
+
+
+class TrackTooSparseError(LearnedBuilderDeclined):
+    """The ball track is empty, or below `min_track_rate` usable speed samples
+    per second — the same test `active_windows_guarded` abstains on."""
+
+
+def check_contract(weights: dict, where: str = "deadtime weights") -> None:
+    """
+    Refuse a weights dict this code cannot apply: a different feature list or
+    feature version, or a different preparation record (`check_preparation`).
+
+    Split out of `load_weights` so a dict that did not come through it — the
+    builder's `weights=` argument — is held to the same contract.
+    """
+    if weights.get("features") != FEATURE_NAMES:
+        raise ValueError(
+            f"{where} were trained for features "
+            f"{weights.get('features')}, code expects {FEATURE_NAMES}"
+        )
+    if weights.get("feature_version") != FEATURE_VERSION:
+        raise ValueError(
+            f"{where} are feature_version "
+            f"{weights.get('feature_version')}, code expects {FEATURE_VERSION} — retrain"
+        )
+    check_preparation(weights, where)
+
+
+def load_weights(path: Path = WEIGHTS_PATH, *, warn_unvalidated: bool = True) -> dict:
     """
     Load a weights file, validating the feature contract.
 
@@ -316,25 +362,19 @@ def load_weights(path: Path = WEIGHTS_PATH) -> dict:
     `python -m ml.eval.train_deadtime` (CF-393) and is **unvalidated**: the
     trainer always writes `"validated": false`, and flipping it is CF-395's
     call after applying the epic's bar. Committing weights is not enabling
-    them — nothing in the pipeline loads this file yet (CF-394).
+    them: `active_windows_learned` refuses unvalidated weights unless told
+    otherwise, and `condense_mode="learned"` is not the default.
 
     A weights file carries "validated": true only once its leave-one-game-out
     numbers justify enabling it. Unvalidated weights still load, so the flag
-    stays usable for experiments, but warn.
+    stays usable for experiments, and warn unless `warn_unvalidated=False`.
+    The condense stage passes False: the builder refuses those weights and the
+    stage logs that refusal itself, so the warning would be a second line about
+    the same fact.
     """
     data = json.loads(path.read_text())
-    if data.get("features") != FEATURE_NAMES:
-        raise ValueError(
-            f"deadtime weights at {path} were trained for features "
-            f"{data.get('features')}, code expects {FEATURE_NAMES}"
-        )
-    if data.get("feature_version") != FEATURE_VERSION:
-        raise ValueError(
-            f"deadtime weights at {path} are feature_version "
-            f"{data.get('feature_version')}, code expects {FEATURE_VERSION} — retrain"
-        )
-    check_preparation(data, f"deadtime weights at {path}")
-    if not data.get("validated"):
+    check_contract(data, f"deadtime weights at {path}")
+    if warn_unvalidated and not data.get("validated"):
         logger.warning(
             "deadtime weights at %s are NOT validated (trained on %s) — "
             "keep-windows from them are unproven on unseen footage",
@@ -345,7 +385,7 @@ def load_weights(path: Path = WEIGHTS_PATH) -> dict:
 
 # ── matrix preparation and inference (CF-393) ──────────────────────────────
 #
-# Shared by the trainer and, later, the builder (CF-394), so the two cannot
+# Shared by the trainer and the builder (CF-394), so the two cannot
 # prepare a matrix differently. The weights file records the rule each one
 # applies ("scaling", "context"); these functions are that rule.
 #
@@ -536,3 +576,89 @@ def windows_from_probability(
         for s, e in windows
     ]
     return merge_intervals([w for w in padded if w[1] > w[0]], merge_gap_seconds)
+
+
+# ── the builder (CF-394) ───────────────────────────────────────────────────
+
+def active_windows_learned(
+    contacts: list[dict],
+    positions: list[dict],
+    duration: float,
+    frame_height: int,
+    *,
+    weights: dict,
+    allow_unvalidated: bool = False,
+    min_track_rate: float = 1.0,
+) -> list[Interval]:
+    """
+    Keep-windows from the learned in-play model: `compute_features` →
+    `predict_in_play` (the weights' own scaling and context) →
+    `windows_from_probability` at the weights' `"threshold"`.
+
+    **Raises on anything it cannot judge**, before computing anything, so the
+    condense stage falls back to `guarded`:
+
+      - `frame_height <= 0` or `duration <= 0` (ValueError) — every pixel column
+        is divided by the height, and there is no second to score without a
+        duration;
+      - weights whose feature list, version or preparation record differ from
+        this code's (ValueError, `check_contract`), or that carry no threshold;
+      - `"validated"` not true, unless `allow_unvalidated=True`
+        (`UnvalidatedWeightsError`). Production never passes it; the eval
+        ladder's `v6` does;
+      - an empty track, or one below `min_track_rate` usable speed samples/s
+        (`TrackTooSparseError`) — `track_is_usable`, the test
+        `active_windows_guarded` abstains on, so on such a game the fallback
+        abstains and the previous condensed cut is kept. Without this an empty
+        track would score every second at its fills and return `[]`, a verdict
+        the condense stage acts on by deleting the previous cut.
+
+    `min_track_rate` defaults to `active_windows_guarded`'s; the condense stage
+    passes `condense_guard_min_track_rate`, so both builders decline the same
+    games.
+
+    Returns a plain list. `[]` is a verdict ("nothing here is play"), not a
+    failure, exactly as it is from `active_windows_guarded`: a caller must not
+    read it as a reason to fall back.
+    """
+    if frame_height <= 0:
+        raise ValueError(
+            f"active_windows_learned needs a real frame height, got {frame_height!r} — "
+            "every pixel feature is normalized by it"
+        )
+    if duration <= 0:
+        raise ValueError(f"active_windows_learned needs a positive duration, got {duration!r}")
+    check_contract(weights)
+    if "threshold" not in weights:
+        raise ValueError("deadtime weights carry no threshold — retrain")
+    threshold = float(weights["threshold"])
+    if not weights.get("validated") and not allow_unvalidated:
+        raise UnvalidatedWeightsError(
+            "deadtime weights are not validated (\"validated\": false until "
+            "CF-395 applies the epic's bar)"
+        )
+    if not positions:
+        raise TrackTooSparseError("no ball track to score")
+    samples = speed_samples(positions, frame_height)
+    if not track_is_usable(samples, duration, min_rate=min_track_rate):
+        raise TrackTooSparseError(
+            f"{len(samples[0]) / duration:.2f} usable speed samples/s over "
+            f"{duration:.0f}s is below {min_track_rate:.2f}/s"
+        )
+
+    features = compute_features(positions, contacts, duration, frame_height)
+    probs = predict_in_play(features, weights)
+    windows = windows_from_probability(probs, threshold, duration)
+
+    # Reporting must never break processing (CLAUDE.md → Code posture).
+    try:
+        logger.info(
+            "Learned condense windows: %d of %d s at or above threshold %.3f "
+            "(peak %.3f) → %d windows keeping %.0fs",
+            int(np.count_nonzero(probs >= threshold)), len(probs), threshold,
+            float(np.max(probs)) if len(probs) else 0.0,
+            len(windows), sum(e - s for s, e in windows),
+        )
+    except Exception:
+        pass
+    return windows

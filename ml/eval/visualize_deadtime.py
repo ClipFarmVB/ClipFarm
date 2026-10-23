@@ -5,7 +5,10 @@ against the human-labeled ground truth, across the dead-time fixtures.
 Reads the ball-cache from ml/eval/ball_caches/{md5}.json — no video download,
 no app deps. Both ends of the ladder ship: v0 is condense_mode="rules", v5 is
 condense_mode="guarded" (the default). v1-v4 are the intermediate prototypes in
-deadtime_variants.py.
+deadtime_variants.py. v6 is condense_mode="learned" (CF-394) on the committed,
+unvalidated weights, and it is IN-SAMPLE: those weights were fitted on every
+fixture scored here, so none of v6's columns is held out. The held-out
+numbers for the learned model are train_deadtime's leave-one-game-out folds.
 
 The variants were designed against test2 / test4 (DeadtimeLabel2.mp4 /
 DeadtimeLabel4.mp4); every other fixture was never looked at while tuning, so
@@ -22,7 +25,7 @@ Usage:
   # CF-391: score one side of the CF-174 switch, and keep the shipping rows'
   # windows so the harness can record them (--windows-json reads these back).
   python -m ml.eval.visualize_deadtime --contact-scale off --dump-windows DIR
-  # -> DIR/{test}_v0.json, DIR/{test}_v5.json
+  # -> DIR/{test}_v0.json, DIR/{test}_v5.json, DIR/{test}_v6.json
 """
 from __future__ import annotations
 
@@ -66,6 +69,10 @@ COMPARABLE = tuple(t for t in TEST_IDS if t not in EXCLUDED_FROM_TOTALS)
 # BASELINE is what it is measured against.
 SHIPPING = "v5"
 BASELINE = "v0"
+# condense_mode="learned" (CF-394): not shipping, but dumped beside the two
+# rows above so its windows can be recorded through harness --windows-json.
+# Its row is in-sample — see the module docstring.
+LEARNED = "v6"
 
 # 1s of wrongly cut play costs this many seconds of kept dead time (CF-187's
 # exchange rate).
@@ -426,6 +433,11 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
       over {BASELINE} <i>within the held-out net</i> (both percentages are of that
       column, not of the headline). Unfitted is not the same as comparable; test5 is
       the only fixture that is both.</p>
+      <p class="note"><code>{LEARNED}</code> is the exception to the held-out columns:
+      its weights were fitted on all {len(TEST_IDS)} fixtures, so every one of its
+      columns is <b>in-sample</b>, test5 included. Its held-out numbers are the
+      trainer's leave-one-game-out folds (<code>python -m ml.eval.train_deadtime</code>),
+      not this table.</p>
     </section>
     """
 
@@ -589,8 +601,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="CF-229's static-site filter on the loaded tracks (default: the "
                          "settings mirror, currently %(default)s)")
     ap.add_argument("--dump-windows", type=Path, metavar="DIR",
-                    help=f"also write {BASELINE}'s and {SHIPPING}'s keep-windows to "
-                         f"DIR/{{test}}_{{{BASELINE}|{SHIPPING}}}.json, for harness --windows-json")
+                    help=f"also write {BASELINE}'s, {SHIPPING}'s and {LEARNED}'s keep-windows to "
+                         f"DIR/{{test}}_{{{BASELINE}|{SHIPPING}|{LEARNED}}}.json, "
+                         "for harness --windows-json")
     return ap.parse_args(argv)
 
 
@@ -629,17 +642,17 @@ def _ladder(args: argparse.Namespace) -> None:
     if args.dump_windows:
         args.dump_windows.mkdir(parents=True, exist_ok=True)
         for tid in TEST_IDS:
-            for key in (BASELINE, SHIPPING):
+            for key in (BASELINE, SHIPPING, LEARNED):
                 dump_windows(args.dump_windows, tid, key, all_results[tid][key][0],
                              args.contact_scale, args.static_site_filter)
-        print(f"Dumped {BASELINE}/{SHIPPING} keep-windows -> {args.dump_windows}\n")
+        print(f"Dumped {BASELINE}/{SHIPPING}/{LEARNED} keep-windows -> {args.dump_windows}\n")
 
     print(f"Contact scale: {args.contact_scale}  static-site filter: {args.static_site_filter}\n")
 
     print(f"Headline net covers {'+'.join(COMPARABLE)}; "
           f"{'+'.join(EXCLUDED_FROM_TOTALS)} are shown but excluded from it "
           f"(see EXCLUDED_FROM_TOTALS).\n")
-    header = (f"{'variant':<46}{'net':>8}{'all5':>9}   "
+    header = (f"{'variant':<50}{'net':>8}{'all5':>9}   "
               + "".join(f"{t:>28}" for t in TEST_IDS))
     print(header)
     for key, (label, _) in VARIANTS.items():
@@ -649,7 +662,7 @@ def _ladder(args: argparse.Namespace) -> None:
         for t in TEST_IDS:
             s = all_results[t][key][1]
             cells += f"{'dead ' + _pct(s.dead_removed_pct) + '  live -' + f'{s.live_removed_sec:.0f}s':>28}"
-        print(f"{key + ' ' + label:<46}{total:>+7.0f}s{all_total:>+8.0f}s   {cells}")
+        print(f"{key + ' ' + label:<50}{total:>+7.0f}s{all_total:>+8.0f}s   {cells}")
 
 
 if __name__ == "__main__":

@@ -103,7 +103,12 @@ local CPU pose. Each level catches and falls through.
   than falling back. `guarded` is the default — it rejects
   contacts fired over a near-stationary ball, opens windows on sustained motion
   so a rally the contact detector never sees isn't cut outright, and pads
-  tighter.
+  tighter. A third mode, `learned` (CF-394, off), scores each second with a
+  logistic in-play model from committed weights and sits one link further up
+  the same chain: any exception — unvalidated weights, a contract mismatch, a
+  track too sparse to judge, its own import — falls back to `guarded`. It lives
+  in its own module (`dead_time_ml.py`), imported inside that fallback, so it
+  cannot take the other two down with it.
 - **Abstaining beats guessing.** When the ball track is too sparse to judge (below
   ~1 usable speed sample/s, measured on fixture test3 at 0.57/s), every builder
   buys dead time by cutting real play. `guarded` detects that and declines: it

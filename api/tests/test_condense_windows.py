@@ -136,6 +136,165 @@ class TestEmptyIsAVerdictNotAFailure:
         assert isinstance(windows, Abstained)
 
 
+def learned_weights(**over) -> dict:
+    """Synthetic weights that call fast seconds in play (mean_speed_3s only),
+    so their windows follow `track()`'s rally and differ from guarded's."""
+    from ml.pipeline.dead_time_ml import FEATURE_NAMES, FEATURE_VERSION, SCALING, context_rule
+
+    coef = [0.0] * len(FEATURE_NAMES)
+    coef[FEATURE_NAMES.index("mean_speed_3s")] = 4.0
+    data = {
+        "features": list(FEATURE_NAMES), "feature_version": FEATURE_VERSION,
+        "scaling": dict(SCALING), "context": context_rule([]),
+        "coef": coef, "intercept": -2.0, "threshold": 0.5,
+        "validated": True, "trained_on": "synthetic",
+    }
+    data.update(over)
+    return data
+
+
+class TestLearnedMode:
+    """CF-394: "learned" chains to "guarded", which chains to "rules".
+
+    The acceptance criteria, one test each: committed (unvalidated) weights give
+    guarded's windows and one log line naming why; validated weights give the
+    learned builder's; a corrupted file gives guarded's.
+    """
+
+    CONTACTS = contacts_at(12.0, 15.0, 18.0, 70.0)
+
+    @staticmethod
+    def _weights_file(monkeypatch, tmp_path, text):
+        import ml.pipeline.dead_time_ml as dml
+
+        p = tmp_path / "weights.json"
+        p.write_text(text)
+        monkeypatch.setattr(dml, "WEIGHTS_PATH", p)
+        return p
+
+    def _build(self, mode, positions=None, frame_height=FRAME_H):
+        return _build_condense_windows(
+            mode, self.CONTACTS, track() if positions is None else positions,
+            DURATION, frame_height, settings,
+        )
+
+    def test_the_committed_unvalidated_weights_give_guarded_windows(self, caplog):
+        import logging
+
+        import ml.pipeline.dead_time_ml as dml
+
+        assert dml.load_weights(dml.WEIGHTS_PATH, warn_unvalidated=False)["validated"] is False, (
+            "premise: the committed weights are unvalidated until CF-395"
+        )
+        guarded, _ = self._build("guarded")
+        with caplog.at_level(logging.INFO, logger="app.workers.tasks"):
+            windows, built_by = self._build("learned")
+
+        assert built_by == "guarded"
+        assert windows == guarded
+        lines = [r for r in caplog.records if r.name == "app.workers.tasks"]
+        assert len(lines) == 1, [r.getMessage() for r in lines]
+        assert lines[0].levelno == logging.INFO, "an expected fallback, not a failure"
+        assert "not validated" in lines[0].getMessage()
+
+    def test_validated_weights_give_the_learned_windows(self, monkeypatch, tmp_path):
+        import json
+
+        from ml.pipeline.dead_time_ml import active_windows_learned
+
+        self._weights_file(monkeypatch, tmp_path, json.dumps(learned_weights()))
+        windows, built_by = self._build("learned")
+
+        assert built_by == "learned"
+        assert windows == active_windows_learned(
+            self.CONTACTS, track(), DURATION, FRAME_H, weights=learned_weights())
+        guarded, _ = self._build("guarded")
+        assert windows != guarded, "sanity: the two builders disagree on this track"
+
+    @pytest.mark.parametrize("text", [
+        "{not json",
+        "",
+        '{"features": ["only_one"], "validated": true}',
+    ], ids=["truncated", "empty", "wrong-contract"])
+    def test_a_corrupted_file_gives_guarded_windows(self, monkeypatch, tmp_path, caplog, text):
+        import logging
+
+        self._weights_file(monkeypatch, tmp_path, text)
+        guarded, _ = self._build("guarded")
+        with caplog.at_level(logging.INFO, logger="app.workers.tasks"):
+            windows, built_by = self._build("learned")
+
+        assert (windows, built_by) == (guarded, "guarded")
+        lines = [r for r in caplog.records if r.name == "app.workers.tasks"]
+        assert len(lines) == 1 and lines[0].levelno == logging.WARNING
+
+    def test_a_missing_file_gives_guarded_windows(self, monkeypatch, tmp_path):
+        import ml.pipeline.dead_time_ml as dml
+
+        monkeypatch.setattr(dml, "WEIGHTS_PATH", tmp_path / "absent.json")
+        guarded, _ = self._build("guarded")
+        assert self._build("learned") == (guarded, "guarded")
+
+    def test_an_import_failure_gives_guarded_windows(self, monkeypatch):
+        """The learned builder is its own module: unlike guarded → rules, its
+        import failing still leaves the next link standing."""
+        import ml.pipeline
+
+        monkeypatch.delattr(ml.pipeline, "dead_time_ml", raising=False)
+        monkeypatch.setitem(sys.modules, "ml.pipeline.dead_time_ml", None)
+        guarded, _ = self._build("guarded")
+        assert self._build("learned") == (guarded, "guarded")
+
+    def test_learned_empty_is_a_verdict_not_a_fallback(self, monkeypatch, tmp_path):
+        """One link up from TestEmptyIsAVerdictNotAFailure: `[]` from the learned
+        builder ships as `[]`, not as guarded's windows."""
+        import json
+
+        self._weights_file(monkeypatch, tmp_path, json.dumps(learned_weights(threshold=2.0)))
+        assert self._build("learned") == ([], "learned")
+
+    def test_a_sparse_track_falls_back_to_guardeds_abstain(self, monkeypatch, tmp_path, caplog):
+        """Declined, not scored — so the previous condensed cut survives, which
+        it would not if the learned builder returned `[]` here."""
+        import json
+        import logging
+
+        self._weights_file(monkeypatch, tmp_path, json.dumps(learned_weights()))
+        with caplog.at_level(logging.INFO, logger="app.workers.tasks"):
+            windows, built_by = self._build("learned", positions=track(step=1.2))
+
+        assert built_by == "guarded"
+        assert isinstance(windows, Abstained)
+        lines = [r for r in caplog.records if r.name == "app.workers.tasks"]
+        assert len(lines) == 1 and lines[0].levelno == logging.INFO
+
+    def test_both_failing_lands_on_rules(self, monkeypatch, tmp_path):
+        """frame_height 0 makes both track builders raise; the chain ends at
+        rules, which needs no frame height."""
+        import json
+
+        self._weights_file(monkeypatch, tmp_path, json.dumps(learned_weights()))
+        windows, built_by = self._build("learned", frame_height=0)
+        assert built_by == "rules"
+        assert windows
+
+    def test_a_logging_failure_cannot_break_condense(self, monkeypatch):
+        """Reporting must never break processing (CLAUDE.md → Code posture)."""
+        from app.workers import tasks
+
+        def broken(*a, **k):
+            raise RuntimeError("log handler down")
+
+        guarded, _ = self._build("guarded")
+        monkeypatch.setattr(tasks.logger, "info", broken)
+        monkeypatch.setattr(tasks.logger, "warning", broken)
+        assert self._build("learned") == (guarded, "guarded")
+
+    def test_unknown_mode_still_lands_on_rules(self):
+        """The new link must not turn an unknown name into a guarded run."""
+        assert self._build("Learned")[1] == "rules"
+
+
 class TestWorthCondensing:
     def test_abstain_is_not_worth_encoding(self):
         assert _worth_condensing(DURATION, DURATION) is False

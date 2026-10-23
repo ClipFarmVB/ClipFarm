@@ -28,7 +28,12 @@ from ml.pipeline.dead_time_ml import (  # noqa: E402
     FEATURE_NAMES,
     FEATURE_VERSION,
     SCALING,
+    WEIGHTS_PATH,
+    TrackTooSparseError,
+    UnvalidatedWeightsError,
+    active_windows_learned,
     add_context,
+    check_contract,
     compute_features,
     context_rule,
     load_weights,
@@ -339,6 +344,226 @@ class TestWeightsContract:
         with caplog.at_level("WARNING"):
             load_weights(p)
         assert "NOT validated" in caplog.text
+
+    def test_the_warning_can_be_turned_off(self, tmp_path, caplog):
+        """The condense stage logs the refusal itself; a second line is noise."""
+        p = self._write(tmp_path, validated=False)
+        with caplog.at_level("WARNING"):
+            assert load_weights(p, warn_unvalidated=False)["validated"] is False
+        assert "NOT validated" not in caplog.text
+
+    def test_check_contract_holds_a_dict_to_the_same_rules(self, tmp_path):
+        """A dict that never went through `load_weights` — the builder's
+        `weights=` — is refused for the same reasons, with the same words."""
+        good = json.loads(self._write(tmp_path).read_text())
+        check_contract(good)
+        for over, match in [
+            ({"features": FEATURE_NAMES[:-1]}, "trained for features"),
+            ({"feature_version": FEATURE_VERSION - 1}, "retrain"),
+            ({"scaling": {**SCALING, "range": "p75-p25"}}, "scaled by"),
+            ({"context": {"lags": []}}, "context"),
+        ]:
+            with pytest.raises(ValueError, match=match):
+                check_contract({**good, **over})
+
+
+def _rally_track(rally=(10.0, 30.0), duration=120.0, step=0.33,
+                 rally_speed=300.0, idle_speed=20.0):
+    """Dense track (3 samples/s) over the whole video, fast inside `rally`."""
+    out, t, x = [], 0.0, 0.0
+    while t <= duration:
+        out.append({"time": t, "x": x, "y": 180.0, "confidence": 0.9})
+        x += (rally_speed if rally[0] <= t <= rally[1] else idle_speed) * step
+        t += step
+    return out
+
+
+def learned_weights(**over) -> dict:
+    """Synthetic weights that call fast seconds in play: everything rides on
+    mean_speed_3s, so the expected windows follow the rally in `_rally_track`."""
+    coef = [0.0] * len(FEATURE_NAMES)
+    coef[col("mean_speed_3s")] = 4.0
+    data = {
+        "features": list(FEATURE_NAMES),
+        "feature_version": FEATURE_VERSION,
+        "scaling": dict(SCALING),
+        "context": context_rule([]),
+        "coef": coef,
+        "intercept": -2.0,
+        "threshold": 0.5,
+        "validated": True,
+        "trained_on": "synthetic",
+    }
+    data.update(over)
+    return data
+
+
+class TestActiveWindowsLearned:
+    DURATION = 120.0
+
+    def _run(self, *, positions=None, contacts=(), duration=None, frame_height=H, **kw):
+        kw.setdefault("weights", learned_weights())
+        return active_windows_learned(
+            list(contacts), _rally_track() if positions is None else positions,
+            self.DURATION if duration is None else duration, frame_height, **kw,
+        )
+
+    def test_windows_follow_the_probability_trace(self):
+        windows = self._run()
+        assert any(s <= 20.0 <= e for s, e in windows), "the rally is kept"
+        assert not any(s <= 90.0 <= e for s, e in windows), "idle time is cut"
+
+    def test_it_is_exactly_the_shared_helpers_at_the_weights_threshold(self):
+        """No second preparation path: features → predict → windows, as the
+        trainer scores them."""
+        w = learned_weights(threshold=0.4)
+        positions = _rally_track()
+        probs = predict_in_play(compute_features(positions, [], self.DURATION, H), w)
+        assert self._run(weights=w) == windows_from_probability(probs, 0.4, self.DURATION)
+
+    def test_an_empty_verdict_is_a_plain_empty_list(self):
+        """`[]` is a verdict the condense stage ships, so it must come back as
+        one — not raised, and not an Abstained that would protect the old cut."""
+        windows = self._run(weights=learned_weights(threshold=2.0))
+        assert windows == [] and type(windows) is list
+
+    def test_unvalidated_weights_are_refused_unless_allowed(self):
+        w = learned_weights(validated=False)
+        with pytest.raises(UnvalidatedWeightsError) as excinfo:
+            self._run(weights=w)
+        assert isinstance(excinfo.value, ValueError)
+        assert self._run(weights=w, allow_unvalidated=True) == self._run()
+
+    def test_a_missing_validated_key_counts_as_unvalidated(self):
+        w = learned_weights()
+        del w["validated"]
+        with pytest.raises(UnvalidatedWeightsError):
+            self._run(weights=w)
+
+    @pytest.mark.parametrize("kw, match", [
+        ({"frame_height": 0}, "frame height"),
+        ({"duration": 0.0}, "duration"),
+        ({"weights": learned_weights(feature_version=FEATURE_VERSION - 1)}, "retrain"),
+        ({"weights": learned_weights(features=FEATURE_NAMES[:-1])}, "trained for features"),
+        ({"weights": learned_weights(scaling={**SCALING, "rule": "global"})}, "scaled by"),
+    ])
+    def test_what_it_cannot_judge_raises(self, kw, match):
+        with pytest.raises(ValueError, match=match):
+            self._run(**kw)
+
+    def test_weights_without_a_threshold_are_refused(self):
+        w = learned_weights()
+        del w["threshold"]
+        with pytest.raises(ValueError, match="threshold"):
+            self._run(weights=w)
+
+    def test_an_empty_track_is_declined_not_scored(self):
+        """Scored, an empty track is every column at its fill and comes back
+        `[]` — a verdict, which would delete the previous condensed cut."""
+        with pytest.raises(TrackTooSparseError):
+            self._run(positions=[])
+
+    def test_a_sparse_track_is_declined_on_guardeds_test(self):
+        sparse = _rally_track(step=1.2)   # ~0.83 usable samples/s
+        assert not dt.track_is_usable(dt.speed_samples(sparse, H), self.DURATION)
+        with pytest.raises(TrackTooSparseError):
+            self._run(positions=sparse)
+        # The floor is a parameter: below it, the same track is judged.
+        assert isinstance(self._run(positions=sparse, min_track_rate=0.5), list)
+
+    def test_the_sparse_floor_defaults_to_guardeds(self):
+        learned = inspect.signature(active_windows_learned).parameters["min_track_rate"].default
+        guarded = inspect.signature(dt.active_windows_guarded).parameters["min_track_rate"].default
+        assert learned == guarded
+
+    def test_refusals_happen_before_any_compute(self, monkeypatch):
+        """Raising on the cheap checks first is what keeps a refusal from
+        costing a feature pass — and from being masked by a compute error."""
+        import ml.pipeline.dead_time_ml as dml
+
+        def boom(*a, **k):
+            raise AssertionError("computed before refusing")
+
+        monkeypatch.setattr(dml, "compute_features", boom)
+        for kw, exc in [
+            ({"frame_height": 0}, ValueError),
+            ({"weights": learned_weights(validated=False)}, UnvalidatedWeightsError),
+            ({"weights": learned_weights(feature_version=0)}, ValueError),
+            ({"positions": []}, TrackTooSparseError),
+        ]:
+            with pytest.raises(exc):
+                self._run(**kw)
+
+    def test_one_summary_line(self, caplog):
+        with caplog.at_level("INFO", logger="ml.pipeline.dead_time_ml"):
+            windows = self._run()
+        lines = [r for r in caplog.records if r.name == "ml.pipeline.dead_time_ml"]
+        assert len(lines) == 1
+        msg = lines[0].getMessage()
+        assert "threshold 0.500" in msg and f"{len(windows)} windows" in msg
+
+    def test_a_logging_failure_does_not_break_the_builder(self, monkeypatch):
+        import ml.pipeline.dead_time_ml as dml
+
+        def broken(*a, **k):
+            raise RuntimeError("log handler down")
+
+        expected = self._run()
+        monkeypatch.setattr(dml.logger, "info", broken)
+        assert self._run() == expected
+
+    def test_the_committed_weights_run_when_allowed(self):
+        weights = load_weights(WEIGHTS_PATH, warn_unvalidated=False)
+        assert isinstance(
+            self._run(weights=weights, allow_unvalidated=True), list)
+        with pytest.raises(UnvalidatedWeightsError):
+            self._run(weights=weights)
+
+
+class TestTheEvalRung:
+    """`v6` scores the learned builder on the ladder before CF-395 validates it."""
+
+    def _game(self, positions):
+        return dv.Game(test_id="t", video_file="t.mp4", duration=120.0, frame_height=H,
+                       positions=positions, contacts=[], human_keep=[], raw={})
+
+    def test_v6_is_on_the_ladder_and_labelled_in_sample(self):
+        label, fn = dv.VARIANTS["v6"]
+        assert fn is dv.v6_learned
+        assert "IN-SAMPLE" in label and "learned" in label
+
+    def test_the_shipping_rows_do_not_move(self):
+        from ml.eval import visualize_deadtime as vd
+        assert (vd.SHIPPING, vd.BASELINE, vd.LEARNED) == ("v5", "v0", "v6")
+
+    def test_v6_scores_unvalidated_weights(self, monkeypatch, tmp_path):
+        import ml.pipeline.dead_time_ml as dml
+
+        p = tmp_path / "w.json"
+        p.write_text(json.dumps(learned_weights(validated=False)))
+        monkeypatch.setattr(dml, "WEIGHTS_PATH", p)
+        positions = _rally_track()
+        assert dv.v6_learned(self._game(positions)) == active_windows_learned(
+            [], positions, 120.0, H, weights=learned_weights())
+
+    def test_v6_reads_the_path_at_call_time(self, monkeypatch, tmp_path):
+        """The loader caches per path, so repointing WEIGHTS_PATH is not
+        answered from the previous file."""
+        import ml.pipeline.dead_time_ml as dml
+
+        a, b = tmp_path / "a.json", tmp_path / "b.json"
+        a.write_text(json.dumps(learned_weights(threshold=0.5)))
+        b.write_text(json.dumps(learned_weights(threshold=2.0)))
+        game = self._game(_rally_track())
+        monkeypatch.setattr(dml, "WEIGHTS_PATH", a)
+        assert dv.v6_learned(game)
+        monkeypatch.setattr(dml, "WEIGHTS_PATH", b)
+        assert dv.v6_learned(game) == []
+
+    def test_a_sparse_game_gets_productions_fallback(self):
+        game = self._game(_rally_track(step=1.2))
+        assert dv.v6_learned(game) == dv.v5_guarded(game)
+        assert isinstance(dv.v6_learned(game), dt.Abstained)
 
 
 
