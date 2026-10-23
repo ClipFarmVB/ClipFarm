@@ -194,11 +194,13 @@ def compute_features(
     # inside the matrix.
     #
     # The warning below therefore no longer describes the normal state. Outside
-    # ml/tests, the one caller is CF-393's trainer (ml/eval/train_deadtime.py,
-    # via deadtime_variants.load_game), so the warning means whatever fed it lost
-    # the field: a regressed producer, or a track dumped before CF-420. Today the
-    # five producers' dicts reach only dead_time.py's builders and motion bridge
-    # (and diagnose_detection's dump file), none of which reads `confidence`.
+    # ml/tests there are three callers: CF-393's trainer
+    # (ml/eval/train_deadtime.py, via deadtime_variants.load_game), the eval
+    # ladder's v6 rung (deadtime_variants), and active_windows_learned, which
+    # the worker reaches when condense_mode="learned" (CF-394). A warning in
+    # worker logs therefore means the live track the worker scored lost the
+    # field, not only a training input: either way it is a regressed producer,
+    # or a track dumped before CF-420.
     if positions and not any("confidence" in p for p in positions):
         logger.warning(
             "no ball-track sample carries 'confidence' — mean_conf_3s and "

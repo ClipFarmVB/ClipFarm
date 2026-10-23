@@ -472,6 +472,13 @@ class TestActiveWindowsLearned:
         with pytest.raises(TrackTooSparseError):
             self._run(positions=[])
 
+    def test_an_empty_track_is_declined_with_no_rate_floor(self):
+        """At the default floor `track_is_usable` already rejects an empty
+        track; at `min_track_rate=0.0` (no sparse gate) only the empty-track
+        guard stands between it and a `[]` verdict."""
+        with pytest.raises(TrackTooSparseError, match="no ball track"):
+            self._run(positions=[], min_track_rate=0.0)
+
     def test_a_sparse_track_is_declined_on_guardeds_test(self):
         sparse = _rally_track(step=1.2)   # ~0.83 usable samples/s
         assert not dt.track_is_usable(dt.speed_samples(sparse, H), self.DURATION)
