@@ -322,7 +322,7 @@ export function UploadZone() {
             checked={condense}
             onChange={(e) => setCondense(e.target.checked)}
             disabled={uploading}
-            className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--brand,#6366f1)]"
+            className="mt-0.5 h-4 w-4 shrink-0 accent-brand"
           />
           <span>
             <span className="block text-[13px] font-medium text-foreground">Remove dead time</span>
