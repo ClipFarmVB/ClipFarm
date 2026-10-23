@@ -579,6 +579,30 @@ class TestActiveWindowsLearned:
                          positions=_rally_track(duration=240.0)) == NOISY_HMM_WINDOWS
         assert seen == [False]
 
+    def test_threshold_weights_smooth_the_raw_trace_exactly_once(self, monkeypatch):
+        """The saturated rally above thresholds the same smoothed once, twice or
+        not at all (R7-M1). A 3s burst does not: its windows move with every
+        pass of the moving average, so this pins the shipped path to one."""
+        import ml.pipeline.dead_time_ml as dml
+
+        raw = np.r_[np.full(30, 0.1), np.full(3, 0.9), np.full(27, 0.1)]
+        seen: list = []
+
+        def fake_predict(features, weights, *, smooth=True):
+            seen.append(smooth)
+            return raw.copy()
+
+        monkeypatch.setattr(dml, "predict_in_play", fake_predict)
+        d = 60.0
+        once = windows_from_probability(smooth_probability(raw), 0.4, d)
+        twice = windows_from_probability(smooth_probability(smooth_probability(raw)), 0.4, d)
+        never = windows_from_probability(raw, 0.4, d)
+        assert once == [(26.0, 36.5)]
+        assert once != twice and once != never, "the trace must tell the passes apart"
+        assert self._run(weights=learned_weights(threshold=0.4), duration=d,
+                         positions=_rally_track(duration=d)) == once
+        assert seen == [False]
+
     def test_an_explicit_threshold_decoder_matches_a_file_without_the_key(self):
         """Every file before CF-396 has no "decoder"; it must decode as before."""
         assert self._run(weights=learned_weights(decoder="threshold")) == self._run()
