@@ -163,25 +163,33 @@ will not pick up later edits.
 ## Skein
 
 ClipFarm's decisions are recorded in Skein, in the private repo ClipFarmVB/clipfarm-skein.
-Agents reach it through the `ask_skein` tool, registered in `.mcp.json`; each person sets
-`SKEIN_SECRET` in their environment (ask Nelson for it, never commit it).
+Agents reach it through the `ask_skein` and `record_skein_answer` tools, registered in
+`.mcp.json`; each person sets `SKEIN_SECRET` in their environment (ask Nelson for it, never
+commit it).
 
-- When you are blocked on a decision about conventions, process or scope, call `ask_skein`
-  before asking a person. Act only on an answer with a decision id, and cite that id
-  (`D-0031`) in the commit message and the PR body, not just in your reasoning.
-- `pending` means no decision yet. Never act on it, and never act on a draft attached to it:
-  drafts are guesses until a person confirms them. The question has gone to its owner on
-  Discord. In an unattended run, park the item with the `needs-decision` label citing the
-  pending id, and move on; interactively, carry on with other work and ask again later.
+- **Who is at the chat.** If the current turn was started by a person's message, they are at
+  the chat. A scheduled loop lap, or any turn no person started, is unattended.
+- When you are blocked on a decision about conventions, process or scope, or are about to ask
+  Nelson anything (the end of a turn, a run report, run-control questions such as "start #N
+  once its PRs merge?"), call `ask_skein` first with the question and its context: repo,
+  ticket, PRs. If a person is at the chat and you would ask them anyway, call it with
+  `wait_seconds: 0` and `notify: false`. Act only on an answer with a decision id, and cite
+  that id (`D-0031`) in the commit message and the PR body, not just in your reasoning.
+- When `ask_skein` returns `pending` and you then ask the person in chat, record their reply
+  with `record_skein_answer`: the pending id, their words or the option letter they chose,
+  and their chat handle (Nelson's is `ollienel777`). Never pass your own answer or a summary
+  of theirs. The next ask on that question settles from it.
+- Unattended, call `ask_skein` with the default wait and `notify`, so the owner gets the DM.
+  If it still returns `pending`, park the item with the `needs-decision` label citing the
+  pending id, and move on.
+- `pending` is never an answer, and a draft attached to it is a guess until a person
+  confirms it.
 - Tuning and detection defaults, dependencies and licensing, migrations and deploys, security,
-  users' data, money and deleting things always go to a person. In an unattended run, don't ask
-  Skein about them; use `needs-decision` directly.
-- Before asking a person anything (at the end of a turn, in a run report, or anywhere a
-  question goes to Nelson), call `ask_skein` first with the question and its context: repo,
-  ticket, PRs. That includes run-control and policy questions such as "start #N once the PRs it
-  waits on merge?"; asking them through Skein is what turns the answer into a standing rule. If
-  it settles, act on the answer and cite its id in the run report instead of asking. If it is
-  `pending`, ask in chat as usual, quote the pending id, and don't act until it is answered.
-- Ask Nelson directly, without Skein, for merges and anything only he can do (labelling
-  fixtures, paid compute, deploys), and for the always-a-person topics above.
-- Never put secrets or production data in a question.
+  users' data, money and deleting things always go to a person; Skein never settles them.
+  When a person is at the chat, still call `ask_skein` with `wait_seconds: 0` and
+  `notify: false` to get a pending id, ask Nelson, and record his answer with
+  `record_skein_answer`, so the decision lands in the record. Unattended, don't ask Skein
+  about them; use `needs-decision` directly.
+- Merges and Nelson-only actions (labelling, paid compute, deploys) are direct asks, with
+  nothing to record.
+- Never put secrets or production data in a question or an answer.
