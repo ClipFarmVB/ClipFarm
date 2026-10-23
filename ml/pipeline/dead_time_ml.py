@@ -6,10 +6,15 @@ second: how densely it is tracked, how fast the ball is moving, how close the
 nearest contacts are, and where in the frame the ball sits. A learned builder
 scores those rows; this module only produces them.
 
-**Scope.** Features and the weights contract, nothing else. Training, the
-weights file itself, and window building are separate cards (CF-393, CF-394) —
-so there is deliberately no `predict_in_play` and no `active_windows_from_ml`
-here yet, and nothing imports `ml.pipeline.intervals`.
+**Scope.** Features, the weights contract, and the numpy helpers that turn a
+feature matrix into keep-windows: `robust_scale`, `add_context`,
+`predict_in_play` and `windows_from_probability` (CF-393). The trainer
+(`ml/eval/train_deadtime.py`) and a future builder both call these, so the two
+cannot prepare a matrix differently. A weights file now exists
+(`deadtime_ml_weights.json`, CF-393) and is **unvalidated** — `"validated":
+false` until CF-395 applies the epic's bar. Nothing in the pipeline reads it:
+there is deliberately no `active_windows_from_ml` and no `condense_mode` wiring
+here; that is CF-394.
 
 Ported from the CF-173 branch and changed in two ways to match current main:
 
@@ -46,8 +51,8 @@ averaged. An all-NaN window then reaches the same fill as an empty one, which is
 the house answer; note it means *dead* here, where `speed_gate_contacts` reads
 "unjudged" as benefit of the doubt.
 
-The module imports only numpy and `ml.pipeline.dead_time` — `ml/tests` runs with
-numpy alone in CI, and `ml.pipeline.ball` imports cv2.
+The module imports only numpy, `ml.pipeline.dead_time` and
+`ml.pipeline.intervals` — `ml/tests` runs with numpy alone in CI.
 """
 from __future__ import annotations
 
@@ -59,6 +64,7 @@ from pathlib import Path
 import numpy as np
 
 from ml.pipeline.dead_time import speed_samples
+from ml.pipeline.intervals import Interval, merge_intervals
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +139,13 @@ FAST_SPEED_FH = 0.30
 CONTACT_GAP_CAP = 60.0   # since/until saturate here — beyond this it is just "long ago"
 EMPTY_MEAN_Y = 0.5       # frame centre; see mean_y_5s above
 
+# Moving-average width, in seconds, for the probability trace (from CF-173).
+SMOOTH_SECONDS = 5
+
+# The lagged-context offsets the trainer's context variant uses, in seconds.
+# Negative reads the past: lag -5 puts second t-5's features on row t.
+CONTEXT_LAGS = (-5, -3, -1, 1, 3, 5)
+
 
 def compute_features(
     positions: list[dict],
@@ -175,9 +188,9 @@ def compute_features(
     # supplied" and "no samples in this window" are indistinguishable once
     # inside the matrix.
     #
-    # The warning below therefore no longer describes the normal state. Nothing
-    # outside ml/tests calls compute_features yet; its first real caller will be
-    # CF-393's trainer. Once that exists, the warning means whatever fed it lost
+    # The warning below therefore no longer describes the normal state. Outside
+    # ml/tests, the one caller is CF-393's trainer (ml/eval/train_deadtime.py,
+    # via deadtime_variants.load_game), so the warning means whatever fed it lost
     # the field: a regressed producer, or a track dumped before CF-420. Today the
     # five producers' dicts reach only dead_time.py's builders and motion bridge
     # (and diagnose_detection's dump file), none of which reads `confidence`.
@@ -299,10 +312,11 @@ def load_weights(path: Path = WEIGHTS_PATH) -> dict:
     """
     Load a weights file, validating the feature contract.
 
-    **There is no committed weights file yet** — training is CF-393 — so calling
-    this with no argument raises FileNotFoundError on current main. That is
-    honest rather than convenient: the contract check is what CF-393's output
-    has to satisfy, and it is worth having before there is anything to check.
+    The committed file (`deadtime_ml_weights.json`) is written by
+    `python -m ml.eval.train_deadtime` (CF-393) and is **unvalidated**: the
+    trainer always writes `"validated": false`, and flipping it is CF-395's
+    call after applying the epic's bar. Committing weights is not enabling
+    them — nothing in the pipeline loads this file yet (CF-394).
 
     A weights file carries "validated": true only once its leave-one-game-out
     numbers justify enabling it. Unvalidated weights still load, so the flag
@@ -319,6 +333,7 @@ def load_weights(path: Path = WEIGHTS_PATH) -> dict:
             f"deadtime weights at {path} are feature_version "
             f"{data.get('feature_version')}, code expects {FEATURE_VERSION} — retrain"
         )
+    check_preparation(data, f"deadtime weights at {path}")
     if not data.get("validated"):
         logger.warning(
             "deadtime weights at %s are NOT validated (trained on %s) — "
@@ -326,3 +341,198 @@ def load_weights(path: Path = WEIGHTS_PATH) -> dict:
             path, data.get("trained_on", "?"),
         )
     return data
+
+
+# ── matrix preparation and inference (CF-393) ──────────────────────────────
+#
+# Shared by the trainer and, later, the builder (CF-394), so the two cannot
+# prepare a matrix differently. The weights file records the rule each one
+# applies ("scaling", "context"); these functions are that rule.
+#
+# SCALING and the context's edge/layout are that record, kept beside the code
+# they describe. `load_weights` and `predict_in_play` refuse a weights dict
+# whose record differs, so a change to `robust_scale` or `add_context` that
+# updates its record here also refuses the committed weights until they are
+# retrained; the column count alone cannot catch it. FEATURE_VERSION plays the
+# same part for the features. Change the record whenever the rule changes.
+SCALING = {
+    "rule": "per_video_robust",
+    "center": "median",
+    "range": "p90-p10",
+    "zero_range": "max-min, then divide_by_1",
+}
+CONTEXT_EDGE = "replicate"
+CONTEXT_LAYOUT = "base columns, then one block of all of them per lag, in lags order"
+
+
+def context_rule(lags: tuple[int, ...] | list[int]) -> dict:
+    """The `"context"` record for a model prepared with `lags`."""
+    return {"lags": list(lags), "edge": CONTEXT_EDGE, "layout": CONTEXT_LAYOUT}
+
+
+def check_preparation(weights: dict, where: str = "deadtime weights") -> None:
+    """
+    Refuse weights whose recorded `"scaling"` or `"context"` rule is not the one
+    `robust_scale` and `add_context` apply. A missing record is refused too: a
+    coef vector with no record of its preparation cannot be trusted to match.
+    """
+    if weights.get("scaling") != SCALING:
+        raise ValueError(
+            f"{where} were scaled by {weights.get('scaling')}, code scales by "
+            f"{SCALING} — retrain"
+        )
+    context = weights.get("context") or {}
+    rule = {k: context.get(k) for k in ("edge", "layout")}
+    expected = {"edge": CONTEXT_EDGE, "layout": CONTEXT_LAYOUT}
+    if rule != expected:
+        raise ValueError(
+            f"{where} were given context {rule}, code builds {expected} — retrain"
+        )
+
+def robust_scale(features: np.ndarray) -> np.ndarray:
+    """
+    Per-video robust scaling: each column minus its median, divided by its
+    p10-p90 range, both taken over this one video's rows.
+
+    Per video, not a global mean/std, because condense is a batch job — the
+    whole track exists at inference, so each game can be put on its own scale.
+    That absorbs per-venue offsets (a gym where the ball sits lower in frame, a
+    tracker that is more confident on one ball) that a global fit would have to
+    learn as signal. It is what the epic's experiment measured.
+
+    A column can have a zero p10-p90 range without being constant: when more
+    than 80% of its rows share one value. On the fixtures that is a saturated
+    column (test4's `track_rate_2s` sits at 3.0 bar 2.5% of rows) or a sparse
+    one (test3's `contacts_5s` is non-zero on 9.9% of rows). Such a column
+    falls back to its full range, max - min, so it is still range-scaled like
+    the same column in every other game rather than left in raw units. Only a
+    column that is truly constant (or whose ranges are not finite) is divided
+    by 1, so it centres to zeros rather than to NaN or inf.
+    """
+    X = np.asarray(features, dtype=np.float64)
+    if X.shape[0] == 0:
+        return X.copy()
+    center = np.median(X, axis=0)
+    spread = np.percentile(X, 90, axis=0) - np.percentile(X, 10, axis=0)
+    full = X.max(axis=0) - X.min(axis=0)
+    spread = np.where(np.isfinite(spread) & (spread > 0), spread,
+                      np.where(np.isfinite(full) & (full > 0), full, 1.0))
+    out: np.ndarray = (X - center) / spread
+    return out
+
+
+def add_context(
+    scaled: np.ndarray, lags: tuple[int, ...] | list[int] = CONTEXT_LAGS,
+) -> np.ndarray:
+    """
+    Append a shifted copy of every column per lag: the result is the input's
+    columns, then one block of all of them for each lag, in `lags` order.
+
+    Lag `k` puts row `t + k`'s values on row `t` — negative reads the past.
+    Rows that would read off either end take the edge row instead (replicate),
+    so the first second's "5s ago" is the first second itself. Applied after
+    `robust_scale`, so the lagged blocks share the base columns' scale.
+
+    An empty `lags` returns the input unchanged (as a copy).
+    """
+    X = np.asarray(scaled, dtype=np.float64)
+    n = X.shape[0]
+    if n == 0:
+        return np.zeros((0, X.shape[1] * (1 + len(lags))))
+    rows = np.arange(n)
+    blocks = [X] + [X[np.clip(rows + int(lag), 0, n - 1)] for lag in lags]
+    out: np.ndarray = np.hstack(blocks)
+    return out
+
+
+def design_matrix(features: np.ndarray, lags: tuple[int, ...] | list[int]) -> np.ndarray:
+    """`compute_features` output → the matrix a weights file's `coef` multiplies."""
+    return add_context(robust_scale(features), lags)
+
+
+def smooth_probability(probs: np.ndarray) -> np.ndarray:
+    """
+    Centred moving average over SMOOTH_SECONDS (CF-173's smoothing), one value
+    per input row.
+
+    Not `np.convolve(mode="same")`, which returns max(len(probs),
+    len(kernel)) values, so a video shorter than the kernel came back longer
+    than it went in. Slicing the full convolution at the kernel's centre gives
+    the same values as "same" for any trace at least as long as the kernel.
+    """
+    kernel = np.ones(SMOOTH_SECONDS) / SMOOTH_SECONDS
+    start = (SMOOTH_SECONDS - 1) // 2
+    full = np.convolve(np.asarray(probs, dtype=np.float64), kernel, mode="full")
+    out: np.ndarray = full[start: start + len(probs)]
+    return out
+
+
+def predict_in_play(features: np.ndarray, weights: dict, *, smooth: bool = True) -> np.ndarray:
+    """
+    Per-second P(in-play) from a raw `compute_features` matrix.
+
+    Applies the weights file's own preparation — per-video robust scaling, then
+    the lags in `weights["context"]["lags"]` — so a caller cannot pair a coef
+    vector with the wrong layout. The scaling and edge rule are the code's, so
+    weights whose recorded `"scaling"` or context edge/layout differ from them
+    are refused (`check_preparation`) rather than silently mis-scaled.
+    `smooth=False` returns the raw sigmoid, which
+    is what held-out AUC is computed on; the windows use the smoothed trace.
+    """
+    check_preparation(weights)
+    lags = list(weights.get("context", {}).get("lags", []))
+    X = design_matrix(features, lags)
+    coef = np.asarray(weights["coef"], dtype=np.float64)
+    if X.shape[1] != coef.shape[0]:
+        raise ValueError(
+            f"weights have {coef.shape[0]} coefficients, the prepared matrix has "
+            f"{X.shape[1]} columns ({X.shape[1] // (1 + len(lags))} features x "
+            f"{1 + len(lags)} blocks)"
+        )
+    logits = X @ coef + float(weights["intercept"])
+    probs: np.ndarray = 1.0 / (1.0 + np.exp(-logits))
+    return smooth_probability(probs) if smooth else probs
+
+
+def windows_from_probability(
+    probs: np.ndarray,
+    threshold: float,
+    duration: float,
+    *,
+    pad_before: float = 3.0,
+    pad_after: float = 2.5,
+    merge_gap_seconds: float = 5.0,
+) -> list[Interval]:
+    """
+    Per-second probabilities → padded, merged keep-windows (the shape of
+    CF-173's `active_windows_from_ml`).
+
+    Row `i` covers second [i, i+1). Every run of rows at or above `threshold`
+    becomes a span, padded by `pad_before`/`pad_after`, clamped to
+    [0, duration], and merged with any neighbour closer than
+    `merge_gap_seconds`.
+
+    The pads are tighter than the condense_pad_* settings on purpose: those pad
+    sparse contact anchors, while these pad spans that already cover the
+    detected play. The trainer picks the threshold against these defaults, so
+    a caller changing them is no longer using the threshold it was tuned for.
+    """
+    if duration <= 0 or len(probs) == 0:
+        return []
+    keep = np.asarray(probs) >= threshold
+    windows: list[Interval] = []
+    start: int | None = None
+    for i, k in enumerate(keep):
+        if k and start is None:
+            start = i
+        elif not k and start is not None:
+            windows.append((float(start), float(i)))
+            start = None
+    if start is not None:
+        windows.append((float(start), float(len(keep))))
+
+    padded = [
+        (max(0.0, s - pad_before), min(float(duration), e + pad_after))
+        for s, e in windows
+    ]
+    return merge_intervals([w for w in padded if w[1] > w[0]], merge_gap_seconds)

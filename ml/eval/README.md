@@ -523,6 +523,28 @@ away from the count gate.
 It measures and decides nothing. The candidate fix #476 led to is the soft
 flag (`BALL_CONTACT_SOFT_SCALE_ENABLED`), which ships off.
 
+## Training the learned in-play classifier (CF-393)
+
+`train_deadtime.py` fits the per-second logistic model in
+`ml/pipeline/dead_time_ml.py` on the five dead-time fixtures and writes
+`ml/pipeline/deadtime_ml_weights.json`. It reads the same local caches as the
+ladder (through `deadtime_variants.load_game`), so copy them into
+`ball_caches/` first.
+
+```bash
+python -m ml.eval.train_deadtime              # leave-one-game-out report + write the weights
+python -m ml.eval.train_deadtime --no-write   # report only
+python -m ml.eval.train_deadtime --ablation   # also the epic's feature-subset AUC table
+```
+
+Every fixture gets a fold: the model and its threshold come from the other four,
+and the held-out row sits beside `guarded` (`v5`) on the same game. Headline
+totals are over test2/test4/test5 only, as above. The file is written with
+`"validated": false` and nothing reads it yet (the builder is CF-394), so
+committing new weights enables nothing. Two runs at the same commit are
+byte-identical; `git_commit` records HEAD, so a run at another commit differs
+in that field.
+
 ## Files
 ```
 metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
@@ -536,11 +558,13 @@ contact_cliff.py       how many rallies MIN_RALLY_CONTACTS deletes under CF-174
                        scaling: switch on, on + soft, off (CF-376)
 deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187)
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
+train_deadtime.py      leave-one-game-out trainer for the in-play weights (CF-393)
 fixtures/              one JSON per test case (ground truth)
                        {test_id}.json          highlights (CF-55)
                        {test_id}_deadtime.json ball-in-play spans (CF-98)
                        README_deadtime.md      dead-time fixture format
 ball_caches/           gitignored: {md5}.json ball tracks, for visualize_deadtime.py
+                       and train_deadtime.py
 results/               {test_id}.jsonl and {test_id}_deadtime.jsonl —
                        one row per tagged run, committed
                        deadtime_visualization.html — generated, gitignored

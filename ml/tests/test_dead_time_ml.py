@@ -22,12 +22,20 @@ from ml.eval import tune_contacts as tc  # noqa: E402
 from ml.pipeline import dead_time as dt  # noqa: E402
 from ml.pipeline.dead_time_ml import (  # noqa: E402
     CONTACT_GAP_CAP,
+    CONTEXT_LAGS,
     EMPTY_MEAN_Y,
     FAST_SPEED_FH,
     FEATURE_NAMES,
     FEATURE_VERSION,
+    SCALING,
+    add_context,
     compute_features,
+    context_rule,
     load_weights,
+    predict_in_play,
+    robust_scale,
+    smooth_probability,
+    windows_from_probability,
 )
 
 H = 360  # frame height for every fixture below
@@ -250,6 +258,8 @@ class TestWeightsContract:
         data = {
             "features": FEATURE_NAMES,
             "feature_version": FEATURE_VERSION,
+            "scaling": dict(SCALING),
+            "context": context_rule([]),
             "validated": True,
             "trained_on": "synthetic",
         }
@@ -282,18 +292,253 @@ class TestWeightsContract:
         with pytest.raises(ValueError):
             load_weights(p)
 
+    @pytest.mark.parametrize("field,value", [
+        ("zero_range", "divide_by_1"),
+        ("range", "p75-p25"),
+        ("rule", "global_standard"),
+    ])
+    def test_a_different_scaling_rule_is_refused(self, tmp_path, field, value):
+        """R3-M1: the column count cannot see a scaling change; this record can."""
+        p = self._write(tmp_path, scaling={**SCALING, field: value})
+        with pytest.raises(ValueError, match="scaled by"):
+            load_weights(p)
+
+    def test_a_missing_scaling_record_is_refused(self, tmp_path):
+        p = self._write(tmp_path)
+        data = json.loads(p.read_text())
+        del data["scaling"]
+        p.write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="scaled by"):
+            load_weights(p)
+
+    def test_a_different_context_edge_is_refused(self, tmp_path):
+        p = self._write(tmp_path, context={**context_rule([]), "edge": "zero"})
+        with pytest.raises(ValueError, match="context"):
+            load_weights(p)
+
+    def test_the_record_describes_what_robust_scale_does(self):
+        """
+        The record is a literal, so it moves only when someone moves it. Change
+        it with `robust_scale` (median, p10-p90, then max - min, then 1 — pinned
+        in TestRobustScale), and the committed weights stop loading until they
+        are retrained.
+        """
+        assert SCALING == {
+            "rule": "per_video_robust",
+            "center": "median",
+            "range": "p90-p10",
+            "zero_range": "max-min, then divide_by_1",
+        }
+        assert context_rule([-1, 1]) == {
+            "lags": [-1, 1], "edge": "replicate",
+            "layout": "base columns, then one block of all of them per lag, in lags order",
+        }
+
     def test_unvalidated_weights_load_but_warn(self, tmp_path, caplog):
         p = self._write(tmp_path, validated=False)
         with caplog.at_level("WARNING"):
             load_weights(p)
         assert "NOT validated" in caplog.text
 
-    def test_there_is_no_committed_weights_file_yet(self):
-        """Pins the docstring's claim. When CF-393 commits one, this fails and
-        the docstring gets rewritten with it."""
+
+
+class TestCommittedWeights:
+    """The file CF-393 committed, read as the contract CF-394 will consume.
+
+    Replaces the old `test_there_is_no_committed_weights_file_yet`, which pinned
+    the docstring's "no weights file yet" — both changed together.
+    """
+
+    REQUIRED = ("features", "feature_version", "scaling", "context", "coef",
+                "intercept", "threshold", "trained_on", "git_commit", "folds",
+                "context_variants", "validated")
+    FIXTURES = Path(__file__).resolve().parents[1] / "eval" / "fixtures"
+
+    @pytest.fixture
+    def weights(self):
         from ml.pipeline.dead_time_ml import WEIGHTS_PATH
 
-        assert not WEIGHTS_PATH.exists()
+        return load_weights(WEIGHTS_PATH)
+
+    def test_it_loads_unvalidated_at_the_current_version(self, weights):
+        """Committing is not enabling: CF-395 is the only thing that may flip it."""
+        assert weights["validated"] is False
+        assert weights["feature_version"] == FEATURE_VERSION
+
+    def test_every_required_key_is_present(self, weights):
+        missing = [k for k in self.REQUIRED if k not in weights]
+        assert not missing
+        assert "trained_at" not in weights, "a timestamp breaks byte-identical reruns"
+
+    def test_the_coefficients_fit_the_recorded_context(self, weights):
+        lags = weights["context"]["lags"]
+        assert len(weights["coef"]) == len(FEATURE_NAMES) * (1 + len(lags))
+        assert weights["context"] == context_rule(lags)
+        assert weights["scaling"] == SCALING
+
+    def test_the_folds_cover_all_five_fixtures(self, weights):
+        ids = ["test1", "test2", "test3", "test4", "test5"]
+        assert [f["held_out"] for f in weights["folds"]] == ids
+        for variant in weights["context_variants"].values():
+            assert [f["held_out"] for f in variant["folds"]] == ids
+
+    def test_the_top_level_folds_are_the_shipped_variants(self, weights):
+        """R3-N6: the chosen variant's folds are stored twice; they must agree."""
+        chosen = [v for v in weights["context_variants"].values()
+                  if v["context"] == weights["context"]]
+        assert len(chosen) == 1
+        assert chosen[0]["folds"] == weights["folds"]
+
+    def test_the_shipped_threshold_is_the_median_fold_threshold(self, weights):
+        assert weights["threshold"] == float(np.median(
+            [f["threshold"] for f in weights["folds"]]))
+
+    def test_the_trained_on_md5s_are_the_fixtures(self, weights):
+        for entry in weights["trained_on"]:
+            fx = json.loads(
+                (self.FIXTURES / f"{entry['test_id']}_deadtime.json").read_text())
+            assert entry["source_video_md5"] == fx["source_video_md5"]
+
+    def test_it_runs_through_predict_in_play(self, weights):
+        feats = compute_features(track([t * 0.5 for t in range(40)], step=10.0),
+                                 [{"time": 5.0}], 30.0, H)
+        probs = predict_in_play(feats, weights)
+        assert probs.shape == (30,)
+        assert np.all((probs >= 0.0) & (probs <= 1.0))
+
+
+class TestRobustScale:
+    def test_median_and_p10_p90_range(self):
+        col_a = np.arange(11, dtype=np.float64)        # median 5, p10 1, p90 9
+        col_b = np.arange(11, dtype=np.float64) * 2.0  # median 10, range 16
+        out = robust_scale(np.column_stack([col_a, col_b]))
+        np.testing.assert_allclose(out[:, 0], (col_a - 5.0) / 8.0)
+        np.testing.assert_allclose(out[:, 1], (col_b - 10.0) / 16.0)
+
+    def test_a_constant_column_is_divided_by_one(self):
+        X = np.column_stack([np.full(5, 3.0), np.arange(5.0)])
+        out = robust_scale(X)
+        assert np.all(np.isfinite(out))
+        np.testing.assert_array_equal(out[:, 0], np.zeros(5))
+
+    def test_a_saturated_column_falls_back_to_its_full_range(self):
+        """
+        p10 == p90 without the column being constant (test4's `track_rate_2s`
+        sits at 3.0 bar a few rows): it is scaled by max - min, not left raw.
+        """
+        col = np.full(40, 3.0)
+        col[0] = 1.25
+        out = robust_scale(np.column_stack([col, np.arange(40.0)]))
+        np.testing.assert_allclose(out[:, 0], (col - 3.0) / 1.75)
+        assert out[0, 0] == pytest.approx(-1.0)
+
+    def test_a_sparse_column_falls_back_to_its_full_range(self):
+        """test3's `contacts_5s`: mostly zero, so p10 == p90 == 0."""
+        col = np.zeros(30)
+        col[[3, 11]] = 2.0
+        out = robust_scale(col[:, None])
+        np.testing.assert_allclose(out[:, 0], col / 2.0)
+
+    def test_scaling_is_per_video(self):
+        """The same game shifted and stretched scales to the same rows."""
+        X = np.random.default_rng(0).normal(size=(50, 3))
+        np.testing.assert_allclose(robust_scale(X), robust_scale(X * 4.0 + 7.0))
+
+
+class TestAddContext:
+    X = np.array([[0.0, 10.0], [1.0, 11.0], [2.0, 12.0], [3.0, 13.0]])
+
+    def test_negative_lags_read_the_past_and_edges_replicate(self):
+        out = add_context(self.X, [-1, 2])
+        assert out.shape == (4, 6)
+        np.testing.assert_array_equal(out[:, :2], self.X)
+        # lag -1: row t carries t-1; row 0 replicates itself
+        np.testing.assert_array_equal(out[:, 2], [0.0, 0.0, 1.0, 2.0])
+        # lag +2: row t carries t+2; the last two rows replicate row 3
+        np.testing.assert_array_equal(out[:, 4], [2.0, 3.0, 3.0, 3.0])
+        np.testing.assert_array_equal(out[:, 5], [12.0, 13.0, 13.0, 13.0])
+
+    def test_no_lags_is_the_input(self):
+        np.testing.assert_array_equal(add_context(self.X, []), self.X)
+
+    def test_the_default_lags_are_one_three_five_both_ways(self):
+        assert CONTEXT_LAGS == (-5, -3, -1, 1, 3, 5)
+        assert add_context(self.X).shape == (4, 2 * 7)
+
+
+class TestPredictInPlay:
+    def test_a_coef_of_the_wrong_width_is_refused(self):
+        feats = np.zeros((10, len(FEATURE_NAMES)))
+        w = {"coef": [0.0] * len(FEATURE_NAMES), "intercept": 0.0,
+             "scaling": SCALING, "context": context_rule([-1, 1])}
+        with pytest.raises(ValueError, match="coefficients"):
+            predict_in_play(feats, w)
+
+    def test_weights_scaled_another_way_are_refused(self):
+        """R3-M1: a dict that bypassed `load_weights` is checked here too."""
+        feats = np.zeros((10, len(FEATURE_NAMES)))
+        w = {"coef": [0.0] * len(FEATURE_NAMES), "intercept": 0.0,
+             "scaling": {**SCALING, "zero_range": "divide_by_1"},
+             "context": context_rule([])}
+        with pytest.raises(ValueError, match="scaled by"):
+            predict_in_play(feats, w)
+        w = {**w, "scaling": SCALING, "context": {"lags": []}}
+        with pytest.raises(ValueError, match="context"):
+            predict_in_play(feats, w)
+
+    def test_unsmoothed_is_the_sigmoid_of_the_scaled_matrix(self):
+        feats = np.random.default_rng(1).normal(size=(20, len(FEATURE_NAMES)))
+        coef = np.linspace(-1, 1, len(FEATURE_NAMES))
+        w = {"coef": coef.tolist(), "intercept": 0.25, "scaling": SCALING,
+             "context": context_rule([])}
+        expected = 1 / (1 + np.exp(-(robust_scale(feats) @ coef + 0.25)))
+        np.testing.assert_allclose(predict_in_play(feats, w, smooth=False), expected)
+        assert predict_in_play(feats, w).shape == (20,)
+
+    @pytest.mark.parametrize("n", [1, 2, 4, 5])
+    def test_a_video_shorter_than_the_smoothing_kernel_keeps_its_length(self, n):
+        feats = np.random.default_rng(2).normal(size=(n, len(FEATURE_NAMES)))
+        w = {"coef": [0.1] * len(FEATURE_NAMES), "intercept": 0.0,
+             "scaling": SCALING, "context": context_rule([])}
+        assert predict_in_play(feats, w).shape == (n,)
+        assert smooth_probability(np.ones(n)).shape == (n,)
+
+    def test_a_short_trace_is_smoothed_about_its_own_rows(self):
+        # each row averages rows t-2..t+2 over a window of 5, zero-padded
+        np.testing.assert_allclose(smooth_probability(np.array([1.0, 2.0, 3.0])),
+                                   [1.2, 1.2, 1.2])
+
+    def test_smoothing_matches_convolve_same_from_the_kernel_length_up(self):
+        probs = np.random.default_rng(3).random(30)
+        for n in (5, 6, 30):
+            np.testing.assert_allclose(
+                smooth_probability(probs[:n]),
+                np.convolve(probs[:n], np.ones(5) / 5, mode="same"))
+
+
+class TestWindowsFromProbability:
+    def test_runs_are_padded(self):
+        probs = np.zeros(60)
+        probs[20:25] = 0.9      # seconds [20, 25)
+        assert windows_from_probability(probs, 0.5, 60.0) == [(17.0, 27.5)]
+
+    def test_close_runs_merge_and_far_ones_do_not(self):
+        probs = np.zeros(100)
+        probs[10:12] = probs[18:20] = 0.9   # padded (7, 14.5) and (15, 22.5): 0.5s apart, merge
+        probs[60:62] = 0.9                  # padded (57, 64.5): far from (7, 22.5)
+        assert windows_from_probability(probs, 0.5, 100.0) == [(7.0, 22.5), (57.0, 64.5)]
+
+    def test_windows_are_clamped_to_the_video(self):
+        probs = np.zeros(10)
+        probs[:2] = probs[-1] = 0.9
+        out = windows_from_probability(probs, 0.5, 9.4, merge_gap_seconds=0.0)
+        assert out == [(0.0, 4.5), (6.0, 9.4)]
+
+    def test_the_threshold_is_inclusive_and_empty_input_gives_nothing(self):
+        assert windows_from_probability(np.array([0.5]), 0.5, 1.0) == [(0.0, 1.0)]
+        assert windows_from_probability(np.array([0.49]), 0.5, 1.0) == []
+        assert windows_from_probability(np.array([]), 0.5, 10.0) == []
+        assert windows_from_probability(np.array([0.9]), 0.5, 0.0) == []
 
 
 class TestGuards:
