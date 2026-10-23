@@ -495,11 +495,7 @@ export default function GamePage() {
                 <ClipCard
                   key={clip.id}
                   clip={clip}
-                  players={players}
                   onPlay={() => setActiveClipIndex(i)}
-                  onUpdate={(updated) =>
-                    setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
-                  }
                   selected={selectedIds.has(clip.id)}
                   onToggleSelect={selectMode ? toggleSelect : undefined}
                   onSave={selectMode ? undefined : (id) => setSavingClipId(id)}
@@ -528,6 +524,9 @@ export default function GamePage() {
           onUpdate={(updated) =>
             setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
           }
+          // The roster turns on the modal's edit bar — Label, Trim and the
+          // player tag, which used to sit on the card (CF-272).
+          players={players}
           // Every game reachable here is the viewer's own. `GET /games/{id}` is
           // visibility-scoped rather than owner-only, but no write path exists
           // for a game's visibility — `test_visibility_write_paths_are_declared`

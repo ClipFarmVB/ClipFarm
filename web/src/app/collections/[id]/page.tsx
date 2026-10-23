@@ -140,18 +140,14 @@ function CollectionContent() {
             <div key={clip.id} className="group relative">
               <ClipCard
                 clip={clip}
-                players={players}
                 onPlay={() => setActiveClipIndex(i)}
-                onUpdate={(updated) =>
-                  setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
-                }
                 onSave={(clipId) => setSavingClipId(clipId)}
               />
               {/* Remove from collection. This button is positioned against
                   the wrapper, which is the whole card — not the thumbnail — so
-                  a `bottom-*` offset lands on the footer, over the Label/Save
-                  row and over the trim panel's Start controls when it is open.
-                  Only the top edge of the wrapper coincides with the thumbnail.
+                  a `bottom-*` offset lands on the footer, over the
+                  Download/Save row. Only the top edge of the wrapper coincides
+                  with the thumbnail.
                   Top-right is free there: the badges sit top-left, the duration
                   is bottom-right *inside* the thumbnail, and the selection
                   checkbox that would otherwise own this corner is never
@@ -191,6 +187,10 @@ function CollectionContent() {
           onUpdate={(updated) =>
             setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
           }
+          // The edit bar (CF-272), as the card offered it here before. Known
+          // gap, unchanged by the move: a collection can hold another owner's
+          // clip, whose edit the api refuses with 404.
+          players={players}
         />
       )}
     </div>
