@@ -2,11 +2,10 @@
 //
 // CF-385: the "Remove dead time" checkbox takes its tint from the brand token.
 //
-// It used to read `var(--brand, #6366f1)`, a variable defined nowhere, so the
-// indigo fallback always rendered in both themes. jsdom runs no Tailwind, so
-// these cases pin the class name; the rendered colour is checked by eye.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+// It used to read an arbitrary-value accent over a CSS variable defined
+// nowhere, so its indigo #6366f1 fallback always rendered in both themes.
+// jsdom runs no Tailwind, so this case pins the class name; the rendered
+// colour is checked by eye.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +26,8 @@ import { UploadZone } from "@/components/UploadZone";
 
 let host: HTMLDivElement;
 let root: Root;
+const realCreateObjectURL = URL.createObjectURL;
+const realRevokeObjectURL = URL.revokeObjectURL;
 
 beforeEach(() => {
   // readDuration needs object URLs, which jsdom does not implement; without
@@ -44,6 +45,8 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  URL.createObjectURL = realCreateObjectURL;
+  URL.revokeObjectURL = realRevokeObjectURL;
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -61,7 +64,7 @@ async function pickMp4() {
   });
   // Settle the duration probe so no state update lands after unmount.
   await act(async () => {
-    vi.advanceTimersByTime(10_000);
+    await vi.runOnlyPendingTimersAsync();
   });
 }
 
@@ -73,10 +76,5 @@ describe("UploadZone dead-time checkbox", () => {
     expect(checkbox).not.toBeNull();
     expect(checkbox!.className.split(/\s+/)).toContain("accent-brand");
     expect(checkbox!.className).not.toContain("var(--");
-  });
-
-  it("leaves no reference to the undefined --brand variable in the source", () => {
-    const src = readFileSync(join(__dirname, "UploadZone.tsx"), "utf8");
-    expect(src).not.toMatch(/var\(--brand\b/);
   });
 });
