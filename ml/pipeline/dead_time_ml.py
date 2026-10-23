@@ -359,16 +359,23 @@ def robust_scale(features: np.ndarray) -> np.ndarray:
     tracker that is more confident on one ball) that a global fit would have to
     learn as signal. It is what the epic's experiment measured.
 
-    A column whose range is zero or not finite — a game with no contacts at all
-    makes `contacts_5s` constant — is divided by 1, so it centres to zeros
-    rather than to NaN or inf.
+    A column can have a zero p10-p90 range without being constant: when more
+    than 80% of its rows share one value. On the fixtures that is a saturated
+    column (test4's `track_rate_2s` sits at 3.0 bar 2.5% of rows) or a sparse
+    one (test3's `contacts_5s` is non-zero on 9.9% of rows). Such a column
+    falls back to its full range, max - min, so it is still range-scaled like
+    the same column in every other game rather than left in raw units. Only a
+    column that is truly constant (or whose ranges are not finite) is divided
+    by 1, so it centres to zeros rather than to NaN or inf.
     """
     X = np.asarray(features, dtype=np.float64)
     if X.shape[0] == 0:
         return X.copy()
     center = np.median(X, axis=0)
     spread = np.percentile(X, 90, axis=0) - np.percentile(X, 10, axis=0)
-    spread = np.where(np.isfinite(spread) & (spread > 0), spread, 1.0)
+    full = X.max(axis=0) - X.min(axis=0)
+    spread = np.where(np.isfinite(spread) & (spread > 0), spread,
+                      np.where(np.isfinite(full) & (full > 0), full, 1.0))
     out: np.ndarray = (X - center) / spread
     return out
 
@@ -403,9 +410,19 @@ def design_matrix(features: np.ndarray, lags: tuple[int, ...] | list[int]) -> np
 
 
 def smooth_probability(probs: np.ndarray) -> np.ndarray:
-    """Centred moving average over SMOOTH_SECONDS (CF-173's smoothing)."""
+    """
+    Centred moving average over SMOOTH_SECONDS (CF-173's smoothing), one value
+    per input row.
+
+    Not `np.convolve(mode="same")`, which returns max(len(probs),
+    len(kernel)) values, so a video shorter than the kernel came back longer
+    than it went in. Slicing the full convolution at the kernel's centre gives
+    the same values as "same" for any trace at least as long as the kernel.
+    """
     kernel = np.ones(SMOOTH_SECONDS) / SMOOTH_SECONDS
-    out: np.ndarray = np.convolve(probs, kernel, mode="same")
+    start = (SMOOTH_SECONDS - 1) // 2
+    full = np.convolve(np.asarray(probs, dtype=np.float64), kernel, mode="full")
+    out: np.ndarray = full[start: start + len(probs)]
     return out
 
 

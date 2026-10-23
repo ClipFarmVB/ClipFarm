@@ -32,6 +32,7 @@ from ml.pipeline.dead_time_ml import (  # noqa: E402
     load_weights,
     predict_in_play,
     robust_scale,
+    smooth_probability,
     windows_from_probability,
 )
 
@@ -367,6 +368,24 @@ class TestRobustScale:
         assert np.all(np.isfinite(out))
         np.testing.assert_array_equal(out[:, 0], np.zeros(5))
 
+    def test_a_saturated_column_falls_back_to_its_full_range(self):
+        """
+        p10 == p90 without the column being constant (test4's `track_rate_2s`
+        sits at 3.0 bar a few rows): it is scaled by max - min, not left raw.
+        """
+        col = np.full(40, 3.0)
+        col[0] = 1.25
+        out = robust_scale(np.column_stack([col, np.arange(40.0)]))
+        np.testing.assert_allclose(out[:, 0], (col - 3.0) / 1.75)
+        assert out[0, 0] == pytest.approx(-1.0)
+
+    def test_a_sparse_column_falls_back_to_its_full_range(self):
+        """test3's `contacts_5s`: mostly zero, so p10 == p90 == 0."""
+        col = np.zeros(30)
+        col[[3, 11]] = 2.0
+        out = robust_scale(col[:, None])
+        np.testing.assert_allclose(out[:, 0], col / 2.0)
+
     def test_scaling_is_per_video(self):
         """The same game shifted and stretched scales to the same rows."""
         X = np.random.default_rng(0).normal(size=(50, 3))
@@ -409,6 +428,26 @@ class TestPredictInPlay:
         expected = 1 / (1 + np.exp(-(robust_scale(feats) @ coef + 0.25)))
         np.testing.assert_allclose(predict_in_play(feats, w, smooth=False), expected)
         assert predict_in_play(feats, w).shape == (20,)
+
+    @pytest.mark.parametrize("n", [1, 2, 4, 5])
+    def test_a_video_shorter_than_the_smoothing_kernel_keeps_its_length(self, n):
+        feats = np.random.default_rng(2).normal(size=(n, len(FEATURE_NAMES)))
+        w = {"coef": [0.1] * len(FEATURE_NAMES), "intercept": 0.0,
+             "context": {"lags": []}}
+        assert predict_in_play(feats, w).shape == (n,)
+        assert smooth_probability(np.ones(n)).shape == (n,)
+
+    def test_a_short_trace_is_smoothed_about_its_own_rows(self):
+        # each row averages rows t-2..t+2 over a window of 5, zero-padded
+        np.testing.assert_allclose(smooth_probability(np.array([1.0, 2.0, 3.0])),
+                                   [1.2, 1.2, 1.2])
+
+    def test_smoothing_matches_convolve_same_from_the_kernel_length_up(self):
+        probs = np.random.default_rng(3).random(30)
+        for n in (5, 6, 30):
+            np.testing.assert_allclose(
+                smooth_probability(probs[:n]),
+                np.convolve(probs[:n], np.ones(5) / 5, mode="same"))
 
 
 class TestWindowsFromProbability:

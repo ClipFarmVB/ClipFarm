@@ -87,7 +87,7 @@ SCALING = {
     "rule": "per_video_robust",
     "center": "median",
     "range": "p90-p10",
-    "zero_range": "divide_by_1",
+    "zero_range": "max-min, then divide_by_1",
 }
 
 # The epic's ablation, over the 13 position-track columns. "base" is what the
