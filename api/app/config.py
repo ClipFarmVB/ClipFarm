@@ -796,15 +796,27 @@ class Settings(BaseSettings):
     # abstain reads a thinner track — is measured only on unlabelled 1080p
     # rally counts and five dead-time fixtures; see the PR before enabling it.
     ball_static_site_filter_enabled: bool = False
-    # Which keep-window builder the condense stage uses. A failure *inside* the
-    # guarded builder falls back to "rules", so a feature mismatch degrades the
-    # condense rather than failing the run. Note the fallback is within-builder
-    # only: both builders are imported from the same module, so an import-time
-    # failure takes out "rules" too and the whole condense stage is skipped by
-    # the stage-level handler in tasks.py. The game still ships `ready`.
+    # Which keep-window builder the condense stage uses. The builders chain:
+    # "learned" falls back to "guarded" on any exception, and a failure *inside*
+    # the guarded builder falls back to "rules", so a feature mismatch degrades
+    # the condense rather than failing the run. Note the guarded → rules
+    # fallback is within-builder only: both are imported from the same module,
+    # so an import-time failure takes out "rules" too and the whole condense
+    # stage is skipped by the stage-level handler in tasks.py. The game still
+    # ships `ready`. The learned builder lives in its own module and is imported
+    # inside its own try, so its import failing lands on "guarded".
     #   "rules"    the two blocks above: contacts + motion bridge (CF-46)
     #   "guarded"  speed-gated contacts + motion anchors + tight pads, abstaining
     #              when the ball track is too sparse to judge (CF-187)
+    #   "learned"  a per-second in-play classifier over the ball track, from the
+    #              committed weights (ml/pipeline/deadtime_ml_weights.json,
+    #              CF-394). Not the default and not yet usable: while those
+    #              weights say "validated": false — until CF-395 applies the
+    #              epic's bar — every game falls back to "guarded" with one INFO
+    #              line saying so. It declines (→ "guarded") on the same sparse
+    #              tracks guarded abstains on, read off
+    #              condense_guard_min_track_rate below. No tunable of its own:
+    #              its threshold lives in the weights file.
     # Default is "guarded". Re-measured at 13180a3 (CF-391) on all five fixtures
     # at each position of ball_contact_scale_enabled above; the full table is in
     # ml/eval/README.md. The figures it was chosen on (42b582f) are the
@@ -844,7 +856,7 @@ class Settings(BaseSettings):
     # of the video now ships without a condensed cut where it would previously
     # have re-encoded a near-copy. CONDENSE_MODE=rules restores the *builder*,
     # not every line the card touched.
-    condense_mode: Literal["rules", "guarded"] = "guarded"
+    condense_mode: Literal["rules", "guarded", "learned"] = "guarded"
     # Guarded-path tunables — see ml/pipeline/dead_time.active_windows_guarded.
     # Speeds are frame-heights/s, so they hold across source resolutions.
     condense_guard_gate_speed: float = 0.25       # min median speed around a credible contact
@@ -1242,8 +1254,8 @@ def _boot_error(exc: ValidationError) -> str:
 
     `loc` as well as `msg`, because pydantic renders the field name on its own
     line and taking only the message drops it. A first version of this did, and
-    turned `CONDENSE_MODE=banana` into a bare "Input should be 'rules' or
-    'guarded'" — true, and useless, because the operator is not told which of
+    turned `CONDENSE_MODE=banana` into a bare "Input should be 'rules',
+    'guarded' or 'learned'" — true, and useless, because the operator is not told which of
     setting it is about.
 
     The name goes through `Settings.env_name_for()` rather than being printed
@@ -1267,8 +1279,8 @@ def _boot_error(exc: ValidationError) -> str:
     Keyed on `type == "value_error"` rather than on the text, and applied with
     `removeprefix`, so an error carrying no such prefix is untouched either way.
     Every other pydantic error type keeps its message verbatim: a
-    `literal_error` reads `CONDENSE_MODE: Input should be 'rules' or 'guarded'`
-    and has no prefix to remove. An `assert` in a validator produces
+    `literal_error` reads `CONDENSE_MODE: Input should be 'rules', 'guarded'
+    or 'learned'` and has no prefix to remove. An `assert` in a validator produces
     `assertion_error` with `Assertion failed, ` instead, and is deliberately not
     stripped — `config.py` has no such validator, and inventing a second case
     for code that does not exist is how the pattern below would start to drift.

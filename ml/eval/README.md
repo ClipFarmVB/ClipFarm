@@ -203,13 +203,15 @@ exact bytes forever and matches the ball-cache key.
 
 ## Which condense builder runs (CF-187)
 
-`condense_mode` in `app.config` picks the keep-window builder, and every mode
-lives in `ml/pipeline/dead_time.py`:
+`condense_mode` in `app.config` picks the keep-window builder. `rules` and
+`guarded` live in `ml/pipeline/dead_time.py`, `learned` in
+`ml/pipeline/dead_time_ml.py`:
 
 | mode | builder | notes |
 |---|---|---|
 | `rules` | `active_windows_from_contacts` + `bridge_windows_by_motion` | the CF-46 path; still the fallback when `guarded` raises |
 | `guarded` | `active_windows_guarded` | **the default.** Speed-gated contacts, motion anchors, tight pads, and an abstain when the ball track is too sparse |
+| `learned` | `active_windows_learned` | CF-394, **off**. A per-second in-play classifier from `ml/pipeline/deadtime_ml_weights.json`. Falls back to `guarded` on any exception — including unvalidated weights, which the committed file is until CF-395, and a track below `condense_guard_min_track_rate`. Ladder row `v6`, scored in-sample |
 
 `guarded` became the default on the fixture numbers measured at `42b582f`, not
 on a clean sweep. Those numbers are the **switch-off** column below: they
@@ -540,8 +542,11 @@ python -m ml.eval.train_deadtime --ablation   # also the epic's feature-subset A
 Every fixture gets a fold: the model and its threshold come from the other four,
 and the held-out row sits beside `guarded` (`v5`) on the same game. Headline
 totals are over test2/test4/test5 only, as above. The file is written with
-`"validated": false` and nothing reads it yet (the builder is CF-394), so
-committing new weights enables nothing. Two runs at the same commit are
+`"validated": false`, which the builder (`condense_mode="learned"`, CF-394)
+refuses — it falls back to `guarded` — so committing new weights enables
+nothing. The ladder's `v6` scores them regardless, **in-sample**: the shipped
+weights are fitted on all five fixtures, so `v6`'s row is not a held-out
+result; the folds above are. Two runs at the same commit are
 byte-identical; `git_commit` records HEAD, so a run at another commit differs
 in that field.
 
@@ -556,7 +561,8 @@ track_quality.py       is the tracker following the ball? the lock-on fraction
                        CF-229's acceptance is written in (#233)
 contact_cliff.py       how many rallies MIN_RALLY_CONTACTS deletes under CF-174
                        scaling: switch on, on + soft, off (CF-376)
-deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187)
+deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187),
+                       v6 = mode=learned, in-sample (CF-394)
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 train_deadtime.py      leave-one-game-out trainer for the in-play weights (CF-393)
 fixtures/              one JSON per test case (ground truth)

@@ -35,6 +35,8 @@ MIRROR_CONSUMERS = (
     REPO / "ml" / "eval" / "deadtime_variants.py",
 )
 DEAD_TIME_PY = REPO / "ml" / "pipeline" / "dead_time.py"
+DEAD_TIME_ML_PY = REPO / "ml" / "pipeline" / "dead_time_ml.py"
+TASKS_PY = REPO / "api" / "app" / "workers" / "tasks.py"
 
 # tune_contacts constant -> the app.config setting it copies.
 COND_TO_SETTING = {
@@ -63,7 +65,9 @@ GUARD_TO_KWARG = {
 }
 # Mode switches, not tunables: not copied into tune_contacts, which sweeps the
 # rule-based path only. Listed here so the coverage test stays a conscious
-# checkpoint for every new condense_* knob.
+# checkpoint for every new condense_* knob. CF-394's "learned" mode added no
+# knob: its threshold lives in the weights file, and the one setting it reads
+# (condense_guard_min_track_rate) is guarded's, pinned below.
 SWITCH_SETTINGS = {"condense_mode"}
 
 # Settings outside the condense_ prefix that the eval tooling still copies, so
@@ -276,7 +280,60 @@ class TestGuardedDefaultsMatchProduction:
 
     def test_condense_mode_default_is_a_known_mode(self):
         mode = _settings_defaults()["condense_mode"]
-        assert mode in {"rules", "guarded"}, f"unknown condense_mode default {mode!r}"
+        assert mode in _condense_mode_literal(), f"unknown condense_mode default {mode!r}"
+        assert mode == "guarded", "CF-394 adds a mode; flipping the default is CF-399's call"
+
+    def test_the_learned_builder_declines_on_guardeds_floor(self):
+        """
+        CF-394: the learned builder declines (→ guarded) on the sparse tracks
+        guarded abstains on. Production hands it `condense_guard_min_track_rate`;
+        the eval rung `v6` runs on the kwarg default. The two must agree, or v6
+        scores a decline boundary production does not have.
+        """
+        settings = _settings_defaults()
+        defaults = _kwarg_defaults(DEAD_TIME_ML_PY, "active_windows_learned")
+        assert defaults["min_track_rate"] == settings["condense_guard_min_track_rate"]
+        calls = _calls(TASKS_PY, "active_windows_learned")
+        assert len(calls) == 1, "tasks.py should call the learned builder exactly once"
+        kwargs = {k.arg: ast.unparse(k.value) for k in calls[0].keywords if k.arg}
+        assert kwargs.get("min_track_rate") == "settings.condense_guard_min_track_rate"
+        assert "allow_unvalidated" not in kwargs, "production must never score unvalidated weights"
+
+
+def _condense_mode_literal() -> set[str]:
+    """The values of `condense_mode: Literal[...]` in app.config, parsed."""
+    tree = ast.parse(CONFIG_PY.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+                and node.target.id == "condense_mode"):
+            ann = node.annotation
+            assert isinstance(ann, ast.Subscript) and ast.unparse(ann.value) == "Literal"
+            elts = ann.slice.elts if isinstance(ann.slice, ast.Tuple) else [ann.slice]
+            return {ast.literal_eval(e) for e in elts}
+    raise AssertionError("condense_mode not found in app.config")
+
+
+def test_every_condense_mode_is_dispatched_and_nothing_else():
+    """
+    The modes `_build_condense_windows` compares against are exactly the ones
+    the Literal admits. A Literal value the dispatcher never names boots clean
+    and then lands on the unknown-mode fallback ("rules") for every game, the
+    failure the Literal was added to close; a name only the dispatcher knows is
+    dead code. Both `==` and `!=` are read, because "rules" is dispatched by
+    the negative test.
+    """
+    tree = ast.parse(TASKS_PY.read_text(encoding="utf-8"))
+    func = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "_build_condense_windows")
+    dispatched = {
+        side.value
+        for cmp in ast.walk(func) if isinstance(cmp, ast.Compare)
+        and all(isinstance(op, ast.Eq | ast.NotEq) for op in cmp.ops)
+        and ast.unparse(cmp.left) == "mode"
+        for side in cmp.comparators
+        if isinstance(side, ast.Constant) and isinstance(side.value, str)
+    }
+    assert dispatched == _condense_mode_literal()
 
 
 # The eval modules that read the switches straight off app.config.settings

@@ -26,8 +26,10 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import logging
 import os
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -597,6 +599,60 @@ def refuse_contact_scale_mismatch(path: Path, snapshot: dict) -> None:
         )
 
 
+# The logger the worker's learned → guarded fallback line is written to.
+_TASKS_LOGGER = "app.workers.tasks"
+
+
+def _learned_windows_or_exit(
+    build: Callable[[], tuple[list[tuple[float, float]], str]],
+) -> list[tuple[float, float]]:
+    """
+    Run the worker's condense chain for mode=learned and return its windows, or
+    exit if a builder other than "learned" produced them.
+
+    A row tagged mode=learned that guarded (or rules) built would be scored and
+    recorded as the learned builder's. With the committed weights unvalidated
+    this is every run; score them in-sample with visualize_deadtime's v6 instead.
+
+    The exit carries the fallback's reason itself. The worker logs it at INFO
+    for a decline (unvalidated weights, a sparse track), and nothing in this
+    process configures logging, so Python's last-resort handler would print
+    only WARNING and above: the reason has to be captured here, or the operator
+    cannot tell unvalidated weights from a sparse track.
+    """
+    reasons: list[str] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            try:
+                reasons.append(record.getMessage())
+            except Exception:
+                pass
+
+    handler = _Collect(level=logging.INFO)
+    tasks_logger = logging.getLogger(_TASKS_LOGGER)
+    previous_level = tasks_logger.level
+    tasks_logger.addHandler(handler)
+    if not tasks_logger.isEnabledFor(logging.INFO):
+        tasks_logger.setLevel(logging.INFO)
+    try:
+        shipped, built_by = build()
+    finally:
+        tasks_logger.removeHandler(handler)
+        tasks_logger.setLevel(previous_level)
+
+    print(f"Offline deadtime [mode=learned]: built by {built_by}")
+    if built_by != "learned":
+        why = "; ".join(reasons) if reasons else "the worker logged no reason"
+        raise SystemExit(
+            f"Offline deadtime: condense_mode=learned fell back to {built_by!r} "
+            f"({why}) — refusing to record it as learned. "
+            "Unvalidated weights always fall back; score them with "
+            "`python -m ml.eval.visualize_deadtime` (v6)."
+        )
+    return shipped
+
+
 def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval], str, str]:
     """
     Derive the condense keep-windows from the fixture's source video, mirroring
@@ -606,7 +662,9 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
 
     Follows `condense_mode`, so this scores the builder production actually runs
     rather than a fixed one — the whole point of the offline path is that its
-    numbers transfer.
+    numbers transfer. Under "learned" it refuses (SystemExit) when the worker's
+    chain fell back to another builder, rather than record that builder's
+    windows under the learned mode's name.
 
     Returns (companion, shipped, comparison_title, companion_tag). `shipped` is
     what the condense stage would produce under the current mode; `companion` is
@@ -703,11 +761,14 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         # so contact-free input with a real track is a legitimate thing to
         # score — and refusing it here would decline exactly the case the
         # builder was added for. It still needs a track: with no positions
-        # either, there is nothing for anchors to work from.
-        if not contacts and not (mode == "guarded" and positions):
+        # either, there is nothing for anchors to work from. The learned
+        # builder (CF-394) reads the track the same way — contacts are two of
+        # its thirteen columns — so the same holds for it.
+        track_modes = ("guarded", "learned")
+        if not contacts and not (mode in track_modes and positions):
             raise SystemExit(
                 f"Offline deadtime: ball cache for {r2_key} yielded no contacts"
-                f"{' and no positions' if mode == 'guarded' else ''}. "
+                f"{' and no positions' if mode in track_modes else ''}. "
                 "Score the pose-first fallback via --windows-json with a dumped "
                 "keep-window list instead."
             )
@@ -740,13 +801,27 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
                 min_track_rate=settings.condense_guard_min_track_rate,
             )
             title = "GUARDED vs RULES (CF-187)"
+        elif mode == "learned":
+            # Through the worker's own chain rather than a call to
+            # active_windows_learned, so this row is what production would ship
+            # — weights load, validation refusal and fallback included.
+            from app.workers.tasks import _build_condense_windows
+
+            shipped = _learned_windows_or_exit(
+                lambda: _build_condense_windows(
+                    mode, contacts, positions, duration, frame_h, settings,
+                ),
+            )
+            title = "LEARNED vs RULES (CF-394)"
         else:
             # Unreachable via settings since condense_mode became a Literal (a
             # typo now fails at Settings construction). Kept because this reads
             # settings directly, so it is the one guard left if that annotation
             # is ever widened back to str — unlike tasks._build_condense_windows'
             # twin, which also still serves direct callers passing a mode string.
-            raise SystemExit(f"Unknown condense_mode {mode!r} — expected rules or guarded")
+            raise SystemExit(
+                f"Unknown condense_mode {mode!r} — expected rules, guarded or learned"
+            )
 
         # The abstain (one whole-video window) is a real outcome worth seeing in
         # the report, not an error — say so, because a 0% dead-removed row

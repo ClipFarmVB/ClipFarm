@@ -23,8 +23,11 @@ game at `LIVE_CUT_COST`), and shipped weights fit on all games at the median of
 the per-fold thresholds.
 
 **The weights are written with `"validated": false`, always.** Committing them
-is not enabling them: nothing in the pipeline reads this file (CF-394 is the
-builder), and the bar for flipping the flag is CF-395's to apply.
+is not enabling them: the builder that reads this file
+(`dead_time_ml.active_windows_learned`, CF-394) refuses unvalidated weights, so
+`condense_mode="learned"` falls back to `guarded` on every game until the flag
+flips, and the bar for flipping it is CF-395's to apply. The eval ladder's `v6`
+scores them anyway, in-sample.
 
 **Headline totals are over `COMPARABLE` (test2/test4/test5) only.** test1 is a
 different labeler on 360p footage and test3 is a game the tracker cannot follow

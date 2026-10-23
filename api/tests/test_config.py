@@ -1707,7 +1707,7 @@ def test_a_boot_error_names_every_pydantic_error_not_just_the_first(
     not two — which is why the first attempt at this test proved nothing.
 
     It also pins that each problem names its field. Taking only `msg` rendered
-    `CONDENSE_MODE=banana` as a bare "Input should be 'rules' or 'guarded'":
+    `CONDENSE_MODE=banana` as a bare "Input should be 'rules', 'guarded' or 'learned'":
     true, and useless, since the operator is not told which setting it is about,
     out of dozens. pydantic puts the field on its own line and the first version of
     the wrapper dropped it.
@@ -1764,16 +1764,26 @@ def test_an_unknown_condense_mode_fails_at_load(clean_env):
     assert "condense_mode" in str(excinfo.value).lower()
 
 
-def test_both_shipping_modes_still_load(clean_env):
+def test_every_condense_mode_still_loads(clean_env):
     """The companion to the two above: closing the set must not close it around
-    the wrong values. Both names here are dispatched on by
+    the wrong values. Every name here is dispatched on by
     `tasks._build_condense_windows` and `ml/eval/harness.py`, so a Literal that
     admitted only the default would fail the run it was meant to protect.
+    "learned" (CF-394) is in the set and is not the default — flipping it is
+    CF-399's decision, not a side effect of adding it.
     """
-    for mode in ("rules", "guarded"):
+    for mode in ("rules", "guarded", "learned"):
         assert _settings(condense_mode=mode).condense_mode == mode
 
     assert _settings().condense_mode == "guarded", "the default must stay guarded"
+
+
+def test_learned_is_named_in_the_refusal(clean_env):
+    """An operator who mistypes the new mode is told it exists."""
+    with pytest.raises(Exception) as excinfo:
+        _settings(condense_mode="lerned")
+
+    assert "'learned'" in str(excinfo.value)
 
 
 # ── CF-92: the tools CI runs on are pinned ─────────────────────────────────
