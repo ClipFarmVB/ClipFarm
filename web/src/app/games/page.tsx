@@ -109,8 +109,8 @@ function GamesContent() {
     p.then((data) => {
       setGames(data);
       setLoading(false);
-    }).catch((e: Error) => {
-      setError(e.message);
+    }).catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : "Couldn't load your games.");
       setLoading(false);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps

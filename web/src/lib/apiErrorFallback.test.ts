@@ -14,7 +14,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getProfile } from "./api";
+import { ApiError, getProfile, uploadAvatar } from "./api";
 
 function failWith(status: number, body: string) {
   vi.stubGlobal(
@@ -72,5 +72,40 @@ describe("the error message for a body the API did not write", () => {
 
     const err = await getProfile("alice").catch((e: Error) => e);
     expect((err as Error).message).toBe("Profile not found");
+  });
+});
+
+describe("the status travels with the error (CF-423)", () => {
+  it("rejects a 404 with an ApiError carrying the status and the unchanged message", async () => {
+    failWith(404, JSON.stringify({ detail: "Profile not found" }));
+
+    const err = await getProfile("alice").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    // Still an Error, so every caller that only reads `.message` is unaffected.
+    expect(err).toBeInstanceOf(Error);
+    expect((err as ApiError).status).toBe(404);
+    expect((err as ApiError).message).toBe("Profile not found");
+    expect((err as ApiError).name).toBe("ApiError");
+  });
+
+  it("carries the status of a response the API did not write", async () => {
+    // A proxy's HTML 502: the message is nothing but the status, and now the
+    // status is also a number a caller can branch on.
+    failWith(502, "<!DOCTYPE html><html><body>Bad gateway</body></html>");
+
+    const err = await getProfile("alice").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(502);
+    expect((err as ApiError).message).toBe("API error 502");
+  });
+
+  it("does the same on the hand-rolled avatar upload path", async () => {
+    failWith(413, JSON.stringify({ detail: "Avatar must be 2 MB or smaller" }));
+
+    const file = new File(["x"], "a.png", { type: "image/png" });
+    const err = await uploadAvatar(file).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(413);
+    expect((err as ApiError).message).toBe("Avatar must be 2 MB or smaller");
   });
 });

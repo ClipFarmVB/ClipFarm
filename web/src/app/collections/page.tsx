@@ -23,7 +23,7 @@ function CollectionsContent() {
   useEffect(() => {
     getCollections()
       .then(setCollections)
-      .catch((e) => setError(e.message))
+      .catch((e) => setError(e instanceof Error ? e.message : "Couldn't load collections."))
       .finally(() => setLoading(false));
   }, []);
 
