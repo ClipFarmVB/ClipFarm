@@ -197,6 +197,16 @@ class TestLearnedMode:
         assert lines[0].levelno == logging.INFO, "an expected fallback, not a failure"
         assert "not validated" in lines[0].getMessage()
 
+    def test_the_offline_harness_exit_says_why_learned_fell_back(self):
+        """R1-M2: the decline is logged at INFO, which nothing in a harness run
+        prints, so `harness --offline`'s refusal must carry the reason."""
+        from ml.eval.harness import _learned_windows_or_exit
+
+        with pytest.raises(SystemExit) as excinfo:
+            _learned_windows_or_exit(lambda: self._build("learned"))
+        assert "fell back to 'guarded'" in str(excinfo.value)
+        assert "not validated" in str(excinfo.value)
+
     def test_validated_weights_give_the_learned_windows(self, monkeypatch, tmp_path):
         import json
 

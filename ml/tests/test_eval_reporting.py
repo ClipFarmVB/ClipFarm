@@ -273,3 +273,39 @@ class TestResultRounding:
 
         assert abs(row["incorrect_seconds"]["total"] - raw.incorrect.total) < 1e-3
         assert abs(row["captured_pct"] - raw.captured_pct) < 1e-3
+
+
+class TestLearnedFallbackExit:
+    """`harness --offline` under condense_mode=learned refuses a row another
+    builder made. The worker logs *why* at INFO, which an unconfigured process
+    never prints, so the exit itself has to carry the reason."""
+
+    @staticmethod
+    def _declining_build():
+        import logging
+
+        logging.getLogger(harness._TASKS_LOGGER).info(
+            "Condense mode 'learned' declined (%s) — using guarded windows",
+            "deadtime weights are not validated",
+        )
+        return [(1.0, 2.0)], "guarded"
+
+    def test_the_exit_names_the_reason_the_worker_logged_at_info(self):
+        with pytest.raises(SystemExit) as excinfo:
+            harness._learned_windows_or_exit(self._declining_build)
+        msg = str(excinfo.value)
+        assert "fell back to 'guarded'" in msg
+        assert "deadtime weights are not validated" in msg
+
+    def test_the_capture_leaves_the_worker_logger_as_it_found_it(self):
+        import logging
+
+        tasks_logger = logging.getLogger(harness._TASKS_LOGGER)
+        before = (tasks_logger.level, list(tasks_logger.handlers))
+        with pytest.raises(SystemExit):
+            harness._learned_windows_or_exit(self._declining_build)
+        assert (tasks_logger.level, list(tasks_logger.handlers)) == before
+
+    def test_learned_windows_are_returned(self):
+        assert harness._learned_windows_or_exit(
+            lambda: ([(3.0, 4.0)], "learned")) == [(3.0, 4.0)]

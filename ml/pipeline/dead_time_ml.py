@@ -374,7 +374,7 @@ def load_weights(path: Path = WEIGHTS_PATH, *, warn_unvalidated: bool = True) ->
     """
     data = json.loads(path.read_text())
     check_contract(data, f"deadtime weights at {path}")
-    if warn_unvalidated and not data.get("validated"):
+    if warn_unvalidated and data.get("validated") is not True:
         logger.warning(
             "deadtime weights at %s are NOT validated (trained on %s) — "
             "keep-windows from them are unproven on unseen footage",
@@ -603,7 +603,7 @@ def active_windows_learned(
         duration;
       - weights whose feature list, version or preparation record differ from
         this code's (ValueError, `check_contract`), or that carry no threshold;
-      - `"validated"` not true, unless `allow_unvalidated=True`
+      - `"validated"` anything but exactly `True`, unless `allow_unvalidated=True`
         (`UnvalidatedWeightsError`). Production never passes it; the eval
         ladder's `v6` does;
       - an empty track, or one below `min_track_rate` usable speed samples/s
@@ -632,7 +632,9 @@ def active_windows_learned(
     if "threshold" not in weights:
         raise ValueError("deadtime weights carry no threshold — retrain")
     threshold = float(weights["threshold"])
-    if not weights.get("validated") and not allow_unvalidated:
+    # Exactly True, not truthy: this is the production gate, and a hand-edited
+    # or tool-written "false", "no" or 1 must not open it.
+    if weights.get("validated") is not True and not allow_unvalidated:
         raise UnvalidatedWeightsError(
             "deadtime weights are not validated (\"validated\": false until "
             "CF-395 applies the epic's bar)"

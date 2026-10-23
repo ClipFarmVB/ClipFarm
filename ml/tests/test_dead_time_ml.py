@@ -440,6 +440,15 @@ class TestActiveWindowsLearned:
         with pytest.raises(UnvalidatedWeightsError):
             self._run(weights=w)
 
+    @pytest.mark.parametrize("flag", ["false", "no", "true", 1, [True], None])
+    def test_only_a_literal_true_counts_as_validated(self, flag):
+        """The gate is `is True`: a string or int written by hand or by a tool
+        is not a validation, whatever it says."""
+        w = learned_weights()
+        w["validated"] = flag
+        with pytest.raises(UnvalidatedWeightsError):
+            self._run(weights=w)
+
     @pytest.mark.parametrize("kw, match", [
         ({"frame_height": 0}, "frame height"),
         ({"duration": 0.0}, "duration"),
