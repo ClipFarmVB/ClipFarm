@@ -15,13 +15,15 @@ class PlayerOut(BaseModel):
 
 class PlayerCreate(BaseModel):
     # Lengths mirror the columns (String(255), String(2048)), so an oversized
-    # value is a 422 here rather than a database error at commit.
+    # value is a 422 here rather than a database error at commit. The
+    # min_length=1 on photo_url refuses "": it would be stored as-is and render
+    # as <img src="">, and null is the way to leave a photo unset.
     name: str = Field(min_length=1, max_length=255)
     jersey_number: int | None = None
     # Nullable in the type only so create_player can answer a missing team with
     # its own 400; PlayerUpdate does not repeat this.
     team_id: uuid.UUID | None = None
-    photo_url: str | None = Field(default=None, max_length=2048)
+    photo_url: str | None = Field(default=None, min_length=1, max_length=2048)
 
 
 class PlayerUpdate(BaseModel):
@@ -33,7 +35,8 @@ class PlayerUpdate(BaseModel):
     `ProfileUpdate`, where null means "leave it alone":
 
     - `jersey_number`, `photo_url`: null **clears** the value. Both columns are
-      nullable and "not known yet" is a legitimate state for a player.
+      nullable and "not known yet" is a legitimate state for a player. An
+      empty `photo_url` is a 422, so null is the only way to clear it.
     - `name`, `team_id`: null is a **422**. `name` is NOT NULL, and a null
       `team_id` would orphan the player — `get_owned_player` rejects a teamless
       row, so every later PATCH would 404 and the team could never be put back
@@ -48,7 +51,7 @@ class PlayerUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     jersey_number: int | None = None
     team_id: uuid.UUID | None = None
-    photo_url: str | None = Field(default=None, max_length=2048)
+    photo_url: str | None = Field(default=None, min_length=1, max_length=2048)
 
     @field_validator("name", "team_id")
     @classmethod

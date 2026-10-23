@@ -1,6 +1,6 @@
 """CF-238 / CF-253: `update_player` must not let a team_id be cleared to null.
 
-Clearing it is a one-way door. `_get_owned_player` rejects `team_id IS NULL` —
+Clearing it is a one-way door. `get_owned_player` rejects `team_id IS NULL` —
 there is no team whose owner it could check — and `update_player` calls it
 first, so an orphaned player 404s on every subsequent PATCH and the team cannot
 be put back through the API. `list_players` filters to owned teams, so the row
@@ -19,7 +19,7 @@ real request body.
 
 Follows the house pattern from test_profile_routes.py — stand-in session, direct
 calls into the router, no TestClient and no database. Nothing here imports
-`_get_owned_player` by name; PR #239 renames it, and these tests should not care.
+`get_owned_player` by name; these tests go through the route handlers.
 """
 import asyncio
 import uuid
@@ -108,6 +108,15 @@ def test_a_null_or_empty_name_is_a_validation_error(name):
     """`name` is NOT NULL; omitting it is fine, blanking it is not."""
     with pytest.raises(ValidationError) as exc:
         PlayerUpdate.model_validate({"name": name})
+    assert [e["loc"] for e in exc.value.errors()] == [("name",)]
+
+
+@pytest.mark.parametrize("name", ["", "x" * 256])
+def test_create_refuses_an_empty_or_oversized_name(name):
+    """POST's name mirrors String(255): blank and over-long are 422s, not a
+    database error at commit."""
+    with pytest.raises(ValidationError) as exc:
+        PlayerCreate.model_validate({"name": name})
     assert [e["loc"] for e in exc.value.errors()] == [("name",)]
 
 
@@ -249,6 +258,15 @@ def test_patch_with_a_null_photo_url_clears_it():
     assert session.committed
 
 
+@pytest.mark.parametrize("schema", [PlayerCreate, PlayerUpdate])
+def test_an_empty_photo_url_is_a_validation_error(schema):
+    """"" would be stored as-is and render as <img src="">; null is the way to
+    leave a photo unset or clear it, so "" is refused on both routes."""
+    with pytest.raises(ValidationError) as exc:
+        schema.model_validate({"name": "Rosa", "photo_url": ""})
+    assert [e["loc"] for e in exc.value.errors()] == [("photo_url",)]
+
+
 def test_create_player_sets_photo_url():
     team = _Team()
     session = _FakeSession(None, [team])
@@ -279,5 +297,6 @@ def test_both_routes_refuse_a_null_team_id():
     assert created.value.status_code == 400
     assert not session.added
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as updated:
         PlayerUpdate.model_validate({"name": "Rosa", "team_id": None})
+    assert [e["loc"] for e in updated.value.errors()] == [("team_id",)]
