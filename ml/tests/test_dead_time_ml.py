@@ -22,12 +22,17 @@ from ml.eval import tune_contacts as tc  # noqa: E402
 from ml.pipeline import dead_time as dt  # noqa: E402
 from ml.pipeline.dead_time_ml import (  # noqa: E402
     CONTACT_GAP_CAP,
+    CONTEXT_LAGS,
     EMPTY_MEAN_Y,
     FAST_SPEED_FH,
     FEATURE_NAMES,
     FEATURE_VERSION,
+    add_context,
     compute_features,
     load_weights,
+    predict_in_play,
+    robust_scale,
+    windows_from_probability,
 )
 
 H = 360  # frame height for every fixture below
@@ -288,12 +293,97 @@ class TestWeightsContract:
             load_weights(p)
         assert "NOT validated" in caplog.text
 
+
+
     def test_there_is_no_committed_weights_file_yet(self):
         """Pins the docstring's claim. When CF-393 commits one, this fails and
         the docstring gets rewritten with it."""
         from ml.pipeline.dead_time_ml import WEIGHTS_PATH
 
         assert not WEIGHTS_PATH.exists()
+
+
+class TestRobustScale:
+    def test_median_and_p10_p90_range(self):
+        col_a = np.arange(11, dtype=np.float64)        # median 5, p10 1, p90 9
+        col_b = np.arange(11, dtype=np.float64) * 2.0  # median 10, range 16
+        out = robust_scale(np.column_stack([col_a, col_b]))
+        np.testing.assert_allclose(out[:, 0], (col_a - 5.0) / 8.0)
+        np.testing.assert_allclose(out[:, 1], (col_b - 10.0) / 16.0)
+
+    def test_a_constant_column_is_divided_by_one(self):
+        X = np.column_stack([np.full(5, 3.0), np.arange(5.0)])
+        out = robust_scale(X)
+        assert np.all(np.isfinite(out))
+        np.testing.assert_array_equal(out[:, 0], np.zeros(5))
+
+    def test_scaling_is_per_video(self):
+        """The same game shifted and stretched scales to the same rows."""
+        X = np.random.default_rng(0).normal(size=(50, 3))
+        np.testing.assert_allclose(robust_scale(X), robust_scale(X * 4.0 + 7.0))
+
+
+class TestAddContext:
+    X = np.array([[0.0, 10.0], [1.0, 11.0], [2.0, 12.0], [3.0, 13.0]])
+
+    def test_negative_lags_read_the_past_and_edges_replicate(self):
+        out = add_context(self.X, [-1, 2])
+        assert out.shape == (4, 6)
+        np.testing.assert_array_equal(out[:, :2], self.X)
+        # lag -1: row t carries t-1; row 0 replicates itself
+        np.testing.assert_array_equal(out[:, 2], [0.0, 0.0, 1.0, 2.0])
+        # lag +2: row t carries t+2; the last two rows replicate row 3
+        np.testing.assert_array_equal(out[:, 4], [2.0, 3.0, 3.0, 3.0])
+        np.testing.assert_array_equal(out[:, 5], [12.0, 13.0, 13.0, 13.0])
+
+    def test_no_lags_is_the_input(self):
+        np.testing.assert_array_equal(add_context(self.X, []), self.X)
+
+    def test_the_default_lags_are_one_three_five_both_ways(self):
+        assert CONTEXT_LAGS == (-5, -3, -1, 1, 3, 5)
+        assert add_context(self.X).shape == (4, 2 * 7)
+
+
+class TestPredictInPlay:
+    def test_a_coef_of_the_wrong_width_is_refused(self):
+        feats = np.zeros((10, len(FEATURE_NAMES)))
+        w = {"coef": [0.0] * len(FEATURE_NAMES), "intercept": 0.0,
+             "context": {"lags": [-1, 1]}}
+        with pytest.raises(ValueError, match="coefficients"):
+            predict_in_play(feats, w)
+
+    def test_unsmoothed_is_the_sigmoid_of_the_scaled_matrix(self):
+        feats = np.random.default_rng(1).normal(size=(20, len(FEATURE_NAMES)))
+        coef = np.linspace(-1, 1, len(FEATURE_NAMES))
+        w = {"coef": coef.tolist(), "intercept": 0.25, "context": {"lags": []}}
+        expected = 1 / (1 + np.exp(-(robust_scale(feats) @ coef + 0.25)))
+        np.testing.assert_allclose(predict_in_play(feats, w, smooth=False), expected)
+        assert predict_in_play(feats, w).shape == (20,)
+
+
+class TestWindowsFromProbability:
+    def test_runs_are_padded(self):
+        probs = np.zeros(60)
+        probs[20:25] = 0.9      # seconds [20, 25)
+        assert windows_from_probability(probs, 0.5, 60.0) == [(17.0, 27.5)]
+
+    def test_close_runs_merge_and_far_ones_do_not(self):
+        probs = np.zeros(100)
+        probs[10:12] = probs[18:20] = 0.9   # padded (7, 14.5) and (15, 22.5): 0.5s apart, merge
+        probs[60:62] = 0.9                  # padded (57, 64.5): far from (7, 22.5)
+        assert windows_from_probability(probs, 0.5, 100.0) == [(7.0, 22.5), (57.0, 64.5)]
+
+    def test_windows_are_clamped_to_the_video(self):
+        probs = np.zeros(10)
+        probs[:2] = probs[-1] = 0.9
+        out = windows_from_probability(probs, 0.5, 9.4, merge_gap_seconds=0.0)
+        assert out == [(0.0, 4.5), (6.0, 9.4)]
+
+    def test_the_threshold_is_inclusive_and_empty_input_gives_nothing(self):
+        assert windows_from_probability(np.array([0.5]), 0.5, 1.0) == [(0.0, 1.0)]
+        assert windows_from_probability(np.array([0.49]), 0.5, 1.0) == []
+        assert windows_from_probability(np.array([]), 0.5, 10.0) == []
+        assert windows_from_probability(np.array([0.9]), 0.5, 0.0) == []
 
 
 class TestGuards:
