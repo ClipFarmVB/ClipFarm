@@ -176,4 +176,12 @@ Agents reach it through the `ask_skein` tool, registered in `.mcp.json`; each pe
 - Tuning and detection defaults, dependencies and licensing, migrations and deploys, security,
   users' data, money and deleting things always go to a person. In an unattended run, don't ask
   Skein about them; use `needs-decision` directly.
+- Before asking a person anything (at the end of a turn, in a run report, or anywhere a
+  question goes to Nelson), call `ask_skein` first with the question and its context: repo,
+  ticket, PRs. That includes run-control and policy questions such as "start #N once the PRs it
+  waits on merge?"; asking them through Skein is what turns the answer into a standing rule. If
+  it settles, act on the answer and cite its id in the run report instead of asking. If it is
+  `pending`, ask in chat as usual, quote the pending id, and don't act until it is answered.
+- Ask Nelson directly, without Skein, for merges and anything only he can do (labelling
+  fixtures, paid compute, deploys), and for the always-a-person topics above.
 - Never put secrets or production data in a question.
