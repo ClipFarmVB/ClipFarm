@@ -8,7 +8,8 @@ scores those rows.
 
 **Scope.** Features, the weights contract, the numpy helpers that turn a
 feature matrix into keep-windows — `robust_scale`, `add_context`,
-`predict_in_play` and `windows_from_probability` (CF-393) — and the builder
+`predict_in_play` and `windows_from_probability` (CF-393), the HMM decoder
+and the `decode_windows` dispatch between the two (CF-396) — and the builder
 that chains them, `active_windows_learned` (CF-394). The trainer
 (`ml/eval/train_deadtime.py`) and the builder both call the same helpers, so
 the two cannot prepare a matrix differently.
@@ -338,7 +339,9 @@ class TrackTooSparseError(LearnedBuilderDeclined):
 def check_contract(weights: dict, where: str = "deadtime weights") -> None:
     """
     Refuse a weights dict this code cannot apply: a different feature list or
-    feature version, or a different preparation record (`check_preparation`).
+    feature version, a different preparation record (`check_preparation`), or
+    a decoder this code does not know or an hmm record it cannot use
+    (`check_decoder`, CF-396; a missing `"decoder"` is "threshold").
 
     Split out of `load_weights` so a dict that did not come through it — the
     builder's `weights=` argument — is held to the same contract.
@@ -354,6 +357,7 @@ def check_contract(weights: dict, where: str = "deadtime weights") -> None:
             f"{weights.get('feature_version')}, code expects {FEATURE_VERSION} — retrain"
         )
     check_preparation(weights, where)
+    check_decoder(weights, where)
 
 
 def load_weights(path: Path = WEIGHTS_PATH, *, warn_unvalidated: bool = True) -> dict:
@@ -562,6 +566,26 @@ def windows_from_probability(
     if duration <= 0 or len(probs) == 0:
         return []
     keep = np.asarray(probs) >= threshold
+    return _runs_to_windows(keep, duration, pad_before=pad_before, pad_after=pad_after,
+                            merge_gap_seconds=merge_gap_seconds)
+
+
+def _runs_to_windows(
+    keep: np.ndarray,
+    duration: float,
+    *,
+    pad_before: float,
+    pad_after: float,
+    merge_gap_seconds: float,
+) -> list[Interval]:
+    """
+    Per-second in-play flags → padded, merged keep-windows: the tail both
+    decoders share (CF-396), so the pads and merge gap mean the same thing
+    whichever one produced the flags. Split out of `windows_from_probability`
+    unchanged.
+    """
+    if duration <= 0 or len(keep) == 0:
+        return []
     windows: list[Interval] = []
     start: int | None = None
     for i, k in enumerate(keep):
@@ -580,6 +604,214 @@ def windows_from_probability(
     return merge_intervals([w for w in padded if w[1] > w[0]], merge_gap_seconds)
 
 
+# ── decoding: smooth-and-threshold or a two-state HMM (CF-396) ─────────────
+#
+# A weights file's `"decoder"` names how its per-second probabilities become
+# keep-windows. "threshold" is the CF-393 path — `smooth_probability`, then
+# `windows_from_probability` at `"threshold"` — and a file without the key is
+# read as it, since every file written before CF-396 was decoded that way.
+# "hmm" is `viterbi_windows` over the RAW probabilities, with the transition
+# record in `"hmm"`. `decode_windows` is the one dispatch; the builder and the
+# trainer both go through it, so hmm weights cannot be decoded by threshold.
+DECODERS = ("threshold", "hmm")
+DEFAULT_DECODER = "threshold"
+HMM_KEYS = ("p_stay_play", "p_stay_dead", "prior_play")
+
+# Guards on fitted transitions against degenerate label sets, not tuning: the
+# five fixtures' folds land well inside both (the trainer prints them). Below
+# 0.5 a state would rather switch than stay — a mean run under two seconds,
+# which is not a duration model — and above 0.999 (a mean run over 1000s) one
+# state would be all but absorbing. The prior is kept off 0 and 1 because it
+# enters in log space.
+STAY_BOUNDS = (0.5, 0.999)
+PRIOR_BOUNDS = (0.01, 0.99)
+
+# Emission floor: a sigmoid can reach 0.0 or 1.0 in float64, and log(0) would
+# make a state impossible on one second's word.
+_EMISSION_EPS = 1e-6
+
+
+def decoder_of(weights: dict) -> str:
+    """The weights' decoder, `DEFAULT_DECODER` when the key is absent."""
+    return str(weights.get("decoder", DEFAULT_DECODER))
+
+
+def check_decoder(weights: dict, where: str = "deadtime weights") -> None:
+    """
+    Refuse an unknown `"decoder"`, or hmm weights whose `"hmm"` record is not
+    exactly HMM_KEYS, each a real number strictly between 0 and 1.
+
+    Refused rather than defaulted: an unknown decoder read as "threshold" would
+    decode probabilities by a rule the weights were not built for.
+    """
+    decoder = weights.get("decoder", DEFAULT_DECODER)
+    if decoder not in DECODERS:
+        raise ValueError(f"{where} name decoder {decoder!r}, code knows {list(DECODERS)}")
+    if decoder != "hmm":
+        return
+    record = weights.get("hmm")
+    if not isinstance(record, dict) or sorted(record) != sorted(HMM_KEYS):
+        raise ValueError(
+            f"{where} use decoder 'hmm' with record {record!r}, expected keys "
+            f"{list(HMM_KEYS)} — retrain"
+        )
+    for key in HMM_KEYS:
+        value = record[key]
+        # A bool passes isinstance(int) but is 0.0 or 1.0, so the range refuses it.
+        if not isinstance(value, (int, float)) or not (0.0 < float(value) < 1.0):
+            raise ValueError(f"{where} hmm {key} is {value!r}, expected a number in (0, 1)")
+
+
+def _run_lengths(y: np.ndarray) -> tuple[list[int], list[int]]:
+    """(play run lengths, dead run lengths) of one game's 0/1 labels."""
+    play: list[int] = []
+    dead: list[int] = []
+    labels = np.asarray(y) >= 0.5
+    i = 0
+    while i < len(labels):
+        j = i
+        while j < len(labels) and labels[j] == labels[i]:
+            j += 1
+        (play if labels[i] else dead).append(j - i)
+        i = j
+    return play, dead
+
+
+def fit_transitions(label_sets: list[np.ndarray] | tuple[np.ndarray, ...]) -> dict:
+    """
+    The `"hmm"` record from per-second labels, one array per game.
+
+    Runs are counted per game, so no run spans two videos. Durations are
+    modelled as geometric, so each stay probability is 1 − 1/(mean run length
+    of that state), pooled over every run in every game passed, then clamped to
+    STAY_BOUNDS. Runs cut off by the start or end of a video count at the
+    length they show, which shortens the means slightly. `prior_play` is the
+    in-play fraction of all seconds passed, clamped to PRIOR_BOUNDS.
+
+    Values are rounded to 6dp here, so a fold decodes with exactly the numbers
+    a weights file records. Raises when either state never occurs — there is no
+    duration to fit.
+    """
+    play: list[int] = []
+    dead: list[int] = []
+    total = in_play = 0
+    for y in label_sets:
+        p, d = _run_lengths(y)
+        play += p
+        dead += d
+        total += len(y)
+        in_play += int(sum(p))
+    if not play or not dead:
+        raise ValueError("fit_transitions needs at least one play and one dead run")
+
+    def stay(runs: list[int]) -> float:
+        raw = 1.0 - 1.0 / float(np.mean(runs))
+        return round(min(max(raw, STAY_BOUNDS[0]), STAY_BOUNDS[1]), 6)
+
+    prior = min(max(in_play / total, PRIOR_BOUNDS[0]), PRIOR_BOUNDS[1])
+    return {"p_stay_play": stay(play), "p_stay_dead": stay(dead),
+            "prior_play": round(prior, 6)}
+
+
+def viterbi_path(
+    probs: np.ndarray,
+    *,
+    p_stay_play: float,
+    p_stay_dead: float,
+    prior_play: float,
+) -> np.ndarray:
+    """
+    Most likely per-second in-play path of a two-state HMM (state 0 dead,
+    1 play), decoded in log space.
+
+    Emissions are the classifier's probabilities as they are: second t scores
+    log p_t for play and log(1 − p_t) for dead, with p floored at
+    _EMISSION_EPS from either end. `prior_play` is used only as the initial
+    distribution — the first second's — not as a per-second weight. On an
+    uninformative trace (every p equal) the path therefore starts in the
+    likelier state and stays there when the stay probabilities agree with the
+    prior, which `fit_transitions`' do: fitted from the same labels, the
+    transitions' stationary share of play, Lp / (Lp + Ld) for mean run lengths
+    Lp and Ld, is the in-play fraction whenever play and dead runs alternate —
+    as they do within a game, up to one run per edge. A hand-set prior that
+    favours the state with the SHORTER runs does not hold a long flat trace —
+    staying in the other state is cheaper per second. Ties go to dead.
+
+    Returns a bool array, one per input row.
+    """
+    p = np.clip(np.asarray(probs, dtype=np.float64), _EMISSION_EPS, 1.0 - _EMISSION_EPS)
+    n = len(p)
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    log_emit = np.column_stack((np.log1p(-p), np.log(p)))
+    # log_trans[i, j] = log P(state j at t | state i at t-1)
+    log_trans = np.log(np.array([
+        [p_stay_dead, 1.0 - p_stay_dead],
+        [1.0 - p_stay_play, p_stay_play],
+    ]))
+    delta = np.log(np.array([1.0 - prior_play, prior_play])) + log_emit[0]
+    back = np.zeros((n, 2), dtype=np.int8)
+    for t in range(1, n):
+        cand = delta[:, None] + log_trans
+        back[t] = np.argmax(cand, axis=0)
+        delta = np.max(cand, axis=0) + log_emit[t]
+    path = np.zeros(n, dtype=np.int8)
+    path[-1] = int(np.argmax(delta))
+    for t in range(n - 1, 0, -1):
+        path[t - 1] = back[t, path[t]]
+    out: np.ndarray = path == 1
+    return out
+
+
+def viterbi_windows(
+    probs: np.ndarray,
+    duration: float,
+    *,
+    p_stay_play: float,
+    p_stay_dead: float,
+    prior_play: float,
+    pad_before: float = 3.0,
+    pad_after: float = 2.5,
+    merge_gap_seconds: float = 5.0,
+) -> list[Interval]:
+    """
+    `viterbi_path` over raw per-second probabilities → keep-windows, through the
+    same pad/clamp/merge tail as `windows_from_probability`, with its defaults.
+
+    Those pads and that merge gap were chosen for smooth-and-threshold, whose
+    5s moving average already blurs every edge; this decoder inherits them
+    unchanged rather than tuning its own.
+    """
+    if duration <= 0 or len(probs) == 0:
+        return []
+    keep = viterbi_path(probs, p_stay_play=p_stay_play, p_stay_dead=p_stay_dead,
+                        prior_play=prior_play)
+    return _runs_to_windows(keep, duration, pad_before=pad_before, pad_after=pad_after,
+                            merge_gap_seconds=merge_gap_seconds)
+
+
+def decode_windows(raw_probs: np.ndarray, model: dict, duration: float) -> list[Interval]:
+    """
+    Keep-windows from RAW per-second probabilities (`predict_in_play(...,
+    smooth=False)`) by the decoder `model` names.
+
+    "threshold" (or no `"decoder"` key) smooths them and thresholds at
+    `model["threshold"]` — exactly the CF-393/CF-394 path. "hmm" decodes them
+    unsmoothed with `model["hmm"]`. Anything else is refused (`check_decoder`).
+    """
+    check_decoder(model)
+    if decoder_of(model) == "hmm":
+        record = model["hmm"]
+        return viterbi_windows(
+            raw_probs, duration,
+            p_stay_play=float(record["p_stay_play"]),
+            p_stay_dead=float(record["p_stay_dead"]),
+            prior_play=float(record["prior_play"]),
+        )
+    return windows_from_probability(smooth_probability(raw_probs),
+                                    float(model["threshold"]), duration)
+
+
 # ── the builder (CF-394) ───────────────────────────────────────────────────
 
 def active_windows_learned(
@@ -594,8 +826,11 @@ def active_windows_learned(
 ) -> list[Interval]:
     """
     Keep-windows from the learned in-play model: `compute_features` →
-    `predict_in_play` (the weights' own scaling and context) →
-    `windows_from_probability` at the weights' `"threshold"`.
+    `predict_in_play` (the weights' own scaling and context, unsmoothed) →
+    `decode_windows` by the weights' `"decoder"` (CF-396). Under "threshold"
+    — the committed file, and any file without the key — that is
+    `windows_from_probability` on the smoothed trace at `"threshold"`, the
+    same windows as before CF-396; under "hmm" it is `viterbi_windows`.
 
     **Raises on anything it cannot judge**, before computing anything, so the
     condense stage falls back to `guarded`:
@@ -651,18 +886,29 @@ def active_windows_learned(
         )
 
     features = compute_features(positions, contacts, duration, frame_height)
-    probs = predict_in_play(features, weights)
-    windows = windows_from_probability(probs, threshold, duration)
+    raw = predict_in_play(features, weights, smooth=False)
+    # Through the decoder the weights name (CF-396), never a fixed one: hmm
+    # weights decoded by smooth-and-threshold would ship windows nobody scored.
+    windows = decode_windows(raw, weights, duration)
 
     # Reporting must never break processing (CLAUDE.md → Code posture).
     try:
-        logger.info(
-            "Learned condense windows: %d of %d s at or above threshold %.3f "
-            "(peak %.3f) → %d windows keeping %.0fs",
-            int(np.count_nonzero(probs >= threshold)), len(probs), threshold,
-            float(np.max(probs)) if len(probs) else 0.0,
-            len(windows), sum(e - s for s, e in windows),
-        )
+        if decoder_of(weights) == "hmm":
+            logger.info(
+                "Learned condense windows (hmm decoder, %s): %d s scored "
+                "(peak %.3f) → %d windows keeping %.0fs",
+                weights["hmm"], len(raw), float(np.max(raw)) if len(raw) else 0.0,
+                len(windows), sum(e - s for s, e in windows),
+            )
+        else:
+            probs = smooth_probability(raw)
+            logger.info(
+                "Learned condense windows: %d of %d s at or above threshold %.3f "
+                "(peak %.3f) → %d windows keeping %.0fs",
+                int(np.count_nonzero(probs >= threshold)), len(probs), threshold,
+                float(np.max(probs)) if len(probs) else 0.0,
+                len(windows), sum(e - s for s, e in windows),
+            )
     except Exception:
         pass
     return windows

@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ml.eval import train_deadtime as TD  # noqa: E402
 from ml.eval.metrics import evaluate_deadtime  # noqa: E402
+from ml.pipeline import dead_time_ml as dml  # noqa: E402
 from ml.pipeline.dead_time_ml import FEATURE_NAMES, FEATURE_VERSION  # noqa: E402
 
 IDS = ("test1", "test2", "test3", "test4", "test5")
@@ -69,9 +70,10 @@ def test_the_weights_keys_are_the_contract_in_order(games, fast_fit):
     weights, _ = TD.train(games, "abc1234")
     assert list(weights) == [
         "features", "feature_version", "scaling", "context", "coef", "intercept",
-        "threshold", "trained_on", "git_commit", "folds", "context_variants",
+        "threshold", "decoder", "trained_on", "git_commit", "folds", "context_variants",
         "validated",
     ]
+    assert weights["decoder"] == "threshold"
     assert weights["validated"] is False
     assert weights["feature_version"] == FEATURE_VERSION
     assert weights["features"] == FEATURE_NAMES
@@ -188,6 +190,135 @@ def test_train_ships_the_variant_choose_variant_picks(games, fast_fit, monkeypat
     assert report["chosen"] == "lags_1_3_5"
     assert weights["context"]["lags"] == list(TD.VARIANTS["lags_1_3_5"])
     assert weights["folds"] == weights["context_variants"]["lags_1_3_5"]["folds"]
+
+
+# ── the decoder (CF-396) ──────────────────────────────────────────────────
+
+def test_hmm_weights_carry_the_record_after_the_decoder(games, fast_fit):
+    weights, _ = TD.train(games, "abc1234", "hmm")
+    keys = list(weights)
+    assert keys[keys.index("threshold"):keys.index("trained_on")] == [
+        "threshold", "decoder", "hmm"]
+    assert weights["decoder"] == "hmm"
+    # Fitted on every game's labels, as the coefficients are.
+    assert weights["hmm"] == dml.fit_transitions([g.y for g in games])
+    dml.check_contract(weights)
+    for f in weights["folds"]:
+        assert set(f["hmm"]) == set(dml.HMM_KEYS)
+        assert f["threshold"] in TD.THRESHOLDS, "hmm folds still pick a threshold"
+
+
+def test_threshold_weights_and_folds_carry_no_hmm_record(games, fast_fit):
+    """`--decoder threshold` must write what the trainer wrote before CF-396
+    plus one key, so nothing hmm-shaped may leak into it."""
+    weights, _ = TD.train(games, "abc1234", "threshold")
+    assert "hmm" not in weights
+    for variant in weights["context_variants"].values():
+        assert all("hmm" not in f for f in variant["folds"])
+
+
+def test_an_unknown_decoder_is_refused(games):
+    with pytest.raises(ValueError, match="decoder"):
+        TD.train(games, "x", "crf")
+
+
+def test_hmm_transitions_are_fitted_on_the_training_games_only(games, monkeypatch, fast_fit):
+    seen: list[int] = []
+    real = TD.fit_transitions
+
+    def spy(label_sets):
+        seen.append(sum(len(y) for y in label_sets))
+        return real(label_sets)
+
+    monkeypatch.setattr(TD, "fit_transitions", spy)
+    TD.loo(games, (), "hmm")
+    assert seen == [sum(len(g.y) for g in games if g is not held) for held in games]
+
+
+def test_hmm_folds_are_scored_through_the_shared_dispatch(games, monkeypatch, fast_fit):
+    """The held-out windows come from `decode_windows` on the RAW trace with
+    the fold's own transitions — the call the builder makes."""
+    unsmoothed: list[np.ndarray] = []    # kept alive, so identity is meaningful
+    calls: list[tuple[str, bool, dict]] = []
+    real_decode, real_probs = TD.decode_windows, TD.probabilities
+
+    def spy_probs(game, model, *, smooth=True):
+        out = real_probs(game, model, smooth=smooth)
+        if not smooth:
+            unsmoothed.append(out)
+        return out
+
+    def spy_decode(raw, model, duration):
+        calls.append((model["decoder"], any(raw is o for o in unsmoothed), model["hmm"]))
+        return real_decode(raw, model, duration)
+
+    monkeypatch.setattr(TD, "probabilities", spy_probs)
+    monkeypatch.setattr(TD, "decode_windows", spy_decode)
+    folds = TD.loo(games, (), "hmm")
+    assert [c[0] for c in calls] == ["hmm"] * len(games)
+    assert all(c[1] for c in calls), "a smoothed trace reached the hmm"
+    assert [c[2] for c in calls] == [f["hmm"] for f in folds]
+
+
+def _scored(net: dict[str, float], live: dict[str, float]) -> list[dict]:
+    return [{"held_out": t, "net_sec": net[t], "live_cut_sec": live[t]} for t in IDS]
+
+
+_BASE_NET = {"test1": 100.0, "test2": 100.0, "test3": 100.0, "test4": 100.0, "test5": 100.0}
+_BASE_LIVE = {"test1": 50.0, "test2": 50.0, "test3": 50.0, "test4": 50.0, "test5": 50.0}
+
+
+@pytest.mark.parametrize("net_delta, live_delta, expected", [
+    (+1.0, -1.0, "hmm"),          # net up, live down
+    (+1.0, 0.0, "hmm"),           # net up, live unchanged: "does not rise"
+    (+1.0, +0.5, "threshold"),    # net up, live up
+    (0.0, -5.0, "threshold"),     # net tied: not an improvement
+    (-1.0, -5.0, "threshold"),    # net down, live down
+    (-1.0, +1.0, "threshold"),    # both worse
+])
+def test_choose_decoder_codes_the_shipping_rule(net_delta, live_delta, expected):
+    thr = _scored(_BASE_NET, _BASE_LIVE)
+    hmm = _scored({**_BASE_NET, "test4": 100.0 + net_delta},
+                  {**_BASE_LIVE, "test4": 50.0 + live_delta})
+    assert TD.choose_decoder(thr, hmm) == expected
+
+
+def test_choose_decoder_reads_the_comparable_three_only():
+    """hmm wins test1/test3 hugely and loses the comparable three: threshold."""
+    thr = _scored(_BASE_NET, _BASE_LIVE)
+    hmm = _scored({**_BASE_NET, "test1": 9000.0, "test3": 9000.0, "test2": 99.0},
+                  {**_BASE_LIVE, "test1": 0.0, "test3": 0.0})
+    assert TD.choose_decoder(thr, hmm) == "threshold"
+    # And the converse: excluded fixtures cutting live play cannot block hmm.
+    hmm = _scored({**_BASE_NET, "test2": 101.0},
+                  {**_BASE_LIVE, "test1": 900.0, "test3": 900.0})
+    assert TD.choose_decoder(thr, hmm) == "hmm"
+
+
+@pytest.mark.parametrize("winner", ["threshold", "hmm"])
+def test_main_writes_the_decoder_choose_decoder_picks(games, fast_fit, monkeypatch, winner):
+    by_id = {g.test_id: g for g in games}
+    written: list[dict] = []
+    monkeypatch.setattr(TD.dv, "load_game", lambda t: by_id[t])
+    monkeypatch.setattr(TD, "prepare", lambda g: g)
+    monkeypatch.setattr(TD, "git_commit", lambda: "abc1234")
+    monkeypatch.setattr(TD, "choose_decoder", lambda thr, hmm: winner)
+    monkeypatch.setattr(TD, "write", lambda w: written.append(w))
+    TD.main([])
+    assert len(written) == 1 and written[0]["decoder"] == winner
+    assert written[0] == TD.train(games, "abc1234", winner)[0]
+
+
+def test_main_with_a_named_decoder_writes_that_one(games, fast_fit, monkeypatch):
+    by_id = {g.test_id: g for g in games}
+    written: list[dict] = []
+    monkeypatch.setattr(TD.dv, "load_game", lambda t: by_id[t])
+    monkeypatch.setattr(TD, "prepare", lambda g: g)
+    monkeypatch.setattr(TD, "git_commit", lambda: "abc1234")
+    monkeypatch.setattr(TD, "choose_decoder", lambda thr, hmm: "hmm")
+    monkeypatch.setattr(TD, "write", lambda w: written.append(w))
+    TD.main(["--decoder", "threshold"])
+    assert [w["decoder"] for w in written] == ["threshold"]
 
 
 # ── AUC ───────────────────────────────────────────────────────────────────

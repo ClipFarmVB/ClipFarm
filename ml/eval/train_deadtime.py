@@ -16,6 +16,11 @@ changed where the epic (CF-389) says to:
 - **Two context variants** — the windowed aggregates alone, and those plus
   lagged copies at ±1/±3/±5s. The one with the higher summed held-out net over
   the comparable fixtures ships; both are reported.
+- **Two decoders** (CF-396) — smooth-and-threshold, and a two-state HMM
+  decoded by Viterbi over the raw probabilities, its transitions fitted per
+  fold on the training games' labels (`dead_time_ml.fit_transitions`). Each
+  decoder picks its own context variant; `choose_decoder` applies the ticket's
+  rule between them and the weights record the winner as `"decoder"`.
 
 Kept from the branch: the numpy `fit_logistic`, leave-one-game-out validation,
 a threshold picked on the training games only (summed net over every training
@@ -43,7 +48,8 @@ Needs the five ball caches in `ml/eval/ball_caches/{source_video_md5}.json`
 (CF-390; gitignored — copy them in). No video, no app deps.
 
 Usage:
-  python -m ml.eval.train_deadtime              # LOO report + write the weights
+  python -m ml.eval.train_deadtime              # LOO both decoders + write the winner
+  python -m ml.eval.train_deadtime --decoder threshold   # one decoder only, written as is
   python -m ml.eval.train_deadtime --no-write   # report only
   python -m ml.eval.train_deadtime --ablation   # also the feature-subset AUC table
 """
@@ -63,13 +69,16 @@ from ml.eval.metrics import DeadTimeSignals, evaluate_deadtime, union
 from ml.eval.visualize_deadtime import COMPARABLE, LIVE_CUT_COST, TEST_IDS, net_seconds
 from ml.pipeline.dead_time_ml import (
     CONTEXT_LAGS,
+    DECODERS,
     FEATURE_NAMES,
     FEATURE_VERSION,
     SCALING,
     WEIGHTS_PATH,
     compute_features,
     context_rule,
+    decode_windows,
     design_matrix,
+    fit_transitions,
     predict_in_play,
     windows_from_probability,
 )
@@ -219,14 +228,35 @@ def _r(x: float | None, nd: int = 6) -> float | None:
     return None if x is None else round(float(x), nd)
 
 
-def run_fold(held: TrainGame, train: Sequence[TrainGame], lags: Sequence[int]) -> dict:
+def score_hmm(game: TrainGame, raw: np.ndarray, transitions: dict) -> DeadTimeSignals:
+    """Through `decode_windows` — the builder's dispatch — on the raw trace."""
+    windows = decode_windows(raw, {"decoder": "hmm", "hmm": transitions}, game.duration)
+    return evaluate_deadtime(game.human_keep, windows, game.duration)
+
+
+def run_fold(held: TrainGame, train: Sequence[TrainGame], lags: Sequence[int],
+             decoder: str = "threshold") -> dict:
+    """
+    One held-out game. Under "hmm" the logistic fit and the threshold are the
+    same as under "threshold" — the threshold is still picked and recorded, so
+    hmm weights carry one — but the held-out windows come from Viterbi over the
+    raw probabilities, with transitions fitted on the training games' labels
+    only.
+    """
     model = fit_on(train, lags)
     thr = pick_threshold(train, model)
-    sig = score(held, probabilities(held, model), thr)
+    transitions: dict | None = None
+    if decoder == "hmm":
+        transitions = fit_transitions([g.y for g in train])
+        sig = score_hmm(held, probabilities(held, model, smooth=False), transitions)
+    else:
+        sig = score(held, probabilities(held, model), thr)
     g = held.guarded
+    fold: dict = {"held_out": held.test_id, "threshold": round(thr, 2)}
+    if transitions is not None:
+        fold["hmm"] = transitions
     return {
-        "held_out": held.test_id,
-        "threshold": round(thr, 2),
+        **fold,
         "dead_removed_pct": _r(sig.dead_removed_pct or 0.0),
         "live_cut_sec": _r(sig.live_removed_sec),
         "net_sec": _r(net_seconds(sig)),
@@ -239,12 +269,30 @@ def run_fold(held: TrainGame, train: Sequence[TrainGame], lags: Sequence[int]) -
     }
 
 
-def loo(games: Sequence[TrainGame], lags: Sequence[int]) -> list[dict]:
-    return [run_fold(held, [g for g in games if g is not held], lags) for held in games]
+def loo(games: Sequence[TrainGame], lags: Sequence[int],
+        decoder: str = "threshold") -> list[dict]:
+    return [run_fold(held, [g for g in games if g is not held], lags, decoder)
+            for held in games]
 
 
 def comparable_net(folds: Sequence[dict]) -> float:
     return float(sum(f["net_sec"] for f in folds if f["held_out"] in COMPARABLE))
+
+
+def comparable_live_cut(folds: Sequence[dict]) -> float:
+    return float(sum(f["live_cut_sec"] for f in folds if f["held_out"] in COMPARABLE))
+
+
+def choose_decoder(threshold_folds: Sequence[dict], hmm_folds: Sequence[dict]) -> str:
+    """
+    CF-396's shipping rule, on each decoder's own shipped-variant folds: "hmm"
+    only if its summed held-out net over COMPARABLE is strictly higher than
+    threshold's AND its summed live play cut over COMPARABLE is not higher.
+    Anything else — a tie on net included — keeps "threshold".
+    """
+    net_up = comparable_net(hmm_folds) > comparable_net(threshold_folds)
+    live_not_up = comparable_live_cut(hmm_folds) <= comparable_live_cut(threshold_folds)
+    return "hmm" if net_up and live_not_up else "threshold"
 
 
 def choose_variant(variant_folds: dict[str, list[dict]]) -> str:
@@ -280,19 +328,28 @@ def git_commit() -> str:
     return out or "unknown"
 
 
-def train(games: Sequence[TrainGame], commit: str) -> tuple[dict, dict]:
-    """LOO both variants, pick one, fit it on everything. Returns (weights, report).
+def train(games: Sequence[TrainGame], commit: str,
+          decoder: str = "threshold") -> tuple[dict, dict]:
+    """LOO both variants under `decoder`, pick one, fit it on everything.
+    Returns (weights, report).
+
+    Each decoder picks its own context variant: the choice is made on that
+    decoder's folds. Under "hmm" the weights also carry the transitions fitted
+    on every game's labels, beside the threshold (the median fold threshold,
+    as under "threshold").
 
     Pure: no I/O, so two calls on the same games give the same weights.
     """
-    variant_folds = {name: loo(games, lags) for name, lags in VARIANTS.items()}
+    if decoder not in DECODERS:
+        raise ValueError(f"unknown decoder {decoder!r}, expected one of {list(DECODERS)}")
+    variant_folds = {name: loo(games, lags, decoder) for name, lags in VARIANTS.items()}
     chosen = choose_variant(variant_folds)
     lags = VARIANTS[chosen]
     folds = variant_folds[chosen]
     threshold = float(np.median([f["threshold"] for f in folds]))
     model = fit_on(games, lags)
 
-    weights = {
+    weights: dict = {
         "features": list(FEATURE_NAMES),
         "feature_version": FEATURE_VERSION,
         "scaling": dict(SCALING),
@@ -300,6 +357,11 @@ def train(games: Sequence[TrainGame], commit: str) -> tuple[dict, dict]:
         "coef": [_r(c) for c in model["coef"]],
         "intercept": _r(model["intercept"]),
         "threshold": round(threshold, 2),
+        "decoder": decoder,
+    }
+    if decoder == "hmm":
+        weights["hmm"] = fit_transitions([g.y for g in games])
+    weights |= {
         "trained_on": [{"test_id": g.test_id, "source_video_md5": g.source_video_md5}
                        for g in games],
         "git_commit": commit,
@@ -341,9 +403,9 @@ def _auc(v: float | None) -> str:
     return "  n/a" if v is None else f"{v:.3f}"
 
 
-def print_folds(name: str, folds: Sequence[dict]) -> None:
-    print(f"\ncontext variant {name!r} - held-out, threshold picked on train games only;"
-          f" net at {LIVE_CUT_COST:.0f}:1 live cut")
+def print_folds(name: str, folds: Sequence[dict], decoder: str = "threshold") -> None:
+    print(f"\n[{decoder}] context variant {name!r} - held-out, threshold picked on train"
+          f" games only; net at {LIVE_CUT_COST:.0f}:1 live cut")
     print(f"  {'fixture':8s} {'thr':>4s}  {'dead%':>6s} {'live s':>7s} {'net s':>8s}"
           f" {'AUC':>5s}  | guarded {'dead%':>6s} {'live s':>7s} {'net s':>8s}")
     for f in folds:
@@ -357,6 +419,9 @@ def print_folds(name: str, folds: Sequence[dict]) -> None:
           f" (guarded {sum(f['guarded_live_cut_sec'] for f in comp):6.1f}s)"
           f"   net {sum(f['net_sec'] for f in comp):+7.1f}s"
           f" (guarded {sum(f['guarded_net_sec'] for f in comp):+7.1f}s)")
+    for f in folds:
+        if "hmm" in f:
+            print(f"  {f['held_out']:8s} transitions from the other four: {f['hmm']}")
 
 
 def print_ablation(table: dict[str, dict[str, float | None]]) -> None:
@@ -379,6 +444,10 @@ def main(argv: Sequence[str] | None = None) -> None:
                     help="run LOO and print the report, but leave the weights file alone")
     ap.add_argument("--ablation", action="store_true",
                     help="also print held-out AUC for the epic's feature subsets")
+    ap.add_argument("--decoder", choices=("auto",) + DECODERS, default="auto",
+                    help="how probabilities become windows (CF-396). 'auto' (default) runs"
+                         " both leave-one-game-out and writes the one choose_decoder"
+                         " picks; naming one runs and writes only that one")
     args = ap.parse_args(argv)
 
     games = [prepare(dv.load_game(t)) for t in TEST_IDS]
@@ -386,23 +455,40 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"{g.test_id}: {g.duration:.0f}s, {int(g.y.sum())}s in-play "
               f"({g.y.mean():.0%}), md5 {g.source_video_md5}")
 
-    weights, report = train(games, git_commit())
-    for name, folds in report["variant_folds"].items():
-        print_folds(name, folds)
-    print(f"\nshipped variant: {report['chosen']!r} "
-          f"(comparable net: " + ", ".join(
-              f"{n} {comparable_net(f):+.1f}s" for n, f in report["variant_folds"].items())
-          + f"); threshold {weights['threshold']:.2f} = median of "
-          f"{[f['threshold'] for f in weights['folds']]}")
+    commit = git_commit()
+    decoders = DECODERS if args.decoder == "auto" else (args.decoder,)
+    results = {d: train(games, commit, d) for d in decoders}
+    for decoder, (weights, report) in results.items():
+        for name, folds in report["variant_folds"].items():
+            print_folds(name, folds, decoder)
+        print(f"\n[{decoder}] shipped variant: {report['chosen']!r} "
+              f"(comparable net: " + ", ".join(
+                  f"{n} {comparable_net(f):+.1f}s" for n, f in report["variant_folds"].items())
+              + f"); threshold {weights['threshold']:.2f} = median of "
+              f"{[f['threshold'] for f in weights['folds']]}"
+              + (f"; transitions {weights['hmm']}" if "hmm" in weights else ""))
+
+    if args.decoder == "auto":
+        thr_folds, hmm_folds = results["threshold"][0]["folds"], results["hmm"][0]["folds"]
+        shipped = choose_decoder(thr_folds, hmm_folds)
+        print(f"\ndecoder: {shipped!r} - comparable net threshold "
+              f"{comparable_net(thr_folds):+.1f}s vs hmm {comparable_net(hmm_folds):+.1f}s;"
+              f" comparable live cut threshold {comparable_live_cut(thr_folds):.1f}s vs hmm"
+              f" {comparable_live_cut(hmm_folds):.1f}s (hmm ships only if net rises and"
+              f" live cut does not)")
+    else:
+        shipped = args.decoder
+    weights = results[shipped][0]
 
     if args.ablation:
-        print_ablation(ablation(games, VARIANTS[report["chosen"]]))
+        print_ablation(ablation(games, VARIANTS[results[shipped][1]["chosen"]]))
 
     if args.no_write:
         print("\n--no-write: weights file untouched")
         return
     write(weights)
-    print(f"\nweights -> {WEIGHTS_PATH} (validated=false; flipping it is CF-395's call)")
+    print(f"\nweights ({shipped}) -> {WEIGHTS_PATH} "
+          "(validated=false; flipping it is CF-395's call)")
 
 
 if __name__ == "__main__":
