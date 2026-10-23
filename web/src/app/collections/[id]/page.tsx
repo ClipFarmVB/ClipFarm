@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, ArrowLeft, FolderOpen, X } from "lucide-react";
+import { Button } from "@/components/ui/Button";
 import { ClipCardSkeleton } from "@/components/ui/Skeleton";
 import { ClipCard } from "@/components/ClipCard";
 import { ClipModal } from "@/components/ClipModal";
@@ -17,6 +18,7 @@ import {
   type Clip,
   type Player,
 } from "@/lib/api";
+import { ApiError } from "@/lib/apiError";
 import { cn } from "@/lib/utils";
 import { RequireAuth } from "@/components/RequireAuth";
 
@@ -27,6 +29,7 @@ function CollectionContent() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [activeClipIndex, setActiveClipIndex] = useState<number | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [savingClipId, setSavingClipId] = useState<string | null>(null);
@@ -42,7 +45,13 @@ function CollectionContent() {
         setClips(clps);
         setPlayers(plrs);
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        // `getCollectionClips` 404s a collection that does not exist or is not
+        // the caller's (`_get_owned_collection`), and only that is "not
+        // found" (CF-423). Anything else is a fault, shown as one.
+        if (e instanceof ApiError && e.status === 404) setNotFound(true);
+        else setError(e instanceof Error ? e.message : "Couldn't load this collection.");
+      })
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -58,6 +67,21 @@ function CollectionContent() {
       setRemovingId(null);
     }
   }, [id]);
+
+  if (notFound) {
+    return (
+      <div className="fade-up flex flex-col items-center justify-center rounded-lg border border-dashed border-border py-20 text-center">
+        <FolderOpen size={28} className="text-subtle mb-3" />
+        <h1 className="text-[13px] font-medium text-foreground">Collection not found</h1>
+        <p className="mt-1 text-[12px] text-muted">
+          It may have been deleted, or the link is wrong.
+        </p>
+        <Link href="/collections" className="mt-4">
+          <Button variant="secondary" size="sm">Back to collections</Button>
+        </Link>
+      </div>
+    );
+  }
 
   if (error) {
     return (

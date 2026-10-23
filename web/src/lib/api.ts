@@ -1,4 +1,6 @@
-import { apiErrorMessage } from "@/lib/apiError";
+import { ApiError, apiErrorMessage } from "@/lib/apiError";
+
+export { ApiError };
 import { createClient } from "@/lib/supabase";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -34,10 +36,17 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
  * So a body that is not JSON is cut by `errorFallback` below, and one that
  * opens as markup is dropped entirely: it has nothing in it for the person
  * reading.
+ *
+ * **It throws an `ApiError`, which carries `res.status` (CF-423).** The status
+ * used to survive only inside the fallback string, and not at all when the
+ * body had a `detail` — which FastAPI always sets — so no caller could tell a
+ * missing resource from a server fault. The message is unchanged; the status
+ * is additive, and `ApiError` is still an `Error` for every caller that only
+ * reads `.message`.
  */
 async function throwApiError(res: Response): Promise<never> {
   const text = await res.text();
-  throw new Error(apiErrorMessage(text, errorFallback(res.status, text)));
+  throw new ApiError(apiErrorMessage(text, errorFallback(res.status, text)), res.status);
 }
 
 const _MAX_FALLBACK_BODY = 200;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { apiErrorMessage } from "./apiError";
+import { ApiError, apiErrorMessage } from "./apiError";
 
 const FALLBACK = "Upload failed: 500";
 
@@ -75,5 +75,16 @@ describe("apiErrorMessage", () => {
     const once = apiErrorMessage(body, FALLBACK);
     expect(once).toBe("This clip is private.");
     expect(apiErrorMessage(once, "Could not post")).toBe("Could not post");
+  });
+});
+
+describe("ApiError (CF-423)", () => {
+  it("is an Error that keeps its message and carries the status", () => {
+    const err = new ApiError("Profile not found", 404);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.message).toBe("Profile not found");
+    expect(err.status).toBe(404);
+    expect(err.name).toBe("ApiError");
   });
 });

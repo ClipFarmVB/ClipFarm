@@ -11,6 +11,7 @@ import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type Player, type ActionType, type ClipFilters } from "@/lib/api";
+import { ApiError } from "@/lib/apiError";
 import { estimateEtaSeconds, formatEta, pushSample, type ProgressSample } from "@/lib/eta";
 import { cn } from "@/lib/utils";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
@@ -69,6 +70,7 @@ export default function GamePage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [activeClipIndex, setActiveClipIndex] = useState<number | null>(null);
   const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0, min_score: 0, sort: "time" });
   // What the clips fetch reads. The controls update `filters` at once so the
@@ -156,7 +158,10 @@ export default function GamePage() {
           }, 5000);
         }
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load game.");
+        // A 404 is a game that does not exist or is not visible to this
+        // viewer (`get_game`); anything else is a fault (CF-423).
+        if (e instanceof ApiError && e.status === 404) setNotFound(true);
+        else setError(e instanceof Error ? e.message : "Failed to load game.");
       }
     }
 
@@ -169,7 +174,7 @@ export default function GamePage() {
     if (!game || game.status !== "ready") return;
     Promise.all([getClips(id, settledFilters), getPlayers()])
       .then(([c, p]) => { setClips(c); setPlayers(p); })
-      .catch((e) => setError(e.message))
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load clips."))
       .finally(() => setLoading(false));
   }, [game, id, settledFilters]);
 
@@ -184,6 +189,21 @@ export default function GamePage() {
       };
     });
   }, []);
+
+  if (notFound) {
+    return (
+      <div className="fade-up flex flex-col items-center justify-center rounded-lg border border-dashed border-border py-20 text-center">
+        <Scissors size={28} className="text-subtle mb-3" />
+        <h1 className="text-[13px] font-medium text-foreground">Game not found</h1>
+        <p className="mt-1 text-[12px] text-muted">
+          It may have been deleted, or the link is wrong.
+        </p>
+        <Link href="/games" className="mt-4">
+          <Button variant="secondary" size="sm">Back to library</Button>
+        </Link>
+      </div>
+    );
+  }
 
   if (error) {
     return (
