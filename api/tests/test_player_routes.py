@@ -18,8 +18,11 @@ is the thing under test, and only the dict path matches what FastAPI does to a
 real request body.
 
 Follows the house pattern from test_profile_routes.py — stand-in session, direct
-calls into the router, no TestClient and no database. Nothing here imports
-`get_owned_player` by name; these tests go through the route handlers.
+calls into the router, no database. Nothing here imports `get_owned_player` by
+name; these tests go through the route handlers. The exception is the
+`TestClient` section at the end: a direct call is handed an already-parsed
+body, so only a request through FastAPI's routing proves the PATCH route is
+declared with `PlayerUpdate` at all.
 """
 import asyncio
 import uuid
@@ -135,6 +138,7 @@ def test_a_jersey_only_patch_changes_only_the_jersey():
     assert player.team_id == team.id
     assert player.photo_url is None
     assert session.committed
+
 
 def test_omitting_team_id_still_patches():
     """`exclude_unset` is what keeps an omitted team_id from being read as its
@@ -289,7 +293,9 @@ def test_both_routes_refuse_a_null_team_id():
     POST answers 400 from the handler, because `PlayerCreate.team_id` stays
     nullable in the type; PATCH answers 422 from validation, because
     `PlayerUpdate` refuses it before the handler runs (CF-253). Asserting both
-    halves together is what fails if a later change relaxes either one."""
+    halves together is what fails if a later change relaxes either schema; that
+    the PATCH route is still *declared* with `PlayerUpdate` is pinned over HTTP
+    below."""
     session = _FakeSession(None, [])
     body = PlayerCreate.model_validate({"name": "Rosa", "team_id": None})
     with pytest.raises(HTTPException) as created:
@@ -300,3 +306,61 @@ def test_both_routes_refuse_a_null_team_id():
     with pytest.raises(ValidationError) as updated:
         PlayerUpdate.model_validate({"name": "Rosa", "team_id": None})
     assert [e["loc"] for e in updated.value.errors()] == [("team_id",)]
+
+
+# ── the PATCH route is wired to PlayerUpdate ────────────────────────────────
+
+def _client(session):
+    """The players router behind a real ASGI stack, with the database and the
+    caller overridden. Everything above parses bodies itself, so it would pass
+    even if `update_player` were annotated with `PlayerCreate` again; these go
+    through FastAPI's own body parsing instead."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.auth import get_current_user_id
+    from app.database import get_db
+
+    app = FastAPI()
+    app.include_router(players.router)
+
+    async def _db():
+        yield session
+
+    app.dependency_overrides[get_db] = _db
+    app.dependency_overrides[get_current_user_id] = lambda: OWNER
+    return TestClient(app)
+
+
+def test_patch_route_refuses_a_null_team_id_over_http():
+    """CF-238's orphan path, closed at the route rather than in the schema
+    alone. With the body typed `PlayerCreate`, this request validates and the
+    handler (which no longer has a runtime guard) writes the null."""
+    team = _Team()
+    player = _Player(team_id=team.id, name="Rosa")
+    session = _FakeSession(player, [team])
+
+    with _client(session) as client:
+        resp = client.patch(f"/players/{player.id}", json={"name": "x", "team_id": None})
+
+    assert resp.status_code == 422
+    assert [e["loc"] for e in resp.json()["detail"]] == [["body", "team_id"]]
+    assert player.team_id == team.id
+    assert player.name == "Rosa"
+    assert not session.committed
+
+
+def test_patch_route_accepts_a_jersey_only_body_over_http():
+    """The other half: `PlayerCreate` requires `name`, so this was a 422."""
+    team = _Team()
+    player = _Player(team_id=team.id, name="Rosa", jersey_number=7)
+    session = _FakeSession(player, [team])
+
+    with _client(session) as client:
+        resp = client.patch(f"/players/{player.id}", json={"jersey_number": 9})
+
+    assert resp.status_code == 200
+    assert resp.json()["jersey_number"] == 9
+    assert player.name == "Rosa"
+    assert player.team_id == team.id
+    assert session.committed
