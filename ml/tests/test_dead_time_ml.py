@@ -561,6 +561,24 @@ class TestActiveWindowsLearned:
         assert self._run(weights=w) == expected
         assert any(s <= 20.0 <= e for s, e in expected), "the rally is kept"
 
+    def test_hmm_weights_decode_the_raw_trace_with_the_records_stays(self, monkeypatch):
+        """The clean rally above decodes the same with the stays swapped or the
+        trace smoothed; `_noisy_trace` does not (R5-M1). The builder must ask
+        for the unsmoothed trace and hand it, with the record, to the hmm."""
+        import ml.pipeline.dead_time_ml as dml
+
+        seen: list = []
+
+        def fake_predict(features, weights, *, smooth=True):
+            seen.append(smooth)
+            return _noisy_trace()
+
+        monkeypatch.setattr(dml, "predict_in_play", fake_predict)
+        w = learned_weights(decoder="hmm", hmm=dict(FOLD_HMM))
+        assert self._run(weights=w, duration=240.0,
+                         positions=_rally_track(duration=240.0)) == NOISY_HMM_WINDOWS
+        assert seen == [False]
+
     def test_an_explicit_threshold_decoder_matches_a_file_without_the_key(self):
         """Every file before CF-396 has no "decoder"; it must decode as before."""
         assert self._run(weights=learned_weights(decoder="threshold")) == self._run()
@@ -848,6 +866,28 @@ FOLD_HMM = {"p_stay_play": 0.88, "p_stay_dead": 0.94, "prior_play": 0.33}
 NO_PAD = {"pad_before": 0.0, "pad_after": 0.0, "merge_gap_seconds": 0.0}
 
 
+def _noisy_trace() -> np.ndarray:
+    """
+    240s whose hmm windows depend on which stay is which and on the trace
+    being raw — the clean step traces above decode the same either way:
+
+      - a 100s lull alternating 0.35/0.65 between two 20s rallies. Its mean
+        log-odds is 0, so the stays alone decide it: under FOLD_HMM dead is the
+        cheaper state to remain in and the lull is cut; with the stays swapped
+        play is, and the two rallies become one window;
+      - three 3s bursts at 0.99 in dead. Raw, each is a short rally; a 5s
+        moving average flattens them to ~0.6 at the peak and they vanish.
+    """
+    burst = np.r_[np.full(17, 0.05), np.full(3, 0.99)]
+    return np.r_[np.full(20, 0.05), np.full(20, 0.9), np.tile([0.35, 0.65], 50),
+                 np.full(20, 0.9), np.tile(burst, 3), np.full(20, 0.05)]
+
+
+# FOLD_HMM's windows on _noisy_trace, default pads and merge gap.
+NOISY_HMM_WINDOWS = [(17.0, 42.5), (136.0, 162.5), (174.0, 182.5),
+                     (194.0, 202.5), (214.0, 222.5)]
+
+
 class TestViterbi:
     def _rally_with_dip(self, dip_len: int, dip_p: float) -> np.ndarray:
         """20s dead at 0.1, a 20s rally at 0.9 with `dip_len` seconds at
@@ -902,6 +942,22 @@ class TestViterbi:
                             prior_play=prior)
         assert path.tolist() == [expected] * 200
 
+    def test_ties_go_to_dead(self):
+        """Flat 0.5, equal stays, a 0.5 prior: every path scores the same, and
+        the docstring's rule picks dead."""
+        path = viterbi_path(np.full(20, 0.5), p_stay_play=0.9, p_stay_dead=0.9,
+                            prior_play=0.5)
+        assert path.tolist() == [False] * 20
+
+    def test_entering_play_costs_one_minus_the_dead_stay(self):
+        """A trace that ends on 7s at 0.6 after dead: entering play there pays
+        log(1 − p_stay_dead) = log 0.06 once, more than those seconds gain, so
+        they stay dead. Read the other way round (log 0.12) the entry would be
+        cheap enough. Interior runs pay one entry and one exit either way, so
+        only an unmatched entry like this one tells them apart."""
+        probs = np.r_[np.full(20, 0.05), np.full(7, 0.6)]
+        assert not viterbi_path(probs, **FOLD_HMM).any()
+
     def test_the_prior_is_only_the_initial_distribution(self):
         """Applied to every second, a 0.99 prior (log-odds 4.6) would outvote a
         0.05 trace (log-odds 2.9) everywhere and keep it all. As the first
@@ -922,6 +978,25 @@ class TestViterbi:
         probs = np.r_[np.zeros(10), np.ones(10), np.zeros(10)]
         path = viterbi_path(probs, **FOLD_HMM)
         assert path.tolist() == [False] * 10 + [True] * 10 + [False] * 10
+
+    @pytest.mark.parametrize("stay, held", [(0.9995, True), (0.995, False)])
+    def test_one_saturated_second_costs_the_floor_not_infinity(self, stay, held):
+        """
+        One exact 0.0 inside a confident rally, and one exact 1.0 inside dead.
+        Floored at 1e-6, the disagreeing second costs log(1e-6) = -13.8, so it
+        is outvoted when leaving and re-entering costs more (2·log(0.0005) =
+        -15.2) and splits the run when that is cheaper (2·log(0.005) = -10.6).
+        Unfloored, log(0) is -inf and it would split the run at any stay.
+        """
+        hmm = {"p_stay_play": stay, "p_stay_dead": stay, "prior_play": 0.5}
+        rally = np.full(30, 0.9)
+        rally[15] = 0.0
+        dead = np.full(30, 0.1)
+        dead[15] = 1.0
+        path = viterbi_path(np.r_[rally, dead], **hmm)
+        assert path[15] == held and path[45] == (not held)
+        assert path[:15].all() and path[16:30].all()
+        assert not path[30:45].any() and not path[46:].any()
 
     def test_empty_and_zero_duration(self):
         assert viterbi_path(np.array([]), **FOLD_HMM).shape == (0,)
@@ -991,6 +1066,29 @@ class TestDecoderContract:
         raw = np.r_[np.full(10, 0.1), np.full(10, 0.9), np.full(10, 0.1)]
         w = self._weights(decoder="hmm", hmm=dict(FOLD_HMM))
         assert decode_windows(raw, w, 30.0) == viterbi_windows(raw, 30.0, **FOLD_HMM)
+
+    def test_hmm_decodes_a_noisy_trace_raw_with_each_stay_in_its_place(self):
+        """On a trace where the answer depends on them: the record's stays in
+        their own places, applied to the raw trace (R5-M1)."""
+        raw = _noisy_trace()
+        w = self._weights(decoder="hmm", hmm=dict(FOLD_HMM))
+        swapped = {**FOLD_HMM, "p_stay_play": FOLD_HMM["p_stay_dead"],
+                   "p_stay_dead": FOLD_HMM["p_stay_play"]}
+        assert viterbi_windows(raw, 240.0, **FOLD_HMM) == NOISY_HMM_WINDOWS
+        assert viterbi_windows(raw, 240.0, **swapped) != NOISY_HMM_WINDOWS, \
+            "the trace must tell the stays apart"
+        assert viterbi_windows(smooth_probability(raw), 240.0, **FOLD_HMM) \
+            != NOISY_HMM_WINDOWS, "the trace must tell raw from smoothed"
+        assert decode_windows(raw, w, 240.0) == NOISY_HMM_WINDOWS
+
+    @pytest.mark.parametrize("prior, expected", [(0.7, [(0.0, 30.0)]), (0.3, [])])
+    def test_hmm_decodes_with_the_records_prior(self, prior, expected):
+        """With equal stays a flat 0.5 trace is decided by the prior alone
+        (see TestViterbi), so a prior dropped or defaulted on the way to the
+        decoder changes the windows."""
+        hmm = {"p_stay_play": 0.9, "p_stay_dead": 0.9, "prior_play": prior}
+        w = self._weights(decoder="hmm", hmm=hmm)
+        assert decode_windows(np.full(30, 0.5), w, 30.0) == expected
 
     @pytest.mark.parametrize("over, match", [
         ({"decoder": "crf"}, "decoder 'crf'"),
