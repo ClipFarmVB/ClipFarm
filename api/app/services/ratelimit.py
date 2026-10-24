@@ -19,8 +19,10 @@ is the success case.
 object for the same viewer, so splitting the budget would mean two numbers to
 keep in agreement and no more safety.
 
-``GET /clips/{id}/download`` was the fifth route in exposure B and is **not
-here**: it requires authentication instead — see ``routers/clips.py``. Neither
+``GET /clips/{id}/download`` was a route in exposure B when this card looked at
+it — the fifth of five then, before CF-319 added ``/clips/{id}/playback`` to the
+list above — and is **not here**: it requires authentication instead — see
+``routers/clips.py``. Neither
 that nor this module bounds how often a clip is fetched: ``/share`` and the post
 reads presign the same object anonymously, and a presigned URL is fetched from
 R2 without touching the API. What these limits bound is calls to the API.

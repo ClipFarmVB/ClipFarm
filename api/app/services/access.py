@@ -99,8 +99,8 @@ serves no anonymous footage — the flag gates setting `public`, not reading it,
 so it does not withdraw rows written while it was on. `services/publishing.py`
 argues why that tier waits on
 CF-75/CF-88 (terms) and CF-116 (report and takedown) while `followers` does
-not. And the six anonymous reads are throttled per caller (CF-186), with
-``/clips/{id}/download`` behind auth.
+not. And the anonymous reads enumerated above are throttled per caller
+(CF-186), with ``/clips/{id}/download`` behind auth.
 
 What is genuinely open: nobody has reassessed those limits against real public
 traffic, because there has not been any. The 404-not-403 choice below keeps
