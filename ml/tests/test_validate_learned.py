@@ -163,6 +163,44 @@ def test_validated_matches_the_bar(committed):
     assert committed["validated"] is False
 
 
+def test_clause_1_is_reported_for_every_recorded_variant(committed):
+    """R1-M1: the trainer picks the variant by clause 1's own quantity on the
+    held-out games, so the report must show clause 1 for the variant it did not
+    pick. On the committed record the chosen one passes and the other fails."""
+    by = {v.variant: v for v in vl.clause_1_by_variant(committed)}
+    assert set(by) == set(committed["context_variants"])
+    assert [n for n, v in by.items() if v.chosen] == ["none"]
+    assert by["none"].clause.passed
+    assert by["none"].clause.margin == pytest.approx(4.92, abs=0.01)
+    assert not by["lags_1_3_5"].clause.passed
+    assert by["lags_1_3_5"].clause.margin == pytest.approx(-23.58, abs=0.01)
+    # The chosen variant's clause 1 is the headline clause 1.
+    learned, guarded = scores_from_folds(committed["folds"])
+    assert by["none"].clause == apply_bar(learned, guarded)[0]
+
+
+def test_the_report_prints_every_variants_clause_1(committed, capsys):
+    folds = {f["held_out"]: f for f in committed["folds"]}
+    results = []
+    for t, f in folds.items():
+        s = Score(f["dead_removed_pct"], f["live_cut_sec"], f["net_sec"])
+        g = Score(f["guarded_dead_removed_pct"], f["guarded_live_cut_sec"], f["guarded_net_sec"])
+        results.append(vl.GameResult(t, 1.0, g, s, s, s, {}))
+    vl.print_report(results, committed)
+    out = capsys.readouterr().out
+    assert "selection-biased" in out
+    assert "lags_1_3_5" in out and "-23.58" in out
+    assert "clause 1 does not hold for every variant" in out
+
+
+def test_main_exits_non_zero_when_the_bar_fails(monkeypatch):
+    """R1-N3: a failing bar is exit status 1, a passing one 0."""
+    monkeypatch.setattr(vl, "run", lambda: [])
+    for passed, status in ((False, 1), (True, 0)):
+        monkeypatch.setattr(vl, "print_report", lambda r, w, p=passed: p)
+        assert vl.main([]) == status
+
+
 def test_every_fold_rebuilds_into_weights_the_builder_accepts(committed):
     for fold in committed["folds"]:
         fw = fold_weights(committed, fold)

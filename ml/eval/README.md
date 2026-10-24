@@ -240,7 +240,10 @@ position only (CF-395), with each figure marked: **ho** is held out — the
 CF-393 fold model that never saw that game — and **in** is in-sample, the
 shipped weights, fitted on all five. Its held-out figures follow production's
 fallback chain, so on test3 the builder declines the track and `guarded`
-abstains. The bar is judged on the **ho** figures alone.
+abstains. The bar is judged on the **ho** figures alone. One caveat on "never
+saw that game": the fold models are those of the context variant the trainer
+chose by summed held-out net over test2/4/5, so the variant choice did see it
+(see [Validating the learned builder](#validating-the-learned-builder-cf-395)).
 
 | fixture | switch off (production today) | switch on (code default) | switch on + soft | learned, switch on |
 |---|---|---|---|---|
@@ -332,9 +335,11 @@ be mistaken for a broken run.
 
 **The abstain threshold is unconstrained, not tuned.** Only test3 is below it
 (0.57 usable speed samples/s — its fixture note records 0.76, which is the *raw*
-track rate, a different measure); the other four sit at 1.51-2.99. The default 1.0
+track rate, a different measure); the other four sit at 1.47-2.99, measured from
+the five ball caches with the static-site filter off, as in the CF-395 table
+below (an earlier measurement here read 1.51-2.99). The default 1.0
 stands in that gap, but nothing has been measured inside it, and a game landing
-between 0.57 and 1.51 flips between condensing normally and shipping no condensed
+between 0.57 and 1.47 flips between condensing normally and shipping no condensed
 video — the most user-visible outcome on this path. A fixture in the gap is what
 would settle it; until one exists, treat a move of
 `condense_guard_min_track_rate` as unevidenced in either direction.
@@ -547,6 +552,8 @@ python -m ml.eval.validate_learned                    # table + every clause, bo
 python -m ml.eval.validate_learned --dump-windows DIR # also {test}_{learned|learned-ungated}.json
 ```
 
+It exits 1 when the bar fails for the gated rung and 0 when it passes.
+
 Two learned rungs, both held out:
 
 - **gated** — production's chain: below `min_track_rate` usable speed
@@ -566,6 +573,25 @@ Two learned rungs, both held out:
 | 3. test4 live cut ≤ `guarded`'s + 30s | +31.43s · 30s · **−1.43s FAIL** | same |
 | 3. test5 live cut ≤ `guarded`'s + 30s | −5.50s · 30s · +35.50s pass | same |
 | 4. test3 abstains or cuts ≤ 30s live | abstains · pass | 14.50s · 30s · +15.50s pass |
+
+**Clause 1's pass is selection-biased.** The folds scored are the ones of the
+context variant `train_deadtime.choose_variant` picked, and it picks by the
+highest summed held-out net over test2/4/5 — exactly what clause 1 tests. The
+coefficients, intercept and threshold of each fold never saw the held-out game;
+the choice of variant did. The trainer recorded two variants, and clause 1
+holds for the chosen one only:
+
+| context variant | clause 1: value · limit · margin |
+|---|---|
+| `none` (chosen, scored above) | +463.27s · +458.35s · **+4.92s pass** |
+| `lags_1_3_5` | +434.77s · +458.35s · **−23.58s FAIL** |
+
+The tool prints this table after the clauses, from each variant's fold record.
+Today's verdict does not depend on it, since clauses 2 and 3 fail either way,
+but a future pass on clause 1 is only as good as this table: if it holds for
+the chosen variant alone, it rests on the choice. Removing the bias needs the
+trainer to choose the variant inside each training fold (nested); it does not
+yet.
 
 Per fixture, dead time removed then live play cut, net at 4:1:
 

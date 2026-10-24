@@ -12,6 +12,18 @@ four games only. This module rebuilds a weights dict per fold from that record
 scores the result beside `guarded` (`deadtime_variants.v5_guarded`) on the same
 game.
 
+**Held out is not quite clean: the context variant was chosen on the held-out
+games.** The folds scored are those of the context variant the trainer picked
+(`train_deadtime.choose_variant`), and it picks the variant with the highest
+summed held-out net over test2/4/5 — the very quantity clause 1 tests. So the
+coefficients, intercept and threshold never saw the held-out game, but the
+choice of variant did, and clause 1 on the chosen variant is selection-biased.
+On the committed record the chosen variant (`none`, +463.27s) passes clause 1
+and the other (`lags_1_3_5`, +434.77s) would fail it. `clause_1_by_variant`
+reports clause 1 for every recorded variant so the report shows this; removing
+the bias needs the trainer to choose the variant inside each training fold
+(nested), which it does not yet do.
+
 Two learned rungs, both held out:
 
 - **gated** — production's chain: the builder declines a track below
@@ -35,7 +47,8 @@ CF-391's `guarded` column the bar is measured against. The switch-off position
 is not scored here.
 
 This reports; it never writes the weights file. `"validated"` is a person's
-edit, made only when `apply_bar` passes.
+edit, made only when `apply_bar` passes. The CLI exits 1 when the bar fails for
+the gated rung and 0 when it passes, so a script can gate on it.
 
 Needs the five ball caches in `ml/eval/ball_caches/` (CF-390). No video, no
 app deps.
@@ -51,6 +64,7 @@ from __future__ import annotations
 import argparse
 import copy
 import logging
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -171,6 +185,36 @@ def scores_from_folds(folds: Sequence[dict]) -> tuple[dict[str, Score], dict[str
         guarded[t] = Score(f["guarded_dead_removed_pct"], f["guarded_live_cut_sec"],
                            f["guarded_net_sec"])
     return learned, guarded
+
+
+@dataclass(frozen=True)
+class VariantClause1:
+    """Clause 1 for one recorded context variant, from its fold record."""
+    variant: str
+    chosen: bool                # the variant whose folds this module scores
+    clause: Clause
+
+
+def clause_1_by_variant(weights: Mapping) -> list[VariantClause1]:
+    """
+    Clause 1 for every context variant the trainer recorded, from each
+    variant's own fold record (ungated, which on COMPARABLE equals gated).
+
+    The selection caveat this makes visible: the trainer picks the variant by
+    the highest summed held-out net over COMPARABLE (`train_deadtime.
+    choose_variant`) — the quantity clause 1 tests — so the chosen variant's
+    clause 1 has seen the games it is judged on. A clause 1 pass that holds
+    for the chosen variant only is a product of that choice.
+
+    The chosen variant is the one whose `context` matches the shipped file's.
+    Empty when the file records no variants.
+    """
+    out = []
+    for name, rec in (weights.get("context_variants") or {}).items():
+        learned, guarded = scores_from_folds(rec["folds"])
+        out.append(VariantClause1(name, rec.get("context") == weights.get("context"),
+                                  apply_bar(learned, guarded)[0]))
+    return out
 
 
 # ── per-fold weights ───────────────────────────────────────────────────────
@@ -312,13 +356,30 @@ def print_report(results: Sequence[GameResult], weights: dict) -> bool:
         for c in clauses:
             print(f"  {'pass' if c.passed else 'FAIL'}  {c.name:44s} value {c.value:8.2f}"
                   f"  limit {c.limit:8.2f}  margin {c.margin:+8.2f}  ({c.detail})")
+
+    # The trainer chose the scored variant by clause 1's own quantity on these
+    # games, so the headline clause 1 is selection-biased; show every variant's.
+    variants = clause_1_by_variant(weights)
+    if variants:
+        print("\nclause 1 per recorded context variant (CF-393 fold record, ungated). The "
+              "trainer chose the\nscored variant by this same summed held-out net, so the "
+              "headline clause 1 is selection-biased:")
+        for v in variants:
+            c = v.clause
+            print(f"  {'pass' if c.passed else 'FAIL'}  {v.variant:14s} value {c.value:8.2f}"
+                  f"  limit {c.limit:8.2f}  margin {c.margin:+8.2f}"
+                  f"{'  (chosen, scored above)' if v.chosen else ''}")
+        if not all(v.clause.passed for v in variants):
+            print("  -> clause 1 does not hold for every variant; a pass rests on the choice.")
     print(f"\n\"validated\" in the weights file is {weights.get('validated')!r}; the bar "
           f"{'passes' if verdicts['gated'] else 'fails'} for the gated rung. This tool "
           "never writes the file.")
     return verdicts["gated"]
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def main(argv: Sequence[str] | None = None) -> int:
+    """Exit status 0 when the bar passes for the gated rung, 1 when it fails, so a
+    script can gate on it. The report prints either way."""
     ap = argparse.ArgumentParser(description="CF-395: score the learned builder held out "
                                              "and apply the epic's validation bar")
     ap.add_argument("--dump-windows", type=Path, metavar="DIR",
@@ -336,7 +397,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         logging.disable(logging.INFO)
         weights = load_weights(dead_time_ml.WEIGHTS_PATH, warn_unvalidated=False)
         results = run()
-        print_report(results, weights)
+        passed = print_report(results, weights)
         if args.dump_windows:
             args.dump_windows.mkdir(parents=True, exist_ok=True)
             for r in results:
@@ -346,7 +407,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     finally:
         dv.NORMALIZE, dv.SOFT_SCALE, dv.STATIC_SITE_FILTER = saved
         logging.disable(previous)
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
