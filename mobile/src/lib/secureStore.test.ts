@@ -123,6 +123,42 @@ describe("createChunkedSecureStorage", () => {
     expect(await storage.getItem("k")).toBe(before);
   });
 
+  it("leaves no orphaned chunks when a longer write is interrupted", async () => {
+    const { store, values, failAfterWrites } = fakeStore();
+    const storage = createChunkedSecureStorage(store);
+    const short = "short";
+    const longer = "L".repeat(CHUNK_SIZE * 4);
+
+    await storage.setItem("k", short);
+    // The reservation plus all four chunks land; the commit is what dies. The
+    // new chunks sit past the old value's high-water mark, so a sweep bounded
+    // by the committed pointer alone would never reach them.
+    failAfterWrites(5);
+    await expect(storage.setItem("k", longer)).rejects.toThrow();
+
+    // The old value is still what a reader sees.
+    expect(await storage.getItem("k")).toBe(short);
+
+    await storage.removeItem("k");
+    // Nothing left: no fragment of a session token stays in a keychain that
+    // survives uninstall on iOS.
+    expect([...values.keys()]).toEqual([]);
+  });
+
+  it("reads an interrupted first write as no session, and sweeps it", async () => {
+    const { store, values, failAfterWrites } = fakeStore();
+    const storage = createChunkedSecureStorage(store);
+
+    // Nothing stored yet, so the reservation names count 0.
+    failAfterWrites(3);
+    await expect(storage.setItem("k", "V".repeat(CHUNK_SIZE * 3))).rejects.toThrow();
+
+    expect(await storage.getItem("k")).toBeNull();
+
+    await storage.removeItem("k");
+    expect([...values.keys()]).toEqual([]);
+  });
+
   it("alternates generations so a write never lands on live chunks", async () => {
     const { store, writes } = fakeStore();
     const storage = createChunkedSecureStorage(store);

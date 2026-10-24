@@ -24,12 +24,27 @@
  *    task, so a listener that attached late — or after a relaunch — is correct
  *    immediately, with no accumulated state to rebuild.
  *
- * 4. **Presigned URLs expire.** `url_ttl_seconds` is minutes; a multi-gigabyte
- *    upload over a gym's wifi is not. `expired-url` is its own failure reason
- *    because its recovery is specific: JS re-issues the ticket and calls
- *    `startUpload` again with the parts already done in `completedParts`, and
- *    the module skips them. That is also what makes a failed upload retryable
- *    without creating a second game (CF-330).
+ * 4. **A ticket cannot be renewed, so `completedParts` resumes within one and
+ *    never across two.** `upload_url_ttl_seconds` is 12 hours
+ *    (`api/app/config.py`), sized so a cap-sized 8 GB upload fits in a single
+ *    ticket; every part URL in that ticket shares the one expiry and the api
+ *    has no re-presign route. `POST /games/uploads` is the only source of part
+ *    URLs and it mints a fresh `game_id` and a fresh R2 multipart upload on
+ *    every call (`api/app/routers/games.py`), so a "re-issued" ticket is a
+ *    different game whose completion rejects the old ticket's ETags.
+ *
+ *    What `completedParts` is for, then, is resuming the *same* ticket: the
+ *    system killed the app at part 40 of 80 and the URLs are still live, so the
+ *    next launch hands back the parts already stored and skips them. That is
+ *    the retry CF-330 needs, and it creates no second game.
+ *
+ *    `expired-url` is therefore terminal for that upload, not a retry: the
+ *    12 hours are gone, the parts in R2 are unreachable, and the only way
+ *    forward is a new ticket — a new game — from byte zero. It stays its own
+ *    reason because it is the one failure worth saying that about in the UI
+ *    rather than offering a retry that cannot work. An api ticket adding
+ *    re-presigning for an existing game is what would turn this into a
+ *    resume; until one exists, do not build against one.
  *
  * 5. **Temp files are the module's to clean up**, on success, failure and
  *    cancellation alike. iOS cannot upload from memory or a byte range at all —
@@ -70,7 +85,11 @@ export interface StartUploadRequest {
    */
   contentType: string | null;
   parts: UploadPartTarget[];
-  /** Parts already stored — skipped, and echoed back in the finished task. */
+  /**
+   * Parts already stored under **this** ticket — skipped, and echoed back in
+   * the finished task with the ETags they came in with. Carrying them across a
+   * re-issued ticket does not work; see rule 4.
+   */
   completedParts?: CompletedPart[];
   /**
    * Hold the transfer while the device is on cellular (CF-327). The task stays
@@ -101,7 +120,11 @@ export type UploadState =
 export type UploadFailureReason =
   /** Transient: connectivity, a 5xx, a timeout. Retry as-is. */
   | "network"
-  /** A presigned URL is past its TTL. Re-issue the ticket, then resume. */
+  /**
+   * A presigned URL is past its TTL. Terminal for this upload — the ticket
+   * cannot be renewed and its stored parts are unreachable, so the only way on
+   * is a new upload from the start. See rule 4.
+   */
   | "expired-url"
   /** The picked file is gone or unreadable — the user must pick again. */
   | "file-unreadable"

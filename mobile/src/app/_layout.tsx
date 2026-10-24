@@ -21,9 +21,15 @@ export default function RootLayout() {
  *
  * Every screen is declared here once so that a screen ticket replaces its own
  * file and touches nothing shared — the single change that keeps five screen
- * tickets from colliding in one file. Adding a screen to an existing flow is
- * still just a new file; this list is only for the ones that need options or a
- * guard.
+ * tickets from colliding in one file.
+ *
+ * A screen added later does need a line here, with one exception. expo-router
+ * registers any file under `src/app/`, declared or not, and an undeclared one
+ * lands *outside* both `Stack.Protected` blocks — reachable while signed out.
+ * Inside `(tabs)` or `(auth)` a new file inherits that group's guard and needs
+ * nothing; anywhere else it needs its own entry. `routes.test.ts` holds this
+ * for the epic's screens, including against a misspelled `name`, which would
+ * otherwise guard a route that does not exist and leave the real one open.
  *
  * `Stack.Protected` rather than a redirect in an effect: a guard is evaluated
  * before the screen mounts, so a signed-out cold start never flashes the

@@ -23,7 +23,19 @@ function required(name: string, value: string | undefined): string {
   return value;
 }
 
-export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:8000";
+/**
+ * Where the ClipFarm API lives.
+ *
+ * Defaulted only in development. A release build that reaches this unset used
+ * to fall back to `http://localhost:8000`, which no phone can reach and
+ * Android blocks as cleartext anyway — so the app looked network-broken when
+ * the real fault was a missing EAS environment variable. Failing here names
+ * the variable instead. See the EAS section of mobile/README.md.
+ */
+export const API_URL = (): string =>
+  __DEV__
+    ? (process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:8000")
+    : required("EXPO_PUBLIC_API_URL", process.env.EXPO_PUBLIC_API_URL);
 
 export const SUPABASE_URL = (): string =>
   required("EXPO_PUBLIC_SUPABASE_URL", process.env.EXPO_PUBLIC_SUPABASE_URL);

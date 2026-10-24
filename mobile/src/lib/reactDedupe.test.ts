@@ -17,9 +17,13 @@ const require = createRequire(import.meta.url);
  * Nothing else here catches that: lint, tsc and the rest of this suite never
  * bundle anything, and `metro.config.js` cannot fix it — its `nodeModulesPaths`
  * is a fallback for what Metro's upward walk missed, not an override for what
- * it found. So the invariant is the pin, and this is what holds it: if a future
- * bump moves `mobile/package.json`'s react off `web/package.json`'s, this fails
- * in CI rather than on a device.
+ * it found.
+ *
+ * What this asserts is the invariant itself — react-native and app code see one
+ * React — rather than "the two pins match". The pins drifting is the cause, but
+ * whether it surfaces depends on which copy npm hoists: hoist mobile's and this
+ * still passes while `web/` gets the nested one. Checking the resolution
+ * catches the half that breaks the app.
  */
 describe("react", () => {
   it("resolves to one copy from both react-native and app code", () => {

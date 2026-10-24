@@ -126,7 +126,9 @@ export function createChunkedSecureStorage(store: SecureStoreLike): SupabaseStor
   return {
     async getItem(key) {
       const pointer = await readPointer(key);
-      if (pointer === null) return null;
+      // `count === 0` is a reservation, not a value — see `setItem`. The empty
+      // string is stored as one empty chunk, so a real write never lands here.
+      if (pointer === null || pointer.count === 0) return null;
 
       const parts: string[] = [];
       for (let i = 0; i < pointer.count; i++) {
@@ -149,6 +151,21 @@ export function createChunkedSecureStorage(store: SecureStoreLike): SupabaseStor
       const chunks = splitIntoChunks(value);
       const highWater = Math.max(live?.highWater ?? 0, chunks.length);
 
+      // Raise the sweep bound *before* writing anything it has to cover. A
+      // longer value writes chunks past the old bound, and if the commit below
+      // never happens, every later sweep — `removeItem` on sign-out included —
+      // stops short of them and leaves fragments of a session token in a
+      // keychain that outlives the app on iOS. This write keeps the live
+      // generation and count, so it still names the old complete value and
+      // changes nothing a reader sees; with no live pointer it names count 0,
+      // which `getItem` reads as no value.
+      if (!live || highWater > live.highWater) {
+        await store.setItemAsync(
+          key,
+          `${live?.generation ?? 0}:${live?.count ?? 0}:${highWater}`
+        );
+      }
+
       for (let i = 0; i < chunks.length; i++) {
         await store.setItemAsync(chunkKey(key, generation, i), chunks[i]);
       }
@@ -158,9 +175,11 @@ export function createChunkedSecureStorage(store: SecureStoreLike): SupabaseStor
 
       // Housekeeping, past the point where an interruption can cost anything:
       // the generation just retired, and any chunk of this one left over from a
-      // longer value. `highWater` bounds both — a deleted key that was never
-      // there is free, an orphaned chunk of a session token is not.
-      if (live) await deleteChunks(key, live.generation, 0, live.highWater);
+      // longer value. `highWater` bounds both, and bounds them even for a write
+      // that died before committing, because it was raised first — a deleted
+      // key that was never there is free, an orphaned chunk of a session token
+      // is not.
+      if (live) await deleteChunks(key, live.generation, 0, highWater);
       await deleteChunks(key, generation, chunks.length, highWater);
     },
 

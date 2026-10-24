@@ -1,26 +1,52 @@
 /**
- * Local stand-in for `packages/api-client` (CF-314), which is in flight and not
- * on `main` yet.
+ * Local stand-in for `packages/api-client` (CF-314, #418), which is in flight
+ * and not on `main` yet.
  *
- * It is deliberately the *same shape* CF-314 is landing — a client initialised
- * with `{ baseUrl, getToken }`, where `getToken` may be async and returns null
- * when signed out — so adopting the real package is an import change in
- * `src/lib/api.ts` and the deletion of this file, not a rewrite of anything
- * that calls it.
+ * It mirrors that package's **configuration surface** exactly, because that is
+ * the part this ticket has to get right: `configureApiClient({ baseUrl,
+ * getToken })` as a module-level setter returning void, with `getToken` called
+ * before every request rather than read once, allowed to be async, returning
+ * null when signed out, and — when it rejects — sending the request out
+ * unauthenticated rather than failing it.
  *
- * Only `request` lives here. The endpoint wrappers (`getGames`, `getClips`, …)
- * are CF-314's to move out of `web/src/lib/api.ts`; re-typing them here would
- * guarantee two versions that drift.
+ * It does **not** mirror the rest. The real package exports named endpoint
+ * functions (`getGames`, `createUpload`, …) and keeps `request` private; those
+ * are CF-314's to move out of `web/src/lib/api.ts`, and re-typing them here
+ * would guarantee two copies that drift. So `apiRequest` below is the one
+ * interim symbol: it exists for a screen that needs the api before #418 lands,
+ * and it is the one call site that has to change afterwards, to the endpoint
+ * function for whatever it was fetching. Everything else is a swap of this
+ * import for `@clipfarm/api-client`.
  */
 
-export interface ApiClientOptions {
+export interface ApiClientConfig {
+  /** Root of the api, without a trailing slash. Paths are appended verbatim. */
   baseUrl: string;
-  /** The caller's access token, or null when signed out. */
+  /** The caller's bearer token, or null when signed out. May be async. */
   getToken: () => string | null | Promise<string | null>;
 }
 
-export interface ApiClient {
-  request<T>(path: string, init?: RequestInit): Promise<T>;
+let config: ApiClientConfig | null = null;
+
+/** Bind the client to its host app. Call once, before the first request. */
+export function configureApiClient(next: ApiClientConfig): void {
+  config = next;
+}
+
+/**
+ * The active config, or a loud failure if nothing configured it.
+ *
+ * A throw rather than a default `http://localhost:8000`: a build that forgot to
+ * initialise would otherwise spend its requests on a host that does not exist
+ * and report them as network errors.
+ */
+export function getApiClientConfig(): ApiClientConfig {
+  if (!config) {
+    throw new Error(
+      "The api client is not configured — call configureApiClient({ baseUrl, getToken }) before the first request."
+    );
+  }
+  return config;
 }
 
 /**
@@ -54,30 +80,35 @@ export function errorMessage(body: string, fallback: string): string {
   return fallback;
 }
 
-export function createApiClient({ baseUrl, getToken }: ApiClientOptions): ApiClient {
-  return {
-    async request<T>(path: string, init?: RequestInit): Promise<T> {
-      const token = await getToken();
-      const res = await fetch(`${baseUrl}${path}`, {
-        ...init,
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...init?.headers,
-        },
-      });
+/**
+ * Interim only — see the note at the top of this file. The real package has no
+ * public `request`; when #418 lands, each call to this becomes a call to the
+ * endpoint function for that route.
+ */
+export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const { baseUrl, getToken } = getApiClientConfig();
+  // A token that cannot be read sends the request out unauthenticated rather
+  // than failing it — what the web client does today, and what #418 keeps.
+  const token = await Promise.resolve(getToken()).catch(() => null);
 
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(errorMessage(body, `API error ${res.status}: ${body}`));
-      }
-      // Every DELETE in this API returns 204, and a 200 with no body happens
-      // too. `res.json()` rejects on both with a parse error that reads as if
-      // the response were malformed rather than absent.
-      if (res.status === 204 || res.headers.get("content-length") === "0") {
-        return undefined as T;
-      }
-      return (await res.json()) as T;
+  const res = await fetch(`${baseUrl}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
     },
-  };
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(errorMessage(body, `API error ${res.status}: ${body}`));
+  }
+  // Every DELETE in this API returns 204, and a 200 with no body happens too.
+  // `res.json()` rejects on both with a parse error that reads as if the
+  // response were malformed rather than absent.
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
+  return (await res.json()) as T;
 }

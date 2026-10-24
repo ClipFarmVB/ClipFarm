@@ -20,7 +20,8 @@ export interface PlayableClip {
   game_id: string;
   /** The clip's own file, as the api serves it today. */
   clip_url: string;
-  thumbnail_url?: string;
+  /** `str | None` on the api's `ClipOut`, so null and not just absent. */
+  thumbnail_url?: string | null;
   /**
    * Offsets **within the game**, which is how the api reports them. The file
    * source discards them; a proxy source is built on them.

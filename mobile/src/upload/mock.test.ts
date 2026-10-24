@@ -90,7 +90,7 @@ describe("createMockBackgroundUpload", () => {
   it("fails at the configured point instead of completing", async () => {
     const upload = createMockBackgroundUpload({
       fractionPerTick: 0.25,
-      failAt: { fraction: 0.5, failure: { reason: "expired-url", message: "410" } },
+      failAt: { fraction: 0.5, failure: { reason: "network", message: "offline" } },
     });
 
     await upload.startUpload(request());
@@ -98,9 +98,11 @@ describe("createMockBackgroundUpload", () => {
 
     const task = await upload.getUpload("game-1");
     expect(task?.state).toBe("failed");
-    expect(task?.failure?.reason).toBe("expired-url");
-    // The parts that did land are reported, not the previous tick's set: this
-    // is what the retry resumes from, and dropping one re-sends it.
+    expect(task?.failure?.reason).toBe("network");
+    // The parts that did land are reported, not the previous tick's set: a
+    // retry on the same ticket resumes from these, and dropping one re-sends
+    // it. (`network`, not `expired-url`: rule 4 in ./types makes an expired
+    // ticket terminal, so there is nothing to resume from in that case.)
     expect(task?.completedParts.map((p) => p.partNumber)).toEqual([1]);
   });
 

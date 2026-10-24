@@ -3,7 +3,7 @@
 // first, so the polyfill is installed before the client is constructed.
 import "react-native-url-polyfill/auto";
 
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createClient, processLock, type SupabaseClient } from "@supabase/supabase-js";
 import * as SecureStore from "expo-secure-store";
 
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from "./env";
@@ -24,12 +24,21 @@ let client: SupabaseClient | null = null;
  *   Any OAuth flow arrives as a deep link and is handled explicitly (CF-326).
  * - `autoRefreshToken` is on, but the timer only counts while the app is
  *   foregrounded — see `startAutoRefreshOnForeground` in ./session.
+ *
+ * `lock: processLock` is the fourth, and it is what the chunked storage
+ * underneath depends on. Browsers get `navigatorLock` by default and React
+ * Native gets nothing, so without it a refresh firing while a sign-out writes
+ * can interleave two `setItem`/`removeItem` calls on the same key — and the
+ * generation scheme in ./secureStore is only atomic per call, not against a
+ * concurrent one. `processLock` serialises them within the process, which is
+ * all one app needs and what Supabase's own Expo setup uses.
  */
 export function getSupabaseClient(): SupabaseClient {
   if (client) return client;
   client = createClient(SUPABASE_URL(), SUPABASE_ANON_KEY(), {
     auth: {
       storage: createChunkedSecureStorage(SecureStore),
+      lock: processLock,
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: false,

@@ -38,7 +38,7 @@ disappears at the next prebuild — put the change in a plugin instead. See
 | Profile | What it produces |
 |---|---|
 | `development` | A development client — iOS simulator build, Android APK. What you want while working on native code. |
-| `preview` | An internal-distribution build for testers. |
+| `preview` | An internal-distribution build for testers: a device build, not a simulator one. iOS therefore needs the testers' devices registered (`eas device:create`), which CF-345 does alongside the Apple account. |
 | `production` | A store build: Android app bundle, versioned remotely. |
 
 ```bash
@@ -49,6 +49,29 @@ The first `eas build` needs an Expo account and `npx eas init`, which writes
 `extra.eas.projectId` into `app.json`. That is left out of this commit on
 purpose — the id belongs to whichever Expo organisation owns the app, and
 CF-345/CF-346 set it up along with the store accounts.
+
+### A build needs its environment set on EAS, not in `.env`
+
+**`mobile/.env` never reaches an EAS build.** EAS uploads the project using
+`.gitignore`, and `.env` is ignored — so a build that relies on it comes out
+installable and then dies on first launch, when the session provider asks for
+`EXPO_PUBLIC_SUPABASE_URL` and gets nothing. Register the three variables with
+EAS once per environment instead:
+
+```bash
+npx eas env:create --environment preview --name EXPO_PUBLIC_API_URL             --value https://api.example
+npx eas env:create --environment preview --name EXPO_PUBLIC_SUPABASE_URL        --value https://xxxx.supabase.co
+npx eas env:create --environment preview --name EXPO_PUBLIC_SUPABASE_ANON_KEY   --value ey...
+```
+
+Repeat for `production`. They are not secrets — `EXPO_PUBLIC_*` is inlined into
+the bundle either way — which is also why no values are committed here: they
+identify one organisation's projects, not the code's.
+
+`EXPO_PUBLIC_API_URL` is required outside development for the same reason: the
+old default, `http://localhost:8000`, is unreachable from a phone and blocked
+as cleartext on Android, so a missing variable looked like a network fault
+instead of a missing variable.
 
 CI does not run EAS builds. They are slow and metered, and nothing about a
 scaffold PR needs one.
