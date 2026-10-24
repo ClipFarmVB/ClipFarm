@@ -1,7 +1,10 @@
 import { cn } from "@/lib/utils";
 import { type ActionType } from "@/lib/api";
 
-const ACTION_STYLES: Record<string, { bg: string; text: string; dot: string }> = {
+// Exported for Badge.tokens.test.ts, which checks these class names still
+// resolve to the same colours as `actionColors` in @clipfarm/tokens — the map
+// mobile's Badge renders from. Nothing else should read it.
+export const ACTION_STYLES: Record<string, { bg: string; text: string; dot: string }> = {
   spike:        { bg: "bg-red-500/8",     text: "text-red-400",     dot: "bg-red-400" },
   serve:        { bg: "bg-sky-500/8",     text: "text-sky-400",     dot: "bg-sky-400" },
   dig:          { bg: "bg-emerald-500/8", text: "text-emerald-400", dot: "bg-emerald-400" },

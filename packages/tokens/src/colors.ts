@@ -44,9 +44,24 @@ export interface ThemeColors {
   /** Translucent `brand` wash behind an active row or a selected chip. */
   brandDim: string;
   /**
-   * Text/icon colour on top of a `brand` fill. Near-black in both themes: the
-   * blue and the amber are both light enough to need dark text, and web has
-   * been hardcoding this exact value in Button since the first pass.
+   * Text/icon colour on top of a `brand` fill. Near-black in both themes,
+   * because that is the value web has been hardcoding in Button since the
+   * first pass — this token names the shipped colour rather than choosing one.
+   *
+   * It is **not** the better label colour in light mode, and the comment that
+   * used to live here claimed otherwise. Measured against the hexes in this
+   * file (WCAG 2.x, `#0c0c0e` vs `#ffffff` as the label):
+   *
+   * - light `brand` `#2563eb` — 3.78:1 dark, 5.17:1 white
+   * - light `brandLight` `#3b82f6` (press/hover) — 5.31:1 dark, 3.68:1 white
+   * - dark `brand` `#f59e0b` — 9.10:1 dark
+   *
+   * So the resting state of every light-mode primary button is below AA's
+   * 4.5:1 for the 12–14px labels that use it, and white would be better there
+   * by a wide margin. Dark mode is comfortable. Switching light mode to
+   * `#ffffff` is a visible appearance change on the login and upload CTAs and
+   * wants its own card; until then, treat the light-mode value as inherited
+   * from web and known to be sub-AA.
    */
   onBrand: string;
 
@@ -161,9 +176,17 @@ export const danger: ToneColors & { borderHover: string; bgHover: string } = {
 /**
  * Per-action badge colours, matching `ACTION_STYLES` in web's Badge.
  *
+ * Web does not import this — it renders badges with Tailwind class names, and
+ * `themeCss()` emits only `ThemeColors`, so these values never reach
+ * `tokens.generated.css` and the stylesheet snapshot cannot see them. The
+ * match is held by `web/src/components/ui/Badge.tokens.test.ts`, which resolves
+ * every class in `ACTION_STYLES` against `palette` and compares it to the entry
+ * here. Move one side without the other and that test fails.
+ *
  * Keyed by the `ActionType` values the API returns. `unknown` is the fallback
  * for anything unrecognised, so a new action type degrades to a grey chip
- * rather than an unstyled one.
+ * rather than an unstyled one. The hues are tuned for the dark theme; see the
+ * measured table in `packages/ui-mobile/src/Badge.tsx`.
  */
 export const actionColors: Record<string, ToneColors & { dot: string }> = {
   spike: { bg: "rgba(251, 44, 54, 0.08)", fg: palette.red400, border: "transparent", dot: palette.red400 },

@@ -75,6 +75,12 @@ See `packages/ui-mobile`, which is built entirely out of them.
 `text-[#0c0c0e]` hardcoded for the label on a brand fill; it is the same value
 in both themes, and mobile needs it too. Same colour, now named.
 
+Naming it is not a blessing of it: on the light-mode `brand` blue the
+near-black label measures 3.78:1, below AA's 4.5:1 for the label sizes that use
+it, where white would give 5.17:1. Dark mode is fine (9.10:1 on the amber). The
+value is what web ships today; changing light mode is a visible appearance
+change and wants its own card. See the doc comment on `ThemeColors.onBrand`.
+
 ## Adding a token
 
 1. Add it to the right module with a doc comment saying what it is *for*, not

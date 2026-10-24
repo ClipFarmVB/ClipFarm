@@ -21,12 +21,30 @@ import { Text } from "./Text";
 import { useTheme } from "./theme";
 
 /**
- * The mobile counterpart to web's Button, variant for variant.
+ * The mobile counterpart to web's Button: same four variants, same three
+ * sizes, same colours per state.
  *
  * Web expresses hover; a phone has no hover, so every state web reaches on
  * hover this reaches on press instead. The two therefore land on the same
  * colours for the same meaning without either surface pretending to have the
  * other's input model.
+ *
+ * Geometry is *not* variant-for-variant, deliberately. `borderWidth` lives in
+ * `styles.base`, so all four variants draw a 1px border — transparent on
+ * `primary` and `ghost`, which web leaves borderless. Mobile therefore matches
+ * web's bordered variants (`secondary`, `danger`) exactly and is 2px taller
+ * and 2px wider on the other two:
+ *
+ * | size | web `primary` / `ghost` | web `secondary` / `danger` | here, all four |
+ * |------|-------------------------|----------------------------|----------------|
+ * | sm   | 28px                    | 30px                       | 30px           |
+ * | md   | 36px                    | 38px                       | 38px           |
+ * | lg   | 40px                    | 42px                       | 42px           |
+ *
+ * One hit-target size across variants is worth more on a touch surface than
+ * the last 2px of parity with web, and the larger number is the kinder one.
+ * Said here so nobody re-derives the heights from web's classes and reads the
+ * difference as a bug.
  */
 
 export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
@@ -92,7 +110,9 @@ function variantColors(
  * `text` names a step on the shared type scale rather than a raw size, because
  * the label's height is fontSize *and* lineHeight and they have to move
  * together. Overriding only the size leaves the Text variant's line box behind
- * — a 12px label in a 20px box, and an `sm` button 4px taller than web's.
+ * — a 12px label in a 20px box, which made `sm` 34px against web's 28px.
+ * Fixing that got it to 30px; the remaining 2px is the base border, which the
+ * docstring above accounts for.
  */
 const SIZES: Record<
   ButtonSize,

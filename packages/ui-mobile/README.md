@@ -1,8 +1,12 @@
 # @clipfarm/ui-mobile
 
 Five React Native primitives — `Button`, `Card`, `Badge`, `Screen`, `Text` —
-built on `@clipfarm/tokens`. Every colour, size and distance comes from the
-token package, so a screen never writes a hex value or a magic number.
+built on `@clipfarm/tokens`. Every colour comes from the token package, and so
+does every distance a screen can see, so **a screen** never writes a hex value
+or a magic number. The primitives themselves still write a few raw numbers
+inside their own padding (`Button`'s `paddingVertical: 6`, `Badge`'s
+`paddingVertical: 2`), where the value is web's and falls between steps on the
+shared scale.
 
 ## Where this lives, and why
 
@@ -70,7 +74,8 @@ needs a raw value.
 | `disabled` | boolean | `false` |
 | `fullWidth` | boolean | `false` |
 
-Plus everything `Pressable` takes except `style` and `children`.
+Plus `style` (a `ViewStyle`, merged last so it wins) and everything `Pressable`
+takes except `children`.
 
 **States**
 
@@ -130,13 +135,25 @@ header accessibility role so VoiceOver can jump card to card.
 
 **States** — none; it is not interactive. Colours come from `actionColors` in
 the token package (`spike`, `serve`, `dig`, `set`, `block`, `unknown`,
-`removed`, `not_an_action`), so a badge matches web exactly. An unrecognised
-action degrades to the grey `unknown` chip rather than rendering unstyled.
-`not_an_action` displays as "removed", as it does on web.
+`removed`, `not_an_action`). An unrecognised action degrades to the grey
+`unknown` chip rather than rendering unstyled. `not_an_action` displays as
+"removed", as it does on web.
 
-Unlike the other primitives, badge colours do **not** change with the theme —
-the action hues are picked to work on either background, which is how web has
-always drawn them.
+The values match web, but not by sharing the map: web's Badge keeps its own
+`ACTION_STYLES` table of Tailwind class names and imports nothing from the
+token package. `web/src/components/ui/Badge.tokens.test.ts` is what holds the
+two together — it resolves each Tailwind class against `palette` and compares
+it to the token entry, so moving one side alone fails web's test run. (The
+stylesheet snapshot cannot cover this: `themeCss()` emits only `ThemeColors`.)
+
+Unlike the other primitives, badge colours do **not** change with the theme,
+which matches web. That is **not** because the hues work on either background.
+They are dark-theme hues: against the 10px label, five of the eight chips pass
+AA on `#0c0c0e` and fail on `#ffffff`, and `removed` / `not_an_action` fail on
+both. Web lands on dark unless the user flips `cf-theme` by hand, so it rarely
+shows there; `ThemeProvider` here follows `useColorScheme()`, so a phone in
+light mode meets it on first launch. Measured table and the two options
+(theme `actionColors`, or keep one palette) are in `src/Badge.tsx`.
 
 ## Screen
 
@@ -153,13 +170,25 @@ always drawn them.
 | `scrollProps` | `ScrollViewProps` | — |
 
 **States** — none. It sets the theme background, the status-bar glyph colour
-(inverted from the theme name), the safe-area inset and the standard 16px
-gutter. `scroll` adds a `ScrollView` with bottom padding so the last row clears
-a tab bar; leave it off when the screen brings its own `FlatList`.
+(inverted from the theme name), the safe-area inset on iOS and the standard
+16px gutter. `scroll` adds a `ScrollView` with bottom padding so the last row
+clears a tab bar; leave it off when the screen brings its own `FlatList`.
 
-Uses React Native's `SafeAreaView`, which is iOS-only. When `mobile/` picks up
-`react-native-safe-area-context` (expo-router depends on it), swap it for
-`useSafeAreaInsets` here — no screen has to change.
+Two caveats on the platform APIs it uses:
+
+- `safeArea` defaults to `true` but **only does anything on iOS**. React
+  Native's `SafeAreaView` is `Platform.select({ ios: native, default: View })`,
+  so on Android it pads nothing and content draws under the status bar and the
+  navigation bar.
+- That import is **deprecated** in `react-native@0.81.4` and logs a warning on
+  first mount. Both points are fixed by one swap: when `mobile/` picks up
+  `react-native-safe-area-context` (expo-router depends on it), move to
+  `useSafeAreaInsets` here — no screen has to change, but it needs a
+  `SafeAreaProvider` at the app root and it does change Android's layout.
+
+`StatusBar backgroundColor` is Android-only and, per RN's own types, has no
+effect on Android 15+. The glyph style (`barStyle`) is the part that works
+everywhere.
 
 ## Text
 
