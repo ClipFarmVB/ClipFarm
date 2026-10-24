@@ -1,13 +1,13 @@
 """The overnight brief's own token figures, recomputed rather than trusted.
 
 `docs/overnight/README.md` carries a table of per-file token costs, five lap
-costs, and one figure derived from two of those laps, and a run reads them to
-plan what it can afford. They are pure functions of the brief's own file sizes,
-so nothing but discipline kept them true — and discipline lost: they had
-drifted by a third before CF-275 re-took them, on a page that asked the next
-reader to re-measure and had no way to tell whether they had. CF-371 (#464) is
-that class of failure, a figure that was right when written and rotted
-untouched.
+costs, one figure derived from two of those laps, and the cost of the one
+`BRIEFS.md` section a step-3 lap adds, and a run reads them to plan what it can
+afford. They are pure functions of the brief's own file sizes, so nothing but
+discipline kept them true — and discipline lost: they had drifted by a third
+before CF-275 re-took them, on a page that asked the next reader to re-measure
+and had no way to tell whether they had. CF-371 (#464) is that class of
+failure, a figure that was right when written and rotted untouched.
 
 **What this does not reach.** CF-370 lists six wrong published figures and this
 check would have caught **none** of them, because none was on this surface. They
@@ -103,6 +103,11 @@ _LAPS_SENTENCE = re.compile(r"\s+".join(_LAPS_WORDS.split(" ")))
 # columns then reported the claim as missing from the page entirely.
 _CHEAPER_WORDS = r"only selects is ~(?P<k>\d+)k cheaper than one"
 _CHEAPER = re.compile(r"\s+".join(_CHEAPER_WORDS.split(" ")))
+# The one-section figure a step-3 lap adds when it dispatches an implementer.
+# Joined on `\\s+` like the two above, and to a tenth like a table row.
+_SECTION_WORDS = r"adds one section of `BRIEFS.md` to that, about (?P<k>[0-9]+(?:\.[0-9]+)?)k\."
+_SECTION = re.compile(r"\s+".join(_SECTION_WORDS.split(" ")))
+_SECTION_HEADING = "### A mutation result licenses a claim about that mutation, not about its class"
 
 
 def _size(name):
@@ -246,4 +251,35 @@ def test_the_spawning_lap_costs_what_the_two_lap_figures_differ_by():
         f"than a spawning one. Recomputed from the files, those two laps are "
         f"{select}k and {spawn}k, a difference of {spawn - select}k — which is what the "
         f"page should say. Re-measure (CF-371, #464)."
+    )
+
+
+def test_the_implementer_section_states_the_size_it_actually_is():
+    """The one section of `BRIEFS.md` a step-3 lap reads to dispatch an implementer.
+
+    Measured from its heading to the next heading of the same or a higher level,
+    or to the end of the file — the section, not "the rest of the file", so a
+    section appended after it does not inflate the figure.
+    """
+    stated = _SECTION.search(README.read_text(encoding="utf-8"))
+    assert stated, (
+        "docs/overnight/README.md no longer states what the implementer-dispatch "
+        "section of BRIEFS.md costs. Update _SECTION here if the wording changed "
+        "deliberately (CF-371, #464)."
+    )
+    lines = (BRIEF / "BRIEFS.md").read_bytes().replace(b"\r\n", b"\n").decode("utf-8").split("\n")
+    heads = [i for i, line in enumerate(lines) if line == _SECTION_HEADING]
+    assert len(heads) == 1, (
+        f"BRIEFS.md has {len(heads)} headings reading {_SECTION_HEADING!r}; "
+        "README.md's figure for it cannot be checked. Update _SECTION_HEADING "
+        "if the heading was renamed (CF-371, #464)."
+    )
+    start = heads[0]
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"#{1,3} ", lines[i])), len(lines))
+    size = len("\n".join(lines[start:end]).encode("utf-8")) + (1 if end < len(lines) else 0)
+    actual = _tenths(size)
+    assert Decimal(stated.group("k")) == actual, (
+        f"docs/overnight/README.md says the implementer-dispatch section of "
+        f"BRIEFS.md is about {stated.group('k')}k; it is {actual}k ({size} bytes). "
+        "Re-measure it (CF-371, #464)."
     )

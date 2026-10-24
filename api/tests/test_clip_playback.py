@@ -31,7 +31,7 @@ pytest.importorskip("fastapi")
 from app.models.clip import ActionType  # noqa: E402
 from app.models.visibility import Visibility  # noqa: E402
 from app.routers import clips as clips_router  # noqa: E402
-from app.routers.clips import PLAYBACK_URL_TTL_SECONDS, refresh_clip_playback  # noqa: E402
+from app.routers.clips import CLIP_URL_TTL_SECONDS, refresh_clip_playback  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 OWNER = uuid.uuid4()
@@ -101,6 +101,62 @@ def presigned(monkeypatch):
     return calls
 
 
+class TestRewriteUrls:
+    """The helper itself, because it is what every clip URL goes through.
+
+    `CLIP_URL_TTL_SECONDS` governs `/clips/{id}/playback` *and*, via
+    `_clip_out`, the clip list and the three PATCH echoes. Round 1 found that
+    nothing pinned the latter: dropping the constant to 300 failed exactly one
+    test — the playback one — while every URL in the list response silently
+    became a five-minute link, in a response that carries no expiry field for a
+    client to notice it with.
+
+    So the TTL is pinned here, on the shared helper, rather than once per route.
+    One assertion covers every caller, including the ones added later.
+    """
+
+    def test_it_presigns_with_the_clip_ttl_and_reports_it(self, presigned, monkeypatch):
+        """Patched off the default so the assertion cannot pass by coincidence."""
+        monkeypatch.setattr(clips_router, "CLIP_URL_TTL_SECONDS", 300)
+        clip = _Clip(_Game())
+
+        urls = clips_router._rewrite_urls(clip)
+
+        assert {c["expires_in"] for c in presigned} == {300}
+        assert urls.expires_in == 300
+
+    def test_the_signed_branch_reports_the_ttl_it_signed_with(self, presigned):
+        clip = _Clip(_Game())
+        urls = clips_router._rewrite_urls(clip)
+
+        assert urls.expires_in == clips_router.CLIP_URL_TTL_SECONDS
+        assert {c["expires_in"] for c in presigned} == {
+            clips_router.CLIP_URL_TTL_SECONDS
+        }
+
+    def test_the_unsigned_branch_has_no_expiry_at_all(self, monkeypatch):
+        """The invariant ClipPlaybackOut rests on, asserted where it is decided.
+
+        A stored public URL carries no signature, so there is nothing to
+        expire. Answering this question in one place is the point: when the
+        route recomputed `r2_configured()` for the expiry, "non-null expiry
+        means signed" held only because two functions happened to agree.
+        """
+        monkeypatch.setattr(clips_router.storage, "r2_configured", lambda: False)
+        clip = _Clip(_Game())
+
+        urls = clips_router._rewrite_urls(clip)
+
+        assert urls.clip_url == "https://r2.example/clips/abc.mp4"
+        assert urls.expires_in is None
+
+    def test_a_clip_without_a_thumbnail_signs_once(self, presigned):
+        urls = clips_router._rewrite_urls(_Clip(_Game(), thumbnail_url=None))
+
+        assert urls.thumbnail_url is None
+        assert len(presigned) == 1
+
+
 class TestPlaybackEndpoint:
     def test_owner_gets_a_fresh_url(self, presigned):
         game = _Game()
@@ -123,7 +179,7 @@ class TestPlaybackEndpoint:
         default would pass even if the two sides had been wired to different
         numbers — the exact drift the constant exists to prevent.
         """
-        monkeypatch.setattr(clips_router, "PLAYBACK_URL_TTL_SECONDS", 900)
+        monkeypatch.setattr(clips_router, "CLIP_URL_TTL_SECONDS", 900)
         game = _Game()
         clip = _Clip(game)
         out = _playback(_FakeSession(game, clip), clip.id, OWNER)
@@ -132,11 +188,26 @@ class TestPlaybackEndpoint:
         assert out.expires_in == 900
 
     def test_the_default_ttl_is_an_hour(self, presigned):
+        """The one test that pins the *value*, so read it before changing it.
+
+        `CLIP_URL_TTL_SECONDS` is not this endpoint's alone. Through
+        `_rewrite_urls` it sets the lifetime of every clip URL the router
+        mints — the clip list and the three PATCH echoes included — and those
+        responses carry no expiry field, so a client has no way to notice the
+        number moving. Lowering it to tighten this route shortens links the web
+        app is already holding, and it is this assertion, not a code comment,
+        that stands between a one-character edit and that outcome.
+
+        So if you are here because this failed: the question is not whether
+        playback wants a different TTL, it is whether *every clip URL* does. If
+        only playback does, the change is a second constant and a parameter on
+        `_rewrite_urls`, not a new number here.
+        """
         game = _Game()
         clip = _Clip(game)
         out = _playback(_FakeSession(game, clip), clip.id, OWNER)
 
-        assert PLAYBACK_URL_TTL_SECONDS == 3600
+        assert CLIP_URL_TTL_SECONDS == 3600
         assert out.expires_in == 3600
         assert {c["expires_in"] for c in presigned} == {3600}
 
@@ -157,9 +228,9 @@ class TestPlaybackEndpoint:
         assert out.expires_at.tzinfo is not None
         assert out.expires_at.utcoffset() == timedelta(0)
         assert (
-            before + timedelta(seconds=PLAYBACK_URL_TTL_SECONDS)
+            before + timedelta(seconds=CLIP_URL_TTL_SECONDS)
             <= out.expires_at
-            <= after + timedelta(seconds=PLAYBACK_URL_TTL_SECONDS)
+            <= after + timedelta(seconds=CLIP_URL_TTL_SECONDS)
         )
 
     def test_a_clip_without_a_thumbnail_is_not_an_error(self, presigned):
@@ -220,13 +291,24 @@ class TestPlaybackEndpoint:
 
         assert out.clip_url == "https://r2.example/signed?k=1"
 
-    def test_it_reuses_the_shared_read_gate(self):
+    def test_it_reuses_the_shared_read_gate_and_adds_no_second_one(self):
         """Structural, because the failure mode is a *second* implementation.
 
         The card's second acceptance criterion is that authorization goes
         through `_get_viewable_clip` rather than growing a parallel check here.
         A behavioural test cannot tell a correct copy from a reuse — it can only
         catch a copy once it has already drifted, which is after the leak.
+
+        Asserting the gate is *present* and ownership is *absent* catches a gate
+        that was swapped out, which is the cheap half. The shape this route is
+        actually at risk of is a check added **beside** the reuse — the clip
+        fetched again, `can_view_clip` consulted a second time with different
+        arguments, a visibility comparison inlined "just for this response".
+        Each of those leaves `_get_viewable_clip` in place, so a present/absent
+        pair waves them through while the docstring claims otherwise. So the
+        gate must also be the *only* access decision in the function: the whole
+        allowlist below is what makes that assertion, rather than a denylist of
+        the spellings someone thought of.
         """
         import ast
         import inspect
@@ -238,13 +320,48 @@ class TestPlaybackEndpoint:
             if isinstance(node, ast.AsyncFunctionDef)
             and node.name == "refresh_clip_playback"
         )
-        called = {
-            node.func.id
-            for node in ast.walk(fn)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        }
+        # Bare names and attribute calls both, so `access.can_view_clip(...)`
+        # cannot slip past a check that only looks at `ast.Name`.
+        called: set[str] = set()
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name):
+                called.add(node.func.id)
+            elif isinstance(node.func, ast.Attribute):
+                called.add(node.func.attr)
+
         assert "_get_viewable_clip" in called
         assert "_get_owned_clip" not in called, (
             "a refresh is a read — gating it on ownership would make a public "
             "clip unrefreshable by the anonymous viewer /share hands it to"
+        )
+
+        # Everything this route is allowed to call. A new name here is a
+        # deliberate edit; an access check arriving by accident is not in it.
+        # `inspect.getsource` carries the decorators, so the route's own
+        # dependencies are walked too. That is deliberate and not noise: a
+        # `Depends(get_current_user_id)` appearing up there would change who may
+        # call this route, which is exactly the kind of edit this test should
+        # make someone justify.
+        permitted = {
+            "_get_viewable_clip",
+            "_rewrite_urls",
+            "ClipPlaybackOut",
+            "now",
+            "timedelta",
+            "get",  # db.get, via the gate's own helper in some spellings
+            # The CF-186 throttle. A budget, not an access decision — it fails
+            # open by design (services/ratelimit.py), so it decides nothing
+            # about who may read this clip.
+            "Depends",
+            "rate_limit",
+        }
+        unexpected = called - permitted
+        assert not unexpected, (
+            f"refresh_clip_playback calls {sorted(unexpected)}, which this test "
+            "has not been told about. If one of those is a second access "
+            "decision, that is the defect the card forbids — authorization "
+            "belongs in _get_viewable_clip alone. If it is innocuous, add it to "
+            "`permitted` so the next addition is the one that fails."
         )

@@ -11,6 +11,7 @@ what is easy to get wrong. It does **not** re-describe the project — for that:
 | Evaluating detection / dead-time changes | `ml/eval/README.md` |
 | Deploying | `DEPLOY_RENDER.md` (production, Render), `DEPLOY.md` (backend on a VPS), `DOCKER.md` |
 | Running an unattended `/loop` overnight | `docs/overnight/README.md` — it indexes the brief, which is split by phase |
+| What license this is under, and why AGPL rather than MIT | `docs/licensing.md` — it also holds the dependency audit |
 
 Read the relevant section before changing detection or pipeline code. The
 `Key Concepts` section in the README exists specifically to prevent well-meaning
@@ -53,7 +54,12 @@ tsc and vitest for `web/`.
 
   Nothing does this for you, so a clone that skips it commits with no local
   checks at all and only finds out on the PR. `git config core.hooksPath`
-  printing nothing means you are in that state.
+  printing nothing means you are in that state. Printing a path is not proof
+  the hook runs, though: it must also be executable, or git skips it and the
+  commit goes through. The only tell is git's "hook was ignored because it's
+  not set as executable" hint, silenced if `advice.ignoredHook` is off. A copy
+  not made by git may need `chmod +x .hooks/pre-commit`. Git for Windows runs
+  hooks by their `#!` line and ignores the bit.
 - **The hook picks its own Python; don't assume `python` works.** It probes
   `python`, then `py`, then `python3`, and uses the first that both runs *and*
   has the tooling in it — on Windows the Microsoft Store ships `python`/`python3`
@@ -134,6 +140,10 @@ issues titled `CF-## · Description`. `Status` is a single-select
 (Todo → In Progress → Code Review → Staging → Done) and `Sprint` is an *iteration*
 field — iteration fields are not touched by GitHub's built-in project workflows,
 so sprint assignment is always manual.
+
+Work blocked on a person's decision is parked with the `needs-decision` label, citing what it
+waits on (a pending decision id, a PR, a question). Removing the label is how a person
+releases it.
 
 ## Automated review
 

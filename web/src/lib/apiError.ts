@@ -1,4 +1,24 @@
 /**
+ * A failed API response, carrying its HTTP status (CF-423).
+ *
+ * `message` is exactly what `apiErrorMessage` produces — the server's own
+ * sentence, or the bounded fallback — so every caller that only reads the
+ * message sees what it saw before. `status` is what lets a caller tell "this
+ * does not exist" (404) from "the server broke" (5xx) without matching on the
+ * server's prose, which changes whenever someone rewords a `detail`.
+ *
+ * Lives here rather than in `api.ts` so a component can `instanceof` it
+ * without importing the client (and so a test that mocks `@/lib/api` still has
+ * the real class). `api.ts` re-exports it.
+ */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/**
  * Turn an API error response into something worth showing a user.
  *
  * FastAPI wraps every rejection as `{"detail": "..."}`. The upload limits

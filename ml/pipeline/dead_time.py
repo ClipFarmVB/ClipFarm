@@ -18,6 +18,10 @@ Two keep-window builders ship here (`condense_mode` picks between them):
   "guarded"  active_windows_guarded (CF-187) — the default: contacts are
              speed-gated, sustained motion opens windows of its own, pads are
              tight, and a track too sparse to judge abstains instead of guessing
+
+A third mode, "learned", lives in `ml/pipeline/dead_time_ml.py`
+(`active_windows_learned`, CF-394) and falls back to "guarded" whenever it
+declines or fails.
 """
 from __future__ import annotations
 
@@ -114,10 +118,13 @@ MAX_SAMPLE_SPACING = 1.5   # a longer gap is a tracking dropout, not motion
 # window over-ceiling if nothing else in it is slow, ~30% if half the window
 # already sits below the bar (pinned in test_dead_time.py). Against test1's 4.0%
 # global rate that is comfortable, and the fixture re-score at 42b582f bears out
-# the direction without the collapse: coverage did go — every fixture now
-# removes more dead time than under the clamp and cuts more live play with it,
-# which is exactly what losing keep-windows looks like — but none fell off the
-# way the ~80% case would. See ml/eval/README.md for the measured table.
+# the direction without the collapse: coverage did go — every fixture removed
+# more dead time than under the clamp and cut more live play with it, which is
+# exactly what losing keep-windows looks like — but none fell off the way the
+# ~80% case would. That re-score had the CF-174 contact scale off in effect (its
+# figures reproduce only at ball_contact_scale_enabled=false), so it compares
+# NaN with the clamp at that one position. ml/eval/README.md holds the current
+# table at every switch position (CF-391); it does not re-run the clamp.
 MAX_PLAUSIBLE_SPEED_FH = 1.11
 
 CONTACT_SPEED_HALF_WINDOW = 1.5   # median speed is taken over ±this around a contact

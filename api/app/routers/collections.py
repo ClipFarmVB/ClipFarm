@@ -15,7 +15,7 @@ from app.models.collection import Collection, CollectionClip
 from app.models.player import Player
 from app.schemas.clip import ClipOut
 from app.schemas.collection import CollectionOut, CollectionCreate, CollectionRename, CollectionAddClip
-from app.services import access, storage
+from app.services import access, sample_game, storage
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +157,7 @@ async def list_collection_clips(collection_id: uuid.UUID, user_id: UserId, db: D
         d.player_name = player_map.get(c.player_id) if c.player_id else None  # type: ignore[arg-type]
         d.source_available = game is not None and game.raw_video_url is not None
         d.effective_visibility = access.widest_allowed(c, game)
+        d.is_sample = game is not None and sample_game.is_sample(game)
         if storage.r2_configured():
             d.clip_url = storage.presign_from_stored_url(c.clip_url, expires_in=3600)  # type: ignore[assignment]
             d.thumbnail_url = (

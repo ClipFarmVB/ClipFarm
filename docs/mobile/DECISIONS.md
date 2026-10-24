@@ -143,21 +143,27 @@ the dev path serves a stored public URL that has no signature and so no expiry.
 Reporting an hour there would have a client refresh a URL that never dies, and,
 worse, teach it that a non-null expiry means "signed".
 
-**Consequences.** `PLAYBACK_URL_TTL_SECONDS` is now a named constant in
+**Consequences.** `CLIP_URL_TTL_SECONDS` is now a named constant in
 `api/app/routers/clips.py` and the expiry is part of the api's public contract:
-changing it is a client-visible change, not a one-line tweak. It is deliberately
-scoped to *playback* — `/share` and `/download` keep their own `3600` literals,
-because /share's expiry is the open question CF-320 (#370) exists to settle and
-folding all three into one constant would let that decision change playback by
-accident. Same number today, different reasons for it. Reversing any of this is
-cheap: the endpoint is additive, nothing else reads it yet, and the fields are
-new rather than changed.
+changing it is a client-visible change, not a one-line tweak. It governs every
+clip URL `_rewrite_urls` mints — this endpoint, the clip list, and the PATCH
+echoes — which is why it is named for clips and not for playback. `/share` and
+`/download` are the real exceptions and keep their own `3600` literals, because
+/share's expiry is the open question CF-320 (#370) exists to settle and folding
+those two in would let that decision change playback by accident. Same number
+today, different reasons for it. Reversing any of this is cheap: the endpoint is
+additive and the fields are new rather than changed.
 
-It also adds a sixth unauthenticated read where `services/access.py` enumerates
-five, and CF-186 (#481) is in flight adding rate limits to those five without
-knowing about this one. Filed as CF-379 (#494) rather than guessed at, because
-the choice there — throttle it like `/share`, or put it behind auth as #481 does
-for `/download` — is a real one and belongs with that card.
+It also adds an anonymous read to the surface `services/access.py` enumerates,
+and that surface is throttled: CF-186 (#481) landed in September, so the route
+carries `POLICIES["share"]` — the same budget, because it presigns the same
+object for the same viewer. `api/tests/test_ratelimit_wiring.py` walks the
+routers and fails on any anonymous GET missing from its table, so this could
+not have merged unthrottled by accident; the table's row is what pins it. The
+remaining half of CF-379 (#494) is the question that is genuinely open — whether
+a route handing over a playable URL should require auth at all, as `/download`
+now does — and that is a change to the anonymous-read convention rather than
+this card's to make.
 
 What this does **not** do is make the URL durable. `posts._serialize` already
 records the real ceiling: a presigned URL is bearer authority for its lifetime,

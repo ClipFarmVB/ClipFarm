@@ -150,6 +150,65 @@ def _condense_verdict_is_confident(windows, *, ball_ok: bool) -> bool:
     return ball_ok and not isinstance(windows, Abstained)
 
 
+def _learned_condense_windows(
+    contacts: list[dict],
+    positions: list[dict],
+    duration: float,
+    frame_height: int,
+    settings: "Settings",
+) -> list[tuple[float, float]] | None:
+    """
+    The learned builder's windows (CF-394), or None when the chain should go on
+    to "guarded".
+
+    None for *any* exception, the import included: the learned builder lives in
+    its own module, so unlike the guarded → rules link an import failure here
+    still leaves "guarded" standing. A refusal the builder makes by design —
+    unvalidated weights, a track too sparse to judge — is logged at INFO, since
+    with today's committed weights it is every game; anything else is a broken
+    builder and logs at WARNING. Either way exactly one line, and neither log
+    call can break condense.
+
+    The weights path is read off the module at call time rather than bound at
+    import, so a test (or an operator's patched build) pointing WEIGHTS_PATH at
+    another file is what actually loads.
+    """
+    try:
+        from ml.pipeline import dead_time_ml
+    except Exception as import_err:
+        _log_learned_fallback(import_err, declined=False)
+        return None
+    try:
+        weights = dead_time_ml.load_weights(dead_time_ml.WEIGHTS_PATH, warn_unvalidated=False)
+        return dead_time_ml.active_windows_learned(
+            contacts, positions, duration, frame_height,
+            weights=weights,
+            min_track_rate=settings.condense_guard_min_track_rate,
+        )
+    except dead_time_ml.LearnedBuilderDeclined as declined_err:
+        _log_learned_fallback(declined_err, declined=True)
+    except Exception as learned_err:
+        _log_learned_fallback(learned_err, declined=False)
+    return None
+
+
+def _log_learned_fallback(err: Exception, *, declined: bool) -> None:
+    """One line for the learned → guarded fallback. Never raises: reporting
+    must never break processing (CLAUDE.md → Code posture)."""
+    try:
+        if declined:
+            logger.info(
+                "Condense mode 'learned' declined (%s) — using guarded windows", err,
+            )
+        else:
+            logger.warning(
+                "Condense mode 'learned' failed (%s: %s) — using guarded windows",
+                type(err).__name__, err,
+            )
+    except Exception:
+        pass
+
+
 def _build_condense_windows(
     mode: str,
     contacts: list[dict],
@@ -163,7 +222,14 @@ def _build_condense_windows(
     actually produced them (for logging — the requested mode may not be the one
     that ran).
 
-    Anything that goes wrong *inside* a non-default builder — feature drift, a
+    The builders chain, one link per mode: "learned" → "guarded" → "rules".
+    "learned" (CF-394) falls back to "guarded" on any exception — its import,
+    unvalidated weights, a contract mismatch, a sparse track — logging one line
+    (`_learned_condense_windows`); from "guarded" the chain continues exactly
+    as below. `built_by` names the builder that produced the windows, never the
+    one that was asked for.
+
+    Anything that goes wrong *inside* the guarded builder — feature drift, a
     missing frame height, an unknown mode name — falls back to "rules" with a
     warning, because a degraded condense beats a failed run. The scope is worth
     being precise about: both builders come from the same module import below, so
@@ -178,6 +244,8 @@ def _build_condense_windows(
     anchored a window, which is a real verdict of "no play here". Reading that as
     a failure would rebuild the windows from the very contacts the gate rejected
     — the junk the mode exists to remove. Only an exception means "fall back".
+    The same holds one link up: `[]` from the learned builder is its verdict
+    and ships as one, rather than being handed on to "guarded".
     """
     from ml.pipeline.dead_time import (
         active_windows_from_contacts,
@@ -187,7 +255,15 @@ def _build_condense_windows(
 
     windows: list[tuple[float, float]] | None = None
     built_by = mode
-    if mode != "rules":
+    if mode == "learned":
+        windows = _learned_condense_windows(
+            contacts, positions, duration, frame_height, settings,
+        )
+        if windows is None:
+            # The next link. Reassigned rather than branched on, so an unknown
+            # mode below still means only what was passed in.
+            mode = built_by = "guarded"
+    if windows is None and mode != "rules":
         try:
             if mode == "guarded":
                 windows = active_windows_guarded(
@@ -326,9 +402,32 @@ def _track_ball_modal(local_video: Path, r2_key: str, sample_every: int, on_prog
 
 
 def _ball_cache_key(video_md5: str, sample_every: int) -> str:
-    from ml.pipeline.ball import MODEL_ID
+    """Where a video's tracked positions live in R2.
+
+    Four components, and the fourth is the one that is easy to leave out.
+    The video, the model and the sample rate all obviously change the track;
+    so does every other tracking input, and none of those were represented —
+    so a change to how tracking works left every cached entry looking valid,
+    and the next run of an already-processed video replayed a track built by
+    the old code. On a tuning change that is a wrong answer nobody can see; on
+    a re-measure it is worse, because the numbers come back unchanged and read
+    as "no effect".
+
+    `ball.TRACKING_CACHE_VERSION` is that fourth component. Its own comment
+    says what counts as a reason to bump it, and a test fails if one of those
+    reasons moves and the version does not.
+
+    **Bumping it orphans every existing entry rather than overwriting one.**
+    That is the intent — the old tracks stay readable for a comparison — but it
+    means the next run of every video re-tracks, which on Modal is real money
+    and real minutes. Bump it because the track changed, not to be safe.
+    """
+    from ml.pipeline.ball import MODEL_ID, TRACKING_CACHE_VERSION
     model_slug = MODEL_ID.replace("/", "-")
-    return f"ball-cache/{video_md5}-{model_slug}-s{sample_every}.json"
+    return (
+        f"ball-cache/{video_md5}-{model_slug}"
+        f"-s{sample_every}-v{TRACKING_CACHE_VERSION}.json"
+    )
 
 
 def _track_ball_cached(
@@ -342,10 +441,15 @@ def _track_ball_cached(
     """
     Ball tracking with an R2-backed cache keyed by video content hash.
 
-    Tracking a 22-min video takes ~30 min on CPU; the positions only depend
-    on the video bytes, the model version, and the sample rate — so re-runs
-    of the same footage (re-uploads, pipeline tuning) load cached positions
-    in seconds instead. Cache failures fall through to normal tracking.
+    Tracking a 22-min video takes ~30 min on CPU; the positions depend on the
+    video bytes, the model version, the sample rate and TRACKING_CACHE_VERSION
+    — so re-runs of the same footage (re-uploads, pipeline tuning) load cached
+    positions in seconds instead. Cache failures fall through to normal
+    tracking.
+
+    The version is the component that is NOT derived from the inputs: the other
+    three cannot see a change to how tracking works, so it is bumped by hand
+    when one lands (CF-231). Nothing reclaims the orphaned generation.
 
     When Modal is configured, tracking itself runs on a GPU worker (CF-11)
     instead of locally on CPU; Modal failures fall back to local CPU tracking
@@ -1129,10 +1233,20 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             ball_positions: list[dict] = []
             if _os.environ.get("ROBOFLOW_API_KEY"):
                 try:
-                    from ml.pipeline.ball import find_contacts, contacts_to_rallies
+                    from ml.pipeline.ball import (
+                        contacts_to_rallies, filter_static_sites, find_contacts,
+                    )
                     tracker   = _track_ball_cached(
                         local_video, tmp, sample_every=sample_every, r2_key=r2_key,
                         video_md5=video_md5, on_progress=progress.update,
+                    )
+                    # CF-229: after the cache, before anything reads the track,
+                    # so contacts and the condense stage's positions below see
+                    # the same one. Off returns `tracker` itself. See
+                    # settings.ball_static_site_filter_enabled.
+                    tracker   = filter_static_sites(
+                        tracker, _frame_h,
+                        enabled=_cfg.ball_static_site_filter_enabled,
                     )
                     contacts  = find_contacts(
                         tracker, frame_height=_frame_h,
@@ -1142,6 +1256,10 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                         # consumer — two consumers on different scales would be
                         # worse than either scale. See settings.ball_contact_scale_enabled.
                         normalize=_cfg.ball_contact_scale_enabled,
+                        # CF-376: soften that scale. Contacts only — the bridge
+                        # in _build_condense_windows keeps the full scale. See
+                        # settings.ball_contact_soft_scale_enabled.
+                        soft_scale=_cfg.ball_contact_soft_scale_enabled,
                     )
                     detections = contacts_to_rallies(contacts, video_duration, _frame_h)
                     ball_ok   = True
@@ -1149,7 +1267,8 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
                     # Kept for the condense stage's motion bridge (CF-46).
                     if condense:
                         ball_positions = [
-                            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+                            {"time": p.time, "x": p.x, "y": p.y, "confidence": p.confidence}
+                            for p in tracker.positions
                         ]
                     logger.info("Ball pipeline: %d contacts → %d rallies", len(contacts), len(detections))
                 except Exception as err:

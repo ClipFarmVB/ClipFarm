@@ -1,14 +1,16 @@
-"""CF-238: `update_player` must not let a team_id be cleared to null.
+"""CF-238 / CF-253: `update_player` must not let a team_id be cleared to null.
 
-Clearing it is a one-way door. `_get_owned_player` rejects `team_id IS NULL` —
+Clearing it is a one-way door. `get_owned_player` rejects `team_id IS NULL` —
 there is no team whose owner it could check — and `update_player` calls it
 first, so an orphaned player 404s on every subsequent PATCH and the team cannot
 be put back through the API. `list_players` filters to owned teams, so the row
 also vanishes from the UI. Nothing surfaces it and nothing fixes it.
 
-`create_player` has always refused a null `team_id` with a 400. The defect was
-the two routes disagreeing about the same value, so the parity itself is pinned
-here (`test_the_two_routes_agree_...`) rather than only the new branch.
+CF-238 refused it with a runtime 400 in the handler. CF-253 gave PATCH its own
+body, `PlayerUpdate`, which refuses an explicit null `team_id` at validation,
+a 422 before the handler runs, so the 400 branch and its tests are gone.
+`create_player` keeps its 400 for a missing team; the two routes now reject the
+same value with different codes on purpose (`test_both_routes_refuse_...`).
 
 Bodies are built with `model_validate` on a dict, not with kwargs: `updates`
 comes from `model_dump(exclude_unset=True)`, so whether a field counts as "set"
@@ -16,8 +18,11 @@ is the thing under test, and only the dict path matches what FastAPI does to a
 real request body.
 
 Follows the house pattern from test_profile_routes.py — stand-in session, direct
-calls into the router, no TestClient and no database. Nothing here imports
-`_get_owned_player` by name; PR #239 renames it, and these tests should not care.
+calls into the router, no database. Nothing here imports `get_owned_player` by
+name; these tests go through the route handlers. The exception is the
+`TestClient` section at the end: a direct call is handed an already-parsed
+body, so only a request through FastAPI's routing proves the PATCH route is
+declared with `PlayerUpdate` at all.
 """
 import asyncio
 import uuid
@@ -37,7 +42,7 @@ from fastapi import HTTPException  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
 from app.routers import players  # noqa: E402
-from app.schemas.player import PlayerCreate  # noqa: E402
+from app.schemas.player import PlayerCreate, PlayerOut, PlayerUpdate  # noqa: E402
 
 OWNER = uuid.uuid4()
 STRANGER = uuid.uuid4()
@@ -88,48 +93,57 @@ class _FakeSession:
 
 
 def _patch(session, player_id, body):
-    parsed = PlayerCreate.model_validate(body)
+    parsed = PlayerUpdate.model_validate(body)
     return asyncio.run(players.update_player(player_id, parsed, session, OWNER))
 
 
-# ── the new guard ───────────────────────────────────────────────────────────
+# ── the null team_id is refused at the boundary ─────────────────────────────
 
-def test_clearing_team_id_is_rejected():
-    """The bug: the old guard's `is not None` let an explicit null straight
-    through to the setattr loop."""
-    team = _Team()
-    player = _Player(team_id=team.id)
-    session = _FakeSession(player, [team])
-
-    with pytest.raises(HTTPException) as exc:
-        _patch(session, player.id, {"name": "Rosa", "team_id": None})
-
-    assert exc.value.status_code == 400
-    assert "cannot be cleared" in exc.value.detail
+def test_clearing_team_id_is_a_validation_error():
+    """A null team_id never reaches the handler, so it cannot orphan the row."""
+    with pytest.raises(ValidationError) as exc:
+        PlayerUpdate.model_validate({"team_id": None})
+    assert [e["loc"] for e in exc.value.errors()] == [("team_id",)]
 
 
-def test_a_rejected_clear_leaves_the_row_untouched():
-    """The raise must precede the setattr loop, not follow it — a 400 that has
-    already written the other fields is a worse outcome than the original bug."""
+@pytest.mark.parametrize("name", [None, ""])
+def test_a_null_or_empty_name_is_a_validation_error(name):
+    """`name` is NOT NULL; omitting it is fine, blanking it is not."""
+    with pytest.raises(ValidationError) as exc:
+        PlayerUpdate.model_validate({"name": name})
+    assert [e["loc"] for e in exc.value.errors()] == [("name",)]
+
+
+@pytest.mark.parametrize("name", ["", "x" * 256])
+def test_create_refuses_an_empty_or_oversized_name(name):
+    """POST's name mirrors String(255): blank and over-long are 422s, not a
+    database error at commit."""
+    with pytest.raises(ValidationError) as exc:
+        PlayerCreate.model_validate({"name": name})
+    assert [e["loc"] for e in exc.value.errors()] == [("name",)]
+
+
+# ── partial updates ─────────────────────────────────────────────────────────
+
+def test_a_jersey_only_patch_changes_only_the_jersey():
+    """CF-253's headline: PlayerCreate required `name`, so this body was a 422."""
     team = _Team()
     player = _Player(team_id=team.id, name="Rosa", jersey_number=7)
     session = _FakeSession(player, [team])
 
-    with pytest.raises(HTTPException):
-        _patch(session, player.id, {"name": "Renamed", "jersey_number": 99, "team_id": None})
+    _patch(session, player.id, {"jersey_number": 9})
 
-    assert player.team_id == team.id
+    assert player.jersey_number == 9
     assert player.name == "Rosa"
-    assert player.jersey_number == 7
-    assert not session.committed
+    assert player.team_id == team.id
+    assert player.photo_url is None
+    assert session.committed
 
-
-# ── what the guard must NOT break ───────────────────────────────────────────
 
 def test_omitting_team_id_still_patches():
-    """`exclude_unset` is the whole reason this can be a 400 and not a schema
-    change. If the guard ever reads a *default* rather than a *set* value, this
-    turns into `team_id is required on every patch`."""
+    """`exclude_unset` is what keeps an omitted team_id from being read as its
+    default. If the router ever reads a *default* rather than a *set* value,
+    this turns into `team_id is required on every patch`."""
     team = _Team()
     player = _Player(team_id=team.id, name="Rosa")
     session = _FakeSession(player, [team])
@@ -142,19 +156,18 @@ def test_omitting_team_id_still_patches():
 
 
 def test_clearing_a_different_nullable_field_is_still_allowed():
-    """The guard rejects a null `team_id`, not a null.
+    """The schema rejects a null `team_id`, not a null.
 
     `jersey_number` is nullable on both the schema and the column, and clearing
     it is legitimate — a player whose number is not known yet. Without this,
-    nothing in the suite distinguishes the branch above from an over-broad
-    `if any(v is None for v in updates.values())`, which is a plausible reading
-    of "reject the null" and would break a valid request.
+    nothing in the suite distinguishes the validator from an over-broad one
+    that refuses every null, which would break a valid request.
     """
     team = _Team()
     player = _Player(team_id=team.id, jersey_number=7)
     session = _FakeSession(player, [team])
 
-    _patch(session, player.id, {"name": "Rosa", "jersey_number": None})
+    _patch(session, player.id, {"jersey_number": None})
 
     assert player.jersey_number is None
     assert player.team_id == team.id
@@ -166,15 +179,14 @@ def test_a_valid_team_id_alongside_another_null_still_patches():
 
     The test above never enters the `"team_id" in updates` branch, so it says
     nothing about an over-broad condition written *inside* it. This request —
-    a valid reassignment that also clears the jersey number — is the one that
-    distinguishes `updates["team_id"] is None` from `any(v is None ...)`, and
-    it is an ordinary request a client would make.
+    a valid reassignment that also clears the jersey number — is an ordinary
+    one a client would make.
     """
     old_team, new_team = _Team(), _Team()
     player = _Player(team_id=old_team.id, jersey_number=7)
     session = _FakeSession(player, [old_team, new_team])
 
-    _patch(session, player.id, {"name": "Rosa", "team_id": str(new_team.id), "jersey_number": None})
+    _patch(session, player.id, {"team_id": str(new_team.id), "jersey_number": None})
 
     assert player.team_id == new_team.id
     assert player.jersey_number is None
@@ -186,21 +198,21 @@ def test_reassigning_to_another_owned_team_still_works():
     player = _Player(team_id=old.id)
     session = _FakeSession(player, [old, new])
 
-    _patch(session, player.id, {"name": "Rosa", "team_id": str(new.id)})
+    _patch(session, player.id, {"team_id": str(new.id)})
 
     assert player.team_id == new.id
     assert session.committed
 
 
 def test_reassigning_to_someone_elses_team_is_still_a_404():
-    """The pre-existing tenant guard. The nesting moved it a level deeper, so
-    it is pinned here against a refactor that drops it."""
+    """The pre-existing tenant guard, pinned against a refactor that drops it
+    along with the retired null branch beside it."""
     own, foreign = _Team(), _Team(owner_id=STRANGER)
     player = _Player(team_id=own.id)
     session = _FakeSession(player, [own, foreign])
 
     with pytest.raises(HTTPException) as exc:
-        _patch(session, player.id, {"name": "Rosa", "team_id": str(foreign.id)})
+        _patch(session, player.id, {"team_id": str(foreign.id)})
 
     assert exc.value.status_code == 404
     assert player.team_id == own.id
@@ -210,24 +222,80 @@ def test_reassigning_to_someone_elses_team_is_still_a_404():
 def test_an_already_orphaned_player_is_unreachable():
     """Why this is a one-way door and not a cosmetic inconsistency.
 
-    An orphan 404s before the new guard is even reached, which is also why the
-    guard cannot repair existing rows — only stop new ones.
+    An orphan 404s in `get_owned_player` before any body field is looked at,
+    which is also why refusing the null cannot repair existing rows — only stop
+    new ones.
     """
     player = _Player(team_id=None)
     session = _FakeSession(player, [])
 
     with pytest.raises(HTTPException) as exc:
-        _patch(session, player.id, {"name": "Rosa", "team_id": str(uuid.uuid4())})
+        _patch(session, player.id, {"team_id": str(uuid.uuid4())})
 
     assert exc.value.status_code == 404
 
 
-# ── the parity that was actually broken ─────────────────────────────────────
+# ── photo_url ───────────────────────────────────────────────────────────────
 
-def test_the_two_routes_agree_that_a_null_team_id_is_invalid():
-    """create_player refused it and update_player accepted it. Asserting the
-    agreement, rather than each route alone, is what fails if a later change
-    relaxes one of them."""
+def test_patch_sets_photo_url_and_player_out_returns_it():
+    team = _Team()
+    player = _Player(team_id=team.id)
+    session = _FakeSession(player, [team])
+
+    _patch(session, player.id, {"photo_url": "https://cdn.example/rosa.jpg"})
+
+    assert PlayerOut.model_validate(player).photo_url == "https://cdn.example/rosa.jpg"
+    assert player.name == "Rosa"
+    assert session.committed
+
+
+def test_patch_with_a_null_photo_url_clears_it():
+    """Unlike name/team_id, a null here means clear (see PlayerUpdate)."""
+    team = _Team()
+    player = _Player(team_id=team.id)
+    player.photo_url = "https://cdn.example/rosa.jpg"
+    session = _FakeSession(player, [team])
+
+    _patch(session, player.id, {"photo_url": None})
+
+    assert player.photo_url is None
+    assert session.committed
+
+
+@pytest.mark.parametrize("schema", [PlayerCreate, PlayerUpdate])
+def test_an_empty_photo_url_is_a_validation_error(schema):
+    """"" would be stored as-is and render as <img src="">; null is the way to
+    leave a photo unset or clear it, so "" is refused on both routes."""
+    with pytest.raises(ValidationError) as exc:
+        schema.model_validate({"name": "Rosa", "photo_url": ""})
+    assert [e["loc"] for e in exc.value.errors()] == [("photo_url",)]
+
+
+def test_create_player_sets_photo_url():
+    team = _Team()
+    session = _FakeSession(None, [team])
+    body = PlayerCreate.model_validate(
+        {"name": "Rosa", "team_id": str(team.id), "photo_url": "https://cdn.example/rosa.jpg"}
+    )
+
+    asyncio.run(players.create_player(body, session, OWNER))
+
+    [created] = session.added
+    assert created.photo_url == "https://cdn.example/rosa.jpg"
+    assert created.team_id == team.id
+
+
+# ── the two routes refuse the same value, with different codes ──────────────
+
+def test_both_routes_refuse_a_null_team_id():
+    """create_player refused it and update_player once accepted it (CF-238).
+    They still agree that it is invalid, but now differ on purpose in *how*:
+    POST answers 400 from the handler, because `PlayerCreate.team_id` stays
+    nullable in the type; PATCH answers 422 from validation, because
+    `PlayerUpdate` refuses it before the handler runs (CF-253). Asserting both
+    halves together is what fails if a later change relaxes either schema; that
+    the PATCH route is still *declared* with `PlayerUpdate` is pinned over HTTP
+    below."""
     session = _FakeSession(None, [])
     body = PlayerCreate.model_validate({"name": "Rosa", "team_id": None})
     with pytest.raises(HTTPException) as created:
@@ -235,24 +303,64 @@ def test_the_two_routes_agree_that_a_null_team_id_is_invalid():
     assert created.value.status_code == 400
     assert not session.added
 
+    with pytest.raises(ValidationError) as updated:
+        PlayerUpdate.model_validate({"name": "Rosa", "team_id": None})
+    assert [e["loc"] for e in updated.value.errors()] == [("team_id",)]
+
+
+# ── the PATCH route is wired to PlayerUpdate ────────────────────────────────
+
+def _client(session):
+    """The players router behind a real ASGI stack, with the database and the
+    caller overridden. Everything above parses bodies itself, so it would pass
+    even if `update_player` were annotated with `PlayerCreate` again; these go
+    through FastAPI's own body parsing instead."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.auth import get_current_user_id
+    from app.database import get_db
+
+    app = FastAPI()
+    app.include_router(players.router)
+
+    async def _db():
+        yield session
+
+    app.dependency_overrides[get_db] = _db
+    app.dependency_overrides[get_current_user_id] = lambda: OWNER
+    return TestClient(app)
+
+
+def test_patch_route_refuses_a_null_team_id_over_http():
+    """CF-238's orphan path, closed at the route rather than in the schema
+    alone. With the body typed `PlayerCreate`, this request validates and the
+    handler (which no longer has a runtime guard) writes the null."""
     team = _Team()
-    player = _Player(team_id=team.id)
+    player = _Player(team_id=team.id, name="Rosa")
     session = _FakeSession(player, [team])
-    with pytest.raises(HTTPException) as updated:
-        _patch(session, player.id, {"name": "Rosa", "team_id": None})
-    assert updated.value.status_code == created.value.status_code
+
+    with _client(session) as client:
+        resp = client.patch(f"/players/{player.id}", json={"name": "x", "team_id": None})
+
+    assert resp.status_code == 422
+    assert [e["loc"] for e in resp.json()["detail"]] == [["body", "team_id"]]
+    assert player.team_id == team.id
+    assert player.name == "Rosa"
+    assert not session.committed
 
 
-def test_a_body_without_a_name_never_reaches_the_handler():
-    """Recording a real limit rather than asserting a fiction.
+def test_patch_route_accepts_a_jersey_only_body_over_http():
+    """The other half: `PlayerCreate` requires `name`, so this was a 422."""
+    team = _Team()
+    player = _Player(team_id=team.id, name="Rosa", jersey_number=7)
+    session = _FakeSession(player, [team])
 
-    CF-238's acceptance says `PATCH {"team_id": null}` returns 400. It does not
-    — `PlayerCreate.name` has no default, so that body is a 422 in validation
-    and the handler never runs. The reproducing body needs `name` too, which is
-    what every test above sends. Pinned because the day `PlayerCreate` gains a
-    default (or update_player takes a PlayerUpdate), the bare body starts
-    reaching the handler and the guard above becomes the only thing stopping it.
-    """
-    with pytest.raises(ValidationError) as exc:
-        PlayerCreate.model_validate({"team_id": None})
-    assert [e["type"] for e in exc.value.errors()] == ["missing"]
+    with _client(session) as client:
+        resp = client.patch(f"/players/{player.id}", json={"jersey_number": 9})
+
+    assert resp.status_code == 200
+    assert resp.json()["jersey_number"] == 9
+    assert player.name == "Rosa"
+    assert player.team_id == team.id
+    assert session.committed

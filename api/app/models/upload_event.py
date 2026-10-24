@@ -15,16 +15,21 @@ class UploadEvent(Base):
     delete, so counting live game rows made the quota refundable — upload to
     the cap, delete, repeat, with the GPU spend already incurred.
 
-    So this table is append-only. `game_id` is `ON DELETE SET NULL` rather than
-    cascade: deleting a game detaches its accounting row, it never removes it.
-    Nothing in the app deletes from here except the reservation-release path,
-    which only fires when the upload itself failed and no work was queued.
+    So rows are never removed by the app: inserted once, and only their
+    `charged_seconds` updated afterwards (settlement, below). `game_id` is
+    `ON DELETE SET NULL` rather than cascade: deleting a game detaches its
+    accounting row, it never removes it. Nothing in the app deletes from this
+    table — `app.services.quota` deliberately has no release or refund helper —
+    so a row leaves only through the `owner_id` `ON DELETE CASCADE`, when the
+    user row itself is deleted.
 
     `charged_seconds` is what this upload costs the minute quota. It starts as
-    the client's declared duration — or, when the client declares nothing, the
-    full per-video maximum, so omitting the field is the *expensive* choice
-    rather than a free pass. The worker settles it to the probed truth once it
-    has the file.
+    the client's declared duration, unless that is missing or shorter than the
+    file's verified size physically allows; then it is an estimate derived from
+    the size, capped at the per-video maximum (or the maximum outright when
+    there is no size to go on). So omitting the field is not a free pass — see
+    `quota.charge_for`. The worker settles it to the probed truth once it has
+    the file.
     """
 
     __tablename__ = "upload_events"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { apiErrorMessage } from "./apiError";
+import { ApiError, apiErrorMessage } from "./apiError";
 
 const FALLBACK = "Upload failed: 500";
 
@@ -65,15 +65,26 @@ describe("apiErrorMessage", () => {
     //
     // PostComposerModal did exactly that, so the 409 naming the clip's
     // visibility ceiling — the backstop for a clip that goes private between
-    // page load and click, the one case the greyed-out tiers cannot cover —
-    // always reached the user as "Could not post". The 422 branch above made it
-    // worse rather than better: a first decode that now succeeds is a second
-    // decode that now fails.
+    // page load and click, the one case the composer's own ceiling check
+    // cannot cover — always reached the user as "Could not post". The 422
+    // branch above made it worse rather than better: a first decode that now
+    // succeeds is a second decode that now fails.
     //
     // The rule: decode once, at the throw site. A catch block uses e.message.
     const body = JSON.stringify({ detail: "This clip is private." });
     const once = apiErrorMessage(body, FALLBACK);
     expect(once).toBe("This clip is private.");
     expect(apiErrorMessage(once, "Could not post")).toBe("Could not post");
+  });
+});
+
+describe("ApiError (CF-423)", () => {
+  it("is an Error that keeps its message and carries the status", () => {
+    const err = new ApiError("Profile not found", 404);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.message).toBe("Profile not found");
+    expect(err.status).toBe(404);
+    expect(err.name).toBe("ApiError");
   });
 });
