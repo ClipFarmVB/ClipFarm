@@ -12,7 +12,7 @@
 >
 > **CF-317 cannot be closed on this document.** It closes when a human runs
 > [the on-device protocol](#6-the-on-device-test-protocol) below and fills in
-> [the results table](#7-results-to-be-filled-in-on-device). CF-323 and CF-324
+> [the results table](#7-results--to-be-filled-in-on-device). CF-323 and CF-324
 > should read this first, but must treat every platform behaviour here as
 > *documented* rather than *observed*.
 
@@ -50,7 +50,7 @@ POST /games/uploads              → UploadTicket  (all presigned URLs, up front
 POST /games/{id}/uploads/complete  {parts: [{part_number, etag}, …]}
 ```
 
-Three settings shape everything (`api/app/config.py`) `[repo]`:
+Five settings shape everything (`api/app/config.py`) `[repo]`:
 
 | setting | value | what it does |
 |---|---|---|
@@ -129,8 +129,8 @@ larger parts.
 These are ours. They are not documented anywhere else, and CF-323/CF-324 will
 hit all three.
 
-**(a) There is no way to re-issue a ticket.** The only routes are
-`GET /games/upload-config`, `POST /games/uploads`, and
+**(a) There is no way to re-issue a ticket.** The only *upload* routes on
+`/games` are `GET /games/upload-config`, `POST /games/uploads`, and
 `POST /games/{id}/uploads/complete` `[repo]`. There is no endpoint that
 re-presigns parts for an *existing* `upload_id`, and `storage.py` has no
 `list_parts` wrapper `[repo]`. So today, if the 12 h TTL lapses mid-transfer,
@@ -148,11 +148,15 @@ multi-hour stall is normal — see §3 on iOS discretionary scheduling.
 user's rows in status `uploading` older than `abandoned_upload_hours` (24 h),
 aborts the multipart upload and deletes the object `[repo]`. It does not and
 cannot know that one of those rows is a live background transfer. A filmer who
-starts game 1 in the evening, whose phone defers it overnight, and who starts
-game 2 the next evening, destroys game 1.
+starts game 1 in the evening, whose phone defers it overnight, and who presigns
+game 2 any time more than a day later, destroys game 1. (The predicate is
+`Game.created_at < now - 24 h`, strictly — an evening-to-evening gap of almost
+exactly 24 h may not fire, but the following night will.)
 
 In practice (a) fires first — 12 h < 24 h — so today this is the second
-tripwire, not the first. Both need a Lane A ticket.
+tripwire, not the first. Both need a Lane A ticket — and note that (b) needs the
+sweep's predicate changed, not just the re-presign endpoint (a) needs. §8 scopes
+both.
 
 **(c) ETags must be durable, not in memory.** `complete_upload` requires the
 full `[{part_number, etag}, …]` list and rejects a multipart completion without
@@ -287,12 +291,22 @@ HEVC and slow-motion assets that may need transcoding on export) is
 
 All `[docs]` unless marked otherwise.
 
-### 4.1 The good news: no temp files needed
+### 4.1 The good news: probably no temp files needed
 
-Android has no equivalent of the separate-process constraint. The upload runs in
-*your* process, kept alive by a foreground service, so the request body can read
-straight from the picker's `content://` URI at an offset. **Android needs zero
-scratch disk for slicing** — a structural asymmetry with iOS that §5 quantifies.
+Android has no equivalent of the separate-process constraint: the upload runs in
+*your* process, kept alive by a foreground service, so the body does not have to
+be a file the system can read while your process is dead. That much is `[docs]`,
+and it is the structural asymmetry with iOS that §5 quantifies.
+
+**Whether that means zero scratch disk is `[TO MEASURE]`, not `[docs]`.** It
+holds only if the body can read straight from the picker's `content://` URI at
+an offset, which requires the provider behind that URI to hand back a *seekable*
+descriptor. A local file does. A cloud-backed provider reached through SAF —
+Google Photos, Drive — may return a `ParcelFileDescriptor` over a pipe instead,
+and a pipe cannot be seeked, so the app has to stage a copy and the scratch cost
+comes back. Nothing in the Android documentation cited guarantees seekability
+for every provider. **Test A-8 is the pass criterion for this claim**, and its
+`peak scratch` cell in §7 is where the observation goes.
 
 ### 4.2 Doze
 
@@ -369,7 +383,7 @@ order.
 
 ### 5.1 Temp-file disk cost
 
-**iOS only** (§4.1: Android needs none). Two designs, and naming the choice is
+**iOS for certain; Android only if A-8 fails** (§4.1). Two designs, and naming the choice is
 half the point of this section.
 
 **Rolling window** — keep at most `C` slice files on disk, delete each on
@@ -422,12 +436,16 @@ exist.
    failures are most likely.
 3. Everything it costs is measured and small: 256 URLs and 136 KiB of ticket for
    a cap-sized file, and 65 ms of signing `[measured-here]`.
-4. It is a config change, not a protocol change `[repo]` — `plan_part_count` and
-   `planParts` both read it, and 32 MiB is far above R2's 5 MiB minimum.
+4. Changing it needs no change to the wire shape `[repo]` — `plan_part_count`
+   and `planParts` both read it, and 32 MiB is far above R2's 5 MiB minimum.
+   **But see §5.4: the setting is one global, so this is not a change that can
+   be made for iOS alone.**
 5. It does not touch `single_put_max_bytes`, which stays 100 MiB. Files between
-   32 and 100 MiB keep going as a single PUT — and note that on iOS *that*
-   single PUT still needs a 100 MiB temp file, so 100 MiB remains the floor on
-   iOS scratch space no matter what part size we choose.
+   32 and 100 MiB keep going as a single PUT — and on iOS *that* single PUT
+   still needs a 100 MiB temp file, so 100 MiB is the floor on iOS scratch for
+   *those* files no matter what part size we pick. It is not a floor on the
+   multi-GB case: a file above `single_put_max_bytes` never takes the single-PUT
+   path, so reason 1's 96 MiB stands for every upload this epic is about.
 
 **This recommendation flips if the device test shows any of:**
 
@@ -448,8 +466,47 @@ exist.
   one FGS budget, which is a `max_upload_bytes` conversation, not a part-size
   one.
 
-Do **not** change the setting until the device test is run. The current 100 MiB
-is correct for the browser, where none of the above applies.
+Do **not** change the setting until the device test is run.
+
+### 5.4 There is only one part size, and the browser shares it
+
+Everything in §5.3 is written as though iOS could be given 32 MiB while the
+browser kept 100 MiB. **It cannot, today.** `upload_part_size_bytes` is a single
+server-side global and no client can ask for a different one `[repo]`:
+
+- `api/app/routers/games.py:315` — `part_size = settings.upload_part_size_bytes`,
+  unconditionally, for every caller of `POST /games/uploads`.
+- `api/app/schemas/game.py` — `UploadCreate` carries `title`, `filename`,
+  `content_type`, `size_bytes`, `duration_seconds` and `condense`. There is no
+  part-size field, so a client cannot express a preference.
+- `api/app/routers/games.py:260` — `GET /games/upload-config` serves that same
+  one value to everybody.
+
+So dropping the setting to 32 MiB moves the browser too: 2 GiB goes from 21
+parts to 64, and a cap-sized 8 GiB from 82 to 256 (§1.2). That may well be
+fine — the ticket and signing costs in §1.2 are small for the browser as well,
+and `web/src/lib/upload.ts` slices at the ticket's value rather than at the
+config's — but it is a consequence, not a non-event, and §5.3 should not be read
+as leaving the browser alone.
+
+Two consequences worth stating plainly:
+
+- **Per-platform part sizes are a protocol change, not a config change.** Giving
+  iOS 32 MiB while the browser keeps 100 MiB means a new field on `UploadCreate`
+  and on `UploadConfig`, plus a branch at `games.py:315` — exactly the thing
+  §5.3's reason 4 claims is avoided.
+- **So the real question the device test unblocks is not "what should
+  `upload_part_size_bytes` be" but "do we need a per-client part size at all".**
+  If I-6 shows 32 MiB is no worse for the browser's own case, one global at
+  32 MiB is the cheapest answer. If the platforms genuinely want different
+  sizes, the Lane A work in §8 should carry the extra field.
+
+Also in step, and a second site to update if the global moves:
+`web/src/components/UploadZone.tsx` hardcodes `single_put_max_bytes` and
+`part_size_bytes` at 100 MiB in `FALLBACK_CONFIG`, under a comment that asks you
+to "Keep these in step with api/app/config.py" `[repo]`. Nothing breaks if it
+drifts — `upload.ts` slices at the ticket's `part_size`, not at the config's —
+but the repo explicitly asks for it to match.
 
 ---
 
@@ -480,6 +537,13 @@ each — these results are only meaningful against a stated build.
 
 Run against a **real staging api and a real R2 bucket**. A local mock will not
 reproduce the 12 h TTL, the 403-on-expiry, or R2's part handling.
+
+**You need write access to that staging api's configuration, not just to the
+app.** Test I-6 compares two part sizes and the part size is chosen by the
+server (§5.4), so running it means setting `upload_part_size_bytes` on staging
+and restarting it between the two runs. Arrange that before the trip rather than
+discovering it on the second night. While a non-default part size is set,
+anything else uploading against that staging api gets it too.
 
 ### 6.3 Instrumentation
 
@@ -523,7 +587,7 @@ backgrounded. The ticket is explicit about this and it is the whole point.
 | **I-3** | system termination | I-1, then terminate the app process mid-transfer (Xcode stop, or memory pressure) | transfer continues; app relaunches; upload completes |
 | **I-4** | network interruption | I-2, toggle airplane mode for 60 s at ~40 % | the affected part retries; no duplicate or corrupt part in `list-parts` |
 | **I-5** | rolling refill | instrument how many slice files exist at once, and how many process launches occur | peak scratch ≈ `C × part_size` (§5.1) and the upload still finishes. **If this fails, §8 applies** |
-| **I-6** | part-size comparison | same F-2GB, same link, at 100 MiB and at 32 MiB | record wall-clock, relaunch count and peak scratch for both. This is the input to §5.3's flip conditions |
+| **I-6** | part-size comparison | same F-2GB, same link, at 100 MiB and at 32 MiB. **The part size is server-chosen (§5.4), so this needs an operator: set `upload_part_size_bytes` on the staging api, restart it, run, then set it to the other value, restart, run again.** The app cannot request a part size | record wall-clock, relaunch count and peak scratch for both. This is the input to §5.3's flip conditions |
 | **I-7** | 8 GB overnight | F-8GB, locked, cellular, on battery, left overnight | completes **inside the 12 h TTL**. A 403 here is §1.3(a) confirmed in the wild |
 | **I-8** | camera-roll source | upload straight from a Photos asset, not a file already in the sandbox | peak disk does not include a whole second copy of the source (§3.4) |
 | **I-9** | force-quit | swipe the app away from the multitasking switcher mid-transfer | expected to **cancel** — this is documented behaviour `[docs]`, so the test records what the user sees, and CF-330 needs a story for it |
@@ -539,8 +603,8 @@ backgrounded. The ticket is explicit about this and it is the whole point.
 | **A-5** | **OEM battery manager** | **D4 at factory settings, nothing whitelisted.** Then repeat with the app set to unrestricted battery | record both. A pass only in the second configuration is a **user-guidance requirement**, and CF-324's acceptance criterion says so |
 | **A-6** | process death | A-2, then `adb shell am kill <pkg>` | WorkManager reschedules; upload resumes from the parts already in R2, without re-sending them |
 | **A-7** | `dataSync` 6 h cap | D3, F-8GB on a deliberately throttled link so the FGS runs >6 h | `onTimeout()` fires; the service stops cleanly with no `RemoteServiceException`; the upload resumes on next foreground |
-| **A-8** | scoped storage | upload straight from the system picker's `content://` URI | ranged reads work with no full copy to app storage |
-| **A-9** | 8 GB overnight | F-8GB, locked, on battery, overnight | completes inside the 12 h TTL |
+| **A-8** | scoped storage | upload straight from the system picker's `content://` URI, **once from local device storage and once from a cloud-backed provider** (Google Photos or Drive) | ranged reads work with no full copy to app storage. **Record peak scratch for each provider.** A provider that hands back a non-seekable descriptor forces a staged copy, which makes §4.1's zero-scratch claim false and extends §5.1's disk cost to Android |
+| **A-9** | 8 GB overnight | D3, F-8GB, locked, on battery, overnight, **on a link fast enough that 8 GiB transfers in under 6 h of service time** (≥ ~3.5 Mbps sustained) and with the app never foregrounded | completes inside the 12 h TTL. **If the transfer needs more than 6 h of `dataSync` time it cannot pass this criterion** — the Android 15 cap (§4.3) stops the service first, and that result is A-7, not a TTL failure. Record the link rate and the service time so the two are distinguishable |
 
 ### 6.6 Pass / fail thresholds
 
@@ -557,6 +621,12 @@ Apply per test, and record the verdict verbatim.
 
 Any 403 from R2 during a run is `[repo]` §1.3(a) and should be called out
 separately from a platform failure — it is our bug, not Apple's or Google's.
+
+Likewise, an Android run that stops because the 6 h `dataSync` budget ran out
+(§4.3) is **not** a FAIL against the 12 h TTL and must not be recorded as one.
+It is the documented cap doing what §4.3 says, and the result belongs with A-7.
+Record the service time alongside the wall-clock so the two causes stay
+distinguishable.
 
 ---
 
@@ -586,12 +656,16 @@ came from.
 | A-5 unrestricted | | `[TO MEASURE]` | | | n/a | |
 | A-6 | | `[TO MEASURE]` | | | n/a | |
 | A-7 | | `[TO MEASURE]` | | | n/a | |
-| A-8 | | `[TO MEASURE]` | | | n/a | |
+| A-8 | | `[TO MEASURE]` | | | `[TO MEASURE]` | provider behind the URI (local / Photos / Drive); seekable descriptor y/n: |
 | A-9 | | `[TO MEASURE]` | | | n/a | |
 
 **Final part-size decision:** `[TO MEASURE]` — §5.3 recommends 32 MiB
 provisionally; record what I-6 actually showed and which flip condition, if any,
 fired.
+
+**Does the browser keep 100 MiB?** `[TO MEASURE]` — §5.4: there is one global
+part size today, so answering the part-size question also answers whether we
+need a per-client one. Record the decision here.
 
 ---
 
@@ -622,8 +696,29 @@ or one combined endpoint:
 not currently wrapped `[repo]`) and a re-presign that issues fresh URLs for the
 remaining parts of an existing `upload_id`. Both are small. **File this ticket
 regardless of whether I-7 fails** — §3.2 makes a multi-hour stall the normal
-case on iOS, and §1.3(b)'s 24 h sweep needs the same fix to know not to sweep a
-live upload.
+case on iOS.
+
+**Those two endpoints close §1.3(a) only. They do not close §1.3(b).** The
+sweep's predicate is time of creation, not time of activity `[repo]`:
+
+```
+api/app/routers/games.py:206-210
+            select(Game).where(
+                Game.owner_id == user_id,
+                Game.status == GameStatus.uploading,
+                Game.created_at < cutoff,
+            )
+```
+
+Re-presigning at hour 11 issues fresh URLs and leaves `Game.created_at` where it
+was, so the row is still swept — `abort_multipart` then `delete_file` `[repo]` —
+at hour 24, mid-transfer. The endpoint gives the sweep no new information. The
+ticket therefore has to carry a third piece of work: change the predicate so a
+live transfer is visible to it. Either a last-activity column on `Game`, bumped
+on every re-presign and compared against the cutoff instead of `created_at`, or
+a per-stale-row `list_parts` check for a recent `LastModified` before aborting
+anything. The first is cheaper and the sweep's comment already explains why the
+abort-then-delete pair has to stay.
 
 **If Android A-3 fails (Doze kills it).** The foreground service is not doing
 its job — check the type is `dataSync`, the permission is declared, and
@@ -654,7 +749,9 @@ the iOS TTL fix needs. One ticket serves both.
 - The exact part counts, URL sizes and ticket sizes at every candidate part
   size, signed through our own code path `[measured-here]`.
 - Signing cost is negligible even at 512 parts `[measured-here]`.
-- Temp files are an **iOS-only** cost; Android needs none `[docs]`.
+- iOS background sessions transfer in a separate process, so the body must be a
+  file; Android uploads from its own process and so is under no such constraint
+  `[docs]`.
 - Peak scratch is `C × part_size` for a rolling window and `file_size` for
   all-up-front `[arithmetic]`.
 - iOS forces discretionary scheduling for anything started in the background,
@@ -674,8 +771,11 @@ the iOS TTL fix needs. One ticket serves both.
 - Whether 32 MiB or 100 MiB parts finish faster in background conditions.
   `[TO MEASURE]`
 - What an OEM battery manager does to us at factory settings. `[TO MEASURE]`
+- Whether Android really needs *zero* scratch disk, i.e. whether every provider
+  behind a picker `content://` URI gives a seekable descriptor for ranged reads
+  (§4.1). Test A-8. `[TO MEASURE]`
 - Whether the file-only constraint on iOS background uploads still holds as
   documented (§3.1). `[TO MEASURE]`
 
 The acceptance boxes on [#367](https://github.com/ClipFarmVB/ClipFarm/issues/367)
-that depend on those five are deliberately left unticked.
+that depend on those are deliberately left unticked.
