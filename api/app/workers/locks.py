@@ -8,6 +8,14 @@ that redelivery can land on a *second* worker while the first is still running.
 This lock makes concurrent double-processing impossible; the idempotent clip
 refresh (CF-37) separately handles sequential re-runs.
 
+**Fork safety (CF-65b).** `_engine` is built lazily and cached per process, and
+a prefork child inherits whatever the parent had already built. Sharing a
+SQLAlchemy engine across a fork means two processes writing to one socket, and
+here that socket is the one *holding the advisory lock* — so a child could
+release, or appear to hold, the parent's lock. `reset_engine()` is called from
+the `worker_process_init` hook so each child builds its own; it disposes without
+closing, because closing would take the parent's live connection down with it.
+
 **Why Postgres and not Redis.** The original lock was `SET NX EX` with a TTL
 deliberately longer than the broker visibility timeout — correct against a
 *slow* task, but a TTL has no relationship to whether the holder is still alive.
@@ -178,6 +186,19 @@ def _lock_url() -> str:
             "Set LOCK_DATABASE_URL to the session-mode connection (port 5432)."
         )
     return url
+
+
+def reset_engine() -> None:
+    """Drop this process's cached engine, so the next acquire builds a fresh one.
+
+    Called from the post-fork hook (see `forksafe.reset_after_fork`). `dispose`
+    with `close=False` detaches the inherited connections instead of closing
+    them: the parent is still using its own, and closing here would break it.
+    """
+    global _engine
+    if _engine is not None:
+        _engine.dispose(close=False)
+        _engine = None
 
 
 def _get_engine() -> Engine:
