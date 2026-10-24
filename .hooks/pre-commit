@@ -187,6 +187,14 @@ printf "  eslint (web) ...     "
 npm run lint --workspace=web --silent
 echo "ok"
 
+# ── Shared api client: ESLint ─────────────────────────────────────────────────
+# Its own step because the web one is a bare `eslint` with cwd `web/` and never
+# sees `packages/` (CF-314). Its own flat config too — the Next/React set web
+# uses is wrong for a package that renders nothing.
+printf "  eslint (api-client)  "
+npm run lint --workspace=packages/api-client --silent
+echo "ok"
+
 # ── Web: TypeScript ───────────────────────────────────────────────────────────
 printf "  tsc (web) ...        "
 npm run typecheck --workspace=web --silent

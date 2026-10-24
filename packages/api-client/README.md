@@ -44,9 +44,15 @@ It ships TypeScript source rather than a compiled `dist/`, and its `exports`
 point at `src/index.ts`. Both consumers bundle it themselves — Next through
 `transpilePackages`, Metro through `babel-preset-expo` — so a build step would
 add an ordering dependency (and a chance of a stale artifact) in exchange for
-nothing either one can use. `npm run typecheck` is what proves it compiles;
-`npm test` runs its suite.
+nothing either one can use. `npm run typecheck` is what proves it compiles,
+`npm run lint` lints it, and `npm test` runs its suite — all three are CI steps.
 
 `tsconfig.json` includes the `DOM` lib for the *types* of `fetch`, `Response`,
 `FormData` and `File`. That is a type-level borrow of web-standard names, not a
 runtime dependency on a browser; Expo's `tsconfig.base` includes the same lib.
+
+It also sets `"types": []`, which is what makes the typecheck mean anything: left
+unset, tsc auto-includes whatever `@types/*` the installer hoisted to the repo
+root — `node`, `react`, `react-dom` from `web` — and the package would compile
+against ambient `process`, `Buffer` and `setImmediate` that no React Native
+consumer has.

@@ -8,6 +8,16 @@
     // dependency is what the package must not do; borrowing the type names for
     // web-standard globals is fine.
     "lib": ["ES2022", "DOM"],
+    // Empty on purpose, and the thing that makes `npm run typecheck` mean
+    // anything. With `types` unset, tsc auto-includes every `@types/*` package
+    // it finds walking up to the nearest `node_modules/@types` — which, after
+    // the install CI runs, is the repo ROOT, holding `node`, `react` and
+    // `react-dom` hoisted out of `web`. The package would then typecheck green
+    // against ambient `process`, `Buffer` and `setImmediate` that no React
+    // Native consumer has, and the gate would pass on exactly the coupling it
+    // exists to catch. `lib` above is the deliberate list; this says "and
+    // nothing else, however the installer happens to hoist".
+    "types": [],
     "module": "esnext",
     "moduleResolution": "bundler",
     "strict": true,

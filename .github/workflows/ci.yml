@@ -20,11 +20,20 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci --workspace=web --workspace=packages/api-client
+      # `npm run lint --workspace=web` is a bare `eslint` with cwd `web/`, so it
+      # only ever sees `web/`. The api client needs its own step or the whole
+      # package drops out of lint — which is also what makes the "warning set
+      # unchanged" comparison on a move like CF-314 misleading: code that leaves
+      # `web/` leaves the set being compared.
       - run: npm run lint --workspace=web
+      - run: npm run lint --workspace=packages/api-client
       - run: npm run typecheck --workspace=web
       # The shared api client is its own workspace (CF-314). web's tsc already
       # sees the source it imports; this checks the package on its own tsconfig,
-      # which is what a React Native consumer will compile it under.
+      # whose `"types": []` is what gives the step teeth — without it tsc picks
+      # up the `@types/node` and `@types/react` the install above hoists to the
+      # repo root, and the package typechecks green against ambient globals no
+      # React Native consumer has.
       - run: npm run typecheck --workspace=packages/api-client
       # Unit tests for web/ (CF-96). Pure logic, no browser — runs in ~1s.
       - run: npm run test --workspace=web
