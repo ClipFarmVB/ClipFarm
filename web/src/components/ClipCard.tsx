@@ -1,48 +1,31 @@
 "use client";
 
 import { useState } from "react";
-import { Play, User, ChevronLeft, ChevronRight, Tag, Check, Bookmark, Download } from "lucide-react";
+import { Play, User, Check, Bookmark, Download } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
-import { type Clip, type Player, type ActionType, tagClip, updateClipLabels, trimClip, getClipDownloadUrl } from "@/lib/api";
+import { type Clip, type ActionType, getClipDownloadUrl } from "@/lib/api";
 import { startCrossOriginDownload } from "@/lib/download";
 import { cn } from "@/lib/utils";
 import { DemoBadge } from "@/components/DemoGame";
 
-const LABEL_OPTIONS = ["spike", "serve", "dig", "set", "block", "not_an_action"];
-
+// The card carries the triage actions — Download and Save, done while scanning
+// a grid. Label, Trim and the player tag are edits to a clip you are watching
+// and live in ClipModal (CF-272): this row clipped them off its right edge.
+// So the card holds no copy of the clip's state either; it renders the row the
+// page has, which the modal's edits update.
 interface ClipCardProps {
   clip: Clip;
-  players: Player[];
   onPlay: (clip: Clip) => void;
-  onUpdate?: (clip: Clip) => void;
   selected?: boolean;
   onToggleSelect?: (clipId: string) => void;
   onSave?: (clipId: string) => void;
 }
 
-export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSelect, onSave }: ClipCardProps) {
-  const [tagging, setTagging] = useState(false);
-  const [tagLoading, setTagLoading] = useState(false);
-  const [labeling, setLabeling] = useState(false);
-  const [trimming, setTrimming] = useState(false);
-  const [localPlayerName, setLocalPlayerName] = useState(clip.player_name);
-  const [localAction, setLocalAction] = useState(clip.action_type);
-  const [localConfidence, setLocalConfidence] = useState(clip.confidence);
-  const [localLabels, setLocalLabels] = useState<string[]>(clip.labels ?? []);
-  const [localStart, setLocalStart] = useState(clip.start_time);
-  const [localEnd, setLocalEnd] = useState(clip.end_time);
-  const [trimLoading, setTrimLoading] = useState(false);
-  const [labelLoading, setLabelLoading] = useState(false);
+export function ClipCard({ clip, onPlay, selected, onToggleSelect, onSave }: ClipCardProps) {
   const [downloadLoading, setDownloadLoading] = useState(false);
 
-  // CF-194: the raw upload is deleted after its retention window, and a re-cut
-  // reads from it. Undefined means an older payload without the field — treat
-  // that as available so trimming isn't hidden on a stale response.
-  const canTrim = clip.source_available !== false;
-
   async function handleDownload() {
-    // Serialises the presign call, the way labelLoading and trimLoading
-    // serialise theirs — no more than that. It is released as soon as
+    // Serialises the presign call — no more than that. It is released as soon as
     // startCrossOriginDownload appends the frame, so two clicks far enough
     // apart still start two transfers of the same clip and Chrome still saves
     // the second as `… (1).mp4`. Holding it for the transfer is not available:
@@ -63,92 +46,11 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
     }
   }
 
-  async function handleTag(playerId: string) {
-    if (tagLoading) return;
-    setTagLoading(true);
-    try {
-      const updated = await tagClip(clip.id, playerId);
-      setLocalPlayerName(updated.player_name);
-      // The channel `handleToggleLabel` and `handleTrim` already use, and both
-      // call sites already pass. Without it the parent's `clips[]` keeps the
-      // stale `player_name`, so ClipModal for the same clip shows no player
-      // (CF-304). `tagClip` returns the whole Clip, so this is the same
-      // one-liner as its siblings — not a second channel for the same thing.
-      // Known, out of scope: the tag reaches ClipModal only until the next
-      // label change or trim on that clip, whose responses carry a null
-      // `player_name` that their own `onUpdate` writes back (CF-566, #574).
-      // The card itself keeps it.
-      onUpdate?.(updated);
-    } catch (e) {
-      // `alert`, matching `handleDownload` above. Previously the select closed
-      // and the failure vanished (CF-304). The two mutations below were the
-      // same defect in a quieter form — one silent, one console-only — and are
-      // fixed in the same change, so all three handlers now answer a failed
-      // write the same way.
-      alert(e instanceof Error ? e.message : "Could not tag this clip.");
-    } finally {
-      setTagLoading(false);
-      setTagging(false);
-    }
-  }
-
-  async function handleToggleLabel(label: string) {
-    if (labelLoading) return;
-    let next: string[];
-    if (label === "not_an_action") {
-      next = ["not_an_action"];
-    } else {
-      const without = localLabels.filter((l) => l !== "not_an_action");
-      if (without.includes(label)) {
-        next = without.filter((l) => l !== label);
-      } else if (without.length >= 2) {
-        next = [without[1], label];
-      } else {
-        next = [...without, label];
-      }
-    }
-    if (next.length === 0) next = ["not_an_action"];
-
-    const prev = localLabels;
-    setLocalLabels(next);
-    setLabelLoading(true);
-    try {
-      const updated = await updateClipLabels(clip.id, next);
-      setLocalLabels(updated.labels);
-      setLocalAction(updated.action_type);
-      setLocalConfidence(updated.confidence);
-      onUpdate?.(updated);
-    } catch (err) {
-      // The rollback below is visible; the REASON was not. A label that snaps
-      // back with nothing said reads as the UI refusing the edit rather than
-      // the write failing, so the user retries the same click (CF-304).
-      setLocalLabels(prev);
-      alert(err instanceof Error ? err.message : "Could not update the labels.");
-    } finally {
-      setLabelLoading(false);
-    }
-  }
-
-  async function handleTrim(startDelta: number, endDelta: number) {
-    setTrimLoading(true);
-    try {
-      const updated = await trimClip(clip.id, startDelta, endDelta);
-      setLocalStart(updated.start_time);
-      setLocalEnd(updated.end_time);
-      onUpdate?.(updated);
-    } catch (err) {
-      // Nothing was shown at all here: the clip kept its old bounds and the
-      // only record of the failure was the devtools console (CF-304).
-      alert(err instanceof Error ? err.message : "Could not trim this clip.");
-    } finally {
-      setTrimLoading(false);
-    }
-  }
-
-  const confidencePct = Math.round(localConfidence * 100);
-  const isDiscarded = localLabels.includes("not_an_action") || (localAction === "unknown" && localConfidence === 0);
-  const duration = localEnd - localStart;
-  const displayLabels = localLabels.filter((l) => l !== "not_an_action");
+  const labels = clip.labels ?? [];
+  const confidencePct = Math.round(clip.confidence * 100);
+  const isDiscarded = labels.includes("not_an_action") || (clip.action_type === "unknown" && clip.confidence === 0);
+  const duration = clip.end_time - clip.start_time;
+  const displayLabels = labels.filter((l) => l !== "not_an_action");
 
   return (
     <div className={cn(
@@ -183,7 +85,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
           <img
             src={clip.thumbnail_url}
             loading="lazy"
-            alt={`${localAction} clip`}
+            alt={`${clip.action_type} clip`}
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
           />
         ) : (
@@ -227,7 +129,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
             e.currentTarget.focus();
             onPlay(clip);
           }}
-          aria-label={onToggleSelect ? undefined : `Play ${localAction} clip`}
+          aria-label={onToggleSelect ? undefined : `Play ${clip.action_type} clip`}
           tabIndex={onToggleSelect ? -1 : undefined}
           aria-hidden={onToggleSelect ? true : undefined}
           className="peer/play absolute inset-0 z-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand"
@@ -236,7 +138,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
         {/* Play overlay. Keyboard focus on the play button reveals it the way
             hover does — keyed to that button (peer), not group-focus-within,
             which would also light it up for the checkbox and the footer's
-            Download and Label buttons, none of which play anything. */}
+            Download and Save buttons, none of which play anything. */}
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/35 peer-focus-visible/play:bg-black/35 peer-focus-visible/play:*:opacity-100 peer-focus-visible/play:*:scale-100 transition-colors duration-200">
           <div className="hover-reveal opacity-0 group-hover:opacity-100 scale-90 group-hover:scale-100 transition-all duration-200">
             <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white/15 backdrop-blur-sm border border-white/20">
@@ -254,7 +156,7 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
               <Badge key={l} label={l} action={l as ActionType} />
             ))
           ) : (
-            <Badge label={localAction} action={localAction as ActionType} />
+            <Badge label={clip.action_type} action={clip.action_type} />
           )}
         </div>
 
@@ -266,25 +168,34 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
 
       {/* Card footer */}
       <div className="px-2.5 py-2">
-        <div className="flex items-center justify-between gap-1">
-          {/* Left: confidence + timestamp */}
-          <div className="flex items-center gap-2 min-w-0">
+        {/* Wraps: where the card is too narrow for the meta and the actions
+            side by side (the four-column grid from 1024 to about 1260), the
+            actions drop to a line of their own rather than the two painting
+            over each other. Both are content-sized, so neither is squeezed
+            while they fit on one line. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-1 gap-y-0.5">
+          {/* Left: confidence and timestamp. The timestamp still truncates, for
+              a card too narrow even for this column on a line of its own. */}
+          <div className="flex min-w-0 items-center gap-2">
             <span className={cn(
-              "text-[11px] font-semibold tabular-nums",
+              "shrink-0 text-[11px] font-semibold tabular-nums",
               confidencePct >= 80 ? "text-emerald-400"
               : confidencePct >= 60 ? "text-amber-400"
               : "text-muted"
             )}>
               {confidencePct}%
             </span>
-            <span className="text-[10px] text-subtle truncate">{formatTimestamp(localStart)}</span>
+            <span className="min-w-0 truncate text-[10px] text-subtle tabular-nums">{formatTimestamp(clip.start_time)}</span>
           </div>
 
-          {/* Right: action buttons */}
-          <div className="flex flex-wrap items-center justify-end gap-0.5 shrink-0">
-            {/* Demo clips (CF-565): the api refuses download and trim for them
-                with 409, so neither is offered rather than ending in an error.
-                The badge says why, where no game banner is in view (a
+          {/* Right: action buttons. No `shrink-0`: held at max-content width
+              it could not wrap, and the card's overflow-hidden clipped
+              whatever did not fit (CF-272). `ml-auto` keeps it right-aligned
+              when it has wrapped onto its own line. */}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-0.5">
+            {/* Demo clips (CF-565): the api refuses download for them with
+                409, so it is not offered rather than ending in an error. The
+                badge says why, where no game banner is in view (a
                 collection). */}
             {clip.is_sample && (
               <span title="Demo clip: download, trim and posting are for your own games">
@@ -304,23 +215,6 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
             </button>
             )}
 
-            <button
-              onClick={() => {
-                if (!labeling && localLabels.length === 0 && localAction !== "unknown") {
-                  setLocalLabels([localAction]);
-                }
-                setLabeling(!labeling);
-                setTrimming(false);
-              }}
-              className={cn(
-                "flex min-h-8 items-center gap-1 rounded px-2 py-1.5 text-[10px] font-medium transition-colors",
-                labeling ? "text-brand bg-brand/8" : "text-subtle hover:text-muted hover:bg-surface-hover"
-              )}
-            >
-              <Tag size={9} />
-              Label
-            </button>
-
             {onSave && (
               <button
                 onClick={() => onSave(clip.id)}
@@ -331,165 +225,19 @@ export function ClipCard({ clip, players, onPlay, onUpdate, selected, onToggleSe
                 Save
               </button>
             )}
-
-            {!clip.is_sample && (
-            <button
-              onClick={() => { setTrimming(!trimming); setLabeling(false); }}
-              disabled={!canTrim}
-              title={canTrim ? undefined : "Source video expired — this clip can no longer be re-cut"}
-              className={cn(
-                "flex min-h-8 items-center gap-0.5 rounded px-2 py-1.5 text-[10px] font-medium transition-colors",
-                trimming ? "text-brand bg-brand/8" : "text-subtle hover:text-muted hover:bg-surface-hover",
-                !canTrim && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-subtle"
-              )}
-            >
-              <ChevronLeft size={9} /><ChevronRight size={9} className="-ml-1" />
-              Trim
-            </button>
-            )}
-
-            {/* Player tag */}
-            {tagging ? (
-              /* `disabled` pairs with `handleTag`'s `if (tagLoading) return`, so
-                 a second choice cannot be made and then dropped in silence —
-                 the failure this change exists to remove, reintroduced one
-                 layer up. `handleDownload` and `handleToggleLabel` pair their
-                 guards the same way; `handleTrim` has no re-entry guard at all
-                 and relies on `disabled={trimLoading}` alone.
-
-                 The `onBlur` checks `tagLoading` because this element is
-                 focused (`autoFocus`) at the moment it becomes disabled, and
-                 the HTML focus fixup rule can blur it for that reason alone.
-                 An unguarded handler would then close the dropdown on a blur
-                 the user did not perform.
-
-                 **What is not established is whether that actually happens, and
-                 an earlier version of this comment asserted it did.** Two
-                 things are measured: jsdom implements no focus fixup at all, so
-                 no test here can reach the question; and React disables its
-                 event system for the commit's mutation phase, so a fixup blur
-                 dispatched synchronously with the `disabled` write would not
-                 reach this handler even in principle. Whether a browser instead
-                 defers that blur to a later task — where React is listening
-                 again — is the part nobody here has run a browser to answer.
-
-                 So the guard is kept for being correct under both answers
-                 rather than for a behaviour anyone has seen. Under the
-                 deferred answer it is what keeps the disabled state visible;
-                 under the synchronous one it changes nothing.
-
-                 It does mean blur cannot close this while a write is in
-                 flight. `handleTag`'s `finally` closes it on either outcome, so
-                 the only way to be stuck is a request that never settles —
-                 which would equally leave `handleDownload` spinning and the
-                 label and trim controls disabled. That exposure is the file's,
-                 not this guard's, and a timeout for one control would be the
-                 odd one out. */
-              <select
-                autoFocus
-                disabled={tagLoading}
-                aria-busy={tagLoading}
-                className="min-h-8 rounded border border-border bg-surface-high px-2 py-1 text-[10px] text-foreground focus:outline-none disabled:opacity-50"
-                onBlur={() => {
-                  if (!tagLoading) setTagging(false);
-                }}
-                onChange={(e) => handleTag(e.target.value)}
-                defaultValue=""
-              >
-                <option value="" disabled>Player…</option>
-                {players.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.jersey_number != null ? `#${p.jersey_number} ` : ""}{p.name}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <button
-                onClick={() => setTagging(true)}
-                className="flex min-h-8 items-center gap-1 rounded px-2 py-1.5 text-[10px] text-subtle hover:text-muted hover:bg-surface-hover transition-colors"
-              >
-                <User size={9} />
-                {localPlayerName ?? "Tag"}
-              </button>
-            )}
           </div>
         </div>
 
-        {/* Label panel */}
-        {labeling && (
-          <div className="mt-2 flex flex-wrap gap-1 pt-2 border-t border-border">
-            {LABEL_OPTIONS.map((label) => {
-              const isNotAction = label === "not_an_action";
-              const active = isNotAction
-                ? localLabels.includes("not_an_action") || isDiscarded
-                : localLabels.includes(label);
-              return (
-                <button
-                  key={label}
-                  disabled={labelLoading}
-                  onClick={() => handleToggleLabel(label)}
-                  className={cn(
-                    "min-h-8 rounded px-2.5 py-1.5 text-[10px] font-medium capitalize transition-all duration-100 disabled:opacity-40",
-                    active && isNotAction
-                      ? "bg-red-500/10 text-red-400 ring-1 ring-red-500/20"
-                      : active
-                      ? "bg-brand/10 text-brand ring-1 ring-brand/20"
-                      : "bg-surface-high text-subtle hover:text-muted"
-                  )}
-                >
-                  {isNotAction ? "Not an action" : label}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Trim panel */}
-        {trimming && canTrim && (
-          <div className="mt-2 pt-2 border-t border-border">
-            <div className="flex items-center justify-between gap-2">
-              {/* Start controls */}
-              <div className="flex flex-col items-center gap-1">
-                <span className="text-[9px] font-semibold uppercase tracking-widest text-subtle">Start</span>
-                <div className="flex items-center gap-1">
-                  {[{ label: "−2s", d: [-2, 0] }, { label: "+2s", d: [2, 0] }].map(({ label, d }) => (
-                    <button
-                      key={label}
-                      disabled={trimLoading}
-                      onClick={() => handleTrim(d[0], d[1])}
-                      className="min-h-9 min-w-11 rounded bg-surface-high px-2.5 py-1.5 text-[10px] font-medium text-subtle hover:text-foreground hover:bg-surface-hover transition-colors disabled:opacity-40"
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <span className="text-[10px] text-muted tabular-nums">{formatTimestamp(localStart)}</span>
-              </div>
-
-              <span className="text-[10px] text-subtle tabular-nums">{formatDuration(duration)}</span>
-
-              {/* End controls */}
-              <div className="flex flex-col items-center gap-1">
-                <span className="text-[9px] font-semibold uppercase tracking-widest text-subtle">End</span>
-                <div className="flex items-center gap-1">
-                  {[{ label: "−2s", d: [0, -2] }, { label: "+2s", d: [0, 2] }].map(({ label, d }) => (
-                    <button
-                      key={label}
-                      disabled={trimLoading}
-                      onClick={() => handleTrim(d[0], d[1])}
-                      className="min-h-9 min-w-11 rounded bg-surface-high px-2.5 py-1.5 text-[10px] font-medium text-subtle hover:text-foreground hover:bg-surface-hover transition-colors disabled:opacity-40"
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <span className="text-[10px] text-muted tabular-nums">{formatTimestamp(localEnd)}</span>
-              </div>
-            </div>
-
-            {trimLoading && (
-              <p className="mt-1.5 text-center text-[10px] text-brand animate-pulse">Re-cutting clip…</p>
-            )}
+        {/* The tagged player, read-only — tagging is in the clip modal
+            (CF-272). A line of its own under the row, not a third item in it:
+            in a four-column grid at 1280 and 1440 the confidence, timestamp
+            and the two actions take the whole row, and a name squeezed in
+            beside them got 0px and showed only its icon. Here it has the
+            card's width and truncates only when it is longer than that. */}
+        {clip.player_name && (
+          <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-muted" title={clip.player_name}>
+            <User size={9} className="shrink-0" />
+            <span className="truncate">{clip.player_name}</span>
           </div>
         )}
       </div>
