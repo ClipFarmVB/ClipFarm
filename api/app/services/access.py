@@ -60,15 +60,24 @@ happened to define it first.
 ``GET /games/{id}/clips`` and ``GET /clips/{id}/share`` reach the database
 without a credential, joined, with the social surface on, by
 ``GET /users/{handle}`` from CF-107, ``GET /posts/{id}`` and
-``GET /posts?username=``. Six endpoints where there were none.
+``GET /posts?username=``, and since CF-319 by
+``GET /clips/{id}/playback``. Seven endpoints where there were none.
 
-**All six are throttled per caller since CF-186 (#189)** — see
+**All seven are throttled per caller since CF-186 (#189)** — see
 ``services/ratelimit.py`` for the two exposures, the numbers, and why the
 limiter fails open. Each route's own docstring says which exposure it belongs
 to and what was decided, which is that card's acceptance criterion.
 
-``GET /clips/{id}/download`` was the seventh and is no longer on this list:
-CF-186 put it behind authentication instead. It presigns the same object
+``/clips/{id}/playback`` arrived after that card and shares ``/share``'s
+policy rather than taking a number of its own: it presigns the same object for
+the same viewer, so it is the same exposure and the same budget.
+``api/tests/test_ratelimit_wiring.py`` is what keeps this paragraph true — it
+walks the routers and fails on any anonymous GET missing from its table, so a
+route added without a limiter cannot merge green.
+
+``GET /clips/{id}/download`` was on this list when CF-186 looked at it — the
+seventh of seven then — and is no longer: that card put it behind
+authentication instead. It presigns the same object
 ``/share`` does, under an attachment header, so this decides who may ask for
 that URL and does not bound what leaves the bucket — see ``routers/clips.py``.
 **So it no longer shares /share's authorization**, which it did when both were
