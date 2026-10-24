@@ -80,11 +80,6 @@ async def _get_owned_clip(
     return clip, game
 
 
-#: How long a minted playback URL stays valid. Named rather than repeated
-#: because CF-319 makes it part of the response — a client that is told the
-#: expiry can refresh before the player dies instead of after — and a number
-#: reported from one place and minted in another drifts apart silently.
-#:
 #: How long a clip URL minted by `_rewrite_urls` stays valid. Named rather than
 #: repeated because CF-319 makes it part of a response — a client told the
 #: expiry can refresh before the player dies instead of after — and a number

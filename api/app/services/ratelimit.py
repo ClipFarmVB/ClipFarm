@@ -455,10 +455,14 @@ class RateLimiter:
     would.
 
     ``dependencies=[...]`` rather than a parameter, in turn, because a new
-    parameter would change all six throttled coroutine signatures and churn
-    every direct call site in the suite. (Six, not the seven anonymous reads
-    this card started from: ``download_clip`` is the seventh and its signature
-    *did* change here, since auth rather than a limiter is what it got.)
+    parameter would change every throttled coroutine signature and churn each
+    direct call site in the suite. Six of them when this card landed — not the
+    seven anonymous reads it started from, because ``download_clip`` was the
+    seventh and its signature *did* change here, auth rather than a limiter
+    being what it got. Seven since CF-319 added ``/clips/{id}/playback``, which
+    is why the count is left out of this sentence rather than restated in it:
+    the number moves with every route added, and
+    ``api/tests/test_ratelimit_wiring.py`` is where it is actually enforced.
     """
 
     def __init__(self, policy: Policy) -> None:

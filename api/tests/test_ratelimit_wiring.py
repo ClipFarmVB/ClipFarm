@@ -1,7 +1,7 @@
 """Every anonymous read is actually covered (CF-186, #189).
 
 The limiters hang off each route decorator's ``dependencies=[...]``, which
-keeps the six throttled coroutine signatures byte-identical and leaves every
+keeps the seven throttled coroutine signatures byte-identical and leaves every
 direct call in this suite working — and makes the limiter completely invisible to
 those calls. So this file is not optional: without it, deleting a
 ``dependencies=[...]`` line would break nothing that runs.
@@ -32,7 +32,7 @@ from app.services.ratelimit import MemoryBackend, RateLimiter
 # defaults to). All three, because the name alone pins almost nothing: a policy
 # can carry the right name and read another route's setting, and every default
 # can be raised to 30000, with the name-only check still green. The README,
-# config.py and six route docstrings all state these numbers as decisions;
+# config.py and seven route docstrings all state these numbers as decisions;
 # this table is what makes them true.
 THROTTLED = {
     ("/users/{handle}", "GET"): ("profile", "rate_limit_profile_per_minute", 30),
@@ -182,7 +182,8 @@ def test_every_throttled_read_stays_anonymous(path, method):
 
 
 def test_the_download_route_requires_auth_instead_of_a_limiter():
-    """The seventh anonymous read, deliberately handled differently.
+    """The one anonymous read handled differently — the seventh of seven when
+    CF-186 looked at it, and the eighth now that CF-319 added /playback.
 
     It requires auth rather than a limiter. It presigns the same object /share
     does, so this pins a decision about who may ask for the attachment URL, not
