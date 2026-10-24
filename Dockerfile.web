@@ -5,10 +5,17 @@ WORKDIR /app
 # Install root workspace deps used by the web workspace.
 COPY package.json package-lock.json ./
 COPY web/package.json ./web/package.json
+# packages/tokens is a workspace of the root package.json, so npm links it into
+# node_modules whether or not it is here. Without its manifest `npm ci` still
+# exits 0 and leaves node_modules/@clipfarm/tokens dangling — the build looks
+# fine and the failure surfaces later, inside the container, at whatever first
+# resolves the package.
+COPY packages/tokens/package.json ./packages/tokens/package.json
 RUN npm ci
 
 # Copy app source.
 COPY web ./web
+COPY packages/tokens ./packages/tokens
 
 EXPOSE 3000
 

@@ -292,6 +292,9 @@ services:
       - "3000:3000"
     volumes:
       - ./web:/app/web
+      # Mounted for the same reason web/ is: a token edited on the host should
+      # reach the container, not sit behind the copy baked into the image.
+      - ./packages/tokens:/app/packages/tokens
       - ./package.json:/app/package.json:ro
       - ./package-lock.json:/app/package-lock.json:ro
       - node_modules:/app/node_modules

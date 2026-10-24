@@ -1,0 +1,235 @@
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  View,
+  type PressableProps,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
+import {
+  borderWidth,
+  danger as dangerColors,
+  fontSize,
+  letterSpacingPx,
+  lineHeight,
+  radius,
+  spacing,
+  type ThemeColors,
+} from "@clipfarm/tokens";
+import { Text } from "./Text";
+import { useTheme } from "./theme";
+
+/**
+ * The mobile counterpart to web's Button: same four variants, same three
+ * sizes, same colours per state.
+ *
+ * Web expresses hover; a phone has no hover, so every state web reaches on
+ * hover this reaches on press instead. The two therefore land on the same
+ * colours for the same meaning without either surface pretending to have the
+ * other's input model.
+ *
+ * Geometry is *not* variant-for-variant, deliberately. `borderWidth` lives in
+ * `styles.base`, so all four variants draw a 1px border — transparent on
+ * `primary` and `ghost`, which web leaves borderless. Mobile therefore matches
+ * web's bordered variants (`secondary`, `danger`) exactly and is 2px taller
+ * and 2px wider on the other two:
+ *
+ * | size | web `primary` / `ghost` | web `secondary` / `danger` | here, all four |
+ * |------|-------------------------|----------------------------|----------------|
+ * | sm   | 28px                    | 30px                       | 30px           |
+ * | md   | 36px                    | 38px                       | 38px           |
+ * | lg   | 40px                    | 42px                       | 42px           |
+ *
+ * One hit-target size across variants is worth more on a touch surface than
+ * the last 2px of parity with web, and the larger number is the kinder one.
+ * Said here so nobody re-derives the heights from web's classes and reads the
+ * difference as a bug.
+ */
+
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+export type ButtonSize = "sm" | "md" | "lg";
+
+interface VariantColors {
+  background: string;
+  backgroundPressed: string;
+  border: string;
+  borderPressed: string;
+  /** Label and spinner colour. */
+  content: string;
+  contentPressed: string;
+}
+
+function variantColors(
+  variant: ButtonVariant,
+  colors: ThemeColors,
+): VariantColors {
+  switch (variant) {
+    case "primary":
+      return {
+        background: colors.brand,
+        backgroundPressed: colors.brandLight,
+        border: "transparent",
+        borderPressed: "transparent",
+        content: colors.onBrand,
+        contentPressed: colors.onBrand,
+      };
+    case "secondary":
+      return {
+        background: colors.surfaceHigh,
+        backgroundPressed: colors.surfaceHover,
+        border: colors.border,
+        borderPressed: colors.borderStrong,
+        content: colors.foreground,
+        contentPressed: colors.foreground,
+      };
+    case "ghost":
+      return {
+        background: "transparent",
+        backgroundPressed: colors.surfaceHigh,
+        border: "transparent",
+        borderPressed: "transparent",
+        content: colors.muted,
+        contentPressed: colors.foreground,
+      };
+    case "danger":
+      return {
+        background: dangerColors.bg,
+        backgroundPressed: dangerColors.bgHover,
+        border: dangerColors.border,
+        borderPressed: dangerColors.borderHover,
+        content: dangerColors.fg,
+        contentPressed: dangerColors.fg,
+      };
+  }
+}
+
+/**
+ * Padding and label size per size, mirroring web's px/py/text triples.
+ *
+ * `text` names a step on the shared type scale rather than a raw size, because
+ * the label's height is fontSize *and* lineHeight and they have to move
+ * together. Overriding only the size leaves the Text variant's line box behind
+ * — a 12px label in a 20px box, which made `sm` 34px against web's 28px.
+ * Fixing that got it to 30px; the remaining 2px is the base border, which the
+ * docstring above accounts for.
+ */
+const SIZES: Record<
+  ButtonSize,
+  { padding: ViewStyle; text: keyof typeof fontSize }
+> = {
+  sm: {
+    padding: { paddingHorizontal: spacing.sm, paddingVertical: 6 },
+    text: "xs",
+  },
+  md: {
+    padding: { paddingHorizontal: 14, paddingVertical: spacing.xs },
+    text: "sm",
+  },
+  lg: {
+    padding: { paddingHorizontal: 20, paddingVertical: 10 },
+    text: "sm",
+  },
+};
+
+const styles = StyleSheet.create({
+  base: {
+    borderRadius: radius.md,
+    borderWidth,
+  },
+  // The label and spinner share a row so the spinner can sit on top of the
+  // label without the two fighting over the button's own padding.
+  content: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+  },
+  // Web's `disabled:opacity-35`. Applied to the whole button so the border
+  // fades with the label rather than the two drifting apart.
+  disabled: { opacity: 0.35 },
+  // Web's `active:scale-[0.97]`.
+  pressed: { transform: [{ scale: 0.97 }] },
+  // Keeps the button's width while the spinner is up: the label stays laid out
+  // and is hidden, so a "Save" button does not collapse to a circle mid-request.
+  hiddenLabel: { opacity: 0 },
+  spinner: { position: "absolute" },
+});
+
+export interface ButtonProps extends Omit<PressableProps, "style" | "children"> {
+  /** Button text. */
+  label: string;
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  /** Shows a spinner in place of the label and blocks presses. */
+  loading?: boolean;
+  /** Stretches the button to the width of its container. */
+  fullWidth?: boolean;
+  style?: StyleProp<ViewStyle>;
+}
+
+export function Button({
+  label,
+  variant = "primary",
+  size = "md",
+  loading = false,
+  fullWidth = false,
+  disabled = false,
+  style,
+  ...props
+}: ButtonProps) {
+  const { colors } = useTheme();
+  const palette = variantColors(variant, colors);
+  const metrics = SIZES[size];
+  // A loading button is inert: a second tap while the first request is in
+  // flight is the most common way to double-post something.
+  const inert = disabled || loading;
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled: inert, busy: loading }}
+      accessibilityLabel={label}
+      disabled={inert}
+      style={({ pressed }) => [
+        styles.base,
+        metrics.padding,
+        {
+          backgroundColor: pressed ? palette.backgroundPressed : palette.background,
+          borderColor: pressed ? palette.borderPressed : palette.border,
+          alignSelf: fullWidth ? "stretch" : "flex-start",
+        },
+        pressed && !inert && styles.pressed,
+        inert && styles.disabled,
+        style,
+      ]}
+      {...props}
+    >
+      {({ pressed }) => (
+        <View style={styles.content}>
+          <Text
+            variant="label"
+            style={[
+              {
+                color: pressed ? palette.contentPressed : palette.content,
+                fontSize: fontSize[metrics.text],
+                lineHeight: lineHeight[metrics.text],
+                letterSpacing: letterSpacingPx("tight", fontSize[metrics.text]),
+              },
+              loading && styles.hiddenLabel,
+            ]}
+          >
+            {label}
+          </Text>
+          {loading ? (
+            <ActivityIndicator
+              size="small"
+              color={palette.content}
+              style={styles.spinner}
+            />
+          ) : null}
+        </View>
+      )}
+    </Pressable>
+  );
+}
