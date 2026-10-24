@@ -80,6 +80,27 @@ export function errorMessage(body: string, fallback: string): string {
   return fallback;
 }
 
+/** Longest response body carried into a fallback message. */
+const MAX_FALLBACK_BODY = 200;
+
+/**
+ * The fallback when the body is not our JSON — bounded, so a proxy's HTML
+ * error page cannot push the status out of view.
+ *
+ * `web/src/lib/api.ts` has since grown a fuller version of this (CF-304) and
+ * an `ApiError` carrying `status` (CF-423). Both belong in the package rather
+ * than a third copy here, so CF-314 should bring them across; this is the
+ * bound only, because an unbounded message is the part that is actually wrong
+ * rather than merely thinner.
+ */
+function fallbackMessage(status: number, body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed || trimmed.startsWith("<")) return `API error ${status}`;
+  return trimmed.length > MAX_FALLBACK_BODY
+    ? `API error ${status}: ${trimmed.slice(0, MAX_FALLBACK_BODY)}…`
+    : `API error ${status}: ${trimmed}`;
+}
+
 /**
  * Interim only — see the note at the top of this file. The real package has no
  * public `request`; when #418 lands, each call to this becomes a call to the
@@ -91,18 +112,19 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   // than failing it — what the web client does today, and what #418 keeps.
   const token = await Promise.resolve(getToken()).catch(() => null);
 
-  const res = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...init?.headers,
-    },
-  });
+  // Built through `Headers` rather than spread into an object literal. A
+  // `Headers` instance has no own enumerable properties, so `...init.headers`
+  // spreads it to nothing: the caller's headers type-check and then vanish.
+  // `Headers` takes all three forms `HeadersInit` allows.
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const res = await fetch(`${baseUrl}${path}`, { ...init, headers });
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(errorMessage(body, `API error ${res.status}: ${body}`));
+    throw new Error(errorMessage(body, fallbackMessage(res.status, body)));
   }
   // Every DELETE in this API returns 204, and a 200 with no body happens too.
   // `res.json()` rejects on both with a parse error that reads as if the

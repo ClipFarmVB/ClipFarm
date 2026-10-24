@@ -7,6 +7,10 @@
     "scheme": "clipfarm",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "platforms": [
+      "ios",
+      "android"
+    ],
     "ios": {
       "bundleIdentifier": "com.clipfarm.app",
       "supportsTablet": false

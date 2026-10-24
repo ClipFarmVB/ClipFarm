@@ -30,6 +30,10 @@ function fakeStore() {
     failAfterWrites(n: number) {
       failAfter = writes.length + n;
     },
+    /** Let writes through again — the keychain comes back, as it does. */
+    stopFailing() {
+      failAfter = Infinity;
+    },
   };
 }
 
@@ -143,6 +147,27 @@ describe("createChunkedSecureStorage", () => {
     // Nothing left: no fragment of a session token stays in a keychain that
     // survives uninstall on iOS.
     expect([...values.keys()]).toEqual([]);
+  });
+
+  it("sweeps an interrupted write's leftovers when the next write reuses its generation", async () => {
+    const { store, values, failAfterWrites, stopFailing } = fakeStore();
+    const storage = createChunkedSecureStorage(store);
+
+    // The live value sits in one generation, so every write below targets the
+    // other one — which is what makes this the path that the retired-generation
+    // sweep cannot reach, and the same-generation sweep can.
+    await storage.setItem("k", "short");
+    failAfterWrites(21);
+    await expect(storage.setItem("k", "L".repeat(CHUNK_SIZE * 20))).rejects.toThrow();
+    stopFailing();
+
+    // A refresh lands a small session straight afterwards. It reuses the
+    // generation the dead write was filling, so its own commit is what has to
+    // take those 19 leftover chunks out.
+    await storage.setItem("k", "small");
+
+    expect(await storage.getItem("k")).toBe("small");
+    expect([...values.keys()].sort()).toEqual(["k", "k.1.0"]);
   });
 
   it("reads an interrupted first write as no session, and sweeps it", async () => {

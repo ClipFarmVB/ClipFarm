@@ -1,11 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { errorMessage } from "./apiClient";
+import { apiRequest, configureApiClient, errorMessage } from "./apiClient";
 
 /**
  * Kept in step with `web/src/lib/apiError.ts` — the two show the same sentence
  * for the same response until CF-314 makes them literally the same function.
  */
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("errorMessage", () => {
   it("uses the server's own sentence", () => {
     const body = JSON.stringify({
@@ -32,6 +36,48 @@ describe("errorMessage", () => {
 
   it("falls back on a body that is not JSON", () => {
     expect(errorMessage("<html>502 Bad Gateway</html>", "API error 502")).toBe("API error 502");
+  });
+
+  it("keeps a caller's Headers instance instead of dropping it", async () => {
+    // `...init.headers` spreads a `Headers` to nothing — it has no own
+    // enumerable properties — so this type-checked and silently sent neither
+    // the caller's header nor, before the fix, the JSON content type.
+    const seen: Record<string, string> = {};
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      new Headers(init?.headers).forEach((value, key) => {
+        seen[key] = value;
+      });
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    configureApiClient({ baseUrl: "https://api.example", getToken: () => "tok" });
+    await apiRequest("/games", { headers: new Headers({ "X-Request-Id": "abc" }) });
+
+    expect(seen["x-request-id"]).toBe("abc");
+    expect(seen["authorization"]).toBe("Bearer tok");
+    expect(seen["content-type"]).toBe("application/json");
+  });
+
+  it("sends the request unauthenticated when the token cannot be read", async () => {
+    // #418's config documents this: a `getToken` that rejects must not fail the
+    // request, which is what the web client has always done.
+    const seen: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        new Headers(init?.headers).forEach((_v, key) => seen.push(key));
+        return new Response(null, { status: 204 });
+      })
+    );
+
+    configureApiClient({
+      baseUrl: "https://api.example",
+      getToken: () => Promise.reject(new Error("keychain locked")),
+    });
+
+    await expect(apiRequest("/games")).resolves.toBeUndefined();
+    expect(seen).not.toContain("authorization");
   });
 
   it("falls back on JSON with nothing usable in detail", () => {

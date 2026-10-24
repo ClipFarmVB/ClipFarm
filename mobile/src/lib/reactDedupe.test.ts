@@ -26,6 +26,14 @@ const require = createRequire(import.meta.url);
  * catches the half that breaks the app.
  */
 describe("react", () => {
+  it("looks in the right place", () => {
+    // The resolution below starts from `process.cwd()`, and from the repo root
+    // both sides walk up to the hoisted React and agree no matter what is
+    // nested under `mobile/` — a pass that proves nothing. `npm run test
+    // --workspace=mobile` runs here; anything else has to.
+    expect(process.cwd().endsWith("mobile")).toBe(true);
+  });
+
   it("resolves to one copy from both react-native and app code", () => {
     const reactNativeDir = dirname(require.resolve("react-native/package.json"));
 
