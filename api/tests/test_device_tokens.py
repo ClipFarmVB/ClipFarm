@@ -44,7 +44,7 @@ from sqlalchemy.dialects import postgresql  # noqa: E402
 
 from app.routers import devices  # noqa: E402
 from app.schemas.device_token import (  # noqa: E402
-    MAX_TOKEN_LENGTH,
+    MAX_TOKEN_BYTES,
     DeviceTokenRegister,
     DeviceTokenUnregister,
 )
@@ -211,10 +211,39 @@ def test_the_token_is_bounded_at_the_edge_because_the_column_is_not():
     """`token` is Text, so nothing downstream will refuse an absurd value —
     and a btree unique index stops indexing around 2704 bytes. The bound has to
     be here, and it has to be under that."""
-    assert MAX_TOKEN_LENGTH < 2704
-    at_limit = "x" * MAX_TOKEN_LENGTH
+    assert MAX_TOKEN_BYTES < 2704
+    at_limit = "x" * MAX_TOKEN_BYTES
+    assert len(at_limit.encode()) == MAX_TOKEN_BYTES
     assert DeviceTokenRegister(platform="ios", token=at_limit).token == at_limit
     with pytest.raises(ValidationError):
-        DeviceTokenRegister(platform="ios", token="x" * (MAX_TOKEN_LENGTH + 1))
+        DeviceTokenRegister(platform="ios", token="x" * (MAX_TOKEN_BYTES + 1))
     with pytest.raises(ValidationError):
-        DeviceTokenUnregister(token="x" * (MAX_TOKEN_LENGTH + 1))
+        DeviceTokenUnregister(token="x" * (MAX_TOKEN_BYTES + 1))
+
+
+def test_the_bound_is_counted_in_bytes_not_characters():
+    """The unit is the half that can be wrong while the number looks right.
+
+    A `max_length` of 1024 is 1024 *characters*, and UTF-8 spends up to four
+    bytes on one — so the same bound written in characters accepts 4096 bytes,
+    which is past the btree limit `uq_device_tokens_token` is subject to.
+    Postgres refuses the index entry, nothing in `app/main.py` turns that into
+    a readable response, and the caller gets a 500 where the schema promises a
+    422. Every real Expo, APNs and FCM token is ASCII, so an ASCII-only test
+    passes either way and establishes nothing about the unit — which is why
+    these are the inputs.
+    """
+    # Four bytes per character: a quarter of a character budget is the whole
+    # byte budget, and one character past that has to be refused.
+    at_limit = "\U0001f600" * (MAX_TOKEN_BYTES // 4)
+    assert len(at_limit) * 4 == len(at_limit.encode()) == MAX_TOKEN_BYTES
+    assert DeviceTokenRegister(platform="ios", token=at_limit).token == at_limit
+
+    # Both shapes a character bound lets through: 4-byte emoji one character
+    # over, and 3-byte CJK well inside any plausible character limit.
+    for over in ("\U0001f600" * (MAX_TOKEN_BYTES // 4 + 1), "\u5b57" * MAX_TOKEN_BYTES):
+        assert len(over) <= MAX_TOKEN_BYTES < len(over.encode())
+        with pytest.raises(ValidationError):
+            DeviceTokenRegister(platform="ios", token=over)
+        with pytest.raises(ValidationError):
+            DeviceTokenUnregister(token=over)

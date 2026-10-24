@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 # The token column is `Text`, so this is the only bound there is — deliberately.
 # A caller sending something absurd gets a 422 naming the field, rather than a
@@ -9,9 +9,33 @@ from pydantic import BaseModel, Field
 # one-line change with no migration, which is the whole reason the bound is
 # here and not on the column.
 #
+# **Counted in bytes, because the ceiling it has to stay under is a byte
+# ceiling.** `max_length` counts characters and UTF-8 spends up to four bytes
+# on one, so a 1024-*character* bound accepts 4096 bytes — past the btree
+# limit, where Postgres refuses the index entry for `uq_device_tokens_token`.
+# `app/main.py` registers no exception handler, so that arrives as a 500 and
+# not as the readable 422 this comment promises. Every real Expo, APNs and FCM
+# token is ASCII, which is why it takes a hostile or buggy client to reach it
+# and why the bound was easy to write in the wrong unit.
+#
 # For scale: an Expo push token is ~40 characters, an APNs device token 64 hex,
 # an FCM registration token ~160-200 and not documented as bounded.
-MAX_TOKEN_LENGTH = 1024
+MAX_TOKEN_BYTES = 1024
+
+
+def _within_the_index_bound(v: str) -> str:
+    encoded = len(v.encode("utf-8"))
+    if encoded > MAX_TOKEN_BYTES:
+        raise ValueError(
+            f"token is {encoded} bytes as UTF-8; the maximum is {MAX_TOKEN_BYTES}"
+        )
+    return v
+
+
+# Shared by both schemas: the bound belongs to the column's unique index, not to
+# one route. `min_length` stays in characters, which is the honest unit for "not
+# empty" — one character is at least one byte either way.
+Token = Annotated[str, Field(min_length=1), AfterValidator(_within_the_index_bound)]
 
 
 class DeviceTokenRegister(BaseModel):
@@ -23,7 +47,7 @@ class DeviceTokenRegister(BaseModel):
     """
 
     platform: Literal["ios", "android"]
-    token: str = Field(min_length=1, max_length=MAX_TOKEN_LENGTH)
+    token: Token
 
 
 class DeviceTokenUnregister(BaseModel):
@@ -34,4 +58,4 @@ class DeviceTokenUnregister(BaseModel):
     caller to send a mismatched pair and expect something to happen.
     """
 
-    token: str = Field(min_length=1, max_length=MAX_TOKEN_LENGTH)
+    token: Token

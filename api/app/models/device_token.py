@@ -30,8 +30,12 @@ class DeviceToken(Base):
     next number is another guess. FCM registration tokens are not documented as
     bounded, so there is no number to pick honestly. The bound that does exist
     lives in `schemas/device_token.py`, where an over-long token is a 422 the
-    caller can read instead of a truncation error — and it keeps the value far
-    under the ~2704-byte ceiling a btree unique index imposes.
+    caller can read instead of a truncation error — and it is counted in
+    *bytes*, so it keeps the value under the ~2704-byte ceiling a btree unique
+    index imposes whatever the client encodes. A character bound of the same
+    number would not: UTF-8 spends up to four bytes on a character, and the
+    index entry Postgres then refuses is a 500, since nothing in `app/main.py`
+    translates it.
     """
 
     __tablename__ = "device_tokens"
