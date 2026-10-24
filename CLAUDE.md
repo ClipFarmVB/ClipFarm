@@ -141,6 +141,10 @@ issues titled `CF-## · Description`. `Status` is a single-select
 field — iteration fields are not touched by GitHub's built-in project workflows,
 so sprint assignment is always manual.
 
+Work blocked on a person's decision is parked with the `needs-decision` label, citing what it
+waits on (a pending decision id, a PR, a question). Removing the label is how a person
+releases it.
+
 ## Automated review
 
 `.github/workflows/claude-review.yml` posts a Claude review when a PR is opened,
@@ -159,49 +163,3 @@ Two behaviours that look like bugs and are not:
 To re-review after changes, use `workflow_dispatch` with the PR number. GitHub's
 "Re-run jobs" replays the workflow file as it was at the triggering commit, so it
 will not pick up later edits.
-
-## Skein
-
-ClipFarm's decisions are recorded in Skein, in the private repo ClipFarmVB/clipfarm-skein.
-Agents reach it through the `ask_skein` and `record_skein_answer` tools, registered in
-`.mcp.json`; each person sets `SKEIN_SECRET` in their environment (ask Nelson for it, never
-commit it).
-
-- **Who is at the chat.** If the current turn was started by a person's message, they are at
-  the chat. A scheduled loop lap, or any turn no person started, is unattended.
-- When you are blocked on a decision about conventions, process or scope, or are about to ask
-  Nelson anything (the end of a turn, a run report, run-control questions such as "start #N
-  once its PRs merge?"), call `ask_skein` first with the question and its context: repo,
-  ticket, PRs. If a person is at the chat and you would ask them anyway, call it with
-  `wait_seconds: 0` and `notify: false`. Act only on an answer with a decision id, and cite
-  that id (`D-0031`) in the commit message and the PR body, not just in your reasoning.
-- Go-ahead and confirmation questions are questions for Skein too: "start the run now?",
-  "proceed with X?", "continue to the next ticket?", "OK to open the PR?". Call `ask_skein`
-  before asking Nelson, the same way as for any other question, at the chat or unattended.
-- When a standing rule in the record covers the situation (for example D-0035: start a
-  planned ticket Nelson named once the PR it waits on merges), act on it without asking and
-  cite its id in the run report. Act on a rule only when every one of its conditions holds;
-  if you are unsure it applies, ask Skein rather than stretch it.
-- Never route Claude Code's tool-permission prompts through Skein: approving a command, a file
-  write or a tool. Those are the harness's safety checks, not decisions, and Skein never
-  stands in for them. If a permission check blocks a step, name the exact command or tool in
-  the run report so Nelson can decide whether to allow it; never change permission settings
-  yourself.
-- When `ask_skein` returns `pending` and you then ask the person in chat, record their reply
-  with `record_skein_answer`: the pending id, their words or the option letter they chose,
-  and their chat handle (Nelson's is `ollienel777`). Never pass your own answer or a summary
-  of theirs. The next ask on that question settles from it.
-- Unattended, call `ask_skein` with the default wait and `notify`, so the owner gets the DM.
-  If it still returns `pending`, park the item with the `needs-decision` label citing the
-  pending id, and move on.
-- `pending` is never an answer, and a draft attached to it is a guess until a person
-  confirms it.
-- Tuning and detection defaults, dependencies and licensing, migrations and deploys, security,
-  users' data, money and deleting things always go to a person; Skein never settles them.
-  When a person is at the chat, still call `ask_skein` with `wait_seconds: 0` and
-  `notify: false` to get a pending id, ask Nelson, and record his answer with
-  `record_skein_answer`, so the decision lands in the record. Unattended, don't ask Skein
-  about them; use `needs-decision` directly.
-- Merges and Nelson-only actions (labelling, paid compute, deploys) are direct asks, with
-  nothing to record.
-- Never put secrets or production data in a question or an answer.
