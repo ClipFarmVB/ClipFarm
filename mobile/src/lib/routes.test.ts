@@ -39,19 +39,30 @@ const EPIC_SCREENS: [ticket: string, file: string, declaredAs: string][] = [
 // deleted screen rather than a misconfigured runner.
 const appDir = join(process.cwd(), "src", "app");
 
+function rootLayout(): string {
+  return readFileSync(join(appDir, "_layout.tsx"), "utf8");
+}
+
 /**
- * Every `name` the root layout declares.
+ * The `name`s declared inside the `Stack.Protected` block with this guard.
  *
- * Checked as well as the files, because expo-router registers a route whose
- * file exists regardless of whether the layout mentions it — and anything it
- * does not mention sits outside both `Stack.Protected` blocks, reachable while
- * signed out. A misspelled `Stack.Screen name` is the way that happens by
- * accident: the typo'd entry guards nothing and the real screen is left open,
- * with no error anywhere.
+ * Scoped to the block rather than matched across the whole file, because where
+ * a declaration sits is the thing that matters. expo-router registers a route
+ * whose file exists whether the layout mentions it or not, and anything outside
+ * both blocks is reachable while signed out — so "mentioned somewhere in
+ * _layout.tsx" is satisfied by a screen that has been moved out of its guard,
+ * and by the guards being deleted outright. Both of those passed a whole-file
+ * match; neither passes this.
  */
-function declaredScreenNames(): string[] {
-  const layout = readFileSync(join(appDir, "_layout.tsx"), "utf8");
-  return [...layout.matchAll(/name="([^"]+)"/g)].map((match) => match[1]);
+function namesGuardedBy(guard: string): string[] {
+  const blocks = [
+    ...rootLayout().matchAll(
+      /<Stack\.Protected\s+guard=\{([^}]*)\}>([\s\S]*?)<\/Stack\.Protected>/g
+    ),
+  ];
+  return blocks
+    .filter(([, blockGuard]) => blockGuard.trim() === guard)
+    .flatMap(([, , inner]) => [...inner.matchAll(/name="([^"]+)"/g)].map((m) => m[1]));
 }
 
 describe("epic routes", () => {
@@ -63,10 +74,27 @@ describe("epic routes", () => {
     expect(existsSync(join(appDir, file)), `${file} is missing`).toBe(true);
   });
 
-  it.each(EPIC_SCREENS)("%s is declared in the root layout", (_ticket, _file, declaredAs) => {
-    expect(
-      declaredScreenNames(),
-      `${declaredAs} is not declared in _layout.tsx, so it is not behind a guard`
-    ).toContain(declaredAs);
+  it.each(EPIC_SCREENS)(
+    "%s is declared inside the guard it belongs to",
+    (_ticket, _file, declaredAs) => {
+      // `(auth)` is the signed-out half; everything else in the epic is behind
+      // a session. A screen in the wrong block — or in neither, because the
+      // guards were removed — is reachable by whoever should not reach it.
+      const guard = declaredAs === "(auth)" ? "!session" : "!!session";
+      expect(
+        namesGuardedBy(guard),
+        `${declaredAs} is not declared inside <Stack.Protected guard={${guard}}>, ` +
+          `so it is not behind that guard`
+      ).toContain(declaredAs);
+    }
+  );
+
+  it("binds the api client", () => {
+    // `src/lib/api.ts` is the only caller of `configureApiClient`, and it does
+    // it as an import side effect — so if nothing imports it, the client is
+    // never configured and the first request throws. A static check because the
+    // module reaches supabase-js and expo-secure-store, which do not load under
+    // this runner; what it guards is that the import line still exists.
+    expect(rootLayout()).toMatch(/import\s+"@\/lib\/api"/);
   });
 });

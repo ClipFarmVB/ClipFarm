@@ -12,9 +12,11 @@ cp mobile/.env.example mobile/.env        # then fill in the Supabase values
 npm run start --workspace=mobile
 ```
 
-Expo Go is enough for the placeholder screens and the session. It is **not**
-enough once the background-upload modules land (CF-323, CF-324): custom native
-code needs a development build.
+Expo Go is enough for the placeholder screens and the session — but
+`expo-dev-client` is a dependency, so `expo start` opens in development-build
+mode and you press `s` to switch to Expo Go. Expo Go stops being enough once
+the background-upload modules land (CF-323, CF-324): custom native code needs a
+development build.
 
 The sign-in screen is the one placeholder that works: an existing ClipFarm
 account signs in, and the session is read back from the keychain on the next
@@ -83,7 +85,8 @@ scaffold PR needs one.
 | `src/app/` | Routes. Every screen in the epic is registered as a placeholder — a screen ticket replaces its own file and touches nothing shared. |
 | `src/lib/session.tsx` | The session: restore on cold start, sign in/up/out, the access token for the API client. |
 | `src/lib/secureStore.ts` | Keychain storage for that session, chunked around the 2048-byte Android cap. |
-| `src/lib/apiClient.ts` | Temporary stand-in for `packages/api-client` (CF-314) — same `{ baseUrl, getToken }` shape, so adopting the real package is an import change. |
+| `src/lib/api.ts` | Binds the client to this app. **Import `apiRequest` from here**, not from `apiClient.ts`: this is the module that configures it, and an unconfigured client throws on the first request. |
+| `src/lib/apiClient.ts` | Temporary stand-in for `packages/api-client` (CF-314) — mirrors that package's `configureApiClient({ baseUrl, getToken })` surface, so adopting it is an import change. |
 | `src/upload/` | The background-upload contract (CF-323/CF-324 implement it) and the mock CF-330 builds against. |
 | `src/player/` | The `ClipSource` contract, so CF-332's player survives the mezzanine proxy landing under it. |
 | `modules/clipfarm-upload/` | The local Expo module and its config plugin. No native code yet. |

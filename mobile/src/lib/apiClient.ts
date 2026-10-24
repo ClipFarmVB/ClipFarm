@@ -17,6 +17,12 @@
  * and it is the one call site that has to change afterwards, to the endpoint
  * function for whatever it was fetching. Everything else is a swap of this
  * import for `@clipfarm/api-client`.
+ *
+ * **Screens import from ./api, not from here.** Nothing in this file configures
+ * itself — `./api` is what calls `configureApiClient`, and the root layout
+ * imports it for that side effect. Reaching past it gets an unconfigured client
+ * that throws on the first request, which is exactly what happened when no
+ * module imported `./api` at all.
  */
 
 export interface ApiClientConfig {

@@ -5,6 +5,13 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 import { SessionProvider, useSession } from "@/lib/session";
 
+// Imported for its side effect: it is what calls `configureApiClient`, and the
+// api client throws on the first request until something does. This is the one
+// module the app cannot start without loading, which is why the binding hangs
+// here rather than off whichever screen happens to fetch first. `routes.test.ts`
+// fails if this import goes away.
+import "@/lib/api";
+
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -27,9 +34,13 @@ export default function RootLayout() {
  * registers any file under `src/app/`, declared or not, and an undeclared one
  * lands *outside* both `Stack.Protected` blocks — reachable while signed out.
  * Inside `(tabs)` or `(auth)` a new file inherits that group's guard and needs
- * nothing; anywhere else it needs its own entry. `routes.test.ts` holds this
- * for the epic's screens, including against a misspelled `name`, which would
- * otherwise guard a route that does not exist and leave the real one open.
+ * nothing; anywhere else it needs its own entry.
+ *
+ * `routes.test.ts` holds the epic's screens to the block they belong in, not
+ * merely to being mentioned somewhere in this file: a misspelled `name` guards
+ * a route that does not exist and leaves the real one open, and a screen moved
+ * out of its `Stack.Protected` block is reachable signed out. Both red there.
+ * It cannot hold a screen nobody added — that is what the exception above is.
  *
  * `Stack.Protected` rather than a redirect in an effect: a guard is evaluated
  * before the screen mounts, so a signed-out cold start never flashes the
