@@ -16,3 +16,22 @@
  * on alone yields a UI that cannot load anything.
  */
 export const SOCIAL_ENABLED = process.env.NEXT_PUBLIC_SOCIAL_ENABLED === "true";
+
+/**
+ * Whether a clip or a post may be set to `public` (CF-109b).
+ *
+ * Off by default, and mirrored from the API's `PUBLIC_POSTING_ENABLED` the same
+ * way `SOCIAL_ENABLED` is mirrored — `api/app/services/publishing.py` carries
+ * the argument for why that tier is gated apart from `followers`.
+ *
+ * This flag decides only what the composer OFFERS. The API refuses `public`
+ * with a 422 whenever its own flag is off, whatever this one says, and the
+ * composer still surfaces that: this is the
+ * backstop for the two flags disagreeing, which is a rebuild apart on the web
+ * side and a restart apart on the API side. An option that explains why it is
+ * unavailable is a limit; one that fails on submit is a dead end — the
+ * argument CF-109's tier ceiling used to make, before CF-109b turned that
+ * ceiling into a consent step.
+ */
+export const PUBLIC_POSTING_ENABLED =
+  process.env.NEXT_PUBLIC_PUBLIC_POSTING_ENABLED === "true";

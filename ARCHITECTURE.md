@@ -68,9 +68,13 @@ local CPU pose. Each level catches and falls through.
   units make tuning portable across sources. Sampling is fps-aware too
   (`sample_every = round(fps / 3)` → ~3 detections/sec at any frame rate).
 - **Content-addressed ball cache on R2.** Tracking a 22-min video costs ~30 min on CPU
-  but depends only on (video bytes, model version, sample rate) — so positions are
-  cached at `ball-cache/{md5(video)}-{model}-s{rate}.json`. Re-uploads and pipeline
-  re-tuning hit the cache in seconds. Classic memoization keyed by content hash, not id.
+  but depends only on (video bytes, model version, sample rate, tracking version) — so
+  positions are cached at `ball-cache/{md5(video)}-{model}-s{rate}-v{version}.json`.
+  Re-uploads and pipeline re-tuning hit the cache in seconds. Classic memoization keyed
+  by content hash, not id. The trailing version is `ball.TRACKING_CACHE_VERSION` (CF-231):
+  the first three components cannot see a change to how tracking works, so without it a
+  tuning change replays tracks built by the old code. Bumping it orphans every entry —
+  nothing reclaims them — and the next run of every video re-tracks.
 - **Precision gate before expensive compute** (stage 2 before stage 3): scoring is
   cheap (audio + features already in hand), pose is not. The gate turns a 22-min VOD
   into ~5 min of clip candidates before the expensive model runs.
@@ -99,7 +103,12 @@ local CPU pose. Each level catches and falls through.
   than falling back. `guarded` is the default — it rejects
   contacts fired over a near-stationary ball, opens windows on sustained motion
   so a rally the contact detector never sees isn't cut outright, and pads
-  tighter.
+  tighter. A third mode, `learned` (CF-394, off), scores each second with a
+  logistic in-play model from committed weights and sits one link further up
+  the same chain: any exception — unvalidated weights, a contract mismatch, a
+  track too sparse to judge, its own import — falls back to `guarded`. It lives
+  in its own module (`dead_time_ml.py`), imported inside that fallback, so it
+  cannot take the other two down with it.
 - **Abstaining beats guessing.** When the ball track is too sparse to judge (below
   ~1 usable speed sample/s, measured on fixture test3 at 0.57/s), every builder
   buys dead time by cutting real play. `guarded` detects that and declines: it

@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { AlertCircle, CheckCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { LogoMark } from "@/components/LogoMark";
 import { createClient } from "@/lib/supabase";
 
 export default function SignupPage() {
@@ -34,10 +35,21 @@ export default function SignupPage() {
 
   async function handleGoogleSignup() {
     const supabase = createClient();
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: `${window.location.origin}/auth/callback` },
-    });
+    setError(null);
+    // Same two failure paths as /login's handleGoogleLogin, which carries the
+    // full reasoning: the `{ error }` arm is the API's shape, and the reachable
+    // failure is a rejection from the PKCE code challenge. This is an
+    // un-awaited `onClick`, so without the catch that rejection gave no UI and
+    // an unhandled rejection (CF-304).
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
+      });
+      if (error) setError(error.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Please try again.");
+    }
   }
 
   if (success) {
@@ -66,6 +78,7 @@ export default function SignupPage() {
     <div className="flex min-h-[80vh] items-center justify-center fade-up">
       <div className="w-full max-w-[340px]">
         <div className="mb-7">
+          <LogoMark className="mb-5 h-12 w-12" />
           <h1 className="text-[18px] font-semibold text-foreground">Create an account</h1>
           <p className="mt-1 text-[13px] text-muted">Start clipping volleyball highlights</p>
         </div>
@@ -105,7 +118,10 @@ export default function SignupPage() {
           </div>
 
           {error && (
-            <div className="flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400"
+            >
               <AlertCircle size={13} className="shrink-0 mt-0.5" />
               {error}
             </div>

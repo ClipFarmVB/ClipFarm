@@ -9,7 +9,7 @@ from app.auth import get_current_user_id
 from app.database import get_db
 from app.models.player import Player
 from app.models.team import Team
-from app.schemas.player import PlayerOut, PlayerCreate
+from app.schemas.player import PlayerOut, PlayerCreate, PlayerUpdate
 
 router = APIRouter(prefix="/players", tags=["players"])
 
@@ -77,19 +77,17 @@ async def create_player(body: PlayerCreate, db: DB, user_id: UserId):
 
 
 @router.patch("/{player_id}", response_model=PlayerOut)
-async def update_player(player_id: uuid.UUID, body: PlayerCreate, db: DB, user_id: UserId):
+async def update_player(player_id: uuid.UUID, body: PlayerUpdate, db: DB, user_id: UserId):
     player = await get_owned_player(player_id, user_id, db)
 
+    # exclude_unset is load-bearing: an omitted field must not be written, and
+    # a null jersey_number/photo_url must still clear (CF-253).
     updates = body.model_dump(exclude_unset=True)
-    # Nested, not two sibling conditions: CF-238 was a third path through a
-    # fused `in updates and is not None`, so every team_id present here must
-    # leave through one of these two branches.
+    # PlayerUpdate refuses a null team_id at validation (422), so a team_id
+    # present here is always a UUID. That replaced CF-238's runtime 400, which
+    # existed only because PlayerCreate let null through and clearing it
+    # orphans the player irrecoverably.
     if "team_id" in updates:
-        # Clearing orphans the player irrecoverably — _get_owned_player rejects
-        # team_id IS NULL and runs first, so every later PATCH 404s and nothing
-        # can put the team back. create_player already refuses a null team_id.
-        if updates["team_id"] is None:
-            raise HTTPException(status_code=400, detail="team_id cannot be cleared")
         # Reassigning: the new team must be owned by the caller too.
         new_team = await db.get(Team, updates["team_id"])
         if not new_team or new_team.owner_id != user_id:

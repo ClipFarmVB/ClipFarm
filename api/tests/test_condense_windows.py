@@ -136,6 +136,175 @@ class TestEmptyIsAVerdictNotAFailure:
         assert isinstance(windows, Abstained)
 
 
+def learned_weights(**over) -> dict:
+    """Synthetic weights that call fast seconds in play (mean_speed_3s only),
+    so their windows follow `track()`'s rally and differ from guarded's."""
+    from ml.pipeline.dead_time_ml import FEATURE_NAMES, FEATURE_VERSION, SCALING, context_rule
+
+    coef = [0.0] * len(FEATURE_NAMES)
+    coef[FEATURE_NAMES.index("mean_speed_3s")] = 4.0
+    data = {
+        "features": list(FEATURE_NAMES), "feature_version": FEATURE_VERSION,
+        "scaling": dict(SCALING), "context": context_rule([]),
+        "coef": coef, "intercept": -2.0, "threshold": 0.5,
+        "validated": True, "trained_on": "synthetic",
+    }
+    data.update(over)
+    return data
+
+
+class TestLearnedMode:
+    """CF-394: "learned" chains to "guarded", which chains to "rules".
+
+    The acceptance criteria, one test each: committed (unvalidated) weights give
+    guarded's windows and one log line naming why; validated weights give the
+    learned builder's; a corrupted file gives guarded's.
+    """
+
+    CONTACTS = contacts_at(12.0, 15.0, 18.0, 70.0)
+
+    @staticmethod
+    def _weights_file(monkeypatch, tmp_path, text):
+        import ml.pipeline.dead_time_ml as dml
+
+        p = tmp_path / "weights.json"
+        p.write_text(text)
+        monkeypatch.setattr(dml, "WEIGHTS_PATH", p)
+        return p
+
+    def _build(self, mode, positions=None, frame_height=FRAME_H):
+        return _build_condense_windows(
+            mode, self.CONTACTS, track() if positions is None else positions,
+            DURATION, frame_height, settings,
+        )
+
+    def test_the_committed_unvalidated_weights_give_guarded_windows(self, caplog):
+        import logging
+
+        import ml.pipeline.dead_time_ml as dml
+
+        assert dml.load_weights(dml.WEIGHTS_PATH, warn_unvalidated=False)["validated"] is False, (
+            "premise: the committed weights are unvalidated until CF-395"
+        )
+        guarded, _ = self._build("guarded")
+        with caplog.at_level(logging.INFO, logger="app.workers.tasks"):
+            windows, built_by = self._build("learned")
+
+        assert built_by == "guarded"
+        assert windows == guarded
+        lines = [r for r in caplog.records if r.name == "app.workers.tasks"]
+        assert len(lines) == 1, [r.getMessage() for r in lines]
+        assert lines[0].levelno == logging.INFO, "an expected fallback, not a failure"
+        assert "not validated" in lines[0].getMessage()
+
+    def test_the_offline_harness_exit_says_why_learned_fell_back(self):
+        """R1-M2: the decline is logged at INFO, which nothing in a harness run
+        prints, so `harness --offline`'s refusal must carry the reason."""
+        from ml.eval.harness import _learned_windows_or_exit
+
+        with pytest.raises(SystemExit) as excinfo:
+            _learned_windows_or_exit(lambda: self._build("learned"))
+        assert "fell back to 'guarded'" in str(excinfo.value)
+        assert "not validated" in str(excinfo.value)
+
+    def test_validated_weights_give_the_learned_windows(self, monkeypatch, tmp_path):
+        import json
+
+        from ml.pipeline.dead_time_ml import active_windows_learned
+
+        self._weights_file(monkeypatch, tmp_path, json.dumps(learned_weights()))
+        windows, built_by = self._build("learned")
+
+        assert built_by == "learned"
+        assert windows == active_windows_learned(
+            self.CONTACTS, track(), DURATION, FRAME_H, weights=learned_weights())
+        guarded, _ = self._build("guarded")
+        assert windows != guarded, "sanity: the two builders disagree on this track"
+
+    @pytest.mark.parametrize("text", [
+        "{not json",
+        "",
+        '{"features": ["only_one"], "validated": true}',
+    ], ids=["truncated", "empty", "wrong-contract"])
+    def test_a_corrupted_file_gives_guarded_windows(self, monkeypatch, tmp_path, caplog, text):
+        import logging
+
+        self._weights_file(monkeypatch, tmp_path, text)
+        guarded, _ = self._build("guarded")
+        with caplog.at_level(logging.INFO, logger="app.workers.tasks"):
+            windows, built_by = self._build("learned")
+
+        assert (windows, built_by) == (guarded, "guarded")
+        lines = [r for r in caplog.records if r.name == "app.workers.tasks"]
+        assert len(lines) == 1 and lines[0].levelno == logging.WARNING
+
+    def test_a_missing_file_gives_guarded_windows(self, monkeypatch, tmp_path):
+        import ml.pipeline.dead_time_ml as dml
+
+        monkeypatch.setattr(dml, "WEIGHTS_PATH", tmp_path / "absent.json")
+        guarded, _ = self._build("guarded")
+        assert self._build("learned") == (guarded, "guarded")
+
+    def test_an_import_failure_gives_guarded_windows(self, monkeypatch):
+        """The learned builder is its own module: unlike guarded → rules, its
+        import failing still leaves the next link standing."""
+        import ml.pipeline
+
+        monkeypatch.delattr(ml.pipeline, "dead_time_ml", raising=False)
+        monkeypatch.setitem(sys.modules, "ml.pipeline.dead_time_ml", None)
+        guarded, _ = self._build("guarded")
+        assert self._build("learned") == (guarded, "guarded")
+
+    def test_learned_empty_is_a_verdict_not_a_fallback(self, monkeypatch, tmp_path):
+        """One link up from TestEmptyIsAVerdictNotAFailure: `[]` from the learned
+        builder ships as `[]`, not as guarded's windows."""
+        import json
+
+        self._weights_file(monkeypatch, tmp_path, json.dumps(learned_weights(threshold=2.0)))
+        assert self._build("learned") == ([], "learned")
+
+    def test_a_sparse_track_falls_back_to_guardeds_abstain(self, monkeypatch, tmp_path, caplog):
+        """Declined, not scored — so the previous condensed cut survives, which
+        it would not if the learned builder returned `[]` here."""
+        import json
+        import logging
+
+        self._weights_file(monkeypatch, tmp_path, json.dumps(learned_weights()))
+        with caplog.at_level(logging.INFO, logger="app.workers.tasks"):
+            windows, built_by = self._build("learned", positions=track(step=1.2))
+
+        assert built_by == "guarded"
+        assert isinstance(windows, Abstained)
+        lines = [r for r in caplog.records if r.name == "app.workers.tasks"]
+        assert len(lines) == 1 and lines[0].levelno == logging.INFO
+
+    def test_both_failing_lands_on_rules(self, monkeypatch, tmp_path):
+        """frame_height 0 makes both track builders raise; the chain ends at
+        rules, which needs no frame height."""
+        import json
+
+        self._weights_file(monkeypatch, tmp_path, json.dumps(learned_weights()))
+        windows, built_by = self._build("learned", frame_height=0)
+        assert built_by == "rules"
+        assert windows
+
+    def test_a_logging_failure_cannot_break_condense(self, monkeypatch):
+        """Reporting must never break processing (CLAUDE.md → Code posture)."""
+        from app.workers import tasks
+
+        def broken(*a, **k):
+            raise RuntimeError("log handler down")
+
+        guarded, _ = self._build("guarded")
+        monkeypatch.setattr(tasks.logger, "info", broken)
+        monkeypatch.setattr(tasks.logger, "warning", broken)
+        assert self._build("learned") == (guarded, "guarded")
+
+    def test_unknown_mode_still_lands_on_rules(self):
+        """The new link must not turn an unknown name into a guarded run."""
+        assert self._build("Learned")[1] == "rules"
+
+
 class TestWorthCondensing:
     def test_abstain_is_not_worth_encoding(self):
         assert _worth_condensing(DURATION, DURATION) is False
@@ -375,7 +544,10 @@ class TestTheCF174KillSwitchReachesTheBridge:
             "_build_condense_windows stopped passing normalize= to the bridge, "
             "so the kill switch no longer reaches the condense half"
         )
-        return seen
+        # A copy, not `seen` itself: a second call in the same test wraps this
+        # spy, so the live dict would keep updating and compare equal to any
+        # later capture (R9-M1).
+        return dict(seen)
 
     def test_on_scales_the_bridge_with_frame_height(self, monkeypatch):
         seen = self._bridge_threshold(monkeypatch, enabled=True, frame_height=1080)
@@ -388,3 +560,86 @@ class TestTheCF174KillSwitchReachesTheBridge:
         # The height is still passed; `normalize=False` is what stops it being
         # used, so the two halves cannot disagree about which video this is.
         assert seen["frame_height"] == 1080
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_the_soft_flag_does_not_reach_the_bridge(self, monkeypatch, enabled):
+        """
+        CF-376's `ball_contact_soft_scale_enabled` softens the contact gates
+        and nothing else: the bridge keeps the full scale, so it is handed the
+        same arguments whichever way the soft flag is set. Soft contacts joined
+        by a full-scale bridge is the combination that flag ships, measured on
+        unlabelled fixtures in its PR.
+        """
+        monkeypatch.setattr(settings, "ball_contact_soft_scale_enabled", False)
+        baseline = self._bridge_threshold(monkeypatch, enabled=enabled, frame_height=1080)
+        monkeypatch.setattr(settings, "ball_contact_soft_scale_enabled", True)
+        soft = self._bridge_threshold(monkeypatch, enabled=enabled, frame_height=1080)
+        assert "soft_scale" not in soft
+        assert soft == baseline
+
+
+def test_the_worker_hands_find_contacts_both_switches():
+    """
+    process_game_task is the one production caller of find_contacts, and the
+    soft flag is a keyword with a False default, so dropping it there is silent
+    — the flag would read as set and change nothing. Asserted on the parsed
+    call, as test_eval_condense_settings does for the eval mirrors.
+    """
+    import ast
+
+    tasks_py = Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks.py"
+    tree = ast.parse(tasks_py.read_text(encoding="utf-8"))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        and n.func.id == "find_contacts"
+    ]
+    assert calls, "tasks.py no longer calls find_contacts"
+    for call in calls:
+        kwargs = {k.arg: ast.unparse(k.value) for k in call.keywords if k.arg}
+        assert kwargs.get("normalize") == "_cfg.ball_contact_scale_enabled"
+        assert kwargs.get("soft_scale") == "_cfg.ball_contact_soft_scale_enabled"
+
+
+def test_the_worker_filters_static_sites_before_anything_reads_the_track():
+    """
+    CF-229: process_game_task applies `ball_static_site_filter_enabled` to the
+    cached track once, rebinding `tracker`, before the find_contacts call that
+    reads it — so contacts and the condense stage's positions, which are both
+    read off `tracker` afterwards, see the same track. Dropping `enabled=`
+    would not even run (it is required), but reading the wrong setting, or
+    filtering into a name nothing reads, would be silent.
+    """
+    import ast
+
+    tasks_py = Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks.py"
+    tree = ast.parse(tasks_py.read_text(encoding="utf-8"))
+    assigns = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Name) and n.value.func.id == "filter_static_sites"
+    ]
+    assert len(assigns) == 1, "tasks.py should filter the ball track exactly once"
+    (assign,) = assigns
+    assert [ast.unparse(t) for t in assign.targets] == ["tracker"]
+    call = assign.value
+    assert ast.unparse(call.args[0]) == "tracker"
+    kwargs = {k.arg: ast.unparse(k.value) for k in call.keywords if k.arg}
+    assert kwargs.get("enabled") == "_cfg.ball_static_site_filter_enabled"
+
+    finds = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        and n.func.id == "find_contacts"
+    ]
+    assert finds and all(ast.unparse(f.args[0]) == "tracker" for f in finds)
+    assert all(assign.lineno < f.lineno for f in finds), (
+        "find_contacts runs before the static-site filter, so it reads the unfiltered track"
+    )
+
+
+def test_the_static_site_filter_ships_off():
+    """CF-229: the flag is evidence-gathering only; flipping it is a decision."""
+    from app.config import Settings
+
+    assert Settings.model_fields["ball_static_site_filter_enabled"].default is False

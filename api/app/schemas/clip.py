@@ -39,6 +39,11 @@ class ClipOut(BaseModel):
     # forgets to resolve it offers less than it could, never more. It is a hint
     # for the UI either way — `create_post` re-derives it server-side.
     effective_visibility: Visibility = Visibility.private
+    # True when the clip belongs to a copy of the example game (CF-220). Read
+    # off the game, like source_available, because the clip modal is reached
+    # from pages that hold only the clip. Such a clip cannot be posted or have
+    # its visibility changed — the footage is not the owner's to publish.
+    is_sample: bool = False
 
 
 class ClipTagRequest(BaseModel):
@@ -52,6 +57,26 @@ class ClipLabelsRequest(BaseModel):
 class ClipTrimRequest(BaseModel):
     start_delta: float  # seconds to add/subtract from start (negative = extend earlier)
     end_delta: float    # seconds to add/subtract from end (positive = extend later)
+
+
+class ClipVisibilityRequest(BaseModel):
+    """Who may read this clip (CF-109b).
+
+    The clip's OWN tier, which overrides the game's rather than being bounded
+    by it — `access._effective` resolves NULL as "inherit", and a set value
+    wins. A public clip inside a private game is a supported and documented
+    state: it is reachable by direct link and through a collection, while
+    `GET /games/{id}/clips` still 404s the whole game. Publishing *that clip*
+    is not the right to enumerate its game.
+
+    There is no way back to NULL — "inherit from the game" is a state only the
+    detector's original write produces. It costs nothing today, because no
+    write path for a game's visibility exists, so every game is private and an
+    explicit `private` and an inherited one are the same answer. If a game
+    setter ever lands, this is the thing to revisit.
+    """
+
+    visibility: Visibility
 
 
 class ClipDeleteRequest(BaseModel):
