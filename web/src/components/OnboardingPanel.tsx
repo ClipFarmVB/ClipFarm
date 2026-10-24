@@ -156,7 +156,7 @@ function Step({
       <span
         className={cn(
           "mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium tabular-nums",
-          done ? "border-brand bg-brand text-[#0c0c0e]" : "border-border-strong bg-surface text-muted",
+          done ? "border-brand bg-brand text-on-brand" : "border-border-strong bg-surface text-muted",
         )}
       >
         {done ? <Check size={11} strokeWidth={3} aria-hidden="true" /> : n}
