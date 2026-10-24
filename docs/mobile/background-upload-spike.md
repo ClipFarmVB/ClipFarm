@@ -464,7 +464,10 @@ exist.
 - **The 6 h `dataSync` cap binds on Android** for cap-sized files. It does not
   change the best part size, but it changes whether 8 GB is achievable at all on
   one FGS budget, which is a `max_upload_bytes` conversation, not a part-size
-  one.
+  one. **Test A-10** is the one that settles it: A-7 forces the cap on a
+  throttled link to check `onTimeout()` handling, and A-9 is pinned above the
+  cap on purpose, so neither produces a cap-sized unattended result at a rate a
+  filmer would actually have.
 
 Do **not** change the setting until the device test is run.
 
@@ -474,13 +477,14 @@ Everything in §5.3 is written as though iOS could be given 32 MiB while the
 browser kept 100 MiB. **It cannot, today.** `upload_part_size_bytes` is a single
 server-side global and no client can ask for a different one `[repo]`:
 
-- `api/app/routers/games.py:315` — `part_size = settings.upload_part_size_bytes`,
-  unconditionally, for every caller of `POST /games/uploads`.
+- `api/app/routers/games.py` — `create_upload` sets `part_size =
+  settings.upload_part_size_bytes` unconditionally, for every caller of
+  `POST /games/uploads`.
 - `api/app/schemas/game.py` — `UploadCreate` carries `title`, `filename`,
   `content_type`, `size_bytes`, `duration_seconds` and `condense`. There is no
   part-size field, so a client cannot express a preference.
-- `api/app/routers/games.py:260` — `GET /games/upload-config` serves that same
-  one value to everybody.
+- `api/app/routers/games.py` — `upload_config`, serving
+  `GET /games/upload-config`, hands that same one value to everybody.
 
 So dropping the setting to 32 MiB moves the browser too: 2 GiB goes from 21
 parts to 64, and a cap-sized 8 GiB from 82 to 256 (§1.2). That may well be
@@ -493,7 +497,7 @@ Two consequences worth stating plainly:
 
 - **Per-platform part sizes are a protocol change, not a config change.** Giving
   iOS 32 MiB while the browser keeps 100 MiB means a new field on `UploadCreate`
-  and on `UploadConfig`, plus a branch at `games.py:315` — exactly the thing
+  and on `UploadConfig`, plus a branch in `create_upload` — exactly the thing
   §5.3's reason 4 claims is avoided.
 - **So the real question the device test unblocks is not "what should
   `upload_part_size_bytes` be" but "do we need a per-client part size at all".**
@@ -605,6 +609,7 @@ backgrounded. The ticket is explicit about this and it is the whole point.
 | **A-7** | `dataSync` 6 h cap | D3, F-8GB on a deliberately throttled link so the FGS runs >6 h | `onTimeout()` fires; the service stops cleanly with no `RemoteServiceException`; the upload resumes on next foreground |
 | **A-8** | scoped storage | upload straight from the system picker's `content://` URI, **once from local device storage and once from a cloud-backed provider** (Google Photos or Drive) | ranged reads work with no full copy to app storage. **Record peak scratch for each provider.** A provider that hands back a non-seekable descriptor forces a staged copy, which makes §4.1's zero-scratch claim false and extends §5.1's disk cost to Android |
 | **A-9** | 8 GB overnight | D3, F-8GB, locked, on battery, overnight, **on a link fast enough that 8 GiB transfers in under 6 h of service time** (≥ ~3.5 Mbps sustained) and with the app never foregrounded | completes inside the 12 h TTL. **If the transfer needs more than 6 h of `dataSync` time it cannot pass this criterion** — the Android 15 cap (§4.3) stops the service first, and that result is A-7, not a TTL failure. Record the link rate and the service time so the two are distinguishable |
+| **A-10** | **8 GB overnight at a representative rate** | D3, F-8GB, locked, on battery, overnight, app never foregrounded, **on an ordinary cellular uplink of ~2 Mbps** — fast enough for the 12 h TTL (needs 1.59 Mbps, §1.2) but ~9.5 h of transfer time, so the 6 h cap is the binding constraint `[arithmetic]` | **this row is an input to the `max_upload_bytes` decision, not a platform pass/fail.** Record whether the service reached its 6 h budget, and what wall-clock that took: 6 h of `dataSync` time is not 6 h of wall-clock once Doze, maintenance windows and the OEM manager intervene, and that ratio is the number §5.3's fourth flip condition needs. A cap-induced stop here is A-7's mechanism under realistic conditions, so record how many bytes landed before `onTimeout()` and whether the remainder resumed on next foreground. **Not** a FAIL against the 12 h TTL (§6.6) |
 
 ### 6.6 Pass / fail thresholds
 
@@ -624,9 +629,9 @@ separately from a platform failure — it is our bug, not Apple's or Google's.
 
 Likewise, an Android run that stops because the 6 h `dataSync` budget ran out
 (§4.3) is **not** a FAIL against the 12 h TTL and must not be recorded as one.
-It is the documented cap doing what §4.3 says, and the result belongs with A-7.
-Record the service time alongside the wall-clock so the two causes stay
-distinguishable.
+It is the documented cap doing what §4.3 says, and the result belongs with A-7
+(mechanism) or A-10 (whether it binds at a rate a filmer would have). Record the
+service time alongside the wall-clock so the two causes stay distinguishable.
 
 ---
 
@@ -658,6 +663,7 @@ came from.
 | A-7 | | `[TO MEASURE]` | | | n/a | |
 | A-8 | | `[TO MEASURE]` | | | `[TO MEASURE]` | provider behind the URI (local / Photos / Drive); seekable descriptor y/n: |
 | A-9 | | `[TO MEASURE]` | | | n/a | |
+| A-10 | | `[TO MEASURE]` | | | n/a | link rate; service time at stop; wall-clock those 6 h took; bytes landed before `onTimeout()`: |
 
 **Final part-size decision:** `[TO MEASURE]` — §5.3 recommends 32 MiB
 provisionally; record what I-6 actually showed and which flip condition, if any,
@@ -666,6 +672,12 @@ fired.
 **Does the browser keep 100 MiB?** `[TO MEASURE]` — §5.4: there is one global
 part size today, so answering the part-size question also answers whether we
 need a per-client one. Record the decision here.
+
+**Does 8 GB survive one Android FGS budget?** `[TO MEASURE]` — A-10. If 6 h of
+`dataSync` time does not cover a cap-sized file at an ordinary rate, that is the
+`max_upload_bytes` input §5.3's fourth flip condition asks for, and the answer
+is a product decision (lower the cap, or require a foreground visit), not a
+part-size one.
 
 ---
 
@@ -702,7 +714,7 @@ case on iOS.
 sweep's predicate is time of creation, not time of activity `[repo]`:
 
 ```
-api/app/routers/games.py:206-210
+api/app/routers/games.py — _sweep_abandoned_uploads
             select(Game).where(
                 Game.owner_id == user_id,
                 Game.status == GameStatus.uploading,
@@ -776,6 +788,10 @@ the iOS TTL fix needs. One ticket serves both.
   (§4.1). Test A-8. `[TO MEASURE]`
 - Whether the file-only constraint on iOS background uploads still holds as
   documented (§3.1). `[TO MEASURE]`
+- Whether 6 h of `dataSync` budget covers a cap-sized file at an ordinary
+  cellular rate, i.e. how much wall-clock those 6 h of service time take once
+  Doze and the OEM manager are in play. Test A-10; it is the `max_upload_bytes`
+  input, not a part-size one. `[TO MEASURE]`
 
 The acceptance boxes on [#367](https://github.com/ClipFarmVB/ClipFarm/issues/367)
 that depend on those are deliberately left unticked.
