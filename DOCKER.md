@@ -107,11 +107,42 @@ Full detail in `README.md` § Local Development.
 docker compose down
 ```
 
-To also remove Postgres data volume:
+To also remove the named volumes — `postgres_data` *and* `clipfarm_node_modules`:
 
 ```bash
 docker compose down -v
 ```
+
+That loses the database. To clear only the installed dependencies, see the next
+section.
+
+## After a dependency or workspace change
+
+A rebuild is not enough on its own. `node_modules` is a **named volume**
+(`clipfarm_node_modules`) mounted over `/app/node_modules`, and Docker seeds a
+named volume from image content only while the volume is **empty** — so on any
+machine that has already run `docker compose up`, the `npm ci` the rebuilt image
+ran never reaches the container, and neither does anything it created. The
+compose `command` is `npm --workspace=web run dev`, which installs nothing.
+
+That bites hardest on a new workspace (CF-314 added `packages/api-client`): the
+`node_modules/@clipfarm/api-client` symlink that makes the import resolve is an
+`npm ci` artifact, so without it Next cannot resolve the package and
+`transpilePackages` has nothing to transpile. A changed dependency pin has the
+same shape.
+
+So after pulling such a change, drop the volume as well as rebuilding:
+
+```bash
+docker compose down
+docker volume rm clipfarm_node_modules
+docker compose build web
+docker compose up -d
+```
+
+`docker compose down -v` does the same thing and more — it takes
+`postgres_data` with it, so reach for it only when you also want the database
+gone.
 
 ## Useful commands
 

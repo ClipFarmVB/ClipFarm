@@ -2,6 +2,11 @@
 .gitignore
 node_modules
 web/node_modules
+# Listed separately because a root-level pattern does not match nested paths —
+# which is why `web/node_modules` is its own line above. `Dockerfile.web` now
+# COPYs `packages/`, so without this a host-built install there would land in
+# the image on top of what `npm ci` put in it.
+packages/*/node_modules
 api/.venv
 .venv
 web/.next
