@@ -211,7 +211,7 @@ exact bytes forever and matches the ball-cache key.
 |---|---|---|
 | `rules` | `active_windows_from_contacts` + `bridge_windows_by_motion` | the CF-46 path; still the fallback when `guarded` raises |
 | `guarded` | `active_windows_guarded` | **the default.** Speed-gated contacts, motion anchors, tight pads, and an abstain when the ball track is too sparse |
-| `learned` | `active_windows_learned` | CF-394, **off**. A per-second in-play classifier from `ml/pipeline/deadtime_ml_weights.json`. Falls back to `guarded` on any exception — including unvalidated weights, which the committed file is until CF-395, and a track below `condense_guard_min_track_rate`. Ladder row `v6`, scored in-sample |
+| `learned` | `active_windows_learned` | CF-394, **off**. A per-second in-play classifier from `ml/pipeline/deadtime_ml_weights.json`. Falls back to `guarded` on any exception — including unvalidated weights, which the committed file is (CF-395 held it to the epic's bar held out and it failed; [below](#validating-the-learned-builder-cf-395)), and a track below `condense_guard_min_track_rate`. Ladder rows `v6` (and `v7`, without that track floor, eval only), scored in-sample |
 
 `guarded` became the default on the fixture numbers measured at `42b582f`, not
 on a clean sweep. Those numbers are the **switch-off** column below: they
@@ -234,20 +234,27 @@ read, so read the column that matches the deployment first.
 > merge left them unchanged, since nothing on the branch after it touched the
 > ladder's builders, scoring or inputs.
 
-Each cell is `rules` → `guarded`, dead time removed then live play cut.
+Each cell of the first three columns is `rules` → `guarded`, dead time removed
+then live play cut. The last column is `learned` alone, at the switch-on
+position only (CF-395), with each figure marked: **ho** is held out — the
+CF-393 fold model that never saw that game — and **in** is in-sample, the
+shipped weights, fitted on all five. Its held-out figures follow production's
+fallback chain, so on test3 the builder declines the track and `guarded`
+abstains. The bar is judged on the **ho** figures alone.
 
-| fixture | switch off (production today) | switch on (code default) | switch on + soft |
-|---|---|---|---|
-| test1*† | 56.2% → **58.4%** · 176s → **126s** | 56.2% → **58.4%** · 176s → **126s** | 56.2% → **58.4%** · 176s → **126s** |
-| test2 | 9.5% → **50.8%** · 2s → 12s | 54.4% → **54.9%** · 31s → **14s** | 40.6% → **53.4%** · 6s → 13s |
-| test3*† | 76.5% → 0.0% · 118s → **0s** | 92.8% → 0.0% · 178s → **0s** | 86.5% → 0.0% · 144s → **0s** |
-| test4 | 44.2% → **73.3%** · 83s → 100s | 62.9% → **81.0%** · 89s → 115s | 49.5% → **74.7%** · 84s → 102s |
-| test5* | 9.6% → **49.8%** · 0s → 20s | 50.4% → **57.2%** · 76s → **51s** | 30.5% → **50.2%** · 14s → 28s |
-| live cut, comparable three | 85s → 132s (**+47s**) | 196s → 180s (**−16s**) | 104s → 143s (**+39s**) |
-| net, comparable three | +134s → **+533s** | +201s → **+458s** | +315s → **+517s** |
-| net, all five | +633s → +1440s | +527s → +1366s | +752s → +1424s |
+| fixture | switch off (production today) | switch on (code default) | switch on + soft | learned, switch on |
+|---|---|---|---|---|
+| test1*† | 56.2% → **58.4%** · 176s → **126s** | 56.2% → **58.4%** · 176s → **126s** | 56.2% → **58.4%** · 176s → **126s** | ho 65.7% · 130.5s · in 66.2% · 117.5s |
+| test2 | 9.5% → **50.8%** · 2s → 12s | 54.4% → **54.9%** · 31s → **14s** | 40.6% → **53.4%** · 6s → 13s | ho 69.4% · 18.5s · in 75.1% · 28.5s |
+| test3*† | 76.5% → 0.0% · 118s → **0s** | 92.8% → 0.0% · 178s → **0s** | 86.5% → 0.0% · 144s → **0s** | ho abstains · in abstains |
+| test4 | 44.2% → **73.3%** · 83s → 100s | 62.9% → **81.0%** · 89s → 115s | 49.5% → **74.7%** · 84s → 102s | ho 81.3% · 146.5s · in 73.2% · 86.0s |
+| test5* | 9.6% → **49.8%** · 0s → 20s | 50.4% → **57.2%** · 76s → **51s** | 30.5% → **50.2%** · 14s → 28s | ho 74.2% · 45.5s · in 68.7% · 22.5s |
+| live cut, comparable three | 85s → 132s (**+47s**) | 196s → 180s (**−16s**) | 104s → 143s (**+39s**) | ho 210.5s · in 137.0s |
+| net, comparable three | +134s → **+533s** | +201s → **+458s** | +315s → **+517s** | ho +463.3s · in +687.3s |
+| net, all five | +633s → +1440s | +527s → +1366s | +752s → +1424s | ho +1528.8s · in +1818.2s |
 
-`* = held out while the variants were tuned.`
+`* = held out while the variants were tuned.` (The rule-based variants' sense of
+held out; the learned column's **ho** is the per-fold one above.)
 `† = excluded from the headline net` — see `EXCLUDED_FROM_TOTALS` in
 `visualize_deadtime.py`. test1 is a different labeler on 360p-space footage and
 test3 is a game the ball tracker cannot follow, so both measure something other
@@ -346,7 +353,7 @@ timeline.
 python -m ml.eval.visualize_deadtime   # -> results/deadtime_visualization.html
 
 # One side of the CF-174 switch (default: the settings mirror), keeping the
-# v0/v5 windows as {test}_{v0|v5}.json for harness --windows-json (CF-391).
+# v0/v5/v6 windows as {test}_{v0|v5|v6}.json for harness --windows-json (CF-391).
 python -m ml.eval.visualize_deadtime --contact-scale off --dump-windows DIR
 ```
 
@@ -525,6 +532,82 @@ away from the count gate.
 It measures and decides nothing. The candidate fix #476 led to is the soft
 flag (`BALL_CONTACT_SOFT_SCALE_ENABLED`), which ships off.
 
+## Validating the learned builder (CF-395)
+
+`validate_learned.py` scores `condense_mode="learned"` **held out** and applies
+the epic's validation bar (CF-389 decision 6) to it. The shipped weights have
+seen every fixture, so the ladder's `v6` cannot judge them; the held-out models
+are the trainer's per-fold ones, which the weights file already records under
+`"folds"`. For each fixture the tool rebuilds that fold's weights from the
+record (no refit), runs them through the production builder on the one game
+the fold held out, and scores the result beside `guarded` on the same game.
+
+```bash
+python -m ml.eval.validate_learned                    # table + every clause, both rungs
+python -m ml.eval.validate_learned --dump-windows DIR # also {test}_{learned|learned-ungated}.json
+```
+
+Two learned rungs, both held out:
+
+- **gated** — production's chain: below `min_track_rate` usable speed
+  samples/s the builder declines and `guarded` takes over, which abstains there.
+  The bar is judged on this rung, since it is what the mode would ship.
+- **ungated** — `min_track_rate=0.0`, eval only (D-0034). Production's gate
+  is unchanged. Its ladder counterpart, in-sample, is `v7`.
+
+**The bar fails for both rungs, so `"validated"` stays `false`.** Measured at
+`d2ca3fa`, CF-174 switch on, static-site filter off, from the five local caches:
+
+| clause | gated: value · limit · margin | ungated: value · limit · margin |
+|---|---|---|
+| 1. summed net over test2/4/5 exceeds `guarded`'s | +463.27s · +458.35s · **+4.92s pass** | same |
+| 2. summed live cut ≤ `guarded`'s + 15s | 210.50s · 195.12s · **−15.38s FAIL** | same |
+| 3. test2 live cut ≤ `guarded`'s + 30s | +4.44s · 30s · +25.56s pass | same |
+| 3. test4 live cut ≤ `guarded`'s + 30s | +31.43s · 30s · **−1.43s FAIL** | same |
+| 3. test5 live cut ≤ `guarded`'s + 30s | −5.50s · 30s · +35.50s pass | same |
+| 4. test3 abstains or cuts ≤ 30s live | abstains · pass | 14.50s · 30s · +15.50s pass |
+
+Per fixture, dead time removed then live play cut, net at 4:1:
+
+| fixture | usable samples/s | `rules` (v0) | `guarded` (v5) | learned gated, ho | learned ungated, ho | learned, in-sample (v6) |
+|---|---|---|---|---|---|---|
+| test1† | 1.54 | 56.2% · 176s | 58.4% · 126.3s · +907.7 | 65.7% · 130.5s · +1065.5 | same as gated | 66.2% · 117.5s · +1131.0 |
+| test2 | 1.53 | 54.4% · 31s | 54.9% · 14.1s · +175.1 | 69.4% · 18.5s · +218.2 | same as gated | 75.1% · 28.5s · +202.2 |
+| test3† | 0.57 | 92.8% · 178s | abstains · +0.0 | abstains · +0.0 | 31.0% · 14.5s · +70.5 | abstains · +0.0 |
+| test4 | 2.99 | 62.9% · 89s | 81.0% · 115.1s · +275.4 | 81.3% · 146.5s · +152.1 | same as gated | 73.2% · 86.0s · +320.6 |
+| test5 | 1.47 | 50.4% · 76s | 57.2% · 51.0s · +7.8 | 74.2% · 45.5s · +92.9 | same as gated | 68.7% · 22.5s · +164.4 |
+| comparable three | | 196s · +201 | 180.1s · +458.4 | 210.5s · +463.3 | 210.5s · +463.3 | 137.0s · +687.3 |
+
+`† = excluded from the headline totals`, as above. The ungated rung's
+held-out figures land exactly on the trainer's fold record, which scores each
+fold with no track floor; `ml/tests/test_validate_learned.py` checks that when
+the caches are present. The in-sample column clears every clause and is not
+evidence: it is the model scored on the games it was fitted to.
+
+**The ungated rung is an input to the gate question, not an answer to it.**
+It moves test3 alone, the only fixture below the 1.0 floor (0.57 usable
+samples/s; the other four measure 1.47-2.99 here). Ungated, the test3 fold
+removes 31.0% of its dead time for 14.5s of live play, net +70.5s, where the
+gated rung abstains at 0. test3 is excluded from the headline totals, so the
+gate changes none of clauses 1-3. Whether production drops it is a decision
+for a person, from these numbers.
+
+**Scored at the CF-174 switch on only.** That is the position the folds were
+fitted and scored at (the trainer reads the settings mirror, which is on) and
+the position of CF-391's `guarded` column the bar is measured against. Switch
+off — production today — was not scored: the fold models were fitted on
+switch-on contacts, so scoring them on switch-off ones would judge them on a
+contact detector they were not trained against, beside a `guarded` that is not
+the one the bar names.
+
+The results rows are `CF-395-learned` (gated), `CF-395-learned-ungated` and
+`CF-395-learned-insample` (`v6`) in `results/test{n}_deadtime.jsonl`, scored
+from the dumped windows through `--windows-json`, each with a
+`config_snapshot` showing the switch on. Their `condense_mode` reads `guarded`
+because that is the app setting the harness snapshots; the windows came from
+the learned builder. `d2ca3fa` is a commit on the CF-395 branch, which `main`
+squash-merges, so it will not resolve from `main`.
+
 ## Training the learned in-play classifier (CF-393)
 
 `train_deadtime.py` fits the per-second logistic model in
@@ -562,9 +645,11 @@ track_quality.py       is the tracker following the ball? the lock-on fraction
 contact_cliff.py       how many rallies MIN_RALLY_CONTACTS deletes under CF-174
                        scaling: switch on, on + soft, off (CF-376)
 deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (CF-187),
-                       v6 = mode=learned, in-sample (CF-394)
+                       v6 = mode=learned, in-sample (CF-394); v7 = v6 without
+                       the sparse-track gate, in-sample, eval only (CF-395)
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 train_deadtime.py      leave-one-game-out trainer for the in-play weights (CF-393)
+validate_learned.py    the learned builder held out, against the epic's bar (CF-395)
 fixtures/              one JSON per test case (ground truth)
                        {test_id}.json          highlights (CF-55)
                        {test_id}_deadtime.json ball-in-play spans (CF-98)
