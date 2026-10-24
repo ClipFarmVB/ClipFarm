@@ -14,6 +14,7 @@ from app.models.collection import Collection, CollectionClip
 from app.models.correction import Correction
 from app.models.post import Post
 from app.models.upload_event import UploadEvent
+from app.models.device_token import DeviceToken
 
 __all__ = [
     "User",
@@ -26,4 +27,5 @@ __all__ = [
     "Correction",
     "Post",
     "UploadEvent",
+    "DeviceToken",
 ]

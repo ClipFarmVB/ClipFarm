@@ -63,6 +63,7 @@ VALID_CLASSES = {"identifier", "credential", "profile", "operational"}
 USER_REFERENCING_TABLES = {
     "collections": None,
     "corrections": "CASCADE",
+    "device_tokens": "CASCADE",
     "games": None,
     "posts": "CASCADE",
     "teams": None,
