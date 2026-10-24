@@ -1,1 +1,1 @@
-{ "mcpServers": { "skein": { "type": "http", "url": "https://tiptoeing-attentive-dramatize.ngrok-free.dev/mcp", "headers": { "Authorization": "Bearer ${SKEIN_SECRET}" } } } }
+{ "mcpServers": { "skein": { "type": "http", "url": "https://clipfarm.skeinai.ca/mcp", "headers": { "Authorization": "Bearer ${SKEIN_SECRET}" } } } }
