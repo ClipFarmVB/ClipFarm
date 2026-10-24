@@ -28,11 +28,22 @@ async def register_device_token(body: DeviceTokenRegister, db: DB, user_id: User
 
     **A conflict re-owns the row.** The alternative — refusing, or keeping both
     rows — leaves a device notifying whoever signed into it last month, which
-    is the failure CF-343's sign-out step is also aimed at. Between the two
-    risks that is the right way round: re-owning costs an attacker who already
-    holds someone's token the ability to receive "your game is ready" in their
-    place, while refusing costs a resold phone's new owner nothing and leaks
-    the previous owner's activity to a stranger, with no action by anybody.
+    is the failure CF-343's sign-out step is also aimed at. What re-owning
+    buys is that a resold or handed-down phone detaches from its previous
+    owner with no action by anybody, which is the likelier event by a wide
+    margin.
+
+    What it costs is not the attacker's loss this was first written up as.
+    Nothing here proves the caller holds the device, so someone who has
+    obtained another person's token can post it and take the row: the send
+    fan-out is "every device for this owner", so the *caller's* notifications
+    are delivered to that handset, its real user is silenced for their own
+    games because no row carries their `owner_id` any more, and they cannot
+    clear it — `unregister` filters on `owner_id`, and the app re-registering
+    is the only recovery, which flips ownership back. Both halves are real and
+    the trade is recorded in `docs/mobile/DECISIONS.md`. The consequence for
+    the send half: `owner_id` on a token row is a caller-influenced value, so
+    the payload has to be harmless on the wrong handset.
 
     `created_at` is deliberately absent from the SET clause: a device that
     re-registers is the same registration, so it keeps the date it first

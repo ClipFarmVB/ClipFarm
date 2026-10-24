@@ -118,14 +118,33 @@ safe against theft but leaves the resold phone attached to its old owner, i.e.
 it preserves exactly the failure we are trying to remove, and does it silently.
 *Unique on `token`, re-own on conflict* — what was built.
 
-**Chosen.** Re-own. The two risks are not symmetric. Re-owning costs an
-attacker who *already holds someone's push token* the ability to receive "your
-game is ready" in their place — a low-value payload, and they had to obtain the
-token first. Refusing costs a resold phone's new owner nothing at all and leaks
-the previous owner's activity to them with no action by anybody, which is the
-likelier event by a wide margin and the worse one. `created_at` is deliberately
-left out of the `SET` clause so a re-registration keeps its first-seen date;
-`last_seen_at` moves.
+**Chosen.** Re-own — but not on the asymmetry this entry first claimed, which
+had the cost backwards and is corrected here before it reaches anyone's record.
+Re-owning does *not* cost an attacker who already holds someone's push token
+the ability to receive "your game is ready" in their place. Nothing in the
+route proves the caller holds the device, and the fan-out is "every device for
+this owner", so it runs the other way: after A posts V's token the row is
+`(owner_id=A, token=V's handset)`, **A's** notifications are delivered to
+**V's** phone, **V** is silenced for V's own games because no row carries V's
+`owner_id` any more — the feature the epic exists for — and V cannot clear it,
+because `unregister` filters on `owner_id`. V's only recovery is the app
+re-registering, which flips ownership back, so the two can oscillate. What
+re-owning buys is the resold or handed-down phone detaching from its previous
+owner with no action by anybody, which is the likelier event by a wide margin
+and the one private-by-default is about; the price is an unsolicited push
+channel onto a stranger's handset plus that denial of service, not a stranger's
+view of their notifications. `created_at` is deliberately left out of the `SET`
+clause so a re-registration keeps its first-seen date; `last_seen_at` moves.
+
+**Not settled by this correction — Owen's call.** The cost above is worse than
+the one this was decided against, and there is a third option neither this log
+nor the PR weighed: keep `token` unique and re-own on conflict *only* when the
+existing row has not been seen recently, 409 otherwise. A live device
+re-registering on launch still wins, the resold phone still resolves once the
+old install stops checking in, and the instant takeover goes away — for one
+predicate on the `DO UPDATE` and a decision about the window. The code ships as
+described above; changing which semantics we want is a product call and is not
+being taken as part of fixing the write-up.
 
 **Consequences.** CF-325 (#375) can call register on every launch without
 checking anything first, which is what you want given the OS reissues tokens
