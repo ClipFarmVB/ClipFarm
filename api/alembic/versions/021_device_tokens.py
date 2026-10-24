@@ -4,13 +4,12 @@ A registry of push destinations. Nothing sends yet — the send half of CF-318
 lands separately — so there is nothing to backfill and no existing row to
 migrate.
 
-**Numbered 021 while revising 016, and the gap is on purpose.** `main` is at
-016, but 017, 018, 019 and 020 are all claimed by the CF-109 social stack on
-branches that have not merged: `017_follow_graph.py` and
-`018_visibility_index_shape.py` (CF-110, #191), `019_posts_feed_cursor_index.py`
-(CF-111, #192) and `020_post_engagement.py` (CF-113, #477). Two of those
-branches moved the day before this was written, so they are live work, not
-archaeology.
+**Numbered 021 out of order with its parent, and the gap is on purpose.** 017,
+018, 019 and 020 are all claimed by the CF-109 social stack on branches that
+have not merged: `017_follow_graph.py` and `018_visibility_index_shape.py`
+(CF-110, #191), `019_posts_feed_cursor_index.py` (CF-111, #192) and
+`020_post_engagement.py` (CF-113, #477). Two of those branches moved the day
+before this was written, so they are live work, not archaeology.
 
 Taking 017 here would have been the collision `tests/test_migration_chain.py`
 exists to name: the filenames differ, so git merges both without a conflict and
@@ -19,17 +18,38 @@ leaves two files claiming 017, and `alembic upgrade head` then dies with
 made. Reserving a number past that stack removes the duplicate outright and
 leaves only the ordinary rebase.
 
-So this file expects to be rebased, not renumbered. **When the social stack
-merges, change `down_revision` to "020" and leave the filename and the id
-alone.** If it merges after this one, the stack rebases instead and this file
-does not move at all. Either way `test_the_chain_is_a_single_line` is what
-fires if both land unrebased, naming 016 as the parent of two — which is the
-accurate complaint, and the reason this is not deferred to a PENDING_UPSTREAM
-entry (that dict is a merge blocker, and nothing here is blocked on the social
-stack).
+**The parent is 023, the head of `main`.** It was 016 when this was written,
+and this file said so; `023_sample_game.py` (CF-220, #571) has since landed on
+top of 016 there. Left on 016 the two would be siblings, which is the same
+outage by the other route: `main`'s own `test_the_chain_is_a_single_line` and
+`test_there_is_exactly_one_head` go red on merge, and `alembic upgrade head`
+raises `MultipleHeads`, prints `FAILED: Multiple head revisions are present for
+given argument 'head'` and exits 255 with nothing applied — on Render's
+`preDeployCommand` and ahead of uvicorn in the api container, so it takes every
+endpoint with it. So the rebase this file always expected has happened: the
+filename and the id stay, only the parent moves. If the social stack lands
+before this does, it moves once more, onto whatever head that leaves.
+
+The cost of keeping the id is that `versions/` now lists 016, 021, 023 while
+the chain runs 016 -> 023 -> 021, so the listing no longer reads as the order.
+`test_the_filename_prefix_matches_the_revision_id` is satisfied either way — it
+asks that a file's prefix match its own id, which this one does — and
+renumbering to 024 would move an id other files already name by hand
+(`app/models/device_token.py`), for a directory listing that the social stack's
+own rebase is about to reorder again regardless.
+
+One consequence to expect rather than be surprised by: until `main` is merged
+into this branch, 023 is not in `versions/` here, so
+`test_every_down_revision_resolves` names it as a parent that is not present
+and `test_there_is_exactly_one_head` counts 016 as a second head. That is the
+declared state of a branch whose base has moved, and deliberately not a
+PENDING_UPSTREAM entry: 023 is merged, not waiting on an open PR, so the
+dependency is the base merge rather than a merge *order*, and nothing has to be
+remembered and deleted afterwards. Both checks go green the moment the merge
+brings the file in.
 
 Revision ID: 021
-Revises: 016
+Revises: 023
 Create Date: 2026-09-10
 """
 from typing import Sequence, Union
@@ -38,7 +58,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "021"
-down_revision: Union[str, None] = "016"
+down_revision: Union[str, None] = "023"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
