@@ -165,8 +165,10 @@ def sync_set_original_duration(game_id: uuid.UUID, original_duration: float):
 def sync_settle_upload_charge(game_id: uuid.UUID, actual_seconds: float):
     """Correct this game's quota charge to the probed duration (CF-91).
 
-    At accept time the api charges what the client declared, or the full
-    per-video maximum when it declared nothing. This is the correction that
+    At accept time the api charges what the client declared, or — when it
+    declared nothing, or less than the file's size physically allows — an
+    estimate derived from the size, capped at the per-video maximum (see
+    `app.services.quota.charge_for`). This is the correction that
     makes the conservative default fair to honest clients — and that stops an
     under-declared duration from sticking as the charge.
     """

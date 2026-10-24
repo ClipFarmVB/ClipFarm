@@ -1,11 +1,12 @@
 /**
  * Colour tokens.
  *
- * Every value here was lifted out of `web/src/app/globals.css` as it stood
- * before CF-316 — this is the palette the web app has been shipping, not a new
- * one. `themeCss()` (see `css.ts`) regenerates that stylesheet from this file,
- * so web keeps rendering exactly what it did and mobile gets the same numbers
- * without a second copy.
+ * Every value here comes out of `web/src/app/globals.css` — this is the
+ * palette the web app ships, not a new one. The logo teal and the cream
+ * neutrals are CF-573's; the contrast figures below them are CF-568's, both
+ * measured on web before this package existed. `themeCss()` (see `css.ts`)
+ * regenerates that stylesheet from this file, so web keeps rendering exactly
+ * what it did and mobile gets the same numbers without a second copy.
  */
 
 /** The two themes the app ships. Mirrors `Theme` in web's ThemeContext. */
@@ -39,29 +40,22 @@ export interface ThemeColors {
 
   /** Accent — primary buttons, focus rings, active nav. */
   brand: string;
-  /** Hover state for `brand`. */
+  /**
+   * Hover/press state for a `brand` fill. In the light theme this is *darker*
+   * than `brand`, not lighter: a lighter teal would drop the white label below
+   * AA. In the dark theme it is brighter, as the name suggests.
+   */
   brandLight: string;
   /** Translucent `brand` wash behind an active row or a selected chip. */
   brandDim: string;
   /**
-   * Text/icon colour on top of a `brand` fill. Near-black in both themes,
-   * because that is the value web has been hardcoding in Button since the
-   * first pass — this token names the shipped colour rather than choosing one.
+   * Text/icon colour on a `brand` fill — the primary button's label.
    *
-   * It is **not** the better label colour in light mode, and the comment that
-   * used to live here claimed otherwise. Measured against the hexes in this
-   * file (WCAG 2.x, `#0c0c0e` vs `#ffffff` as the label):
-   *
-   * - light `brand` `#2563eb` — 3.78:1 dark, 5.17:1 white
-   * - light `brandLight` `#3b82f6` (press/hover) — 5.31:1 dark, 3.68:1 white
-   * - dark `brand` `#f59e0b` — 9.10:1 dark
-   *
-   * So the resting state of every light-mode primary button is below AA's
-   * 4.5:1 for the 12–14px labels that use it, and white would be better there
-   * by a wide margin. Dark mode is comfortable. Switching light mode to
-   * `#ffffff` is a visible appearance change on the login and upload CTAs and
-   * wants its own card; until then, treat the light-mode value as inherited
-   * from web and known to be sub-AA.
+   * Per theme, because the two brands sit on opposite sides of the contrast
+   * line: the light theme's teal is dark, so the label is white; the dark
+   * theme's teal is bright, so the label is near-black. Both clear AA
+   * comfortably (5.83:1 and 8.77:1) — `themeCss()` emits the full set of
+   * figures CF-568 measured, and they travel with the stylesheet.
    */
   onBrand: string;
 
@@ -73,52 +67,52 @@ export interface ThemeColors {
   scrollbarHover: string;
 }
 
-/** Light — white / off-white / blue. */
+/** Light — cream / warm neutrals / logo teal. */
 export const lightColors: ThemeColors = {
-  background: "#ffffff",
-  surface: "#f6f6f9",
-  surfaceHigh: "#ededf2",
-  surfaceHover: "#e4e4eb",
+  background: "#faf7f1",
+  surface: "#f3eee4",
+  surfaceHigh: "#ebe4d7",
+  surfaceHover: "#e3dbcc",
 
-  border: "#e2e2ea",
-  borderStrong: "#ccccd8",
+  border: "#e5ded1",
+  borderStrong: "#d2c9b8",
 
-  foreground: "#111116",
-  muted: "#62627a",
-  subtle: "#9898b4",
+  foreground: "#1c1b17",
+  muted: "#65604f",
+  subtle: "#948c7b",
 
-  brand: "#2563eb",
-  brandLight: "#3b82f6",
-  brandDim: "rgba(37, 99, 235, 0.09)",
-  onBrand: "#0c0c0e",
+  brand: "#037170",
+  brandLight: "#025f5e",
+  brandDim: "rgba(3, 113, 112, 0.09)",
+  onBrand: "#ffffff",
 
-  dot: "rgba(0, 0, 0, 0.10)",
-  scrollbar: "#d4d4e0",
-  scrollbarHover: "#b8b8cc",
+  dot: "rgba(60, 50, 30, 0.12)",
+  scrollbar: "#d9d1c2",
+  scrollbarHover: "#c2b8a5",
 };
 
-/** Dark — charcoal / amber. */
+/** Dark — deep teal-black / bright logo teal. */
 export const darkColors: ThemeColors = {
-  background: "#0c0c0e",
-  surface: "#111114",
-  surfaceHigh: "#18181c",
-  surfaceHover: "#1e1e24",
+  background: "#0b0f0f",
+  surface: "#101616",
+  surfaceHigh: "#172020",
+  surfaceHover: "#1d2828",
 
-  border: "#222226",
-  borderStrong: "#333338",
+  border: "#1f2a2a",
+  borderStrong: "#2f3d3c",
 
-  foreground: "#f0f0f2",
-  muted: "#6e6e7a",
-  subtle: "#44444e",
+  foreground: "#eef3f2",
+  muted: "#7f8c8a",
+  subtle: "#56625f",
 
-  brand: "#f59e0b",
-  brandLight: "#fbbf24",
-  brandDim: "rgba(245, 158, 11, 0.12)",
-  onBrand: "#0c0c0e",
+  brand: "#3cc2b3",
+  brandLight: "#5fd3c5",
+  brandDim: "rgba(60, 194, 179, 0.12)",
+  onBrand: "#0b0f0f",
 
-  dot: "rgba(255, 255, 255, 0.18)",
-  scrollbar: "#2a2a2e",
-  scrollbarHover: "#3a3a40",
+  dot: "rgba(255, 255, 255, 0.16)",
+  scrollbar: "#26302f",
+  scrollbarHover: "#36423f",
 };
 
 export const colors: Record<ThemeName, ThemeColors> = {

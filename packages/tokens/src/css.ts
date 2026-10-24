@@ -65,6 +65,43 @@ const TAILWIND_UTILITY: Partial<Record<keyof ThemeColors, string>> = {
   onBrand: "on-brand",
 };
 
+/**
+ * Comments that ride along with a single `@theme` entry, where the token needs
+ * a word the group label cannot carry.
+ */
+const TOKEN_NOTE: Partial<Record<keyof ThemeColors, readonly string[]>> = {
+  onBrand: [
+    "  /* Text and icons drawn on a brand fill (the primary button). Per theme,",
+    "     because the light-theme teal is dark and the dark-theme teal is light. */",
+  ],
+};
+
+/**
+ * Why the palette is what it is, emitted between `@theme` and the values.
+ *
+ * Kept with the tokens rather than in globals.css because it is the reason the
+ * numbers below are what they are: a reader who changes one needs these
+ * figures, and mobile reads the same values with no stylesheet to find them in.
+ */
+const RATIONALE = `/*
+ * Both themes take their accent from the logo (CF-573): a teal line-art mark
+ * on cream. \`--cf-brand-light\` is the hover state of a brand fill, so in the
+ * light theme it is *darker* than the base — a lighter teal would drop white
+ * button text below AA.
+ *
+ * Contrast, WCAG relative luminance, measured when these were set (CF-568):
+ *   light  on-brand #fff on brand #037170          5.83:1
+ *          on-brand #fff on brand-light #025f5e    7.49:1
+ *          brand #037170 as text on bg #faf7f1     5.46:1
+ *          muted #65604f on bg                     5.88:1
+ *   dark   on-brand #0b0f0f on brand #3cc2b3      8.77:1
+ *          on-brand on brand-light #5fd3c5        10.66:1
+ *          brand as text on bg #0b0f0f             8.77:1
+ *          muted #7f8c8a on bg                     5.53:1
+ * \`subtle\` stays near 3:1 in both, as before: it is for decorative and
+ * tertiary text only.
+ */`;
+
 /** Emission order, and the comment each run of tokens sits under. */
 const GROUPS: ReadonlyArray<{
   label: string;
@@ -91,23 +128,31 @@ function widestName(names: ReadonlyArray<string>): number {
 }
 
 function themeBlock(): string {
-  const utilities = GROUPS.map((group) => ({
-    label: group.label,
-    entries: group.tokens.flatMap((token) => {
-      const utility = TAILWIND_UTILITY[token];
-      return utility
-        ? [[`--color-${utility}`, `var(${CSS_VARIABLE[token]})`] as const]
-        : [];
-    }),
-  })).filter((group) => group.entries.length > 0);
+  const utilities = GROUPS.map((group) => {
+    const tokens = group.tokens.filter((token) => TAILWIND_UTILITY[token]);
+    return {
+      label: group.label,
+      tokens,
+      entries: tokens.map(
+        (token) =>
+          [`--color-${TAILWIND_UTILITY[token]}`, `var(${CSS_VARIABLE[token]})`] as const,
+      ),
+    };
+  }).filter((group) => group.entries.length > 0);
 
   const width = widestName(
     utilities.flatMap((group) => group.entries.map(([name]) => name)),
   );
 
-  const body = utilities.map(
-    (group) => [`  /* ${group.label} */`, ...declarations(group.entries, width)].join("\n"),
-  );
+  const noted = (token: keyof ThemeColors, line: string) =>
+    TOKEN_NOTE[token] ? [...TOKEN_NOTE[token]!, line] : [line];
+
+  const body = utilities.map((group) => {
+    const lines = group.entries.flatMap(([name, value], i) =>
+      noted(group.tokens[i], declarations([[name, value]], width)[0]),
+    );
+    return [`  /* ${group.label} */`, ...lines].join("\n");
+  });
 
   return [
     "@theme {",
@@ -139,11 +184,17 @@ function paletteBlock(selector: string, heading: string, values: ThemeColors): s
   return [heading, `${selector} {`, body.join("\n\n"), "}"].join("\n");
 }
 
-/** A `── label ──` rule comment, padded to the 72-column width globals.css uses. */
-function heading(label: string): string {
-  const prefix = `/* ── ${label} `;
-  return `${prefix}${"─".repeat(Math.max(3, 72 - prefix.length - 3))} */`;
-}
+/**
+ * The two section rules, verbatim.
+ *
+ * Literal rather than padded to a column: the originals in globals.css are
+ * hand-set (76 and 75 columns) and an em dash or a slash shifts where the eye
+ * wants the break, so a formula reproduces neither and silently reflows them.
+ */
+const LIGHT_HEADING =
+  "/* ── Light mode (default) — cream / warm neutrals / logo teal ────────── */";
+const DARK_HEADING =
+  "/* ── Dark mode — deep teal-black / bright logo teal ─────────────────── */";
 
 /** The full contents of `web/src/app/tokens.generated.css`. */
 export function themeCss(): string {
@@ -154,9 +205,11 @@ export function themeCss(): string {
     "",
     themeBlock(),
     "",
-    paletteBlock(":root", heading("Light mode (default) — white / off-white / blue"), lightColors),
+    RATIONALE,
     "",
-    paletteBlock(".dark", heading("Dark mode — charcoal / amber"), darkColors),
+    paletteBlock(":root", LIGHT_HEADING, lightColors),
+    "",
+    paletteBlock(".dark", DARK_HEADING, darkColors),
     "",
   ].join("\n");
 }

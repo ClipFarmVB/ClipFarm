@@ -7,6 +7,10 @@ Imports only `app.observability`, which pulls in `app.config` — no database,
 no network, no sentry-sdk required.
 """
 
+import typing
+
+import pytest
+
 from app import observability
 
 
@@ -72,10 +76,220 @@ def test_scrub_still_drops_sensitive_headers():
     assert scrubbed["request"]["headers"]["Accept"] == "application/json"
 
 
-def test_secret_values_applies_the_minimum_length_guard():
-    # Short values must not become scrub patterns — redacting a 3-character
-    # string would gut every error message that happens to contain it.
-    assert all(len(value) >= 6 for value in observability._secret_values())
+@pytest.fixture(autouse=True)
+def _secret_cache_cleared():
+    """Clear the `_secret_values` cache around every test in this file.
+
+    **Autouse deliberately.** The hazard is not this test — it is the next one
+    that patches settings and forgets, and `api/tests/` has no `conftest.py` to
+    catch that. Autouse is the only version of this fixture that protects a test
+    nobody has written yet.
+
+    It costs nothing measurable and breaks nothing: the one test that reads
+    `cache_info()` calls `cache_clear()` itself immediately before asserting
+    `misses == 1`, and says in its own docstring that this makes it independent
+    of whatever ran before. An earlier version of the PR body claimed two tests
+    read `cache_info()` and that this blocked autouse. One test reads it, and it
+    is immune, so nothing blocked it.
+
+    **The teardown clear is the load-bearing half.** The test below calls
+    `_secret_values()` while settings are patched, so the real `lru_cache` ends
+    the test holding a fake secret; without this fixture that value is what the
+    next caller gets. Today the leak is *masked* — `test_secret_values_cache_can_be_cleared`
+    further down the file happens to clear it. Deleting this fixture used to
+    leave the suite green while reintroducing the bug, which is why it is a
+    fixture with a reason rather than two bare calls; since
+    `test_every_secret_source_reaches_the_scrub_patterns` asserts on values it
+    patched itself, a stale cache now fails that test — with a message that
+    names a candidate rather than the cache, so read this docstring first.
+
+    Parameter order does not matter, and an earlier version of this docstring
+    said it did: it claimed listing this before `monkeypatch` mattered because
+    "clearing while a patch is live would poison the cache". `cache_clear()`
+    only empties — it never recomputes — so that hazard does not exist, and
+    swapping the parameters changes nothing. Recorded because the wrong reason
+    for a right fixture is what gets the fixture removed.
+    """
+    observability._secret_values.cache_clear()
+    yield
+    observability._secret_values.cache_clear()
+
+
+def test_secret_values_applies_the_minimum_length_guard(monkeypatch):
+    """A short secret must not become a scrub pattern — redacting a 3-character
+    string would gut every error message that happens to contain it.
+
+    This asserts an exclusion, which needs a short secret to exist. The version
+    this replaces asserted `all(len(v) >= 6 ...)` over the *shipped defaults*,
+    where every candidate is either empty — dropped by the `if c` half, which
+    survives deleting the length guard — or a connection URL far longer than the
+    threshold. So it passed with the guard deleted, in CI and on any
+    default-config machine (CF-308, #358).
+
+    No length is quoted for those URLs on purpose. An earlier version named one,
+    which was wrong for one of the four defaults — and naming the right ones
+    here would be the same mistake, since they are facts about shipped config
+    that nothing in this file pins. "Longer than the threshold" is all the
+    argument needs and all that can be relied on.
+
+    Every value this test asserts on is patched rather than read off the
+    ambient config — the connection URLs in the result are still shipped
+    defaults, and nothing here asserts about them:
+    `Settings` loads `api/.env` if one exists, so an assertion about a value
+    this test did not set is an assertion about the developer's machine. The
+    comment on `test_postgres_auth_error_survives_scrubbing_under_defaults`
+    records that biting once already.
+    """
+    monkeypatch.setattr(observability.settings, "r2_access_key_id", "abc")
+    monkeypatch.setattr(observability.settings, "jwt_secret", "long-enough-secret")
+    # The threshold's own two sides. Without these only 3 and 18 characters are
+    # pinned, and the guard could then sit anywhere in 4..18 unnoticed —
+    # measured, not reasoned: with just those two, >= 4, 5, 6, 7, 8, 12 and 18
+    # all pass and only >= 19 fails. An earlier version of this comment said
+    # "4..6", understating the gap by twelve — and the >= 7 and >= 8 mutation
+    # rows that contradict it live in the PR, not in this file, which is why
+    # nothing here caught it.
+    monkeypatch.setattr(observability.settings, "modal_token_id", "12345")
+    monkeypatch.setattr(observability.settings, "modal_token_secret", "123456")
+
+    values = observability._secret_values()
+
+    # `values` is a tuple, so `in` is exact equality rather than a substring
+    # test — which matters here, since "12345" is a prefix of "123456".
+    assert "12345" not in values, (
+        "a 5-character secret became a scrub pattern; the guard admits one "
+        "character below its stated threshold of 6 (CF-308, #358)."
+    )
+    assert "123456" in values, (
+        "a 6-character secret was dropped; the guard excludes the shortest "
+        "value it is supposed to admit (CF-308, #358)."
+    )
+    assert "abc" not in values, (
+        "a 3-character secret became a scrub pattern. The `len(c) >= 6` guard in "
+        "observability._secret_values is what keeps short config values from "
+        "redacting ordinary words out of every error report (CF-308, #358)."
+    )
+    # The control: without it, a `_secret_values` that returned nothing at all
+    # would satisfy the exclusion above and this test would pass while scrubbing
+    # had stopped entirely.
+    assert "long-enough-secret" in values, (
+        "a secret over the length threshold is missing from the scrub patterns, "
+        "so nothing is being redacted (CF-308, #358)."
+    )
+
+
+def test_every_secret_source_reaches_the_scrub_patterns(monkeypatch):
+    """Each candidate source, pinned individually.
+
+    The exclusions in the test above assert that a short value is *absent*, and
+    absence has two causes: the guard rejected it, or the setting is not a
+    candidate at all. That made them satisfiable by deleting the very settings
+    they name — measured, not reasoned: dropping `r2_access_key_id` and
+    `modal_token_id` from the candidate list and weakening the guard to
+    `>= 4` left every test in this file green. The guard CF-308 exists
+    to pin moved by two characters with nothing red.
+
+    So this pins the wiring the other test's exclusions depend on. Every value
+    is long enough to clear the threshold, distinct, and patched rather than
+    read off the ambient config, so a missing one names the source that dropped
+    it rather than reporting a length failure a second time.
+    """
+    # Every str-typed setting gets a distinct sentinel FIRST, and the explicit
+    # values below override the ones this test is about. The point is the
+    # equality at the bottom: a *new* candidate joining `_secret_values` shows
+    # up there as an unexpected pattern — but only if it has a value, and every
+    # real secret's shipped default is "", so without this a new
+    # `settings.<x>` source was filtered by the `if c` half before the equality
+    # ever saw it. Review measured it: adding `settings.lock_database_url` to
+    # the candidate list left the suite green. The sentinel has no `:` or `@`,
+    # so `_url_passwords` lifts nothing out of it, and it clears the length
+    # guard, so the `if c and len(c) >= 6` half cannot hide it either.
+    #
+    # `str | None` counts as str-typed too. `field.annotation is str` is False
+    # for it, so a candidate declared that way — `sentry_dsn: str | None` is an
+    # ordinary future edit — would keep its None default, be filtered by `if c`,
+    # and join the list unpinned; review measured exactly that. No such field
+    # exists today (every str-ish setting is bare `str`; `condense_mode` is a
+    # `Literal`, whose `get_args` are its string *values*, so it stays out).
+    # The guarantee is scoped to `Settings` fields: a second
+    # `os.environ.get(...)` candidate would not be sentinelled here and would
+    # join the list unpinned. There is one such source and it is asserted by
+    # name below; a new one needs its own line.
+    for name, field in type(observability.settings).model_fields.items():
+        if field.annotation is str or str in typing.get_args(field.annotation):
+            monkeypatch.setattr(observability.settings, name, f"sentinel-{name}-value")
+
+    scalars = {
+        "supabase_service_role_key": "scrub-supabase-service-role-key",
+        "r2_access_key_id": "scrub-r2-access-key-id",
+        "r2_secret_access_key": "scrub-r2-secret-access-key",
+        "modal_token_id": "scrub-modal-token-id",
+        "modal_token_secret": "scrub-modal-token-secret",
+        "jwt_secret": "scrub-jwt-secret",
+    }
+    for name, value in scalars.items():
+        monkeypatch.setattr(observability.settings, name, value)
+    monkeypatch.setenv("ROBOFLOW_API_KEY", "scrub-roboflow-api-key")
+
+    # The four connection-URL settings, written out rather than read from
+    # `_CONNECTION_URL_SETTINGS`. Two earlier versions of this got it wrong in
+    # opposite ways. The first patched `database_url` alone and claimed it
+    # "covers the last two entries at once" — true of the two *lines* in
+    # `candidates`, false of the four *sources* they iterate, so deleting
+    # `redis_url`, `celery_broker_url` or `celery_result_backend` left the
+    # whole api suite green. The second built this dict *from* the tuple, which
+    # is worse: a deleted name is then neither patched nor asserted, so all
+    # four deletions passed. A test that enumerates the thing under test cannot
+    # see the thing under test shrink.
+    url_settings = ("database_url", "redis_url",
+                    "celery_broker_url", "celery_result_backend")
+    assert set(observability._CONNECTION_URL_SETTINGS) == set(url_settings), (
+        "the connection-URL settings changed. Add the new one here with its own "
+        "patched value — this list is deliberately not read from the module, so "
+        "that a source dropped from it fails rather than disappearing quietly "
+        "(CF-308, #358)."
+    )
+    urls = {name: f"postgresql+asyncpg://postgres.abc:scrub-pw-{name}@db.example.com:5432/x"
+            for name in url_settings}
+    for name, url in urls.items():
+        monkeypatch.setattr(observability.settings, name, url)
+
+    values = observability._secret_values()
+
+    for name, value in scalars.items():
+        assert value in values, (
+            f"settings.{name} is not a scrub pattern, so its value would appear "
+            f"verbatim in an error report (CF-308, #358)."
+        )
+    assert "scrub-roboflow-api-key" in values, (
+        "the ROBOFLOW_API_KEY environment variable is not a scrub pattern "
+        "(CF-308, #358)."
+    )
+    for name, url in urls.items():
+        assert url in values, (
+            f"settings.{name} is not a scrub pattern. Connection URLs are the "
+            f"most common thing an error tracker sees (CF-308, #358)."
+        )
+        assert f"scrub-pw-{name}" in values, (
+            f"settings.{name}'s password is not a scrub pattern on its own, so "
+            f"a re-rendered form of that URL would leak it (CF-308, #358)."
+        )
+
+    # The drift guard for the scalars, which have no named tuple to compare
+    # against the way the URLs do — they are a literal list inside
+    # `_secret_values`. Equality rather than containment, so a *new* candidate
+    # source shows up here as an unexpected pattern and has to be given its own
+    # assertion above, instead of joining the list unpinned. That asymmetry is
+    # this file's own recurring failure — one surface covered and the identical
+    # one beside it not — so it is closed rather than noted.
+    expected = (set(scalars.values()) | {"scrub-roboflow-api-key"}
+                | set(urls.values()) | {f"scrub-pw-{name}" for name in urls})
+    assert set(values) == expected, (
+        "the set of scrub patterns is not the set this test patched. Extra "
+        f"{sorted(set(values) - expected)} means a candidate source is not "
+        f"pinned here; missing {sorted(expected - set(values))} means one "
+        "stopped being scrubbed (CF-308, #358)."
+    )
 
 
 # --- caching (raised on #131 review) -----------------------------------------

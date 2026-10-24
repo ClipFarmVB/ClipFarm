@@ -11,10 +11,19 @@ import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type Player, type ActionType, type ClipFilters } from "@/lib/api";
+import { ApiError } from "@/lib/apiError";
 import { estimateEtaSeconds, formatEta, pushSample, type ProgressSample } from "@/lib/eta";
 import { cn } from "@/lib/utils";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { DemoBadge, DemoBanner } from "@/components/DemoGame";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];
+
+// How long the filters must be still before the clips are refetched. The
+// sliders change on every step of a drag, and GET /games/{id}/clips is rate
+// limited per caller (CF-186), so fetching per step could spend the whole
+// budget in one gesture.
+const CLIP_FILTER_DEBOUNCE_MS = 300;
 
 function fmtDuration(seconds: number): string {
   const s = Math.round(seconds);
@@ -27,8 +36,14 @@ function fmtDuration(seconds: number): string {
 }
 
 const STATUS_STYLES: Record<Game["status"], string> = {
-  // Reachable only by the tab performing the upload — the api hands back an
-  // `uploading` game while its video is still transferring to R2.
+  // Not expected here: UploadZone navigates to this page only after
+  // completeUpload resolves, by which point the game is `queued`. Reachable
+  // only by a typed URL: mid-transfer, or for an abandoned upload (a tab
+  // closed mid-transfer), whose row stays `uploading` until the api's sweep
+  // removes it — 24h old at the earliest, and only on that owner's next
+  // upload, so possibly never. The entry keeps this map total over
+  // Game["status"]; the page does not poll an `uploading` game, so such a
+  // visit shows a static header for as long as the row lasts.
   uploading:  "text-zinc-500 bg-zinc-500/8 border-zinc-500/20",
   queued:     "text-zinc-500 bg-zinc-500/8 border-zinc-500/20",
   processing: "text-blue-400 bg-blue-500/8 border-blue-500/20",
@@ -55,8 +70,12 @@ export default function GamePage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [activeClipIndex, setActiveClipIndex] = useState<number | null>(null);
   const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0, min_score: 0, sort: "time" });
+  // What the clips fetch reads. The controls update `filters` at once so the
+  // numbers track the drag; the request waits for them to settle.
+  const settledFilters = useDebouncedValue(filters, CLIP_FILTER_DEBOUNCE_MS);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
@@ -139,7 +158,10 @@ export default function GamePage() {
           }, 5000);
         }
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load game.");
+        // A 404 is a game that does not exist or is not visible to this
+        // viewer (`get_game`); anything else is a fault (CF-423).
+        if (e instanceof ApiError && e.status === 404) setNotFound(true);
+        else setError(e instanceof Error ? e.message : "Failed to load game.");
       }
     }
 
@@ -150,11 +172,11 @@ export default function GamePage() {
   // Fetch clips when game is ready
   useEffect(() => {
     if (!game || game.status !== "ready") return;
-    Promise.all([getClips(id, filters), getPlayers()])
+    Promise.all([getClips(id, settledFilters), getPlayers()])
       .then(([c, p]) => { setClips(c); setPlayers(p); })
-      .catch((e) => setError(e.message))
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load clips."))
       .finally(() => setLoading(false));
-  }, [game, id, filters]);
+  }, [game, id, settledFilters]);
 
   const toggleActionFilter = useCallback((action: ActionType) => {
     setFilters((f) => {
@@ -167,6 +189,21 @@ export default function GamePage() {
       };
     });
   }, []);
+
+  if (notFound) {
+    return (
+      <div className="fade-up flex flex-col items-center justify-center rounded-lg border border-dashed border-border py-20 text-center">
+        <Scissors size={28} className="text-subtle mb-3" />
+        <h1 className="text-[13px] font-medium text-foreground">Game not found</h1>
+        <p className="mt-1 text-[12px] text-muted">
+          It may have been deleted, or the link is wrong.
+        </p>
+        <Link href="/games" className="mt-4">
+          <Button variant="secondary" size="sm">Back to library</Button>
+        </Link>
+      </div>
+    );
+  }
 
   if (error) {
     return (
@@ -204,9 +241,12 @@ export default function GamePage() {
         </Link>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-[18px] font-semibold text-foreground tracking-tight truncate">
-              {game.title}
-            </h1>
+            <div className="flex min-w-0 items-center gap-2">
+              <h1 className="text-[18px] font-semibold text-foreground tracking-tight truncate">
+                {game.title}
+              </h1>
+              {game.is_sample && <DemoBadge />}
+            </div>
             <p className="mt-0.5 text-[12px] text-muted">
               {game.clip_count ?? clips.length} clip{(game.clip_count ?? clips.length) !== 1 ? "s" : ""}
             </p>
@@ -219,6 +259,8 @@ export default function GamePage() {
           </span>
         </div>
       </div>
+
+      {game.is_sample && <DemoBanner credit={game.sample_credit} />}
 
       {/* Processing state */}
       {(game.status === "queued" || game.status === "processing") && (
@@ -483,6 +525,16 @@ export default function GamePage() {
           onClose={() => setActiveClipIndex(null)}
           onPrev={activeClipIndex > 0 ? () => setActiveClipIndex((i) => i! - 1) : undefined}
           onNext={activeClipIndex < clips.length - 1 ? () => setActiveClipIndex((i) => i! + 1) : undefined}
+          onUpdate={(updated) =>
+            setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
+          }
+          // Every game reachable here is the viewer's own. `GET /games/{id}` is
+          // visibility-scoped rather than owner-only, but no write path exists
+          // for a game's visibility — `test_visibility_write_paths_are_declared`
+          // holds that — so every game is private and only its owner can open
+          // it. Revisit if a game setter ever lands; the collections page,
+          // which really is cross-owner, passes nothing.
+          ownsClip
         />
       )}
     </div>

@@ -2,11 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertCircle, FolderOpen, Plus, Trash2, Pencil, Check, X } from "lucide-react";
+import { AlertCircle, FolderOpen, Plus, Trash2, Pencil, X } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { getCollections, createCollection, renameCollection, deleteCollection, type Collection } from "@/lib/api";
-import { cn } from "@/lib/utils";
 
 function CollectionsContent() {
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -24,7 +23,7 @@ function CollectionsContent() {
   useEffect(() => {
     getCollections()
       .then(setCollections)
-      .catch((e) => setError(e.message))
+      .catch((e) => setError(e instanceof Error ? e.message : "Couldn't load collections."))
       .finally(() => setLoading(false));
   }, []);
 
@@ -45,6 +44,11 @@ function CollectionsContent() {
       setCollections((prev) => [col, ...prev]);
       setNewName("");
       setCreating(false);
+    } catch (e) {
+      // A 401 after token expiry, a network drop, or the server's own 422 on a
+      // too-long name all used to un-spin the button and do nothing else
+      // (CF-304). `alert`, matching `handleDelete` below.
+      alert(e instanceof Error ? e.message : "Could not create the collection.");
     } finally {
       setCreateLoading(false);
     }
@@ -59,8 +63,14 @@ function CollectionsContent() {
     try {
       const updated = await renameCollection(id, name);
       setCollections((prev) => prev.map((c) => (c.id === id ? updated : c)));
-    } catch {
-      // revert silently
+    } catch (e) {
+      // The comment here read "revert silently" and there was nothing to
+      // revert: the rename is written on the RESPONSE, not optimistically, so
+      // a failure left the row showing the old name with no feedback and the
+      // user believing it had been renamed. Not one of the card's eight, but
+      // the same defect in the same file — fixed rather than left for the next
+      // audit to find again.
+      alert(e instanceof Error ? e.message : "Could not rename the collection.");
     }
   }
 
@@ -83,7 +93,9 @@ function CollectionsContent() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-[18px] font-semibold text-foreground tracking-tight">Collections</h1>
-          {!loading && (
+          {/* `!error` for the same reason the empty state has it: a failed
+              load must not say "No collections yet" (CF-304). */}
+          {!loading && !error && (
             <p className="mt-0.5 text-[12px] text-muted">
               {collections.length === 0 ? "No collections yet" : `${collections.length} collection${collections.length !== 1 ? "s" : ""}`}
             </p>

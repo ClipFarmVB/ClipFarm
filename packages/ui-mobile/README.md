@@ -148,9 +148,9 @@ stylesheet snapshot cannot cover this: `themeCss()` emits only `ThemeColors`.)
 
 Unlike the other primitives, badge colours do **not** change with the theme,
 which matches web. That is **not** because the hues work on either background.
-They are dark-theme hues: against the 10px label, five of the eight chips pass
-AA on `#0c0c0e` and fail on `#ffffff`, and `removed` / `not_an_action` fail on
-both. Web lands on dark unless the user flips `cf-theme` by hand, so it rarely
+They are dark-theme hues: against the 10px label, five of the eight chips clear
+AA on the dark background `#0b0f0f`, and **none** clears it on the light
+background `#faf7f1`. Web lands on dark unless the user flips `cf-theme` by hand, so it rarely
 shows there; `ThemeProvider` here follows `useColorScheme()`, so a phone in
 light mode meets it on first launch. Measured table and the two options
 (theme `actionColors`, or keep one palette) are in `src/Badge.tsx`.

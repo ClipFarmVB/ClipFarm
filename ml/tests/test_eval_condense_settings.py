@@ -18,12 +18,25 @@ import ast
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 REPO = Path(__file__).resolve().parents[2]
 CONFIG_PY = REPO / "api" / "app" / "config.py"
 TUNE_PY = REPO / "ml" / "eval" / "tune_contacts.py"
+# Every eval module that consumes the NORMALIZE mirror. deadtime_variants
+# imports it from tune_contacts, so a check that scanned only the file the
+# constant is *declared* in could not see the consumer that drops it — which
+# is exactly what happened: v0_shipped, the baseline every v1..v5 is scored
+# against, passed it to find_contacts and not to the bridge.
+MIRROR_CONSUMERS = (
+    TUNE_PY,
+    REPO / "ml" / "eval" / "deadtime_variants.py",
+)
 DEAD_TIME_PY = REPO / "ml" / "pipeline" / "dead_time.py"
+DEAD_TIME_ML_PY = REPO / "ml" / "pipeline" / "dead_time_ml.py"
+TASKS_PY = REPO / "api" / "app" / "workers" / "tasks.py"
 
 # tune_contacts constant -> the app.config setting it copies.
 COND_TO_SETTING = {
@@ -52,8 +65,30 @@ GUARD_TO_KWARG = {
 }
 # Mode switches, not tunables: not copied into tune_contacts, which sweeps the
 # rule-based path only. Listed here so the coverage test stays a conscious
-# checkpoint for every new condense_* knob.
+# checkpoint for every new condense_* knob. CF-394's "learned" mode added no
+# knob: its threshold lives in the weights file, and the one setting it reads
+# (condense_guard_min_track_rate) is guarded's, pinned below.
 SWITCH_SETTINGS = {"condense_mode"}
+
+# Settings outside the condense_ prefix that the eval tooling still copies, so
+# the coverage test above cannot see them. `ball_contact_scale_enabled` (CF-174)
+# is mirrored as tune_contacts.NORMALIZE and reaches both find_contacts and the
+# motion bridge, which is why drift here would move every swept number.
+# `ball_contact_soft_scale_enabled` (CF-376) is mirrored as SOFT_SCALE and reaches
+# find_contacts only — the bridge keeps the full scale in production too.
+# `ball_static_site_filter_enabled` (CF-229) is mirrored as STATIC_SITE_FILTER and
+# is applied where the track loads, so it reaches every consumer at once.
+NON_CONDENSE_TO_MIRROR = {
+    "ball_contact_scale_enabled": "NORMALIZE",
+    "ball_contact_soft_scale_enabled": "SOFT_SCALE",
+    "ball_static_site_filter_enabled": "STATIC_SITE_FILTER",
+}
+# The keyword each mirrored setting arrives as, per callee. SOFT_SCALE is not
+# passed to the bridge on purpose, so it is listed for find_contacts only.
+SWITCH_KWARGS = {
+    "find_contacts": ("normalize", "soft_scale"),
+    "bridge_windows_by_motion": ("normalize",),
+}
 
 
 def _settings_defaults() -> dict[str, object]:
@@ -112,6 +147,21 @@ def _tune_constant(name: str) -> dict[str, object]:
     raise AssertionError(f"{name} not found in {TUNE_PY.name}")
 
 
+def _tune_scalar(name: str) -> object:
+    """The scalar literal assigned to a module-level constant in tune_contacts.py."""
+    tree = ast.parse(TUNE_PY.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+            return ast.literal_eval(value)
+    raise AssertionError(f"{name} not found in {TUNE_PY.name}")
+
+
 class TestTuneContactsMatchesProduction:
     def test_condense_window_settings_match(self):
         settings = _settings_defaults()
@@ -133,6 +183,65 @@ class TestTuneContactsMatchesProduction:
                 f"tune_contacts BRIDGE[{key!r}]={bridge[key]} but "
                 f"app.config {setting}={settings[setting]}"
             )
+
+    def test_non_condense_mirrors_match(self):
+        """
+        `ball_contact_scale_enabled` is copied into tune_contacts the same way
+        COND and BRIDGE are, but it carries no `condense_` prefix, so the
+        coverage test below cannot see it and would not notice it drifting.
+
+        Drift here is worse than on a condense knob, not better: the switch
+        moves the contact gates *and* the bridge, so a tuner mirroring the wrong
+        value re-scores every row of every sweep against a detector production
+        is not running.
+        """
+        settings = _settings_defaults()
+        for setting, constant in NON_CONDENSE_TO_MIRROR.items():
+            assert setting in settings, f"app.config lost {setting!r}"
+            assert _tune_scalar(constant) == settings[setting], (
+                f"tune_contacts {constant}={_tune_scalar(constant)} but "
+                f"app.config {setting}={settings[setting]}"
+            )
+
+    @pytest.mark.parametrize("module_py", MIRROR_CONSUMERS, ids=lambda p: p.name)
+    @pytest.mark.parametrize("callee", ["find_contacts", "bridge_windows_by_motion"])
+    def test_the_switch_reaches_both_halves_of_the_condense_path(self, module_py, callee):
+        """
+        The mirrored value is only worth pinning if it is actually passed to
+        every consumer. CF-174's switch is one setting precisely so the contact
+        gates and the motion bridge cannot land on opposite sides of it, and the
+        eval mirrors are where that wiring is easiest to drop — nothing else in
+        this suite would notice, because both tools need a ball track from R2 to
+        run at all.
+
+        Parametrized over the *modules*, not just the callees, because the first
+        version of this test scanned only `tune_contacts` — the file the constant
+        is declared in — and therefore could not see `deadtime_variants.v0_shipped`
+        passing the mirror to its contacts and not to its bridge. A test whose
+        docstring claims both halves are covered has to check both files, or it
+        is the same class of unverified claim it exists to catch.
+
+        Asserted over the parsed call rather than a source substring: a
+        substring check passes or fails on formatting, and two earlier versions
+        of this idea in the CF-174 branch were replaced for exactly that. This
+        reads the keyword off the AST, so rewrapping the call is invisible and
+        dropping the argument is not.
+        """
+        tree = ast.parse(module_py.read_text(encoding="utf-8"))
+        calls = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name | ast.Attribute)
+            and (n.func.id if isinstance(n.func, ast.Name) else n.func.attr) == callee
+        ]
+        assert calls, f"{module_py.name} no longer calls {callee}"
+        for call in calls:
+            kwargs = {k.arg for k in call.keywords if k.arg}
+            for kwarg in SWITCH_KWARGS[callee]:
+                assert kwarg in kwargs, (
+                    f"{module_py.name} calls {callee} at line {call.lineno} without "
+                    f"{kwarg}=, so that half of the run ignores the switch it carries"
+                )
 
     def test_every_condense_setting_is_covered(self):
         """A new condense_* knob should be mapped here, not silently skipped."""
@@ -171,4 +280,137 @@ class TestGuardedDefaultsMatchProduction:
 
     def test_condense_mode_default_is_a_known_mode(self):
         mode = _settings_defaults()["condense_mode"]
-        assert mode in {"rules", "guarded"}, f"unknown condense_mode default {mode!r}"
+        assert mode in _condense_mode_literal(), f"unknown condense_mode default {mode!r}"
+        assert mode == "guarded", "CF-394 adds a mode; flipping the default is CF-399's call"
+
+    def test_the_learned_builder_declines_on_guardeds_floor(self):
+        """
+        CF-394: the learned builder declines (→ guarded) on the sparse tracks
+        guarded abstains on. Production hands it `condense_guard_min_track_rate`;
+        the eval rung `v6` runs on the kwarg default. The two must agree, or v6
+        scores a decline boundary production does not have.
+        """
+        settings = _settings_defaults()
+        defaults = _kwarg_defaults(DEAD_TIME_ML_PY, "active_windows_learned")
+        assert defaults["min_track_rate"] == settings["condense_guard_min_track_rate"]
+        calls = _calls(TASKS_PY, "active_windows_learned")
+        assert len(calls) == 1, "tasks.py should call the learned builder exactly once"
+        kwargs = {k.arg: ast.unparse(k.value) for k in calls[0].keywords if k.arg}
+        assert kwargs.get("min_track_rate") == "settings.condense_guard_min_track_rate"
+        assert "allow_unvalidated" not in kwargs, "production must never score unvalidated weights"
+
+
+def _condense_mode_literal() -> set[str]:
+    """The values of `condense_mode: Literal[...]` in app.config, parsed."""
+    tree = ast.parse(CONFIG_PY.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+                and node.target.id == "condense_mode"):
+            ann = node.annotation
+            assert isinstance(ann, ast.Subscript) and ast.unparse(ann.value) == "Literal"
+            elts = ann.slice.elts if isinstance(ann.slice, ast.Tuple) else [ann.slice]
+            return {ast.literal_eval(e) for e in elts}
+    raise AssertionError("condense_mode not found in app.config")
+
+
+def test_every_condense_mode_is_dispatched_and_nothing_else():
+    """
+    The modes `_build_condense_windows` compares against are exactly the ones
+    the Literal admits. A Literal value the dispatcher never names boots clean
+    and then lands on the unknown-mode fallback ("rules") for every game, the
+    failure the Literal was added to close; a name only the dispatcher knows is
+    dead code. Both `==` and `!=` are read, because "rules" is dispatched by
+    the negative test.
+    """
+    tree = ast.parse(TASKS_PY.read_text(encoding="utf-8"))
+    func = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "_build_condense_windows")
+    dispatched = {
+        side.value
+        for cmp in ast.walk(func) if isinstance(cmp, ast.Compare)
+        and all(isinstance(op, ast.Eq | ast.NotEq) for op in cmp.ops)
+        and ast.unparse(cmp.left) == "mode"
+        for side in cmp.comparators
+        if isinstance(side, ast.Constant) and isinstance(side.value, str)
+    }
+    assert dispatched == _condense_mode_literal()
+
+
+# The eval modules that read the switches straight off app.config.settings
+# rather than through a tune_contacts mirror, so neither the mirror test above
+# nor api/tests' worker AST test can see them. Dropping `soft_scale=` from one
+# of these is silent: harness.config_snapshot would still record the flag as
+# on for a run that gated with it off.
+SETTINGS_CONSUMERS = (
+    REPO / "ml" / "eval" / "harness.py",
+    REPO / "ml" / "eval" / "diagnose_detection.py",
+)
+
+
+@pytest.mark.parametrize("module_py", SETTINGS_CONSUMERS, ids=lambda p: p.name)
+def test_the_settings_consumers_hand_find_contacts_both_switches(module_py):
+    """CF-376: each find_contacts call passes both switches, by value."""
+    tree = ast.parse(module_py.read_text(encoding="utf-8"))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name | ast.Attribute)
+        and (n.func.id if isinstance(n.func, ast.Name) else n.func.attr) == "find_contacts"
+    ]
+    assert calls, f"{module_py.name} no longer calls find_contacts"
+    for call in calls:
+        kwargs = {k.arg: ast.unparse(k.value) for k in call.keywords if k.arg}
+        assert kwargs.get("normalize") == "settings.ball_contact_scale_enabled", (
+            f"{module_py.name}:{call.lineno} find_contacts without the CF-174 switch"
+        )
+        assert kwargs.get("soft_scale") == "settings.ball_contact_soft_scale_enabled", (
+            f"{module_py.name}:{call.lineno} find_contacts without CF-376's soft flag"
+        )
+
+
+def _calls(module_py: Path, callee: str, within: str | None = None) -> list[ast.Call]:
+    """Calls to `callee` (bare or attribute) in a module, or in one function of it."""
+    tree = ast.parse(module_py.read_text(encoding="utf-8"))
+    if within is not None:
+        tree = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == within)
+    return [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name | ast.Attribute)
+        and (n.func.id if isinstance(n.func, ast.Name) else n.func.attr) == callee
+    ]
+
+
+# CF-229: the static-site filter is track-level, so its mirror is applied where
+# the track loads rather than at each find_contacts call. Every loader has to
+# apply it, or a tool reading that loader scores the unfiltered track while
+# the mirror says otherwise.
+@pytest.mark.parametrize("module_py, func", [
+    (TUNE_PY, "load"),
+    (TUNE_PY, "load_track"),
+    (REPO / "ml" / "eval" / "deadtime_variants.py", "load_game"),
+], ids=lambda v: v if isinstance(v, str) else v.name)
+def test_every_track_loader_applies_the_static_site_mirror(module_py, func):
+    calls = _calls(module_py, "apply_static_site_filter", within=func)
+    assert len(calls) == 1, f"{module_py.name}:{func} does not apply the static-site filter"
+    kwargs = {k.arg: ast.unparse(k.value) for k in calls[0].keywords if k.arg}
+    # tune_contacts' loaders take a per-call override that falls back to the
+    # mirror; load_game reads deadtime_variants' own binding of it, which is
+    # what visualize_deadtime --static-site-filter flips.
+    expected = "STATIC_SITE_FILTER" if func == "load_game" else "static_site_filter"
+    assert kwargs.get("enabled") == expected
+
+
+@pytest.mark.parametrize("module_py, count", [
+    (REPO / "ml" / "eval" / "harness.py", 2),
+    (REPO / "ml" / "eval" / "diagnose_detection.py", 1),
+], ids=lambda v: v.name if isinstance(v, Path) else str(v))
+def test_the_settings_consumers_filter_static_sites_by_the_setting(module_py, count):
+    """CF-229: each offline path filters the cached track by the setting, by value."""
+    calls = _calls(module_py, "filter_static_sites")
+    assert len(calls) == count, f"{module_py.name} filters {len(calls)} tracks, expected {count}"
+    for call in calls:
+        kwargs = {k.arg: ast.unparse(k.value) for k in call.keywords if k.arg}
+        assert kwargs.get("enabled") == "settings.ball_static_site_filter_enabled", (
+            f"{module_py.name}:{call.lineno} filter_static_sites without the CF-229 setting"
+        )

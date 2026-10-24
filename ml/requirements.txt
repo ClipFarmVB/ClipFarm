@@ -13,9 +13,71 @@ Pillow>=10.0.0
 # Video / media
 ffmpeg-python==0.2.0
 
-# OCR (jersey numbers)
-paddlepaddle==2.6.2
-paddleocr==2.9.1
+# OCR (jersey numbers) — deliberately NOT installed. `ml/pipeline/ocr.py` has
+# no call sites; CF-7 (#31) is its intended consumer and is unscheduled. Two
+# reasons this file does not carry the pins in the meantime: they are several
+# hundred MB in every dev install, and `paddleocr==2.9.1` requires `numpy<2.0`.
+# What this comment does NOT say is that removing it unblocks numpy 2 here.
+# Three versions of this block claimed some form of "the only thing blocking
+# numpy 2 in this file" and a review round falsified each one, so the claim is
+# gone rather than narrowed a fourth time. It cannot be maintained: this file
+# pins `numpy==1.26.4` itself, in lockstep with Dockerfile.api,
+# ml/modal_pose.py, api/requirements-dev.txt and .github/workflows/ci.yml, and
+# six of the twelve entries here are version ranges whose constraints move
+# under you without this file changing. CF-363 needs a survey at the time it runs, not a
+# superlative recorded here. Two inputs for it, read from wheel metadata:
+#
+#   ultralytics caps numpy below 2 on darwin only (`numpy<2.0.0; sys_platform
+#     == "darwin"`). The marker survives through 8.3.69 and is gone in 8.3.70 —
+#     which replaces it with an unconditional `numpy<=2.1.1`. 8.3.253 has no
+#     unconditional cap. So the bump has a target, and picking it matters.
+#
+#   `inference-sdk>=0.9.0` is a closed loop with the numpy pin above. Its
+#     numpy constraint has moved twice inside the range this file allows:
+#     0.9.0 and 0.10.0 declare only `numpy>=1.20.0`; by 0.13.0, and still at
+#     0.45.1, it is `numpy<=1.26.4`; from 0.45.2 through 1.5.1 — the latest
+#     when this was measured — it is `numpy>=2.0.0`. So `numpy==1.26.4`
+#     silently selects 0.45.1, whose own metadata re-asserts the ceiling that
+#     chose it, while the SDK on its own resolves to 1.5.1. Dropping the numpy
+#     pin is what frees it, which is the shape of the whole numpy-2 question
+#     here. All of that is wheel METADATA and two `pip install --dry-run`
+#     resolves, not inference from release notes — and it is a snapshot, which
+#     is why the paragraph above says to survey rather than to trust this.
+#
+# It is NOT the only thing holding the repo on numpy 1, and CF-363 should not
+# read it that way: this file's own `numpy==1.26.4` is a harder ceiling still,
+# and it is repeated in Dockerfile.api, ml/modal_pose.py, api/requirements-dev.txt
+# and .github/workflows/ci.yml. A pin-consistency test requires the first three
+# to agree, so those move in lockstep or not at all. Dropping these two pins
+# removes one obstacle in front of that work; it does not clear the way.
+#
+# `read_jersey_numbers` imports PaddleOCR lazily and returns all-`None` with a
+# warning when it is absent, so the module stays importable without them.
+#
+# CF-7 inherits a PORT, not a working module. `ocr.py` targets paddleocr 2.x
+# and does not run on 3.x, which is the release that drops the numpy ceiling.
+# Three breakages, in call order — anchored on the code rather than on line
+# numbers this file has no way to keep correct:
+#   PaddleOCR(show_log=False) — 3.x has no `show_log` and does not map it, so
+#     `parse_common_args` raises ValueError. The lazy import guard only catches
+#     ImportError, so this is a hard failure, not the graceful all-`None` path.
+#   ocr.ocr(torso, cls=False) — 3.x forwards `ocr()` to `predict()`, which
+#     takes no `cls`. TypeError.
+#   text, conf = item[1] — 3.x returns PaddleX `OCRResult` objects, not the
+#     2.x nested-list shape this unpacks.
+# The last two are unlike the first in the way that matters here: both run
+# inside the per-box `try` whose `except Exception` logs and appends `None`.
+# Fixing only the constructor therefore buys a full run of `None`s and one
+# traceback per box — the silent no-op, not a stop.
+#
+# So do not re-add a pin here expecting the module to work. Port `ocr.py` to
+# 3.x as part of CF-7, then add BOTH `paddleocr>=3` and a `paddlepaddle` pin.
+# The framework is not pulled in for you: paddleocr 3.7.0 requires
+# `paddlex[ocr-core]` and never names paddlepaddle, and neither does paddlex —
+# which is why this file carried it on its own line. Its absence surfaces from
+# paddlex rather than as the ImportError `ocr.py` guards, so that path does not
+# degrade to all-`None` either. Pinning `paddleocr==2.x` instead would work
+# today and put the numpy ceiling straight back.
 
 # Roboflow inference (ball detection)
 inference-sdk>=0.9.0

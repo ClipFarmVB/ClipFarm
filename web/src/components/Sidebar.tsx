@@ -3,7 +3,8 @@
 import { useCallback, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Clapperboard, Upload, LayoutGrid, LogOut, Menu, Sun, Moon, FolderOpen, X } from "lucide-react";
+import { Upload, LayoutGrid, LogOut, Menu, Sun, Moon, FolderOpen, X } from "lucide-react";
+import { BrandMark } from "@/components/BrandMark";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { SOCIAL_ENABLED } from "@/lib/features";
@@ -38,9 +39,13 @@ export function Sidebar() {
   // flag-off build from calling a route the API doesn't register.
   const me = useMe(SOCIAL_ENABLED && Boolean(user) && !loading);
   // A generated handle is not published — /users/{handle} 404s until it's
-  // claimed — so linking to it would send the user to "No one is using @alice".
+  // claimed — so linking to it would send the user to a "Profile not found" page.
   // needsHandle() is the same predicate the banner and the API use.
   const hasPublicProfile = Boolean(me?.username) && !needsHandle(me);
+
+  // The brand logo goes to the landing page for everyone (CF-574). The
+  // library is the first nav item, one click away.
+  const homeHref = "/";
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
@@ -96,13 +101,8 @@ export function Sidebar() {
         >
           <Menu size={18} />
         </button>
-        <Link href="/" className="group flex items-center gap-2.5">
-          <div className="flex h-[26px] w-[26px] items-center justify-center rounded-md bg-brand/10 transition-colors group-hover:bg-brand/20">
-            <Clapperboard size={13} className="text-brand" strokeWidth={2.5} />
-          </div>
-          <span className="text-[14px] font-semibold tracking-tight text-foreground">
-            ClipFarm
-          </span>
+        <Link href={homeHref} className="group flex items-center gap-2.5">
+          <BrandMark />
         </Link>
       </header>
 
@@ -156,13 +156,8 @@ export function Sidebar() {
       >
         {/* Logo */}
         <div className="flex h-[52px] shrink-0 items-center border-b border-border">
-          <Link href="/" onClick={closeOnNavigate} className="group flex min-w-0 flex-1 items-center gap-2.5 px-4">
-            <div className="flex h-[26px] w-[26px] items-center justify-center rounded-md bg-brand/10 transition-colors group-hover:bg-brand/20">
-              <Clapperboard size={13} className="text-brand" strokeWidth={2.5} />
-            </div>
-            <span className="text-[14px] font-semibold tracking-tight text-foreground">
-              ClipFarm
-            </span>
+          <Link href={homeHref} onClick={closeOnNavigate} className="group flex min-w-0 flex-1 items-center gap-2.5 px-4">
+            <BrandMark />
           </Link>
           <button
             ref={closeRef}
@@ -292,8 +287,23 @@ export function Sidebar() {
               {/* Sign out */}
               <button
                 onClick={() => {
-                  // Drop the cached profile first so the next user never sees the
-                  // previous one's handle/avatar in the chrome.
+                  // Drop the cached profile first so the next user never sees
+                  // the previous one's handle/avatar in the chrome. AuthContext
+                  // now clears it too, on any identity change, so this call is
+                  // redundant on the sign-out path — kept because it lands
+                  // before the `signOut()` round trip rather than after it, and
+                  // clearMe is idempotent.
+                  //
+                  // The games cache is deliberately *not* cleared here as
+                  // well, and the asymmetry with clearMe above is the point.
+                  // It is cleared in AuthContext when the signed-in identity
+                  // changes, which is strictly after the token is revoked.
+                  // Clearing it in this handler would run while the old access
+                  // token is still valid, and `fetchGames` re-requests on a lost
+                  // generation race — that retry would return the outgoing
+                  // user's rows and write them into the cache we had just
+                  // emptied, reinstating CF-299 from inside its own fix.
+                  // `clearMe` has no such hazard because `useMe` never retries.
                   clearMe();
                   void signOut();
                 }}

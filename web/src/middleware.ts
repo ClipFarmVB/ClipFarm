@@ -1,11 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-
-// Routes that require an authenticated session
-// /settings is protected; /u/{handle} deliberately is not — a profile has to be
-// reachable by someone who isn't signed in (or isn't following) for the account
-// to be findable at all. What's *visible* there is gated separately (CF-108).
-const PROTECTED_PREFIXES = ["/games", "/upload", "/collections", "/settings"];
+import { authRedirect } from "@/lib/authRoutes";
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -36,18 +31,21 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const { pathname } = request.nextUrl;
-  const isProtected = PROTECTED_PREFIXES.some(
-    (prefix) => pathname === prefix || pathname.startsWith(prefix + "/")
-  );
+  const target = authRedirect(pathname, Boolean(user));
+  if (!target) return response;
 
-  if (isProtected && !user) {
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
-    loginUrl.searchParams.set("next", pathname);
-    return NextResponse.redirect(loginUrl);
-  }
-
-  return response;
+  // Keep the request's own query and overlay the target's, as the /login
+  // redirect always has.
+  const url = request.nextUrl.clone();
+  const resolved = new URL(target, url);
+  url.pathname = resolved.pathname;
+  resolved.searchParams.forEach((value, key) => url.searchParams.set(key, value));
+  // Only a signed-out visitor is redirected now (CF-574 dropped the signed-in
+  // `/` → /games hop). getUser() may still have refreshed or cleared cookies
+  // on `response`, which a redirect replaces — carry them across.
+  const redirect = NextResponse.redirect(url);
+  response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
+  return redirect;
 }
 
 export const config = {

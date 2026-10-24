@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { FolderOpen, Plus, X, Check, Loader } from "lucide-react";
+import { createPortal } from "react-dom";
+import { AlertCircle, FolderOpen, Plus, X, Check, Loader } from "lucide-react";
 import {
   getCollections,
   createCollection,
@@ -41,6 +42,13 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [createLoading, setCreateLoading] = useState(false);
+  // Two error slots, not one. `error` is the outcome of something the user
+  // just did and is cleared when they try again; `loadError` is a standing fact
+  // about the list they are looking at and survives every action, because a
+  // successful create after a failed load otherwise leaves them reading a
+  // one-item list as if it were their whole account (CF-304).
+  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const newNameRef = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -105,6 +113,12 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   useEffect(() => {
     getCollections()
       .then(setCollections)
+      // Without this the fetch rejects unhandled AND the empty-list branch
+      // below tells the user they have no collections — an affirmative claim
+      // about their account made from a network failure (CF-304).
+      // The card below supplies "Couldn't load your collections."; this is the
+      // reason that follows it, so the fallback must not repeat the heading.
+      .catch((e) => setLoadError(e instanceof Error ? e.message : "Please try again."))
       .finally(() => setLoading(false));
   }, []);
 
@@ -137,9 +151,20 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
   async function handleAdd(collectionId: string) {
     if (saved.has(collectionId) || saving === collectionId) return;
     setSaving(collectionId);
+    setError(null);
     try {
       await addClipToCollection(collectionId, clipId);
       setSaved((prev) => new Set(prev).add(collectionId));
+    } catch (e) {
+      // The row un-spins either way; without this the clip silently is not in
+      // the collection.
+      //
+      // Reported here and NOT rethrown, which is what keeps a create-then-add
+      // failure to one message. `handleCreate` does await this inside its own
+      // try, so its catch would wrap it — swallowing here rather than at the
+      // call site is what makes the two paths report once, and the comment on
+      // that await says the same thing from the other end.
+      setError(e instanceof Error ? e.message : "Couldn't add the clip.");
     } finally {
       setSaving(null);
     }
@@ -154,19 +179,57 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
     // entry points at once.
     if (createLoading) return;
     setCreateLoading(true);
+    setError(null);
     try {
       const col = await createCollection(name);
       setCollections((prev) => [col, ...prev]);
       setNewName("");
       setCreating(false);
-      // Immediately add clip to the newly created collection
+      // Immediately add clip to the newly created collection.
+      //
+      // Inside the try and AFTER the three lines above, both deliberately.
+      // `handleAdd` owns its own error, so a create-then-add failure reports
+      // once rather than twice; and clearing `creating`/`newName` before the
+      // await is what CF-227's Escape contract depends on (see the onEscape
+      // comment above) — a catch here must not reorder them.
       await handleAdd(col.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't create the collection.");
     } finally {
       setCreateLoading(false);
     }
   }
 
-  return (
+  // Portalled to document.body, like ClipModal — and it is not cosmetic
+  // symmetry. Rendered inline, this overlay is a descendant of the page's
+  // `.fade-up` wrapper, and `.fade-up` keeps `transform: translateY(0)`
+  // applied forever because its animation is `both`-filled. A transform that
+  // is not `none` makes an element a containing block for `position: fixed`
+  // descendants, so `inset-0` sized this to the *wrapper's padding box* rather
+  // than the viewport and centred the card thousands of pixels below the fold:
+  // near enough the document to look like it — 11508 against a 11620px
+  // document in the reduction below, the difference being the layout chrome —
+  // but the wrapper is what it resolved against. Mounted,
+  // visible, opacity 1, and unreachable, with the scroll lock already holding
+  // the page still. Measured on the deployed app at ovTop 76 / ovH 11304 /
+  // cardTop 5647 in a 608px viewport, stable across 60 frames (CF-347).
+  //
+  // Reproduced headless on a reduction of this layout — `.fade-up` verbatim
+  // from globals.css around a tall grid, the animation driven to `finished`
+  // so the retained fill is observed rather than assumed. Inline, ovTop 76 and
+  // ovH 11508; portalled, ovTop 0 and ovH = the viewport. Measured mid-run the
+  // same page reads ovTop 84, which is the `both` fill's *backwards* half at
+  // translateY(8px): 76 + 8, and a good way to mistake a faithful repro for a
+  // broken one. Setting the wrapper to `transform: none` makes the inline case
+  // identical to the portalled one, which is what pins the cause on the
+  // transform rather than on anything else in the page.
+  //
+  // The portal is the fix rather than editing the keyframe, because ending
+  // `fade-up` at `transform: none` would still leave the bug live for the
+  // 0.22s the animation is running — and because this way the overlay does not
+  // care what any ancestor does. `.fade-up` wraps most pages here, so an inline
+  // `fixed` child is a trap the next overlay would fall into too (CF-349).
+  return createPortal(
     <div
       ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
@@ -207,6 +270,50 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
           </button>
         </div>
 
+        {/* Both cards sit OUTSIDE the scrolling list below, deliberately. Inside
+            it, a message inserted above the rows is inserted above the retained
+            `scrollTop`: a user with enough collections to scroll clicks a row,
+            the write fails, the row un-spins with no check mark, and the reason
+            is off-screen — the failure the catch was added to remove, for
+            exactly the users most likely to hit it.
+
+            `role="alert"` for the same reason it is on `ClipModal` and
+            `PostComposerModal`: focus never moves when either of these appears
+            — `loadError` arrives after mount and `error` while focus is still
+            on the row button — so without it the failure is silent to a screen
+            reader.
+
+            Labelled, because the two are otherwise identical and can carry the
+            same sentence — one about the list, one about what the user just
+            did. Without the prefix a failed create reads as the list failing
+            again.
+
+            "Your existing collections are not shown" rather than "anything
+            below may be incomplete": the fetch failed, so nothing below came
+            from it, and the only row that can appear afterwards is one the user
+            just created. */}
+        {loadError && (
+          <div
+            role="alert"
+            className="mx-4 my-3 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400"
+          >
+            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            <span>
+              <span className="font-medium">Couldn&apos;t load your collections.</span>{" "}
+              {loadError} Your existing collections are not shown.
+            </span>
+          </div>
+        )}
+
+        {error && (
+          <div
+            role="alert"
+            className="mx-4 my-3 flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400"
+          >
+            <AlertCircle size={13} className="shrink-0" /> {error}
+          </div>
+        )}
+
         {/* Collection list */}
         <div className="max-h-60 overflow-y-auto py-1">
           {loading && (
@@ -215,7 +322,7 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
             </div>
           )}
 
-          {!loading && collections.length === 0 && !creating && (
+          {!loading && !loadError && collections.length === 0 && !creating && (
             <p className="px-4 py-4 text-center text-[12px] text-subtle">
               No collections yet — create one below.
             </p>
@@ -288,6 +395,7 @@ export function CollectionPickerModal({ clipId, onClose }: Props) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

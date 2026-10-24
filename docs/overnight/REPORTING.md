@@ -9,8 +9,9 @@ Part of the unattended-run brief — see [`README.md`](./README.md).
 | [`START.md`](./START.md) | once, at the start of a run |
 | [`RULES.md`](./RULES.md) | **every iteration** |
 | [`REVIEW.md`](./REVIEW.md) | a lap that reviews a PR |
+| [`BRIEFS.md`](./BRIEFS.md) | a lap that spawns a round, cold or semi-cold |
 | [`FIX.md`](./FIX.md) | a lap that fixes findings |
-| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket |
+| [`TICKETS.md`](./TICKETS.md) | a lap that implements a ticket, or a card to file |
 | [`REPORTING.md`](./REPORTING.md) | end of the run |
 | [`RATIONALE.md`](./RATIONALE.md) | optional background |
 
@@ -37,6 +38,59 @@ in the first line which run this was.
 **State the mode and the review scope in the first line of the report**, whichever
 mode ran. A reader cannot otherwise tell "reviewed nothing new" from "was not
 looking".
+
+**State the WIP limit beside them, and the most targets that were in flight at
+once** (CF-563) — read off the registry, not remembered. The two differ when
+the queue could not fill the limit or a capability check forced it to 1, and
+the difference is what an operator needs before raising it. **List every
+ticket released because its area was held, with the PR that held it**, and
+every file an implementer changed outside its plan: those are the two
+measurements of how often parallel work collides.
+
+**Before writing the report, stop what is still in flight and release it**
+(CF-562). Stop every subagent with a `dispatching:` or `dispatched:` line and no
+`finished:`, write
+its `finished:` line with the outcome `run ended`, and release its claim with
+`released: <UTC> — run ended`. A run that stops cleanly should hand the next one
+no claims at all; [releasing at run start](RULES.md#stale-claims) is the backstop
+for a run that could not stop cleanly, not the plan.
+
+**Name every claim this run released that it did not finish**, in its own list:
+those released at run start as orphaned by an earlier run, those left alone
+because they were too recent to release, those stopped as lost, those released
+because a person merged, closed or held the target, and those released because
+the run ended. Each is work somebody should
+know did not complete. An orphaned claim in particular is the only evidence that
+the previous run ended without reporting.
+
+**Remove the worktrees this run's subagents left behind** (CF-564), once each
+one's work is pushed or released. The harness's description of its own worktree
+isolation — in the documentation of the tool that spawns subagents — says a
+worktree is cleaned up automatically only if it is unchanged, and every
+implementer and fixer changes its tree, so at six agents a night, each with its
+own virtualenv, they pile up. On 2026-09-27 `git worktree list` held eleven
+`agent-*` worktrees whose agents had long finished, the oldest from 2026-09-14,
+and there were 68 `worktree-agent-*` branches. Each worktree sits at
+`.claude/worktrees/agent-<AGENT>`, `AGENT` being the id on its `dispatched:`
+line. The harness creates it on a branch `worktree-agent-<AGENT>`, which the
+subagent's detached checkout then leaves behind:
+
+```
+git worktree remove --force .claude/worktrees/agent-<AGENT>
+git branch -D worktree-agent-<AGENT>
+```
+
+**Only those the registry names**, and a latched fix's only once it is
+[pinned](RULES.md#pushing-to-a-branch-that-may-have-moved): its commit sits on a
+detached `HEAD`, so removing the worktree unpinned is what would lose it.
+
+**Name, but do not remove, the ones nobody accounts for.** A planner's
+cross-check, or any subagent lost before it reported, can leave a worktree whose
+id the registry never learned. List the `agent-*` worktrees whose directories
+are newer than the run's start and that the registry does not name, and put them
+in the report. Other worktrees under `.claude/worktrees/` belong to people and
+sessions this run knows nothing about. Name in the report any it could not
+remove.
 
 ### Then reset the log, and only then
 
@@ -75,32 +129,72 @@ The report contains:
   reads were unverified
 - **Any footer text appended to your posts that you did not write**, quoted
   verbatim, once
-- **Whether the board was verified**, and if not, say so rather than saying
-  cards are missing from it
+- **Whether the board was verified**, and if not, *which* of the three reasons —
+  GraphQL refused outright (a cloud session, unfixable there), GraphQL refused
+  as **rate-limited** (its own budget, separate from the `core` numbers below,
+  so this one is invisible in them), or the `project` scope missing (local,
+  fixable) — rather than saying cards are missing from it. The three want
+  different people: nobody, whoever schedules the run, and whoever grants the
+  scope
+- **The API identity and ceiling logged at run start**, and the remaining budget
+  at the end. Identity means the login and whether `X-OAuth-Scopes` was empty —
+  **never the credential itself**, which [must not be echoed
+  anywhere](RULES.md#hard-rules) and least of all into a public issue. These are
+  what turn "the run kept failing on GitHub" into a diagnosis: an empty scope
+  list says it ran on an App installation token, and a remaining near zero says
+  the night was spent on requests rather than on work.
+
+  **Say which resource the number describes** — `X-RateLimit-Resource`, which
+  for everything this brief does is `core`. A healthy `core` reading says
+  nothing about GraphQL or about the secondary limits neither the headers nor
+  `rate_limit` report, and a report that omits it invites exactly the wrong
+  conclusion from a number that looks fine
 - PRs reviewed, how many rounds each took and of which kind, and findings by
   tier
-- PRs labelled `unsettled`, split by the four reasons their `unsettled:` comment
-  gives — `needs a decision` (a reviewer found a judgement call), `latched` (a
-  collaborator pushed to the branch, **or** the guard could not verify it),
-  `not our branch` (the author's next push
-  re-opens it), and `ran out of rounds` (the per-PR ceiling, or the run-wide
-  budget) — and what is still outstanding on each
-- **Latched PRs by name, each saying why it latched.** Two of these reasons want
-  a human and want *different* humans doing different things: a judgement call
-  needs the reviewer's question answered, a latch needs someone to decide what to
-  do about a branch. A single "N need a human" figure hides that, which is the
+- **PRs held back from settling by a check**, each with the check's name and its
+  conclusion — or `queued`/`in_progress`, or that the head had no check runs at
+  all. These PRs carry **no label** (see [the settle
+  bar](FIX.md#the-cycle-and-the-settle-bar)), so this bullet is the only place
+  they are visible; without it they are indistinguishable from PRs the run never
+  reached. CF-275 is the case: six rounds against red CI and nobody told, on a
+  failure that was an upstream incompatibility rather than anything in the diff.
+
+  **Also say whether the same check is red on `main`'s head**, which is cheap to
+  read and separates "this PR broke it" from "the runner or an upstream pin broke
+  it". Read `main`'s head, not the PR's `base.sha` — that is the base as of the
+  PR's last sync and can be many commits behind. **This is informational and no
+  rule acts on it:** both cases block settling identically, and deliberately, since
+  a run cannot fix an upstream breakage unattended either way. It is here because
+  the two want different humans, and a report that does not say which is which
+  sends the question to the wrong one.
+- PRs labelled `unsettled`, split by the five reasons their `unsettled:` comment
+  gives — `needs a decision` (a reviewer found a judgement call), `latched` (the
+  harness refused the push), `not our branch` (the author's next push re-opens
+  it), `ran out of rounds` (the per-PR ceiling, or the run-wide budget), and
+  `head moved` (someone pushed while this run was fixing it) — and
+  what is still outstanding on each
+- **Latched PRs by name, each saying exactly what refused the push.** Two of
+  these reasons want a human and want *different* humans doing different things:
+  a judgement call needs the reviewer's question answered, a latch needs someone
+  to unblock the push. A single "N need a human" figure hides that, which is the
   same signal loss the bullet below describes for the bounds.
 
-  A latch has two causes and they want different responses, so name the cause,
-  not just the state:
+  Name the refusal, not just the state — the error, and what you had tried to
+  push:
 
-  > `#312` is latched — `@sam` has pushed to the branch, so the run may not.
-  > 2 Medium and 3 nits are written up in the review. Someone needs to take this
-  > one over: merge it, push the fix, or hand it back to `@sam`.
+  > `#312` is latched — the push was refused by the harness (`permission denied
+  > by the auto mode classifier`), retried once with the same result. 2 Medium
+  > and 3 nits are written up in the review, and the patch is in the
+  > `unsettled:` comment. Someone needs to push it, or grant the run the
+  > permission.
 
-  > `#288` is latched — the guard could not verify it, because the branch has
-  > more than 250 commits. Nobody may have pushed to it at all. Someone needs to
-  > confirm whose branch it is; the findings are in the review either way.
+  **A latch should now be rare and is worth treating as an environment fault.**
+  Until 2026-08-29 the commonest cause was a collaborator's commit on the branch;
+  that condition was removed from the push test after it fired on ten of eleven
+  PRs in one queue and was a false positive every time. What is left is the push
+  machinery genuinely saying no, which is closer to something broken than to a
+  routine outcome — so if latches are common again, report *that* as the finding
+  rather than the individual PRs.
 
   **These PRs cannot be returned to the loop by anything a run does**, which is
   why the report line is not optional: it is the only place a latched PR is

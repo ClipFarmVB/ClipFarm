@@ -1,4 +1,5 @@
 """Cloudflare R2 (or AWS S3) object storage helpers."""
+import logging
 import re
 import uuid
 from collections.abc import Iterator, Sequence
@@ -11,6 +12,8 @@ import boto3
 from botocore.config import Config
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class LimitedReader:
@@ -134,7 +137,7 @@ def head_object(key: str) -> dict | None:
     The size is what makes this more than an existence check: a presigned PUT
     cannot enforce Content-Length (S3 and R2 ignore it as a query parameter),
     so the only place a client's *declared* size can be checked against the
-    bytes it actually wrote is here, after the fact — see confirm_upload.
+    bytes it actually wrote is here, after the fact — see complete_upload.
     """
     try:
         resp = _client().head_object(Bucket=settings.r2_bucket_name, Key=key)
@@ -156,7 +159,7 @@ def head_bytes(key: str, count: int) -> bytes | None:
 
     A probe, never raises — same contract as head_object, and for the same
     reason: the caller is better placed to decide what a missing answer means
-    than this function is. confirm_upload treats None as "allow", which is the
+    than this function is. complete_upload treats None as "allow", which is the
     opposite of what it does with a None from head_object; see the reasoning
     there.
 
@@ -189,7 +192,7 @@ def presign_put(key: str, content_type: str, expires_in: int) -> str:
     That binds the header, not the bytes (CF-244). A client can declare
     video/mp4, send the matching header so the signature verifies, and upload
     anything at all. This is a control over what the object is *labelled*, not
-    over what it contains — confirm_upload sniffs the stored bytes for that.
+    over what it contains — complete_upload sniffs the stored bytes for that.
     """
     return _client().generate_presigned_url(
         "put_object",
@@ -382,9 +385,34 @@ def delete_files(keys: Sequence[str]) -> list[str]:
     a batch that fails outright is reported the same way rather than raising,
     since one bad batch must not abandon the rest. Deleting a missing key is
     not an error — S3 and R2 both report it as deleted.
+
+    **Every failure path logs its reason here**, because the return value cannot
+    carry one: it is a key list, and the reason — an exception on the call, or a
+    per-key `Code`/`Message` — is gone by the time the caller sees it. The only
+    caller today reports a count, so without these lines a persistent failure is
+    a number that never changes and nothing to act on.
+
+    **A client we cannot build is reported the same way**, rather than raising
+    past every caller. `_client()` reads `settings.r2_*`, so a missing or
+    malformed config fails here and not at import; the promise above would be
+    untrue for exactly that case if the construction sat outside the guard.
+
+    That branch is unreachable from the retention sweep, which is the only
+    caller today: it walks `list_objects` first, and that builds the same
+    `lru_cache`d client (see that function) inside the sweep's own guard, so a
+    bad config aborts the sweep a step earlier. The guard is here because this
+    promise is the function's, not the sweep's — the next caller need not walk
+    a listing first.
     """
     failed: list[str] = []
-    client = _client()
+    try:
+        client = _client()
+    except Exception as exc:
+        logger.warning(
+            "delete_files: could not build a client, reporting %d key(s) as failed (%s)",
+            len(keys), exc,
+        )
+        return list(keys)
     for i in range(0, len(keys), 1000):
         batch = list(keys[i:i + 1000])
         try:
@@ -392,10 +420,34 @@ def delete_files(keys: Sequence[str]) -> list[str]:
                 Bucket=settings.r2_bucket_name,
                 Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True},
             )
-        except Exception:
+        except Exception as exc:
+            # The return value carries *which* keys failed; only this line can
+            # carry *why*. Without it the sole trace of a persistent failure is
+            # the caller's count — the retention sweep logs "N object(s) could
+            # not be deleted, retrying next sweep" on every completed game —
+            # which cannot distinguish a credential that lost DeleteObject from
+            # an object lock from a transient network fault.
+            logger.warning(
+                "delete_files: batch of %d key(s) failed outright, reporting them "
+                "as undeleted (%s)", len(batch), exc,
+            )
             failed.extend(batch)
             continue
-        failed.extend(err["Key"] for err in resp.get("Errors", []))
+        # Per-key rejections inside an otherwise successful call. `Code` and
+        # `Message` are the diagnosis and are not recoverable from the key
+        # list, so they are logged here rather than discarded; the return value
+        # stays keys-only, which is what the caller retries on.
+        errors = resp.get("Errors", [])
+        if errors:
+            logger.warning(
+                "delete_files: %d of %d key(s) in this batch were rejected: %s",
+                len(errors), len(batch),
+                "; ".join(
+                    f"{err.get('Key')}: {err.get('Code')} {err.get('Message')}"
+                    for err in errors[:10]
+                ) + (f" (+{len(errors) - 10} more)" if len(errors) > 10 else ""),
+            )
+        failed.extend(err["Key"] for err in errors)
     return failed
 
 

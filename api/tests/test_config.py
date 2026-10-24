@@ -20,6 +20,7 @@ import pytest
 pytest.importorskip("pydantic_settings")
 
 from pydantic import ValidationError  # noqa: E402
+from pydantic_core import InitErrorDetails, PydanticCustomError  # noqa: E402
 
 from app.config import (  # noqa: E402
     LOCAL_CORS_ORIGINS,
@@ -27,6 +28,7 @@ from app.config import (  # noqa: E402
     REQUIRED_IN_PRODUCTION,
     REQUIRED_IN_PRODUCTION_WORKER,
     Settings,
+    _boot_error,
     _origin_problem,
     _origin_problems,
     _settings_or_boot_error,
@@ -128,6 +130,70 @@ def test_blank_credential_counts_as_missing(clean_env):
         _settings(**{k.lower(): v for k, v in env.items()})
 
     assert "R2_SECRET_ACCESS_KEY" in str(exc.value)
+
+
+def test_render_states_the_public_posting_decision_rather_than_defaulting_to_it():
+    """PUBLIC_POSTING_ENABLED must be set explicitly, either way.
+
+    Deliberately NOT asserted to be `false`. Turning it on is a decision the
+    operator makes when terms of service (CF-75/CF-88) and a report and
+    takedown path (CF-116) are in place, and a test that pinned the value would
+    make that a code change instead of a deploy change — which is the opposite
+    of why it is a flag.
+
+    What is asserted is that the blueprint says *something*: a literal `value:`,
+    not `sync: false` and not absent. Left to the code default it would still
+    be off today, but whether owners may set youth-sports footage `public` is
+    a decision the blueprint should state on its face rather than inherit, and
+    a `sync: false` is missing in exactly the case that matters — a fresh apply
+    where nobody has filled the group in.
+    """
+    yaml = pytest.importorskip("yaml")
+
+    render = yaml.safe_load((REPO_ROOT / "render.yaml").read_text(encoding="utf-8"))
+    api = next(s for s in render["services"] if s.get("name") == "clipfarm-api")
+    entry = next(
+        (v for v in api["envVars"] if v.get("key") == "PUBLIC_POSTING_ENABLED"), None
+    )
+    assert entry is not None, (
+        "render.yaml must state PUBLIC_POSTING_ENABLED on clipfarm-api — the flag "
+        "that decides whether owners may set a clip or a post to public"
+    )
+    assert entry.get("value") in {"true", "false"}, (
+        "it must carry a literal value; `sync: false` is absent on a fresh apply"
+    )
+
+
+def test_render_sets_the_proxy_hop_count_the_limiter_depends_on():
+    """Without this, per-caller limiting silently does not work in production.
+
+    uvicorn rewrites `request.client` from X-Forwarded-For only when the peer
+    is in --forwarded-allow-ips (default 127.0.0.1), and
+    scripts/render-start-api.sh passes no override — so on Render every request
+    presents the platform router's address. Left at the default of 0, the
+    limiter puts the whole internet in one bucket and throttles every reader
+    together: strictly worse than no limiter, and green in every local test.
+
+    A literal `value:`, not `sync: false`, for the same reason ENVIRONMENT is
+    pinned above — a value nobody has filled in is exactly the case this
+    guards.
+    """
+    yaml = pytest.importorskip("yaml")
+
+    render = yaml.safe_load((REPO_ROOT / "render.yaml").read_text(encoding="utf-8"))
+    api = next(s for s in render["services"] if s.get("name") == "clipfarm-api")
+    entry = next(
+        (v for v in api["envVars"] if v.get("key") == "RATE_LIMIT_TRUSTED_PROXY_HOPS"),
+        None,
+    )
+    assert entry is not None, (
+        "render.yaml must set RATE_LIMIT_TRUSTED_PROXY_HOPS on clipfarm-api, or "
+        "the rate limiter identifies every caller as Render's router"
+    )
+    assert int(entry.get("value", 0)) >= 1, (
+        "Render puts exactly one proxy in front of uvicorn; 0 means the limiter "
+        "reads the router's address instead of the client's"
+    )
 
 
 def test_render_blueprint_turns_the_guard_on_without_a_human_step():
@@ -1558,6 +1624,77 @@ def test_a_boot_error_still_names_every_problem(clean_env, monkeypatch):
     assert "wildcard" in message
 
 
+def test_pydantics_own_prefix_does_not_reach_the_operator(clean_env, monkeypatch):
+    """`Value error, ` is pydantic's, and it lands mid-sentence in ours.
+
+    The composed line is the one thing whoever is staring at a failed deploy
+    reads, and it opened `Configuration is not usable: Value error, ENVIRONMENT=
+    production but ...`. Nothing asserted the leading text before this, which is
+    why the wart survived CF-235.
+
+    Both halves are asserted on purpose. A test that only checks the prefix is
+    gone passes just as well if the strip ate the message with it, and this
+    repository has recent form for assertions that hold for the wrong reason.
+    """
+    for name, value in PRODUCTION_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("CORS_ORIGINS", "https://clipfarm.ca/")
+
+    with pytest.raises(RuntimeError) as exc:
+        _settings_or_boot_error(_env_file=None)
+
+    message = str(exc.value)
+    assert "Value error," not in message
+    assert "ENVIRONMENT=production but CORS_ORIGINS" in message
+
+
+def test_the_prefix_strip_is_keyed_on_the_type_and_keeps_a_bare_message():
+    """The two branches of the strip, driven directly because nothing else can.
+
+    Both of these were written first as end-to-end tests through `Settings`,
+    and **both could not fail**: measured, deleting the `type` guard and
+    deleting the empty-remainder guard each left the whole suite green. No env
+    var this codebase accepts produces either input — `config.py`'s two model
+    validators raise from three sites and every one passes non-empty text, so
+    a real error is either a `value_error` with text or a pydantic-generated
+    message that has no such prefix to lose.
+
+    That is the failure class CF-308 is about, so the errors are constructed
+    instead. `_boot_error` takes a `ValidationError` and nothing else, which is
+    what makes driving it directly honest rather than a workaround.
+
+    - A non-`value_error` whose message merely *starts* with pydantic's prefix
+      must keep it: the strip is a fact about where the text came from, not a
+      pattern match on the text.
+    - A `value_error` carrying nothing but the prefix must keep it too, or the
+      composed line becomes `Configuration is not usable: ` and names no
+      problem at all.
+    - A `value_error` whose text opens with characters drawn from the prefix
+      must lose the prefix and nothing else. `rule, all of it` opens with a run
+      of eleven characters that all appear in `"Value error, "`, so `lstrip` in
+      its place eats the message down to `f it` — stopping at the first `f`,
+      the earliest character the prefix does not contain. Without this case
+      that substitution survives the whole suite, because every message a real
+      setting produces starts with `E`, which is not in the set either: the two
+      spellings agree by luck rather than by design.
+    """
+    errors = [
+        InitErrorDetails(
+            type=PydanticCustomError("not_a_value_error", "Value error, mine"),
+            loc=(),
+        ),
+        InitErrorDetails(type="value_error", loc=(), ctx={"error": ValueError("")}),
+        InitErrorDetails(
+            type="value_error", loc=(), ctx={"error": ValueError("rule, all of it")}
+        ),
+    ]
+    message = _boot_error(ValidationError.from_exception_data("Settings", errors))
+
+    assert "Value error, mine" in message
+    assert "Value error, ; " in message
+    assert message.endswith("rule, all of it")
+
+
 def test_a_boot_error_names_every_pydantic_error_not_just_the_first(
     clean_env, monkeypatch
 ):
@@ -1570,7 +1707,7 @@ def test_a_boot_error_names_every_pydantic_error_not_just_the_first(
     not two — which is why the first attempt at this test proved nothing.
 
     It also pins that each problem names its field. Taking only `msg` rendered
-    `CONDENSE_MODE=banana` as a bare "Input should be 'rules' or 'guarded'":
+    `CONDENSE_MODE=banana` as a bare "Input should be 'rules', 'guarded' or 'learned'":
     true, and useless, since the operator is not told which setting it is about,
     out of dozens. pydantic puts the field on its own line and the first version of
     the wrapper dropped it.
@@ -1627,16 +1764,26 @@ def test_an_unknown_condense_mode_fails_at_load(clean_env):
     assert "condense_mode" in str(excinfo.value).lower()
 
 
-def test_both_shipping_modes_still_load(clean_env):
+def test_every_condense_mode_still_loads(clean_env):
     """The companion to the two above: closing the set must not close it around
-    the wrong values. Both names here are dispatched on by
+    the wrong values. Every name here is dispatched on by
     `tasks._build_condense_windows` and `ml/eval/harness.py`, so a Literal that
     admitted only the default would fail the run it was meant to protect.
+    "learned" (CF-394) is in the set and is not the default — flipping it is
+    CF-399's decision, not a side effect of adding it.
     """
-    for mode in ("rules", "guarded"):
+    for mode in ("rules", "guarded", "learned"):
         assert _settings(condense_mode=mode).condense_mode == mode
 
     assert _settings().condense_mode == "guarded", "the default must stay guarded"
+
+
+def test_learned_is_named_in_the_refusal(clean_env):
+    """An operator who mistypes the new mode is told it exists."""
+    with pytest.raises(Exception) as excinfo:
+        _settings(condense_mode="lerned")
+
+    assert "'learned'" in str(excinfo.value)
 
 
 # ── CF-92: the tools CI runs on are pinned ─────────────────────────────────

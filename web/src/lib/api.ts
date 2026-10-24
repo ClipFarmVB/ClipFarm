@@ -1,4 +1,6 @@
-import { apiErrorMessage } from "@/lib/apiError";
+import { ApiError, apiErrorMessage } from "@/lib/apiError";
+
+export { ApiError };
 import { createClient } from "@/lib/supabase";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -24,10 +26,44 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
  * are exactly the ones that drifted: an over-quota video upload reported a
  * clean sentence while the 2 MB avatar cap still showed
  * `API error 413: {"detail":"..."}`.
+ *
+ * **The fallback is bounded, and that started mattering with CF-304.** When
+ * the body is not our JSON — a proxy or CDN 502, which is an HTML page — the
+ * fallback carries the whole body. That was tolerable while these strings
+ * reached `console.error`; the error paths fixed in CF-304 put them in an
+ * `alert()` and on the profile page, where a kilobyte of markup is an
+ * unreadable wall and the status line at the front scrolls out of reach.
+ * So a body that is not JSON is cut by `errorFallback` below, and one that
+ * opens as markup is dropped entirely: it has nothing in it for the person
+ * reading.
+ *
+ * **It throws an `ApiError`, which carries `res.status` (CF-423).** The status
+ * used to survive only inside the fallback string, and not at all when the
+ * body had a `detail` — which FastAPI always sets — so no caller could tell a
+ * missing resource from a server fault. The message is unchanged; the status
+ * is additive, and `ApiError` is still an `Error` for every caller that only
+ * reads `.message`.
  */
 async function throwApiError(res: Response): Promise<never> {
   const text = await res.text();
-  throw new Error(apiErrorMessage(text, `API error ${res.status}: ${text}`));
+  throw new ApiError(apiErrorMessage(text, errorFallback(res.status, text)), res.status);
+}
+
+const _MAX_FALLBACK_BODY = 200;
+
+/**
+ * The bounded fallback `throwApiError` uses when the body is not our JSON.
+ *
+ * Markup is dropped rather than cut: a proxy's HTML page has nothing in it for
+ * a reader, and the one useful token is the status. Anything else is truncated
+ * and visibly marked, so a wall of text cannot push the status out of view.
+ */
+function errorFallback(status: number, text: string): string {
+  const body = text.trim();
+  if (!body || body.startsWith("<")) return `API error ${status}`;
+  return body.length > _MAX_FALLBACK_BODY
+    ? `API error ${status}: ${body.slice(0, _MAX_FALLBACK_BODY)}…`
+    : `API error ${status}: ${body}`;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -65,9 +101,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface Game {
   id: string;
   title: string;
-  // "uploading" means the row exists but the browser is still PUTting the
-  // video to R2. The Library filters these out server-side, so they're only
-  // ever seen by the tab doing the upload.
+  // "uploading" means the row exists but the upload was never completed:
+  // either the browser is still PUTting the video to R2, or the transfer was
+  // abandoned (tab closed) and the row is waiting for the api's sweep, which
+  // removes it only once it is 24h old and only on that owner's next upload —
+  // so it can persist indefinitely. The Library filters these out
+  // server-side, and the upload tab navigates to the game only after
+  // completeUpload returns it `queued`, so a client sees this status only by
+  // fetching the game by id (e.g. a typed URL). The game page does not poll it.
   status: "uploading" | "queued" | "processing" | "ready" | "failed";
   progress: number;
   progress_stage: string | null;
@@ -77,6 +118,13 @@ export interface Game {
   condensed_video_url?: string | null;
   original_duration?: number | null;
   condensed_duration?: number | null;
+  // A copy of the demo game a new account starts with (CF-220). Its media is
+  // shared with every other copy: removing it deletes rows only, and the api
+  // refuses to publish, share, download or trim its clips (409).
+  is_sample?: boolean;
+  // Credit for the demo footage, frozen onto the copy when it was made. Null
+  // on ordinary games. Operator text that may hold a URL: render as text only.
+  sample_credit?: string | null;
 }
 
 export function getGames(): Promise<Game[]> {
@@ -192,20 +240,25 @@ export interface Clip {
   start_time: number;
   end_time: number;
   clip_url: string;
-  thumbnail_url: string;
+  // Null when the clip has no thumbnail (ClipOut.thumbnail_url is `str | None`).
+  thumbnail_url: string | null;
   labels: string[];
   created_at: string;
   // False once the game's raw upload has passed its retention window (CF-194):
   // the clip still plays, but it can no longer be re-cut, so trimming is off.
   source_available?: boolean;
-  // The widest tier a post over this clip may take — the clip's own visibility
-  // or its game's, resolved server-side (CF-109). The composer greys out
-  // anything above it; without this the only way to learn the ceiling was to
-  // submit and read the 409, and since nothing can raise a clip's visibility
-  // yet that was a dead end rather than a step.
+  // The clip belongs to a copy of the demo game (CF-220): post, visibility,
+  // share, download and trim are refused for it, so the UI does not offer them.
+  is_sample?: boolean;
+  // The widest tier a post over this clip may take without widening the clip —
+  // the clip's own visibility or its game's, resolved server-side (CF-109).
+  // Above it, the composer asks for consent to raise the clip along with the
+  // post (CF-109b). Before CF-109b nothing could raise a clip's visibility, so
+  // CF-109 greyed those tiers out rather than let a submit end in the 409.
   //
   // Optional, and absent means `private`: a response from a path that hasn't
-  // been taught to resolve it offers less, never more.
+  // been taught to resolve it asks for consent it may not need, rather than
+  // widening footage whose tier it could not read.
   effective_visibility?: Visibility;
 }
 
@@ -248,6 +301,14 @@ export function getClipShareUrl(clipId: string): Promise<{ url: string }> {
  * origin. So the caller points the browser at this URL and lets the header do
  * the work — through lib/download.ts, which explains why that is a hidden frame
  * rather than window.location.
+ *
+ * REQUIRES A SIGNED-IN CALLER (CF-186). Unlike getClipShareUrl, which stays
+ * anonymous and presigns the same object, this endpoint is gated on a credential
+ * rather than on a rate limit. Every caller today already sits behind auth —
+ * ClipCard and ClipModal render only on /games/* and /collections/*, both
+ * covered by middleware.ts — so nothing had to change for it. Do not wire it
+ * into an anonymous surface: the feed and a public profile would get a 401 at
+ * runtime, not a 404.
  */
 export function getClipDownloadUrl(clipId: string): Promise<{ url: string }> {
   return request<{ url: string }>(`/clips/${clipId}/download`);
@@ -439,10 +500,44 @@ export function createPost(
   clipId: string,
   caption: string,
   visibility: Visibility,
+  /**
+   * Widen the CLIP to match, in the same transaction, when it is narrower than
+   * the post (CF-109b).
+   *
+   * Opt-in and defaulted off, because it is the one argument here that changes
+   * something other than the post being created: it makes the underlying
+   * footage readable by whoever the post is addressed to. Sent as a flag on
+   * this request rather than a separate PATCH first, so a post that fails to
+   * insert cannot leave the clip widened behind it.
+   */
+  raiseClipVisibility = false,
 ): Promise<Post> {
   return request<Post>("/posts", {
     method: "POST",
-    body: JSON.stringify({ clip_id: clipId, caption, visibility }),
+    body: JSON.stringify({
+      clip_id: clipId,
+      caption,
+      visibility,
+      raise_clip_visibility: raiseClipVisibility,
+    }),
+  });
+}
+
+/**
+ * Set who may read a clip (CF-109b). Owner only.
+ *
+ * The clip's OWN tier, which overrides its game's rather than being bounded by
+ * it — a public clip inside a private game is a supported state on the API
+ * side. Both directions: narrowing is how a user takes something back, and
+ * deleting a post does not do it.
+ */
+export function setClipVisibility(
+  clipId: string,
+  visibility: Visibility,
+): Promise<Clip> {
+  return request<Clip>(`/clips/${clipId}/visibility`, {
+    method: "PATCH",
+    body: JSON.stringify({ visibility }),
   });
 }
 

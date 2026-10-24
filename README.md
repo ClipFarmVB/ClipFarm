@@ -47,7 +47,7 @@ Celery worker  ──  process_game_task()  (api/app/workers/tasks.py)
     │
     ├─ 1. BALL TRACKING → rally windows            (ml/pipeline/ball.py)
     │     ├─ track_ball()  ← Modal GPU (T4) if configured, else local CPU
-    │     │                  R2-cached by video MD5 + model + sample rate
+    │     │                  R2-cached by video MD5 + model + sample rate + tracking version
     │     ├─ find_contacts()      ← ballistic-residual contact detection
     │     └─ contacts_to_rallies()← group contacts into clip windows
     │
@@ -129,8 +129,9 @@ prediction by more than a measured noise floor. Contacts are grouped into rally 
 by time gaps.
 
 - All velocities are **px/second**, so thresholds hold at any source frame rate.
-- Ball positions are cached to R2 keyed by `md5(video) + model + sample_rate`, so re-runs
-  (re-uploads, pipeline tuning) load in seconds instead of re-tracking (~28–42 min on CPU).
+- Ball positions are cached to R2 keyed by `md5(video)`, model, sample rate and
+  `ball.TRACKING_CACHE_VERSION`, so re-runs (re-uploads, tuning downstream of tracking) load in
+  seconds instead of re-tracking (~28–42 min on CPU). A version bump re-tracks every video.
 
 ### 2. Highlight scoring → gate (`ml/pipeline/score.py`, `audio.py`)
 Each rally gets a `highlight_score` (0–1) from **cheer** (crowd/bench reaction in the
@@ -161,7 +162,8 @@ writes `Clip` rows. Re-running a game clears its prior clips first (idempotent).
   *failure* (net serve on set point) or a *neighboring court* scores just as high. Ranking
   quality and multi-court false positives are known open problems (see backlog).
 - **The ball cache is content-addressed.** Re-uploading the same file is nearly free.
-  Changing the model or sample rate invalidates it automatically (it's in the key).
+  Changing the model or sample rate invalidates it automatically (both are in the key).
+  A change to how tracking works does not: it needs a `ball.TRACKING_CACHE_VERSION` bump.
 - **Model weights live on Modal, not here** (CF-164). The worker used to mount a
   `model_cache` volume so RF-DETR/YOLO weights survived a container recreate; now no
   weights are loaded in this image at all. Pose weights are baked into the
@@ -186,6 +188,11 @@ docker compose --env-file .env.docker up --build
 # 3. Enable the pre-commit hook (runs most of what CI runs; api/tests too,
 #    once the dev install under "Tests" below is done)
 git config core.hooksPath .hooks
+#    The hook must be executable or git skips it; the only sign is a
+#    "hook was ignored because it's not set as executable" hint (silenced if
+#    advice.ignoredHook is false). git tracks it as 100755, so a clone gets
+#    the bit; a copy not made by git may need: chmod +x .hooks/pre-commit
+#    Git for Windows runs hooks by their #! line and ignores the bit.
 ```
 
 Tests:
@@ -197,7 +204,7 @@ Tests:
 # 3.12+, so on a newer interpreter pip tries to build it and the whole install
 # fails in compiler output. See the note at the top of requirements-dev.txt.
 npm ci                                   # at the repo root
-pip install -r api/requirements-dev.txt  # runtime deps + test-only deps
+python -m pip install -r api/requirements-dev.txt   # runtime + test-only deps
 
 npm run test --workspace=web             # vitest, ~1s
 npm run test:watch --workspace=web       # same suite, watch mode
@@ -207,6 +214,20 @@ cd api && python -m pytest tests/        # api (CI and the hook run this too,
                                          # ~12s, the hook's slowest step —
                                          # CLIPFARM_SKIP_API_TESTS=1 opts out)
 ```
+
+If a bare `python` is not the right interpreter on your machine, substitute the
+one that is throughout that block. On Windows that is `py`: the Microsoft Store
+ships `python`/`python3` stubs that resolve on PATH and then refuse to run. On
+Debian, Ubuntu and macOS 12.3+ it is `python3` — none of them ships a
+`/usr/bin/python` (Debian and Ubuntu unless `python-is-python3` is installed,
+macOS not at all since it dropped the system Python 2). That is the more likely
+case here, since this block is the first thing a fresh clone runs. Both
+substitutes are what the pre-commit hook's interpreter probe walks (CF-259, and
+the `python` bullet in `CLAUDE.md`).
+
+It applies to the install line as much as the test lines — pytest has to land in
+the interpreter that runs it, which is why that line goes through
+`python -m pip` rather than a bare `pip`.
 
 The api suite needs `requirements-dev.txt`, not just `requirements.txt`. Almost
 every test guards its imports with `pytest.importorskip` (`sqlalchemy`,
@@ -334,7 +355,11 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `lock_database_url` | `""` | Connection used *only* for the worker's per-game advisory lock (CF-184). Empty = use `database_url`, which is right for any direct or session-mode connection. Set it when `database_url` is a **transaction**-mode pooler (Supabase port 6543): that mode cannot hold a session-scoped lock, so the worker refuses to process rather than run unprotected. `lock_pooler_ports` (default `6543`) lists the ports refused for that reason — set it if your transaction pooler answers somewhere else. |
 | `supabase_url` / `supabase_service_role_key` | — | Auth (JWKS) verification. |
 | `r2_*` | — | Cloudflare R2 bucket + credentials. |
-| `redis_url` / `celery_*` | redis:6379 | Job queue. |
+| `redis_url` / `celery_*` | redis:6379 | Job queue. Also backs the read limiter below, in the same database — its keys are prefixed `rl:`. |
+| `public_posting_enabled` | `false` | Whether an owner may **set** a clip or a post to `public` (CF-109b). It gates the write, not the read: no read consults it, so turning it off withdraws nothing already public — undoing that means narrowing the stored `public` clips and posts. Off by default, and a product decision rather than a stub: `public` puts youth-sports footage in front of signed-out strangers and anything that crawls a link, which is what wants terms of service (CF-75/CF-88) and a report and takedown path (CF-116). `followers` needs no moderation surface, because its audience is approved one by one, but until the follow graph (CF-110) and home feed (CF-111) land it reaches nobody but the owner — so with this off, every tier the API accepts is owner-only in practice. Independent of `social_enabled`: `PATCH /clips/{id}/visibility` is on the clips router, which is mounted either way. Both tiers are built and tested — this decides which the API accepts. `api/app/services/publishing.py` carries the argument. |
+| `rate_limit_enabled` | `true` | Per-caller limits on the six anonymous read endpoints (CF-186). A switch, not a knob: the alternative during an incident is a code deploy. Fails **open** — if Redis is unreachable the request is allowed, because this bounds cost and enumeration rate, not access; `services/access.py` decides who may read what and never consults Redis. "Unreachable" covers a Redis that hangs as well as one that refuses: the client carries a one-second socket timeout, so the hang becomes a raise the limiter can fail open on rather than a request blocked until the kernel gives up. |
+| `rate_limit_trusted_proxy_hops` | `0` | **Set this to the number of reverse proxies in front of the api, or per-caller limiting silently does not work.** uvicorn only rewrites `request.client` from `X-Forwarded-For` when the peer is in `--forwarded-allow-ips` (default `127.0.0.1`), so behind any proxy every caller looks like the proxy and shares one bucket. `0` is right for a direct `uvicorn`/`docker compose` run; Render sets `1` (`render.yaml`); a VPS with Caddy or nginx in front wants `1` too. |
+| `rate_limit_*_per_minute` | 30 / 60 / 120 | Per route group. The two enumerable routes (`/users/{handle}`, `/posts?username=`) key on the **client address even for a signed-in caller** — signup is self-serve, so a per-account bucket is one an attacker mints; the others key on the signed-in caller and fall back to the address. An address is a v4 host or a v6 /64 (an IPv4-mapped address counts as the v4 host it names, since its /64 is all zeroes and would otherwise bucket every mapped caller together). 30 for the handle-keyed routes (`/users/{handle}`, `/posts?username=`), which are the enumerable ones; 60 for `/games/{id}` and its clips, sized for the detail page: its 5-second poll of the game, and one clips request each time its debounced filters settle; 120 for `/clips/{id}/share` and `/posts/{id}`, where traffic is the success case. `/clips/{id}/download` is not in this table — it requires auth instead. |
 | `modal_token_id` / `modal_token_secret` | "" | Enables the Modal GPU path for ball tracking *and* pose. |
 | `allow_stub_detections` | `false` | Lets the pose-first fallback return **fabricated** clips when no pose runtime is available. Development only — the worker persists what it returns. Kept separate from `debug` on purpose, so a shared dev flag can't grant it. |
 | `max_upload_bytes` | 8 GB | Upload size cap. Served to the web app by `GET /games/upload-config` so the advertised limit can't drift from the enforced one. |
@@ -344,6 +369,9 @@ All settings live in `api/app/config.py` (env-driven, prefixed to match). The mo
 | `max_upload_duration_seconds` | `14400` (4 h) | Longest single video accepted. Checked at presign against the client-declared length, then again by the worker against the probed one. |
 | `quota_window_hours` / `quota_max_games_per_window` / `quota_max_minutes_per_window` | `24` / `5` / `360` | Per-user rolling processing quota (cost guardrail — GPU inference is ~$0.25 per hour of footage). Both caps apply. Counted from the `upload_events` ledger, so deleting a game does not refund a slot. A duration the file size contradicts (missing, `0`, or physically impossible for the byte count) is priced from the size instead of trusted, and settled to the probed value by the worker. `GET /games/upload-config` returns the limits plus the caller's remaining allowance. |
 | `raw_upload_retention_days` | `7` | Raw uploads are deleted this many days after upload (`0` = keep forever). Clips outlive the source; trimming a clip needs it, so this is also how long trims stay available. |
+| `sample_game_id` | `""` (off) | Optional. The id of a `ready` game copied into every account created after it is set, marked `is_sample`, so a new user's Library is not empty (CF-220, `api/app/services/sample_game.py`). Empty leaves signup exactly as before; a value that is not a UUID, or names a missing or not-ready game or one with no clips, is logged and skipped, and a copy that fails never fails the signup. Existing accounts are not backfilled. **The copies share the source's media**: their clips store the same R2 URLs, so deleting, reprocessing, trimming or re-condensing the source game changes or breaks every copy (a trim re-uploads to `clip_key(gid, cid)` in place — `api/app/workers/tasks.py`). Keep the source on a dedicated internal account that nobody edits. While the setting names it, the api refuses to delete the source game, delete any of its clips, or trim one (409). **To retire a demo game**, point `SAMPLE_GAME_ID` at the new game; the old source must never be deleted or trimmed while copies of it exist, so leave it on the internal account. The guard follows the *current* setting only, so a retired source has no guard in code — keeping it untouched is on whoever operates the account. Copies carry no raw upload or condensed cut, are private, cannot be posted or have their visibility raised (409), write no `Correction` on relabel, and deleting one removes rows only. `/share` and `/download` also return 409 on a copy, but that only stops the app offering a share or download link; it is **not access control**. The owner's `GET /games/{id}/clips` and `GET /collections/{id}/clips` already return the same presigned `clip_url`, which plays for anyone holding it for its hour and can be saved or passed on — so consent for the footage must not assume a copy's owner cannot share or download it. **In production its value lives on `clipfarm-api` in the Render dashboard** (first set there on 2026-10-15) — check there, not here, for whether it is set now; `render.yaml` declares all three `sample_game_*` keys as `sync: false`, so look there for their names. An unset value turns the demo off without a log line. The footage decision — which game, and that it is shown with credit and without separately recorded permission — is recorded on CF-571 (#581). Changing the source to other footage needs the same decision made and recorded again: every new account sees it. |
+| `sample_game_title` | `""` | Optional. What the demo copy is called in a new Library. Empty uses `Demo: ` + the source game's title, which is usually an internal name, so set this whenever `SAMPLE_GAME_ID` is set. |
+| `sample_game_credit` | `""` | Optional. Credit for the demo footage (e.g. `Footage: <team> — <URL of the original>`), frozen onto each copy when it is made and returned as `sample_credit` for the web to show beside it. Changing it later does not rewrite existing copies. A credit is not a licence to the footage; see CF-571 (#581). |
 
 Secrets go in `.env.docker` (gitignored) for the stack, `api/.env` and `web/.env.local` for
 local non-Docker runs. Never commit credentials.
@@ -462,3 +490,19 @@ the backend on a VPS — an alternative, not the production path.
 - **Add an API endpoint** → `api/app/routers/` + wire in `api/app/main.py`.
 - **Change the frontend** → `web/` (⚠ read `web/AGENTS.md` first).
 - **Every configurable knob** → `api/app/config.py`.
+
+---
+
+## License
+
+ClipFarm is licensed **AGPL-3.0-or-later** — see [`LICENSE`](LICENSE).
+
+    Copyright (C) 2026 Nelson Kang
+
+AGPL is not a preference here, it is an inheritance: `ultralytics` (the pose
+model, `ml/modal_pose.py`) is AGPL-3.0, and §13 extends its source-offer
+obligation to users interacting with a hosted service over a network. A
+permissive license was therefore not ours to grant.
+
+[`docs/licensing.md`](docs/licensing.md) has the reasoning, the full dependency
+audit, and the exit path if ClipFarm ever needs a commercial posture.

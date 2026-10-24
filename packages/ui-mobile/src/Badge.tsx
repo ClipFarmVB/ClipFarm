@@ -15,21 +15,21 @@ import { Text } from "./Text";
  *
  * Unlike the other primitives this one does not change with the theme, which
  * matches web — but not because the hues work on either background. They do
- * not. Composited over each page background and measured against the 10px
- * label (normal text for WCAG, so the bar is 4.5:1):
+ * not. Composited over each theme's page background and measured against the
+ * 10px label (normal text for WCAG, so the bar is 4.5:1):
  *
- * | chip                    | on light `#ffffff` | on dark `#0c0c0e` |
+ * | chip                    | on light `#faf7f1` | on dark `#0b0f0f` |
  * |-------------------------|--------------------|-------------------|
- * | spike                   | 2.58:1             | 6.42:1            |
- * | serve                   | 2.01:1             | 8.24:1            |
- * | dig                     | 1.80:1             | 9.22:1            |
- * | set                     | 2.57:1             | 6.46:1            |
- * | block                   | 2.18:1             | 7.60:1            |
- * | unknown                 | 4.38:1             | 3.81:1            |
- * | removed / not_an_action | 1.89:1             | 2.20:1            |
+ * | spike                   | 2.42:1             | 6.34:1            |
+ * | serve                   | 1.88:1             | 8.08:1            |
+ * | dig                     | 1.69:1             | 9.03:1            |
+ * | set                     | 2.41:1             | 6.36:1            |
+ * | block                   | 2.05:1             | 7.49:1            |
+ * | unknown                 | 4.11:1             | 3.74:1            |
+ * | removed / not_an_action | 1.81:1             | 2.18:1            |
  *
- * These are dark-theme hues: five of eight pass on dark and fail on light,
- * three fail on both. Web lands on dark by default and only reaches light when
+ * These are dark-theme hues: five of the eight clear AA on dark, and **none**
+ * clears it on light. Web lands on dark by default and only reaches light when
  * the user flips `cf-theme` by hand, so the gap is rarely seen there; here
  * `ThemeProvider` follows `useColorScheme()`, so a phone in light mode gets
  * the light rendering on first launch. That is a known gap, not a settled

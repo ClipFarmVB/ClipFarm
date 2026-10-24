@@ -26,8 +26,10 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import logging
 import os
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,11 +37,12 @@ from pathlib import Path
 from ml.eval.metrics import (
     DeadTimeSignals,
     EvalSignals,
-    Interval,
+    IncorrectTime,
     ModelWindow,
     evaluate,
     evaluate_deadtime,
 )
+from ml.pipeline.intervals import Interval
 
 EVAL_DIR = Path(__file__).resolve().parent
 FIXTURES_DIR = EVAL_DIR / "fixtures"
@@ -53,17 +56,34 @@ _SNAPSHOT_MODULES = ("ml.pipeline.ball", "ml.pipeline.score")
 # ── timestamp / fixture loading ────────────────────────────────────────────
 
 def parse_timestamp(value: str | int | float) -> float:
-    """Accept mm:ss, hh:mm:ss, or raw seconds → float seconds."""
+    """Accept mm:ss, hh:mm:ss, or raw seconds → float seconds.
+
+    One leading sign applies to the whole timestamp, not just its first field:
+    `-0:30` is -30s, where applying the sign to `-0` alone gave +30 and hid a
+    negative time from every `start < 0` check. A leading `+` is accepted the
+    same way (`+0:30` is 30s), as it was before the sign handling existed. The
+    fields after the first are base-60 digits, so a sign on them or a value of
+    60 or more (`0:62`, a slip for `0:26`) is a typo, and raises rather than
+    scoring at the wrong time. So does a second leading sign (`--5`).
+    """
     if isinstance(value, (int, float)):
         return float(value)
-    parts = [float(p) for p in str(value).split(":")]
-    if len(parts) == 1:
-        return parts[0]
-    if len(parts) == 2:
-        return parts[0] * 60 + parts[1]
-    if len(parts) == 3:
-        return parts[0] * 3600 + parts[1] * 60 + parts[2]
-    raise ValueError(f"Unrecognized timestamp: {value!r}")
+    text = str(value).strip()
+    sign = -1.0 if text.startswith("-") else 1.0
+    fields = (text[1:] if text.startswith(("-", "+")) else text).split(":")
+    if len(fields) > 3:
+        raise ValueError(f"Unrecognized timestamp: {value!r}")
+    if fields[0].strip().startswith(("-", "+")):
+        raise ValueError(f"More than one leading sign on timestamp: {value!r}")
+    if any(f.strip().startswith(("-", "+")) for f in fields[1:]):
+        raise ValueError(f"Signed field inside timestamp: {value!r}")
+    parts = [float(p) for p in fields]
+    if not all(0 <= p < 60 for p in parts[1:]):
+        raise ValueError(f"Minutes/seconds field out of range: {value!r}")
+    total = 0.0
+    for p in parts:
+        total = total * 60 + p
+    return sign * total
 
 
 @dataclass
@@ -197,6 +217,20 @@ def config_snapshot() -> dict:
         app_snap = {
             "highlight_score_threshold": settings.highlight_score_threshold,
             "clip_verify_enabled": settings.clip_verify_enabled,
+            # Named rather than caught by the condense_ prefix below, because it
+            # is not a condense knob and would otherwise never reach a row:
+            # CF-174's scaling moves both the contact gates and the bridge, so
+            # two rows on opposite sides of this switch describe different
+            # detectors while looking directly comparable.
+            "ball_contact_scale_enabled": settings.ball_contact_scale_enabled,
+            # CF-376's softening of that scale, for the same reason: while the
+            # CF-174 switch above is on, flag on and off are different contact
+            # sets at heights between 360p and the >1440p clamp. Elsewhere —
+            # switch off, 360p, past the clamp — the two runs are identical.
+            "ball_contact_soft_scale_enabled": settings.ball_contact_soft_scale_enabled,
+            # CF-229's static-site filter changes the track every consumer
+            # reads, so two rows on either side of it are different inputs.
+            "ball_static_site_filter_enabled": settings.ball_static_site_filter_enabled,
         }
         fields = getattr(type(settings), "model_fields", None) or getattr(type(settings), "__fields__", {})
         app_snap.update({
@@ -208,25 +242,71 @@ def config_snapshot() -> dict:
     return snap
 
 
+# results/*.jsonl is committed so runs can be diffed across versions, and raw
+# float tails defeat that: `59.99999999999943` vs `60.00000000000012` is the
+# same number twice and reads as a change (CF-94). 4dp is 0.01% on the ratios
+# and 0.1 ms on the seconds — finer than anything either measures.
+#
+# The interval lists below stay at 3dp. Different unit, different natural
+# floor: 1 ms is already well under a frame at any frame rate this pipeline
+# sees, so more digits there would be recording jitter, not signal.
+RESULT_FLOAT_PLACES = 4
+
+
+def _round(value: float | None, places: int = RESULT_FLOAT_PLACES) -> float | None:
+    """`round`, but None survives.
+
+    captured_pct, auc, dead_removed_pct and the rest are legitimately None —
+    no human clips, or no positive/negative windows to separate — and round()
+    raises TypeError on None rather than passing it through.
+    """
+    return None if value is None else round(value, places)
+
+
+def _incorrect_seconds_to_dict(t: IncorrectTime) -> dict:
+    """The four parts, rounded, plus a `total` that is their sum.
+
+    `IncorrectTime.total` is a property over the *raw* parts, so rounding it
+    directly lets a written row disagree with itself: 60.0 + 5.0 + 11.8333 +
+    2.8333 is 79.6666 beside a written total of 79.6667. Nothing reads these
+    files back programmatically — humans diff them across runs, and a row whose
+    parts do not add up is exactly what misleads that reader. `_decompose_window`
+    documents the decomposition as exact, so the file should show it that way.
+
+    Summing the rounded parts moves `total` by at most four half-ulps at 4dp —
+    4 x 5e-5, so **2e-4 s**, not 5e-5; the first version of this comment said
+    the latter. Still three orders of magnitude below anything this metric
+    means, and well inside the 1e-3 that
+    `test_rounding_does_not_move_a_value_meaningfully` allows. The outer round
+    is there because adding floats reintroduces a tail of its own: without it
+    the fixture writes 79.66659999999999.
+    """
+    # `round`, not `_round`: these four are `float` on IncorrectTime and never
+    # None, and the type has to say so for `sum` below to typecheck.
+    parts: dict[str, float] = {
+        "junk": round(t.junk, RESULT_FLOAT_PLACES),
+        "lead_slop": round(t.lead_slop, RESULT_FLOAT_PLACES),
+        "tail_slop": round(t.tail_slop, RESULT_FLOAT_PLACES),
+        "bridge": round(t.bridge, RESULT_FLOAT_PLACES),
+    }
+    return {**parts, "total": round(sum(parts.values()), RESULT_FLOAT_PLACES)}
+
+
 def _signals_to_dict(s: EvalSignals) -> dict:
     return {
-        "captured_pct": s.captured_pct,
+        "captured_pct": _round(s.captured_pct),
+        # Counts, not measurements — left alone. Rounding an int is a no-op
+        # that invites the next reader to wonder what it is guarding against.
         "buckets": {
             "well_captured": s.buckets.well_captured,
             "butchered": s.buckets.butchered,
             "missed": s.buckets.missed,
             "total": s.buckets.total,
         },
-        "incorrect_seconds": {
-            "junk": s.incorrect.junk,
-            "lead_slop": s.incorrect.lead_slop,
-            "tail_slop": s.incorrect.tail_slop,
-            "bridge": s.incorrect.bridge,
-            "total": s.incorrect.total,
-        },
-        "auc": s.auc,
-        "human_seconds": s.human_seconds,
-        "model_seconds": s.model_seconds,
+        "incorrect_seconds": _incorrect_seconds_to_dict(s.incorrect),
+        "auc": _round(s.auc),
+        "human_seconds": _round(s.human_seconds),
+        "model_seconds": _round(s.model_seconds),
     }
 
 
@@ -298,11 +378,60 @@ def _require_r2_key(raw: dict, test_id: str) -> str:
     return r2_key
 
 
+def _assert_declared_frame_height(
+    fixture: Fixture | DeadFixture, frame_h: int, test_id: str, r2_key: str, mode: str
+) -> None:
+    """
+    Refuse to score if the decoded source is not the height the fixture declares.
+
+    CF-174 made the contact thresholds scale with frame height, so a source that
+    decodes at a different resolution is scored against thresholds the fixture
+    never meant — and the numbers still look plausible, which is what makes it
+    worth failing over.
+
+    This is the ONLY runtime check that the source is the labeled one.
+    `source_video_md5` is pinned in every fixture but verified nowhere at
+    runtime — only fixture-to-fixture in `test_eval_fixtures.py` — so without
+    this a re-encode that changed resolution would shift every threshold
+    silently and still produce a recorded row.
+
+    Opt-in per fixture: absent `source_frame_height` skips the check rather than
+    failing, so fixtures written before the key existed still run.
+
+    A non-positive height is handled first and separately. OpenCV reports 0 for
+    a container it cannot decode — a truncated download, a missing codec — and
+    that is a broken *file*, not a re-labelled one. Reported as a mismatch it
+    reads as "the source is not what the fixture says" and sends the operator to
+    re-upload or re-label a video that is fine; the deadtime path has said so
+    since CF-98, and the highlight path only reached this helper at all once
+    test1.json gained the key.
+    """
+    if frame_h <= 0:
+        flag = "--windows-json" if mode == "deadtime" else "--clips-json"
+        raise SystemExit(
+            f"Offline {mode}: OpenCV read a frame height of {frame_h} from "
+            f"{r2_key}. That is a decode failure, not a fixture mismatch — the "
+            "download is probably truncated or its codec is unavailable here. "
+            f"Check the file plays locally, or score a dumped list with {flag}."
+        )
+    declared = fixture.raw.get("source_frame_height")
+    if declared is None or int(declared) == frame_h:
+        return
+    raise SystemExit(
+        f"Offline {mode}: {test_id} declares source_frame_height={int(declared)} "
+        f"but {r2_key} decodes at {frame_h}px. CF-174 thresholds scale with frame "
+        "height, so this run would not be comparable to the fixture's recorded "
+        "numbers. Re-upload the labeled file, or re-label against this one."
+    )
+
+
 def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     """
     Re-run the detection + scoring stages against the fixture's source video,
     mirroring process_game_task stages 0-2. Ball positions load from the R2
-    cache (free unless model/sample-rate changed), so no re-tracking. Returns
+    cache when an entry exists for the video, model, sample rate and
+    TRACKING_CACHE_VERSION; a miss — every video, after a version bump —
+    re-tracks. Returns
     (pre_gate = all scored rallies, post_gate = those above the gate).
 
     Runs impure edges (R2, ffmpeg, cv2, app config) behind lazy imports — must
@@ -317,7 +446,7 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
     from app.services import storage as s3
     from app.workers.tasks import _track_ball_cached
     from ml.pipeline.audio import compute_audio_energy, score_cheers
-    from ml.pipeline.ball import contacts_to_rallies, find_contacts
+    from ml.pipeline.ball import contacts_to_rallies, filter_static_sites, find_contacts
     from ml.pipeline.score import score_highlights
 
     fixture = load_fixture(test_id)
@@ -336,14 +465,31 @@ def _run_offline(test_id: str) -> tuple[list[ModelWindow], list[ModelWindow]]:
         cap.release()
         duration = n_frames / fps
 
+        # Same guard as the deadtime path: this mode scales the same thresholds.
+        _assert_declared_frame_height(fixture, frame_h, test_id, r2_key, "highlight")
+
         audio = compute_audio_energy(str(local))
 
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
-        # Pass r2_key: without it the ball-cache lookup and the Modal GPU path are
-        # both skipped, so a mode documented as "no re-tracking" would silently
-        # fall through to a ~30-minute local CPU re-track.
+        # Pass r2_key: the Modal path needs it (`_will_attempt_modal`). The cache
+        # lookup does not — it keys on the file's md5 and sample_every — but
+        # without r2_key a miss goes straight to local tracking, which the eval
+        # image has no ML runtime for, so it raises BallRuntimeUnavailable.
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
-        contacts = find_contacts(tracker, frame_height=frame_h)
+        # CF-229: where process_game_task applies it — after the cache,
+        # before contacts (and, on the deadtime path, the positions).
+        tracker = filter_static_sites(
+            tracker, frame_h, enabled=settings.ball_static_site_filter_enabled,
+        )
+        # normalize: this mode reads every other production knob off `settings`
+        # (the gate threshold below, the condense_* tunables on the deadtime
+        # path), so reading the CF-174 switch from anywhere else would score a
+        # detector production is not running whenever it is off.
+        contacts = find_contacts(
+            tracker, frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
+            soft_scale=settings.ball_contact_soft_scale_enabled,
+        )
         detections = contacts_to_rallies(contacts, duration, frame_h)
         if audio is not None:
             detections = score_cheers(detections, *audio)
@@ -414,15 +560,111 @@ def load_windows_json(path: Path) -> list[Interval]:
     return [(parse_timestamp(w["start"]), parse_timestamp(w["end"])) for w in items]
 
 
+def refuse_contact_scale_mismatch(path: Path, snapshot: dict) -> None:
+    """
+    Refuse a windows file whose recorded contact-scale position is not the one
+    this row's config_snapshot will carry (CF-391). visualize_deadtime
+    --dump-windows writes the position it scored as "contact_scale", from its
+    --contact-scale flag, which does not read BALL_CONTACT_SCALE_ENABLED; the
+    snapshot does. Without this, switch-on windows record under a switch-off row.
+    A file with no "contact_scale", or a host without the app settings, passes.
+
+    CF-229's "static_site_filter" ("on"/"off", from --static-site-filter) is
+    checked the same way against BALL_STATIC_SITE_FILTER_ENABLED, and passes
+    on the same terms when either side does not carry it.
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    app = snapshot.get("app.config")
+    site = data.get("static_site_filter") if isinstance(data, dict) else None
+    if site is not None and app and "ball_static_site_filter_enabled" in app:
+        expected_site = "on" if app["ball_static_site_filter_enabled"] else "off"
+        if site != expected_site:
+            raise SystemExit(
+                f"{path}: windows were scored with the static-site filter {site!r}, but "
+                f"this run's settings snapshot is {expected_site!r} - set "
+                f"BALL_STATIC_SITE_FILTER_ENABLED to match, or the row is mislabelled"
+            )
+    recorded = data.get("contact_scale") if isinstance(data, dict) else None
+    if recorded is None or not app or "ball_contact_scale_enabled" not in app:
+        return
+    if not app["ball_contact_scale_enabled"]:
+        expected = "off"
+    else:
+        expected = "soft" if app.get("ball_contact_soft_scale_enabled") else "on"
+    if recorded != expected:
+        raise SystemExit(
+            f"{path}: windows were scored at contact scale {recorded!r}, but this run's "
+            f"settings snapshot is {expected!r} - set BALL_CONTACT_SCALE_ENABLED / "
+            f"BALL_CONTACT_SOFT_SCALE_ENABLED to match, or the row is mislabelled"
+        )
+
+
+# The logger the worker's learned → guarded fallback line is written to.
+_TASKS_LOGGER = "app.workers.tasks"
+
+
+def _learned_windows_or_exit(
+    build: Callable[[], tuple[list[tuple[float, float]], str]],
+) -> list[tuple[float, float]]:
+    """
+    Run the worker's condense chain for mode=learned and return its windows, or
+    exit if a builder other than "learned" produced them.
+
+    A row tagged mode=learned that guarded (or rules) built would be scored and
+    recorded as the learned builder's. With the committed weights unvalidated
+    this is every run; score them in-sample with visualize_deadtime's v6 instead.
+
+    The exit carries the fallback's reason itself. The worker logs it at INFO
+    for a decline (unvalidated weights, a sparse track), and nothing in this
+    process configures logging, so Python's last-resort handler would print
+    only WARNING and above: the reason has to be captured here, or the operator
+    cannot tell unvalidated weights from a sparse track.
+    """
+    reasons: list[str] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            try:
+                reasons.append(record.getMessage())
+            except Exception:
+                pass
+
+    handler = _Collect(level=logging.INFO)
+    tasks_logger = logging.getLogger(_TASKS_LOGGER)
+    previous_level = tasks_logger.level
+    tasks_logger.addHandler(handler)
+    if not tasks_logger.isEnabledFor(logging.INFO):
+        tasks_logger.setLevel(logging.INFO)
+    try:
+        shipped, built_by = build()
+    finally:
+        tasks_logger.removeHandler(handler)
+        tasks_logger.setLevel(previous_level)
+
+    print(f"Offline deadtime [mode=learned]: built by {built_by}")
+    if built_by != "learned":
+        why = "; ".join(reasons) if reasons else "the worker logged no reason"
+        raise SystemExit(
+            f"Offline deadtime: condense_mode=learned fell back to {built_by!r} "
+            f"({why}) — refusing to record it as learned. "
+            "Unvalidated weights always fall back; score them with "
+            "`python -m ml.eval.visualize_deadtime` (v6)."
+        )
+    return shipped
+
+
 def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval], str, str]:
     """
     Derive the condense keep-windows from the fixture's source video, mirroring
     process_game_task's stage-5 condense path (dead_time.py). Ball positions load
-    from the R2 cache (free unless model/sample-rate changed), so no re-tracking.
+    from the R2 cache when an entry exists for the video, model, sample rate and
+    TRACKING_CACHE_VERSION; a miss — every video, after a version bump — re-tracks.
 
     Follows `condense_mode`, so this scores the builder production actually runs
     rather than a fixed one — the whole point of the offline path is that its
-    numbers transfer.
+    numbers transfer. Under "learned" it refuses (SystemExit) when the worker's
+    chain fell back to another builder, rather than record that builder's
+    windows under the learned mode's name.
 
     Returns (companion, shipped, comparison_title, companion_tag). `shipped` is
     what the condense stage would produce under the current mode; `companion` is
@@ -441,7 +683,7 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
     from app.config import settings
     from app.services import storage as s3
     from app.workers.tasks import _track_ball_cached
-    from ml.pipeline.ball import find_contacts
+    from ml.pipeline.ball import filter_static_sites, find_contacts
     from ml.pipeline.dead_time import (
         Abstained,
         active_windows_from_contacts,
@@ -464,27 +706,33 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
 
-        # A container OpenCV cannot decode reports 0 here, and every guarded
-        # speed threshold is normalized by frame height — so the builder would
-        # raise ValueError several frames of stack away from the cause. This
-        # function's other bad-input paths all exit with instructions; so does
-        # this one.
-        if frame_h <= 0:
-            raise SystemExit(
-                f"Offline deadtime: OpenCV read a frame height of {frame_h} from "
-                f"{r2_key}. Its codec is probably unavailable in this environment "
-                "— check the file plays locally, or score a dumped keep-window "
-                "list with --windows-json instead."
-            )
+        # The frame_h <= 0 check that used to sit here moved into
+        # _assert_declared_frame_height below, which runs on both offline paths
+        # rather than only this one.
+        #
         # Prefer the fixture's declared duration (the same value that anchors the
         # dead-time complement); fall back to the decoded frame count.
         duration = fixture.duration or (n_frames / fps)
 
+        _assert_declared_frame_height(fixture, frame_h, test_id, r2_key, "deadtime")
+
         sample_every = max(1, round(fps / 3.0))  # matches process_game_task
-        # Pass r2_key so the ball-cache lookup hits; without it this silently
-        # falls through to a ~30-minute local CPU re-track (see _run_offline).
+        # Pass r2_key for the Modal path, as in _run_offline above; the cache
+        # lookup itself keys on the file's md5 and sample_every.
         tracker = _track_ball_cached(local, tmp, sample_every=sample_every, r2_key=r2_key)
-        contacts = find_contacts(tracker, frame_height=frame_h)
+        # CF-229: where process_game_task applies it — after the cache,
+        # before contacts (and, on the deadtime path, the positions).
+        tracker = filter_static_sites(
+            tracker, frame_h, enabled=settings.ball_static_site_filter_enabled,
+        )
+        # Same reason as the highlight path: every condense knob below comes
+        # from `settings`, so this one must too, or an offline row scores a
+        # detector production is not running.
+        contacts = find_contacts(
+            tracker, frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
+            soft_scale=settings.ball_contact_soft_scale_enabled,
+        )
 
         pre_bridge = active_windows_from_contacts(
             contacts, duration,
@@ -496,12 +744,14 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         )
         # Mirrors what process_game_task keeps for the condense stage.
         positions = [
-            {"time": p.time, "x": p.x, "y": p.y} for p in tracker.positions
+            {"time": p.time, "x": p.x, "y": p.y, "confidence": p.confidence}
+            for p in tracker.positions
         ]
 
         mode = settings.condense_mode
-        # Offline mode is the ball-cache path by design ("no re-tracking"). No
-        # ball signal at all means the cache is empty; the production fallback
+        # Offline mode is the ball-cache path by design (it replays cached
+        # tracks, and re-tracks on a miss). No ball signal at all means the track
+        # is empty, whether cached or re-tracked; the production fallback
         # is a ~30-min pose-first CPU re-detect, which this mode deliberately
         # does not run. Fail loudly rather than score that as the model's output.
         #
@@ -511,11 +761,14 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
         # so contact-free input with a real track is a legitimate thing to
         # score — and refusing it here would decline exactly the case the
         # builder was added for. It still needs a track: with no positions
-        # either, there is nothing for anchors to work from.
-        if not contacts and not (mode == "guarded" and positions):
+        # either, there is nothing for anchors to work from. The learned
+        # builder (CF-394) reads the track the same way — contacts are two of
+        # its thirteen columns — so the same holds for it.
+        track_modes = ("guarded", "learned")
+        if not contacts and not (mode in track_modes and positions):
             raise SystemExit(
                 f"Offline deadtime: ball cache for {r2_key} yielded no contacts"
-                f"{' and no positions' if mode == 'guarded' else ''}. "
+                f"{' and no positions' if mode in track_modes else ''}. "
                 "Score the pose-first fallback via --windows-json with a dumped "
                 "keep-window list instead."
             )
@@ -524,6 +777,8 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
             speed_pxps=settings.condense_bridge_speed_pxps,
             fast_fraction=settings.condense_bridge_fast_fraction,
             max_bridge_seconds=settings.condense_bridge_max_seconds,
+            frame_height=frame_h,
+            normalize=settings.ball_contact_scale_enabled,
         )
 
         if mode == "rules":
@@ -546,13 +801,27 @@ def _run_offline_deadtime(test_id: str) -> tuple[list[Interval], list[Interval],
                 min_track_rate=settings.condense_guard_min_track_rate,
             )
             title = "GUARDED vs RULES (CF-187)"
+        elif mode == "learned":
+            # Through the worker's own chain rather than a call to
+            # active_windows_learned, so this row is what production would ship
+            # — weights load, validation refusal and fallback included.
+            from app.workers.tasks import _build_condense_windows
+
+            shipped = _learned_windows_or_exit(
+                lambda: _build_condense_windows(
+                    mode, contacts, positions, duration, frame_h, settings,
+                ),
+            )
+            title = "LEARNED vs RULES (CF-394)"
         else:
             # Unreachable via settings since condense_mode became a Literal (a
             # typo now fails at Settings construction). Kept because this reads
             # settings directly, so it is the one guard left if that annotation
             # is ever widened back to str — unlike tasks._build_condense_windows'
             # twin, which also still serves direct callers passing a mode string.
-            raise SystemExit(f"Unknown condense_mode {mode!r} — expected rules or guarded")
+            raise SystemExit(
+                f"Unknown condense_mode {mode!r} — expected rules, guarded or learned"
+            )
 
         # The abstain (one whole-video window) is a real outcome worth seeing in
         # the report, not an error — say so, because a 0% dead-removed row
@@ -652,15 +921,27 @@ def format_deadtime_comparison(
 
 def _deadtime_to_dict(s: DeadTimeSignals) -> dict:
     return {
-        "dead_removed_pct": s.dead_removed_pct,
-        "live_removed_sec": s.live_removed_sec,
-        "live_removed_pct": s.live_removed_pct,
-        "kept_play_pct": s.kept_play_pct,
-        "condense_ratio": s.condense_ratio,
-        "human_keep_sec": s.human_keep_sec,
-        "human_dead_sec": s.human_dead_sec,
-        "model_keep_sec": s.model_keep_sec,
-        "duration": s.duration,
+        "dead_removed_pct": _round(s.dead_removed_pct),
+        "live_removed_sec": _round(s.live_removed_sec),
+        "live_removed_pct": _round(s.live_removed_pct),
+        "kept_play_pct": _round(s.kept_play_pct),
+        "condense_ratio": _round(s.condense_ratio),
+        # These two partition [0, duration] by construction in
+        # evaluate_deadtime, so they sum to `duration` exactly before rounding
+        # and can fail to afterwards — the same shape CF-352 fixed for
+        # incorrect_seconds. Measured: human=(0, 100.00005) over a 200.0001s
+        # duration writes 100.0001 + 100.0001 = 200.0002 beside a duration of
+        # 200.0001. Deliberately not changed here: unlike incorrect_seconds,
+        # where `total` is derived from the parts, all three of these are
+        # independent fields and deciding which one gives way is a call about
+        # what the file means, not a rounding detail. Measured and argued in
+        # #401; `kept_play_pct` / `live_removed_pct` were checked and are *not*
+        # exposed — 800k samples plus every half-ulp tie point at the 5th
+        # decimal produced no case where the rounded pair fails to sum to 1.0.
+        "human_keep_sec": _round(s.human_keep_sec),
+        "human_dead_sec": _round(s.human_dead_sec),
+        "model_keep_sec": _round(s.model_keep_sec),
+        "duration": _round(s.duration),
         "over_cut_live": [[round(a, 3), round(b, 3)] for a, b in s.over_cut_live],
         "missed_dead": [[round(a, 3), round(b, 3)] for a, b in s.missed_dead],
     }
@@ -731,6 +1012,7 @@ def main() -> None:
     if args.mode == "deadtime":
         if args.windows_json:
             model_keep = load_windows_json(args.windows_json)
+            refuse_contact_scale_mismatch(args.windows_json, config_snapshot())
             run_deadtime(
                 args.test, args.version, model_keep,
                 record=not args.no_record, audit_limit=args.audit_limit,

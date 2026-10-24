@@ -57,23 +57,96 @@ third caller belongs in a services/ module rather than in whichever router
 happened to define it first.
 
 **Unauthenticated surface.** Allowing anonymous reads means ``GET /games/{id}``,
-``GET /games/{id}/clips``, ``GET /clips/{id}/share`` and
-``GET /clips/{id}/download`` now reach the database without a credential,
-joining ``GET /users/{handle}`` from CF-107 — five unthrottled endpoints where
-there were none. The download one is the most expensive: it mints an attachment
-URL for the full clip, so an unthrottled caller can pull the bytes rather than
-just a row. Nothing can be public yet, so all of that traffic 404s today, making
-this a load question rather than a disclosure one.
+``GET /games/{id}/clips`` and ``GET /clips/{id}/share`` reach the database
+without a credential, joined, with the social surface on, by
+``GET /users/{handle}`` from CF-107, ``GET /posts/{id}`` and
+``GET /posts?username=``. Six endpoints where there were none.
 
-**That last sentence expires with CF-109.** The safety here is not the 404
-choice, it is that no row can be set `public` — so the moment CF-109 lands the
-visibility setter, an unauthenticated caller can walk ``/clips/{id}/download``
-and pull full clip bytes, unthrottled, with an egress bill attached. That makes
-rate limiting (CF-186, #189) a blocker on CF-109 rather than a parallel task,
-and this endpoint is what changed the severity of that ordering. The dependency
-is recorded on CF-109 (#139) too — a paragraph in a module nobody has to open
-is not an ordering constraint. The 404-not-403 choice below keeps none of them
-an existence oracle in the meantime.
+**All six are throttled per caller since CF-186 (#189)** — see
+``services/ratelimit.py`` for the two exposures, the numbers, and why the
+limiter fails open. Each route's own docstring says which exposure it belongs
+to and what was decided, which is that card's acceptance criterion.
+
+``GET /clips/{id}/download`` was the seventh and is no longer on this list:
+CF-186 put it behind authentication instead. It presigns the same object
+``/share`` does, under an attachment header, so this decides who may ask for
+that URL and does not bound what leaves the bucket — see ``routers/clips.py``.
+**So it no longer shares /share's authorization**, which it did when both were
+written; re-merging the two routes would quietly undo that decision.
+
+**The visibility setter has landed (CF-109b, #398), so this is no longer a
+load question alone.** For two releases nothing user-generated could be
+`public` — no write path existed and
+``api/tests/test_no_visibility_write_path.py`` enforced that — so every
+anonymous read reached the database and 404'd. `PATCH /clips/{id}/visibility`
+and `POST /posts` with `raise_clip_visibility` end that. That guard is replaced
+rather than simply deleted: ``test_visibility_write_paths_are_declared.py``
+keeps the same `app/`-wide scan and narrows the rule to those two functions, so
+a third write path still fails in the diff that adds it.
+
+Two things bound what actually became reachable. **`public` is off by default**
+behind ``PUBLIC_POSTING_ENABLED``, so a deployment that has never turned it on
+serves no anonymous footage — the flag gates setting `public`, not reading it,
+so it does not withdraw rows written while it was on. `services/publishing.py`
+argues why that tier waits on
+CF-75/CF-88 (terms) and CF-116 (report and takedown) while `followers` does
+not. And the six anonymous reads are throttled per caller (CF-186), with
+``/clips/{id}/download`` behind auth.
+
+What is genuinely open: nobody has reassessed those limits against real public
+traffic, because there has not been any. The 404-not-403 choice below keeps
+none of these an existence oracle in the meantime.
+
+**Player names ride along with a viewable clip in the two listings, by design
+(CF-263).** ``list_clips`` and ``list_collection_clips`` attach ``player_name``
+with a bare id lookup and no ownership filter, so whoever may read a clip there
+may read the name tagged on it. Of the two, ``GET /games/{game_id}/clips`` is
+the one that can carry a name to an *unauthenticated* caller, because it takes an
+optional viewer; ``GET /collections/{id}/clips`` requires auth, though it spans
+owners. **The collection one becomes live with CF-109b, on a deployment where
+the flag is or has ever been on**: a clip can then be set `public`, so a
+signed-in stranger reading it through ``GET /collections/{id}/clips`` gets the
+tagged player's real name. Where it has never been on, nothing reaches that
+state, because ``_clips_predicate`` admits only `public` (never `followers`)
+and ``services/publishing.py`` refuses to *set* `public` behind
+``PUBLIC_POSTING_ENABLED``. The flag gates the write and not the read, so
+turning it off later leaves every clip already `public` readable here: the
+exposure is one flag away, not one merge away. That is the intended behaviour
+argued below.
+
+The ANONYMOUS variant is still unreachable, and for a different reason than
+before: ``GET /games/{game_id}/clips`` is gated on the *game*, and
+``Game.visibility`` is written by nothing —
+``test_visibility_write_paths_are_declared.py`` holds that. A clip's own tier
+publishes the clip, not the right to enumerate its game, which is the
+asymmetry two paragraphs down.
+
+That behaviour is intended: publishing a clip publishes it *with* its
+attribution, and a listing that blanked the name for exactly the viewers CF-109
+and CF-110 exist to serve would be publishing half of it. No other read returns a
+name in its body — ``GET /clips/{id}/share`` returns a URL and nothing else, and
+there is no feed router yet (CF-111 is #192, open); ``/download`` puts one in a
+*filename* behind its own gate, which is the next paragraph. It is written down
+here, and pinned by ``test_public_player_name.py``, because a missing ``where``
+is otherwise indistinguishable from an oversight and the next reader will "fix"
+it.
+
+**Read that as being about the listings, not as a module-wide invariant**, and
+note that the download path disagrees with it: ``can_identify`` below gates on
+the *game*, so ``GET /clips/{id}/download`` withholds the name for a public clip
+in a private game while ``GET /collections/{id}/clips`` returns it. That
+inconsistency is real, it is described in full on ``can_identify``, and
+**CF-283 (#330) is the card that picks one**. Nothing here decides it. Stating
+the listings' behaviour as though it already held everywhere would resolve #330
+by assertion, in a docstring, which is precisely the kind of silent decision
+this module exists to prevent.
+
+Note what this does *not* license. The name is readable through a clip the
+viewer may already see; it is not enumerable, and no write path accepts a
+foreign ``player_id`` (CF-234 closed the one that did). The orphan case — a
+player whose ``team_id`` is NULL is visible here yet unmanageable by its owner,
+because every editing route 404s on a null team — is a real problem and a
+separate one, tracked in CF-238 (#241).
 
 **One deliberate asymmetry.** A public clip inside a private game is reachable
 by direct link (``GET /clips/{id}/share``) and through a collection, but

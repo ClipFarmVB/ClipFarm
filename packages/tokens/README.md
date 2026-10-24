@@ -11,8 +11,8 @@ transpile it in place.
 ```ts
 import { colors, radius, spacing, fontSize } from "@clipfarm/tokens";
 
-colors.dark.brand;   // "#f59e0b"
-colors.light.brand;  // "#2563eb"
+colors.dark.brand;   // "#3cc2b3"
+colors.light.brand;  // "#037170"
 radius.xl;           // 12
 spacing.md;          // 16
 fontSize.sm;         // 14
@@ -69,17 +69,19 @@ for nothing, so the package documents the scale rather than redefining it.
 Directly — `import { colors } from "@clipfarm/tokens"` and read the numbers.
 See `packages/ui-mobile`, which is built entirely out of them.
 
-## The one new token
+## `onBrand`, and why it is not new any more
 
-`onBrand` (`--cf-on-brand`, Tailwind `text-on-brand`). Web's Button had
-`text-[#0c0c0e]` hardcoded for the label on a brand fill; it is the same value
-in both themes, and mobile needs it too. Same colour, now named.
+`onBrand` (`--cf-on-brand`, Tailwind `text-on-brand`) was the single token this
+package added when it was first written, to name the `text-[#0c0c0e]` that
+web's Button had hardcoded. While this branch sat, CF-568/CF-573 introduced the
+same token on `main`, per theme and with the contrast measured — so the package
+now mirrors it rather than proposing it.
 
-Naming it is not a blessing of it: on the light-mode `brand` blue the
-near-black label measures 3.78:1, below AA's 4.5:1 for the label sizes that use
-it, where white would give 5.17:1. Dark mode is fine (9.10:1 on the amber). The
-value is what web ships today; changing light mode is a visible appearance
-change and wants its own card. See the doc comment on `ThemeColors.onBrand`.
+That is a better answer than the one this package originally had. The label is
+`#ffffff` on the light theme's dark teal (5.83:1) and `#0b0f0f` on the dark
+theme's bright teal (8.77:1); both clear AA, where the old near-black-on-blue
+measured 3.78:1 and did not. The figures travel with the stylesheet —
+`themeCss()` emits CF-568's full table above the values.
 
 ## Adding a token
 
