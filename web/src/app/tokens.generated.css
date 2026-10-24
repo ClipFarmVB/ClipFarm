@@ -35,22 +35,26 @@
 }
 
 /*
- * Both themes take their accent from the logo (CF-573): a teal line-art mark
- * on cream. `--cf-brand-light` is the hover state of a brand fill, so in the
- * light theme it is *darker* than the base — a lighter teal would drop white
- * button text below AA.
+ * Both themes take their accent from the logo (CF-573): a line-art mark on
+ * cream. `--cf-brand-light` is the hover state of a brand fill, so in the
+ * light theme it is *darker* than the base — a lighter accent would drop
+ * white button text below AA.
  *
- * Contrast, WCAG relative luminance, measured when these were set (CF-568):
- *   light  on-brand #fff on brand #037170          5.83:1
- *          on-brand #fff on brand-light #025f5e    7.49:1
- *          brand #037170 as text on bg #faf7f1     5.46:1
- *          muted #65604f on bg                     5.88:1
- *   dark   on-brand #0b0f0f on brand #3cc2b3      8.77:1
- *          on-brand on brand-light #5fd3c5        10.66:1
- *          brand as text on bg #0b0f0f             8.77:1
- *          muted #7f8c8a on bg                     5.53:1
- * `subtle` stays near 3:1 in both, as before: it is for decorative and
- * tertiary text only.
+ * Contrast, WCAG relative luminance, computed from the values below when
+ * this file was generated (the pairings are CF-568's):
+ *   light  on-brand #ffffff on brand #037170  5.83:1
+ *          on-brand on brand-light #025f5e    7.50:1
+ *          brand as text on bg #faf7f1        5.46:1
+ *          muted #65604f on bg                5.88:1
+ *          subtle #948c7b on bg               3.12:1
+ *   dark   on-brand #0b0f0f on brand #3cc2b3  8.77:1
+ *          on-brand on brand-light #5fd3c5    10.66:1
+ *          brand as text on bg #0b0f0f        8.77:1
+ *          muted #7f8c8a on bg                5.53:1
+ *          subtle #56625f on bg               3.04:1
+ *
+ * `subtle` is the only one under AA by design: it is for decorative and
+ * tertiary text, never for anything a reader has to make out.
  */
 
 /* ── Light mode (default) — cream / warm neutrals / logo teal ────────── */

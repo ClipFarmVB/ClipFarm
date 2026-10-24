@@ -32,4 +32,13 @@ export { space, spacing, spacingUnit } from "./spacing";
 
 export { borderWidth, radius } from "./radius";
 
+export {
+  compositeOver,
+  contrastLabel,
+  contrastRatio,
+  parseColor,
+  relativeLuminance,
+  type Rgb,
+} from "./contrast";
+
 export { themeCss } from "./css";

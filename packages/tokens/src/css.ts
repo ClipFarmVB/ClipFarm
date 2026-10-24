@@ -18,6 +18,7 @@ import {
   lightColors,
   type ThemeColors,
 } from "./colors";
+import { contrastLabel } from "./contrast";
 import { fontFamilyStack } from "./typography";
 
 /**
@@ -82,25 +83,59 @@ const TOKEN_NOTE: Partial<Record<keyof ThemeColors, readonly string[]>> = {
  * Kept with the tokens rather than in globals.css because it is the reason the
  * numbers below are what they are: a reader who changes one needs these
  * figures, and mobile reads the same values with no stylesheet to find them in.
- */
-const RATIONALE = `/*
- * Both themes take their accent from the logo (CF-573): a teal line-art mark
- * on cream. \`--cf-brand-light\` is the hover state of a brand fill, so in the
- * light theme it is *darker* than the base — a lighter teal would drop white
- * button text below AA.
  *
- * Contrast, WCAG relative luminance, measured when these were set (CF-568):
- *   light  on-brand #fff on brand #037170          5.83:1
- *          on-brand #fff on brand-light #025f5e    7.49:1
- *          brand #037170 as text on bg #faf7f1     5.46:1
- *          muted #65604f on bg                     5.88:1
- *   dark   on-brand #0b0f0f on brand #3cc2b3      8.77:1
- *          on-brand on brand-light #5fd3c5        10.66:1
- *          brand as text on bg #0b0f0f             8.77:1
- *          muted #7f8c8a on bg                     5.53:1
- * \`subtle\` stays near 3:1 in both, as before: it is for decorative and
- * tertiary text only.
- */`;
+ * **Computed, not transcribed.** This block is inside the artifact the
+ * snapshot compares, so a hardcoded figure would be regenerated rather than
+ * caught — `tokens:sync` would quietly reissue a measurement against a value
+ * it was never measured against. Deriving it from the same hexes the block
+ * sits above makes that impossible: move a colour and the figure moves with
+ * it, or the snapshot fails.
+ */
+function rationale(): string {
+  /** `label` is prose; the ratio is computed from the two colours. */
+  const rows = (c: ThemeColors): ReadonlyArray<readonly [string, string]> => [
+    [`on-brand ${c.onBrand} on brand ${c.brand}`, contrastLabel(c.onBrand, c.brand)],
+    [
+      `on-brand on brand-light ${c.brandLight}`,
+      contrastLabel(c.onBrand, c.brandLight),
+    ],
+    [`brand as text on bg ${c.background}`, contrastLabel(c.brand, c.background)],
+    [`muted ${c.muted} on bg`, contrastLabel(c.muted, c.background)],
+    [`subtle ${c.subtle} on bg`, contrastLabel(c.subtle, c.background)],
+  ];
+
+  const themes = [
+    ["light", lightColors],
+    ["dark ", darkColors],
+  ] as const;
+  const width =
+    Math.max(
+      ...themes.flatMap(([, c]) => rows(c).map(([label]) => label.length)),
+    ) + 2;
+
+  const lines = themes.flatMap(([name, c]) =>
+    rows(c).map(
+      ([label, ratio], i) =>
+        ` *   ${i === 0 ? name : "     "}  ${label.padEnd(width)}${ratio}`,
+    ),
+  );
+
+  return [
+    "/*",
+    " * Both themes take their accent from the logo (CF-573): a line-art mark on",
+    " * cream. \`--cf-brand-light\` is the hover state of a brand fill, so in the",
+    " * light theme it is *darker* than the base — a lighter accent would drop",
+    " * white button text below AA.",
+    " *",
+    " * Contrast, WCAG relative luminance, computed from the values below when",
+    " * this file was generated (the pairings are CF-568's):",
+    ...lines,
+    " *",
+    " * `subtle` is the only one under AA by design: it is for decorative and",
+    " * tertiary text, never for anything a reader has to make out.",
+    " */",
+  ].join("\n");
+}
 
 /** Emission order, and the comment each run of tokens sits under. */
 const GROUPS: ReadonlyArray<{
@@ -205,7 +240,7 @@ export function themeCss(): string {
     "",
     themeBlock(),
     "",
-    RATIONALE,
+    rationale(),
     "",
     paletteBlock(":root", LIGHT_HEADING, lightColors),
     "",

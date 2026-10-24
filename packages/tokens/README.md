@@ -72,8 +72,8 @@ See `packages/ui-mobile`, which is built entirely out of them.
 ## `onBrand`, and why it is not new any more
 
 `onBrand` (`--cf-on-brand`, Tailwind `text-on-brand`) was the single token this
-package added when it was first written, to name the `text-[#0c0c0e]` that
-web's Button had hardcoded. While this branch sat, CF-568/CF-573 introduced the
+package added when it was first written, to name the near-black label that
+web's Button had hardcoded as an arbitrary value. While this branch sat, CF-568/CF-573 introduced the
 same token on `main`, per theme and with the contrast measured — so the package
 now mirrors it rather than proposing it.
 
@@ -86,7 +86,9 @@ measured 3.78:1 and did not. The figures travel with the stylesheet —
 ## Adding a token
 
 1. Add it to the right module with a doc comment saying what it is *for*, not
-   what colour it is — `brand` is blue in light mode and amber in dark.
+   what colour it is. Naming the hue is how a doc comment goes stale: the
+   palette was blue and amber before CF-573 and every sentence that said so
+   had to be found and rewritten.
 2. If web should reach it as a CSS variable or a Tailwind utility, add it to
    `CSS_VARIABLE` / `TAILWIND_UTILITY` / `GROUPS` in `css.ts`.
 3. `npm run tokens:sync --workspace=web`, and commit the regenerated file.

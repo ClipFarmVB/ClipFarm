@@ -13,8 +13,9 @@
 export type ThemeName = "light" | "dark";
 
 /**
- * Semantic colour slots. Named for the job, not the hue — `brand` is blue in
- * light mode and amber in dark, and nothing that consumes it needs to know.
+ * Semantic colour slots. Named for the job, not the hue — `surface` is warm
+ * and pale in one theme and near-black in the other, and nothing that
+ * consumes it needs to know which.
  */
 export interface ThemeColors {
   /** Page background, behind everything. */
