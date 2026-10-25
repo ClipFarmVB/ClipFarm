@@ -38,9 +38,14 @@ const EPIC_SCREENS: [ticket: string, file: string, declaredAs: string][] = [
 // root would otherwise fail every case below with "missing", which reads as a
 // deleted screen rather than a misconfigured runner.
 const appDir = join(process.cwd(), "src", "app");
+const libDir = join(process.cwd(), "src", "lib");
 
 function rootLayout(): string {
   return readFileSync(join(appDir, "_layout.tsx"), "utf8");
+}
+
+function apiBinding(): string {
+  return readFileSync(join(libDir, "api.ts"), "utf8");
 }
 
 /**
@@ -91,10 +96,19 @@ describe("epic routes", () => {
 
   it("binds the api client", () => {
     // `src/lib/api.ts` is the only caller of `configureApiClient`, and it does
-    // it as an import side effect — so if nothing imports it, the client is
-    // never configured and the first request throws. A static check because the
-    // module reaches supabase-js and expo-secure-store, which do not load under
-    // this runner; what it guards is that the import line still exists.
+    // it as an import side effect. That gives the binding two halves and
+    // losing either leaves `config` null and the first request throwing: the
+    // layout stops importing the module, or the module stops configuring
+    // anything. So both are held here — and the second one is not implied by
+    // the first, because dropping the call leaves eslint, tsc and this suite
+    // green (`noUnusedLocals` is off, so its orphaned imports raise nothing).
+    //
+    // Static checks because the module reaches supabase-js and
+    // expo-secure-store, which do not load under this runner. Reading api.ts
+    // rather than only the layout is also what keeps holding through the
+    // CF-314 (#418) swap, where ./apiClient becomes the package and the call
+    // is the thing most likely to be reshaped.
     expect(rootLayout()).toMatch(/import\s+"@\/lib\/api"/);
+    expect(apiBinding()).toMatch(/configureApiClient\(/);
   });
 });
