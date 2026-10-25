@@ -81,6 +81,13 @@ web/                       Next.js frontend
   src/components/          UploadZone, ClipCard, ClipModal, Sidebar, ui/
   AGENTS.md                ⚠ read before touching web — this Next.js has breaking changes vs training data
 
+mobile/                    Expo (React Native) app for iOS + Android — see mobile/README.md
+  src/app/                 routes; every screen in the CF-313 epic exists as a placeholder
+  src/lib/                 session (expo-secure-store), API client, build-time config
+  src/upload/              background-upload contract + the mock CF-330 builds against
+  src/player/              ClipSource contract, so the player survives the mezzanine proxy
+  modules/                 local Expo modules; ios/ and android/ are generated and gitignored
+
 api/app/
   main.py                  FastAPI app + router wiring + CORS
   config.py                ALL settings (env-driven). Start here to see every knob.
