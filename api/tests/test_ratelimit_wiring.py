@@ -1,7 +1,7 @@
 """Every anonymous read is actually covered (CF-186, #189).
 
 The limiters hang off each route decorator's ``dependencies=[...]``, which
-keeps the six throttled coroutine signatures byte-identical and leaves every
+keeps the seven throttled coroutine signatures byte-identical and leaves every
 direct call in this suite working — and makes the limiter completely invisible to
 those calls. So this file is not optional: without it, deleting a
 ``dependencies=[...]`` line would break nothing that runs.
@@ -16,6 +16,7 @@ reviewer does not have to notice.
 import asyncio
 
 import inspect
+import re
 
 import pytest
 from fastapi import FastAPI
@@ -25,14 +26,14 @@ from starlette.datastructures import Headers
 from app.auth import get_current_user_id
 from app.config import Settings, settings
 from app.routers import clips, games, posts, profiles
-from app.services import ratelimit
+from app.services import access, ratelimit
 from app.services.ratelimit import MemoryBackend, RateLimiter
 
 # path -> (policy name, the settings field it reads, the number that field
 # defaults to). All three, because the name alone pins almost nothing: a policy
 # can carry the right name and read another route's setting, and every default
 # can be raised to 30000, with the name-only check still green. The README,
-# config.py and six route docstrings all state these numbers as decisions;
+# config.py and seven route docstrings all state these numbers as decisions;
 # this table is what makes them true.
 THROTTLED = {
     ("/users/{handle}", "GET"): ("profile", "rate_limit_profile_per_minute", 30),
@@ -44,6 +45,12 @@ THROTTLED = {
         60,
     ),
     ("/clips/{clip_id}/share", "GET"): ("share", "rate_limit_share_per_minute", 120),
+    # CF-319 deliberately shares /share's policy rather than adding a seventh
+    # setting: it is the same action on the same object for the same viewer, so
+    # a second number would be one more thing to keep in agreement with the
+    # first. That means this row and /share's are expected to be identical —
+    # which is also why the setting is asserted below and not only the name.
+    ("/clips/{clip_id}/playback", "GET"): ("share", "rate_limit_share_per_minute", 120),
     ("/posts/{post_id}", "GET"): ("post", "rate_limit_post_per_minute", 120),
 }
 
@@ -176,7 +183,8 @@ def test_every_throttled_read_stays_anonymous(path, method):
 
 
 def test_the_download_route_requires_auth_instead_of_a_limiter():
-    """The seventh anonymous read, deliberately handled differently.
+    """The one anonymous read handled differently — the seventh of seven when
+    CF-186 looked at it, and the eighth now that CF-319 added /playback.
 
     It requires auth rather than a limiter. It presigns the same object /share
     does, so this pins a decision about who may ask for the attachment URL, not
@@ -557,3 +565,73 @@ def test_a_backend_that_never_answers_does_not_hold_the_request(monkeypatch):
         return await asyncio.wait_for(limiter(Req()), timeout=1.0)
 
     assert asyncio.run(drive()) is None
+
+
+# ── the counts written into prose ───────────────────────────────────────────
+# Three review rounds on CF-319 raised a stale count in this surface's prose,
+# each time in a different file, because adding one throttled route makes every
+# spelled-out total wrong at once. Two rounds of that were fixed by correcting
+# the file the finding pointed at, which is why a third round found four more.
+#
+# Where the number is incidental to the sentence it has since been removed
+# (config.py's settings header, README's flag row, access.py's second mention).
+# Where it is the record of what the anonymous surface *is*, it stays spelled
+# out — and is asserted here against THROTTLED, so the next route to join
+# cannot leave it behind quietly.
+
+_NUMBER_WORDS = {
+    "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+}
+
+
+def _spelled_count(text: str, pattern: str, where: str) -> int:
+    found = re.findall(pattern, text, re.IGNORECASE)
+    assert found, (
+        f"{where}: no sentence matching {pattern!r}. If that prose was "
+        "deliberately reworded, update this pattern or drop its row below; "
+        "do not delete the assertion to make the suite green."
+    )
+    assert len(set(found)) == 1, f"{where}: disagreeing counts {sorted(set(found))}"
+    word = found[0].lower()
+    assert word in _NUMBER_WORDS, f"{where}: unhandled number word {word!r}"
+    return _NUMBER_WORDS[word]
+
+
+def test_the_throttled_count_in_prose_matches_the_table():
+    """`len(THROTTLED)` is the truth; these sentences must agree with it."""
+    throttled = len(THROTTLED)
+
+    assert _spelled_count(
+        access.__doc__ or "",
+        r"All (\w+) are throttled per caller",
+        "services/access.py module docstring",
+    ) == throttled
+
+    assert _spelled_count(
+        access.__doc__ or "",
+        r"(\w+) endpoints where there were none",
+        "services/access.py module docstring",
+    ) == throttled
+
+    assert _spelled_count(
+        __doc__ or "",
+        r"keeps the (\w+) throttled coroutine signatures",
+        "this module's docstring",
+    ) == throttled
+
+
+def test_the_uncredentialed_count_in_prose_counts_download_too():
+    """ratelimit.py's opening total is the throttled set plus /download.
+
+    /download answers without a credential in the sense that sentence means —
+    it is on the anonymous read surface CF-186 assessed — but it was given auth
+    rather than a limiter, so it is in the total and not in THROTTLED. Pinning
+    the relationship rather than the literal is what keeps the two numbers from
+    being corrected independently and drifting apart.
+    """
+    assert _spelled_count(
+        ratelimit.__doc__ or "",
+        r"(\w+) endpoints answer without a credential",
+        "services/ratelimit.py module docstring",
+    ) == len(THROTTLED) + 1

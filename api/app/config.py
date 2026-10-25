@@ -973,10 +973,13 @@ class Settings(BaseSettings):
     sample_game_credit: str = ""
 
     # ── Anonymous read limits (CF-186, #189) ─────────────────────────────────
-    # Seven endpoints answer without a credential. Six are throttled per caller
+    # Every endpoint that answers without a credential is throttled per caller
     # (see services/ratelimit.py for the two exposures and the fail-open
-    # posture); GET /clips/{id}/download is the seventh and requires auth
-    # instead. All limits are per minute. The two enumerable routes key on the
+    # posture), except GET /clips/{id}/download, which requires auth instead.
+    # The count is deliberately not repeated here: it moves with every route
+    # added — CF-319's /clips/{id}/playback was the most recent — and
+    # api/tests/test_ratelimit_wiring.py is what enforces that none escapes.
+    # All limits are per minute. The two enumerable routes key on the
     # client address even for a signed-in caller (`Policy.by_address`); the rest
     # key on the signed-in caller and fall back to the client
     # address when there is no user.

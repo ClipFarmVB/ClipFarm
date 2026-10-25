@@ -1,6 +1,7 @@
 import logging
 import uuid
-from typing import Annotated
+from datetime import datetime, timedelta, timezone
+from typing import Annotated, NamedTuple
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -19,6 +20,7 @@ from app.schemas.clip import (
     ClipDeleteRequest,
     ClipLabelsRequest,
     ClipOut,
+    ClipPlaybackOut,
     ClipTagRequest,
     ClipTrimRequest,
     ClipVisibilityRequest,
@@ -78,26 +80,70 @@ async def _get_owned_clip(
     return clip, game
 
 
-def _rewrite_urls(clip: Clip) -> dict[str, str | None]:
+#: How long a clip URL minted by `_rewrite_urls` stays valid. Named rather than
+#: repeated because CF-319 makes it part of a response — a client told the
+#: expiry can refresh before the player dies instead of after — and a number
+#: reported from one place and minted in another drifts apart silently.
+#:
+#: **Named for clips, not for playback, because it governs every clip URL this
+#: helper mints**: `/clips/{id}/playback` and, through `_clip_out`, the clip
+#: list and the three PATCH echoes. An earlier spelling called it
+#: PLAYBACK_URL_TTL_SECONDS and claimed playback scope, which was false in the
+#: direction that matters — it read as protecting playback from a /share
+#: decision while quietly leaving the clip list exposed to a playback one.
+#:
+#: `share_clip` and `download_clip` are the genuine exceptions and keep their
+#: own literals: /share's expiry is the open question CF-320 exists to settle,
+#: and folding those two in would let that decision change playback by
+#: accident. Same value today, different reasons for it.
+CLIP_URL_TTL_SECONDS = 3600
+
+
+class _ClipUrls(NamedTuple):
+    """What `_rewrite_urls` resolved, including how long it lasts.
+
+    `expires_in` rides along rather than being recomputed by the caller so the
+    signed/unsigned question is answered **once**. `ClipPlaybackOut` promises
+    that a non-null expiry means the URL is signed, and when the caller read
+    `r2_configured()` a second time to decide the expiry, that promise rested on
+    two functions happening to agree — fine today, and quietly wrong the moment
+    this helper grows a third branch (a CDN URL, CF-48's proxy, a presign that
+    falls back on error) with no test in the way.
+    """
+
+    clip_url: str | None
+    thumbnail_url: str | None
+    #: None when the URL is not signed and so has no expiry at all.
+    expires_in: int | None
+
+
+def _rewrite_urls(clip: Clip) -> _ClipUrls:
     """Presigned URLs when R2 is configured; the stored URLs as-is otherwise.
 
     The configured case is production: the bucket is private, so the stored
     `{r2_public_url}/{key}` form is not loadable and must be presigned. The
     stored URL is returned unchanged only when R2 is not configured (local
-    dev), where there is nothing to sign with."""
+    dev), where there is nothing to sign with — and nothing to expire, which is
+    why `expires_in` is None on that branch rather than the TTL."""
     if storage.r2_configured():
-        return {
-            "clip_url": storage.presign_from_stored_url(clip.clip_url, expires_in=3600),
-            "thumbnail_url": (
-                storage.presign_from_stored_url(clip.thumbnail_url, expires_in=3600)
+        return _ClipUrls(
+            clip_url=storage.presign_from_stored_url(
+                clip.clip_url, expires_in=CLIP_URL_TTL_SECONDS
+            ),
+            thumbnail_url=(
+                storage.presign_from_stored_url(
+                    clip.thumbnail_url, expires_in=CLIP_URL_TTL_SECONDS
+                )
                 if clip.thumbnail_url
                 else None
             ),
-        }
-    return {
-        "clip_url": clip.clip_url,
-        "thumbnail_url": clip.thumbnail_url,
-    }
+            expires_in=CLIP_URL_TTL_SECONDS,
+        )
+    return _ClipUrls(
+        clip_url=clip.clip_url,
+        thumbnail_url=clip.thumbnail_url,
+        expires_in=None,
+    )
 
 def _clip_out(clip: Clip, game: Game, *, player_name: str | None = None) -> ClipOut:
     """The one way to build a ClipOut in this router.
@@ -118,8 +164,8 @@ def _clip_out(clip: Clip, game: Game, *, player_name: str | None = None) -> Clip
     out.effective_visibility = access.widest_allowed(clip, game)
     out.is_sample = sample_game.is_sample(game)
     urls = _rewrite_urls(clip)
-    out.clip_url = urls["clip_url"]  # type: ignore[assignment]
-    out.thumbnail_url = urls["thumbnail_url"]
+    out.clip_url = urls.clip_url  # type: ignore[assignment]
+    out.thumbnail_url = urls.thumbnail_url
     return out
 
 
@@ -520,6 +566,86 @@ async def delete_clips(
 
     await db.commit()
     return {"deleted": deleted}
+
+
+@router.get(
+    "/clips/{clip_id}/playback",
+    response_model=ClipPlaybackOut,
+    dependencies=[Depends(rate_limit(POLICIES["share"]))],
+)
+async def refresh_clip_playback(
+    clip_id: uuid.UUID,
+    db: DB,
+    viewer_id: ViewerId = None,
+):
+    """Mint a fresh playback URL for a clip the caller already holds (CF-319).
+
+    **Why this exists.** Every URL this api hands a player is presigned for
+    `CLIP_URL_TTL_SECONDS`. On the web that is invisible — the page is
+    reloaded long before it matters. On a phone it is not: an app backgrounded
+    for two hours comes back to a player whose URL 403s, and without this the
+    only recovery is refetching the whole list to get the same rows back with
+    new signatures on them.
+
+    **Anonymous exposure B (CF-186, #189): UUID-keyed content, throttled on
+    /share's budget.** It is the same action as /share — presign this clip's
+    object for a viewer entitled to read it — so it belongs in the same
+    exposure and wants the same generous limit, and sharing the policy means
+    there is no second number to keep in agreement with the first. Worth being
+    explicit that this is a choice and not an oversight: a client refreshing on
+    a timer spends from the same bucket as someone opening a shared link, which
+    at 120/min is not a collision either can feel. A dedicated policy is a
+    config setting away if the two ever want separating.
+
+    **Authorization is `/share`'s, via the same helper**, which is what the card
+    asks for: a refresh is a read, and a second access-control implementation
+    beside `_get_viewable_clip` is exactly the thing that drifts. The viewer may
+    be signed out for the same reason `/share` allows it — a public clip's URL
+    is meant to be passed around, and the documented asymmetry in
+    services/access.py (a public clip inside a private game is reachable by
+    direct link) applies here unchanged. Nothing here widens what a viewer may
+    see; it re-mints a URL for a clip they may already read this second.
+
+    **A stale credential reads as a missing clip, not as a 401.** The headline
+    case is an app backgrounded for hours, by which point the caller's own token
+    has often expired too — and `get_optional_user_id` turns a rejected token
+    into an anonymous viewer rather than refusing it (CF-108, repo-wide). For a
+    private clip that lands on `404 Clip not found`, indistinguishable from a
+    deleted clip, so a client that prunes rows on 404 drops the clip it was
+    trying to refresh. Not fixed here: the full-list fallback this endpoint
+    replaces fails the same way, so nothing is made worse, and telling
+    "re-authenticate" from "gone" is a cross-cutting change to the anonymous
+    read convention rather than this route's to make. CF-379 (#494) holds it
+    alongside the auth question for this route.
+
+    **The expiry is in the response, not just in this docstring.** That is the
+    half of the card that makes it useful: a client that knows the TTL refreshes
+    on a timer and never shows a dead player, where a client that must discover
+    expiry by failing shows one every time. `expires_at` is computed here rather
+    than parsed back out of the signature, so treat it as approximate — it is
+    this process's clock at mint time, and R2 signs against its own. Refresh
+    with a margin rather than at the boundary.
+    """
+    clip, _game = await _get_viewable_clip(clip_id, viewer_id, db)
+
+    # `expires_in` comes back from _rewrite_urls rather than being recomputed
+    # here, so the signed/unsigned question is answered once. It is None when
+    # R2 is unconfigured: the stored public URL served then carries no
+    # signature to expire — see ClipPlaybackOut on why that is not reported as
+    # the TTL.
+    urls = _rewrite_urls(clip)
+
+    return ClipPlaybackOut(
+        clip_id=clip.id,
+        clip_url=urls.clip_url,
+        thumbnail_url=urls.thumbnail_url,
+        expires_in=urls.expires_in,
+        expires_at=(
+            datetime.now(timezone.utc) + timedelta(seconds=urls.expires_in)
+            if urls.expires_in is not None
+            else None
+        ),
+    )
 
 
 @router.get(

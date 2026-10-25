@@ -1,6 +1,6 @@
 """Per-caller rate limiting for the anonymous read surface (CF-186, #189).
 
-Seven endpoints answer without a credential. #189 splits them into two
+Eight endpoints answer without a credential. #189 splits them into two
 exposures that want different answers, and this module implements both:
 
 **A. Enumerable, handle-keyed** — ``GET /users/{handle}``, ``GET /posts?username=``.
@@ -9,12 +9,20 @@ pre-CF-107 account the handle is guessable rather than random and a wordlist
 walk returns a roster of real accounts. Throttled.
 
 **B. UUID-keyed content** — ``GET /games/{id}``, ``GET /games/{id}/clips``,
-``GET /clips/{id}/share``, ``GET /posts/{id}``. These take a UUID so they cannot
-be walked; the exposure is load and abuse of a leaked link. Throttled, loosely,
-because traffic on a deliberately public clip is the success case.
+``GET /clips/{id}/share``, ``GET /clips/{id}/playback``, ``GET /posts/{id}``.
+These take a UUID so they cannot be walked; the exposure is load and abuse of a
+leaked link. Throttled, loosely, because traffic on a deliberately public clip
+is the success case.
 
-``GET /clips/{id}/download`` was the fifth route in exposure B and is **not
-here**: it requires authentication instead — see ``routers/clips.py``. Neither
+``/clips/{id}/playback`` (CF-319) arrived after this card and runs on
+``POLICIES["share"]`` rather than a policy of its own — it presigns the same
+object for the same viewer, so splitting the budget would mean two numbers to
+keep in agreement and no more safety.
+
+``GET /clips/{id}/download`` was a route in exposure B when this card looked at
+it — the fifth of five then, before CF-319 added ``/clips/{id}/playback`` to the
+list above — and is **not here**: it requires authentication instead — see
+``routers/clips.py``. Neither
 that nor this module bounds how often a clip is fetched: ``/share`` and the post
 reads presign the same object anonymously, and a presigned URL is fetched from
 R2 without touching the API. What these limits bound is calls to the API.
@@ -449,10 +457,14 @@ class RateLimiter:
     would.
 
     ``dependencies=[...]`` rather than a parameter, in turn, because a new
-    parameter would change all six throttled coroutine signatures and churn
-    every direct call site in the suite. (Six, not the seven anonymous reads
-    this card started from: ``download_clip`` is the seventh and its signature
-    *did* change here, since auth rather than a limiter is what it got.)
+    parameter would change every throttled coroutine signature and churn each
+    direct call site in the suite. Six of them when this card landed — not the
+    seven anonymous reads it started from, because ``download_clip`` was the
+    seventh and its signature *did* change here, auth rather than a limiter
+    being what it got. Seven since CF-319 added ``/clips/{id}/playback``, which
+    is why the count is left out of this sentence rather than restated in it:
+    the number moves with every route added, and
+    ``api/tests/test_ratelimit_wiring.py`` is where it is actually enforced.
     """
 
     def __init__(self, policy: Policy) -> None:
