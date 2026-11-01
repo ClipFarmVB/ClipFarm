@@ -51,7 +51,7 @@ import math
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -244,6 +244,7 @@ def extract_frames(
         raise ValueError("every_sec must be positive")
     start = max(0.0, start or 0.0)
     out_dir.mkdir(parents=True, exist_ok=True)
+    _clear(out_dir, "frame_*.jpg")   # a rerun replaces the set, or frames.json would not list every file
     _clear(out_dir, "_raw_*.jpg")
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{start:.3f}"]
     if end is not None:
@@ -437,9 +438,9 @@ def validate_spans(spans: list[DraftSpan], duration_sec: float) -> None:
     for i, s in enumerate(spans):
         if not (math.isfinite(s.start) and math.isfinite(s.end) and math.isfinite(s.confidence)):
             raise ValueError(f"span {i}: non-finite value ({s.start}, {s.end}, {s.confidence})")
+        if s.start < 0 or s.end < 0:
+            raise ValueError(f"span {i} ({s.start}s-{s.end}s): negative time")
         where = f"span {i} ({_fmt_ts(s.start)}-{_fmt_ts(s.end)})"
-        if s.start < 0:
-            raise ValueError(f"{where}: starts before 0")
         if s.end <= s.start:
             raise ValueError(f"{where}: end is not after start")
         if s.end > duration_sec:
@@ -468,6 +469,12 @@ def build_draft(
     treats an untagged span as in-play. `labeler`/`labeling` are fixed, not
     parameters — see the module docstring.
     """
+    # Round to what the file will hold (tenths of a second, confidence to 2 dp)
+    # before validating and deciding `review`, so a 10.01-10.04 span cannot pass
+    # as positive and land as "00:10"-"00:10", and a 0.699 is flagged exactly
+    # as the stored 0.7 says it should be.
+    spans = [replace(s, start=round(s.start, 1), end=round(s.end, 1), confidence=round(s.confidence, 2))
+             for s in spans]
     validate_spans(spans, duration_sec)
     out_spans: list[dict[str, Any]] = []
     review_count = 0
@@ -477,7 +484,7 @@ def build_draft(
         item: dict[str, Any] = {
             "start": _fmt_ts(s.start),
             "end": _fmt_ts(s.end),
-            "confidence": round(s.confidence, 2),
+            "confidence": s.confidence,
             "review": review,
         }
         if s.note:
@@ -591,6 +598,11 @@ def score_draft(draft_path: Path, test_id: str, audit_limit: int = 12) -> DeadTi
     draft = json.loads(draft_path.read_text(encoding="utf-8"))
     if draft.get("labeling") != LABELING:
         raise ValueError(f"{draft_path}: not an AI draft (labeling={draft.get('labeling')!r})")
+    if draft.get("test_id") != test_id:
+        print(
+            f"WARNING: draft test_id {draft.get('test_id')!r} != {test_id!r} — "
+            f"the draft was written for a different game; the numbers below are not an agreement measure"
+        )
     draft_md5 = draft.get("source_video_md5")
     human_md5 = human.raw.get("source_video_md5")
     if draft_md5 and human_md5 and draft_md5 != human_md5:
@@ -678,6 +690,8 @@ def main(argv: list[str] | None = None) -> None:
         if not md5:
             raise SystemExit(f"{fixture} has no source_video_md5")
         video_dir = args.dir or video_dir_from_env(FIXTURE_VIDEO_DIR_ENV)
+        if not video_dir.is_dir():
+            raise SystemExit(f"--dir {video_dir} is not a directory")
         found = find_video_by_md5(md5, video_dir)
         if found is None:
             raise SystemExit(f"no file in {video_dir} has md5 {md5} ({len(list_videos(video_dir))} videos hashed)")
@@ -691,15 +705,17 @@ def main(argv: list[str] | None = None) -> None:
         print(f"{len(sheets)} sheets -> {out} (sheets.json maps tile -> timestamp)")
     elif args.cmd == "frames":
         if args.around is not None:
+            if args.start is not None or args.end is not None:
+                p.error("--around sets its own range (--radius); it cannot be combined with --start/--end")
             out = args.out or _default_out(args.video, f"dense_{args.around:.0f}s")
             frames = dense_frames(
                 args.video, args.around, out, radius=args.radius,
-                every_sec=args.every or 0.5, height=args.height,
+                every_sec=0.5 if args.every is None else args.every, height=args.height,
             )
         else:
             out = args.out or _default_out(args.video, "1fps")
             frames = extract_frames(
-                args.video, out, every_sec=args.every or 1.0,
+                args.video, out, every_sec=1.0 if args.every is None else args.every,
                 start=args.start, end=args.end, height=args.height,
             )
         print(f"{len(frames)} frames -> {out} (frames.json maps file -> timestamp)")

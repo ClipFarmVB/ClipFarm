@@ -52,7 +52,7 @@ def _spans():
     ]
 
 
-def _draft(spans=None, **overrides):
+def _draft(spans=None, test_id="draftgame", **overrides):
     kwargs = dict(
         duration_sec=120.0,
         source_video_md5="0" * 32,
@@ -62,7 +62,7 @@ def _draft(spans=None, **overrides):
         model="claude-test",
     )
     kwargs.update(overrides)
-    return build_draft("draftgame", spans if spans is not None else _spans(), **kwargs)
+    return build_draft(test_id, spans if spans is not None else _spans(), **kwargs)
 
 
 class TestTimestampFormat:
@@ -124,6 +124,15 @@ class TestBuildDraft:
         d = _draft([DraftSpan(1.0, 2.0, REVIEW_BELOW)])
         assert d["spans"][0]["review"] is False
 
+    def test_review_is_decided_on_the_stored_rounded_confidence(self):
+        d = _draft([DraftSpan(1.0, 2.0, 0.699)])
+        assert d["spans"][0]["confidence"] == 0.7
+        assert d["spans"][0]["review"] is False
+
+    def test_a_span_that_rounds_to_zero_length_is_refused(self):
+        with pytest.raises(ValueError, match="end is not after start"):
+            _draft([DraftSpan(10.01, 10.04, 0.9)])
+
     def test_labeled_at_defaults_to_a_date(self):
         d = _draft(labeled_at=None)
         assert len(d["labeled_at"]) == 10 and d["labeled_at"][4] == "-"
@@ -133,7 +142,8 @@ class TestValidateSpans:
     @pytest.mark.parametrize("spans, message", [
         ([DraftSpan(10.0, 5.0, 0.9)], "end is not after start"),
         ([DraftSpan(10.0, 10.0, 0.9)], "end is not after start"),
-        ([DraftSpan(-1.0, 5.0, 0.9)], "starts before 0"),
+        ([DraftSpan(-1.0, 5.0, 0.9)], "negative time"),
+        ([DraftSpan(5.0, -1.0, 0.9)], "negative time"),
         ([DraftSpan(10.0, 121.0, 0.9)], "ends past the video"),
         ([DraftSpan(10.0, 20.0, 0.9), DraftSpan(15.0, 30.0, 0.9)], "overlaps"),
         ([DraftSpan(30.0, 40.0, 0.9), DraftSpan(10.0, 20.0, 0.9)], "overlaps or precedes"),
@@ -145,6 +155,10 @@ class TestValidateSpans:
     def test_rejects_malformed_spans(self, spans, message):
         with pytest.raises(ValueError, match=message):
             validate_spans(spans, 120.0)
+
+    def test_a_negative_time_is_reported_in_seconds_not_garbled(self):
+        with pytest.raises(ValueError, match=r"\(-1\.0s-5\.0s\)"):
+            validate_spans([DraftSpan(-1.0, 5.0, 0.9)], 120.0)
 
     def test_rejects_a_non_positive_duration(self):
         with pytest.raises(ValueError, match="duration"):
@@ -257,7 +271,7 @@ class TestScoreDraft:
 
     def test_a_perfect_draft_scores_no_divergence(self, tmp_path, monkeypatch, capsys):
         self._human(tmp_path, monkeypatch)
-        draft = write_draft(tmp_path / "drafts" / "scoreme_deadtime.json", _draft())
+        draft = write_draft(tmp_path / "drafts" / "scoreme_deadtime.json", _draft(test_id="scoreme"))
         s = score_draft(draft, "scoreme")
         assert s.live_removed_sec == 0.0
         assert s.dead_removed_pct == pytest.approx(1.0)
@@ -269,16 +283,23 @@ class TestScoreDraft:
     def test_a_missed_rally_shows_as_live_removed(self, tmp_path, monkeypatch):
         self._human(tmp_path, monkeypatch)
         spans = [DraftSpan(10.0, 25.0, 0.9), DraftSpan(60.0, 61.0, 0.9)]
-        draft = write_draft(tmp_path / "drafts" / "scoreme_deadtime.json", _draft(spans))
+        draft = write_draft(tmp_path / "drafts" / "scoreme_deadtime.json", _draft(spans, test_id="scoreme"))
         s = score_draft(draft, "scoreme")
         assert s.live_removed_sec == pytest.approx(12.5)
         assert s.over_cut_live == [(40.0, 52.5)]
 
     def test_a_different_source_file_is_warned_about(self, tmp_path, monkeypatch, capsys):
         self._human(tmp_path, monkeypatch)
-        draft = write_draft(tmp_path / "drafts" / "scoreme_deadtime.json", _draft(source_video_md5="f" * 32))
+        draft = write_draft(tmp_path / "drafts" / "scoreme_deadtime.json",
+                            _draft(test_id="scoreme", source_video_md5="f" * 32))
         score_draft(draft, "scoreme")
         assert "WARNING: draft md5" in capsys.readouterr().out
+
+    def test_a_draft_for_another_test_id_is_warned_about(self, tmp_path, monkeypatch, capsys):
+        self._human(tmp_path, monkeypatch)
+        draft = write_draft(tmp_path / "drafts" / "scoreme_deadtime.json", _draft(test_id="othergame"))
+        score_draft(draft, "scoreme")
+        assert "WARNING: draft test_id 'othergame' != 'scoreme'" in capsys.readouterr().out
 
     def test_refuses_to_score_a_file_that_is_not_a_draft(self, tmp_path, monkeypatch):
         self._human(tmp_path, monkeypatch)
@@ -356,12 +377,32 @@ class TestExtractFrames:
         ai_label.extract_frames(synthetic_clip, tmp_path / "x", every_sec=1.0, start=0.0, end=3.0, height=90)
         frames = ai_label.extract_frames(synthetic_clip, tmp_path / "x", every_sec=1.0, start=0.0, end=2.0, height=90)
         assert [f.sec for f in frames] == [0.0, 1.0]
-        assert not list((tmp_path / "x").glob("_raw_*"))
+        sidecar = json.loads((tmp_path / "x" / "frames.json").read_text(encoding="utf-8"))
+        assert sorted(p.name for p in (tmp_path / "x").glob("*.jpg")) == sorted(x["file"] for x in sidecar["frames"])
 
     @pytest.mark.parametrize("kwargs", [{"every_sec": 0.0}, {"start": 5.0, "end": 5.0}])
     def test_rejects_an_empty_sampling(self, synthetic_clip, tmp_path, kwargs):
         with pytest.raises(ValueError):
             ai_label.extract_frames(synthetic_clip, tmp_path / "bad", **kwargs)
+
+
+@needs_ffmpeg
+class TestFramesCli:
+    def test_every_zero_reaches_the_library_check(self, synthetic_clip, tmp_path):
+        with pytest.raises(ValueError, match="every_sec must be positive"):
+            ai_label.main(["frames", str(synthetic_clip), "--every", "0", "--out", str(tmp_path / "z")])
+
+    def test_around_refuses_a_start_or_end(self, synthetic_clip, tmp_path):
+        with pytest.raises(SystemExit):
+            ai_label.main(["frames", str(synthetic_clip), "--around", "6", "--start", "1",
+                           "--out", str(tmp_path / "a")])
+        assert not (tmp_path / "a").exists()
+
+
+class TestLocateCli:
+    def test_a_missing_dir_is_refused_not_a_traceback(self, tmp_path):
+        with pytest.raises(SystemExit, match="is not a directory"):
+            ai_label.main(["locate", "--test", "test2", "--dir", str(tmp_path / "nope")])
 
 
 @needs_ffmpeg
