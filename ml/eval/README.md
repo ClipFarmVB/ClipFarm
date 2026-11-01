@@ -565,10 +565,16 @@ deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (C
                        v6 = mode=learned, in-sample (CF-394)
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 train_deadtime.py      leave-one-game-out trainer for the in-play weights (CF-393)
+ai_label.py            AI labeller tooling: ffmpeg frames and contact sheets for
+                       Claude to read in a session, the ai-draft fixture writer,
+                       and draft-vs-human scoring (CF-594, docs/research/ai-labeller.md)
 fixtures/              one JSON per test case (ground truth)
                        {test_id}.json          highlights (CF-55)
                        {test_id}_deadtime.json ball-in-play spans (CF-98)
                        README_deadtime.md      dead-time fixture format
+                       drafts/                 ai-draft fixtures from ai_label.py — not
+                                               ground truth, not seen by the fixture suite
+frames/                gitignored: frames and contact sheets from ai_label.py
 ball_caches/           gitignored: {md5}.json ball tracks, for visualize_deadtime.py
                        and train_deadtime.py
 results/               {test_id}.jsonl and {test_id}_deadtime.jsonl —

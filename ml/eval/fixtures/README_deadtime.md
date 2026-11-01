@@ -15,6 +15,7 @@ spans — the harness derives dead time as the complement.
 {
   "test_id": "test1",
   "labeler": "Your Name",
+  "labeling": "independent",
   "labeled_at": "2026-07-25",
   "source_video_md5": "<content MD5 — matches the ball-cache key>",
   "source_r2_key": "raw/<game_id>.mp4",
@@ -50,6 +51,35 @@ spans — the harness derives dead time as the complement.
   verified nowhere at runtime.
 - Pin the video by **content MD5**, not a game id — game rows get deleted; the
   hash identifies the exact bytes forever and matches the ball-cache key.
+- `labeling` — how the labels were made. `independent` is a person labelling
+  from the raw video; `ai-draft` is the AI labeller below and is never ground
+  truth.
+
+### AI drafts (`drafts/`, CF-594)
+
+`ml/eval/ai_label.py` writes a dead-time fixture off frames Claude read in a
+session rather than a person watching the game. Such a file is a **draft**:
+it carries `labeler: "claude-vision"`, `labeling: "ai-draft"`, a `confidence`
+and `review` flag per span, `review_count`, and a `note` saying it is not
+ground truth. It lives in `fixtures/drafts/{test_id}_deadtime.json`, one
+level down from here, and stays there until a person has reviewed it:
+
+- The suite in `ml/tests/test_eval_fixtures.py` globs `fixtures/*_deadtime.json`
+  non-recursively, so `drafts/` is invisible to the pinning checks, and
+  `ml/tests/test_ai_label.py` fails if an `ai-draft` file ever sits at this
+  level.
+- The writer refuses a path in `fixtures/` itself and refuses to overwrite
+  any file that is not already an AI draft, so a draft cannot land on top of
+  a human fixture.
+- A draft has no `source_r2_key`, so `--mode deadtime --offline` cannot run
+  on it. Score it against the human fixture with
+  `python -m ml.eval.ai_label score --test {test_id}`.
+
+To promote a reviewed draft: move it up a level, set `labeler`/`labeling` to
+the reviewer's, add `source_r2_key` once the file is uploaded, and keep the
+`confidence`/`review` fields or drop them — the loader reads neither. The
+protocol, the agreement bar, and the validation status are in
+`docs/research/ai-labeller.md`.
 
 ## How to label (the protocol)
 
