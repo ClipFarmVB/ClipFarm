@@ -272,16 +272,24 @@ def test_fold_weights_take_the_folds_model_and_keep_the_preparation():
     assert w["coef"][0] == 0.0 and w["validated"] is True     # input untouched
 
 
-def test_fold_weights_carry_hmm_transitions_when_the_fold_has_them():
-    fw = fold_weights(_weights(decoder="hmm"), _fold(hmm={"stay_in": 0.9}))
-    assert fw["hmm"] == {"stay_in": 0.9}
+def test_fold_weights_refuse_the_hmm_decoder_until_the_builder_dispatches():
+    """R5-M1: `dead_time_ml` has no decoder dispatch, so a `"decoder": "hmm"`
+    file (the shape open PR #633 writes) would be decoded by threshold at the
+    shipped threshold and scored as a model it does not describe. It is refused,
+    naming #633; `"threshold"` and an absent key still rebuild. A fold's `hmm`
+    record is readable but not carried into the rebuilt dict."""
+    assert vl.KNOWN_DECODERS == ("threshold",)
+    with pytest.raises(ValueError, match=r"decoder 'hmm'.*#633"):
+        fold_weights(_weights(decoder="hmm"), _fold(hmm={"stay_in": 0.9}))
+    for w in (_weights(decoder="threshold"), _weights()):
+        fw = fold_weights(w, _fold(hmm={"stay_in": 0.9}))
+        assert fw["threshold"] == 0.7 and "hmm" not in fw
 
 
 @pytest.mark.parametrize("weights, fold, match", [
     (_weights(), _fold(extra=1), "unknown keys"),
     (_weights(decoder="beam"), _fold(), "decoder"),
     (_weights(), {k: v for k, v in _fold().items() if k != "threshold"}, "no threshold"),
-    (_weights(decoder="hmm"), _fold(), "no hmm"),
 ])
 def test_fold_weights_refuse_what_they_cannot_apply(weights, fold, match):
     with pytest.raises(ValueError, match=match):

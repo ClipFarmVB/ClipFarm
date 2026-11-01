@@ -98,15 +98,22 @@ UNGATED = "learned-ungated"
 
 # What a fold record may carry. Anything else is a field this module does not
 # know how to apply, and scoring past it would report a model the file does not
-# describe. "hmm" is CF-396's per-fold transitions, copied when present.
+# describe. "hmm" is CF-396's per-fold transitions (open PR #633): a fold that
+# records them stays readable, but nothing here decodes with them — see
+# KNOWN_DECODERS.
 _FOLD_KEYS = frozenset({
     "held_out", "threshold", "dead_removed_pct", "live_cut_sec", "net_sec", "auc",
     "guarded_dead_removed_pct", "guarded_live_cut_sec", "guarded_net_sec",
     "coef", "intercept", "hmm",
 })
-# A missing "decoder" is the smooth-and-threshold path every file before CF-396
-# uses.
-KNOWN_DECODERS = ("threshold", "hmm")
+# The decoders the production builder applies. `dead_time_ml` has no decoder
+# dispatch: `active_windows_learned` smooths and thresholds whatever the weights
+# carry, so a file asking for another decoder ("hmm", CF-396 / #633) would be
+# scored by threshold at the shipped threshold — a model the file does not
+# describe. `fold_weights` refuses such a file instead; #633 widens this when the
+# builder dispatches. A missing "decoder" is the threshold path every file so
+# far uses.
+KNOWN_DECODERS = ("threshold",)
 
 
 @dataclass(frozen=True)
@@ -231,26 +238,27 @@ def fold_weights(weights: dict, fold: dict) -> dict:
     (the trainer records the chosen variant's folds). `validated` is forced
     false: a fold model is never a shipping model.
 
-    Refuses a fold or a decoder this code does not know how to apply, rather
-    than scoring a different model than the file records.
+    Refuses a fold this code does not know how to apply, and any decoder but
+    the threshold one — the production builder has no decoder dispatch, so a
+    `"decoder": "hmm"` file (CF-396 / #633) would be scored by threshold and
+    the numbers would describe a model the file does not. A fold's `hmm` record
+    is not carried over: nothing on this branch decodes with it.
     """
     unknown = set(fold) - _FOLD_KEYS
     if unknown:
         raise ValueError(f"fold {fold.get('held_out')!r} carries unknown keys {sorted(unknown)}")
     decoder = weights.get("decoder", "threshold")
     if decoder not in KNOWN_DECODERS:
-        raise ValueError(f"weights use decoder {decoder!r}; this module knows {KNOWN_DECODERS}")
-    if decoder == "threshold" and "threshold" not in fold:
+        why = (" (CF-396 / PR #633; dead_time_ml does not dispatch on a decoder yet)"
+               if decoder == "hmm" else "")
+        raise ValueError(f"weights use decoder {decoder!r}; this module knows "
+                         f"{KNOWN_DECODERS}{why}")
+    if "threshold" not in fold:
         raise ValueError(f"fold {fold.get('held_out')!r} carries no threshold")
-    if decoder == "hmm" and "hmm" not in fold:
-        raise ValueError(f"fold {fold.get('held_out')!r} carries no hmm transitions")
     out = copy.deepcopy(weights)
     out["coef"] = list(fold["coef"])
     out["intercept"] = fold["intercept"]
-    if "threshold" in fold:
-        out["threshold"] = fold["threshold"]
-    if "hmm" in fold:
-        out["hmm"] = copy.deepcopy(fold["hmm"])
+    out["threshold"] = fold["threshold"]
     out["validated"] = False
     out.pop("folds", None)
     out.pop("context_variants", None)
