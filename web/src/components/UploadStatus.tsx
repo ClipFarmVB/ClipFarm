@@ -37,9 +37,16 @@ export function UploadStatus() {
         className="mb-6 flex items-center gap-3 rounded-md border border-brand/30 bg-brand/10 px-4 py-3"
       >
         <Check className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
-        <div className="min-w-0 flex-1 truncate text-sm">
-          <span className="font-medium">&ldquo;{upload.title}&rdquo; uploaded</span>
-          <span className="text-muted"> — processing has started.</span>
+        {/* The title is the only part that may be clipped: it sits alone in
+            the truncating span and the message stays whole from `sm` up. Below
+            that the two stack, since the message alone outgrows a phone-width
+            column (R5-M1). */}
+        <div className="flex min-w-0 flex-1 flex-col gap-x-1 text-sm sm:flex-row">
+          <span className="min-w-0 truncate font-medium">&ldquo;{upload.title}&rdquo;</span>
+          <span className="sm:shrink-0 sm:whitespace-nowrap">
+            <span className="font-medium"> uploaded</span>
+            <span className="text-muted"> — processing has started.</span>
+          </span>
         </div>
         {/* Opening the game is the acknowledgement; the strip would otherwise
             repeat the news on the page it points at. */}
@@ -87,9 +94,14 @@ export function UploadStatus() {
     >
       <div className="flex items-center gap-3">
         <Film className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
-        <div className="min-w-0 flex-1 truncate text-sm">
-          <span className="font-medium">&ldquo;{upload.title}&rdquo;</span>
-          <span className="text-muted"> · {upload.statusText}</span>
+        {/* Same shape as the done row: the title truncates, the status and
+            its ETA stay whole. The separator only makes sense on one line. */}
+        <div className="flex min-w-0 flex-1 flex-col gap-x-1 text-sm sm:flex-row">
+          <span className="min-w-0 truncate font-medium">&ldquo;{upload.title}&rdquo;</span>
+          <span className="text-muted sm:shrink-0 sm:whitespace-nowrap">
+            <span className="hidden sm:inline"> · </span>
+            {upload.statusText}
+          </span>
         </div>
         <span className="shrink-0 text-[11px] tabular-nums text-muted">{Math.round(progress)}%</span>
       </div>

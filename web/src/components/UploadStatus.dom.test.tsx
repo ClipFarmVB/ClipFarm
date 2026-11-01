@@ -134,6 +134,31 @@ async function failUpload(message: string) {
 const dismissButton = () =>
   Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "Dismiss");
 
+/**
+ * The row's two parts (R5-M1): the title in the one span that may be
+ * clipped, and the fixed message beside it, which from `sm` up must neither
+ * shrink nor wrap — so an ellipsis can only ever land on the title. jsdom
+ * paints nothing, so the shape is what the classes pin.
+ */
+function rowParts(row: Element) {
+  const title = row.querySelector<HTMLElement>(".truncate");
+  const message = Array.from(row.querySelectorAll<HTMLElement>("span")).find(
+    (s) => s.className.includes("sm:shrink-0"),
+  );
+  return { title, message };
+}
+
+function expectTitleOnlyTruncates(row: Element, message: string) {
+  const parts = rowParts(row);
+  expect(parts.title).not.toBeNull();
+  expect(parts.title!.className.split(/\s+/)).toContain("min-w-0");
+  expect(parts.title!.textContent).toBe("\u201cVarsity vs Lincoln\u201d");
+  expect(parts.message).toBeDefined();
+  expect(parts.message!.className.split(/\s+/)).toContain("sm:whitespace-nowrap");
+  expect(parts.message!.textContent).toBe(message);
+  expect(parts.title!.contains(parts.message!)).toBe(false);
+}
+
 describe("UploadStatus", () => {
   it("renders nothing when no upload is active", async () => {
     await render();
@@ -176,6 +201,8 @@ describe("UploadStatus", () => {
     // The same thin brand bar as UploadZone and the game page.
     const bar = strip!.querySelector<HTMLElement>(".bg-brand");
     expect(bar?.style.width).toBe("40%");
+    // A long title must not take the ETA with it: only the title truncates.
+    expectTitleOnlyTruncates(strip!, " \u00b7 Uploading\u2026");
     // Nothing to dismiss mid-flight: the attempt cannot be stopped.
     expect(dismissButton()).toBeUndefined();
 
@@ -216,6 +243,8 @@ describe("UploadStatus", () => {
     expect(status!.textContent).toContain("processing has started");
     expect(status!.querySelector('a[href="/games/g1"]')).not.toBeNull();
     expect(mocks.push).not.toHaveBeenCalled();
+    // A long title must not eat "processing has started": only it truncates.
+    expectTitleOnlyTruncates(status!, " uploaded \u2014 processing has started.");
   });
 
   it("opening the game from the strip acknowledges the upload", async () => {
@@ -250,6 +279,8 @@ describe("UploadStatus", () => {
     // A filename-derived title is one unbreakable word; without this it would
     // overflow the row and paint across Try again / Dismiss at phone width.
     expect(alert!.querySelector(".break-words")!.textContent).toContain("Varsity vs Lincoln");
+    // And nothing in it is clipped: the error is the thing to read in full.
+    expect(alert!.querySelector(".truncate")).toBeNull();
   });
 
   it("dismiss clears the strip", async () => {

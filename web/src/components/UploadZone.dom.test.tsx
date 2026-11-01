@@ -196,6 +196,20 @@ describe("UploadZone and the upload store (CF-70)", () => {
     expect(host.textContent).toContain("Drop video here");
     expect(host.querySelector<HTMLInputElement>("#file-input")!.disabled).toBe(false);
     expect(host.textContent).not.toContain("100%");
+    // The same row UploadStatus draws (R5-M1): the title alone may be clipped,
+    // the message beside it neither shrinks nor wraps from `sm` up, so a long
+    // title cannot leave "processing has st…" in a 512 px column.
+    const title = status!.querySelector<HTMLElement>(".truncate");
+    expect(title).not.toBeNull();
+    expect(title!.className.split(/\s+/)).toContain("min-w-0");
+    expect(title!.textContent).toBe("\u201cVarsity vs Lincoln\u201d");
+    const message = Array.from(status!.querySelectorAll<HTMLElement>("span")).find(
+      (s) => s.className.includes("sm:shrink-0"),
+    );
+    expect(message).toBeDefined();
+    expect(message!.className.split(/\s+/)).toContain("sm:whitespace-nowrap");
+    expect(message!.textContent).toBe(" uploaded \u2014 processing has started.");
+    expect(title!.contains(message!)).toBe(false);
   });
 
   it("redirects exactly once on a completion it watched", async () => {

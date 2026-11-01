@@ -369,9 +369,14 @@ export function UploadZone() {
           className="mt-3 flex items-center gap-2 rounded-md border border-brand/30 bg-brand/10 px-3 py-2.5 text-[12px]"
         >
           <Check size={13} className="shrink-0 text-brand" aria-hidden="true" />
-          <span className="min-w-0 flex-1 truncate">
-            <span className="font-medium text-foreground">&ldquo;{upload.title}&rdquo; uploaded</span>
-            <span className="text-muted"> — processing has started.</span>
+          {/* Title alone in the truncating span, message whole from `sm` up,
+              the two stacked below it — the same row UploadStatus draws. */}
+          <span className="flex min-w-0 flex-1 flex-col gap-x-1 sm:flex-row">
+            <span className="min-w-0 truncate font-medium text-foreground">&ldquo;{upload.title}&rdquo;</span>
+            <span className="sm:shrink-0 sm:whitespace-nowrap">
+              <span className="font-medium text-foreground"> uploaded</span>
+              <span className="text-muted"> — processing has started.</span>
+            </span>
           </span>
           <Link
             href={`/games/${upload.gameId}`}
