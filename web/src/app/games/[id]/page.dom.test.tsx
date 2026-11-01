@@ -141,9 +141,37 @@ function clickButton(label: string) {
   });
 }
 
+/**
+ * Moves the nth range input in the bar (0 = Highlights, 1 = Confidence). The
+ * value goes through the prototype's setter: React's value tracker wraps the
+ * element's own, so a plain `.value =` is recorded as already-known and the
+ * following event is dropped as a no-op.
+ */
+async function moveSlider(index: number, value: number) {
+  const input = host.querySelectorAll<HTMLInputElement>('input[type="range"]')[index];
+  if (!input) throw new Error(`no range input ${index}`);
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  await act(async () => {
+    set.call(input, String(value));
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await settle();
+}
+
+/** The next `getClips` stays pending until the returned function is called. */
+function holdNextClips() {
+  let resolve!: (clips: Clip[]) => void;
+  getClips.mockReturnValue(new Promise<Clip[]>((r) => { resolve = r; }));
+  return (clips: Clip[]) => act(async () => { resolve(clips); });
+}
+
 function lastClipsFilters() {
   const call = getClips.mock.calls[getClips.mock.calls.length - 1];
   return call[1] as Record<string, unknown>;
+}
+
+function skeletons() {
+  return host.querySelectorAll(".skeleton").length;
 }
 
 describe("filtering the grid by player (CF-250)", () => {
@@ -210,6 +238,51 @@ describe("filtering the grid by player (CF-250)", () => {
     expect(playerSelect()?.value).toBe("");
   });
 
+  // The two in-flight windows. `clips` is still the old `[]` and the first
+  // load is long over, so without a flag for the pending refetch the empty
+  // state would describe a result that has not landed: the game's clips are
+  // on their way, and the page would say the game has none that match.
+  it("shows the skeletons, not a false empty line, while \"Show all players\" refetches", async () => {
+    await render();
+    getClips.mockResolvedValue([]);
+    await choosePlayer("p2");
+    expect(host.textContent).toContain("No clips tagged Lena Brandt in this game.");
+
+    const release = holdNextClips();
+    await clickButton("Show all players");
+    await settle();
+
+    expect(lastClipsFilters().player_id).toBeUndefined();
+    expect(host.textContent).not.toContain("No clips match your filters.");
+    expect(host.textContent).not.toContain("No clips tagged");
+    expect(skeletons()).toBeGreaterThan(0);
+
+    await release([clip("c1", players[0]), clip("c2")]);
+
+    expect(skeletons()).toBe(0);
+    expect(host.querySelectorAll("[data-clip]")).toHaveLength(2);
+  });
+
+  it("names no player while a switch from an empty player to another is pending", async () => {
+    await render();
+    getClips.mockResolvedValue([]);
+    await choosePlayer("p2");
+    expect(host.textContent).toContain("No clips tagged Lena Brandt in this game.");
+
+    const release = holdNextClips();
+    await choosePlayer("p1");
+
+    expect(lastClipsFilters().player_id).toBe("p1");
+    // The option list still carries "#4 Maya Okafor"; the sentence must not.
+    expect(host.textContent).not.toContain("No clips tagged");
+    expect(skeletons()).toBeGreaterThan(0);
+
+    await release([clip("c1", players[0])]);
+
+    expect(skeletons()).toBe(0);
+    expect(host.querySelectorAll("[data-clip]")).toHaveLength(1);
+  });
+
   it("blames the other filters, not the game, when they are what is narrowing", async () => {
     await render();
     await clickButton("Timeline");
@@ -220,13 +293,22 @@ describe("filtering the grid by player (CF-250)", () => {
     // Sort alone is not a narrowing filter; the sliders and action badges are.
     expect(host.textContent).toContain("No clips tagged Lena Brandt in this game.");
 
-    const spike = [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "spike");
-    if (!spike) throw new Error("no spike badge");
-    await act(async () => {
-      spike.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    await clickButton("spike");
     await settle();
 
+    expect(host.textContent).toContain("No clips tagged Lena Brandt match your other filters.");
+
+    // Every badge selected narrows nothing — the API receives all five and
+    // every clip matches — so the copy goes back to blaming the game.
+    for (const action of ["serve", "dig", "set", "block"]) await clickButton(action);
+    await settle();
+
+    expect(host.textContent).toContain("No clips tagged Lena Brandt in this game.");
+
+    // A slider alone is the other half of the branch.
+    await moveSlider(0, 50);
+
+    expect(lastClipsFilters()).toMatchObject({ min_score: 0.5 });
     expect(host.textContent).toContain("No clips tagged Lena Brandt match your other filters.");
   });
 });

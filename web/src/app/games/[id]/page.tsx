@@ -75,6 +75,10 @@ export default function GamePage() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
+  // A clips request is in flight. Distinct from `loading`, which covers the
+  // first fetch only: a refetch keeps the grid it has, so this flag is what
+  // stops the empty state describing a result that has not landed yet.
+  const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [activeClipIndex, setActiveClipIndex] = useState<number | null>(null);
@@ -178,10 +182,14 @@ export default function GamePage() {
   // Fetch clips when game is ready
   useEffect(() => {
     if (!game || game.status !== "ready") return;
+    setFetching(true);
     getClips(id, settledFilters)
       .then(setClips)
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load clips."))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setFetching(false);
+      });
   }, [game, id, settledFilters]);
 
   // Fetch the roster once the game is ready (CF-250). Separate from the clips
@@ -196,6 +204,15 @@ export default function GamePage() {
       .then(setPlayers)
       .catch(() => setPlayers([]));
   }, [id, gameReady]);
+
+  // Whether anything besides the player filter narrows the grid, for the
+  // empty state's copy. Every action type selected narrows nothing: the API
+  // receives all five and every clip matches.
+  const otherFiltersNarrow = Boolean(
+    (settledFilters.action_type?.length && settledFilters.action_type.length < ACTION_TYPES.length) ||
+    settledFilters.min_confidence ||
+    settledFilters.min_score
+  );
 
   const toggleActionFilter = useCallback((action: ActionType) => {
     setFilters((f) => {
@@ -519,16 +536,20 @@ export default function GamePage() {
             </div>
           )}
 
-          {/* Loading clips skeletons */}
-          {loading && (
+          {/* Loading clips skeletons: the first fetch, and a refetch with no
+              grid to keep on screen (the empty state's "Show all players",
+              or one empty player to another). */}
+          {(loading || (fetching && clips.length === 0)) && (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 stagger">
               {[...Array(8)].map((_, i) => <ClipCardSkeleton key={i} />)}
             </div>
           )}
 
           {/* Empty filtered state. Reads the settled filters, which are what
-              the empty result answers to; the control shows the live ones. */}
-          {!loading && clips.length === 0 && (
+              the empty result answers to; the control shows the live ones.
+              Never while a fetch is pending: `clips` would still be the old
+              `[]` and the line would describe a result that is not in yet. */}
+          {!loading && !fetching && clips.length === 0 && (
             settledFilters.player_id ? (
               <div className="flex flex-col items-center py-16 text-center">
                 <p className="text-[13px] text-muted">
@@ -536,9 +557,7 @@ export default function GamePage() {
                   <span className="font-medium text-foreground">
                     {players.find((p) => p.id === settledFilters.player_id)?.name ?? "this player"}
                   </span>
-                  {settledFilters.action_type?.length || settledFilters.min_confidence || settledFilters.min_score
-                    ? " match your other filters."
-                    : " in this game."}
+                  {otherFiltersNarrow ? " match your other filters." : " in this game."}
                 </p>
                 <button
                   onClick={() => setFilters((f) => ({ ...f, player_id: undefined }))}
