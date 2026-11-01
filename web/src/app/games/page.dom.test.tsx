@@ -224,4 +224,55 @@ describe("Library while an upload finishes (CF-70)", () => {
     expect(host.textContent).toContain("2 games");
     expect(fetchGames).not.toHaveBeenCalled();
   });
+
+  it("recovers from a failed mount load when the upload lands on a cold cache", async () => {
+    // The Library's own load failed, so the error card is up and the cache
+    // stayed cold; the upload already in flight then finishes while the user
+    // sits there (R7-M1).
+    authUser = { id: "upload-b" };
+    fetchGames.mockRejectedValueOnce(new Error("Network down"));
+    await act(async () => { root.render(<GamesPage />); });
+    expect(host.textContent).toContain("Network down");
+
+    // The row had no warm cache to land in, so the page has to ask — and by
+    // now the api answers. That list is the recovery the error card was
+    // waiting for, not something to hold behind it.
+    fetchGames.mockResolvedValue([game("uploaded", "queued"), game("a-ready", "ready")]);
+    await act(async () => {
+      await startUpload(new File(["x"], "match.mp4", { type: "video/mp4" }), {
+        title: "uploaded",
+        condense: false,
+        duration: null,
+      });
+    });
+    expect(getUploadSnapshot().phase).toBe("done");
+
+    expect(fetchGames).toHaveBeenCalledTimes(2);
+    expect(host.querySelector('a[href="/games/uploaded"]')).not.toBeNull();
+    expect(host.textContent).toContain("2 games");
+    expect(host.textContent).not.toContain("Network down");
+  });
+
+  it("reports a cold-cache fetch that fails rather than leaving the skeletons up", async () => {
+    // Mounted on a cold cache with the load still pending (the mock's default
+    // never settles), so the skeletons are up when the upload lands and the
+    // fetch it makes fails. That failure is the first answer the page gets.
+    authUser = { id: "upload-c" };
+    await act(async () => { root.render(<GamesPage />); });
+    expect(host.querySelector(".skeleton")).not.toBeNull();
+
+    fetchGames.mockRejectedValue(new Error("Network down"));
+    await act(async () => {
+      await startUpload(new File(["x"], "match.mp4", { type: "video/mp4" }), {
+        title: "uploaded",
+        condense: false,
+        duration: null,
+      });
+    });
+    expect(getUploadSnapshot().phase).toBe("done");
+
+    expect(host.querySelector(".skeleton")).toBeNull();
+    expect(host.textContent).toContain("Network down");
+    expect(host.textContent).not.toContain("No games yet");
+  });
 });

@@ -127,16 +127,27 @@ function GamesContent() {
   const upload = useActiveUpload();
   useEffect(() => {
     if (upload.phase !== "done") return;
+    // However the list arrives, it is also the recovery a failed mount load
+    // was waiting for: `loading` and `error` both hide the rows, so left set
+    // they kept the error card up, with the game in state behind it, under a
+    // strip saying it uploaded (R7-M1).
+    const show = (data: Game[]) => {
+      setGames(data);
+      setError(null);
+      setLoading(false);
+    };
     const cached = getCachedGames();
     if (cached) {
-      setGames(cached);
+      show(cached);
       return;
     }
-    // Cold cache: the row had nowhere to land, so ask for the list. Same soft
-    // failure as the poll — the strip already carries the news.
-    fetchGames().then((data) => {
-      setGames(data);
-    }).catch(() => {});
+    // Cold cache: the row had nowhere to land, so ask for the list. A failure
+    // is reported the way the mount load's is — this fetch may be the first
+    // the page gets an answer to, and skeletons would otherwise stay up.
+    fetchGames().then(show).catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : "Couldn't load your games.");
+      setLoading(false);
+    });
   }, [upload.phase]);
 
   // Poll while any game is actively processing
