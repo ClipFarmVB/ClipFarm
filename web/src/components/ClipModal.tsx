@@ -281,11 +281,15 @@ export function ClipModal({
    *  length, a reading shorter than the last step and matching none is taken
    *  as that step cut short by the source's end.
    *
-   *  A trim that asks for the stretch the player already holds — one step out
-   *  and one back, or Start −2s at 0:00, which the api clamps — has nothing to
-   *  swap in, and ends the watch with nothing to say. Reporting only: a failed
-   *  poll is retried, and giving up leaves the playing cut and the new bounds
-   *  as they are, with a line saying a reload shows the new cut. */
+   *  A trim that asks for the stretch the player already holds has nothing to
+   *  swap in only while no re-cut is queued — Start −2s at 0:00, which the api
+   *  clamps — and then ends the watch with nothing to say. One step out and one
+   *  back is not that case: the step out is still queued and will overwrite the
+   *  object before the step back does, so the step back is one more length in
+   *  the sequence (R9-M1). Dropping the chain there left the next trim matched
+   *  against the stale re-cuts as they landed. Reporting only: a failed poll is
+   *  retried, and giving up leaves the playing cut and the new bounds as they
+   *  are, with a line saying a reload shows the new cut. */
   function watchRecut(id: string, reply: Clip) {
     // A trim that settled after the dialog closed: there is nothing to show
     // it in, and a poll started now would outlive the unmount cleanup, which
@@ -297,18 +301,23 @@ export function ClipModal({
     const end = cutEnd(reply.end_time);
     const expected = end - start;
     const held = recutHeld.current.get(id) ?? { start, end, length: expected };
-    if (near(start, held.start) && near(end, held.end)) {
+    const chain = recutChain.current.get(id) ?? { last: held.length, pending: [] };
+    const backToHeld = near(start, held.start) && near(end, held.end);
+    if (backToHeld && chain.pending.length === 0) {
       recutHeld.current.delete(id);
       recutChain.current.delete(id);
       setRecutFor(id, null);
       return;
     }
-    const chain = recutChain.current.get(id) ?? { last: held.length, pending: [] };
+    // Back to the held stretch, the object gets the length the player
+    // measured for it, not the bounds' arithmetic: a cut the source's end had
+    // already shortened reads as it did, not as its stored `end` says.
+    const step = backToHeld ? held.length : expected;
     // Not a step of its own when it gives the object the length the step
     // before it does — two trims past the end of the source both cut to it,
     // and the second re-cut cannot be seen landing on top of the first.
     const lastStep = chain.pending[chain.pending.length - 1];
-    if (lastStep === undefined || !near(lastStep, expected)) chain.pending.push(expected);
+    if (lastStep === undefined || !near(lastStep, step)) chain.pending.push(step);
     recutChain.current.set(id, chain);
     setRecutFor(id, "waiting");
     let cancelled = false;
@@ -576,8 +585,12 @@ export function ClipModal({
       // arrows mean nothing to a button — but the panel is keyed to the clip
       // and takes the focused control with it. Its toggle is handed focus
       // once the next clip has rendered (see `refocusToggle`).
+      // The Trim toggle itself is also unmounted when the next clip is a demo
+      // clip (R9-N7), and is blurred by the browser once it disables, so it
+      // gets the same hand-off; Label's button is on every clip.
       const inPanel = active instanceof Element ? active.closest("#clip-edit-label, #clip-edit-trim") : null;
       if (inPanel) refocusToggle.current = inPanel.id === "clip-edit-trim" ? "trim" : "label";
+      else if (active === trimToggleRef.current) refocusToggle.current = "trim";
       go();
     }
     window.addEventListener("keydown", onKey);
@@ -844,7 +857,7 @@ export function ClipModal({
                   ))}
                 </select>
                 {tagPicked && !isBusy("tag") && (
-                  <span id="clip-edit-tag-hint" className="px-1 text-[11px] text-subtle">
+                  <span id="clip-edit-tag-hint" className="px-1 text-[11px] text-muted">
                     Enter to tag
                   </span>
                 )}
@@ -1171,7 +1184,7 @@ function TrimEdge({
 }) {
   return (
     <div className="flex flex-col items-center gap-1 sm:flex-row sm:gap-2">
-      <span className="text-[10px] font-semibold uppercase tracking-widest text-subtle">{edge}</span>
+      <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">{edge}</span>
       <div role="group" aria-label={`${edge} of clip`} className="flex items-center gap-1">
         {steps.map(({ label, d }) => (
           <button

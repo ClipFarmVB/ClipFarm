@@ -323,6 +323,9 @@ describe("tagging a player", () => {
     expect(tagClip).not.toHaveBeenCalled();
     expect(document.getElementById("clip-edit-tag-hint")?.textContent).toBe("Enter to tag");
     expect(s.getAttribute("aria-describedby")).toBe("clip-edit-tag-hint");
+    // R9-N4: an instruction, so the readable token, not `subtle`, which
+    // globals.css keeps for decorative text and sits under AA.
+    expect(document.getElementById("clip-edit-tag-hint")?.className).toContain("text-muted");
 
     await act(async () => {
       s.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
@@ -781,21 +784,132 @@ describe("trimming", () => {
     });
   });
 
-  it("says nothing for one step out and one back", async () => {
+  it("keeps watching through one step out and one back, and swaps in the cut that comes back", async () => {
+    // R9-M1: End +2s, then End −2s before its re-cut lands. The bounds are
+    // back where the player is, but the step out is still queued and will
+    // overwrite the object first, so the object steps 8 → 10 → 8. Ending the
+    // watch here (as before) left the next trim matched against those two
+    // stale re-cuts as they landed.
     await withTimers(async (wait) => {
       trimClip
         .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }))
         .mockResolvedValueOnce(echo({ start_time: 10, end_time: 18 }));
-      getClipShareUrl.mockResolvedValue({ url: "https://example.test/poll.mp4" });
-      probeDuration.mockResolvedValue(8);
-      await mount();
+      numberedPolls();
+      probeDuration.mockResolvedValueOnce(8).mockResolvedValueOnce(10).mockResolvedValueOnce(8);
+      await act(async () => root.render(<Grid initial={[makeClip()]} />));
 
       await click(button("Trim"));
       await click(step("End", "+2s"));
       await click(step("End", "−2s"));
+      expect(status()).toContain("the player shows the old cut");
+
+      await wait(3_000 + 5_000); // 8, then 10: the step out landing
+      expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+      expect(status()).toContain("the player shows the old cut");
+      await wait(5_000); // 8: the step back
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-3.mp4");
       expect(status()).toBe("");
-      await wait(6 * 60_000);
-      expect(getClipShareUrl).not.toHaveBeenCalled();
+    });
+  });
+
+  it("walks the next trim through the re-cuts still queued after a step out and back", async () => {
+    // R9-M1 as reproduced on the game page: End +2s, End −2s, Start −2s on
+    // 10–18 of a 120s source. The object steps 8 → 10 → 8 → 10, and the 10
+    // read second is the FIRST trim's cut, over 10–20; the cut asked for is
+    // the 10s one over 8–18, two re-cuts later. With the chain dropped on the
+    // step back, the third trim started a chain of its own and that stale 10
+    // confirmed it: the wrong footage was swapped in, with the status cleared
+    // under bounds reading 8–18.
+    await withTimers(async (wait) => {
+      trimClip
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }))
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 18 }))
+        .mockResolvedValueOnce(echo({ start_time: 8, end_time: 18 }));
+      numberedPolls();
+      probeDuration
+        .mockResolvedValueOnce(8)
+        .mockResolvedValueOnce(10)
+        .mockResolvedValueOnce(8)
+        .mockResolvedValueOnce(10);
+      await act(async () => root.render(<Grid initial={[makeClip()]} sourceDuration={120} />));
+
+      await click(button("Trim"));
+      await click(step("End", "+2s"));
+      await click(step("End", "−2s"));
+      await click(step("Start", "−2s"));
+      expect(gridRows[0].start_time).toBe(8);
+      expect(gridRows[0].end_time).toBe(18);
+
+      await wait(3_000 + 5_000); // 8, then 10: the first trim's cut, over 10–20
+      expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+      expect(status()).toContain("the player shows the old cut");
+      await wait(5_000); // 8: the step back
+      expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+      await wait(5_000); // 10: the cut over 8–18
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-4.mp4");
+      expect(status()).toBe("");
+    });
+  });
+
+  it("walks the next trim through them where the page does not know the source's length", async () => {
+    // The same on the collections page: Start +2s, Start −2s, End +2s. The
+    // object steps 8 → 6 → 8 → 10. With the chain dropped, the 6 — the first
+    // trim's cut, over 12–18 — read as the third trim's step cut short by the
+    // source's end, and was swapped in for a trim that asked for 10–20.
+    await withTimers(async (wait) => {
+      trimClip
+        .mockResolvedValueOnce(echo({ start_time: 12, end_time: 18 }))
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 18 }))
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }));
+      numberedPolls();
+      probeDuration
+        .mockResolvedValueOnce(8)
+        .mockResolvedValueOnce(6)
+        .mockResolvedValueOnce(8)
+        .mockResolvedValueOnce(10);
+      await act(async () => root.render(<Grid initial={[makeClip()]} />));
+
+      await click(button("Trim"));
+      await click(step("Start", "+2s"));
+      await click(step("Start", "−2s"));
+      await click(step("End", "+2s"));
+
+      await wait(3_000 + 5_000); // 8, then 6: the first trim's cut, over 12–18
+      expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+      expect(status()).toContain("the player shows the old cut");
+      await wait(5_000 + 5_000); // 8, then 10: the cut over 10–20
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-4.mp4");
+      expect(status()).toBe("");
+    });
+  });
+
+  it("keeps the chain through a step out and back made twice", async () => {
+    // End +2s, −2s, +2s, −2s: four re-cuts, 8 → 10 → 8 → 10 → 8, and the cut
+    // to show is the last of them. Before the fix neither step back left a
+    // watch running at all.
+    await withTimers(async (wait) => {
+      trimClip
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }))
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 18 }))
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }))
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 18 }));
+      numberedPolls();
+      probeDuration
+        .mockResolvedValueOnce(8)
+        .mockResolvedValueOnce(10)
+        .mockResolvedValueOnce(8)
+        .mockResolvedValueOnce(10)
+        .mockResolvedValueOnce(8);
+      await act(async () => root.render(<Grid initial={[makeClip()]} />));
+
+      await click(button("Trim"));
+      for (const label of ["+2s", "−2s", "+2s", "−2s"] as const) await click(step("End", label));
+
+      await wait(3_000 + 3 * 5_000); // 8, 10, 8, 10
+      expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+      expect(status()).toContain("the player shows the old cut");
+      await wait(5_000); // 8: the last step back
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-5.mp4");
       expect(status()).toBe("");
     });
   });
@@ -863,6 +977,32 @@ describe("trimming", () => {
       expect(getClipShareUrl).not.toHaveBeenCalled();
       expect(onUpdate).toHaveBeenCalledTimes(1); // the bounds, never media
       expect(onUpdate).toHaveBeenCalledWith("clip-1", { start_time: 10, end_time: 20 });
+    });
+  });
+
+  it("starts no poll for a step back that settles after the dialog closed", async () => {
+    // R7-M1 with the chain kept (R9-M1): the unmount stops the step out's
+    // watch, and the step back, settling after it, must not start the chain's
+    // watch again.
+    await withTimers(async (wait) => {
+      let release!: (c: Clip) => void;
+      trimClip
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }))
+        .mockReturnValueOnce(new Promise<Clip>((r) => { release = r; }));
+      getClipShareUrl.mockResolvedValue({ url: "https://example.test/poll.mp4" });
+      probeDuration.mockResolvedValue(8);
+      const onUpdate = vi.fn();
+      await mount({ onUpdate });
+      await click(button("Trim"));
+      await click(step("End", "+2s"));
+      await click(step("End", "−2s"));
+
+      await act(async () => root.render(<div />));
+      await act(async () => release(echo({ start_time: 10, end_time: 18 })));
+      await wait(60_000);
+      expect(getClipShareUrl).not.toHaveBeenCalled();
+      expect(onUpdate).toHaveBeenCalledTimes(2); // the bounds, twice; never media
+      expect(onUpdate).toHaveBeenLastCalledWith("clip-1", { start_time: 10, end_time: 18 });
     });
   });
 
@@ -1033,6 +1173,20 @@ describe("the keyboard", () => {
 
     act(() => trimStep().focus());
     press("ArrowLeft"); // the demo clip
+    expect(button("Trim")).toBeUndefined();
+    expect(document.activeElement).toBe(button("Label"));
+  });
+
+  it("hands focus to Label when → is pressed on the Trim toggle and the next clip has none", async () => {
+    // R9-N7: a demo clip has no Trim button, so the focused toggle unmounts
+    // with the clip and focus fell to <body>, as it did from inside a panel.
+    await act(async () =>
+      root.render(<Grid initial={[makeClip(), makeClip({ id: "demo", is_sample: true })]} />),
+    );
+    act(() => button("Trim")!.focus());
+    expect(document.activeElement).toBe(button("Trim"));
+
+    press("ArrowRight");
     expect(button("Trim")).toBeUndefined();
     expect(document.activeElement).toBe(button("Label"));
   });
