@@ -17,6 +17,9 @@
 // - ← → leave the tag select alone, a key only picks a player while Enter
 //   tags, and focus comes back to Tag after tagging; ← → from a chip or step
 //   hand focus to the panel's toggle, as the panel goes with the clip.
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, useEffect, useState, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -472,6 +475,23 @@ describe("labelling", () => {
     expect(updateClipLabels).toHaveBeenCalledWith("clip-1", ["dig"]);
   });
 
+  it("paints the pressed Not an action chip with the danger token, set per theme", async () => {
+    // R13-M2: the card's `text-red-400` on a `red-500` tint was 2.1:1 over
+    // the light theme's surface. `danger` is #b91c1c there (4.76:1 on its own
+    // 10% tint) and #f87171 in the dark theme (5.83:1); the figures are in
+    // globals.css, which has to define the token for both themes.
+    await mount({ clip: makeClip({ labels: ["not_an_action"] }) });
+    await click(button("Label"));
+    const notAction = chip("Not an action");
+    expect(notAction.getAttribute("aria-pressed")).toBe("true");
+    expect(notAction.className).toContain("text-danger");
+    expect(notAction.className).toContain("bg-danger/10");
+    expect(notAction.className).not.toMatch(/red-\d/);
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../app/globals.css"), "utf8");
+    expect(css).toMatch(/--color-danger:\s+var\(--cf-danger\)/);
+    expect(css.match(/--cf-danger:/g)).toHaveLength(2);
+  });
+
   it("adds to the seeded label, and hands the parent only the label fields", async () => {
     updateClipLabels.mockResolvedValue(
       echo({ labels: ["spike", "dig"], action_type: "spike", confidence: 0.93, player_name: null }),
@@ -922,29 +942,60 @@ describe("trimming", () => {
     });
   });
 
+  it("drops the steps a reading has passed, not only the one it matched", async () => {
+    // R13-N1: End +2s twice on 10–18, with both re-cuts landing between two
+    // polls, so the 10 is never read: 8, then 12. The 12 is the second step,
+    // and the first is passed with it; dropping only the matched step left
+    // the watch waiting on the 10 until it gave up.
+    await withTimers(async (wait) => {
+      trimClip
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }))
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 22 }));
+      numberedPolls();
+      probeDuration.mockResolvedValueOnce(8).mockResolvedValueOnce(12);
+      await act(async () => root.render(<Grid initial={[makeClip()]} />));
+
+      await click(button("Trim"));
+      await click(step("End", "+2s"));
+      await click(step("End", "+2s"));
+
+      await wait(3_000); // 8
+      expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+      await wait(5_000); // 12, past the unseen 10
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-2.mp4");
+      expect(status()).toBe("");
+    });
+  });
+
   it("measures the next trim from the cut it swapped in", async () => {
     // Once a re-cut lands, the player holds it: End −2s afterwards goes back
     // to the 8s footage, and that is a new cut to wait for and swap in, not a
-    // trim back to what the player has.
+    // trim back to what the player has. Nothing has measured either cut
+    // (jsdom), so each watch's first reading is its baseline (R13-M1): the
+    // 8 before the first swap, the 10 before the second.
     await withTimers(async (wait) => {
       trimClip
         .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }))
         .mockResolvedValueOnce(echo({ start_time: 10, end_time: 18 }));
       numberedPolls();
-      probeDuration.mockResolvedValueOnce(10).mockResolvedValueOnce(10).mockResolvedValueOnce(8);
+      probeDuration
+        .mockResolvedValueOnce(8)
+        .mockResolvedValueOnce(10)
+        .mockResolvedValueOnce(10)
+        .mockResolvedValueOnce(8);
       await act(async () => root.render(<Grid initial={[makeClip()]} />));
 
       await click(button("Trim"));
       await click(step("End", "+2s"));
-      await wait(3_000);
-      expect(video().getAttribute("src")).toBe("https://example.test/poll-1.mp4");
+      await wait(3_000 + 5_000); // 8, then 10
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-2.mp4");
 
       await click(step("End", "−2s"));
       expect(status()).toContain("the player shows the old cut");
-      await wait(3_000);
-      expect(video().getAttribute("src")).toBe("https://example.test/poll-1.mp4");
-      await wait(5_000);
-      expect(video().getAttribute("src")).toBe("https://example.test/poll-3.mp4");
+      await wait(3_000); // 10: the cut it holds
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-2.mp4");
+      await wait(5_000); // 8
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-4.mp4");
       expect(status()).toBe("");
     });
   });
@@ -999,10 +1050,11 @@ describe("trimming", () => {
   });
 
   it("waits for the trim made after a close and reopen, with the held cut unmeasured", async () => {
-    // R11-M1 (b): the same, with the player's metadata not loaded, so the
-    // held length is the row's arithmetic, 10. The first poll reads the
-    // unchanged object at 8, which matches nothing; the fallback swapped
-    // the OLD cut back in on that poll, restarted at 0:00.
+    // R11-M1 (b): the same, with the player's metadata not loaded. The held
+    // length was then the row's arithmetic, 10, and the first poll's 8 (the
+    // unchanged object) matched nothing; the fallback swapped the OLD cut
+    // back in on that poll, restarted at 0:00. Since R13-M1 nothing is
+    // seeded: the 8 is the baseline, and 10 and 12 are matched from it.
     await withTimers(async (wait) => {
       trimClip
         .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }))
@@ -1048,6 +1100,124 @@ describe("trimming", () => {
       await wait(5_000);
       expect(video().getAttribute("src")).toBe("https://example.test/poll-3.mp4");
       expect(status()).toBe("");
+    });
+  });
+
+  /** R13-M1: End +2s (10–20), close, reopen, Start +2s (12–20) on 10–18. The
+   *  cut asked for is 8s — as long as the old cut the object still holds
+   *  while the first re-cut is queued — and the object steps 8 → 10 → 8. */
+  async function reopenThenTrimToOldLength() {
+    trimClip
+      .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }))
+      .mockResolvedValueOnce(echo({ start_time: 12, end_time: 20 }));
+    numberedPolls();
+    probeDuration.mockResolvedValueOnce(8).mockResolvedValueOnce(10).mockResolvedValueOnce(8);
+    await click(button("Trim"));
+    await click(step("End", "+2s"));
+    await reopen();
+    await click(step("Start", "+2s"));
+    expect(gridRows[0].start_time).toBe(12);
+    expect(gridRows[0].end_time).toBe(20);
+  }
+
+  async function expectSwapOnThirdPoll(wait: (ms: number) => Promise<void>) {
+    await wait(3_000); // 8: the unchanged old object
+    expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+    expect(gridRows[0].clip_url).toBe("https://example.test/c.mp4");
+    expect(status()).toContain("the player shows the old cut");
+    await wait(5_000); // 10: the first trim's cut
+    expect(video().getAttribute("src")).toBe("https://example.test/c.mp4");
+    expect(status()).toContain("the player shows the old cut");
+    await wait(5_000); // 8: the cut over 12–20
+    expect(video().getAttribute("src")).toBe("https://example.test/poll-3.mp4");
+    expect(gridRows[0].clip_url).toBe("https://example.test/poll-3.mp4");
+    expect(status()).toBe("");
+  }
+
+  it("does not take the unchanged old cut for a trim as long as it, made after a close and reopen", async () => {
+    // R13-M1 on the collections page, with the player's metadata not loaded.
+    // Seeded from the reopened row's bounds (10), the chain took the first
+    // poll's 8 as the cut asked for: the old footage swapped in under bounds
+    // reading 12–20, the status cleared and the row's URL replaced. With
+    // nothing measured, the first reading is only the baseline.
+    await withTimers(async (wait) => {
+      await act(async () => root.render(<Grid initial={[makeClip()]} />));
+      await reopenThenTrimToOldLength();
+      await expectSwapOnThirdPoll(wait);
+    });
+  });
+
+  it("does not take the unchanged old cut for that trim on the game page either", async () => {
+    // The same with the source's length known, which does not help: the
+    // bounds' 10 is still the cut the object will hold, not the one it does.
+    await withTimers(async (wait) => {
+      await act(async () => root.render(<Grid initial={[makeClip()]} sourceDuration={120} />));
+      await reopenThenTrimToOldLength();
+      await expectSwapOnThirdPoll(wait);
+    });
+  });
+
+  it("waits through that trim's queued re-cut with the held cut measured", async () => {
+    // The same with the metadata loaded (the browser's usual case): the
+    // held cut is 8 as measured, so the first 8 is skipped as unchanged.
+    await withTimers(async (wait) => {
+      const held = heldLength(8);
+      try {
+        await act(async () => root.render(<Grid initial={[makeClip()]} />));
+        await reopenThenTrimToOldLength();
+        await expectSwapOnThirdPoll(wait);
+      } finally {
+        held.mockRestore();
+      }
+    });
+  });
+
+  it("takes the length the player reports once its metadata arrives before the first poll", async () => {
+    // The held cut unmeasured as the step is pressed (the dialog has just
+    // reopened), measured by the first poll. The first reading is then
+    // matched as usual, so a re-cut landed within those 3s is swapped in on
+    // it rather than taken as the baseline.
+    await withTimers(async (wait) => {
+      trimClip.mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }));
+      numberedPolls();
+      probeDuration.mockResolvedValueOnce(10);
+      await act(async () => root.render(<Grid initial={[makeClip()]} />));
+
+      await click(button("Trim"));
+      await click(step("End", "+2s"));
+      const held = heldLength(8);
+      try {
+        await wait(3_000); // 10: the new cut, already landed
+        expect(video().getAttribute("src")).toBe("https://example.test/poll-1.mp4");
+        expect(status()).toBe("");
+      } finally {
+        held.mockRestore();
+      }
+    });
+  });
+
+  it("does not take a reading from the player once → has put another clip in it", async () => {
+    // The same, with the user on the next clip by the first poll: the
+    // player's length is that clip's, not the held cut's, so the reading is
+    // the baseline and the cut is swapped in on the next poll that differs.
+    await withTimers(async (wait) => {
+      trimClip.mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }));
+      numberedPolls();
+      probeDuration.mockResolvedValueOnce(10).mockResolvedValueOnce(10);
+      const other = makeClip({ id: "clip-2", start_time: 30, end_time: 42, clip_url: "https://example.test/d.mp4" });
+      await act(async () => root.render(<Grid initial={[makeClip(), other]} />));
+
+      await click(button("Trim"));
+      await click(step("End", "+2s"));
+      press("ArrowRight");
+      expect(video().getAttribute("src")).toBe("https://example.test/d.mp4");
+      const held = heldLength(12);
+      try {
+        await wait(3_000 + 5_000); // 10, 10: the first is the baseline
+        expect(gridRows[0].clip_url).toBe("https://example.test/c.mp4");
+      } finally {
+        held.mockRestore();
+      }
     });
   });
 

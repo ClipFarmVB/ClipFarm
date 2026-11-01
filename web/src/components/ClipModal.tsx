@@ -237,14 +237,20 @@ export function ClipModal({
     // a re-cut has to differ from to be told apart. Kept across trims until a
     // re-cut lands, because until then the player still holds the cut it
     // opened with, however many trims are queued behind it.
+    //
+    // Measured or not at all: with the metadata not loaded yet, the length is
+    // left null rather than taken from the bounds. The bounds say what the
+    // object will hold once every queued re-cut has landed, not what it holds
+    // now, and the two differ on a clip trimmed before this dialog opened
+    // (closed and reopened mid-chain, or trimmed in another tab) (R13-M1).
     if (!recutHeld.current.has(target.id)) {
       const v = videoRef.current;
       const loaded = v && Number.isFinite(v.duration) && v.duration > 0 ? v.duration : null;
-      const end = cutEnd(target.end_time);
       recutHeld.current.set(target.id, {
         start: target.start_time,
-        end,
-        length: loaded ?? end - target.start_time,
+        end: cutEnd(target.end_time),
+        length: loaded,
+        src: target.clip_url,
       });
     }
     markBusy("trim", target.id, true);
@@ -288,6 +294,16 @@ export function ClipModal({
    *  remount starts from a clean chain and the first stale re-cut to land
    *  then read as the trim just made (R11-M1).
    *
+   *  The chain starts from the length the player measured for the cut it
+   *  holds. Where the player had not measured it when the trim was made, the
+   *  first poll takes it from the player if its metadata has arrived since,
+   *  else from its own reading, which then confirms nothing: the bounds are
+   *  not a baseline, because on a clip whose earlier re-cut is still queued
+   *  (the dialog reopened mid-chain) they describe the cut the object will
+   *  hold, and the old cut read as the new one when the two were as long
+   *  (R13-M1). The cost is one more poll when nothing has measured the cut,
+   *  and a re-cut landing before the first poll is then seen only as below.
+   *
    *  A trim that asks for the stretch the player already holds has nothing to
    *  swap in only while no re-cut is queued — Start −2s at 0:00, which the api
    *  clamps — and then ends the watch with nothing to say. One step out and one
@@ -307,7 +323,10 @@ export function ClipModal({
     const start = reply.start_time;
     const end = cutEnd(reply.end_time);
     const expected = end - start;
-    const held = recutHeld.current.get(id) ?? { start, end, length: expected };
+    // No held cut only when a swap landed while this trim's request was out:
+    // the chain it completed has nothing queued, so the object holds a cut
+    // this one differs from, and only a reading of `expected` confirms it.
+    const held = recutHeld.current.get(id) ?? { start, end, length: expected, src: null };
     const chain = recutChain.current.get(id) ?? { last: held.length, pending: [] };
     const backToHeld = near(start, held.start) && near(end, held.end);
     if (backToHeld && chain.pending.length === 0) {
@@ -318,8 +337,9 @@ export function ClipModal({
     }
     // Back to the held stretch, the object gets the length the player
     // measured for it, not the bounds' arithmetic: a cut the source's end had
-    // already shortened reads as it did, not as its stored `end` says.
-    const step = backToHeld ? held.length : expected;
+    // already shortened reads as it did, not as its stored `end` says. The
+    // arithmetic only where nothing measured it.
+    const step = backToHeld && held.length !== null ? held.length : expected;
     // Not a step of its own when it gives the object the length the step
     // before it does — two trims past the end of the source both cut to it,
     // and the second re-cut cannot be seen landing on top of the first.
@@ -340,6 +360,20 @@ export function ClipModal({
         const { url } = await getClipShareUrl(id);
         const length = await probeDuration(url);
         if (cancelled) return;
+        if (chain.last === null) {
+          // Nothing had measured the held cut when the trim was made. The
+          // player holds it until the swap below, so if its metadata has
+          // arrived since, its length is the baseline — the src check keeps
+          // out another clip ← → has put in the player; otherwise this
+          // reading is the baseline, and is matched against nothing (R13-M1).
+          const v = videoRef.current;
+          const measured =
+            v && held.src !== null && v.getAttribute("src") === held.src && Number.isFinite(v.duration) && v.duration > 0
+              ? v.duration
+              : null;
+          if (measured !== null) held.length = measured;
+          chain.last = measured ?? length;
+        }
         if (!near(length, chain.last)) {
           const reached = chain.pending.findIndex((p) => near(p, length));
           if (reached >= 0) chain.pending.splice(0, reached + 1);
@@ -919,8 +953,11 @@ export function ClipModal({
                         // would title-case every word of it.
                         "h-9 rounded-md px-3 text-[11px] font-medium transition-colors focus-ring aria-disabled:cursor-default aria-disabled:opacity-40 sm:h-8",
                         !isNotAction && "capitalize",
+                        // The `danger` token, per theme: the card's
+                        // `red-400` on a `red-500` tint was 2.1:1 in the
+                        // light theme (R13-M2).
                         active && isNotAction
-                          ? "bg-red-500/10 text-red-400 ring-1 ring-red-500/20"
+                          ? "bg-danger/10 text-danger ring-1 ring-danger/20"
                           : active
                           ? "bg-brand/10 text-brand ring-1 ring-brand/20"
                           : "bg-surface-high text-muted hover:text-foreground"
@@ -1140,18 +1177,22 @@ export function mergeClipFields(clips: Clip[], id: string, fields: Partial<Clip>
 
 type RecutState = "waiting" | "stale";
 
-/** The cut the player holds: the stretch of the source it covers, and its
- *  length. */
+/** The cut the player holds: the stretch of the source it covers, its length
+ *  as the player measured it (null until its metadata has loaded), and the
+ *  `src` it was loaded from, which says whether a length the player reports
+ *  later is still this cut's. */
 interface HeldCut {
   start: number;
   end: number;
-  length: number;
+  length: number | null;
+  src: string | null;
 }
 
-/** The storage object's length as last read, and the lengths the re-cuts
- *  still queued for it will give it, in order. */
+/** The storage object's length as last read (null until something has
+ *  measured it), and the lengths the re-cuts still queued for it will give
+ *  it, in order. */
 interface RecutChain {
-  last: number;
+  last: number | null;
   pending: number[];
 }
 
