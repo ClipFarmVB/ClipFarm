@@ -19,6 +19,12 @@ import { DemoBadge, DemoBanner } from "@/components/DemoGame";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];
 
+// `#7 Alice`, or `Alice` for a player with no jersey number — the same form
+// ClipCard's tag dropdown uses, so a player reads the same in both places.
+function playerLabel(p: Player): string {
+  return `${p.jersey_number != null ? `#${p.jersey_number} ` : ""}${p.name}`;
+}
+
 // How long the filters must be still before the clips are refetched. The
 // sliders change on every step of a drag, and GET /games/{id}/clips is rate
 // limited per caller (CF-186), so fetching per step could spend the whole
@@ -172,11 +178,24 @@ export default function GamePage() {
   // Fetch clips when game is ready
   useEffect(() => {
     if (!game || game.status !== "ready") return;
-    Promise.all([getClips(id, settledFilters), getPlayers()])
-      .then(([c, p]) => { setClips(c); setPlayers(p); })
+    getClips(id, settledFilters)
+      .then(setClips)
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load clips."))
       .finally(() => setLoading(false));
   }, [game, id, settledFilters]);
+
+  // Fetch the roster once the game is ready (CF-250). Separate from the clips
+  // fetch on purpose: the roster does not change with the filters, so it is
+  // not refetched on every slider step, and a roster that fails to load costs
+  // the player filter and the tag action's dropdown, not the grid — the clips
+  // stand on their own.
+  const gameReady = game?.status === "ready";
+  useEffect(() => {
+    if (!gameReady) return;
+    getPlayers()
+      .then(setPlayers)
+      .catch(() => setPlayers([]));
+  }, [id, gameReady]);
 
   const toggleActionFilter = useCallback((action: ActionType) => {
     setFilters((f) => {
@@ -365,6 +384,32 @@ export default function GamePage() {
             })}
 
             <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-2 sm:ml-auto sm:w-auto sm:flex-nowrap">
+              {/* Player filter (CF-250). Only once there is a roster to pick
+                  from: with no players the control could offer nothing but
+                  its own clear option. "All players" is that explicit clear —
+                  most clips are untagged, and a filter you cannot leave is
+                  worse than none. */}
+              {players.length > 0 && (
+                <select
+                  aria-label="Filter by player"
+                  value={filters.player_id ?? ""}
+                  onChange={(e) =>
+                    setFilters((f) => ({ ...f, player_id: e.target.value || undefined }))
+                  }
+                  className={cn(
+                    "max-w-[10rem] truncate rounded-md border bg-surface px-2.5 py-2 text-[11px] font-medium transition-all duration-150 sm:py-1",
+                    filters.player_id
+                      ? "border-brand/30 bg-brand/5 text-brand"
+                      : "border-border text-muted hover:border-border-strong hover:text-foreground"
+                  )}
+                >
+                  <option value="">All players</option>
+                  {players.map((p) => (
+                    <option key={p.id} value={p.id}>{playerLabel(p)}</option>
+                  ))}
+                </select>
+              )}
+
               {/* Sort toggle: chronological vs highlight score */}
               <button
                 onClick={() =>
@@ -481,11 +526,32 @@ export default function GamePage() {
             </div>
           )}
 
-          {/* Empty filtered state */}
+          {/* Empty filtered state. Reads the settled filters, which are what
+              the empty result answers to; the control shows the live ones. */}
           {!loading && clips.length === 0 && (
-            <p className="py-16 text-center text-[13px] text-muted">
-              No clips match your filters.
-            </p>
+            settledFilters.player_id ? (
+              <div className="flex flex-col items-center py-16 text-center">
+                <p className="text-[13px] text-muted">
+                  No clips tagged{" "}
+                  <span className="font-medium text-foreground">
+                    {players.find((p) => p.id === settledFilters.player_id)?.name ?? "this player"}
+                  </span>
+                  {settledFilters.action_type?.length || settledFilters.min_confidence || settledFilters.min_score
+                    ? " match your other filters."
+                    : " in this game."}
+                </p>
+                <button
+                  onClick={() => setFilters((f) => ({ ...f, player_id: undefined }))}
+                  className="mt-3 rounded-md border border-border px-2.5 py-2 text-[11px] font-medium text-muted hover:border-border-strong hover:text-foreground transition-all duration-150 sm:py-1"
+                >
+                  Show all players
+                </button>
+              </div>
+            ) : (
+              <p className="py-16 text-center text-[13px] text-muted">
+                No clips match your filters.
+              </p>
+            )
           )}
 
           {/* Clip grid */}
