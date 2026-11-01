@@ -17,6 +17,7 @@ import {
   getUploadSnapshot,
   startUpload,
   useActiveUpload,
+  type UploadSnapshot,
 } from "@/lib/uploadStore";
 import { cn } from "@/lib/utils";
 
@@ -60,12 +61,18 @@ export function UploadZone() {
   // this page no longer loses it, and coming back finds it still running.
   const upload = useActiveUpload();
   const inFlight = upload.phase === "uploading" || upload.phase === "finalizing";
-  // Set once completion has been observed here and the push is under way.
-  // Dismissing the store re-enables the form for the instant before the
-  // route changes, long enough for a second click to start the same upload
-  // again; this keeps it locked until the component unmounts with the page.
-  const [redirecting, setRedirecting] = useState(false);
-  const uploading = inFlight || redirecting;
+  // Set once completion has been observed here and the push is under way:
+  // the snapshot the push was taken on. Dismissing the store re-enables the
+  // form for the instant before the route changes, long enough for a second
+  // click to start the same upload again — and with no local file (the user
+  // left and came back) it would also drop the card to the empty drop zone
+  // with a 100% bar still under it. Holding the last snapshot keeps the form
+  // locked, and named, until the component unmounts with the page.
+  const [redirecting, setRedirecting] = useState<UploadSnapshot | null>(null);
+  const uploading = inFlight || redirecting !== null;
+  // What the form reflects of the store: the attempt in flight, or the one it
+  // is leaving for.
+  const shown = redirecting ?? upload;
   const error = localError ?? (upload.phase === "failed" ? upload.error : null);
   const setError = setLocalError;
   const [config, setConfig] = useState<UploadConfig>(FALLBACK_UPLOAD_CONFIG);
@@ -102,10 +109,10 @@ export function UploadZone() {
     prevPhase.current = upload.phase;
     if (upload.phase !== "done" || !upload.gameId) return;
     if (was !== "uploading" && was !== "finalizing") return;
-    setRedirecting(true);
+    setRedirecting(upload);
     dismissUpload();
     router.push(`/games/${upload.gameId}`);
-  }, [upload.phase, upload.gameId, router]);
+  }, [upload, router]);
 
   const outOfQuota =
     quotaKnown && (config.games_remaining <= 0 || config.minutes_remaining <= 0);
@@ -192,11 +199,11 @@ export function UploadZone() {
   };
 
   // What the card names: the file picked here, or — back on this page with
-  // the upload still running — the one the store is sending.
+  // the upload still running, or just landed — the one the store is sending.
   const shownFile = file
     ? { name: file.name, size: file.size }
-    : inFlight && upload.fileName !== null && upload.sizeBytes !== null
-    ? { name: upload.fileName, size: upload.sizeBytes }
+    : uploading && shown.fileName !== null && shown.sizeBytes !== null
+    ? { name: shown.fileName, size: shown.sizeBytes }
     : null;
 
   return (
@@ -269,7 +276,7 @@ export function UploadZone() {
           <input
             id="game-title"
             type="text"
-            value={file ? title : upload.title ?? ""}
+            value={file ? title : shown.title ?? ""}
             onChange={(e) => setTitle(e.target.value)}
             disabled={uploading}
             placeholder="e.g. Varsity vs Lincoln — March 25"
@@ -355,7 +362,7 @@ export function UploadZone() {
       {/* Finished while the user was elsewhere: offer the game, don't jump to
           it. UploadStatus carries the same news on every other page and stays
           off this one, so it never shows twice at once. */}
-      {upload.phase === "done" && upload.gameId && !redirecting && (
+      {upload.phase === "done" && upload.gameId && redirecting === null && (
         <div
           role="status"
           className="mt-3 flex items-center gap-2 rounded-md border border-brand/30 bg-brand/10 px-3 py-2.5 text-[12px]"
@@ -382,19 +389,22 @@ export function UploadZone() {
         </div>
       )}
 
-      {/* Upload progress. Held at 100 through the redirect — the store has
-          already been dismissed by then, so this is the last thing the page
-          shows rather than a bar that snaps away before the route changes. */}
-      {(upload.progress !== null || redirecting) && (
+      {/* Upload progress, for exactly as long as the form is locked. Held at
+          100 through the redirect — the store has already been dismissed by
+          then, so this is the last thing the page shows rather than a bar
+          that snaps away before the route changes. Not shown when mounted
+          after completion: the block above says it, and a full bar under an
+          empty drop zone reads as a form still busy. */}
+      {uploading && (
         <div className="mt-4">
           <div className="flex justify-between text-[11px] text-muted mb-1.5">
-            <span>{redirecting ? "Uploaded" : upload.statusText}</span>
-            <span className="tabular-nums">{Math.round(redirecting ? 100 : upload.progress ?? 0)}%</span>
+            <span>{shown.statusText}</span>
+            <span className="tabular-nums">{Math.round(shown.progress ?? 0)}%</span>
           </div>
           <div className="h-0.5 rounded-full bg-surface-high overflow-hidden">
             <div
               className="h-full rounded-full bg-brand transition-all duration-300 ease-out"
-              style={{ width: `${redirecting ? 100 : upload.progress ?? 0}%` }}
+              style={{ width: `${shown.progress ?? 0}%` }}
             />
           </div>
         </div>

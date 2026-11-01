@@ -191,9 +191,11 @@ describe("UploadZone and the upload store (CF-70)", () => {
     expect(status).not.toBeNull();
     expect(status!.querySelector('a[href="/games/g1"]')).not.toBeNull();
     expect(mocks.push).not.toHaveBeenCalled();
-    // The form is free for the next upload.
+    // The form is free for the next upload, with no bar left under it: the
+    // block above says the upload landed.
     expect(host.textContent).toContain("Drop video here");
     expect(host.querySelector<HTMLInputElement>("#file-input")!.disabled).toBe(false);
+    expect(host.textContent).not.toContain("100%");
   });
 
   it("redirects exactly once on a completion it watched", async () => {
@@ -208,8 +210,17 @@ describe("UploadZone and the upload store (CF-70)", () => {
     expect(mocks.push).toHaveBeenCalledWith("/games/g1");
     // Acknowledged: the status strip must not repeat it on the game page.
     expect(getUploadSnapshot().phase).toBe("idle");
-    // And the form stays locked for the instant before the route changes.
+    // And the form stays locked, and named, for the instant before the route
+    // changes. There is no local file here — the user left and came back — so
+    // this is the store's view of the attempt surviving its own dismissal,
+    // not the card collapsing to the empty drop zone with a 100% bar under it.
+    expect(host.textContent).not.toContain("Drop video here");
+    expect(host.textContent).toContain("match.mp4");
     expect(host.querySelector<HTMLInputElement>("#file-input")!.disabled).toBe(true);
+    expect(host.querySelector<HTMLInputElement>("#game-title")!.value).toBe("Varsity vs Lincoln");
+    expect(host.querySelector<HTMLInputElement>("#game-title")!.disabled).toBe(true);
+    expect(uploadButton()?.disabled).toBe(true);
+    expect(host.textContent).toContain("Uploaded");
     expect(host.textContent).toContain("100%");
   });
 

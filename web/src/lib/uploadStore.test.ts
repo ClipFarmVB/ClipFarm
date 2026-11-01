@@ -224,6 +224,25 @@ describe("resetUploadStore", () => {
     expect(mocks.addGameToCache).not.toHaveBeenCalled();
   });
 
+  it("silences a completion that returns after the reset: no cache write, no publish", async () => {
+    // Same identity change, one step later: the bytes had landed and
+    // `completeUpload` was already in flight. Its response must not write the
+    // game into the new user's cache or publish `done` to them.
+    const completion = deferred<Game>();
+    mocks.completeUpload.mockReturnValue(completion.promise);
+    const attempt = startUpload(file(), opts);
+    await vi.waitFor(() => expect(getUploadSnapshot().phase).toBe("finalizing"));
+
+    resetUploadStore();
+    const seen = record();
+    completion.resolve(game);
+    await attempt;
+
+    expect(seen).toEqual([]);
+    expect(getUploadSnapshot().phase).toBe("idle");
+    expect(mocks.addGameToCache).not.toHaveBeenCalled();
+  });
+
   it("silences a failure that lands after the reset", async () => {
     const transfer = deferred<never[]>();
     mocks.uploadFileToR2.mockReturnValue(transfer.promise);

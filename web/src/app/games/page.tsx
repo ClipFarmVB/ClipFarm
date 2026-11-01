@@ -12,6 +12,7 @@ import { deleteGame, renameGame, type Game } from "@/lib/api";
 import { GameTitle, deleteAction } from "@/components/DemoGame";
 import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
 import { sampleGameIdOf } from "@/lib/onboarding";
+import { useActiveUpload } from "@/lib/uploadStore";
 import { cn } from "@/lib/utils";
 
 // `uploading` is filtered out by the api's list endpoint — a game whose video
@@ -115,6 +116,28 @@ function GamesContent() {
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // An upload finishing while this page is open (CF-70). The store writes the
+  // new game into the cache before it publishes `done`, but nothing above
+  // reads the cache again: the effect above ran on mount, and the poll below
+  // only arms on a row already in the list. With the redirect gone this is the
+  // page the user is most likely on when the upload lands, under a strip that
+  // says so — take the row rather than leave the list contradicting it. The
+  // new `queued` row then arms the poll.
+  const upload = useActiveUpload();
+  useEffect(() => {
+    if (upload.phase !== "done") return;
+    const cached = getCachedGames();
+    if (cached) {
+      setGames(cached);
+      return;
+    }
+    // Cold cache: the row had nowhere to land, so ask for the list. Same soft
+    // failure as the poll — the strip already carries the news.
+    fetchGames().then((data) => {
+      setGames(data);
+    }).catch(() => {});
+  }, [upload.phase]);
 
   // Poll while any game is actively processing
   useEffect(() => {

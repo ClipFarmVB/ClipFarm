@@ -64,7 +64,7 @@ export function UploadStatus() {
         <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
         <div className="min-w-0 flex-1 text-sm">
           <span className="font-medium">&ldquo;{upload.title}&rdquo; didn&rsquo;t upload</span>
-          {upload.error && <span className="text-red-400/80"> — {upload.error}</span>}
+          {upload.error && <span> — {upload.error}</span>}
         </div>
         <Link
           href="/upload"

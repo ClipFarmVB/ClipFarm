@@ -12,6 +12,10 @@
 //   user must not survive into the new user's panel.
 // - CF-221 R10-M1: signing out under a mounted Library must not remount it into
 //   an unauthenticated `fetchGames()`, whose 401 left a red error card.
+// - CF-70: an upload that finishes while the Library is open must put its game
+//   in the list. The upload store writes the row into the cache and the status
+//   strip above the list announces it; a list that still lacked the game
+//   contradicted the strip until the user left and came back.
 //
 // `fetchGames` is a single mock whose behaviour each test sets: by default it
 // hands back the in-flight prefetch (or never settles), which is what the
@@ -19,7 +23,7 @@
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Game } from "@/lib/api";
+import type { Game, UploadTicket } from "@/lib/api";
 import { FALLBACK_UPLOAD_CONFIG } from "@/lib/uploadLimits";
 
 let authUser: { id: string } | null = null;
@@ -35,13 +39,31 @@ vi.mock("@/lib/gamesCache", () => ({
   getCachedGames: () => cached,
   getInflightGames: () => inflight,
   updateGamesCache: vi.fn(),
+  // What the upload store calls on completion: prepend to a warm cache, as the
+  // real one does, so the page's re-read finds the row.
+  addGameToCache: (g: Game) => { if (cached) cached = [g, ...cached]; },
 }));
 
+// The upload store's completion path, mocked to settle at once; the store
+// itself is the real module so the Library's subscription is exercised.
+const ticket: UploadTicket = {
+  game_id: "uploaded",
+  mode: "single",
+  content_type: "video/mp4",
+  expires_in: 3600,
+  upload_url: "https://r2.example/put",
+  upload_id: null,
+  part_size_bytes: null,
+  parts: [],
+};
 vi.mock("@/lib/api", () => ({
   getUploadConfig: () => Promise.resolve(FALLBACK_UPLOAD_CONFIG),
   deleteGame: vi.fn(),
   renameGame: vi.fn(),
+  createUpload: () => Promise.resolve(ticket),
+  completeUpload: () => Promise.resolve(game("uploaded", "queued")),
 }));
+vi.mock("@/lib/upload", () => ({ uploadFileToR2: () => Promise.resolve([]) }));
 vi.mock("next/link", () => ({
   default: ({ children, href, ...rest }: ComponentProps<"a">) => (
     <a href={href} {...rest}>{children}</a>
@@ -50,6 +72,7 @@ vi.mock("next/link", () => ({
 
 import GamesPage from "@/app/games/page";
 import { onboardingKey, readOnboarding } from "@/lib/onboarding";
+import { getUploadSnapshot, resetUploadStore, startUpload } from "@/lib/uploadStore";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -75,6 +98,8 @@ afterEach(() => {
   authUser = null;
   cached = null;
   inflight = null;
+  // The upload store is module state and outlives each case by design.
+  resetUploadStore();
 });
 
 describe("the games page", () => {
@@ -170,5 +195,33 @@ describe("Library across a sign-out", () => {
     expect(fetchGames).not.toHaveBeenCalled();
     expect(host.textContent).not.toContain("401");
     expect(host.textContent).not.toContain("a-ready");
+  });
+});
+
+describe("Library while an upload finishes (CF-70)", () => {
+  it("shows the game as soon as the upload store says it is uploaded", async () => {
+    // The user started an upload, left for the Library, and the list was
+    // fresh with nothing active, so nothing is fetching or polling.
+    authUser = { id: "upload-a" };
+    cached = [game("a-ready", "ready")];
+    await act(async () => { root.render(<GamesPage />); });
+    expect(host.textContent).toContain("a-ready");
+    expect(host.textContent).not.toContain("uploaded");
+
+    // The transfer lands while the Library is still open.
+    await act(async () => {
+      await startUpload(new File(["x"], "match.mp4", { type: "video/mp4" }), {
+        title: "uploaded",
+        condense: false,
+        duration: null,
+      });
+    });
+    expect(getUploadSnapshot().phase).toBe("done");
+
+    // The row the store wrote into the cache is in the list, without a
+    // request: the cache already had it.
+    expect(host.querySelector('a[href="/games/uploaded"]')).not.toBeNull();
+    expect(host.textContent).toContain("2 games");
+    expect(fetchGames).not.toHaveBeenCalled();
   });
 });
