@@ -243,7 +243,13 @@ describe("UploadStatus", () => {
     expect(alert!.textContent).toContain("Network error during upload");
     // A way back to try again.
     expect(alert!.querySelector('a[href="/upload"]')).not.toBeNull();
-    expect(alert!.className).toContain("text-red-400");
+    // jsdom runs no Tailwind, so the colour is pinned by class: the per-theme
+    // danger token, not red-400, which reads 2.5:1 on the light theme.
+    expect(alert!.className).toContain("text-danger");
+    expect(alert!.className).not.toContain("text-red-400");
+    // A filename-derived title is one unbreakable word; without this it would
+    // overflow the row and paint across Try again / Dismiss at phone width.
+    expect(alert!.querySelector(".break-words")!.textContent).toContain("Varsity vs Lincoln");
   });
 
   it("dismiss clears the strip", async () => {

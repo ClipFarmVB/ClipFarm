@@ -231,8 +231,26 @@ describe("UploadZone and the upload store (CF-70)", () => {
     await render();
 
     expect(host.textContent).toContain("Network error during upload");
-    expect(host.querySelector(".text-red-400")).not.toBeNull();
+    // Pinned by class, as above: the per-theme danger token, not red-400.
+    expect(host.querySelector(".text-danger")).not.toBeNull();
+    expect(host.querySelector(".text-red-400")).toBeNull();
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it("an invalid pick still answers the previous outcome rather than showing both", async () => {
+    await act(async () => { await startUpload(mp4(), opts); });
+    await render();
+    expect(host.querySelector('[role="status"]')).not.toBeNull();
+
+    const input = host.querySelector<HTMLInputElement>("#file-input")!;
+    Object.defineProperty(input, "files", {
+      value: [new File(["x"], "notes.txt", { type: "text/plain" })],
+    });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+
+    expect(host.textContent).toContain("Unsupported file type");
+    expect(host.querySelector('[role="status"]')).toBeNull();
+    expect(getUploadSnapshot().phase).toBe("idle");
   });
 
   it("submitting hands the attempt to the store", async () => {

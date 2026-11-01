@@ -59,10 +59,10 @@ export function UploadStatus() {
     return (
       <div
         role="alert"
-        className="mb-6 flex items-center gap-3 rounded-md border border-red-500/20 bg-red-500/5 px-4 py-3 text-red-400"
+        className="mb-6 flex items-center gap-3 rounded-md border border-red-500/20 bg-red-500/5 px-4 py-3 text-danger"
       >
         <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
-        <div className="min-w-0 flex-1 text-sm">
+        <div className="min-w-0 flex-1 break-words text-sm">
           <span className="font-medium">&ldquo;{upload.title}&rdquo; didn&rsquo;t upload</span>
           {upload.error && <span> — {upload.error}</span>}
         </div>

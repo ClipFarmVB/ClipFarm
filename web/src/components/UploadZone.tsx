@@ -145,12 +145,13 @@ export function UploadZone() {
   };
 
   const pickFile = useCallback(async (f: File) => {
+    // A new file is the answer to a finished or failed upload, valid or not;
+    // clear it rather than show last time's outcome under this time's form
+    // or beside this pick's own error.
+    dismissUpload();
     const err = validate(f);
     if (err) { setError(err); return; }
     setError(null);
-    // A new file is the answer to a finished or failed upload; clear it rather
-    // than show last time's outcome under this time's form.
-    dismissUpload();
     setFile(f);
     setDuration(null);
     setDurationProbed(false);
@@ -353,7 +354,7 @@ export function UploadZone() {
 
       {/* Error */}
       {error && (
-        <div className="mt-3 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
+        <div className="mt-3 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-danger">
           <AlertCircle size={13} className="shrink-0 mt-0.5" />
           {error}
         </div>
