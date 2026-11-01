@@ -15,7 +15,8 @@
 // - everything is keyed to the clip, so ← → hides a panel and a write that
 //   settles late lands on its own clip, not the one now showing;
 // - ← → leave the tag select alone, a key only picks a player while Enter
-//   tags, and focus comes back to Tag after tagging.
+//   tags, and focus comes back to Tag after tagging; ← → from a chip or step
+//   hand focus to the panel's toggle, as the panel goes with the clip.
 import { act, useEffect, useState, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -288,6 +289,25 @@ describe("tagging a player", () => {
 
     await act(async () => resolve(echo({ player_id: "p2", player_name: "Bob" })));
     expect(document.activeElement).toBe(label);
+  });
+
+  it("does not close a select opened on the next clip when the earlier write settles", async () => {
+    // R7-N3: the write clears the open select only if it is still its own
+    // clip's. Clearing it outright would shut the select the user had just
+    // opened on clip B as clip A's tag landed.
+    let resolve!: (c: Clip) => void;
+    tagClip.mockReturnValue(new Promise<Clip>((r) => { resolve = r; }));
+    await act(async () => root.render(<Grid initial={[makeClip(), makeClip({ id: "clip-2" })]} />));
+
+    await click(button("Tag player"));
+    await choose(select()!, "p2");
+    await click(document.querySelector('[aria-label="Next clip"]')!);
+    await click(button("Tag player"));
+    expect(document.activeElement).toBe(select());
+
+    await act(async () => resolve(echo({ player_id: "p2", player_name: "Bob" })));
+    expect(select()).not.toBeNull();
+    expect(document.activeElement).toBe(select());
   });
 
   it("only picks on an arrow key; Enter tags with the pick", async () => {
@@ -822,6 +842,30 @@ describe("trimming", () => {
     });
   });
 
+  it("starts no poll for a trim that settles after the dialog closed", async () => {
+    // R7-M1: the unmount cleanup stops the watches registered so far. A trim
+    // still out then registered its own as it settled, into a map already
+    // cleared, and that poll ran for up to five minutes and swapped media
+    // onto a page nobody was looking at.
+    await withTimers(async (wait) => {
+      let release!: (c: Clip) => void;
+      trimClip.mockReturnValueOnce(new Promise<Clip>((r) => { release = r; }));
+      getClipShareUrl.mockResolvedValue({ url: "https://example.test/poll.mp4" });
+      probeDuration.mockResolvedValue(10); // the new cut, were it ever read
+      const onUpdate = vi.fn();
+      await mount({ onUpdate });
+      await click(button("Trim"));
+      await click(step("End", "+2s"));
+
+      await act(async () => root.render(<div />));
+      await act(async () => release(echo({ start_time: 10, end_time: 20 })));
+      await wait(60_000);
+      expect(getClipShareUrl).not.toHaveBeenCalled();
+      expect(onUpdate).toHaveBeenCalledTimes(1); // the bounds, never media
+      expect(onUpdate).toHaveBeenCalledWith("clip-1", { start_time: 10, end_time: 20 });
+    });
+  });
+
   it("drops a reading that arrives after the dialog closed", async () => {
     await withTimers(async (wait) => {
       let measured!: (s: number) => void;
@@ -929,6 +973,68 @@ describe("the keyboard", () => {
     press("ArrowLeft");
     expect(onNext).toHaveBeenCalledTimes(1);
     expect(onPrev).not.toHaveBeenCalled();
+  });
+
+  it("hands focus to the Label toggle when → is pressed on a label chip", async () => {
+    // R7-M2: the panel is keyed to the clip, so → hides it and unmounts the
+    // focused chip with it; focus fell to <body>, with nothing announced.
+    await act(async () => root.render(<Grid initial={[makeClip(), makeClip({ id: "clip-2" })]} />));
+    await click(button("Label"));
+    act(() => chip("dig").focus());
+    expect(document.activeElement).toBe(chip("dig"));
+
+    press("ArrowRight");
+    expect(gridRows[1].id).toBe("clip-2");
+    expect(document.getElementById("clip-edit-label")).toBeNull(); // the premise: → navigated and hid the panel
+    expect(document.activeElement).toBe(button("Label"));
+  });
+
+  /** A step in the trim panel, which the keyboard tests only need to focus. */
+  function trimStep(): HTMLButtonElement {
+    return document.querySelector<HTMLButtonElement>('[aria-label="End of clip"] button')!;
+  }
+
+  it("hands focus to the Trim toggle when → is pressed on a trim step", async () => {
+    await act(async () => root.render(<Grid initial={[makeClip(), makeClip({ id: "clip-2" })]} />));
+    await click(button("Trim"));
+    act(() => trimStep().focus());
+
+    press("ArrowRight");
+    expect(gridRows[1].id).toBe("clip-2");
+    expect(document.getElementById("clip-edit-trim")).toBeNull();
+    expect(document.activeElement).toBe(button("Trim"));
+  });
+
+  it("hands focus to Label instead where the next clip's Trim cannot take it", async () => {
+    // Trim is disabled once the source has expired, and not there on a demo
+    // clip; focus on it would go to <body> all the same.
+    await act(async () =>
+      root.render(
+        <Grid
+          initial={[
+            makeClip({ id: "demo", is_sample: true }),
+            makeClip({ id: "clip-2" }),
+            makeClip({ id: "expired", source_available: false }),
+          ]}
+        />,
+      ),
+    );
+    press("ArrowRight"); // onto clip-2, from the dialog card
+    await click(button("Trim"));
+    act(() => trimStep().focus());
+
+    press("ArrowRight"); // the expired clip
+    expect(button("Trim")!.disabled).toBe(true);
+    expect(document.activeElement).toBe(button("Label"));
+
+    press("ArrowLeft"); // back to clip-2: its panel shows again, and focus is left where it was
+    expect(document.getElementById("clip-edit-trim")).not.toBeNull();
+    expect(document.activeElement).toBe(button("Label"));
+
+    act(() => trimStep().focus());
+    press("ArrowLeft"); // the demo clip
+    expect(button("Trim")).toBeUndefined();
+    expect(document.activeElement).toBe(button("Label"));
   });
 
   it("still closes the dialog on Escape from the tag select", async () => {

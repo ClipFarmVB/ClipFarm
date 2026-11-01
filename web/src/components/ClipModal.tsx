@@ -116,6 +116,14 @@ export function ClipModal({
   // <body>. An id, not a flag: a write that settles after ← → must not pull
   // focus to the Tag button of the clip now showing.
   const refocusTagFor = useRef<string | null>(null);
+  // The panel ← → just hid while a chip or step inside it had focus, so its
+  // toggle in the edit bar takes focus once the clip has changed. The panel
+  // is keyed to the clip and unmounts the focused control with it, and focus
+  // would otherwise drop to <body> with nothing announced. Set by the keydown
+  // handler, taken by the effect on `clip.id` below it.
+  const refocusToggle = useRef<EditPanel | null>(null);
+  const labelToggleRef = useRef<HTMLButtonElement | null>(null);
+  const trimToggleRef = useRef<HTMLButtonElement | null>(null);
   // Whether a `change` now arriving was made by a key. On a closed <select>
   // ↑ ↓ ← → and type-ahead change the option and fire `change`, so a keyboard
   // user browsing the roster would tag whichever player the first press lands
@@ -141,6 +149,8 @@ export function ClipModal({
   const recutState = recut[clip.id] ?? null;
   // Stops the poll for a clip, per clip id.
   const recutWatch = useRef(new Map<string, () => void>());
+  // Whether the dialog has unmounted; see the cleanup that sets it.
+  const closed = useRef(false);
   // The cut the player holds for a clip while a trim's re-cut is outstanding,
   // per clip id: the stretch of the source it covers and its length; see
   // `handleTrim`.
@@ -277,6 +287,10 @@ export function ClipModal({
    *  poll is retried, and giving up leaves the playing cut and the new bounds
    *  as they are, with a line saying a reload shows the new cut. */
   function watchRecut(id: string, reply: Clip) {
+    // A trim that settled after the dialog closed: there is nothing to show
+    // it in, and a poll started now would outlive the unmount cleanup, which
+    // has already run and stopped the watches it knew of.
+    if (closed.current) return;
     recutWatch.current.get(id)?.();
     recutWatch.current.delete(id);
     const start = reply.start_time;
@@ -352,10 +366,14 @@ export function ClipModal({
   }
 
   // Stop polling with the dialog. A re-cut still running then shows on the
-  // next load of the page.
+  // next load of the page. `closed` is for a trim still out at that point:
+  // `watchRecut` reads it, so the poll it would start on settling is never
+  // started, rather than registered in a map this has already cleared.
   useEffect(() => {
+    closed.current = false;
     const watches = recutWatch.current;
     return () => {
+      closed.current = true;
       for (const stop of watches.values()) stop();
       watches.clear();
     };
@@ -397,6 +415,18 @@ export function ClipModal({
     // not an error worth surfacing.
     videoRef.current?.play()?.catch(() => {});
   }, [clip.id, clip.clip_url]);
+
+  // Hand focus to the toggle of the panel ← → just hid (see `refocusToggle`).
+  // Trim's button is not on a demo clip and is disabled once the source has
+  // expired, so where it cannot take focus Label's does — still in the bar
+  // the user was working from.
+  useEffect(() => {
+    const hidden = refocusToggle.current;
+    if (hidden === null) return;
+    refocusToggle.current = null;
+    const trim = trimToggleRef.current;
+    (hidden === "trim" && trim && !trim.disabled ? trim : labelToggleRef.current)?.focus();
+  }, [clip.id]);
 
   useEffect(() => () => clearTimeout(tagKeyTimer.current), []);
 
@@ -540,8 +570,15 @@ export function ClipModal({
       // select.
       const active = document.activeElement;
       if (active instanceof HTMLSelectElement || active instanceof HTMLInputElement) return;
-      if (e.key === "ArrowLeft")  onPrev?.();
-      if (e.key === "ArrowRight") onNext?.();
+      const go = e.key === "ArrowLeft" ? onPrev : e.key === "ArrowRight" ? onNext : undefined;
+      if (!go) return;
+      // From a chip or step in an open panel the key still navigates — the
+      // arrows mean nothing to a button — but the panel is keyed to the clip
+      // and takes the focused control with it. Its toggle is handed focus
+      // once the next clip has rendered (see `refocusToggle`).
+      const inPanel = active instanceof Element ? active.closest("#clip-edit-label, #clip-edit-trim") : null;
+      if (inPanel) refocusToggle.current = inPanel.id === "clip-edit-trim" ? "trim" : "label";
+      go();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -712,6 +749,7 @@ export function ClipModal({
           <div className="shrink-0 border-t border-border">
             <div role="group" aria-label="Edit clip" className="flex flex-wrap items-center gap-1 px-2 py-1.5 sm:px-3">
               <button
+                ref={labelToggleRef}
                 type="button"
                 onClick={() => setPanelFor(panel === "label" ? null : { id: clip.id, panel: "label" })}
                 aria-expanded={panel === "label"}
@@ -727,6 +765,7 @@ export function ClipModal({
               {/* Not on a demo clip: the api refuses its trim with 409 (CF-565). */}
               {!clip.is_sample && (
                 <button
+                  ref={trimToggleRef}
                   type="button"
                   onClick={() => setPanelFor(panel === "trim" ? null : { id: clip.id, panel: "trim" })}
                   disabled={!canTrim}
