@@ -106,6 +106,20 @@ class TestBuildDraft:
         assert d["model"] == "claude-test"
         assert d["labeled_at"] == "2026-11-01"
 
+    @pytest.mark.parametrize("probed, stored", [
+        (627.96, 628.0), (627.94, 628.0), (627.9, 627.9), (1223.08, 1223.1), (12.35, 12.4), (120.0, 120.0),
+    ])
+    def test_the_duration_is_stored_at_the_tenth_the_spans_are_rounded_up(self, probed, stored):
+        """Spans are stored to 0.1 s; a duration stored at ffprobe's precision
+        let a span ending at 628.0 sit beside 627.96, which the pinning suite
+        (test_labels_fit_inside_the_declared_duration) classes as over-running
+        and the harness clamps silently. Rounded up, a rally still running when
+        the video ends always fits, and the file never understates the video."""
+        d = _draft([DraftSpan(1.0, probed, 0.9)], duration_sec=probed)
+        assert d["video_duration_sec"] == stored
+        assert d["video_duration_sec"] >= probed
+        assert parse_timestamp(d["spans"][0]["end"]) <= d["video_duration_sec"]
+
     def test_is_tier_less(self):
         d = _draft()
         assert "keep_tiers" not in d
@@ -181,12 +195,15 @@ class TestValidateSpans:
     def test_a_span_ending_at_every_human_fixtures_pinned_duration_is_accepted(self):
         """A rally still running when the video ends has end == duration. The
         draft stores spans to 0.1 s, so test3's 627.96 and test4's 1223.08 must
-        be compared at that resolution, not refused as 628.0 > 627.96."""
+        be accepted, not refused as 628.0 > 627.96 — and the written file must
+        then pass the pinning suite's own over-run check (every parsed end at
+        most `video_duration_sec`), which is what a promoted draft faces."""
         for path in sorted(FIXTURES_DIR.glob("*_deadtime.json")):
             duration = float(json.loads(path.read_text(encoding="utf-8"))["video_duration_sec"])
             d = _draft([DraftSpan(1.0, duration, 0.9)], duration_sec=duration)
             assert d["spans"][0]["end"] == _fmt_ts(duration), path.name
-            assert d["video_duration_sec"] == duration
+            assert duration <= d["video_duration_sec"] < duration + 0.1, path.name
+            assert parse_timestamp(d["spans"][0]["end"]) <= d["video_duration_sec"], path.name
 
     def test_a_span_past_a_fractional_duration_names_both_times(self):
         with pytest.raises(ValueError, match=r"\(00:01-10:28\.1\): ends past the video \(10:28, 627\.960s\)"):
@@ -355,6 +372,43 @@ def synthetic_clip(tmp_path_factory):
     return path
 
 
+@pytest.fixture(scope="module")
+def fractional_clip(tmp_path_factory):
+    """12.35 s of testsrc at 10 fps: ffprobe reports 12.4, and ffmpeg's fps
+    filter does not emit the tail tick at 12.0 — the shape of every real
+    fixture video, none of which has a whole-second duration."""
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not on PATH")
+    path = tmp_path_factory.mktemp("clip") / "fractional.mp4"
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc=duration=12.35:size=320x180:rate=10",
+        "-pix_fmt", "yuv420p", str(path),
+    ], check=True, timeout=120)
+    return path
+
+
+def _tile_brightness(sheet: Path, cols: int, rows: int, tile_w: int, tile_h: int) -> list[float]:
+    """Mean grey level of each cols×rows tile position on a sheet, decoded
+    through ffmpeg so the test needs no image library. Layout as the tile
+    filter lays it out: padding=2 between tiles, margin=2 around them."""
+    padding = margin = 2
+    width = 2 * margin + cols * tile_w + (cols - 1) * padding
+    height = 2 * margin + rows * tile_h + (rows - 1) * padding
+    grey = subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(sheet),
+        "-f", "rawvideo", "-pix_fmt", "gray", "-",
+    ], check=True, stdout=subprocess.PIPE, timeout=60).stdout
+    assert len(grey) == width * height, (len(grey), width, height)
+    means = []
+    for r in range(rows):
+        for c in range(cols):
+            x0, y0 = margin + c * (tile_w + padding), margin + r * (tile_h + padding)
+            total = sum(sum(grey[(y0 + y) * width + x0:(y0 + y) * width + x0 + tile_w]) for y in range(tile_h))
+            means.append(total / (tile_w * tile_h))
+    return means
+
+
 @needs_ffmpeg
 class TestProbeAndHash:
     def test_probe_reads_duration_size_and_fps(self, synthetic_clip):
@@ -436,6 +490,20 @@ class TestExtractFrames:
         sidecar = json.loads((tmp_path / "k" / "frames.json").read_text(encoding="utf-8"))
         assert [x["sec"] for x in sidecar["frames"]] == [0.0, 1.0]
 
+    def test_a_failed_ffmpeg_keeps_the_previous_set(self, synthetic_clip, tmp_path):
+        """Clearing before ffmpeg ran left frames.json naming files that no
+        longer existed when a rerun hit a corrupt file — the one state the
+        sidecar design is meant to rule out."""
+        before = ai_label.extract_frames(synthetic_clip, tmp_path / "c", every_sec=1.0, start=0.0, end=3.0, height=90)
+        corrupt = tmp_path / "corrupt.mp4"
+        corrupt.write_bytes(bytes(4096))
+        with pytest.raises(RuntimeError, match="ffmpeg failed"):
+            ai_label.extract_frames(corrupt, tmp_path / "c", every_sec=1.0, height=90)
+        assert all(f.path.exists() for f in before)
+        sidecar = json.loads((tmp_path / "c" / "frames.json").read_text(encoding="utf-8"))
+        assert [x["sec"] for x in sidecar["frames"]] == [0.0, 1.0, 2.0]
+        assert not list((tmp_path / "c").glob("_raw_*.jpg"))
+
     @pytest.mark.parametrize("kwargs", [{"every_sec": 0.0}, {"start": 5.0, "end": 5.0}])
     def test_rejects_an_empty_sampling(self, synthetic_clip, tmp_path, kwargs):
         with pytest.raises(ValueError):
@@ -483,6 +551,39 @@ class TestContactSheets:
         sidecar = json.loads((tmp_path / "p" / "sheets.json").read_text(encoding="utf-8"))
         assert [len(s["tiles"]) for s in sidecar["sheets"]] == [10, 2]
         assert sidecar["sheets"][1]["tiles"][-1]["sec"] == 11.0
+
+    @pytest.mark.parametrize("every_sec, secs", [
+        (1.0, [float(i) for i in range(12)]),
+        (3.0, [0.0, 3.0, 6.0, 9.0]),
+    ])
+    def test_a_fractional_length_video_lists_exactly_the_tiles_rendered(self, fractional_clip, tmp_path,
+                                                                        every_sec, secs):
+        """Listing a tile for every tick below ffprobe's 12.4 s named 13 tiles
+        (and 5 at --every 3) where the image held 12 (and 4): the fps filter
+        does not emit the tail tick, so the last listed tile was black padding
+        the protocol would read as dead time. Checked against the pixels, not
+        the arithmetic: every listed position is lit, every other one black."""
+        out = tmp_path / f"frac{every_sec}"
+        sheets = ai_label.contact_sheets(fractional_clip, out, every_sec=every_sec, cols=5, rows=3, tile_height=90)
+        assert [s.name for s in sheets] == ["sheet_001.jpg"]
+        sidecar = json.loads((out / "sheets.json").read_text(encoding="utf-8"))
+        tiles = sidecar["sheets"][0]["tiles"]
+        assert [t["sec"] for t in tiles] == secs
+        assert sidecar["sheets"][0]["last_sec"] == secs[-1]
+        brightness = _tile_brightness(sheets[0], cols=5, rows=3, tile_w=160, tile_h=90)
+        listed = {(t["row"], t["col"]) for t in tiles}
+        for k, mean in enumerate(brightness):
+            if (k // 5, k % 5) in listed:
+                assert mean > 32, f"listed tile {k} is black (mean {mean:.1f})"
+            else:
+                assert mean < 8, f"unlisted tile {k} holds a frame (mean {mean:.1f})"
+        assert not list(out.glob("_raw_*.jpg"))
+
+    def test_sheets_and_frames_agree_about_the_last_second(self, fractional_clip, tmp_path):
+        frames = ai_label.extract_frames(fractional_clip, tmp_path / "f", every_sec=1.0, height=90)
+        ai_label.contact_sheets(fractional_clip, tmp_path / "s", every_sec=1.0, cols=6, rows=5, tile_height=90)
+        sidecar = json.loads((tmp_path / "s" / "sheets.json").read_text(encoding="utf-8"))
+        assert [t["sec"] for s in sidecar["sheets"] for t in s["tiles"]] == [f.sec for f in frames]
 
     def test_a_range_offsets_every_tile(self, synthetic_clip, tmp_path):
         ai_label.contact_sheets(synthetic_clip, tmp_path / "r", every_sec=2.0, cols=2, rows=2, tile_height=90,

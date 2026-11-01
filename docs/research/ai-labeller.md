@@ -6,7 +6,10 @@ on the machine this was built on (`CLIPFARM_FIXTURE_VIDEO_DIR` unset, no
 no agreement number exists, and **no draft fixture has been produced**. This
 page records the protocol, the bar a validation run has to clear, and the
 exact commands, so that the run is one sitting once the videos are to hand.
-It makes no claim about the labeller's accuracy.
+The ticket's fallback demo on one local unlabelled game from
+`CLIPFARM_EXTRA_VIDEO_DIR` is pending for the same reason; the tooling has
+been exercised on a synthetic ffmpeg clip only. It makes no claim about the
+labeller's accuracy.
 
 ## What it is
 
@@ -46,7 +49,8 @@ after the serving hand has struck the ball (the toss and the pre-serve
 ritual are *before* the span — the fixtures are tight; the condense pads add
 the ritual back) and the point end as the tile where the ball is dead (on
 the floor, out, in the net, the whistle). At 1 fps a boundary read this way
-is right to within ±0.5 s.
+is late by 0 to 1 s — the tile marked is the first after the event — never
+early.
 
 **Dense pass — where the sheet was unsure.** For a boundary the sheet pass
 cannot place within a tile — the ball is a blur, the serve is off-screen,
@@ -97,7 +101,7 @@ Proposed bar, to be met on each of test2–5 separately, not on their average:
 |---|---|---|
 | Rally recall (human rallies the draft has a match for) | ≥ 0.90 | A rally missing from an answer key *inverts* the metric for it: a model that correctly keeps it scores as missed dead time (`README_deadtime.md`, "the trap"). At ~30 rallies per 10-minute game, 0.90 is ≤ 3 such inversions, which a spot-check of the flagged spans can plausibly catch; below it the reviewer is re-labelling, not spot-checking. |
 | Rally precision (draft spans that match a human rally) | ≥ 0.90 | The mirror failure: dead time labelled as play is scored as the model over-cutting live ball — the harm signal, the one that matters. Same arithmetic. |
-| Boundary error, median | ≤ 1 s | 1 fps sampling quantises a boundary to ±0.5 s; a median past 1 s means transitions are being misread, not sampled coarsely. |
+| Boundary error, median | ≤ 1 s | 1 fps sampling puts a boundary 0 to 1 s late (the first tile after the event); a median past 1 s means transitions are being misread, not sampled coarsely. |
 | Boundary error, p90 | ≤ 2 s | Inside the smallest pad the condense stage applies (`active_windows_guarded` pads 3.0 s before / 2.0 s after; `rules` 5/4), so a draft boundary is at worst as far from the serve as the model is *designed* to be. The human fixtures carry labeler-to-labeler boundary drift of their own — `visualize_deadtime.py` excludes test1 from the headline net partly because a different labeler's boundary style scores as false over-cut — and that drift is not quantified anywhere, which is the other reason to ask for the matcher's per-boundary numbers rather than a seconds total. |
 | Seconds-level, until the matcher lands: `Live wrongly removed` (human play the draft lacks) | ≤ 5 % of human play | The proxy for recall that `score` can report today. |
 | `Dead-time removed` (human dead time the draft also calls dead) | ≥ 95 % | The proxy for precision. |
@@ -176,8 +180,11 @@ protocol has a baseline.
 Same commands with `CLIPFARM_EXTRA_VIDEO_DIR` holding the local games and a
 new `--test` id for each (`game7`, or the venue and date — anything that is
 not an existing fixture id). `write` pins the draft to the file by MD5,
-duration and frame height exactly as the human fixtures are, so a reviewed
-draft can be promoted by moving it up one directory, changing `labeler` and
+duration and frame height as the human fixtures are — the duration rounded
+up to the tenth of a second the spans are stored at, so a rally still running
+when the video ends fits inside it and the pinning suite's over-run check
+(`test_labels_fit_inside_the_declared_duration`) passes a promoted draft.
+A reviewed draft is promoted by moving it up one directory, changing `labeler` and
 `labeling` to the reviewer's, and adding `source_r2_key` once the file is
 uploaded. Until then the draft has no `source_r2_key`, so
 `harness --mode deadtime --offline` refuses it, by design. Promotion is for
@@ -195,9 +202,14 @@ waits on the validation run clearing the bar above.
   of them per game. Nothing downstream needs lossless.
 - **Timestamps live in the sidecar, not the image.** `sheets.json` /
   `frames.json` map every tile and file to its second from the fps filter's
-  arithmetic; the burnt-in `drawtext` label is a reading aid and is skipped
-  (recorded as `burnt_in_timestamps: false`) when ffmpeg lacks the filter or
-  a font. A span's time never depends on reading digits off a tile.
+  arithmetic (frame k sits at start + k·N) and list exactly the frames ffmpeg
+  emitted — `sheets` pulls the frames in one pass and tiles the sequence in a
+  second, rather than tiling the video in one call, because the fps filter
+  does not emit the tail tick of a fractional-length video and a listing
+  derived from the duration named one tile more than the last sheet held.
+  The burnt-in `drawtext` label is a reading aid and is skipped (recorded as
+  `burnt_in_timestamps: false`) when ffmpeg lacks the filter or a font. A
+  span's time never depends on reading digits off a tile.
 - **Tier-less drafts.** test2–5 are tier-less (every span in-play), and the
   loader treats an untagged span as in-play, so a draft lists rallies only.
   Breaks and camera outliers are simply unlabelled gaps.

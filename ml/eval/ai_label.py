@@ -230,6 +230,32 @@ def _clear(out_dir: Path, pattern: str) -> None:
         stale.unlink()
 
 
+def _extract_raw(
+    video: Path, out_dir: Path, every_sec: float, start: float, end: float | None, height: int,
+) -> list[Path]:
+    """One ffmpeg pass: a JPEG per `every_sec` of [start, end), scaled to
+    `height` px, as out_dir/_raw_%06d.jpg. Returns the files in order.
+
+    The list, not the duration, is the record of which ticks exist. The fps
+    filter emits tick k only when a source frame rounds to it, so the tail
+    tick of a fractional-length video (12.0 on a 12.35 s clip) is never
+    written; frames.json and sheets.json both list this set, so neither names
+    a frame or tile the image does not have.
+    """
+    _clear(out_dir, "_raw_*.jpg")
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{start:.3f}"]
+    if end is not None:
+        cmd += ["-t", f"{end - start:.3f}"]
+    cmd += [
+        "-i", str(video),
+        "-vf", f"fps=1/{every_sec},scale=-2:{height}",
+        "-q:v", "3", "-start_number", "0",
+        str(out_dir / "_raw_%06d.jpg"),
+    ]
+    _run(cmd, timeout=3600)
+    return sorted(out_dir.glob("_raw_*.jpg"))
+
+
 def extract_frames(
     video: Path,
     out_dir: Path,
@@ -253,23 +279,15 @@ def extract_frames(
         raise ValueError("end must be after start")
     if not video.is_file():
         raise FileNotFoundError(f"{video}: no such video")
-    # Arguments checked before the directory is touched, so a refused rerun
-    # leaves the previous set and its frames.json as they were.
+    # Arguments checked, and ffmpeg run, before the previous set is touched: a
+    # refused rerun or a failed ffmpeg (corrupt file, timeout) leaves the
+    # earlier frames and their frames.json as they were, rather than a
+    # sidecar naming files that no longer exist.
     out_dir.mkdir(parents=True, exist_ok=True)
+    raws = _extract_raw(video, out_dir, every_sec, start, end, height)
     _clear(out_dir, "frame_*.jpg")   # a rerun replaces the set, or frames.json would not list every file
-    _clear(out_dir, "_raw_*.jpg")
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{start:.3f}"]
-    if end is not None:
-        cmd += ["-t", f"{end - start:.3f}"]
-    cmd += [
-        "-i", str(video),
-        "-vf", f"fps=1/{every_sec},scale=-2:{height}",
-        "-q:v", "3", "-start_number", "0",
-        str(out_dir / "_raw_%06d.jpg"),
-    ]
-    _run(cmd, timeout=3600)
     frames: list[Frame] = []
-    for raw in sorted(out_dir.glob("_raw_*.jpg")):
+    for raw in raws:
         index = int(raw.stem[len("_raw_"):])
         sec = round(start + index * every_sec, 3)
         final = out_dir / _frame_name(sec)
@@ -321,11 +339,12 @@ def drawtext_available() -> bool:
     return _DRAWTEXT_AVAILABLE
 
 
-def _sheet_filter(every_sec: float, tile_height: int, cols: int, rows: int, start: float, burn: bool) -> str:
-    parts = [f"fps=1/{every_sec}", f"scale=-2:{tile_height}"]
+def _sheet_filter(tile_height: int, cols: int, rows: int, start: float, burn: bool) -> str:
+    parts = []
     if burn:
-        # After the fps filter each frame's pts is its sample time from the
-        # seek point, so pts + start is the sidecar's `sec` for that tile.
+        # The frame sequence is read at 1/every_sec fps, so each frame's pts
+        # is its sample time from the seek point and pts + start is the
+        # sidecar's `sec` for that tile.
         parts.append(
             f"drawtext=text='%{{pts\\:hms\\:{start:.3f}}}':x=4:y=4:fontsize={max(12, tile_height // 10)}"
             ":fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=3"
@@ -345,13 +364,16 @@ def contact_sheets(
     end: float | None = None,
 ) -> list[Path]:
     """Tile one frame per `every_sec` into cols×rows sheets (30 s per sheet at
-    the defaults), one ffmpeg call for the whole video.
+    the defaults): one ffmpeg pass pulls the frames, a second tiles them.
 
     `sheets.json` maps every sheet and tile to its timestamp, so a span can be
     read off a sheet without trusting the burnt-in text (which depends on
-    drawtext and a font being present, and is skipped when they are not).
-    Tiles on the last sheet past the end of the video are black padding and
-    are not listed.
+    drawtext and a font being present, and is skipped when they are not). It
+    lists exactly the frames ffmpeg emitted, which is why the sequence is
+    tiled rather than the video in one call: the fps filter does not emit the
+    tail tick of a fractional-length video, so a listing derived from the
+    duration named one tile more than the last sheet held. Tiles on the last
+    sheet past the final frame are black padding and are not listed.
     """
     if every_sec <= 0 or cols <= 0 or rows <= 0:
         raise ValueError("every_sec, cols and rows must be positive")
@@ -361,18 +383,20 @@ def contact_sheets(
     if stop <= start:
         raise ValueError("end must be after start and inside the video")
     out_dir.mkdir(parents=True, exist_ok=True)
+    raws = _extract_raw(video, out_dir, every_sec, start, stop, tile_height)
     _clear(out_dir, "sheet_*.jpg")
 
     def cmd(burn: bool) -> list[str]:
         return [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-ss", f"{start:.3f}", "-t", f"{stop - start:.3f}", "-i", str(video),
-            "-vf", _sheet_filter(every_sec, tile_height, cols, rows, start, burn),
+            "-f", "image2", "-framerate", f"1/{every_sec}", "-start_number", "0",
+            "-i", str(out_dir / "_raw_%06d.jpg"),
+            "-vf", _sheet_filter(tile_height, cols, rows, start, burn),
             "-q:v", "3", "-start_number", "1", str(out_dir / "sheet_%03d.jpg"),
         ]
 
     burnt = drawtext_available()
-    if burnt:
+    if raws and burnt:
         try:
             _run(cmd(burn=True), timeout=3600)
         except RuntimeError:
@@ -380,19 +404,23 @@ def contact_sheets(
             # bare tiles rather than fail — the sidecar carries the times.
             burnt = False
             _clear(out_dir, "sheet_*.jpg")
-    if not burnt:
+    if raws and not burnt:
         _run(cmd(burn=False), timeout=3600)
+    _clear(out_dir, "_raw_*.jpg")
 
     sheets = sorted(out_dir.glob("sheet_*.jpg"))
     per_sheet = cols * rows
+    if len(sheets) != -(-len(raws) // per_sheet):
+        raise RuntimeError(f"ffmpeg wrote {len(sheets)} sheets for {len(raws)} frames at {per_sheet} per sheet")
     listing: list[dict[str, Any]] = []
     for i, sheet in enumerate(sheets):
         tiles = []
-        for k in range(per_sheet):
-            sec = round(start + (i * per_sheet + k) * every_sec, 3)
-            if sec >= stop:
+        for j in range(per_sheet):
+            k = i * per_sheet + j
+            if k >= len(raws):
                 break
-            tiles.append({"row": k // cols, "col": k % cols, "sec": sec, "ts": _fmt_ts(sec)})
+            sec = round(start + k * every_sec, 3)
+            tiles.append({"row": j // cols, "col": j % cols, "sec": sec, "ts": _fmt_ts(sec)})
         listing.append({
             "file": sheet.name,
             "first_sec": tiles[0]["sec"] if tiles else None,
@@ -433,6 +461,23 @@ def default_draft_path(test_id: str) -> Path:
     return DRAFTS_DIR / f"{test_id}_deadtime.json"
 
 
+def _file_duration(duration_sec: float) -> float:
+    """`video_duration_sec` as a draft stores it: ffprobe's value rounded *up*
+    to the tenth of a second the spans are stored at.
+
+    One resolution for the whole file is what keeps a draft inside the pinning
+    suite's over-run check (test_labels_fit_inside_the_declared_duration:
+    every parsed end <= video_duration_sec). Stored unrounded, a rally still
+    running when the video ends — 628.0 read off a 627.96 s video — was
+    accepted and then written as "10:28" beside 627.96, which that check
+    classes as over-running and the harness clamps silently. Up rather than
+    nearest so such a span always fits and the stored duration never
+    understates the file.
+    """
+    tenth = round(duration_sec, 1)
+    return tenth if tenth >= duration_sec else round(tenth + 0.1, 1)
+
+
 def validate_spans(spans: list[DraftSpan], duration_sec: float) -> None:
     """Positive, sorted, disjoint, inside [0, duration] at the tenth of a
     second the file holds, confidence in [0, 1].
@@ -454,12 +499,15 @@ def validate_spans(spans: list[DraftSpan], duration_sec: float) -> None:
         where = f"span {i} ({_fmt_ts(s.start)}-{_fmt_ts(s.end)})"
         if s.end <= s.start:
             raise ValueError(f"{where}: end is not after start")
-        if round(s.end, 1) > round(duration_sec, 1):
-            # build_draft stores spans to 0.1 s, so a rally still running when
-            # the video ends (end == duration; 627.96 s on test3) must not fail
-            # against the unrounded probe value it will be written next to.
+        stored_duration = _file_duration(duration_sec)
+        if round(s.end, 1) > stored_duration:
+            # Both sides at the tenth the file holds — build_draft stores spans
+            # to 0.1 s beside _file_duration(duration_sec) — so this is the
+            # comparison the pinning suite makes on the written file, and a
+            # rally still running when the video ends (627.96 s on test3) is
+            # accepted rather than refused as 628.0 > 627.96.
             raise ValueError(
-                f"{where}: ends past the video ({_fmt_ts(duration_sec)}, {duration_sec:.3f}s)"
+                f"{where}: ends past the video ({_fmt_ts(stored_duration)}, {duration_sec:.3f}s)"
             )
         if s.start < prev_end:
             raise ValueError(f"{where}: overlaps or precedes the previous span (ends {_fmt_ts(prev_end)})")
@@ -514,7 +562,7 @@ def build_draft(
         "model": model,
         "source_video_file": source_video_file,
         "source_video_md5": source_video_md5,
-        "video_duration_sec": duration_sec,
+        "video_duration_sec": _file_duration(duration_sec),
         "source_frame_height": source_frame_height,
         "review_below": REVIEW_BELOW,
         "review_count": review_count,
