@@ -193,6 +193,33 @@ def test_the_report_prints_every_variants_clause_1(committed, capsys):
     assert "clause 1 does not hold for every variant" in out
 
 
+def test_the_chosen_variant_is_the_one_whose_context_the_file_carries():
+    """R3-N2: chosen is decided by the context record, not by the variant's
+    name, so a file shipping the lagged variant marks that one chosen."""
+    folds = [_fold(held_out=t) for t in ("test2", "test3", "test4", "test5")]
+    w = _weights(context=context_rule([1, 3, 5]), context_variants={
+        "none": {"context": context_rule([]), "folds": folds},
+        "lags_1_3_5": {"context": context_rule([1, 3, 5]), "folds": folds},
+    })
+    assert [v.variant for v in vl.clause_1_by_variant(w) if v.chosen] == ["lags_1_3_5"]
+
+
+def test_the_reports_verdict_is_the_gated_rungs(committed, capsys):
+    """R3-N1: print_report returns the gated rung's verdict, the one the exit
+    status and "validated" describe. Gated clears every clause here; ungated
+    condenses test3 past the clause 4 cap, so only the gated verdict is True."""
+    g = _guarded()
+    gated = _learned(test2=(100.0 / 3, 100.01))
+    ungated = dict(gated)
+    ungated["test3"] = Score(0.3, vl.TEST3_LIVE_CAP_SEC + 1.0, 50.0)
+    results = [vl.GameResult(t, 1.0, g[t], gated[t], ungated[t], gated[t], {})
+               for t in vl.TEST_IDS]
+    assert vl.print_report(results, committed) is True
+    out = capsys.readouterr().out
+    assert "bar, learned gated (production's chain): PASS" in out
+    assert "bar, learned ungated (D-0034): FAIL" in out
+
+
 def test_main_exits_non_zero_when_the_bar_fails(monkeypatch):
     """R1-N3: a failing bar is exit status 1, a passing one 0."""
     monkeypatch.setattr(vl, "run", lambda: [])
@@ -301,6 +328,36 @@ def test_ungated_still_falls_back_on_an_empty_track():
     assert vl.learned_windows(game, _weights(), gated=False) == dv.v5_guarded(game)
 
 
+def _one_point():
+    return [{"time": 5.0, "x": 10.0, "y": 180.0, "confidence": 0.9}]
+
+
+def _unpairable(step=3.0):
+    """Points over the whole video, each further from the next than
+    MAX_SAMPLE_SPACING: positions, but not one usable speed sample."""
+    assert step > dt.MAX_SAMPLE_SPACING
+    return [{"time": float(t), "x": 10.0 * t, "y": 180.0, "confidence": 0.9}
+            for t in range(0, int(DURATION) + 1, int(step))]
+
+
+_NO_USABLE_SAMPLE = pytest.mark.parametrize("positions", [_one_point(), _unpairable()],
+                                            ids=["one point", "points 3s apart"])
+
+
+@_NO_USABLE_SAMPLE
+def test_ungated_still_falls_back_on_a_track_with_no_usable_sample(positions):
+    """R3-M1: min_track_rate=0.0 leaves the builder declining only an empty
+    position list; with positions but no usable speed sample it would return []
+    (cut everything). The rung must land where guarded does: an abstain."""
+    game = _game(positions)
+    assert len(game.speed_samples[0]) == 0
+    w = _weights(validated=False)
+    ungated = vl.learned_windows(game, w, gated=False)
+    assert isinstance(ungated, dt.Abstained)
+    assert ungated == vl.learned_windows(game, w, gated=True) == dv.v5_guarded(game)
+    assert vl.score(game, ungated).abstained
+
+
 def test_an_abstain_is_scored_as_one():
     game = _game(_track(step=1.2))
     assert vl.score(game, dv.v5_guarded(game)).abstained
@@ -327,6 +384,20 @@ def test_v7_is_v6_without_the_gate(monkeypatch, tmp_path):
     dense = _game(_track())
     assert dv.v7_learned_ungated(dense) == dv.v6_learned(dense)
     assert dv.v7_learned_ungated(_game([])) == dv.v5_guarded(_game([]))
+
+
+@_NO_USABLE_SAMPLE
+def test_v7_still_falls_back_on_a_track_with_no_usable_sample(monkeypatch, tmp_path, positions):
+    """R3-M1, on the ladder: v7 abstains where v6 and guarded do."""
+    import ml.pipeline.dead_time_ml as dml
+
+    p = tmp_path / "w.json"
+    p.write_text(json.dumps(_weights(validated=False)))
+    monkeypatch.setattr(dml, "WEIGHTS_PATH", p)
+    game = _game(positions)
+    v7 = dv.v7_learned_ungated(game)
+    assert isinstance(v7, dt.Abstained)
+    assert v7 == dv.v6_learned(game) == dv.v5_guarded(game)
 
 
 # ── against the real caches, when present ──────────────────────────────────

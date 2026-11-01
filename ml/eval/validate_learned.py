@@ -31,9 +31,12 @@ Two learned rungs, both held out:
   condense stage falls back to `guarded`, which abstains there. This is the rung
   the bar is judged on, because it is what `condense_mode="learned"` would ship.
 - **ungated** — the same builder with `min_track_rate=0.0`, so it judges every
-  game with any track at all (D-0034). Eval only: production's gate is
+  game with a track it can measure (D-0034). Eval only: production's gate is
   unchanged. On the fixtures it differs from gated on test3 alone, the one game
-  below the gate. An empty track still declines, since there is nothing to score.
+  below the gate. A track with no usable speed sample — empty, a single point,
+  or points further apart than `speed_samples` pairs — still falls back to
+  `guarded`: with nothing to score the builder would return `[]` and cut
+  everything, so `learned_windows` declines it, as the gate would.
 
 The bar (CF-389 decision 6) is `apply_bar`, with the epic's numbers as the
 constants below. It is pure, so the committed fold record — which carries the
@@ -258,8 +261,14 @@ def learned_windows(game: dv.Game, weights: dict, *, gated: bool) -> list[Interv
     """The learned builder on `game`; on a declined track, production's
     fallback (`guarded`, which abstains there).
 
-    `gated=False` is D-0034's rung: `min_track_rate=0.0`.
+    `gated=False` is D-0034's rung: `min_track_rate=0.0`. That removes the
+    builder's floor entirely, so the one decline it still makes is an empty
+    position list; a track with points but no usable speed sample (one point, or
+    points further apart than `MAX_SAMPLE_SPACING`) would be scored at its fills
+    and cut everything. It is declined here instead, as the floor would.
     """
+    if not gated and len(game.speed_samples[0]) == 0:
+        return dv.v5_guarded(game)
     kwargs = {} if gated else {"min_track_rate": 0.0}
     try:
         return active_windows_learned(

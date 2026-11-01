@@ -252,10 +252,15 @@ def v7_learned_ungated(game: Game) -> list[Interval]:
 
     It exists so the gate's cost can be read on the ladder. On the five
     fixtures it differs from `v6` on test3 alone, the one game below the
-    gate. An empty track still falls back to `v5_guarded`: with no samples there
-    is nothing to score, gate or not. Its held-out counterpart is
-    `validate_learned`'s ungated rung.
+    gate. A track with no usable speed sample — empty, a single point, or points
+    further apart than `MAX_SAMPLE_SPACING` — still falls back to `v5_guarded`:
+    with nothing to score, gate or not, the builder would cut everything. Its
+    held-out counterpart is `validate_learned`'s ungated rung.
     """
+    # min_track_rate=0.0 leaves the builder declining an empty position list
+    # only; the no-usable-sample case is declined here, as its floor would.
+    if len(game.speed_samples[0]) == 0:
+        return v5_guarded(game)
     return _learned(game, min_track_rate=0.0)
 
 
