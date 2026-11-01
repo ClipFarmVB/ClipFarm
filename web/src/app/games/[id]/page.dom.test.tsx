@@ -161,7 +161,7 @@ async function moveSlider(index: number, value: number) {
 /** The next `getClips` stays pending until the returned function is called. */
 function holdNextClips() {
   let resolve!: (clips: Clip[]) => void;
-  getClips.mockReturnValue(new Promise<Clip[]>((r) => { resolve = r; }));
+  getClips.mockReturnValueOnce(new Promise<Clip[]>((r) => { resolve = r; }));
   return (clips: Clip[]) => act(async () => { resolve(clips); });
 }
 
@@ -293,22 +293,29 @@ describe("filtering the grid by player (CF-250)", () => {
     // Sort alone is not a narrowing filter; the sliders and action badges are.
     expect(host.textContent).toContain("No clips tagged Lena Brandt in this game.");
 
+    // A slider alone is one half of the branch.
+    await moveSlider(0, 50);
+
+    expect(lastClipsFilters()).toMatchObject({ min_score: 0.5 });
+    expect(host.textContent).toContain("No clips tagged Lena Brandt match your other filters.");
+
+    await moveSlider(0, 0);
+
+    expect(host.textContent).toContain("No clips tagged Lena Brandt in this game.");
+
+    // An action badge alone is the other half.
     await clickButton("spike");
     await settle();
 
     expect(host.textContent).toContain("No clips tagged Lena Brandt match your other filters.");
 
-    // Every badge selected narrows nothing — the API receives all five and
-    // every clip matches — so the copy goes back to blaming the game.
+    // Every badge on is still a non-empty list the API applies as a filter
+    // (it excludes `unknown`-typed clips), so the copy keeps blaming the
+    // filters rather than the game.
     for (const action of ["serve", "dig", "set", "block"]) await clickButton(action);
     await settle();
 
-    expect(host.textContent).toContain("No clips tagged Lena Brandt in this game.");
-
-    // A slider alone is the other half of the branch.
-    await moveSlider(0, 50);
-
-    expect(lastClipsFilters()).toMatchObject({ min_score: 0.5 });
+    expect(lastClipsFilters()).toMatchObject({ action_type: ["spike", "serve", "dig", "set", "block"] });
     expect(host.textContent).toContain("No clips tagged Lena Brandt match your other filters.");
   });
 });

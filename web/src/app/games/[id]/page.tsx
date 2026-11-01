@@ -202,14 +202,18 @@ export default function GamePage() {
     if (!gameReady) return;
     getPlayers()
       .then(setPlayers)
-      .catch(() => setPlayers([]));
+      .catch((e) => {
+        console.warn("Roster failed to load; the player filter and tag dropdown are off.", e);
+        setPlayers([]);
+      });
   }, [id, gameReady]);
 
   // Whether anything besides the player filter narrows the grid, for the
-  // empty state's copy. Every action type selected narrows nothing: the API
-  // receives all five and every clip matches.
+  // empty state's copy. Any non-empty `action_type` list counts: the API
+  // applies it as given, and even all five badges exclude `unknown`-typed
+  // clips (the `removed` ones), which can carry a player tag too.
   const otherFiltersNarrow = Boolean(
-    (settledFilters.action_type?.length && settledFilters.action_type.length < ACTION_TYPES.length) ||
+    settledFilters.action_type?.length ||
     settledFilters.min_confidence ||
     settledFilters.min_score
   );
