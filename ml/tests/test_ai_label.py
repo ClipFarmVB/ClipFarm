@@ -28,6 +28,7 @@ from ml.eval.ai_label import (
     REVIEW_BELOW,
     DraftSpan,
     _fmt_ts,
+    _frame_name,
     build_draft,
     content_md5,
     find_video_by_md5,
@@ -76,6 +77,16 @@ class TestTimestampFormat:
     @pytest.mark.parametrize("seconds", [0.0, 1.5, 59.9, 60.0, 754.3, 3600.0, 4000.5])
     def test_round_trips_through_the_harness_parser(self, seconds):
         assert parse_timestamp(_fmt_ts(seconds)) == pytest.approx(seconds, abs=0.05)
+
+
+class TestFrameName:
+    @pytest.mark.parametrize("sec, name", [
+        (0.0, "frame_00000.0s.jpg"), (754.0, "frame_00754.0s.jpg"), (4.5, "frame_00004.5s.jpg"),
+        (1.05, "frame_00001.05s.jpg"), (1.125, "frame_00001.125s.jpg"), (3600.0, "frame_03600.0s.jpg"),
+    ])
+    def test_carries_the_exact_second(self, sec, name):
+        """A name quantised to 0.1 s would send 1.05 and 1.1 to the same file."""
+        assert _frame_name(sec) == name
 
 
 class TestBuildDraft:
@@ -167,12 +178,33 @@ class TestValidateSpans:
     def test_adjacent_spans_and_a_span_ending_at_the_duration_are_fine(self):
         validate_spans([DraftSpan(0.0, 10.0, 0.9), DraftSpan(10.0, 120.0, 0.9)], 120.0)
 
+    def test_a_span_ending_at_every_human_fixtures_pinned_duration_is_accepted(self):
+        """A rally still running when the video ends has end == duration. The
+        draft stores spans to 0.1 s, so test3's 627.96 and test4's 1223.08 must
+        be compared at that resolution, not refused as 628.0 > 627.96."""
+        for path in sorted(FIXTURES_DIR.glob("*_deadtime.json")):
+            duration = float(json.loads(path.read_text(encoding="utf-8"))["video_duration_sec"])
+            d = _draft([DraftSpan(1.0, duration, 0.9)], duration_sec=duration)
+            assert d["spans"][0]["end"] == _fmt_ts(duration), path.name
+            assert d["video_duration_sec"] == duration
+
+    def test_a_span_past_a_fractional_duration_names_both_times(self):
+        with pytest.raises(ValueError, match=r"\(00:01-10:28\.1\): ends past the video \(10:28, 627\.960s\)"):
+            _draft([DraftSpan(1.0, 628.1, 0.9)], duration_sec=627.96)
+
 
 class TestWriteDraft:
-    def test_refuses_the_fixtures_directory_itself(self, tmp_path):
+    def test_refuses_the_fixtures_directory_itself(self, tmp_path, monkeypatch):
+        """Against a tmp mirror of fixtures/, never the real directory: were the
+        refusal to regress, a test aimed at FIXTURES_DIR would be the one thing
+        that writes an AI draft among the human fixtures."""
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        monkeypatch.setattr(ai_label, "FIXTURES_DIR", fixtures)
+        monkeypatch.setattr(ai_label, "DRAFTS_DIR", fixtures / "drafts")
         with pytest.raises(ValueError, match="refusing to write into"):
-            write_draft(FIXTURES_DIR / "draftgame_deadtime.json", _draft())
-        assert not (FIXTURES_DIR / "draftgame_deadtime.json").exists()
+            write_draft(fixtures / "draftgame_deadtime.json", _draft())
+        assert list(fixtures.iterdir()) == []
 
     def test_refuses_a_draft_whose_stamp_was_edited(self, tmp_path):
         d = _draft()
@@ -379,6 +411,30 @@ class TestExtractFrames:
         assert [f.sec for f in frames] == [0.0, 1.0]
         sidecar = json.loads((tmp_path / "x" / "frames.json").read_text(encoding="utf-8"))
         assert sorted(p.name for p in (tmp_path / "x").glob("*.jpg")) == sorted(x["file"] for x in sidecar["frames"])
+
+    def test_a_sub_tenth_step_keeps_every_frame(self, synthetic_clip, tmp_path):
+        """With names quantised to 0.1 s, every_sec=0.05 collapsed six frames
+        onto three files and frames.json listed each of them twice."""
+        frames = ai_label.extract_frames(synthetic_clip, tmp_path / "f", every_sec=0.05, start=1.0, end=1.3, height=90)
+        assert [f.sec for f in frames] == [1.0, 1.05, 1.1, 1.15, 1.2, 1.25]
+        assert [f.path.name for f in frames] == [
+            "frame_00001.0s.jpg", "frame_00001.05s.jpg", "frame_00001.1s.jpg",
+            "frame_00001.15s.jpg", "frame_00001.2s.jpg", "frame_00001.25s.jpg",
+        ]
+        assert sorted(p.name for p in (tmp_path / "f").glob("frame_*.jpg")) == sorted(f.path.name for f in frames)
+        sidecar = json.loads((tmp_path / "f" / "frames.json").read_text(encoding="utf-8"))
+        files = [x["file"] for x in sidecar["frames"]]
+        assert len(files) == len(set(files)) == 6
+
+    def test_a_refused_rerun_keeps_the_previous_set(self, synthetic_clip, tmp_path):
+        before = ai_label.extract_frames(synthetic_clip, tmp_path / "k", every_sec=1.0, start=0.0, end=2.0, height=90)
+        with pytest.raises(ValueError):
+            ai_label.extract_frames(synthetic_clip, tmp_path / "k", every_sec=1.0, start=5.0, end=5.0, height=90)
+        with pytest.raises(FileNotFoundError):
+            ai_label.extract_frames(tmp_path / "missing.mp4", tmp_path / "k", every_sec=1.0, height=90)
+        assert all(f.path.exists() for f in before)
+        sidecar = json.loads((tmp_path / "k" / "frames.json").read_text(encoding="utf-8"))
+        assert [x["sec"] for x in sidecar["frames"]] == [0.0, 1.0]
 
     @pytest.mark.parametrize("kwargs", [{"every_sec": 0.0}, {"start": 5.0, "end": 5.0}])
     def test_rejects_an_empty_sampling(self, synthetic_clip, tmp_path, kwargs):

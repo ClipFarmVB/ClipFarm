@@ -29,8 +29,8 @@ per-boundary error wait on CF-593's matcher. The protocol, the agreement bar
 and the validation status live in docs/research/ai-labeller.md.
 
 Stdlib-only at import, like metrics.py: ffmpeg/ffprobe run as subprocesses
-(the idiom in ml/pipeline/audio.py), and the harness is imported lazily inside
-`score_draft` so `python -m ml.eval.ai_label frames ...` needs nothing installed.
+(the idiom in ml/pipeline/audio.py), and the harness is imported lazily (inside
+`score_draft` and `_parse_ts`) so the frame and sheet commands never touch it.
 
 Usage:
   python -m ml.eval.ai_label probe  VIDEO
@@ -217,7 +217,12 @@ def _fmt_ts(seconds: float) -> str:
 
 
 def _frame_name(sec: float) -> str:
-    return f"frame_{sec:07.1f}s.jpg"
+    """frame_00754.0s.jpg, frame_00004.5s.jpg, frame_00001.25s.jpg: the exact
+    `sec` extract_frames computed (3 dp), trailing zeros dropped. Two distinct
+    secs never share a name, so a sub-tenth `every_sec` cannot overwrite a
+    frame or list one file twice in frames.json."""
+    text = f"{sec:09.3f}".rstrip("0")
+    return f"frame_{text}0s.jpg" if text.endswith(".") else f"frame_{text}s.jpg"
 
 
 def _clear(out_dir: Path, pattern: str) -> None:
@@ -235,21 +240,26 @@ def extract_frames(
 ) -> list[Frame]:
     """One JPEG every `every_sec` seconds of [start, end), scaled to `height` px.
 
-    Files are named by their timestamp (frame_00754.0s.jpg) and `frames.json`
-    beside them lists every (file, sec), so the time a frame shows never
-    depends on reading text off the image. With the fps filter at 1/N and the
-    seek before the input, output frame k sits at start + k*N.
+    Files are named by their timestamp (frame_00754.0s.jpg; frame_00001.25s.jpg
+    under a sub-tenth step) and `frames.json` beside them lists every (file,
+    sec), so the time a frame shows never depends on reading text off the
+    image. With the fps filter at 1/N and the seek before the input, output
+    frame k sits at start + k*N.
     """
     if every_sec <= 0:
         raise ValueError("every_sec must be positive")
     start = max(0.0, start or 0.0)
+    if end is not None and end <= start:
+        raise ValueError("end must be after start")
+    if not video.is_file():
+        raise FileNotFoundError(f"{video}: no such video")
+    # Arguments checked before the directory is touched, so a refused rerun
+    # leaves the previous set and its frames.json as they were.
     out_dir.mkdir(parents=True, exist_ok=True)
     _clear(out_dir, "frame_*.jpg")   # a rerun replaces the set, or frames.json would not list every file
     _clear(out_dir, "_raw_*.jpg")
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{start:.3f}"]
     if end is not None:
-        if end <= start:
-            raise ValueError("end must be after start")
         cmd += ["-t", f"{end - start:.3f}"]
     cmd += [
         "-i", str(video),
@@ -424,7 +434,8 @@ def default_draft_path(test_id: str) -> Path:
 
 
 def validate_spans(spans: list[DraftSpan], duration_sec: float) -> None:
-    """Positive, sorted, disjoint, inside [0, duration], confidence in [0, 1].
+    """Positive, sorted, disjoint, inside [0, duration] at the tenth of a
+    second the file holds, confidence in [0, 1].
 
     Raises rather than reporting: a draft with a reversed or overlapping span
     would load (the harness loader is permissive) and score as a plausible
@@ -443,8 +454,13 @@ def validate_spans(spans: list[DraftSpan], duration_sec: float) -> None:
         where = f"span {i} ({_fmt_ts(s.start)}-{_fmt_ts(s.end)})"
         if s.end <= s.start:
             raise ValueError(f"{where}: end is not after start")
-        if s.end > duration_sec:
-            raise ValueError(f"{where}: ends past the video ({_fmt_ts(duration_sec)})")
+        if round(s.end, 1) > round(duration_sec, 1):
+            # build_draft stores spans to 0.1 s, so a rally still running when
+            # the video ends (end == duration; 627.96 s on test3) must not fail
+            # against the unrounded probe value it will be written next to.
+            raise ValueError(
+                f"{where}: ends past the video ({_fmt_ts(duration_sec)}, {duration_sec:.3f}s)"
+            )
         if s.start < prev_end:
             raise ValueError(f"{where}: overlaps or precedes the previous span (ends {_fmt_ts(prev_end)})")
         if not 0.0 <= s.confidence <= 1.0:

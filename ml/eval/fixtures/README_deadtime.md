@@ -77,7 +77,10 @@ level down from here, and stays there until a person has reviewed it:
 
 To promote a reviewed draft: move it up a level, set `labeler`/`labeling` to
 the reviewer's, add `source_r2_key` once the file is uploaded, and keep the
-`confidence`/`review` fields or drop them — the loader reads neither. The
+`confidence`/`review` fields or drop them — the loader reads neither. Only a
+draft for a *new* id is ever promoted: a validation draft (`test2`–`test5`)
+has a human fixture at this level already, and moving it up would overwrite
+the ground truth with the draft. The
 protocol, the agreement bar, and the validation status are in
 `docs/research/ai-labeller.md`.
 

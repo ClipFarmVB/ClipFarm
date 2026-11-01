@@ -42,10 +42,11 @@ beside them mapping every tile to its second. Read the sheets in order. A
 rally is a run of tiles with the ball in the air and players moving on both
 sides of the net; dead time is players walking, retrieving the ball, the
 server waiting, huddles, breaks. Mark the serve contact as the first tile
-where the ball has left the server's hand (the toss is *before* the span —
-the fixtures are tight; the condense pads add the ritual back) and the point
-end as the tile where the ball is dead (on the floor, out, in the net, the
-whistle). At 1 fps a boundary read this way is right to within ±0.5 s.
+after the serving hand has struck the ball (the toss and the pre-serve
+ritual are *before* the span — the fixtures are tight; the condense pads add
+the ritual back) and the point end as the tile where the ball is dead (on
+the floor, out, in the net, the whistle). At 1 fps a boundary read this way
+is right to within ±0.5 s.
 
 **Dense pass — where the sheet was unsure.** For a boundary the sheet pass
 cannot place within a tile — the ball is a blur, the serve is off-screen,
@@ -179,7 +180,10 @@ duration and frame height exactly as the human fixtures are, so a reviewed
 draft can be promoted by moving it up one directory, changing `labeler` and
 `labeling` to the reviewer's, and adding `source_r2_key` once the file is
 uploaded. Until then the draft has no `source_r2_key`, so
-`harness --mode deadtime --offline` refuses it, by design.
+`harness --mode deadtime --offline` refuses it, by design. Promotion is for
+a new id only: a validation draft (`test2`–`test5`) already has a human
+fixture one level up, and moving the draft there would replace the ground
+truth with it — those drafts stay in `drafts/` as the run's artefacts.
 
 **Nothing has been labelled yet.** Producing drafts for Nelson to spot-check
 waits on the validation run clearing the bar above.
