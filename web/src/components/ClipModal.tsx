@@ -62,7 +62,9 @@ interface ClipModalProps {
   /** The length, in seconds, of the source video the clip is cut from, where
    *  the page knows it (`Game.original_duration`). A trim's re-cut stops at
    *  the end of the source although the api keeps the end it was asked for,
-   *  so this is what tells the dialog how long a cut past that end will be. */
+   *  so this is what tells the dialog how long a cut past that end will be.
+   *  Without it, such a cut is not confirmed here: the status line says a
+   *  reload shows it. */
   sourceDuration?: number | null;
 }
 
@@ -278,8 +280,13 @@ export function ClipModal({
    *
    *  The length expected is that of the cut ffmpeg makes, which ends at the
    *  end of the source (`cutEnd`). Where the page does not know the source's
-   *  length, a reading shorter than the last step and matching none is taken
-   *  as that step cut short by the source's end.
+   *  length, a cut past its end is never matched and the watch gives up as
+   *  below. Only a reading that matches a step confirms anything: a reading
+   *  that matches none is recorded and waited through. Taking a shorter
+   *  unmatched reading as the last step cut short confirmed the wrong object
+   *  once the dialog had been closed and reopened mid-chain, because the
+   *  remount starts from a clean chain and the first stale re-cut to land
+   *  then read as the trim just made (R11-M1).
    *
    *  A trim that asks for the stretch the player already holds has nothing to
    *  swap in only while no re-cut is queued — Start −2s at 0:00, which the api
@@ -336,9 +343,6 @@ export function ClipModal({
         if (!near(length, chain.last)) {
           const reached = chain.pending.findIndex((p) => near(p, length));
           if (reached >= 0) chain.pending.splice(0, reached + 1);
-          else if (!(sourceDuration != null && sourceDuration > 0) && length < chain.pending[chain.pending.length - 1]) {
-            chain.pending = [];
-          }
           chain.last = length;
         }
         if (chain.pending.length === 0) {
@@ -682,9 +686,12 @@ export function ClipModal({
           <div className="flex shrink-0 items-center gap-1">
             {/* Demo clips (CF-565): download, share and post are refused by the
                 api with 409, so the modal marks the clip instead of offering
-                them. */}
+                them. The badge's tooltip says why, as the card's does; it also
+                covers the Trim the edit bar below leaves out. */}
             {clip.is_sample ? (
-              <DemoBadge className="mr-1" />
+              <span title="Demo clip: download, trim and posting are for your own games">
+                <DemoBadge className="mr-1" />
+              </span>
             ) : (
             <>
             <button

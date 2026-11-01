@@ -151,6 +151,8 @@ describe("ClipModal on a demo clip", () => {
     expect(labels.some((l) => l.includes("Copy link"))).toBe(false);
     expect(labels.some((l) => l === "Post")).toBe(false);
     expect(document.body.textContent).toContain("Demo");
+    // The badge says why, where Trim is missing from the edit bar too.
+    expect(document.querySelector("[title^='Demo clip']")).not.toBeNull();
   });
 
   it("offers all three on an ordinary clip", () => {
