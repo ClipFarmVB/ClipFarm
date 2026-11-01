@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef, ty
 import { type Session, type User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase";
 import { clearGamesCache, prefetchGames } from "@/lib/gamesCache";
+import { resetUploadStore } from "@/lib/uploadStore";
 import { clearMe, fetchMe } from "@/lib/useMe";
 
 interface AuthState {
@@ -61,6 +62,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // path it exists for.
         clearGamesCache();
         clearMe();
+        // The upload in flight, too (CF-70): its progress would otherwise show
+        // to the next user, and its completion would claim the game under
+        // their session.
+        resetUploadStore();
         lastUserIdRef.current = userId;
         // After the clears, so it cannot dedupe onto what they invalidated.
         if (userId !== null) void fetchMe();

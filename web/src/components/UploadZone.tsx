@@ -1,25 +1,23 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Upload, Film, AlertCircle, Loader } from "lucide-react";
+import { Upload, Film, AlertCircle, Check, Loader } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import {
-  completeUpload,
-  createUpload,
-  deleteGame,
-  getUploadConfig,
-  type UploadConfig,
-  type UploadTicket,
-} from "@/lib/api";
-import { uploadFileToR2 } from "@/lib/upload";
-import { addGameToCache } from "@/lib/gamesCache";
+import { getUploadConfig, type UploadConfig } from "@/lib/api";
 import {
   FALLBACK_UPLOAD_CONFIG,
   formatsLabel,
   fmtLimit,
   fmtMinutes,
 } from "@/lib/uploadLimits";
+import {
+  dismissUpload,
+  getUploadSnapshot,
+  startUpload,
+  useActiveUpload,
+} from "@/lib/uploadStore";
 import { cn } from "@/lib/utils";
 
 /**
@@ -49,21 +47,27 @@ function readDuration(f: File): Promise<number | null> {
   });
 }
 
-function fmtRemaining(remainingSec: number): string {
-  if (remainingSec < 60) return "Uploading — less than a minute left";
-  return `Uploading — about ${Math.round(remainingSec / 60)} min left`;
-}
-
 export function UploadZone() {
   const router = useRouter();
   const [dragging, setDragging] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [condense, setCondense] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState<number | null>(null);
-  const [statusText, setStatusText] = useState("Uploading…");
-  const [error, setError] = useState<string | null>(null);
+  // Local validation only (type, size, length). The attempt's own failure
+  // lives in the store, so it survives leaving the page and coming back.
+  const [localError, setLocalError] = useState<string | null>(null);
+  // The attempt in flight, if any — module state, not ours (CF-70). Leaving
+  // this page no longer loses it, and coming back finds it still running.
+  const upload = useActiveUpload();
+  const inFlight = upload.phase === "uploading" || upload.phase === "finalizing";
+  // Set once completion has been observed here and the push is under way.
+  // Dismissing the store re-enables the form for the instant before the
+  // route changes, long enough for a second click to start the same upload
+  // again; this keeps it locked until the component unmounts with the page.
+  const [redirecting, setRedirecting] = useState(false);
+  const uploading = inFlight || redirecting;
+  const error = localError ?? (upload.phase === "failed" ? upload.error : null);
+  const setError = setLocalError;
   const [config, setConfig] = useState<UploadConfig>(FALLBACK_UPLOAD_CONFIG);
   // Only true once the server's numbers arrived — the fallback's quota figures
   // are placeholders and must never be shown as if they were real.
@@ -85,6 +89,23 @@ export function UploadZone() {
       .catch(() => {});
     return () => { live = false; };
   }, []);
+
+  // Go to the game only on a completion we watched happen from here — the
+  // user is still on /upload, where the redirect is what they expect. Mounted
+  // with the upload already done (they left and came back), the link below is
+  // offered instead: yanking someone to a page they did not ask for is the
+  // bug this replaces. The dismiss acknowledges the upload so the status strip
+  // does not repeat the news on the very page it links to.
+  const prevPhase = useRef(upload.phase);
+  useEffect(() => {
+    const was = prevPhase.current;
+    prevPhase.current = upload.phase;
+    if (upload.phase !== "done" || !upload.gameId) return;
+    if (was !== "uploading" && was !== "finalizing") return;
+    setRedirecting(true);
+    dismissUpload();
+    router.push(`/games/${upload.gameId}`);
+  }, [upload.phase, upload.gameId, router]);
 
   const outOfQuota =
     quotaKnown && (config.games_remaining <= 0 || config.minutes_remaining <= 0);
@@ -120,6 +141,9 @@ export function UploadZone() {
     const err = validate(f);
     if (err) { setError(err); return; }
     setError(null);
+    // A new file is the answer to a finished or failed upload; clear it rather
+    // than show last time's outcome under this time's form.
+    dismissUpload();
     setFile(f);
     setDuration(null);
     setDurationProbed(false);
@@ -150,86 +174,30 @@ export function UploadZone() {
     if (f) pickFile(f);
   };
 
-  const handleUpload = async () => {
-    if (!file || uploading) return; // re-entry guard — a second click is a no-op
+  const handleUpload = () => {
+    // Re-entry guard — a second click is a no-op. Read live as well as from
+    // this render: the store can move between the render and the click.
+    if (!file || uploading) return;
+    const live = getUploadSnapshot().phase;
+    if (live === "uploading" || live === "finalizing") return;
     // Re-check on submit: the config may have loaded, or the duration
     // resolved, after the file was picked.
     const blocked = validate(file) ?? validateDuration(duration);
     if (blocked) { setError(blocked); return; }
     setError(null);
-    setUploading(true);
-    setProgress(0); // show the progress bar immediately, not on the first onprogress event
-    setStatusText("Uploading…");
-
-    const start = Date.now();
-    let ticket: UploadTicket | null = null;
-    // Once completion is in flight the server may have already claimed the row
-    // and dispatched the job, so a failure past this point is ambiguous rather
-    // than a clean loss — see the catch.
-    let completing = false;
-    try {
-      // 1. Ask the api for a ticket. Type and size are checked here, server
-      //    side, before anything is transferred — a rejection costs nothing.
-      ticket = await createUpload({
-        title: title || file.name,
-        filename: file.name,
-        content_type: file.type,
-        size_bytes: file.size,
-        condense,
-        duration_seconds: duration,
-      });
-
-      // 2. Send the video straight to R2. One leg, fully observable: the api
-      //    is no longer in the data path, so there is nothing left to guess at
-      //    and the countdown is arithmetic on bytes we watched leave.
-      const parts = await uploadFileToR2(file, ticket, ({ loaded, total }) => {
-        // Held under 100 so a full bar always means "done, redirecting" —
-        // completion below is a real step that can still fail.
-        setProgress(Math.min(99, (loaded / total) * 100));
-        const elapsed = (Date.now() - start) / 1000;
-        if (elapsed > 1 && loaded > 0) {
-          setStatusText(fmtRemaining((total - loaded) / (loaded / elapsed)));
-        }
-      });
-
-      // 3. Confirm the object landed so the api can queue processing. Nothing
-      //    is enqueued before this, so an upload that died never becomes a job.
-      setStatusText("Finalizing…");
-      completing = true;
-      const game = await completeUpload(ticket.game_id, parts);
-      setProgress(100);
-      // Write the new game straight into the cache so the Library shows it
-      // immediately — invalidating alone let a prefetch that started during
-      // the (long) upload resolve afterwards and repopulate the cache with a
-      // stale list that omitted this game (CF-63).
-      addGameToCache(game);
-      router.push(`/games/${game.id}`);
-    } catch (e) {
-      // Discard the failed attempt server-side. Retrying mints a fresh ticket
-      // with a new game id, key and multipart upload, so without this every
-      // retry would leave behind a row and — for a large file — its already
-      // uploaded parts, billed until the 24h sweep. A dropped 1.5 GB upload on
-      // cellular is precisely the case this flow exists for, so retries are
-      // expected rather than exceptional.
-      //
-      // NOT once completion is in flight. `complete_upload` claims the row and
-      // dispatches the job before it responds, so a lost response — dropped
-      // connection, proxy timeout, backgrounded tab — means the upload may well
-      // have succeeded. Deleting there would remove a game the worker is
-      // processing right now, turning a recoverable blip into a vanished
-      // upload. An ambiguous completion is left alone: the worst case is a row
-      // the 24h sweep collects, against silently destroying real work.
-      if (ticket && !completing) {
-        // Best-effort: the row may already be gone (an oversize upload is
-        // deleted server-side), and a cleanup failure must not replace the
-        // real error with a confusing one.
-        deleteGame(ticket.game_id).catch(() => {});
-      }
-      setError(e instanceof Error ? e.message : "Upload failed.");
-      setProgress(null);
-      setUploading(false); // re-enable so the user can retry after a failure
-    }
+    // Not awaited: the outcome arrives through the store, which outlives this
+    // page. The store refuses a concurrent upload, which the guards above
+    // make unreachable from here.
+    void startUpload(file, { title: title || file.name, condense, duration });
   };
+
+  // What the card names: the file picked here, or — back on this page with
+  // the upload still running — the one the store is sending.
+  const shownFile = file
+    ? { name: file.name, size: file.size }
+    : inFlight && upload.fileName !== null && upload.sizeBytes !== null
+    ? { name: upload.fileName, size: upload.sizeBytes }
+    : null;
 
   return (
     <div className="w-full max-w-lg">
@@ -238,12 +206,12 @@ export function UploadZone() {
         onDragOver={(e) => { e.preventDefault(); if (!uploading) setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { e.preventDefault(); if (!uploading) onDrop(e); else setDragging(false); }}
-        onClick={() => !file && document.getElementById("file-input")?.click()}
+        onClick={() => !shownFile && document.getElementById("file-input")?.click()}
         className={cn(
           "relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition-all duration-200 sm:p-12",
           dragging
             ? "border-brand/50 bg-brand/5 scale-[1.01]"
-            : file
+            : shownFile
             ? "border-border-strong bg-surface cursor-default"
             : "border-border bg-surface hover:border-border-strong hover:bg-surface-high cursor-pointer"
         )}
@@ -257,15 +225,15 @@ export function UploadZone() {
           disabled={uploading}
         />
 
-        {file ? (
+        {shownFile ? (
           <>
             <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-brand/10 border border-brand/20">
               <Film size={18} className="text-brand" />
             </div>
-            <p className="text-[14px] font-medium text-foreground">{file.name}</p>
+            <p className="text-[14px] font-medium text-foreground">{shownFile.name}</p>
             <p className="mt-1 text-[12px] text-muted">
-              {formatBytes(file.size)}
-              {duration != null && ` · ${fmtMinutes(duration / 60)}`}
+              {formatBytes(shownFile.size)}
+              {file && duration != null && ` · ${fmtMinutes(duration / 60)}`}
             </p>
             {!uploading && (
               <button
@@ -291,8 +259,9 @@ export function UploadZone() {
         )}
       </div>
 
-      {/* Title input */}
-      {file && (
+      {/* Title input. Remounted mid-upload there is no local file, so it
+          shows the store's title, disabled like everything else. */}
+      {shownFile && (
         <div className="mt-4">
           <label className="block text-[12px] font-medium text-muted mb-1.5" htmlFor="game-title">
             Game title
@@ -300,7 +269,7 @@ export function UploadZone() {
           <input
             id="game-title"
             type="text"
-            value={title}
+            value={file ? title : upload.title ?? ""}
             onChange={(e) => setTitle(e.target.value)}
             disabled={uploading}
             placeholder="e.g. Varsity vs Lincoln — March 25"
@@ -383,17 +352,49 @@ export function UploadZone() {
         </div>
       )}
 
-      {/* Upload progress */}
-      {progress !== null && (
+      {/* Finished while the user was elsewhere: offer the game, don't jump to
+          it. UploadStatus carries the same news on every other page and stays
+          off this one, so it never shows twice at once. */}
+      {upload.phase === "done" && upload.gameId && !redirecting && (
+        <div
+          role="status"
+          className="mt-3 flex items-center gap-2 rounded-md border border-brand/30 bg-brand/10 px-3 py-2.5 text-[12px]"
+        >
+          <Check size={13} className="shrink-0 text-brand" aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate">
+            <span className="font-medium text-foreground">&ldquo;{upload.title}&rdquo; uploaded</span>
+            <span className="text-muted"> — processing has started.</span>
+          </span>
+          <Link
+            href={`/games/${upload.gameId}`}
+            onClick={dismissUpload}
+            className="shrink-0 font-medium text-brand underline-offset-2 hover:underline"
+          >
+            View game
+          </Link>
+          <button
+            type="button"
+            onClick={dismissUpload}
+            className="-my-1 min-h-8 shrink-0 rounded px-2 text-[12px] text-muted transition-colors hover:bg-surface-high hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Upload progress. Held at 100 through the redirect — the store has
+          already been dismissed by then, so this is the last thing the page
+          shows rather than a bar that snaps away before the route changes. */}
+      {(upload.progress !== null || redirecting) && (
         <div className="mt-4">
           <div className="flex justify-between text-[11px] text-muted mb-1.5">
-            <span>{statusText}</span>
-            <span className="tabular-nums">{Math.round(progress)}%</span>
+            <span>{redirecting ? "Uploaded" : upload.statusText}</span>
+            <span className="tabular-nums">{Math.round(redirecting ? 100 : upload.progress ?? 0)}%</span>
           </div>
           <div className="h-0.5 rounded-full bg-surface-high overflow-hidden">
             <div
               className="h-full rounded-full bg-brand transition-all duration-300 ease-out"
-              style={{ width: `${progress}%` }}
+              style={{ width: `${redirecting ? 100 : upload.progress ?? 0}%` }}
             />
           </div>
         </div>
@@ -401,7 +402,7 @@ export function UploadZone() {
 
       {/* Upload button — stays mounted but disabled while uploading so a
           slow network can't leave a clickable button (double-submit, CF-35) */}
-      {file && (
+      {shownFile && (
         <Button
           className="mt-4 w-full"
           size="lg"
