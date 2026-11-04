@@ -8,8 +8,13 @@ page records the protocol, the bar a validation run has to clear, and the
 exact commands, so that the run is one sitting once the videos are to hand.
 The ticket's fallback demo on one local unlabelled game from
 `CLIPFARM_EXTRA_VIDEO_DIR` is pending for the same reason; the tooling has
-been exercised on a synthetic ffmpeg clip only. It makes no claim about the
-labeller's accuracy.
+been exercised on a synthetic ffmpeg clip only, so no part of the frame,
+sheet or md5 path has met real footage (h264, 30/60 fps, 1080p, a
+quarter-hour long). That is an unmet clause of the ticket, not a code
+defect, and closing it is the maintainer's call: accept the gap as recorded
+here, or run `probe`, `sheets` and one `frames --around` on any local game
+and add the output and timing to this page. This page makes no claim about
+the labeller's accuracy.
 
 ## What it is
 
@@ -125,8 +130,9 @@ person's job), and whether the flagged spans were in fact the wrong ones.
 Set `CLIPFARM_FIXTURE_VIDEO_DIR` to the directory holding the test2–5 source
 files. They are matched by content MD5 against each fixture's
 `source_video_md5`, so the names do not matter and a re-encoded copy will
-correctly fail to match. (These two variables are introduced by this
-tooling; nothing else in the repo reads them.)
+correctly fail to match. (This variable and `CLIPFARM_EXTRA_VIDEO_DIR` below
+are this tooling's convention: `locate` is the one command that reads either,
+and nothing else in the repo does.)
 
 ```bash
 export CLIPFARM_FIXTURE_VIDEO_DIR=/path/to/fixture/videos
@@ -177,9 +183,24 @@ protocol has a baseline.
 
 ## Labelling an unlabelled game (after validation passes)
 
-Same commands with `CLIPFARM_EXTRA_VIDEO_DIR` holding the local games and a
+Same commands, with `CLIPFARM_EXTRA_VIDEO_DIR` holding the local games and a
 new `--test` id for each (`game7`, or the venue and date — anything that is
-not an existing fixture id). `write` pins the draft to the file by MD5,
+not an existing fixture id). An unlabelled game has no fixture to carry an
+MD5, so `locate` finds it by name instead: the file's stem is the id, so
+`locate --test game7` prints `$CLIPFARM_EXTRA_VIDEO_DIR/game7.mp4` (any
+video suffix; two files sharing the stem are refused rather than guessed
+between). A fixture id never falls through to this directory — `test2` is
+always the md5 match in `CLIPFARM_FIXTURE_VIDEO_DIR`, even if a `test2.mp4`
+sits among the local games.
+
+```bash
+export CLIPFARM_EXTRA_VIDEO_DIR=/path/to/local/games     # holds game7.mp4
+V=$(python -m ml.eval.ai_label locate --test game7)
+python -m ml.eval.ai_label sheets "$V"
+python -m ml.eval.ai_label write --test game7 --video "$V" --spans /tmp/game7_spans.json --model claude-fable-5-1
+```
+
+`write` pins the draft to the file by MD5,
 duration and frame height as the human fixtures are — the duration rounded
 up to the tenth of a second the spans are stored at, so a rally still running
 when the video ends fits inside it and the pinning suite's over-run check

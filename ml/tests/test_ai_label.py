@@ -32,6 +32,7 @@ from ml.eval.ai_label import (
     build_draft,
     content_md5,
     find_video_by_md5,
+    find_video_by_name,
     load_spans_file,
     score_draft,
     validate_spans,
@@ -444,6 +445,7 @@ class TestExtractFrames:
         assert frames[11].path.name == "frame_00011.0s.jpg"
         sidecar = json.loads((tmp_path / "1fps" / "frames.json").read_text(encoding="utf-8"))
         assert [(x["file"], x["sec"]) for x in sidecar["frames"]] == [(f.path.name, f.sec) for f in frames]
+        assert [x["ts"] for x in sidecar["frames"]] == [f"00:{i:02d}" for i in range(12)]
         assert sidecar["every_sec"] == 1.0 and sidecar["height"] == 90
 
     def test_a_range_offsets_the_timestamps(self, synthetic_clip, tmp_path):
@@ -524,9 +526,75 @@ class TestFramesCli:
 
 
 class TestLocateCli:
+    """`locate` is the one reader of the two video-directory variables: a
+    fixture id goes by md5 in CLIPFARM_FIXTURE_VIDEO_DIR, an unlabelled game
+    (no fixture, so no md5 to match) by file name in CLIPFARM_EXTRA_VIDEO_DIR.
+    The documented unlabelled-game workflow starts with `locate --test game7`,
+    which once exited "no fixture" whatever the variables held."""
+
+    @pytest.fixture
+    def dirs(self, tmp_path, monkeypatch):
+        fixtures = tmp_path / "fixtures"
+        fixture_videos = tmp_path / "fixture_videos"
+        extra = tmp_path / "extra"
+        for d in (fixtures, fixture_videos, extra):
+            d.mkdir()
+        (fixture_videos / "renamed download.mp4").write_bytes(b"the test2 bytes")
+        (fixtures / "test2_deadtime.json").write_text(json.dumps({
+            "source_video_md5": hashlib.md5(b"the test2 bytes").hexdigest(),
+        }), encoding="utf-8")
+        (extra / "game7.mp4").write_bytes(b"an unlabelled game")
+        (extra / "test2.mp4").write_bytes(b"a decoy named after a fixture id")
+        monkeypatch.setattr(ai_label, "FIXTURES_DIR", fixtures)
+        monkeypatch.setenv(ai_label.FIXTURE_VIDEO_DIR_ENV, str(fixture_videos))
+        monkeypatch.setenv(ai_label.EXTRA_VIDEO_DIR_ENV, str(extra))
+        return fixtures, fixture_videos, extra
+
     def test_a_missing_dir_is_refused_not_a_traceback(self, tmp_path):
         with pytest.raises(SystemExit, match="is not a directory"):
             ai_label.main(["locate", "--test", "test2", "--dir", str(tmp_path / "nope")])
+
+    def test_an_unlabelled_game_is_found_by_name_in_the_extra_dir(self, dirs, capsys):
+        _, _, extra = dirs
+        ai_label.main(["locate", "--test", "game7"])
+        assert capsys.readouterr().out.strip() == str(extra / "game7.mp4")
+
+    def test_a_fixture_id_goes_by_md5_and_never_consults_the_extra_dir(self, dirs, capsys):
+        """extra/test2.mp4 exists and is not the fixture's bytes; the answer
+        is the renamed file in the fixture dir whose md5 matches."""
+        _, fixture_videos, _ = dirs
+        ai_label.main(["locate", "--test", "test2"])
+        assert capsys.readouterr().out.strip() == str(fixture_videos / "renamed download.mp4")
+
+    def test_dir_overrides_whichever_directory_the_id_selects(self, dirs, tmp_path, capsys):
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "game7.mkv").write_bytes(b"moved")
+        ai_label.main(["locate", "--test", "game7", "--dir", str(elsewhere)])
+        assert capsys.readouterr().out.strip() == str(elsewhere / "game7.mkv")
+
+    def test_a_new_id_with_the_extra_dir_unset_says_which_variable_to_set(self, dirs, monkeypatch):
+        monkeypatch.delenv(ai_label.EXTRA_VIDEO_DIR_ENV)
+        message = r"no fixture .*game7_deadtime\.json, and CLIPFARM_EXTRA_VIDEO_DIR is not set"
+        with pytest.raises(SystemExit, match=message):
+            ai_label.main(["locate", "--test", "game7"])
+
+    def test_a_new_id_missing_from_the_extra_dir_is_refused(self, dirs):
+        with pytest.raises(SystemExit, match=r"no fixture .* and no game8\.\* among the 2 videos"):
+            ai_label.main(["locate", "--test", "game8"])
+
+    def test_two_files_sharing_the_id_are_refused_rather_than_guessed(self, dirs):
+        _, _, extra = dirs
+        (extra / "game7.mov").write_bytes(b"a different encode")
+        with pytest.raises(SystemExit, match=r"2 files in .* are named game7: game7\.mov, game7\.mp4"):
+            ai_label.main(["locate", "--test", "game7"])
+
+    def test_find_video_by_name_matches_the_stem_under_any_video_suffix(self, tmp_path):
+        (tmp_path / "game7.MP4").write_bytes(b"x")
+        (tmp_path / "game7.txt").write_bytes(b"not a video")
+        (tmp_path / "game70.mp4").write_bytes(b"a different game")
+        assert find_video_by_name("game7", tmp_path) == tmp_path / "game7.MP4"
+        assert find_video_by_name("game8", tmp_path) is None
 
 
 @needs_ffmpeg
@@ -594,3 +662,38 @@ class TestContactSheets:
     def test_rejects_a_range_outside_the_video(self, synthetic_clip, tmp_path):
         with pytest.raises(ValueError):
             ai_label.contact_sheets(synthetic_clip, tmp_path / "bad", start=20.0)
+
+
+class TestSheetOrderPastAThousand:
+    def test_sheets_are_listed_in_numeric_not_name_order(self, tmp_path, monkeypatch):
+        """ffmpeg's sheet_%03d widens to four digits after 999, so a name sort
+        put sheet_1000.jpg between sheet_100.jpg and sheet_101.jpg and every
+        tile from the hundredth sheet on was listed at the wrong second while
+        the count check still passed. Faked rather than rendered: 1000 real
+        sheets is seconds of ffmpeg per run, and the names are all that
+        matter — the fake writes them with the same printf the muxer uses."""
+        n_frames = 1000
+        monkeypatch.setattr(ai_label, "probe", lambda video: ai_label.VideoInfo(float(n_frames), 320, 180, 10.0))
+        monkeypatch.setattr(ai_label, "_DRAWTEXT_AVAILABLE", False)
+
+        def fake_run(cmd, timeout):
+            target = Path(cmd[-1])
+            if target.name == "_raw_%06d.jpg":
+                for k in range(n_frames):
+                    (target.parent / ("_raw_%06d.jpg" % k)).write_bytes(b"")
+            elif target.name == "sheet_%03d.jpg":
+                for k in range(1, len(list(target.parent.glob("_raw_*.jpg"))) + 1):   # one tile per sheet
+                    (target.parent / ("sheet_%03d.jpg" % k)).write_bytes(b"")
+            else:
+                raise AssertionError(f"unexpected ffmpeg call: {cmd}")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        monkeypatch.setattr(ai_label, "_run", fake_run)
+        sheets = ai_label.contact_sheets(tmp_path / "long.mp4", tmp_path / "s", every_sec=1.0, cols=1, rows=1)
+        assert [s.name for s in sheets] == ["sheet_%03d.jpg" % k for k in range(1, n_frames + 1)]
+        listing = json.loads((tmp_path / "s" / "sheets.json").read_text(encoding="utf-8"))["sheets"]
+        assert [(s["file"], s["first_sec"]) for s in listing[99:102]] == [
+            ("sheet_100.jpg", 99.0), ("sheet_101.jpg", 100.0), ("sheet_102.jpg", 101.0),
+        ]
+        assert (listing[-1]["file"], listing[-1]["first_sec"]) == ("sheet_1000.jpg", 999.0)
+        assert [s["first_sec"] for s in listing] == [float(k) for k in range(n_frames)]

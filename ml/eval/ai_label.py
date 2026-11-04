@@ -36,6 +36,7 @@ Usage:
   python -m ml.eval.ai_label probe  VIDEO
   python -m ml.eval.ai_label md5    VIDEO
   python -m ml.eval.ai_label locate --test test2            # by md5, in $CLIPFARM_FIXTURE_VIDEO_DIR
+  python -m ml.eval.ai_label locate --test game7            # no fixture: game7.mp4 in $CLIPFARM_EXTRA_VIDEO_DIR
   python -m ml.eval.ai_label sheets VIDEO [--every 1.0] [--cols 6 --rows 5]
   python -m ml.eval.ai_label frames VIDEO [--every 1.0] [--start S --end E]
   python -m ml.eval.ai_label frames VIDEO --around 754 [--radius 4 --every 0.5]
@@ -65,9 +66,12 @@ DRAFTS_DIR = FIXTURES_DIR / "drafts"
 FRAMES_DIR = EVAL_DIR / "frames"          # gitignored scratch for frames and sheets
 
 # Where the raw videos live locally. Neither variable exists anywhere else in
-# the repo; this module introduces the convention. Fixture videos are found by
-# content MD5 (the fixture's `source_video_md5`), not by name, so a renamed
-# download still resolves — and a re-encoded one correctly does not.
+# the repo; this module introduces the convention, and `locate` is the one
+# command that reads either. Fixture videos are found by content MD5 (the
+# fixture's `source_video_md5`), not by name, so a renamed download still
+# resolves — and a re-encoded one correctly does not. An unlabelled game has
+# no fixture to carry an md5, so it is found by name instead: the file's stem
+# is the id the draft will be written under (game7.mp4 -> `--test game7`).
 FIXTURE_VIDEO_DIR_ENV = "CLIPFARM_FIXTURE_VIDEO_DIR"   # the test2–5 sources
 EXTRA_VIDEO_DIR_ENV = "CLIPFARM_EXTRA_VIDEO_DIR"       # unlabelled local games
 
@@ -179,6 +183,25 @@ def find_video_by_md5(md5: str, video_dir: Path) -> Path | None:
         if content_md5(path) == md5.lower():
             return path
     return None
+
+
+def find_video_by_name(test_id: str, video_dir: Path) -> Path | None:
+    """The video in `video_dir` whose stem is `test_id` (any VIDEO_SUFFIXES),
+    or None. For an unlabelled game, which has no fixture and so no md5 to
+    match: its id is its file name, and the draft is pinned to the bytes by
+    md5 only once `write` has read them.
+
+    Raises ValueError when two files share the stem (game7.mp4 and game7.mov):
+    guessing between them would pin the draft to a file the frames may not
+    have come from.
+    """
+    matches = [p for p in list_videos(video_dir) if p.stem == test_id]
+    if len(matches) > 1:
+        raise ValueError(
+            f"{len(matches)} files in {video_dir} are named {test_id}: "
+            + ", ".join(p.name for p in matches) + " — rename one, or pass the path directly"
+        )
+    return matches[0] if matches else None
 
 
 def video_dir_from_env(name: str) -> Path:
@@ -408,7 +431,13 @@ def contact_sheets(
         _run(cmd(burn=False), timeout=3600)
     _clear(out_dir, "_raw_*.jpg")
 
-    sheets = sorted(out_dir.glob("sheet_*.jpg"))
+    # Numeric order, as _extract_raw parses its index: ffmpeg's sheet_%03d
+    # widens to four digits past 999, and a name sort would then put
+    # sheet_1000.jpg between sheet_100.jpg and sheet_101.jpg — every tile from
+    # the hundredth sheet on listed at the wrong second while the count below
+    # still matched. 1000 sheets is 8.3 h at the defaults but 100 min at
+    # --cols 3 --rows 2, which a long session recording reaches.
+    sheets = sorted(out_dir.glob("sheet_*.jpg"), key=lambda p: int(p.stem[len("sheet_"):]))
     per_sheet = cols * rows
     if len(sheets) != -(-len(raws) // per_sheet):
         raise RuntimeError(f"ffmpeg wrote {len(sheets)} sheets for {len(raws)} frames at {per_sheet} per sheet")
@@ -491,6 +520,7 @@ def validate_spans(spans: list[DraftSpan], duration_sec: float) -> None:
     if not spans:
         raise ValueError("a draft needs at least one span")
     prev_end = 0.0
+    stored_duration = _file_duration(duration_sec)
     for i, s in enumerate(spans):
         if not (math.isfinite(s.start) and math.isfinite(s.end) and math.isfinite(s.confidence)):
             raise ValueError(f"span {i}: non-finite value ({s.start}, {s.end}, {s.confidence})")
@@ -499,7 +529,6 @@ def validate_spans(spans: list[DraftSpan], duration_sec: float) -> None:
         where = f"span {i} ({_fmt_ts(s.start)}-{_fmt_ts(s.end)})"
         if s.end <= s.start:
             raise ValueError(f"{where}: end is not after start")
-        stored_duration = _file_duration(duration_sec)
         if round(s.end, 1) > stored_duration:
             # Both sides at the tenth the file holds — build_draft stores spans
             # to 0.1 s beside _file_duration(duration_sec) — so this is the
@@ -699,9 +728,16 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("md5", help="content MD5 (equals source_video_md5 / the ball-cache key)")
     s.add_argument("video", type=Path)
 
-    s = sub.add_parser("locate", help=f"find a fixture's video by md5 in ${FIXTURE_VIDEO_DIR_ENV}")
-    s.add_argument("--test", required=True, help="fixture id, e.g. test2 (reads only its source_video_md5)")
-    s.add_argument("--dir", type=Path, default=None, help=f"override ${FIXTURE_VIDEO_DIR_ENV}")
+    s = sub.add_parser(
+        "locate",
+        help=f"find a fixture's video by md5 in ${FIXTURE_VIDEO_DIR_ENV}, "
+             f"or an unlabelled game's by file name in ${EXTRA_VIDEO_DIR_ENV}",
+    )
+    s.add_argument("--test", required=True,
+                   help="fixture id, e.g. test2 (reads only its source_video_md5), or a new id "
+                        f"whose video is <id>.mp4 (any video suffix) in ${EXTRA_VIDEO_DIR_ENV}")
+    s.add_argument("--dir", type=Path, default=None,
+                   help="override the directory searched, whichever of the two the id selects")
 
     s = sub.add_parser("sheets", help="contact sheets: cols×rows tiles, one per --every seconds")
     s.add_argument("video", type=Path)
@@ -748,17 +784,38 @@ def main(argv: list[str] | None = None) -> None:
         print(content_md5(args.video))
     elif args.cmd == "locate":
         fixture = FIXTURES_DIR / f"{args.test}_deadtime.json"
-        if not fixture.exists():
-            raise SystemExit(f"no fixture {fixture}")
-        md5 = json.loads(fixture.read_text(encoding="utf-8")).get("source_video_md5")
-        if not md5:
-            raise SystemExit(f"{fixture} has no source_video_md5")
-        video_dir = args.dir or video_dir_from_env(FIXTURE_VIDEO_DIR_ENV)
-        if not video_dir.is_dir():
-            raise SystemExit(f"--dir {video_dir} is not a directory")
-        found = find_video_by_md5(md5, video_dir)
-        if found is None:
-            raise SystemExit(f"no file in {video_dir} has md5 {md5} ({len(list_videos(video_dir))} videos hashed)")
+        if fixture.exists():
+            md5 = json.loads(fixture.read_text(encoding="utf-8")).get("source_video_md5")
+            if not md5:
+                raise SystemExit(f"{fixture} has no source_video_md5")
+            video_dir = args.dir or video_dir_from_env(FIXTURE_VIDEO_DIR_ENV)
+            if not video_dir.is_dir():
+                raise SystemExit(f"--dir {video_dir} is not a directory")
+            found = find_video_by_md5(md5, video_dir)
+            if found is None:
+                raise SystemExit(f"no file in {video_dir} has md5 {md5} ({len(list_videos(video_dir))} videos hashed)")
+        else:
+            # An unlabelled game: nothing to match an md5 against, so the id
+            # names the file. Say which directory was meant when neither is
+            # given, since a mistyped fixture id lands here too.
+            if args.dir is None and not os.environ.get(EXTRA_VIDEO_DIR_ENV):
+                raise SystemExit(
+                    f"no fixture {fixture}, and {EXTRA_VIDEO_DIR_ENV} is not set: a fixture id is found by "
+                    f"md5 in ${FIXTURE_VIDEO_DIR_ENV}, an unlabelled game by its file name "
+                    f"({args.test}.mp4) in ${EXTRA_VIDEO_DIR_ENV}"
+                )
+            video_dir = args.dir or video_dir_from_env(EXTRA_VIDEO_DIR_ENV)
+            if not video_dir.is_dir():
+                raise SystemExit(f"--dir {video_dir} is not a directory")
+            try:
+                found = find_video_by_name(args.test, video_dir)
+            except ValueError as e:
+                raise SystemExit(str(e)) from None
+            if found is None:
+                raise SystemExit(
+                    f"no fixture {fixture} and no {args.test}.* among the {len(list_videos(video_dir))} "
+                    f"videos in {video_dir}"
+                )
         print(found)
     elif args.cmd == "sheets":
         out = args.out or _default_out(args.video, "sheets")
