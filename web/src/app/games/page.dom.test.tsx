@@ -15,7 +15,9 @@
 // - CF-70: an upload that finishes while the Library is open must put its game
 //   in the list. The upload store writes the row into the cache and the status
 //   strip above the list announces it; a list that still lacked the game
-//   contradicted the strip until the user left and came back.
+//   contradicted the strip until the user left and came back. The list it
+//   takes must also survive the Library's own slower load settling afterwards
+//   (R8-M1): the loaders answer out of order, and the latest one owns the page.
 //
 // `fetchGames` is a single mock whose behaviour each test sets: by default it
 // hands back the in-flight prefetch (or never settles), which is what the
@@ -274,5 +276,39 @@ describe("Library while an upload finishes (CF-70)", () => {
     expect(host.querySelector(".skeleton")).toBeNull();
     expect(host.textContent).toContain("Network down");
     expect(host.textContent).not.toContain("No games yet");
+  });
+
+  it("keeps the list the upload fetched when the slower mount request fails after it", async () => {
+    // Mounted on a cold cache with the load still pending (a stuck
+    // connection); the upload lands, the fetch it makes answers with the
+    // list, and only then does the mount request give up (R8-M1). That
+    // failure is older than the list on screen and must not replace it.
+    authUser = { id: "upload-d" };
+    let rejectMount!: (e: Error) => void;
+    fetchGames.mockImplementationOnce(
+      () => new Promise<Game[]>((_, reject) => { rejectMount = reject; }),
+    );
+    await act(async () => { root.render(<GamesPage />); });
+    expect(host.querySelector(".skeleton")).not.toBeNull();
+
+    fetchGames.mockResolvedValue([game("uploaded", "queued"), game("a-ready", "ready")]);
+    await act(async () => {
+      await startUpload(new File(["x"], "match.mp4", { type: "video/mp4" }), {
+        title: "uploaded",
+        condense: false,
+        duration: null,
+      });
+    });
+    expect(getUploadSnapshot().phase).toBe("done");
+    expect(fetchGames).toHaveBeenCalledTimes(2);
+    expect(host.querySelector('a[href="/games/uploaded"]')).not.toBeNull();
+    expect(host.textContent).toContain("2 games");
+
+    // The mount request times out now, after the list it was for is already
+    // on screen from a newer answer.
+    await act(async () => { rejectMount(new Error("Network down")); });
+    expect(host.querySelector('a[href="/games/uploaded"]')).not.toBeNull();
+    expect(host.textContent).toContain("2 games");
+    expect(host.textContent).not.toContain("Network down");
   });
 });
