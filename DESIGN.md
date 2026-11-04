@@ -216,10 +216,13 @@ rail appears at `lg`, as today.
   They get a top bar: the logo on the left, *Sign in* and a primary *Get
   started* on the right. A rail holding only "Log in" and "Sign up" reads as
   an unfinished app.
-- **Content width:** 1024px for app pages, 1200px for the game page (the player
-  needs it), 1120px for the landing page. Today `web/src/app/layout.tsx` wraps
-  every page in `max-w-5xl` (1024px), so the two wider widths take effect only
-  once that shared wrapper changes; none of the cards below scopes that yet.
+- **Content width: 1024px for every page**, the game page and the landing
+  included. `web/src/app/layout.tsx` wraps every page in `max-w-5xl` (1024px),
+  and no card below scopes changing that shared wrapper, so this takes the
+  width the app has rather than asking for 1200px / 1120px it cannot deliver
+  (decided on #599; the signed-out shell CF-582 builds keeps the same width).
+  A later card widens the game page or the landing once a screen actually
+  needs it; the player is 576px tall at 1024px, which is enough.
 - **One primary action per screen**, a brand-filled `Button` at the right of the
   page header: *Upload* on the Library, *Play top plays* on a game, *Upload* in
   an empty state. Everything else is secondary or ghost.
@@ -339,9 +342,14 @@ too. Until the maintainer records that on CF-582 (#597), the landing shows
 **real data from the demo game** (its rally strip and its clip list with play
 scores and timestamps) and no thumbnails, rather than mock media.
 
-Where that data comes from is also open: the demo game exists only as a copy
-made per signup (CF-220), and no unauthenticated route serves it today. CF-582
-settles the source with the maintainer before building the landing.
+That data comes from a small public endpoint CF-582 adds, in the pattern of
+the app's other anonymous reads (throttled per caller, CF-186): the demo source
+game's rally marks and top plays, and no media URLs. The demo game exists only
+as a copy made per signup (CF-220), so the endpoint reads the source game
+`SAMPLE_GAME_ID` names; when that is unset, the hero shows the headline and
+*Get started* only, never invented data. The alternative, a snapshot of the
+data committed to `web/`, goes stale and publishes a copy in the repo; it was
+not taken (decided on #599).
 
 - **Top bar** (see Layout). No rail.
 - **Hero:** a `display` headline that only ClipFarm could say, one `body`
