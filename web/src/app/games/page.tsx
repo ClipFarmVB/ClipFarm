@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { AlertCircle, ArrowRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
@@ -12,6 +12,7 @@ import { deleteGame, renameGame, type Game } from "@/lib/api";
 import { GameTitle, deleteAction } from "@/components/DemoGame";
 import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
 import { sampleGameIdOf } from "@/lib/onboarding";
+import { getUploadSnapshot, subscribeUpload, type UploadPhase } from "@/lib/uploadStore";
 import { cn } from "@/lib/utils";
 
 // `uploading` is filtered out by the api's list endpoint — a game whose video
@@ -32,6 +33,10 @@ const STATUS_LABEL: Record<Game["status"], string> = {
   ready:      "Ready",
   failed:     "Failed",
 };
+
+const getUploadPhase = (): UploadPhase => getUploadSnapshot().phase;
+// Idle on the server, as the store's own hook answers.
+const getServerUploadPhase = (): UploadPhase => "idle";
 
 function GamesContent() {
   const { user } = useAuth();
@@ -92,6 +97,29 @@ function GamesContent() {
     }
   }
 
+  // Three loaders write the list: the mount load, the upload's `done` effect
+  // and the poll. Each claims a sequence number when it starts and drops its
+  // own answer if a later loader has started since (R8-M1): otherwise a slow
+  // mount request rejecting after the upload's list was on screen hid that
+  // list behind the error card, the mirror order left the card over a list in
+  // state, and two requests in flight settled in whichever order the network
+  // chose. However the list arrives, it is also the recovery a failed load was
+  // waiting for: `loading` and `error` both hide the rows, so left set they
+  // kept the error card up with the game in state behind it, under a strip
+  // saying it uploaded (R7-M1).
+  const loadSeq = useRef(0);
+  const show = useCallback((seq: number, data: Game[]) => {
+    if (seq !== loadSeq.current) return;
+    setGames(data);
+    setError(null);
+    setLoading(false);
+  }, []);
+  const fail = useCallback((seq: number, e: unknown) => {
+    if (seq !== loadSeq.current) return;
+    setError(e instanceof Error ? e.message : "Couldn't load your games.");
+    setLoading(false);
+  }, []);
+
   useEffect(() => {
     const cached = getCachedGames();
     const hasActive = (list: Game[]) =>
@@ -105,28 +133,52 @@ function GamesContent() {
     // (e.g. upload success) landing while the request is in flight — an
     // unconditional updateGamesCache here would stamp the pre-upload list
     // fresh and hide the new game again (CF-63).
+    const seq = ++loadSeq.current;
     const p = getInflightGames() ?? fetchGames();
-    p.then((data) => {
-      setGames(data);
-      setLoading(false);
-    }).catch((e: unknown) => {
-      setError(e instanceof Error ? e.message : "Couldn't load your games.");
-      setLoading(false);
-    });
+    p.then((data) => show(seq, data)).catch((e: unknown) => fail(seq, e));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // An upload finishing while this page is open (CF-70). The store writes the
+  // new game into the cache before it publishes `done`, but nothing above
+  // reads the cache again: the effect above ran on mount, and the poll below
+  // only arms on a row already in the list. With the redirect gone this is the
+  // page the user is most likely on when the upload lands, under a strip that
+  // says so — take the row rather than leave the list contradicting it. The
+  // new `queued` row then arms the poll.
+  //
+  // Only the phase is read, so only the phase is subscribed to: a progress
+  // publish every few hundred milliseconds would otherwise re-render every row
+  // for the length of the upload (R8-N3).
+  const uploadPhase = useSyncExternalStore(subscribeUpload, getUploadPhase, getServerUploadPhase);
+  useEffect(() => {
+    if (uploadPhase !== "done") return;
+    // Claimed for the warm branch too: the cache the store just wrote is the
+    // newest answer there is, and a mount request still out must not replace
+    // it when it settles.
+    const seq = ++loadSeq.current;
+    const cached = getCachedGames();
+    if (cached) {
+      show(seq, cached);
+      return;
+    }
+    // Cold cache: the row had nowhere to land, so ask for the list. A failure
+    // is reported the way the mount load's is — this fetch may be the first
+    // the page gets an answer to, and skeletons would otherwise stay up.
+    fetchGames().then((data) => show(seq, data)).catch((e: unknown) => fail(seq, e));
+  }, [uploadPhase, show, fail]);
 
   // Poll while any game is actively processing
   useEffect(() => {
     const hasActive = games.some((g) => g.status === "processing" || g.status === "queued");
     if (!hasActive) return;
     const interval = setInterval(() => {
-      fetchGames().then((data) => {
-        setGames(data);
-      }).catch(() => {});
+      // A tick that fails keeps what is shown; the next one asks again.
+      const seq = ++loadSeq.current;
+      fetchGames().then((data) => show(seq, data)).catch(() => {});
     }, 10_000);
     return () => clearInterval(interval);
-  }, [games]);
+  }, [games, show]);
 
   return (
     <div className="fade-up">
