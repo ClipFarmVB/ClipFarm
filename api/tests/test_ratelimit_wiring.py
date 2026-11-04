@@ -12,6 +12,17 @@ routes that resolve no credential and requires each one to be in it. So a new
 anonymous read added later without a limiter fails here, the same shape as
 test_visibility_write_paths_are_declared.py's AST walk: the point is that a
 reviewer does not have to notice.
+
+Two objects are examined here, and they answer different questions. The router
+table (`ROUTERS`, walked by `_all_routes`) answers "is a limiter attached to
+this route at all, and which policy" -- the decorator is where it is declared,
+and the policy checks read it there. The served app (`served_app`, built by
+`app.main.mount_routers`) answers "where does the limiter sit, and what does a
+refusal cost": `include_router(..., dependencies=[...])` lands a dependency on
+the served route AHEAD of everything the router declared, invisibly to the
+router objects, and a session dependency added inside `RateLimiter.__call__`
+moves no position at all. So the position and no-auth guards read the app's
+route, and the cost is driven over the wire with a counting session (CF-408).
 """
 import asyncio
 
@@ -117,6 +128,81 @@ def _route_for(path, method):
         if (route_path, route_method) == (path, method):
             return route
     raise AssertionError(f"{method} {path} is not registered on any router")
+
+
+def _served_route(app, path, method):
+    """The route as the app serves it -- `include_router` builds a new
+    `APIRoute` per route, so this is not the object `_route_for` returns."""
+    for route in app.routes:
+        if getattr(route, "path", None) != path:
+            continue
+        if method in getattr(route, "methods", set()):
+            return route
+    raise AssertionError(f"{method} {path} is not served by the app")
+
+
+@pytest.fixture
+def served_app(monkeypatch):
+    """The route table `app.main` serves, assembled on a fresh app with the
+    social surface on.
+
+    `social_enabled` is forced on because the two address-keyed policies
+    (`profile`, `user_posts`) live only on the routers main.py mounts behind
+    that flag, which defaults off: on the flag-off app the property the guards
+    below pin exists on no route at all, and the tests would pass vacuously.
+    Forced through the fixture rather than the environment so the module-level
+    `app.main.app` -- which other tests import -- is untouched, nothing is
+    reloaded, and the flag is back to its default when the test ends.
+
+    A fresh `FastAPI()` rather than `TestClient(app.main.app)`, for the cost
+    test: that app's lifespan installs a lazily-connecting `RedisBackend` over
+    whatever the test monkeypatched into `ratelimit._backend`, the first `hit()`
+    fails and the limiter fails open, so no 429 ever arrives. The fresh app has
+    no lifespan and the `MemoryBackend` stays installed.
+    `test_mount_routers_is_what_the_served_app_is_built_from` is what makes
+    this the served table rather than a second, hand-maintained one.
+    """
+    import app.main as main
+
+    monkeypatch.setattr(settings, "social_enabled", True)
+    probe = FastAPI()
+    main.mount_routers(probe)
+    return probe
+
+
+# Added by `app.main` itself rather than by `mount_routers`, so they are on the
+# served app and not on a probe. The debug route exists only under `debug`.
+_APP_OWN_ROUTES = {"/health", "/healthz", "/debug/sentry-error"}
+
+
+def _served_shape(app) -> list:
+    """Each served route as (path, methods, resolved top-level dependencies):
+    the three things the served-app guards read."""
+    return [
+        (
+            route.path,
+            tuple(sorted(route.methods)),
+            [dep.call for dep in route.dependant.dependencies],
+        )
+        for route in app.routes
+        if hasattr(route, "dependant") and route.path not in _APP_OWN_ROUTES
+    ]
+
+
+def test_mount_routers_is_what_the_served_app_is_built_from():
+    """The fixture above is only evidence about production if `mount_routers`
+    is the path `app.main.app` was actually assembled through. Pinned by
+    shape: a probe built under the LIVE flag -- no monkeypatch here -- carries
+    the same routes, methods and top-level dependencies, in the same order, as
+    the module-level app minus the routes main.py adds itself. An
+    `include_router` call that drifts back to module level, or gains a
+    `dependencies=[...]` the helper does not have, shows up here."""
+    import app.main as main
+
+    probe = FastAPI()
+    main.mount_routers(probe)
+    assert _served_shape(probe), "mount_routers mounted nothing"
+    assert _served_shape(main.app) == _served_shape(probe)
 
 
 @pytest.mark.parametrize(
@@ -371,7 +457,7 @@ def test_a_hanging_backend_is_a_raise_the_limiter_can_fail_open_on(monkeypatch):
     assert asyncio.run(limiter(Req())) is None
 
 
-def test_an_address_keyed_route_resolves_no_auth_dependency():
+def test_an_address_keyed_route_resolves_no_auth_dependency(served_app):
     """The property finding 3 was actually about, pinned at the route.
 
     An earlier fix removed `viewer_id` from `get_profile`'s own signature, which
@@ -390,13 +476,16 @@ def test_an_address_keyed_route_resolves_no_auth_dependency():
         purpose is bounding an attacker's rate.
 
     Asserted against the resolved `route.dependant` rather than the source, so
-    reintroducing the dependency anywhere in the chain fails here.
+    reintroducing the dependency anywhere in the chain fails here -- and on the
+    SERVED route rather than the router's, so an `include_router(...,
+    dependencies=[...])` in main.py, which the router object never sees, fails
+    here too (CF-408).
     """
     from app.auth import get_optional_user_id
 
     checked = 0
     for (path, method), (name, _setting, _default) in THROTTLED.items():
-        route = _route_for(path, method)
+        route = _served_route(served_app, path, method)
         limiters = _limiters_on(route)
         if not limiters or not limiters[0].policy.by_address:
             continue
@@ -486,7 +575,9 @@ def test_a_viewer_keyed_limiter_takes_the_viewer_from_auth_not_the_request(monke
     )
 
 
-def test_the_limiter_is_resolved_before_anything_a_refusal_should_not_pay_for():
+def test_the_limiter_is_resolved_before_anything_a_refusal_should_not_pay_for(
+    served_app,
+):
     """On an address-keyed route, a 429 must not have cost a JWT verification or
     a database write first. (A viewer-keyed route resolves the viewer before it
     counts, by design: that is what gives a signed-in caller their own bucket.)
@@ -505,10 +596,18 @@ def test_the_limiter_is_resolved_before_anything_a_refusal_should_not_pay_for():
     the module docstring rejects for an unrelated reason -- would leave the
     whole suite green and restore the full cost on every refused request. So
     assert the position, not just the presence.
+
+    On the served route, not the router's. `include_router` puts a
+    `dependencies=[...]` given at the call ahead of the router-declared ones
+    (fastapi 0.115.6, ``routing.py`` ``include_router``, then
+    ``APIRoute.__init__`` inserting each at index 0), so one added in main.py
+    is at position 0 of the served route and the router object is none the
+    wiser. A review round measured that shape at 12 auth resolutions and 12
+    commits across 12 requests on a 2/min budget, suite green (CF-408).
     """
     checked = 0
     for (path, method), (name, _setting, _default) in THROTTLED.items():
-        route = _route_for(path, method)
+        route = _served_route(served_app, path, method)
         deps = route.dependant.dependencies
         at = [i for i, dep in enumerate(deps) if isinstance(dep.call, RateLimiter)]
         assert at, f"{method} {path} resolves no limiter at all"
@@ -519,6 +618,97 @@ def test_the_limiter_is_resolved_before_anything_a_refusal_should_not_pay_for():
         )
         checked += 1
     assert checked == len(THROTTLED)
+
+
+def test_a_refused_request_opens_no_session_and_commits_nothing(served_app, monkeypatch):
+    """The cost itself, not the shape that implies it.
+
+    The position test above reads `route.dependant.dependencies`, and a
+    dependency can sit BELOW the limiter in that list and still run before it:
+    `solve_dependencies` resolves each entry's own sub-dependencies first, so a
+    `Depends(get_db)` on `RateLimiter.__call__` opens a session ahead of the
+    counter while the limiter keeps position 0. Nothing reading the tree can
+    tell. So this drives the served app over the wire with the session
+    dependency replaced by one that only logs, and asserts that the ten refused
+    requests on a 2/min budget add nothing to that log: no session opened, no
+    commit, nothing. The two allowed requests do open one each, which is what
+    makes the count a measurement rather than a session that never ran.
+
+    Through the real route and the real handler, because the claim is about
+    what `GET /users/{handle}` costs as served, not what a probe would cost.
+    """
+    from app.database import get_db
+
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_trusted_proxy_hops", 0)
+    monkeypatch.setattr(settings, "rate_limit_profile_per_minute", 2)
+    monkeypatch.setattr(ratelimit, "_backend", MemoryBackend())
+
+    log: list[str] = []
+
+    class NoRow:
+        def scalar_one_or_none(self):
+            return None
+
+        def first(self):
+            return None
+
+    class CountingSession:
+        """Every verb the handler or an auth dependency could reach, each one
+        a log line. `execute` answers "no row" so `get_profile` 404s through
+        `_by_handle` rather than reaching anything that wants a real model."""
+
+        async def commit(self):
+            log.append("commit")
+
+        async def rollback(self):
+            log.append("rollback")
+
+        async def execute(self, *args, **kwargs):
+            log.append("execute")
+            return NoRow()
+
+        async def scalar(self, *args, **kwargs):
+            log.append("scalar")
+            return None
+
+        async def get(self, *args, **kwargs):
+            log.append("get")
+            return None
+
+        async def refresh(self, *args, **kwargs):
+            log.append("refresh")
+
+        def add(self, *args, **kwargs):
+            log.append("add")
+
+    async def counting_db():
+        log.append("open")
+        yield CountingSession()
+
+    served_app.dependency_overrides[get_db] = counting_db
+
+    # `raise_server_exceptions=False` so a handler that blows up on the fake
+    # session reads as a 500 in `allowed` below, not as a traceback that hides
+    # which request it was.
+    with TestClient(served_app, raise_server_exceptions=False) as client:
+        allowed = [client.get("/users/someone").status_code for _ in range(2)]
+        # 404, not 429 and not 500: the request reached the handler, the handler
+        # ran its lookup on the counting session, and the session answered
+        # "no such handle". That is the cost an ALLOWED request pays.
+        assert allowed == [404, 404], allowed
+        paid = list(log)
+        refused = [client.get("/users/someone").status_code for _ in range(10)]
+    assert refused == [429] * 10, refused
+    assert log == paid, (
+        f"ten refused requests cost {log[len(paid):]}: a 429 must not open a "
+        "session, commit, or touch the database at all"
+    )
+    assert "commit" not in log
+    # Not vacuous: the override really was the session the allowed requests
+    # used, once each. Zero here would mean the handler never saw it, and the
+    # assertion above would be holding nothing.
+    assert log.count("open") == 2, log
 
 
 def test_a_backend_that_never_answers_does_not_hold_the_request(monkeypatch):
