@@ -12,7 +12,7 @@ to ffmpeg + opencv + numpy + boto3, and lets the *full-quality* pose config
 (The worker is on `standard` again as of CF-240, but for libx264's ~400 MB
 during cutting, not for an import — nothing here ships a model any more.)
 
-Both functions call the same `ml.pipeline.detect` code the worker calls
+All three functions call the same `ml.pipeline.detect` code the worker calls
 locally, so this is an execution-location change, not a second implementation.
 (The old `ml/modal_detect.py` was a second implementation — a drifted copy of
 `classify_action` wired to nothing — and is deleted by this change.)
@@ -130,6 +130,23 @@ def classify_windows_remote(
     function's timeout is half that, so a stream outliving its signature cannot
     happen while those two numbers hold.
     """
+    return _refine_from_url(video_url, windows, model_name, imgsz, skip_frames)
+
+
+def _refine_from_url(
+    video_url: str,
+    windows: list[dict],
+    model_name: str,
+    imgsz: int,
+    skip_frames: int,
+    on_progress=None,
+) -> list[dict]:
+    """The body shared by `classify_windows_remote` and `classify_windows_stream`:
+    pick how the source is read, then run `classify_within_windows` on it.
+
+    One place rather than two so the seek-or-download choice cannot drift
+    between the blocking and streaming entry points.
+    """
     import os
     import tempfile
 
@@ -142,6 +159,7 @@ def classify_windows_remote(
         return classify_within_windows(
             video_url, windows,
             model_name=model_name, imgsz=imgsz, skip_frames=skip_frames,
+            on_progress=on_progress,
         )
 
     # No seekable read — an image whose FFmpeg lacks https, or a store that
@@ -155,7 +173,64 @@ def classify_windows_remote(
         return classify_within_windows(
             local_path, windows,
             model_name=model_name, imgsz=imgsz, skip_frames=skip_frames,
+            on_progress=on_progress,
         )
+
+
+@app.function(image=image, gpu="T4", timeout=1800)
+def classify_windows_stream(
+    video_url: str,
+    windows: list[dict],
+    model_name: str,
+    imgsz: int,
+    skip_frames: int,
+):
+    """
+    Same refinement as `classify_windows_remote`, but a generator: yields
+    {"progress": 0-1} after each window while the GPU run is in flight (Modal
+    streams them to the caller via `remote_gen`) and finally {"windows": [...]}.
+
+    Gives the worker live progress for the bar/ETA (CF-255) — a blocking
+    `.remote()` call has no channel for progress until it returns, and
+    refinement is 12-16% of the bar on a Modal run, frozen for its whole
+    duration. Same shape as `track_ball_stream` in `modal_app.py`: the
+    callback fires from the refinement thread, a Queue bridges it to this
+    generator (yield can't cross threads), and one event per rally is at most
+    a few hundred events per game.
+
+    The blocking function stays deployed beside this one: a worker running
+    ahead of this deploy falls back to it when this name is not found, and a
+    worker behind the worker-side change never asks for this one.
+    """
+    import queue
+    import threading
+
+    events: queue.Queue = queue.Queue()
+    result: dict = {}
+
+    def run() -> None:
+        try:
+            result["windows"] = _refine_from_url(
+                video_url, windows, model_name, imgsz, skip_frames,
+                on_progress=events.put,
+            )
+        except BaseException as exc:  # re-raised in the generator below
+            result["error"] = exc
+        finally:
+            events.put(None)  # sentinel: refinement finished either way
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    while True:
+        item = events.get()
+        if item is None:
+            break
+        yield {"progress": float(item)}
+    worker.join()
+
+    if "error" in result:
+        raise result["error"]
+    yield {"windows": result["windows"]}
 
 
 @app.function(image=image, gpu="T4", timeout=3600)

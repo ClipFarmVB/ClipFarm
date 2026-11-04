@@ -459,6 +459,7 @@ def classify_within_windows(
     model_name: str = "yolov8s-pose.pt",
     imgsz: int = 1280,
     skip_frames: int = SKIP_FRAMES,
+    on_progress=None,
 ) -> list[dict]:
     """
     Run pose classification only inside the given time windows (rally clips).
@@ -477,6 +478,12 @@ def classify_within_windows(
                      use yolov8n-pose.pt for faster CPU testing).
         imgsz:       Inference resolution (default: 1280; use 640 for CPU testing).
         skip_frames: Process every Nth frame (default: SKIP_FRAMES=4; raise for speed).
+        on_progress: Optional callback taking the fraction of windows finished
+                     (0-1), called once after each window. Rallies are the unit
+                     of work here, so this is the stage's real throughput —
+                     what the progress bar and its ETA have been missing
+                     (CF-255). A failing callback is logged and ignored:
+                     reporting must never break processing.
     """
     if not windows:
         return windows
@@ -505,7 +512,7 @@ def classify_within_windows(
     scored = 0            # windows that actually produced a pose signal
     decoded_any = False   # have we ever successfully read a frame?
 
-    for window in windows:
+    for i, window in enumerate(windows):
         w_start = window["start"]
         w_end   = window["end"]
 
@@ -603,6 +610,12 @@ def classify_within_windows(
         if action_scores:
             scored += 1
         refined.append(out)
+
+        if on_progress is not None:
+            try:
+                on_progress((i + 1) / len(windows))
+            except Exception:
+                logger.warning("Pose progress callback failed", exc_info=True)
 
     cap.release()
     # Report windows that produced a pose signal, not windows visited. The old
