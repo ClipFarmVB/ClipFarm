@@ -265,13 +265,16 @@ its plays, made visible at a glance. It appears wherever a game does.
   rally unscored, `api/app/workers/tasks.py`).
 - **Drawing:** each rally is a block at its position, its width its length
   (minimum 2px), and its height its score: the game's lowest score draws at
-  35% of the bar and a score of 1.0 at 100%, linearly between (a game whose
-  scores are all equal draws them all at 100%). The scale comes from the
-  game's own scores, never a fixed floor, because the keep threshold
-  (`highlight_score_threshold`, 0.50 by default) is an env setting. An unscored
-  rally draws at 35% as an ordinary rally. Ordinary rallies are solid `muted`;
-  Top plays are solid `rank`, and nothing in the strip is translucent. The
-  baseline is a 1px `border` line across the full game.
+  35% of the bar and its highest at 100%, linearly between (so a game whose
+  scores are all equal, or that has one scored rally, draws at 100%). Both
+  ends of the scale come from the game's own scores: the floor is not fixed,
+  because the keep threshold (`highlight_score_threshold`, 0.50 by default) is
+  an env setting, and the top is not 1.0, because a game whose best play
+  scores 0.70 should still show its best play at full height (decided on
+  #599, round 5). An unscored rally draws at 35% as an ordinary rally.
+  Ordinary rallies are solid `muted`; Top plays are solid `rank`, and nothing
+  in the strip is translucent. The baseline is a 1px `border` line across the
+  full game.
 - **Sizes:**
   - game page: 48px tall, full content width, under the player;
   - Library row: 20px tall and 160px wide;
@@ -353,8 +356,8 @@ not taken (decided on #599).
 
 - **Top bar** (see Layout). No rail.
 - **Hero:** a `display` headline that only ClipFarm could say, one `body`
-  sentence, and *Get started*. Beside or below it, the demo game's rally strip at
-  64px with its top plays listed under it (`stat` score, action, timestamp), and
+  sentence, and *Get started*. Beside it, the demo game's rally strip at 64px
+  with its top plays listed under it (`stat` score, action, timestamp), and
   with footage once cleared.
 - **Below the hero, one section:** the game page itself (the hero screen above)
   at reduced scale, as a real screenshot once footage is cleared, or the clip
@@ -410,9 +413,37 @@ hype and no exclamation marks.
 The current screens predate this file. These cards implement it, in order;
 each stands alone and leaves the app shippable.
 
+**Where a card's body and this file disagree, this file wins, and the builder
+follows this file.** The cards were filed from the first draft of this file
+(2026-10-05) and have not been edited since; the review rounds on #599 changed
+the spec under them. The points each card still gets wrong, so a builder sees
+them before starting:
+
+- **#592 (CF-577)** lists the colour roles without `warning-dim`, `danger-dim`
+  and `on-media`; all three are in the table above, and `MediaTile` depends on
+  `on-media`. It also names two hard-coded colours to remove; `#6366f1` in
+  `UploadZone` went in CF-385 (#625), so the card should drop it and keep only
+  `#0c0c0e`.
+- **#594 (CF-579)** says "Top plays = the game's five highest scores" and no
+  more. The rules above also cover a clip with no score (no score shown, sorts
+  after the scored clips in time order, never a Top play), ties (the earlier
+  clip), a game with fewer than five scored clips, and a game with none (no
+  Top plays, no *Play top plays*). Its `MediaTile` puts the score and duration
+  on the frame; here they sit on a small solid `--cf-media` chip in `on-media`.
+- **#595 (CF-580)** maps a fixed 0.5–1.0 to 35–100% and draws ordinary rallies
+  as `brand` at 45%. The strip scales from the game's own lowest and highest
+  scores, ordinary rallies are solid `muted`, nothing in the strip is
+  translucent, and an unscored rally draws at 35% with a tooltip that carries
+  no score.
+- **#597 (CF-582)** gates media URLs on CF-571 (#581). That card is closed
+  without deciding the landing page; the gate is the maintainer's record on
+  #597 itself (see The landing page).
+
 1. **Tokens** (CF-577, #592): the colour roles, type roles, display face, radius,
-   elevation and motion tokens; light by default; the two hard-coded colours
-   that bypass the tokens today.
+   elevation and motion tokens; light by default; the one hard-coded colour
+   that still bypasses the tokens, `text-[#0c0c0e]` on the brand fill in
+   `web/src/components/OnboardingPanel.tsx` (the `UploadZone` one went in
+   CF-385, #625).
 2. **Components** (CF-578, #593): `Surface`, `Input`, `Chip`, `IconButton`,
    `Dialog`/`ConfirmDialog`/`Toast`, replacing all native dialogs.
 3. **Clips lead with the play score** (CF-579, #594): `MediaTile`, neutral action
