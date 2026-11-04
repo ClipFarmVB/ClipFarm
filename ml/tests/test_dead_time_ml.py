@@ -990,6 +990,19 @@ class TestViterbi:
                             prior_play=0.99)
         assert not path[1:].any()
 
+    def test_the_first_seconds_own_evidence_counts_against_the_prior(self):
+        """The initial delta is log(prior) + log_emit[0], and only the prior
+        half was pinned (R9-M1): every other trace here opens in the state the
+        prior favours or runs long enough for later seconds to pull second 0
+        back through the backpointers. Without the emission term both of these
+        start dead under the 0.33 prior — the single second has nothing after
+        it, and twenty seconds of dead after the 0.99 only confirm the cheaper
+        start."""
+        assert viterbi_path(np.array([0.9]), **FOLD_HMM).tolist() == [True]
+        probs = np.r_[0.99, np.full(20, 0.05)]
+        assert viterbi_path(probs, **FOLD_HMM).tolist() == [True] + [False] * 20
+        assert viterbi_windows(probs, 21.0, **FOLD_HMM) == [(0.0, 3.5)]
+
     def test_it_reads_raw_probabilities_not_a_smoothed_trace(self):
         """A dip smoothing would hide, held for long enough, is still cut."""
         probs = self._rally_with_dip(6, 0.02)
