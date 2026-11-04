@@ -261,6 +261,19 @@ def test_a_whitespace_only_caption_becomes_null_rather_than_blank():
     assert out.caption is None
 
 
+def test_a_nul_in_a_caption_is_refused_on_both_schemas():
+    """The comment body's `reject_nul`, shared: both caption fields land in the
+    same kind of text column and would 500 the same way."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PostCreate(clip_id=uuid.uuid4(), caption="a\x00b")
+    with pytest.raises(ValidationError):
+        PostUpdate(caption="a\x00b")
+    assert PostUpdate(caption=None).caption is None
+    assert PostCreate(clip_id=uuid.uuid4(), caption="fine").caption == "fine"
+
+
 def test_posting_someone_elses_clip_is_404_not_403():
     """Publishing is an owner action. 404 rather than 403 so the response does
     not confirm a clip id is real — the same choice the read path makes."""

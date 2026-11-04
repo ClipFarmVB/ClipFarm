@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.schemas.post import PostAuthor
+from app.schemas.post import PostAuthor, reject_nul
 
 
 class LikeStateOut(BaseModel):
@@ -27,7 +27,10 @@ class CommentCreate(BaseModel):
     @classmethod
     def _not_blank(cls, value: str) -> str:
         # Stripped, and refused if nothing is left: `min_length` alone admits
-        # a comment of spaces. Same posture as `create_post`'s caption.
+        # a comment of spaces. Same posture as `create_post`'s caption. The NUL
+        # check comes first because `strip()` does not remove one, and the
+        # INSERT would turn it into a 500 (see `reject_nul`).
+        reject_nul(value)
         stripped = value.strip()
         if not stripped:
             raise ValueError("A comment needs some text.")

@@ -694,6 +694,18 @@ def test_a_blank_or_oversized_comment_is_rejected():
     assert r.CommentCreate(body="  ok  ").body == "ok"
 
 
+def test_a_nul_in_a_comment_body_is_a_422_not_a_500():
+    """Postgres text cannot hold `0x00`, and asyncpg reports it as a
+    `DBAPIError` that no router guard catches (R20-M2). `strip()` does not
+    remove one, so the blank check above was not enough on its own."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        r.CommentCreate(body="hi\x00there")
+    with pytest.raises(ValidationError):
+        r.CommentCreate(body="\x00")
+
+
 def test_a_generated_handle_is_withheld_but_the_comment_stays():
     """`from_author`, not `_findable`: the comment renders with a null handle
     rather than vanishing, so `comment_count` and the visible list agree."""

@@ -19,9 +19,14 @@ whichever branch lands first.
 `IF NOT EXISTS`, because a dev database that ran this branch's earlier `020`
 already has the index. No `CONCURRENTLY`, for the reason `018` gives.
 
-Numbered `024`, not `021`: `021`, `022` and `023` are claimed by open PRs
-(#488, #500, #571), and a second file claiming one of those ids would fail
-`test_no_revision_id_is_claimed_twice` when either lands.
+Numbered `024`, not `021`: when this was written, `021`, `022` and `023` were
+claimed by open PRs based on `main` (#488, #500, #571), and a second file
+claiming one of those ids would fail `test_no_revision_id_is_claimed_twice`
+when either lands. #571 has since merged, so `023_sample_game.py` is on `main`
+with `down_revision = "016"` — the same parent as this stack's `017`. That
+fork is this stack's to resolve, not #571's: `017` lives in the stack's first
+migration PR (#192), and re-parenting it is a migration decision a person
+makes (Skein D-0039). This revision's own parent, `020`, is unaffected.
 
 Downgrade is `IF EXISTS` — dev databases drift (the 008 lesson).
 """

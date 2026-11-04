@@ -2,9 +2,28 @@ import uuid
 from datetime import datetime
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.visibility import Visibility
+
+
+def reject_nul(value: str | None) -> str | None:
+    """Refuse a NUL byte here, where it is a 422, rather than at the INSERT.
+
+    Postgres text columns cannot hold `0x00`. asyncpg reports it as a
+    `DBAPIError` (`CharacterNotInRepertoireError`), not an `IntegrityError`,
+    so none of the routers' `except IntegrityError` guards catch it and any
+    signed-in user can turn a malformed caption or comment into a 500 and a
+    Sentry event. `max_length` and `strip()` both let it through.
+
+    Refused rather than stripped: no legitimate text carries a NUL, and
+    silently editing a user's words is a worse surprise than a validation
+    error. Shared by every free-text field that reaches a text column, so the
+    next one does not have to remember.
+    """
+    if value is not None and "\x00" in value:
+        raise ValueError("Text cannot contain a NUL character.")
+    return value
 
 
 class _Author(Protocol):
@@ -131,6 +150,11 @@ class PostCreate(BaseModel):
     # being posted.
     raise_clip_visibility: bool = False
 
+    @field_validator("caption")
+    @classmethod
+    def _no_nul(cls, value: str | None) -> str | None:
+        return reject_nul(value)
+
 
 class PostUpdate(BaseModel):
     """Caption only.
@@ -148,3 +172,8 @@ class PostUpdate(BaseModel):
     """
 
     caption: str | None = Field(default=None, max_length=500)
+
+    @field_validator("caption")
+    @classmethod
+    def _no_nul(cls, value: str | None) -> str | None:
+        return reject_nul(value)
