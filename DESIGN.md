@@ -213,19 +213,34 @@ rail appears at `lg`, as today.
   dimmer than content: `muted` text, the current item in `fg` with a 2px brand
   bar, no background blocks.
 - **Signed-out pages (landing, sign in, sign up) are not in the app shell.**
-  They get a top bar: the logo on the left, *Sign in* and a primary *Get
-  started* on the right. A rail holding only "Log in" and "Sign up" reads as
-  an unfinished app.
-- **Content width: 1024px for every page**, the game page and the landing
-  included. `web/src/app/layout.tsx` wraps every page in `max-w-5xl` (1024px),
-  and no card below scopes changing that shared wrapper, so this takes the
-  width the app has rather than asking for 1200px / 1120px it cannot deliver
-  (decided on #599; the signed-out shell CF-582 builds keeps the same width).
-  A later card widens the game page or the landing once a screen actually
-  needs it; the player is 576px tall at 1024px, which is enough.
+  They get a top bar: the logo on the left, *Sign in* (ghost) and *Get
+  started* (secondary) on the right. The top bar never holds the page's
+  primary: on the landing that is the hero's *Get started*, on sign in and
+  sign up it is the form's submit. A rail holding only "Log in" and "Sign up"
+  reads as an unfinished app.
+- **Content width: the app's shared wrapper, `max-w-5xl`, for every page**,
+  the game page and the landing included. `web/src/app/layout.tsx` wraps every
+  page in `mx-auto max-w-5xl px-4 sm:px-6 lg:px-8`, and no card below scopes
+  changing that shared wrapper, so this takes the width the app has rather
+  than asking for 1200px / 1120px it cannot deliver (decided on #599; the
+  signed-out shell CF-582 builds keeps the same wrapper, padding included).
+  The numbers, for anything sized to it: `max-w-5xl` is a 1024px box, and
+  Tailwind's preflight makes every element border-box, so the side padding
+  comes out of that box rather than adding to it. From `lg` the padding is
+  32px a side, so the **content column is 960px**, and only once the viewport
+  clears the 220px rail plus the box, 1244px; at exactly `lg` (1024px) the
+  box is 804px and the column 740px. Below `lg` there is no rail, and the
+  padding is 24px (`sm`) or 16px a side. "1024" in this file means the box,
+  never the column; widening the column means changing the wrapper or its
+  padding, a layout change to every page, which a later card makes once a
+  screen actually needs it. The 16:9 player across the 960px column is 540px
+  tall, which is enough.
 - **One primary action per screen**, a brand-filled `Button` at the right of the
   page header: *Upload* on the Library, *Play top plays* on a game, *Upload* in
-  an empty state. Everything else is secondary or ghost.
+  an empty state. On the signed-out pages the primary sits in the page, not in
+  the top bar: the hero's *Get started* on the landing (see The landing page),
+  the form's submit on sign in and sign up. Everything else is secondary or
+  ghost.
 
 ## Components
 
@@ -281,9 +296,8 @@ its plays, made visible at a glance. It appears wherever a game does.
   - landing hero: 64px.
 - **Interaction (game page):** hovering a block shows a tooltip, `Spike · 14:23
   · Score 94` (`caption`, tabular; `Spike · 14:23` for an unscored rally).
-  Clicking plays that clip. While a clip
-  plays, a 2px `fg` playhead marks its position. Arrow keys move between
-  rallies, and Enter plays the focused one.
+  Clicking plays that clip. While a clip plays, a 2px `fg` playhead marks its
+  position. Arrow keys move between rallies, and Enter plays the focused one.
 - **The one deliberate animation:** when a game finishes processing, its
   rallies draw in left to right over `--duration-slow`, once. That is the moment
   the product delivered, so it is the moment that moves.
@@ -294,9 +308,8 @@ score shows no score anywhere (never "Score 0"), sorts after the scored clips
 in time order, and is never a Top play. **Top plays** are a game's five
 highest-scored clips, fewer when it has fewer scored clips, ties going to the
 earlier one; a game with no scored clips has no Top plays and no *Play top
-plays*. Classifier confidence
-is not a headline number: it appears only in the clip viewer, labelled as label
-confidence.
+plays*. Classifier confidence is not a headline number: it appears only in the
+clip viewer, labelled as label confidence.
 
 ## The hero screen: a game
 
@@ -345,23 +358,43 @@ too. Until the maintainer records that on CF-582 (#597), the landing shows
 **real data from the demo game** (its rally strip and its clip list with play
 scores and timestamps) and no thumbnails, rather than mock media.
 
-That data comes from a small public endpoint CF-582 adds, in the pattern of
-the app's other anonymous reads (throttled per caller, CF-186): the demo source
-game's rally marks and top plays, and no media URLs. The demo game exists only
-as a copy made per signup (CF-220), so the endpoint reads the source game
-`SAMPLE_GAME_ID` names; when that is unset, the hero shows the headline and
-*Get started* only, never invented data. The alternative, a snapshot of the
-data committed to `web/`, goes stale and publishes a copy in the repo; it was
-not taken (decided on #599).
+That data comes from a small public endpoint CF-582 adds. **It is a deliberate
+public exposure of one private game's non-media data** (D-0041, pending;
+answering it overturns this): a fixed path with no game id in the URL, which
+returns the demo source game's rally marks (start, end, play score) and its
+top plays, and nothing else: no media URLs, no player names, no other game.
+The demo game exists only as a copy made per signup (CF-220), so the endpoint
+reads the source game `SAMPLE_GAME_ID` names; when that is unset, the hero
+shows the headline and *Get started* only, never invented data.
 
-- **Top bar** (see Layout). No rail.
+What it shares with the app's existing anonymous reads (`GET /games/{id}`,
+CF-186): the per-caller throttle (`rate_limit(POLICIES["game"])`) and the
+optional-user resolution (`get_optional_user_id`), so a signed-in caller
+counts against their own bucket. What it does not share: their visibility
+gate. Those reads are UUID-keyed and go through `assert_can_view_game`
+(`api/app/services/access.py`), which answers 404 for a private game to a
+signed-out caller, and the source game is private: `public` is off by
+default, and every demo copy stays private because the footage is not the
+owner's to publish (`api/app/services/sample_game.py`). So a builder who
+routes this endpoint through `assert_can_view_game` gets a 404 and an empty
+hero. The endpoint reads the source game directly and applies no visibility
+check; that bypass is the thing the security review for CF-582 has to look
+at, and the reason the data it returns is listed exhaustively above. Two
+alternatives were not taken: making the source game public so it passes the
+gate, which would also publish its footage through `GET /games/{id}` and the
+clip listings; and a snapshot of the data committed to `web/`, which goes
+stale and publishes a copy in the repo (decided on #599).
+
+- **Top bar** (see Layout): *Sign in* ghost, *Get started* secondary. No rail.
 - **Hero:** a `display` headline that only ClipFarm could say, one `body`
-  sentence, and *Get started*. Beside it, the demo game's rally strip at 64px
+  sentence, and *Get started*, the page's one primary (a brand fill; the top
+  bar's *Get started* is secondary so the two never compete). Beside it, the
+  demo game's rally strip at 64px
   with its top plays listed under it (`stat` score, action, timestamp), and
   with footage once cleared.
-- **Below the hero, one section:** the game page itself (the hero screen above)
-  at reduced scale, as a real screenshot once footage is cleared, or the clip
-  list until then.
+- **Below the hero, two sections.** First, the game page itself (the hero
+  screen above) at reduced scale, as a real screenshot once footage is
+  cleared, or the clip list until then.
 - **How it works:** three short lines in `body`, not numbered cards.
 - **No** ticker, word-by-word reveal, floating cards, drifting dot grid or
   uppercase section labels.
@@ -435,7 +468,7 @@ them before starting:
   scores, ordinary rallies are solid `muted`, nothing in the strip is
   translucent, and an unscored rally draws at 35% with a tooltip that carries
   no score.
-- **#597 (CF-582)** gates media URLs on CF-571 (#581). That card is closed
+- **#597 (CF-582)** gates media URLs on CF-571 (#581). #581 is closed
   without deciding the landing page; the gate is the maintainer's record on
   #597 itself (see The landing page).
 
