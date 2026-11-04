@@ -172,11 +172,14 @@ class _Result:
 class _CapturingSession:
     """Records every statement `list_user_posts` asks it to execute.
 
-    Same shape as `test_public_player_name.py`'s `_FakeSession`, for the same
-    reason: the rows a fake returns satisfy any assertion about *results*
-    whatever the route asked for, so the statements are the only evidence of
-    what was actually asked. The author lookup resolves, so the handler reaches
-    its page query; that query is what the test below reads.
+    Modelled on `test_public_player_name.py`'s `_FakeSession`, for the reason
+    that file gives: the rows a fake returns satisfy any assertion about
+    *results* whatever the route asked for, so the statements are the only
+    evidence of what was actually asked. Simpler than that one, though: it
+    answers every `execute` with the same `_Result` rather than queuing one
+    per call, because the handler makes exactly two and the test asserts on
+    that count. The author lookup resolves, so the handler reaches its page
+    query; that query is what the test below reads.
     """
 
     def __init__(self, author):
@@ -228,31 +231,48 @@ def test_the_list_endpoint_does_not_filter_after_the_limit():
     satisfies — deleting the call, or swapping it for a same-named no-op, left
     this file green (CF-405). A comment cannot put a predicate in the SQL.
 
-    What actually matters is that both gates and the author scope reach the
+    What actually matters is that both gates and the author scope reach a
     WHERE clause ahead of the LIMIT, so the LIMIT counts only rows this viewer
-    may see. The viewer is a stranger, so the helper's own-posts clause names
-    the *stranger's* id; the author scope is asserted on the author's, which
-    only the router's `.where(Post.author_id == author.id)` can have added.
+    may see. Their order in the text proves nothing on its own: the compiler
+    writes WHERE before LIMIT within one SELECT whatever the chaining order.
+    What can actually go wrong is a LIMIT *inside a subquery* — the author's
+    page picked first and gated afterwards, `posts.id IN (SELECT … LIMIT 7)`,
+    which is the post-limit filter wearing a select-ids-then-join shape. So
+    the guard is that the statement carries exactly one LIMIT and it is the
+    outer statement's own tail. Given that, everything from the first WHERE
+    to the LIMIT is every predicate applied before paging, and that slice is
+    where the gates are looked for. The viewer is a stranger, so the helper's
+    own-posts clause names the *stranger's* id; the author scope is asserted
+    on the author's, which only the router's `.where(Post.author_id ==
+    author.id)` can have added.
     """
     import asyncio
 
-    db = _CapturingSession(_Author("alice", False))
+    author = _Author("alice", False)
+    db = _CapturingSession(author)
     page = asyncio.run(
         posts_router.list_user_posts(db=db, username="alice", viewer_id=STRANGER, limit=7)
     )
     assert page == []
+    assert len(db.statements) == 2, "the author lookup, then the page query"
 
     sql = _sql(db.statements[-1]).lower()
     assert "join clips" in sql, "the gates read clips — a missing join fails open"
     assert "join games" in sql, "and games"
-    where_at = sql.index("where ")
+    assert sql.count("limit ") == 1, (
+        "exactly one LIMIT — none, or a second, means the page is sized somewhere else"
+    )
     limit_at = sql.index("limit ")
-    assert where_at < limit_at, "the filter must land before the limit"
+    assert ")" not in sql[limit_at:], (
+        "the LIMIT must be the outer statement's own: one inside a subquery is "
+        "the page picked before the gates — the post-limit filter by another route"
+    )
     assert "limit 7" in sql, "the page size must reach the SQL too"
-    where = sql[where_at:limit_at]
+    assert "where " in sql, "no WHERE clause at all — nothing is filtered"
+    where = sql[sql.index("where ") : limit_at]
     assert "posts.visibility" in where, "the post gate must be in the WHERE clause"
     assert "clips.visibility" in where, "and the clip gate too"
-    assert f"posts.author_id = '{AUTHOR.hex}'" in where, (
+    assert f"posts.author_id = '{author.id.hex}'" in where, (
         "the page must be scoped to the requested author in SQL"
     )
 
