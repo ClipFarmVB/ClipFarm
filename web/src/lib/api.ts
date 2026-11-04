@@ -306,7 +306,7 @@ export function getClipShareUrl(clipId: string): Promise<{ url: string }> {
  * anonymous and presigns the same object, this endpoint is gated on a credential
  * rather than on a rate limit. Every caller today already sits behind auth —
  * ClipCard and ClipModal render only on /games/* and /collections/*, both
- * covered by middleware.ts — so nothing had to change for it. Do not wire it
+ * covered by proxy.ts — so nothing had to change for it. Do not wire it
  * into an anonymous surface: the feed and a public profile would get a 401 at
  * runtime, not a 404.
  */

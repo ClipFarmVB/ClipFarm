@@ -4,7 +4,7 @@ import { useAuth } from "@/contexts/AuthContext";
 
 /**
  * Shows a loading spinner while the Supabase session is resolving.
- * Route protection itself is handled by src/middleware.ts — this component
+ * Route protection itself is handled by src/proxy.ts — this component
  * just prevents a flash of unauthenticated content on the client.
  */
 export function RequireAuth({ children }: { children: React.ReactNode }) {
