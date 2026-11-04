@@ -236,7 +236,8 @@ export function ClipModal({
     // the stretch of the source it covers, and its length as measured — what
     // a re-cut has to differ from to be told apart. Kept across trims until a
     // re-cut lands, because until then the player still holds the cut it
-    // opened with, however many trims are queued behind it.
+    // opened with, however many trims are queued behind it; `watchRecut`
+    // replaces it with the cut it swaps in.
     //
     // Measured or not at all: with the metadata not loaded yet, the length is
     // left null rather than taken from the bounds. The bounds say what the
@@ -295,7 +296,11 @@ export function ClipModal({
    *  then read as the trim just made (R11-M1).
    *
    *  The chain starts from the length the player measured for the cut it
-   *  holds. Where the player had not measured it when the trim was made, the
+   *  holds, or the length the poll read for the cut it last swapped in: the
+   *  swap replaces the held cut rather than removing it, so a trim whose
+   *  request is out as a swap lands is matched against the cut just swapped
+   *  in, not against its own bounds (R16-M1). Where the player had not
+   *  measured the held cut when the trim was made, the
    *  first poll takes it from the player if its metadata has arrived since,
    *  else from its own reading, which then confirms nothing: the bounds are
    *  not a baseline, because on a clip whose earlier re-cut is still queued
@@ -323,14 +328,21 @@ export function ClipModal({
     const start = reply.start_time;
     const end = cutEnd(reply.end_time);
     const expected = end - start;
-    // No held cut only when a swap landed while this trim's request was out:
-    // the chain it completed has nothing queued, so the object holds a cut
-    // this one differs from, and only a reading of `expected` confirms it.
-    const held = recutHeld.current.get(id) ?? { start, end, length: expected, src: null };
+    // Held by `handleTrim` before this trim's request went out, and replaced
+    // by a swap that landed while it was out, never removed (R16-M1). Built
+    // from the reply when missing, it read as a trim back to the held cut
+    // and ended the watch with the earlier cut playing under the new bounds.
+    const held = recutHeld.current.get(id);
+    if (!held) {
+      // Not reached while the dialog is open; the reload line, not a guess,
+      // should that change.
+      setRecutFor(id, "stale");
+      return;
+    }
     const chain = recutChain.current.get(id) ?? { last: held.length, pending: [] };
     const backToHeld = near(start, held.start) && near(end, held.end);
     if (backToHeld && chain.pending.length === 0) {
-      recutHeld.current.delete(id);
+      // The player still holds the cut, so it stays held for the next trim.
       recutChain.current.delete(id);
       setRecutFor(id, null);
       return;
@@ -381,7 +393,11 @@ export function ClipModal({
         }
         if (chain.pending.length === 0) {
           recutWatch.current.delete(id);
-          recutHeld.current.delete(id);
+          // The cut just confirmed is what the player holds from here, as
+          // this reading measured it, under the URL it is swapped in from —
+          // what the next trim differs from, whether made after this or
+          // still out as it lands (R16-M1).
+          recutHeld.current.set(id, { start, end, length, src: url });
           recutChain.current.delete(id);
           setRecutFor(id, null);
           // The URL the probe just read the new cut from, and the thumbnail
@@ -955,11 +971,13 @@ export function ClipModal({
                         !isNotAction && "capitalize",
                         // The `danger` token, per theme: the card's
                         // `red-400` on a `red-500` tint was 2.1:1 in the
-                        // light theme (R13-M2).
+                        // light theme (R13-M2). The brand tint at 8%, as the
+                        // Label and Trim toggles: brand on its 10% tint was
+                        // 4.40:1 in the light theme at this size (R16-M3).
                         active && isNotAction
                           ? "bg-danger/10 text-danger ring-1 ring-danger/20"
                           : active
-                          ? "bg-brand/10 text-brand ring-1 ring-brand/20"
+                          ? "bg-brand/8 text-brand ring-1 ring-brand/20"
                           : "bg-surface-high text-muted hover:text-foreground"
                       )}
                     >
@@ -982,7 +1000,7 @@ export function ClipModal({
                     disabled={isBusy("trim")}
                     onStep={handleTrim}
                   />
-                  <span className="text-[11px] text-subtle tabular-nums">
+                  <span className="text-[11px] text-muted tabular-nums">
                     {formatDuration(clip.end_time - clip.start_time)}
                   </span>
                   <TrimEdge

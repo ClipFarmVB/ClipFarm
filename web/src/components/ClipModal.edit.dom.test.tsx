@@ -970,9 +970,10 @@ describe("trimming", () => {
   it("measures the next trim from the cut it swapped in", async () => {
     // Once a re-cut lands, the player holds it: End −2s afterwards goes back
     // to the 8s footage, and that is a new cut to wait for and swap in, not a
-    // trim back to what the player has. Nothing has measured either cut
-    // (jsdom), so each watch's first reading is its baseline (R13-M1): the
-    // 8 before the first swap, the 10 before the second.
+    // trim back to what the player has. Nothing has measured the first cut
+    // (jsdom), so the first watch's first reading, 8, is its baseline
+    // (R13-M1); the second starts from the 10 the swap read (R16-M1), and
+    // its first reading, 10 again, confirms nothing.
     await withTimers(async (wait) => {
       trimClip
         .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }))
@@ -996,6 +997,48 @@ describe("trimming", () => {
       expect(video().getAttribute("src")).toBe("https://example.test/poll-2.mp4");
       await wait(5_000); // 8
       expect(video().getAttribute("src")).toBe("https://example.test/poll-4.mp4");
+      expect(status()).toBe("");
+    });
+  });
+
+  it("watches a trim whose request was still out when the earlier re-cut was swapped in", async () => {
+    // R16-M1: End +2s (10–20) is being polled; End +2s again (10–22) has its
+    // request out when the poll that confirms the first swaps it in. The
+    // swap used to drop the held cut, so the second trim's reply found none,
+    // built one from its own bounds, read as a trim back to what the player
+    // holds, and ended the watch: the first cut kept playing under the second
+    // trim's bounds with no status and no poll. The swap leaves the cut it
+    // confirmed as the held cut, so the later reply differs from it and is
+    // watched to its own landing.
+    await withTimers(async (wait) => {
+      let release: (c: Clip) => void = () => {};
+      trimClip
+        .mockResolvedValueOnce(echo({ start_time: 10, end_time: 20 }))
+        .mockReturnValueOnce(new Promise<Clip>((r) => { release = r; }));
+      numberedPolls();
+      probeDuration
+        .mockResolvedValueOnce(8) // the baseline: nothing measured it in jsdom
+        .mockResolvedValueOnce(10) // the first re-cut has landed
+        .mockResolvedValueOnce(10) // still that cut
+        .mockResolvedValueOnce(12); // the second has landed
+      await act(async () => root.render(<Grid initial={[makeClip()]} />));
+
+      await click(button("Trim"));
+      await click(step("End", "+2s"));
+      await wait(3_000); // 8
+      await click(step("End", "+2s"));
+      expect(trimClip).toHaveBeenCalledTimes(2);
+      await wait(5_000); // 10: the first cut is swapped in while the request is out
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-2.mp4");
+
+      await act(async () => { release(echo({ start_time: 10, end_time: 22 })); });
+      expect(gridRows[0].end_time).toBe(22);
+      expect(status()).toContain("the player shows the old cut");
+      await wait(3_000); // 10: the cut it holds
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-2.mp4");
+      await wait(5_000); // 12
+      expect(video().getAttribute("src")).toBe("https://example.test/poll-4.mp4");
+      expect(gridRows[0].clip_url).toBe("https://example.test/poll-4.mp4");
       expect(status()).toBe("");
     });
   });
