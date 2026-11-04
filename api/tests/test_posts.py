@@ -154,6 +154,40 @@ def _sql(stmt) -> str:
     return str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
 
+class _Result:
+    """What `execute()` hands back. `_findable_author` reads it with
+    `scalar_one_or_none`; the page query reads it with `all`, and an empty page
+    keeps `_serialize` — and so storage — out of the test."""
+
+    def __init__(self, author):
+        self._author = author
+
+    def scalar_one_or_none(self):
+        return self._author
+
+    def all(self):
+        return []
+
+
+class _CapturingSession:
+    """Records every statement `list_user_posts` asks it to execute.
+
+    Same shape as `test_public_player_name.py`'s `_FakeSession`, for the same
+    reason: the rows a fake returns satisfy any assertion about *results*
+    whatever the route asked for, so the statements are the only evidence of
+    what was actually asked. The author lookup resolves, so the handler reaches
+    its page query; that query is what the test below reads.
+    """
+
+    def __init__(self, author):
+        self._author = author
+        self.statements = []
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        return _Result(self._author)
+
+
 def test_post_visibility_is_applied_in_sql():
     """Review finding: applying `limit` in SQL and visibility in Python means
     the limit counts rows the viewer can't see. An author with 60 private posts
@@ -186,29 +220,41 @@ def test_the_post_query_owns_its_joins():
 def test_the_list_endpoint_does_not_filter_after_the_limit():
     """Pins the fix at the call site, not just in the helper.
 
-    Asserted on the compiled SQL rather than on the source. The previous version
-    checked `"continue" not in src`, which is brittle in both directions: it
-    passes for a list comprehension with an `if`, which reintroduces exactly the
-    post-LIMIT filtering it exists to prevent, and it would fail on an unrelated
-    `continue` somewhere else in the function.
+    Drives the real coroutine against a session that records what it executes,
+    and asserts on the compiled SQL of the page query the *router* built. The
+    two tests above cover the helper's own output; this one covers whether the
+    endpoint uses it. The previous version checked that `apply_post_visibility`
+    appeared in `list_user_posts`' source, which the router's own comment
+    satisfies — deleting the call, or swapping it for a same-named no-op, left
+    this file green (CF-405). A comment cannot put a predicate in the SQL.
 
-    What actually matters is that both gates reach the WHERE clause, so the
-    LIMIT counts only rows this viewer may see.
+    What actually matters is that both gates and the author scope reach the
+    WHERE clause ahead of the LIMIT, so the LIMIT counts only rows this viewer
+    may see. The viewer is a stranger, so the helper's own-posts clause names
+    the *stranger's* id; the author scope is asserted on the author's, which
+    only the router's `.where(Post.author_id == author.id)` can have added.
     """
-    import inspect
+    import asyncio
 
-    src = inspect.getsource(posts_router.list_user_posts)
-    assert "apply_post_visibility" in src
+    db = _CapturingSession(_Author("alice", False))
+    page = asyncio.run(
+        posts_router.list_user_posts(db=db, username="alice", viewer_id=STRANGER, limit=7)
+    )
+    assert page == []
 
-    from sqlalchemy import select
-
-    from app.models.post import Post as PostModel
-
-    sql = _sql(access.apply_post_visibility(select(PostModel), STRANGER)).lower()
+    sql = _sql(db.statements[-1]).lower()
+    assert "join clips" in sql, "the gates read clips — a missing join fails open"
+    assert "join games" in sql, "and games"
     where_at = sql.index("where ")
-    where = sql[where_at:]
+    limit_at = sql.index("limit ")
+    assert where_at < limit_at, "the filter must land before the limit"
+    assert "limit 7" in sql, "the page size must reach the SQL too"
+    where = sql[where_at:limit_at]
     assert "posts.visibility" in where, "the post gate must be in the WHERE clause"
     assert "clips.visibility" in where, "and the clip gate too"
+    assert f"posts.author_id = '{AUTHOR.hex}'" in where, (
+        "the page must be scoped to the requested author in SQL"
+    )
 
 
 def test_a_public_post_over_a_private_clip_is_still_unreadable():
