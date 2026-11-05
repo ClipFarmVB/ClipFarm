@@ -10,9 +10,9 @@ a filtered query is never run against real rows anywhere but here.
 
 The hole that leaves is not theoretical. Rewriting `_posts_predicate` to a
 tautology that still names the column — `Post.visibility == Post.visibility`
-— passes the entire api suite, because the text check finds `posts.visibility`
-in the WHERE clause and is satisfied. A test that survives the bug it names is
-worse than no test, because it reads like cover.
+— passes every test that runs without Postgres, because the text check finds
+`posts.visibility` in the WHERE clause and is satisfied. A test that survives
+the bug it names is worse than no test, because it reads like cover.
 
 So: a throwaway database, the real tables, real rows, and the actual coroutine.
 

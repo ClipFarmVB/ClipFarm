@@ -47,6 +47,15 @@ class _Post:
         self.clip_id = None
 
 
+class _Author:
+    def __init__(self, username, generated):
+        self.id = AUTHOR
+        self.username = username
+        self.display_name = "Someone"
+        self.avatar_url = None
+        self.username_is_generated = generated
+
+
 # ── a post may never be wider than its clip ─────────────────────────────────
 
 
@@ -240,11 +249,20 @@ def test_the_list_endpoint_does_not_filter_after_the_limit():
     which is the post-limit filter wearing a select-ids-then-join shape. So
     the guard is that the statement carries exactly one LIMIT and it is the
     outer statement's own tail. Given that, everything from the first WHERE
-    to the LIMIT is every predicate applied before paging, and that slice is
-    where the gates are looked for. The viewer is a stranger, so the helper's
-    own-posts clause names the *stranger's* id; the author scope is asserted
-    on the author's, which only the router's `.where(Post.author_id ==
-    author.id)` can have added.
+    to the ORDER BY (or to the LIMIT, if nothing is ordered) is every
+    predicate applied before paging, and that slice is where the gates are
+    looked for. The ORDER BY is cut off because a column named there is not a
+    predicate: a page sorted by `Post.visibility` with the post gate gone must
+    not pass for one that is gated on it.
+
+    The viewer is a stranger, so the two `posts.author_id` clauses are told
+    apart by the id each names. The helper's own-posts clause, and the clip
+    gate's owner clause, must carry the *stranger's*: that pins that the
+    router handed the helper the viewer, because a router that handed it the
+    author instead would write the author's id there too, and every private
+    post would be its own author's to anyone asking. The router's scope must
+    carry the *author's*, which the helper never writes for a viewer who is
+    not the author.
     """
     import asyncio
 
@@ -262,16 +280,25 @@ def test_the_list_endpoint_does_not_filter_after_the_limit():
     assert sql.count("limit ") == 1, (
         "exactly one LIMIT — none, or a second, means the page is sized somewhere else"
     )
-    limit_at = sql.index("limit ")
-    assert ")" not in sql[limit_at:], (
-        "the LIMIT must be the outer statement's own: one inside a subquery is "
-        "the page picked before the gates — the post-limit filter by another route"
+    assert sql.rstrip().endswith("limit 7"), (
+        "the LIMIT must be the outer statement's own tail, sized to the page: one "
+        "inside a subquery is the page picked before the gates — the post-limit "
+        "filter by another route"
     )
-    assert "limit 7" in sql, "the page size must reach the SQL too"
     assert "where " in sql, "no WHERE clause at all — nothing is filtered"
-    where = sql[sql.index("where ") : limit_at]
+    # ORDER BY sits between the WHERE and the LIMIT, and a column named there
+    # is not a predicate, so the slice stops short of it.
+    where_end = sql.index(" order by ") if " order by " in sql else sql.index("limit ")
+    where = sql[sql.index("where ") : where_end]
     assert "posts.visibility" in where, "the post gate must be in the WHERE clause"
     assert "clips.visibility" in where, "and the clip gate too"
+    assert f"posts.author_id = '{STRANGER.hex}'" in where, (
+        "the helper must be handed the viewer, not the author: with the author as "
+        "viewer, the own-posts clause admits every row to a stranger"
+    )
+    assert f"games.owner_id = '{STRANGER.hex}'" in where, (
+        "and the clip gate's owner clause must name the viewer too"
+    )
     assert f"posts.author_id = '{author.id.hex}'" in where, (
         "the page must be scoped to the requested author in SQL"
     )
@@ -354,15 +381,6 @@ def test_the_profile_posts_route_does_not_lowercase_by_hand():
 
 
 # ── a generated handle must not ride out on a post ──────────────────────────
-
-
-class _Author:
-    def __init__(self, username, generated):
-        self.id = AUTHOR
-        self.username = username
-        self.display_name = "Someone"
-        self.avatar_url = None
-        self.username_is_generated = generated
 
 
 def test_a_generated_handle_is_withheld_from_the_post_author():
