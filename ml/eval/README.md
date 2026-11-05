@@ -550,6 +550,29 @@ result; the folds above are. Two runs at the same commit are
 byte-identical; `git_commit` records HEAD, so a run at another commit differs
 in that field.
 
+**Two decoders (CF-396).** The weights' `"decoder"` names how per-second
+probabilities become keep-windows, and the builder decodes by it
+(`dead_time_ml.decode_windows`); a file without the key is `threshold`.
+
+| decoder | windows from |
+|---|---|
+| `threshold` | the 5s moving average of the probabilities, at or above `"threshold"` |
+| `hmm` | Viterbi over the raw probabilities: two states, geometric durations, transitions in `"hmm"` fitted on the labels' run lengths (stay = 1 − 1/mean run), prior = in-play fraction, used as the first second's distribution only |
+
+Both share the pads and merge gap. By default the trainer runs both
+leave-one-game-out — each fold's transitions fitted on its training games only,
+each decoder choosing its own context variant — and writes the one
+`choose_decoder` returns: `hmm` only if its summed net over test2/test4/test5
+is higher **and** its summed live play cut there is not.
+
+```bash
+python -m ml.eval.train_deadtime --no-write            # both decoders' fold tables + the verdict
+python -m ml.eval.train_deadtime --decoder threshold   # one decoder, written as is
+```
+
+At CF-396, `threshold` ships: net +463.3s / live cut 210.5s against `hmm`'s
++341.3s / 148.5s. The HMM cuts less live play and less dead time with it.
+
 ## Files
 ```
 metrics.py             pure signal math, both modes (unit-tested in ml/tests/)
