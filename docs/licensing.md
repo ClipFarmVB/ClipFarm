@@ -313,7 +313,8 @@ inherited from this sentence.
 ## Where the declaration lives
 
 - `LICENSE` — verbatim AGPL-3.0 text.
-- `package.json`, `web/package.json` — `"license": "AGPL-3.0-or-later"`.
+- `package.json`, `web/package.json`, `mobile/package.json` —
+  `"license": "AGPL-3.0-or-later"`.
 - **Python: there is no metadata slot.** The repo ships no `pyproject.toml`,
   `setup.py` or `setup.cfg` — nothing here is built or published as a
   distribution, so there is no packaging metadata to carry a license field.

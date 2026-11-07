@@ -25,6 +25,39 @@ jobs:
       # Unit tests for web/ (CF-96). Pure logic, no browser — runs in ~1s.
       - run: npm run test --workspace=web
 
+  mobile:
+    # New check (CF-315), deliberately not folded into the web job: it installs
+    # a different workspace and would double that job's runtime for a PR that
+    # touches neither. EAS builds are NOT run here — they are slow and metered,
+    # and nothing about a lint run needs an installable artifact.
+    #
+    # Named for everything it runs, unlike the two jobs beside it. If this
+    # context is ever added to the main-protection ruleset, it inherits their
+    # trap: the name is matched by exact string, so renaming it afterwards
+    # stops it reporting and blocks every PR until the ruleset is updated.
+    name: Mobile (lint + typecheck + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # The whole workspace, not `npm ci --workspace=mobile`, which the job
+      # started out with. That form reproduces only mobile's slice of the
+      # lockfile tree, and eslint-plugin-import resolves the TypeScript parser
+      # by `require` from its own location at the root — so with the rest of
+      # the tree pruned it cannot see the copy npm nested under `mobile/`, and
+      # every file fails with "Cannot find module '@typescript-eslint/parser'"
+      # while a normal local install passes. Installing both workspaces costs
+      # about a minute and removes the whole class of problem.
+      - run: npm ci
+      - run: npm run lint --workspace=mobile
+      - run: npm run typecheck --workspace=mobile
+      # Contract tests: the secure-store adapter, the upload mock, the clip
+      # source, and a guard that every screen in the epic still has a route.
+      - run: npm run test --workspace=mobile
+
   api:
     name: API (ruff + mypy)
     runs-on: ubuntu-latest

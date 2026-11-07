@@ -4,10 +4,12 @@
   "private": true,
   "license": "AGPL-3.0-or-later",
   "workspaces": [
-    "web"
+    "web",
+    "mobile"
   ],
   "scripts": {
     "dev:web": "npm run dev --workspace=web",
+    "dev:mobile": "npm run start --workspace=mobile",
     "build:web": "npm run build --workspace=web",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
