@@ -58,7 +58,7 @@ function Grid() {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <ClipCard clip={clip} players={[]} onPlay={() => setOpen(true)} />
+      <ClipCard clip={clip} onPlay={() => setOpen(true)} />
       {open && <ClipModal clip={clip} onClose={() => setOpen(false)} />}
     </>
   );

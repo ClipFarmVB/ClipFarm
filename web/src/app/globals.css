@@ -30,6 +30,11 @@
   /* Text and icons drawn on a brand fill (the primary button). Per theme,
      because the light-theme teal is dark and the dark-theme teal is light. */
   --color-on-brand:      var(--cf-on-brand);
+
+  /* Destructive and discarding state (CF-272): text on its own tint. Per
+     theme for the same reason as on-brand — the one red that reads on cream
+     is too dark for the dark theme, and the reverse. */
+  --color-danger:        var(--cf-danger);
 }
 
 /*
@@ -49,6 +54,13 @@
  *          muted #7f8c8a on bg                     5.53:1
  * `subtle` stays near 3:1 in both, as before: it is for decorative and
  * tertiary text only.
+ *
+ * `danger` as text on a 10% tint of itself over surface (the pressed
+ * "Not an action" chip in the clip modal), the same way (CF-272 R13-M2):
+ *   light  danger #b91c1c on #edd9d0                4.76:1   (on surface 5.60:1)
+ *   dark   danger #f87171 on #271f1f                5.83:1   (on surface 6.61:1)
+ * The `red-400`/`red-500` palette values still used elsewhere are 2.1:1 in
+ * the light theme; moving them onto this token is a follow-up.
  */
 
 /* ── Light mode (default) — cream / warm neutrals / logo teal ────────── */
@@ -68,6 +80,7 @@
   --cf-brand-light:   #025f5e;
   --cf-brand-dim:     rgba(3, 113, 112, 0.09);
   --cf-on-brand:      #ffffff;
+  --cf-danger:        #b91c1c;
 
   --cf-dot:           rgba(60, 50, 30, 0.12);
   --cf-scrollbar:     #d9d1c2;
@@ -91,6 +104,7 @@
   --cf-brand-light:   #5fd3c5;
   --cf-brand-dim:     rgba(60, 194, 179, 0.12);
   --cf-on-brand:      #0b0f0f;
+  --cf-danger:        #f87171;
 
   --cf-dot:           rgba(255, 255, 255, 0.16);
   --cf-scrollbar:     #26302f;
