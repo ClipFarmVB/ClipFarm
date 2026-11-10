@@ -162,7 +162,7 @@ separate motion pass.
   100 MiB threshold keeps out of reach, but so a dropped connection retries one part
   instead of the whole file. XHR (not fetch) on the frontend for upload progress.
 - **Auth:** Supabase issues JWTs; the API verifies them (JWKS), never handles
-  passwords. Next.js middleware guards routes server-side.
+  passwords. The Next.js proxy (formerly middleware) guards routes server-side.
 - **Migrations:** Alembic. The api container's start command applies them automatically
   *only against a local database* (`scripts/auto_migrate.py`, CF-189); a shared or
   production target is migrated deliberately instead — Render's `preDeployCommand`, or
