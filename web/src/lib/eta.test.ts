@@ -260,6 +260,42 @@ describe("stepEta", () => {
     });
   });
 
+  it.each([40, 60, 100])("does not hold Modal's countdown past local's first write at 1pp per %ss", (localGap) => {
+    // The stage write, three Modal writes at 1pp per 10s, then Modal dies.
+    // Local restarts the stage 4-10x slower, under the monotonic clamp, so the
+    // window that ends the freeze holds Modal's gap; local's first interval is
+    // far longer than that, and is not a second freeze.
+    const run = warmedUp(0.03, 0.001, "detecting_court");
+    const stageAt = run.tMs + POLL_MS;
+    const start = Number((run.progress + 0.005).toFixed(4));
+    const local = 0.01 / localGap;
+    let written = start;
+    let resumedAt: number | null = null;
+    const after: [number | null, number][] = [];
+    for (let t = stageAt; resumedAt === null || t <= resumedAt + 600_000; t += POLL_MS) {
+      const s = (t - stageAt) / 1000;
+      const before = written;
+      let truth = start + local * Math.max(0, s - 30);
+      if (s <= 30) {
+        truth = start + 0.001 * s;
+        if (s > 0 && s % 10 === 0) written = Number(truth.toFixed(4));
+      } else {
+        const shown = Number((start + Math.floor((truth - start) / 0.01 + 1e-9) * 0.01).toFixed(4));
+        if (shown > written) written = shown;
+      }
+      if (resumedAt === null && s > 30 && written > before) resumedAt = t;
+      const eta = run.poll({ tMs: t, progress: written, stage: "tracking_ball" });
+      if (resumedAt !== null) after.push([eta, (1 - truth) / local]);
+    }
+    // Low for at most one local write interval from the resume. Judging
+    // local's first interval by Modal's gap made it two.
+    const lowSeconds = after.filter(([eta, truth]) => eta !== null && eta <= 0.5 * truth).length * 5;
+    expect(lowSeconds).toBeLessThanOrEqual(localGap);
+    after.forEach(([eta, truth]) => {
+      if (eta !== null) expect(eta).toBeLessThan(1.25 * truth);
+    });
+  });
+
   it.each([100, 200])("does not count a %ss freeze right after a re-budget jump as velocity", (freezeSeconds) => {
     // The jump restarts the window, so it holds one write when the bar
     // freezes: there is no gap between writes yet to call the freeze by.
@@ -274,23 +310,6 @@ describe("stepEta", () => {
       expect(eta).not.toBeNull();
       // Never inflated. The floor is low because the held estimate counted
       // down through the freeze while the truth did not.
-      expect(eta!).toBeLessThan(1.25 * remaining);
-      expect(eta!).toBeGreaterThan(0.3 * remaining);
-    });
-  });
-
-  it("does not count a freeze one write after a freeze restart as velocity", () => {
-    // The first freeze restarts the window; one write later it freezes again,
-    // so the window holds one write and is judged by the first freeze's gap.
-    const run = warmedUp(0.1, 0.001);
-    run.steady(120, 0);
-    run.steady(5, 0.001);
-    expect(run.state.samples).toHaveLength(1);
-    run.steady(100, 0);
-    const after = run.steady(90, 0.001);
-    after.forEach((eta, i) => {
-      const remaining = (1 - (run.progress - 0.001 * 5 * (after.length - 1 - i))) / 0.001;
-      expect(eta).not.toBeNull();
       expect(eta!).toBeLessThan(1.25 * remaining);
       expect(eta!).toBeGreaterThan(0.3 * remaining);
     });
@@ -428,7 +447,6 @@ describe("stepEta", () => {
       stalled: false,
       polledAtMs: 0,
       afterFreeze: false,
-      freezeGapSeconds: null,
     };
     const { etaSeconds } = stepEta(state, { tMs: 60_000, progress: 0.56, stage: "condensing" });
     const raw = (1 - 0.56) / (0.06 / 60);
@@ -448,7 +466,6 @@ describe("stepEta", () => {
       stalled: false,
       polledAtMs: 0,
       afterFreeze: false,
-      freezeGapSeconds: null,
     };
     const { etaSeconds } = stepEta(state, { tMs: 60_000, progress: 0.56, stage: "condensing" });
     expect(etaSeconds).toBeCloseTo((1 - 0.56) / (0.09 / 90), 6);

@@ -24,8 +24,8 @@
  * A flat stretch the polls watched for much longer than the window's own
  * gap between writes is a freeze, not a slow write, so the advance that
  * ends it restarts the window too. A window of one write has no gap yet, so
- * the held estimate's rate stands in for it, or, when the window began at a
- * freeze, the gap that freeze was judged by.
+ * the held estimate's rate stands in for it, unless the window began at a
+ * freeze: then its first interval is not judged at all.
  *
  * `stepEta` is the whole estimator: a pure reducer the page calls once per
  * poll with the state it returned last time.
@@ -56,15 +56,12 @@ export interface EtaState {
   /** The previous poll. Polls since the last write that still saw it flat
    * are what tell a freeze from a long gap between polls. */
   polledAtMs: number | null;
-  /** The window restarted at the end of a freeze. The held estimate predates
-   * the freeze, so it does not judge the window's first interval: after a
-   * Modal-to-local fallback it holds Modal's speed. */
+  /** The window restarted at the end of a freeze, so nothing judges the
+   * window's first interval. The held estimate and the gap the freeze was
+   * judged by both predate it: after a Modal-to-local fallback they hold
+   * Modal's speed, and local more than 3x slower would read as a second
+   * freeze. Two freezes a write apart do not come out of the pipeline. */
   afterFreeze: boolean;
-  /** The mean gap between writes that the freeze was judged by, which judges
-   * the window's first interval instead; null when a one-write check (the
-   * held rate, or this gap) called the freeze, so the next is not judged at
-   * all: a stage slower than the yardstick would restart on every write. */
-  freezeGapSeconds: number | null;
 }
 
 export interface EtaPoll {
@@ -89,7 +86,6 @@ export const INITIAL_ETA_STATE: EtaState = Object.freeze({
   stalled: false,
   polledAtMs: null,
   afterFreeze: false,
-  freezeGapSeconds: null,
 });
 
 // Need at least this much observation before showing a number.
@@ -188,7 +184,6 @@ export function stepEta(state: EtaState, poll: EtaPoll): EtaStep {
     let samples: ProgressSample[];
     let settled = state.settled && !stageChanged;
     let afterFreeze = false;
-    let freezeGapSeconds: number | null = null;
     if (!last) {
       samples = [{ tMs, progress }];
     } else {
@@ -207,14 +202,12 @@ export function stepEta(state: EtaState, poll: EtaPoll): EtaStep {
       // throttled tab's long poll gap saw none of it, so it stays throughput.
       const watchedFlatSeconds = ((state.polledAtMs ?? last.tMs) - last.tMs) / 1000;
       // With one write there is no gap yet (after any restart). After a jump,
-      // the step at the held estimate's rate stands in; after a freeze, the
-      // gap that freeze was judged by.
-      const gap = meanWriteGapSeconds(state.samples);
-      const yardstick = gap
-        ?? (state.afterFreeze ? state.freezeGapSeconds : heldGapSeconds(state, last, step));
+      // the step at the held estimate's rate stands in; after a freeze,
+      // nothing does.
+      const yardstick = meanWriteGapSeconds(state.samples)
+        ?? (state.afterFreeze ? null : heldGapSeconds(state, last, step));
       const isFreeze = yardstick !== null && watchedFlatSeconds > FREEZE_GAP_MULTIPLE * yardstick;
       afterFreeze = isFreeze && !isJump && !state.stalled;
-      freezeGapSeconds = afterFreeze ? gap : null;
       // A jump, or the end of a freeze or stall, restarts the window here:
       // neither the step nor the flat time before it is velocity. The held
       // estimate carries until the fresh window is long enough to measure.
@@ -223,7 +216,7 @@ export function stepEta(state: EtaState, poll: EtaPoll): EtaStep {
         : [...trimWindow(state.samples, tMs), { tMs, progress }];
     }
     const next: EtaState = {
-      ...state, samples, advancedAtMs: tMs, stage, settled, stalled: false, polledAtMs: tMs, afterFreeze, freezeGapSeconds,
+      ...state, samples, advancedAtMs: tMs, stage, settled, stalled: false, polledAtMs: tMs, afterFreeze,
     };
     if (progress < MIN_PROGRESS || progress >= 1) {
       return { state: { ...next, etaSeconds: null, etaAtMs: null }, etaSeconds: null };
