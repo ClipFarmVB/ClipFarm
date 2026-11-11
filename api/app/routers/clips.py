@@ -170,10 +170,11 @@ async def list_clips(
     Takes a game id, so it cannot be walked; the exposure is load rather than
     enumeration. 60/min per signed-in user, or per client address when there
     is none — deliberately the same number as `GET /games/{id}`. The detail
-    page fetches this route once the game is ready and again each time its
-    filters settle. The filter sliders change on every step, so the page
-    debounces them (`useDebouncedValue`); without that, one drag could spend
-    this whole budget and the page would throttle itself.
+    page loads every page of this route (`page_size=100`) once the game is
+    ready and again each time its filters settle, so one load costs one
+    request per 100 clips (CF-300). The filter sliders change on every step,
+    so the page debounces them (`useDebouncedValue`); without that, one drag
+    could spend this whole budget and the page would throttle itself.
     """
     # The game itself must be viewable, else 404 (indistinguishable from a
     # game that doesn't exist — see access.assert_can_view_game).

@@ -12,6 +12,11 @@
 // named empty state with a way out. Two more pin how the roster is fetched:
 // never shown with nothing to pick, and a roster that fails to load does not
 // take the grid down with it.
+//
+// CF-300 (#350) adds the page's own lifecycle: every page of clips, not the
+// route's first 50; a poll that neither outlives the page nor rejects
+// unhandled; a superseded filter load that cannot overwrite the newer one;
+// and a header count that follows a delete.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,11 +24,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const getGame = vi.hoisted(() => vi.fn());
 const getClips = vi.hoisted(() => vi.fn());
 const getPlayers = vi.hoisted(() => vi.fn());
+const deleteClips = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({
   getGame,
   getClips,
   getPlayers,
-  deleteClips: vi.fn(),
+  deleteClips,
 }));
 vi.mock("next/navigation", () => ({ useParams: () => ({ id: "game-1" }) }));
 vi.mock("next/link", () => ({
@@ -41,6 +47,7 @@ vi.mock("@/components/CollectionPickerModal", () => ({ CollectionPickerModal: ()
 
 import GamePage from "@/app/games/[id]/page";
 import type { Clip, Game, Player } from "@/lib/api";
+import { ApiError } from "@/lib/apiError";
 
 // How long the filters must be still before the clips are refetched
 // (CLIP_FILTER_DEBOUNCE_MS on the page).
@@ -55,6 +62,18 @@ const game = {
   is_sample: false,
   created_at: "2026-10-04T18:00:00Z",
 } as unknown as Game;
+
+// Mid-pipeline, so the page polls `getGame` every POLL_MS and fetches no clips.
+const processingGame = {
+  ...game,
+  status: "processing",
+  clip_count: null,
+  progress: 0.4,
+  progress_stage: "tracking_ball",
+} as unknown as Game;
+
+// The page's poll period.
+const POLL_MS = 5000;
 
 const players: Player[] = [
   { id: "p1", name: "Maya Okafor", jersey_number: 4, team_id: "t1", photo_url: null },
@@ -98,7 +117,9 @@ afterEach(() => {
   act(() => root.unmount());
   host.remove();
   vi.useRealTimers();
-  vi.clearAllMocks();
+  // Reset, not clear: a test that queues more `mockResolvedValueOnce` pages
+  // than the page asks for must not hand the leftovers to the next test.
+  vi.resetAllMocks();
 });
 
 /** Mounts the page and lets the game, clips and roster fetches resolve. */
@@ -202,6 +223,8 @@ describe("filtering the grid by player (CF-250)", () => {
       sort: "score",
       min_confidence: 0,
       min_score: 0,
+      page: 1,
+      page_size: 100,
     });
     // The roster rides on the game, not the filters: two filter changes, one
     // roster fetch.
@@ -339,5 +362,164 @@ describe("the roster behind the player filter (CF-250)", () => {
     expect(playerSelect()).toBeNull();
     expect(host.textContent).not.toContain("503");
     expect(host.textContent).toContain("Semifinal vs Ridgeview");
+  });
+});
+
+/** `n` distinct clips, ids `${prefix}0`…, for a page of the paged fetch. */
+function clipPage(prefix: string, n: number): Clip[] {
+  return Array.from({ length: n }, (_, i) => clip(`${prefix}${i}`));
+}
+
+function renderedClipIds() {
+  return [...host.querySelectorAll("[data-clip]")].map((el) => el.getAttribute("data-clip"));
+}
+
+describe("loading every clip, not the route's first page (CF-300)", () => {
+  it("pages through the route until a short page, and renders all of them", async () => {
+    getClips
+      .mockResolvedValueOnce(clipPage("a", 100))
+      .mockResolvedValueOnce(clipPage("b", 30));
+    await render();
+    await act(async () => {});
+
+    expect(getClips).toHaveBeenCalledTimes(2);
+    expect(getClips.mock.calls[0][1]).toMatchObject({ page: 1, page_size: 100 });
+    expect(getClips.mock.calls[1][1]).toMatchObject({ page: 2, page_size: 100 });
+    expect(host.querySelectorAll("[data-clip]")).toHaveLength(130);
+  });
+
+  it("shows a clip that straddles two pages once", async () => {
+    const first = clipPage("a", 100);
+    getClips
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce([first[99], clip("b0")]);
+    await render();
+    await act(async () => {});
+
+    const ids = renderedClipIds();
+    expect(ids).toHaveLength(101);
+    expect(new Set(ids).size).toBe(101);
+    expect(ids[ids.length - 1]).toBe("b0");
+  });
+});
+
+describe("the status poll (CF-300)", () => {
+  it("starts no poll when the page is gone before the first fetch resolves", async () => {
+    let resolveGame!: (g: Game) => void;
+    getGame.mockReturnValueOnce(new Promise<Game>((r) => { resolveGame = r; }));
+    await act(async () => {
+      root.render(<GamePage />);
+    });
+
+    act(() => root.unmount());
+    await act(async () => { resolveGame(processingGame); });
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_MS * 3);
+    });
+
+    expect(getGame).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows \"Game not found\" and stops polling when a tick 404s", async () => {
+    getGame
+      .mockResolvedValueOnce(processingGame)
+      .mockRejectedValueOnce(new ApiError("Game not found", 404));
+    await render();
+    expect(host.textContent).toContain("Semifinal vs Ridgeview");
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_MS);
+    });
+
+    expect(host.textContent).toContain("Game not found");
+    expect(getGame).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_MS * 3);
+    });
+
+    expect(getGame).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the error and stops polling when a tick fails otherwise", async () => {
+    getGame
+      .mockResolvedValueOnce(processingGame)
+      .mockRejectedValueOnce(new ApiError("Server error", 503));
+    await render();
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_MS);
+    });
+
+    expect(host.textContent).toContain("Server error");
+    expect(host.textContent).not.toContain("Game not found");
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_MS * 3);
+    });
+
+    expect(getGame).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("a superseded filter load (CF-300)", () => {
+  it("keeps the newer result when the older one lands last", async () => {
+    await render();
+    const releaseOlder = holdNextClips();
+    await choosePlayer("p1");
+    const releaseNewer = holdNextClips();
+    await choosePlayer("p2");
+
+    await releaseNewer([clip("c2", players[1])]);
+    await releaseOlder([clip("c1", players[0])]);
+
+    expect(renderedClipIds()).toEqual(["c2"]);
+  });
+
+  it("does not flash the empty state when the older load lands empty first", async () => {
+    await render();
+    getClips.mockResolvedValue([]);
+    await choosePlayer("p2");
+    expect(host.textContent).toContain("No clips tagged Lena Brandt in this game.");
+
+    const releaseOlder = holdNextClips();
+    await choosePlayer("p1");
+    const releaseNewer = holdNextClips();
+    await choosePlayer("");
+
+    await releaseOlder([]);
+
+    expect(host.textContent).not.toContain("No clips tagged");
+    expect(host.textContent).not.toContain("No clips match your filters.");
+    expect(skeletons()).toBeGreaterThan(0);
+
+    await releaseNewer([clip("c1", players[0]), clip("c2")]);
+
+    expect(skeletons()).toBe(0);
+    expect(renderedClipIds()).toEqual(["c1", "c2"]);
+  });
+});
+
+describe("the header count after a delete (CF-300)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("drops by what the api deleted, without refetching the grid", async () => {
+    getGame.mockResolvedValue({ ...game, clip_count: 5 });
+    deleteClips.mockResolvedValue({ deleted: 2 });
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    await render();
+    expect(host.textContent).toContain("5 clips");
+    const clipFetches = getClips.mock.calls.length;
+
+    await clickButton("Select");
+    await clickButton("All (2)");
+    await clickButton("Delete 2");
+
+    expect(deleteClips).toHaveBeenCalledWith(["c1", "c2"]);
+    expect(host.textContent).toContain("3 clips");
+    expect(host.textContent).not.toContain("5 clips");
+    expect(getClips).toHaveBeenCalledTimes(clipFetches);
   });
 });
