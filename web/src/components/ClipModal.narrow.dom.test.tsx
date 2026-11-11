@@ -81,7 +81,7 @@ afterEach(() => {
 
 function mount(
   effective: Visibility | null,
-  onUpdate: (c: Clip) => void = () => {},
+  onUpdate: (id: string, fields: Partial<Clip>) => void = () => {},
   ownsClip = true,
 ) {
   act(() => {
@@ -129,14 +129,15 @@ describe("taking a clip back", () => {
     expect(narrowButton()).toBeUndefined();
   });
 
-  it("narrows to private and hands the parent its own row with the new tier", async () => {
+  it("narrows to private and hands the parent the new tier alone", async () => {
     // The parent owns the grid behind this dialog; without the callback its
     // badge keeps showing the old tier until a refetch.
     //
-    // Its own row, not the PATCH echo. The echo carries no `player_name`, and
-    // with R2 a freshly presigned `clip_url`, so swapping it in dropped the
-    // tagged player from the header and restarted the video. The echo here is
-    // shaped like that on purpose, so a version that forwards it goes red.
+    // The tier, for the parent to merge onto its row (CF-272) — not the PATCH
+    // echo. The echo carries no `player_name`, and with R2 a freshly presigned
+    // `clip_url`, so swapping it in dropped the tagged player from the header
+    // and restarted the video. The echo here is shaped like that on purpose,
+    // so a version that forwards it goes red.
     const shown = { ...makeClip("public"), player_name: "Sam" } as Clip;
     const echo = {
       ...makeClip("private"),
@@ -153,7 +154,7 @@ describe("taking a clip back", () => {
 
     expect(setClipVisibility).toHaveBeenCalledWith("clip-1", "private");
     expect(onUpdate).toHaveBeenCalledTimes(1);
-    expect(onUpdate.mock.calls[0][0]).toEqual({ ...shown, effective_visibility: "private" });
+    expect(onUpdate).toHaveBeenCalledWith("clip-1", { effective_visibility: "private" });
   });
 
   it("offers exactly one control here, and it narrows", async () => {
@@ -306,9 +307,7 @@ describe("taking a clip back", () => {
     );
     await click(document.getElementById("stub-posted")!);
 
-    expect(onUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "clip-1", effective_visibility: "public" }),
-    );
+    expect(onUpdate).toHaveBeenCalledWith("clip-1", { effective_visibility: "public" });
   });
 
 

@@ -6,7 +6,7 @@ import Link from "next/link";
 import { AlertCircle, ArrowLeft, CheckSquare, Download, Scissors, Square, Trash2, X } from "lucide-react";
 import { ClipCardSkeleton } from "@/components/ui/Skeleton";
 import { ClipCard } from "@/components/ClipCard";
-import { ClipModal } from "@/components/ClipModal";
+import { ClipModal, mergeClipFields } from "@/components/ClipModal";
 import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -18,6 +18,12 @@ import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { DemoBadge, DemoBanner } from "@/components/DemoGame";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];
+
+// `#7 Alice`, or `Alice` for a player with no jersey number — the same form
+// ClipCard's tag dropdown uses, so a player reads the same in both places.
+function playerLabel(p: Player): string {
+  return `${p.jersey_number != null ? `#${p.jersey_number} ` : ""}${p.name}`;
+}
 
 // How long the filters must be still before the clips are refetched. The
 // sliders change on every step of a drag, and GET /games/{id}/clips is rate
@@ -69,6 +75,10 @@ export default function GamePage() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
+  // A clips request is in flight. Distinct from `loading`, which covers the
+  // first fetch only: a refetch keeps the grid it has, so this flag is what
+  // stops the empty state describing a result that has not landed yet.
+  const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [activeClipIndex, setActiveClipIndex] = useState<number | null>(null);
@@ -172,11 +182,41 @@ export default function GamePage() {
   // Fetch clips when game is ready
   useEffect(() => {
     if (!game || game.status !== "ready") return;
-    Promise.all([getClips(id, settledFilters), getPlayers()])
-      .then(([c, p]) => { setClips(c); setPlayers(p); })
+    setFetching(true);
+    getClips(id, settledFilters)
+      .then(setClips)
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load clips."))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setFetching(false);
+      });
   }, [game, id, settledFilters]);
+
+  // Fetch the roster once the game is ready (CF-250). Separate from the clips
+  // fetch on purpose: the roster does not change with the filters, so it is
+  // not refetched on every slider step, and a roster that fails to load costs
+  // the player filter and the tag action's dropdown, not the grid — the clips
+  // stand on their own.
+  const gameReady = game?.status === "ready";
+  useEffect(() => {
+    if (!gameReady) return;
+    getPlayers()
+      .then(setPlayers)
+      .catch((e) => {
+        console.warn("Roster failed to load; the player filter and tag dropdown are off.", e);
+        setPlayers([]);
+      });
+  }, [id, gameReady]);
+
+  // Whether anything besides the player filter narrows the grid, for the
+  // empty state's copy. Any non-empty `action_type` list counts: the API
+  // applies it as given, and even all five badges exclude `unknown`-typed
+  // clips (the `removed` ones), which can carry a player tag too.
+  const otherFiltersNarrow = Boolean(
+    settledFilters.action_type?.length ||
+    settledFilters.min_confidence ||
+    settledFilters.min_score
+  );
 
   const toggleActionFilter = useCallback((action: ActionType) => {
     setFilters((f) => {
@@ -365,6 +405,32 @@ export default function GamePage() {
             })}
 
             <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-2 sm:ml-auto sm:w-auto sm:flex-nowrap">
+              {/* Player filter (CF-250). Only once there is a roster to pick
+                  from: with no players the control could offer nothing but
+                  its own clear option. "All players" is that explicit clear —
+                  most clips are untagged, and a filter you cannot leave is
+                  worse than none. */}
+              {players.length > 0 && (
+                <select
+                  aria-label="Filter by player"
+                  value={filters.player_id ?? ""}
+                  onChange={(e) =>
+                    setFilters((f) => ({ ...f, player_id: e.target.value || undefined }))
+                  }
+                  className={cn(
+                    "max-w-[10rem] truncate rounded-md border bg-surface px-2.5 py-2 text-[11px] font-medium transition-all duration-150 sm:py-1",
+                    filters.player_id
+                      ? "border-brand/30 bg-brand/5 text-brand"
+                      : "border-border text-muted hover:border-border-strong hover:text-foreground"
+                  )}
+                >
+                  <option value="">All players</option>
+                  {players.map((p) => (
+                    <option key={p.id} value={p.id}>{playerLabel(p)}</option>
+                  ))}
+                </select>
+              )}
+
               {/* Sort toggle: chronological vs highlight score */}
               <button
                 onClick={() =>
@@ -474,18 +540,41 @@ export default function GamePage() {
             </div>
           )}
 
-          {/* Loading clips skeletons */}
-          {loading && (
+          {/* Loading clips skeletons: the first fetch, and a refetch with no
+              grid to keep on screen (the empty state's "Show all players",
+              or one empty player to another). */}
+          {(loading || (fetching && clips.length === 0)) && (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 stagger">
               {[...Array(8)].map((_, i) => <ClipCardSkeleton key={i} />)}
             </div>
           )}
 
-          {/* Empty filtered state */}
-          {!loading && clips.length === 0 && (
-            <p className="py-16 text-center text-[13px] text-muted">
-              No clips match your filters.
-            </p>
+          {/* Empty filtered state. Reads the settled filters, which are what
+              the empty result answers to; the control shows the live ones.
+              Never while a fetch is pending: `clips` would still be the old
+              `[]` and the line would describe a result that is not in yet. */}
+          {!loading && !fetching && clips.length === 0 && (
+            settledFilters.player_id ? (
+              <div className="flex flex-col items-center py-16 text-center">
+                <p className="text-[13px] text-muted">
+                  No clips tagged{" "}
+                  <span className="font-medium text-foreground">
+                    {players.find((p) => p.id === settledFilters.player_id)?.name ?? "this player"}
+                  </span>
+                  {otherFiltersNarrow ? " match your other filters." : " in this game."}
+                </p>
+                <button
+                  onClick={() => setFilters((f) => ({ ...f, player_id: undefined }))}
+                  className="mt-3 rounded-md border border-border px-2.5 py-2 text-[11px] font-medium text-muted hover:border-border-strong hover:text-foreground transition-all duration-150 sm:py-1"
+                >
+                  Show all players
+                </button>
+              </div>
+            ) : (
+              <p className="py-16 text-center text-[13px] text-muted">
+                No clips match your filters.
+              </p>
+            )
           )}
 
           {/* Clip grid */}
@@ -495,11 +584,7 @@ export default function GamePage() {
                 <ClipCard
                   key={clip.id}
                   clip={clip}
-                  players={players}
                   onPlay={() => setActiveClipIndex(i)}
-                  onUpdate={(updated) =>
-                    setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
-                  }
                   selected={selectedIds.has(clip.id)}
                   onToggleSelect={selectMode ? toggleSelect : undefined}
                   onSave={selectMode ? undefined : (id) => setSavingClipId(id)}
@@ -525,9 +610,15 @@ export default function GamePage() {
           onClose={() => setActiveClipIndex(null)}
           onPrev={activeClipIndex > 0 ? () => setActiveClipIndex((i) => i! - 1) : undefined}
           onNext={activeClipIndex < clips.length - 1 ? () => setActiveClipIndex((i) => i! + 1) : undefined}
-          onUpdate={(updated) =>
-            setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
-          }
+          // Merged onto the row as it is when the write lands, by id: a write
+          // can settle after another on the same clip, or after ← →.
+          onUpdate={(id, fields) => setClips((prev) => mergeClipFields(prev, id, fields))}
+          // The roster turns on the modal's edit bar — Label, Trim and the
+          // player tag, which used to sit on the card (CF-272).
+          players={players}
+          // How long the source is, so a trim past its end is expected to
+          // come back cut short at it (CF-272).
+          sourceDuration={game?.original_duration}
           // Every game reachable here is the viewer's own. `GET /games/{id}` is
           // visibility-scoped rather than owner-only, but no write path exists
           // for a game's visibility — `test_visibility_write_paths_are_declared`

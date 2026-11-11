@@ -78,21 +78,38 @@ app.add_middleware(
     expose_headers=["Retry-After"],
 )
 
-app.include_router(games.router)
-app.include_router(clips.router)
-app.include_router(players.router)
-app.include_router(collections.router)
-app.include_router(corrections.router)
-# Behind SOCIAL_ENABLED (CF-107): with the flag off the profile routes are not
-# registered at all, so /users/* 404s rather than existing-but-empty. Nothing
-# else in the app depends on them.
-#
-# Posts (CF-109) share the gate: a post is only reachable through a profile or
-# the feed, so leaving /posts/* routed while the rest of the social surface is
-# hidden would expose the one endpoint that serves other people's footage.
-if settings.social_enabled:
-    app.include_router(profiles.router)
-    app.include_router(posts.router)
+
+def mount_routers(target: FastAPI) -> None:
+    """Attach every router to ``target``, in the order and under the flag the
+    served app uses.
+
+    A function rather than module-level statements so a test can assemble the
+    same route table on a fresh ``FastAPI()``: ``test_ratelimit_wiring.py``
+    asserts the rate-limit wiring on the app as served rather than on the
+    router objects, and needs the social routers mounted under a flag that
+    defaults off. ``app`` is still built at import below -- Docker and compose
+    run ``uvicorn app.main:app``, and the health routes and ``_check_redis``
+    are called directly by tests -- so this is not an app factory.
+    """
+    target.include_router(games.router)
+    target.include_router(clips.router)
+    target.include_router(players.router)
+    target.include_router(collections.router)
+    target.include_router(corrections.router)
+    # Behind SOCIAL_ENABLED (CF-107): with the flag off the profile routes are
+    # not registered at all, so /users/* 404s rather than existing-but-empty.
+    # Nothing else in the app depends on them.
+    #
+    # Posts (CF-109) share the gate: a post is only reachable through a profile
+    # or the feed, so leaving /posts/* routed while the rest of the social
+    # surface is hidden would expose the one endpoint that serves other
+    # people's footage.
+    if settings.social_enabled:
+        target.include_router(profiles.router)
+        target.include_router(posts.router)
+
+
+mount_routers(app)
 
 
 async def _check_db() -> bool:

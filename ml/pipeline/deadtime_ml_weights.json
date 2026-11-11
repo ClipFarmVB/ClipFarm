@@ -43,6 +43,7 @@
   ],
   "intercept": -0.04228,
   "threshold": 0.65,
+  "decoder": "threshold",
   "trained_on": [
     {
       "test_id": "test1",
@@ -65,7 +66,7 @@
       "source_video_md5": "783f91a5a37ba90b6a332df57ccc672f"
     }
   ],
-  "git_commit": "d33d38f",
+  "git_commit": "c8e419c",
   "folds": [
     {
       "held_out": "test1",

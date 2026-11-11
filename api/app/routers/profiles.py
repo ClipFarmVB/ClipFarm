@@ -90,14 +90,20 @@ def _sniff_image_type(header: bytes) -> str | None:
 
 
 def _bad_avatar_type(reason: str) -> HTTPException:
-    """A 400 naming the allowlist.
+    """A 415 naming the allowlist.
 
     Both avatar rejections end the same way and differ only in the reason, so
     the allowlist half lives here once rather than being spelled out twice and
     drifting.
+
+    415 rather than 400 because the video path already answers 415 for the
+    same rejection — a disallowed declared type in `check_upload_allowed`, bytes
+    that are not a video in `complete_upload` — and a client should be able to
+    write one handler for "wrong file type" across both (CF-264).
+    test_profile_routes pins the two together.
     """
     allowed = ", ".join(sorted(ALLOWED_AVATAR_TYPES))
-    return HTTPException(status_code=400, detail=f"{reason} Allowed: {allowed}")
+    return HTTPException(status_code=415, detail=f"{reason} Allowed: {allowed}")
 
 
 def _log_avatar_type(event: str, user_id: uuid.UUID, declared: str, sniffed: str | None) -> None:
@@ -314,7 +320,7 @@ async def upload_avatar(user_id: UserId, db: DB, file: UploadFile = File(...)):
     # to govern then, so the bytes decide alone — an extensionless PNG is a
     # normal upload, not an attack, and refusing it here would mean the sniff
     # never ran. Nothing is widened by that: whatever the sniff does not
-    # recognise is still a 400 a few lines down.
+    # recognise is still a 415 a few lines down.
     declared = (file.content_type or "").split(";")[0].strip().lower()
     if declared not in ALLOWED_AVATAR_TYPES and declared not in UNDECLARED_AVATAR_TYPES:
         _log_avatar_type("rejected on its declared type", user_id, declared, None)

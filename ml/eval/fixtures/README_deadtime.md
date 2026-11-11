@@ -160,7 +160,8 @@ is a real outcome and not a failed run. Under `learned` (CF-394) it runs the
 worker's own fallback chain, prints which builder ran, and exits without
 recording when that was not the learned one — which, while the committed
 weights are unvalidated, is every run; score those in-sample with
-`visualize_deadtime` (`v6`) instead. It needs the worker deps (R2, cv2, app
+`visualize_deadtime` (`v6`) instead, and held out with `validate_learned`
+(CF-395). It needs the worker deps (R2, cv2, app
 config), and a ball-cache entry for the video under the current
 `TRACKING_CACHE_VERSION` — or Modal to re-track it, which is safe only when the
 deployed Modal app matches your checkout. On a branch that bumps the version,

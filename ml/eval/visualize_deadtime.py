@@ -7,8 +7,10 @@ no app deps. Both ends of the ladder ship: v0 is condense_mode="rules", v5 is
 condense_mode="guarded" (the default). v1-v4 are the intermediate prototypes in
 deadtime_variants.py. v6 is condense_mode="learned" (CF-394) on the committed,
 unvalidated weights, and it is IN-SAMPLE: those weights were fitted on every
-fixture scored here, so none of v6's columns is held out. The held-out
-numbers for the learned model are train_deadtime's leave-one-game-out folds.
+fixture scored here, so none of v6's columns is held out. v7 is v6 without the
+sparse-track gate (D-0034, eval only), in-sample the same way. The held-out
+numbers for the learned model, and the validation bar, are
+validate_learned's (CF-395).
 
 The variants were designed against test2 / test4 (DeadtimeLabel2.mp4 /
 DeadtimeLabel4.mp4); every other fixture was never looked at while tuning, so
@@ -433,11 +435,12 @@ def render_summary(all_results: dict[str, dict[str, tuple[list[Interval], DeadTi
       over {BASELINE} <i>within the held-out net</i> (both percentages are of that
       column, not of the headline). Unfitted is not the same as comparable; test5 is
       the only fixture that is both.</p>
-      <p class="note"><code>{LEARNED}</code> is the exception to the held-out columns:
-      its weights were fitted on all {len(TEST_IDS)} fixtures, so every one of its
-      columns is <b>in-sample</b>, test5 included. Its held-out numbers are the
-      trainer's leave-one-game-out folds (<code>python -m ml.eval.train_deadtime</code>),
-      not this table.</p>
+      <p class="note"><code>{LEARNED}</code> and <code>v7</code> (the same builder
+      without its sparse-track gate, eval only) are the exception to the held-out
+      columns: their weights were fitted on all {len(TEST_IDS)} fixtures, so every one
+      of their columns is <b>in-sample</b>, test5 included. Their held-out numbers
+      and the validation bar are <code>python -m ml.eval.validate_learned</code>
+      (CF-395), not this table.</p>
     </section>
     """
 

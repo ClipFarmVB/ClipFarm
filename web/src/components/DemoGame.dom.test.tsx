@@ -80,17 +80,16 @@ function buttonLabels(scope: ParentNode = document): string[] {
 
 describe("ClipCard on a demo clip", () => {
   function render(isSample: boolean) {
-    act(() => root.render(<ClipCard clip={makeClip(isSample)} players={[]} onPlay={() => {}} />));
+    act(() => root.render(<ClipCard clip={makeClip(isSample)} onPlay={() => {}} />));
   }
 
-  it("does not offer Download or Trim, which the api refuses", () => {
+  it("does not offer Download, which the api refuses", () => {
+    // Trim is no longer on the card at all (CF-272); its demo gate is pinned
+    // on the modal below.
     render(true);
     const labels = buttonLabels(host);
 
     expect(labels.some((l) => l.includes("Download"))).toBe(false);
-    expect(labels.some((l) => l.includes("Trim"))).toBe(false);
-    // Label stays: relabelling a demo clip is allowed (it writes no Correction).
-    expect(labels.some((l) => l.includes("Label"))).toBe(true);
   });
 
   it("says it is a demo clip, so the missing buttons have a reason", () => {
@@ -106,12 +105,36 @@ describe("ClipCard on a demo clip", () => {
     expect(host.textContent).not.toContain("Demo");
   });
 
-  it("still offers both on an ordinary clip", () => {
+  it("still offers Download on an ordinary clip", () => {
     render(false);
     const labels = buttonLabels(host);
 
     expect(labels.some((l) => l.includes("Download"))).toBe(true);
+  });
+});
+
+describe("ClipModal's edit bar on a demo clip (CF-272)", () => {
+  function render(isSample: boolean) {
+    act(() =>
+      root.render(<ClipModal clip={makeClip(isSample)} onClose={() => {}} players={[]} ownsClip />),
+    );
+  }
+
+  it("offers Label but not Trim, which the api refuses", () => {
+    render(true);
+    const labels = buttonLabels();
+
+    expect(labels.some((l) => l.includes("Trim"))).toBe(false);
+    // Label stays: relabelling a demo clip is allowed (it writes no Correction).
+    expect(labels.some((l) => l.includes("Label"))).toBe(true);
+  });
+
+  it("offers both on an ordinary clip", () => {
+    render(false);
+    const labels = buttonLabels();
+
     expect(labels.some((l) => l.includes("Trim"))).toBe(true);
+    expect(labels.some((l) => l.includes("Label"))).toBe(true);
   });
 });
 
@@ -128,6 +151,8 @@ describe("ClipModal on a demo clip", () => {
     expect(labels.some((l) => l.includes("Copy link"))).toBe(false);
     expect(labels.some((l) => l === "Post")).toBe(false);
     expect(document.body.textContent).toContain("Demo");
+    // The badge says why, where Trim is missing from the edit bar too.
+    expect(document.querySelector("[title^='Demo clip']")).not.toBeNull();
   });
 
   it("offers all three on an ordinary clip", () => {

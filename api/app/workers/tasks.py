@@ -625,29 +625,59 @@ def _json_safe(value):
     return value
 
 
-def _classify_windows_modal(r2_key: str, windows: list[dict]) -> list[dict]:
+def _classify_windows_modal(r2_key: str, windows: list[dict], on_progress=None) -> list[dict]:
     """
     Pose-refine rally windows on Modal GPU (CF-164). Raises on any failure;
     the caller falls back to local CPU pose.
 
-    Blocking, unlike `_track_ball_modal`: refinement visits only the rallies
-    that survived the highlight gate, so there is far less wall-clock to report
-    against, and `classify_within_windows` has no progress callback to bridge.
+    Prefers the streaming function (classify_windows_stream) so the progress
+    bar moves per rally during the GPU run (CF-255); falls back to the blocking
+    call when only the older deployment exists. Same two-step shape as
+    `_track_ball_modal`, for the same reason.
     """
     import modal as modal_sdk
     from app.config import settings
     from app.services import storage as s3
 
     video_url = s3.presign_url(r2_key, expires_in=3600)
-    fn = modal_sdk.Function.from_name("clipfarm-pose", "classify_windows_remote")
-    return fn.remote(
+    args = (
         video_url, _json_safe(windows),
         settings.pose_model, settings.pose_imgsz, settings.pose_skip_frames,
     )
 
+    streaming_started = False
+    try:
+        fn = modal_sdk.Function.from_name("clipfarm-pose", "classify_windows_stream")
+        refined = None
+        for event in fn.remote_gen(*args):
+            streaming_started = True
+            if "progress" in event and on_progress:
+                try:
+                    on_progress(event["progress"])
+                except Exception:
+                    logger.warning("Progress callback failed", exc_info=True)
+            elif "windows" in event:
+                refined = event["windows"]
+        if refined is None:
+            raise RuntimeError("Modal stream ended without a windows event")
+        return refined
+    except modal_sdk.exception.NotFoundError:
+        # from_name is lazy, so a missing deploy can surface on the first
+        # remote_gen pull — hence the try spans the loop. But once the stream
+        # has produced events, a NotFound is a mid-run failure, not a missing
+        # function: re-raise so the caller falls back to local CPU instead of
+        # silently re-running the whole GPU job on the blocking function.
+        if streaming_started:
+            raise
+        logger.info("classify_windows_stream not deployed yet — using blocking Modal call")
+
+    fn = modal_sdk.Function.from_name("clipfarm-pose", "classify_windows_remote")
+    return fn.remote(*args)
+
 
 def _refine_with_pose(
     local_video: Path, r2_key: str, windows: list[dict], game_id: str = "",
+    on_progress=None,
 ) -> list[dict]:
     """
     Stage 3 pose refinement: Modal GPU when configured, local CPU otherwise.
@@ -657,6 +687,11 @@ def _refine_with_pose(
     carries torch (CF-164), so the local branch is a real path only for
     development installs; without ultralytics `classify_within_windows`
     no-ops and the ball-trajectory labels stand.
+
+    `on_progress` (fraction of windows done, 0-1) reaches whichever branch
+    runs. On a Modal-then-local fallback it restarts from 0 — the bar's
+    monotonic clamp holds the high-water mark meanwhile, exactly as it does
+    for ball tracking.
     """
     from app.config import settings
 
@@ -668,7 +703,7 @@ def _refine_with_pose(
 
     if _will_attempt_modal(r2_key):
         try:
-            refined = _classify_windows_modal(r2_key, windows)
+            refined = _classify_windows_modal(r2_key, windows, on_progress=on_progress)
             # Deliberately "returned", not "refined": this side only sees the
             # list come back, and its length is just the input size. How many
             # windows pose actually scored is logged by classify_within_windows
@@ -703,12 +738,17 @@ def _refine_with_pose(
         )
         return windows
 
-    return classify_within_windows(
-        str(local_video), windows,
-        model_name=settings.pose_model,
-        imgsz=settings.pose_imgsz,
-        skip_frames=settings.pose_skip_frames,
-    )
+    local_kwargs: dict = {
+        "model_name": settings.pose_model,
+        "imgsz": settings.pose_imgsz,
+        "skip_frames": settings.pose_skip_frames,
+    }
+    # Only when set: the three quality knobs are the whole of the local call's
+    # contract and a test pins them as such; a callback that nobody passed has
+    # no business widening it.
+    if on_progress is not None:
+        local_kwargs["on_progress"] = on_progress
+    return classify_within_windows(str(local_video), windows, **local_kwargs)
 
 
 def _run_detection(video_path: str, r2_key: str = "") -> list[dict]:
@@ -1337,7 +1377,10 @@ def process_game_task(self, game_id: str, raw_video_url: str, condense: bool = F
             # ball-trajectory label when pose is more confident.
             progress.stage("refining_actions")
             try:
-                detections = _refine_with_pose(local_video, r2_key, detections, game_id)
+                detections = _refine_with_pose(
+                    local_video, r2_key, detections, game_id,
+                    on_progress=progress.update,
+                )
                 logger.info("Pose refinement stage done (%d windows)", len(detections))
             except Exception as pose_err:
                 logger.warning("Pose refinement failed (%s) — keeping trajectory labels", pose_err)
