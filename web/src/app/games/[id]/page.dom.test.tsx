@@ -401,7 +401,72 @@ describe("loading every clip, not the route's first page (CF-300)", () => {
     expect(new Set(ids).size).toBe(101);
     expect(ids[ids.length - 1]).toBe("b0");
   });
+
+  // Each sequential page is one more promise turn.
+  async function flushPages() {
+    for (let i = 0; i < 15; i++) await act(async () => {});
+  }
+
+  function queueFullPages(n: number) {
+    for (let i = 0; i < n; i++) getClips.mockResolvedValueOnce(clipPage(`p${i}-`, 100));
+  }
+
+  it("stops at ten pages, and warns only when a clip lies past them", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    queueFullPages(10);
+    getClips.mockResolvedValueOnce([clip("past-cap")]);
+    await render();
+    await flushPages();
+
+    expect(getClips).toHaveBeenCalledTimes(11);
+    expect(getClips.mock.calls[9][1]).toMatchObject({ page: 10, page_size: 100 });
+    // The probe: one clip at offset 1,000.
+    expect(getClips.mock.calls[10][1]).toMatchObject({ page: 1001, page_size: 1 });
+    expect(renderedClipIds()).toHaveLength(1000);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("stopped at 10 pages"));
+    warn.mockRestore();
+  });
+
+  it("does not warn at exactly 1,000 clips, where nothing was cut", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    queueFullPages(10);
+    getClips.mockResolvedValueOnce([]);
+    await render();
+    await flushPages();
+
+    expect(getClips).toHaveBeenCalledTimes(11);
+    expect(renderedClipIds()).toHaveLength(1000);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("stopped at"));
+    warn.mockRestore();
+  });
+
+  // A superseded load must not spend more of the rate limit on pages nobody
+  // will see.
+  it("requests no further page for a load that newer filters replaced", async () => {
+    await render();
+    const releaseOlder = holdNextClips();
+    await choosePlayer("p1");
+    getClips.mockResolvedValue([]);
+    await choosePlayer("p2");
+
+    await releaseOlder(clipPage("a", 100));
+    await flushPages();
+
+    const olderPages = getClips.mock.calls
+      .map((c) => c[1] as Record<string, unknown>)
+      .filter((f) => f.player_id === "p1")
+      .map((f) => f.page);
+    expect(olderPages).toEqual([1]);
+    expect(renderedClipIds()).toEqual([]);
+  });
 });
+
+/** Advances one poll period and lets the tick's request land. */
+async function tick() {
+  await act(async () => {
+    vi.advanceTimersByTime(POLL_MS);
+  });
+}
 
 describe("the status poll (CF-300)", () => {
   it("starts no poll when the page is gone before the first fetch resolves", async () => {
@@ -441,24 +506,70 @@ describe("the status poll (CF-300)", () => {
     expect(getGame).toHaveBeenCalledTimes(2);
   });
 
-  it("shows the error and stops polling when a tick fails otherwise", async () => {
+  // A blip, a 502 during a deploy or a 429 is not the end of the game: the
+  // processing view stays and the next tick picks the poll back up.
+  it("keeps the processing view and the poll through a tick that fails otherwise", async () => {
     getGame
       .mockResolvedValueOnce(processingGame)
-      .mockRejectedValueOnce(new ApiError("Server error", 503));
+      .mockRejectedValueOnce(new ApiError("Server error", 502))
+      .mockResolvedValueOnce({ ...processingGame, progress: 0.7 });
     await render();
 
-    await act(async () => {
-      vi.advanceTimersByTime(POLL_MS);
-    });
+    await tick();
 
-    expect(host.textContent).toContain("Server error");
+    expect(host.textContent).not.toContain("Server error");
     expect(host.textContent).not.toContain("Game not found");
+    expect(host.textContent).toContain("Tracking the ball");
+    expect(host.textContent).toContain("40%");
 
-    await act(async () => {
-      vi.advanceTimersByTime(POLL_MS * 3);
-    });
+    await tick();
 
-    expect(getGame).toHaveBeenCalledTimes(2);
+    expect(getGame).toHaveBeenCalledTimes(3);
+    expect(host.textContent).toContain("70%");
+  });
+
+  it("says it cannot reach the server after three failed ticks in a row, and clears it on the next good one", async () => {
+    getGame
+      .mockResolvedValueOnce(processingGame)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(processingGame);
+    await render();
+
+    await tick();
+    await tick();
+    expect(host.textContent).not.toContain("Can't reach ClipFarm");
+
+    await tick();
+    expect(host.textContent).toContain("Can't reach ClipFarm right now.");
+    expect(host.textContent).toContain("Tracking the ball");
+
+    await tick();
+    expect(getGame).toHaveBeenCalledTimes(5);
+    expect(host.textContent).not.toContain("Can't reach ClipFarm");
+  });
+
+  // Ticks do not wait for each other. One slower than the period can land
+  // after a later tick saw `ready` and stopped the poll.
+  it("ignores a tick that lands after the poll stopped", async () => {
+    let resolveSlow!: (g: Game) => void;
+    getGame
+      .mockResolvedValueOnce(processingGame)
+      .mockReturnValueOnce(new Promise<Game>((r) => { resolveSlow = r; }))
+      .mockResolvedValueOnce(game);
+    await render();
+
+    await tick();
+    await tick();
+    await act(async () => {});
+    expect(renderedClipIds()).toEqual(["c1", "c2"]);
+
+    await act(async () => { resolveSlow(processingGame); });
+    await act(async () => {});
+
+    expect(host.textContent).not.toContain("Tracking the ball");
+    expect(renderedClipIds()).toEqual(["c1", "c2"]);
   });
 });
 

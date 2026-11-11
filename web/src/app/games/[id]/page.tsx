@@ -40,6 +40,11 @@ const CLIP_FILTER_DEBOUNCE_MS = 300;
 const CLIP_PAGE_SIZE = 100;
 const CLIP_PAGE_LIMIT = 10;
 
+// Consecutive failed poll ticks before the processing view says it cannot
+// reach the server. One or two are a blip the next tick usually rides out; at
+// the 5s period this is 15s without an answer.
+const POLL_TROUBLE_AFTER = 3;
+
 function fmtDuration(seconds: number): string {
   const s = Math.round(seconds);
   const h = Math.floor(s / 3600);
@@ -90,6 +95,9 @@ export default function GamePage() {
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
+  // The last POLL_TROUBLE_AFTER poll ticks failed. The poll keeps going, so
+  // this clears on the next tick that lands.
+  const [pollTrouble, setPollTrouble] = useState(false);
   const [activeClipIndex, setActiveClipIndex] = useState<number | null>(null);
   const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0, min_score: 0, sort: "time" });
   // What the clips fetch reads. The controls update `filters` at once so the
@@ -153,8 +161,8 @@ export default function GamePage() {
       setClips((prev) => prev.filter((c) => !selectedIds.has(c.id)));
       // The header's count comes from the game fetch, which a ready game
       // never repeats; without this it kept the pre-delete number until a
-      // reload (CF-300). `deleted` is what the api removed, not what was
-      // asked for.
+      // reload (CF-300). The api deletes the whole selection or refuses it,
+      // so `deleted` equals what was asked for.
       setGame((g) => (g && g.clip_count != null
         ? { ...g, clip_count: Math.max(0, g.clip_count - deleted) }
         : g));
@@ -192,19 +200,32 @@ export default function GamePage() {
         if (disposed) return;
         setGame(g);
         if (g.status === "processing" || g.status === "queued") {
+          let failedTicks = 0;
           interval = setInterval(async () => {
-            // A failed tick ends the poll and says so, rather than rejecting
-            // unhandled every five seconds: a game deleted in another tab
-            // 404s here (CF-300).
+            // Ticks do not wait for each other, so one can land after the
+            // poll has stopped (a slower tick behind the one that saw
+            // `ready`); a late answer then must not touch the page.
             try {
               const updated = await getGame(id);
-              if (disposed) return;
+              if (disposed || interval === null) return;
+              failedTicks = 0;
+              setPollTrouble(false);
               setGame(updated);
               if (updated.status === "ready" || updated.status === "failed") stopPolling();
             } catch (e) {
-              if (disposed) return;
-              stopPolling();
-              showFailure(e, "Failed to refresh game.");
+              if (disposed || interval === null) return;
+              // A 404 is final: the game was deleted, say in another tab
+              // (CF-300). Anything else (a network blip, a 502 during a
+              // deploy, a 429) keeps the processing view and the poll, so
+              // the next tick can recover. CF-410 (#533) reads a 429's
+              // Retry-After here.
+              if (e instanceof ApiError && e.status === 404) {
+                stopPolling();
+                showFailure(e, "Failed to refresh game.");
+                return;
+              }
+              failedTicks += 1;
+              if (failedTicks >= POLL_TROUBLE_AFTER) setPollTrouble(true);
             }
           }, 5000);
         }
@@ -250,7 +271,22 @@ export default function GamePage() {
           }
           if (batch.length < CLIP_PAGE_SIZE) break;
           if (page === CLIP_PAGE_LIMIT) {
-            console.warn(`Clip grid stopped at ${CLIP_PAGE_LIMIT} pages; later clips are not shown.`);
+            // A full last page may also be the last clip. One single-clip
+            // probe at offset CLIP_PAGE_LIMIT * CLIP_PAGE_SIZE tells which,
+            // and only a game this large pays for it. The probe only decides
+            // a warning, so its failure leaves the grid as loaded.
+            try {
+              const probe = await getClips(id, {
+                ...settledFilters,
+                page: CLIP_PAGE_LIMIT * CLIP_PAGE_SIZE + 1,
+                page_size: 1,
+              });
+              if (probe.length > 0 && !cancelled) {
+                console.warn(`Clip grid stopped at ${CLIP_PAGE_LIMIT} pages; later clips are not shown.`);
+              }
+            } catch (e) {
+              console.warn("Could not check for clips past the grid's page cap.", e);
+            }
           }
         }
         if (!cancelled) setClips(loaded);
@@ -266,7 +302,13 @@ export default function GamePage() {
         }
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // A newer load sets this again in the same commit; with none (the
+      // game stopped being ready) the skeleton must not wait on a load that
+      // will never report.
+      setFetching(false);
+    };
   }, [gameReady, id, settledFilters]);
 
   // Fetch the roster once the game is ready (CF-250). Separate from the clips
@@ -400,6 +442,11 @@ export default function GamePage() {
                 />
               </div>
             </div>
+          )}
+          {pollTrouble && (
+            <p role="status" className="mt-4 text-[12px] text-red-400 max-w-xs">
+              Can&apos;t reach ClipFarm right now. Still trying; check your connection if this stays.
+            </p>
           )}
           <p className="mt-4 text-[12px] text-muted max-w-xs">
             Detecting actions and cutting clips. You can leave this page — we&apos;ll keep working.
