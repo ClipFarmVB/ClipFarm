@@ -10,13 +10,11 @@ class Run {
   progress = 0;
   stage: string | null = null;
   shown: (number | null)[] = [];
-  reported = new Map<number, number>();
 
   poll(p: Partial<EtaPoll> = {}): number | null {
     this.tMs = p.tMs ?? this.tMs;
     this.progress = p.progress ?? this.progress;
     this.stage = p.stage === undefined ? this.stage : p.stage;
-    this.reported.set(this.tMs, this.progress);
     const out = stepEta(this.state, { tMs: this.tMs, progress: this.progress, stage: this.stage });
     this.state = out.state;
     this.shown.push(out.etaSeconds);
@@ -30,11 +28,6 @@ class Run {
       out.push(this.poll({ tMs: this.tMs + POLL_MS, progress: this.progress + rate * (POLL_MS / 1000), stage }));
     }
     return out;
-  }
-
-  /** How far each window sample sits above what was reported at its time. */
-  shifts(): number[] {
-    return this.state.samples.map((s) => s.progress - this.reported.get(s.tMs)!);
   }
 
   last(): number | null {
@@ -80,6 +73,83 @@ describe("stepEta", () => {
     expect(exit).toBeCloseTo(held - POLL_MS / 1000, 0);
   });
 
+  it.each([30, 60, 120])("stays near the true remaining time for every poll after a %ss opaque stage", (flatSeconds) => {
+    const run = warmedUp(0.1, 0.001);
+    run.poll({ tMs: run.tMs + POLL_MS, stage: "refining_actions" });
+    run.steady(flatSeconds, 0);
+    run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.12, stage: "cutting_clips" });
+    const after = [run.last(), ...run.steady(90, 0.001)];
+    // The next stage runs at 0.001/s, so the truth at each poll is the
+    // remaining fraction over that rate. The flat stretch is not velocity.
+    after.forEach((eta, i) => {
+      const progress = run.progress - 0.001 * 5 * (after.length - 1 - i);
+      const remaining = (1 - progress) / 0.001;
+      expect(eta).not.toBeNull();
+      expect(eta!).toBeLessThan(1.25 * remaining);
+      expect(eta!).toBeGreaterThan(0.8 * remaining);
+    });
+  });
+
+  it("never goes astronomical leaving a long flat stretch at a 4-dp value", () => {
+    // A stage flat for 95s at `a` (a stall, or Modal refining before #653's
+    // deploy), then the boundary write to `b`. Any arithmetic on the reported
+    // values can land a hair off them; the reviewer's sweep found 2.31% of such
+    // pairs reading ~1e18 s.
+    const pairs: [number, number][] = [[0.05, 0.21]]; // the reviewer's trace
+    for (let ai = 0; ai < 60; ai++) {
+      const a = Number((0.05 + ai * 0.0097).toFixed(4));
+      for (let bi = 1; bi <= 30; bi++) {
+        const b = Number((a + bi * 0.0063).toFixed(4));
+        if (b < 0.95) pairs.push([a, b]);
+      }
+    }
+    const bad: string[] = [];
+    for (const [a, b] of pairs) {
+      const run = warmedUp(Number((a - 0.03).toFixed(4)), 0.0002);
+      run.poll({ tMs: run.tMs + POLL_MS, progress: a, stage: "refining_actions" });
+      run.steady(95, 0);
+      run.poll({ tMs: run.tMs + POLL_MS, progress: b, stage: "cutting_clips" });
+      // The whole run is under ~80 min at this rate; 1e5 s is the reviewer's
+      // line for "astronomical", well clear of any spike or EMA lag.
+      for (const eta of [run.last(), ...run.steady(30, 0.0002)]) {
+        if (eta !== null && !(eta < 1e5)) bad.push(`${a}->${b}: ${eta}`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it.each([
+    [100, "1pp per 100s"],
+    [50, "1pp per 50s"],
+    [33, "1pp per 33s"],
+  ])("reads a slow stage that writes in 1pp quanta at its true rate (%ss, %s)", (writeSeconds) => {
+    // The worker writes only on a >=1pp change (`_MIN_DELTA`), so a slow stage
+    // reports a staircase: flat for `writeSeconds`, then +1pp. Polls every 5s.
+    const rate = 0.01 / writeSeconds;
+    const run = new Run();
+    let written = 0.1;
+    const shown: [number, number][] = [];
+    for (let t = 0; t <= 1800; t += POLL_MS / 1000) {
+      const truth = 0.1 + rate * t;
+      if (truth - written >= 0.01 - 1e-9) written = Number(truth.toFixed(4));
+      const eta = run.poll({ tMs: t * 1000, progress: written, stage: "tracking_ball" });
+      if (t >= 600) shown.push([eta ?? NaN, (1 - truth) / rate]);
+    }
+    for (const [eta, truth] of shown) {
+      expect(eta).toBeGreaterThan(0.85 * truth);
+      expect(eta).toBeLessThan(1.15 * truth);
+    }
+  });
+
+  it("keeps a short held estimate through the gap between writes near the end", () => {
+    // About a minute left: half of it is under the gap between 1pp writes, so
+    // the ceiling's floor is what keeps the number from flickering out.
+    const run = warmedUp(0.85, 0.0008);
+    const anchor = run.state.etaSeconds!;
+    expect(anchor).toBeLessThan(80);
+    expect(run.steady(40, 0).every((eta) => eta !== null)).toBe(true);
+  });
+
   it("does not collapse on a within-stage re-budget jump", () => {
     const run = warmedUp(0.5, 0.001, "condensing");
     run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.1 }); // rebudget_final_stage
@@ -92,15 +162,43 @@ describe("stepEta", () => {
     });
   });
 
-  it("rebases a stage change's step even when it is small", () => {
+  it("restarts the window on a stage change's step even when the rate test would pass it", () => {
     const run = warmedUp(0.5, 0.001, "cutting_clips");
-    // Boundary write plus a re-budget, landing on one poll: 2pp, under the
-    // within-stage jump floor.
-    run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.02, stage: "condensing" });
-    // Everything but the 5s the observed rate accounts for is rebased.
-    const shifts = run.shifts();
-    for (const shift of shifts.slice(0, -1)) expect(shift).toBeCloseTo(0.02 - 0.001 * 5, 6);
-    expect(shifts[shifts.length - 1]).toBe(0);
+    // Boundary write plus a re-budget, landing on one poll: 4pp in 5s is 8x
+    // the observed rate, under the within-stage jump multiple.
+    run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.04, stage: "condensing" });
+    expect(run.state.samples).toEqual([{ tMs: run.tMs, progress: run.progress }]);
+    expect(run.last()).not.toBeNull();
+  });
+
+  it("does not count a re-budget written a poll after the stage change as throughput", () => {
+    // `stage("condensing")` and `rebudget_final_stage` are separate writes with
+    // the keep-window build between them, so they can straddle a poll. The
+    // window has just restarted, so there is no rate to judge the step by.
+    const run = warmedUp(0.5, 0.001, "cutting_clips");
+    run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.005, stage: "condensing" });
+    run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.02 }); // rebudget_final_stage
+    const after = run.steady(90, 0.001);
+    after.forEach((eta, i) => {
+      const remaining = (1 - (run.progress - 0.001 * 5 * (after.length - 1 - i))) / 0.001;
+      expect(eta!).toBeGreaterThan(0.85 * remaining);
+    });
+  });
+
+  it("does not count a stall as velocity once progress resumes", () => {
+    // Modal fails over to local CPU: the bar freezes at its high-water mark
+    // past the ceiling, then resumes at the old rate.
+    const run = warmedUp(0.1, 0.001);
+    const flat = run.steady(run.state.etaSeconds! * 0.6, 0);
+    expect(flat[flat.length - 1]).toBeNull();
+    const resumed = run.steady(120, 0.001);
+    resumed.forEach((eta, i) => {
+      if (eta === null) return; // waiting for a fresh window is fine
+      const remaining = (1 - (run.progress - 0.001 * 5 * (resumed.length - 1 - i))) / 0.001;
+      expect(eta).toBeLessThan(1.2 * remaining);
+      expect(eta).toBeGreaterThan(0.8 * remaining);
+    });
+    expect(resumed[resumed.length - 1]).not.toBeNull();
   });
 
   it("does not hide a stage boundary behind null", () => {
@@ -111,11 +209,13 @@ describe("stepEta", () => {
     expect(boundary!).toBeCloseTo(before - POLL_MS / 1000, -1);
   });
 
-  it("follows a real speed-up instead of rebasing it", () => {
+  it("follows a real speed-up instead of treating it as a jump", () => {
     const run = warmedUp(0.05, 0.001);
-    // 7x faster, 3.5pp a poll: over the jump floor, under the jump multiple.
+    const before = run.tMs;
+    // 7x faster, 3.5pp a poll: under the jump multiple.
     run.steady(60, 0.007);
-    expect(run.shifts().every((shift) => shift === 0)).toBe(true);
+    // The first faster step stayed in the window as velocity.
+    expect(run.state.samples[0].tMs).toBeLessThan(before);
     // Well under what the old rate would say.
     expect(run.last()!).toBeLessThan(0.5 * (1 - run.progress) / 0.001);
   });
@@ -125,7 +225,8 @@ describe("stepEta", () => {
     // A 60s gap between polls, the stage running a little faster meanwhile:
     // 9pp in one step, but only 1.5x the observed rate.
     run.poll({ tMs: run.tMs + 60_000, progress: run.progress + 0.09 });
-    expect(run.shifts().every((shift) => shift === 0)).toBe(true);
+    // The window keeps its history: the step is velocity, not a restart.
+    expect(run.state.samples.length).toBeGreaterThan(1);
   });
 
   it("goes null once a flat stretch outlasts the ceiling, before a false countdown", () => {
@@ -148,10 +249,26 @@ describe("stepEta", () => {
       etaAtMs: 0,
       advancedAtMs: 0,
       stage: "condensing",
+      settled: true,
+      stalled: false,
     };
     const { etaSeconds } = stepEta(state, { tMs: 60_000, progress: 0.56, stage: "condensing" });
     const raw = (1 - 0.56) / (0.06 / 60);
     expect(etaSeconds).toBeCloseTo(0.3 * raw + 0.7 * (600 - 60), 6);
+  });
+
+  it("does not blend a fresh estimate against a held one that has decayed to zero", () => {
+    const state: EtaState = {
+      samples: [{ tMs: 0, progress: 0.5 }],
+      etaSeconds: 30, // ran out 30s ago
+      etaAtMs: 0,
+      advancedAtMs: 0,
+      stage: "condensing",
+      settled: true,
+      stalled: false,
+    };
+    const { etaSeconds } = stepEta(state, { tMs: 60_000, progress: 0.56, stage: "condensing" });
+    expect(etaSeconds).toBeCloseTo((1 - 0.56) / (0.06 / 60), 6);
   });
 
   it("starts over when progress goes backwards (a retry)", () => {

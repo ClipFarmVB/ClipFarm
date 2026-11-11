@@ -12,10 +12,15 @@
  *
  * The bar is not pure throughput, though (CF-255). Stage boundaries and
  * condensing's runtime re-budget (`rebudget_final_stage`) jump it forward,
- * and some stages report nothing until they end. So the window *rebases*
- * past a jump (shifts the earlier samples up by it, so it adds no velocity)
- * instead of clearing, and a flat window *carries* the last estimate,
- * counted down by wall-clock time, instead of dropping to null.
+ * and some stages report nothing until they end. So a jump *restarts* the
+ * velocity window at the jump poll, and the last estimate is *carried*,
+ * counted down by wall-clock time, until the fresh window can give a
+ * velocity, instead of dropping to null.
+ *
+ * Velocity is measured between the worker's writes (the polls where
+ * progress advanced), not up to now: the polls between writes, and an
+ * opaque stage, are not a slowdown, and a slow stage that writes in 1pp
+ * steps needs its previous write, not an arbitrary poll, as the anchor.
  *
  * `stepEta` is the whole estimator: a pure reducer the page calls once per
  * poll with the state it returned last time.
@@ -27,15 +32,22 @@ export interface ProgressSample {
 }
 
 export interface EtaState {
-  /** Velocity window, oldest first. Earlier samples are rebased past jumps,
-   * so only the newest one is guaranteed to hold the reported progress. */
-  samples: ProgressSample[];
+  /** The polls where progress advanced since the window last restarted,
+   * oldest first, as reported. The newest is the current progress. */
+  samples: readonly ProgressSample[];
   /** Smoothed estimate as of `etaAtMs`; it decays by wall-clock time after. */
   etaSeconds: number | null;
   etaAtMs: number | null;
   /** When progress last moved forward; the flat ceiling counts from here. */
   advancedAtMs: number | null;
   stage: string | null;
+  /** False from a stage change until the stage's first advance on a later
+   * poll, which is a re-tiling point too (condensing's re-budget is written
+   * after `stage("condensing")`, often a poll later). */
+  settled: boolean;
+  /** The flat ceiling dropped a held estimate: the flat stretch was a stall,
+   * so the advance that ends it starts a fresh window. */
+  stalled: boolean;
 }
 
 export interface EtaPoll {
@@ -50,31 +62,32 @@ export interface EtaStep {
   etaSeconds: number | null;
 }
 
-export const INITIAL_ETA_STATE: EtaState = {
-  samples: [],
+export const INITIAL_ETA_STATE: EtaState = Object.freeze({
+  samples: Object.freeze([]),
   etaSeconds: null,
   etaAtMs: null,
   advancedAtMs: null,
   stage: null,
-};
+  settled: false,
+  stalled: false,
+});
 
 // Need at least this much observation before showing a number.
 const MIN_WINDOW_SECONDS = 15;
 const MIN_PROGRESS = 0.03;
 
-// Velocity window: samples older than this are dropped (stale stages).
+// Velocity window: writes older than this are dropped, except the newest of
+// them, kept as the anchor so a stage writing less often than this still
+// has an interval to measure.
 const WINDOW_MS = 90_000;
 
 // A within-stage step is a re-tiling jump, not throughput, when its rate
-// (step / seconds since the previous poll, so a throttled background tab's
-// long gaps don't read as bursts) is this many times the window's rate...
+// (step / seconds since the previous write, so neither a throttled
+// background tab's long poll gaps nor a slow stage's 1pp staircase read as
+// bursts) is this many times the window's rate.
 const JUMP_RATE_MULTIPLE = 10;
-// ...and it is at least this big. The worker writes in >=1pp steps, so on a
-// slow stage one ordinary write can be 10x the window's average rate; three
-// write quanta is past what that quantization alone produces.
-const JUMP_MIN_STEP = 0.03;
 
-// A flat window (an opaque stage, or the bar frozen at its high-water mark
+// A flat stretch (an opaque stage, or the bar frozen at its high-water mark
 // while Modal fails over to local CPU) shows the held estimate counting down.
 // Once it has been flat for this fraction of that estimate it is more likely
 // stalled than opaque, and the countdown would end on a false "less than a
@@ -93,9 +106,9 @@ function decayedEta(state: EtaState, tMs: number): number | null {
   return Math.max(0, state.etaSeconds - (tMs - state.etaAtMs) / 1000);
 }
 
-/** Progress per second across the window, or null while it is too short to
- * mean anything or flat. */
-function observedRate(samples: ProgressSample[]): number | null {
+/** Progress per second between the window's first and last write, or null
+ * while they are too close together to mean anything. */
+function windowRate(samples: readonly ProgressSample[]): number | null {
   if (samples.length < 2) return null;
   const first = samples[0];
   const last = samples[samples.length - 1];
@@ -103,6 +116,13 @@ function observedRate(samples: ProgressSample[]): number | null {
   if (seconds < MIN_WINDOW_SECONDS) return null;
   const rate = (last.progress - first.progress) / seconds;
   return rate > 0 ? rate : null;
+}
+
+/** Drop writes older than the window, keeping the newest of them. */
+function trimWindow(samples: readonly ProgressSample[], tMs: number): ProgressSample[] {
+  let start = 0;
+  while (start + 1 < samples.length && tMs - samples[start + 1].tMs > WINDOW_MS) start++;
+  return samples.slice(start);
 }
 
 /** Fold one poll into the estimator. */
@@ -114,58 +134,66 @@ export function stepEta(state: EtaState, poll: EtaPoll): EtaStep {
   const prev = state.samples[state.samples.length - 1];
   if (prev && progress < prev.progress) state = INITIAL_ETA_STATE;
   const last = state.samples[state.samples.length - 1];
-
-  let samples = state.samples.filter((s) => tMs - s.tMs <= WINDOW_MS);
-  let advancedAtMs = state.advancedAtMs ?? tMs;
-  if (last && progress > last.progress) {
-    advancedAtMs = tMs;
-    const step = progress - last.progress;
-    const dtSeconds = Math.max((tMs - last.tMs) / 1000, 1e-3);
-    const rate = observedRate(samples);
-    // A stage change is always a re-tiling point (its forced boundary write,
-    // and condensing's re-budget, which usually lands on the same poll). A
-    // within-stage step is one only when it is far above the observed rate;
-    // with no observed rate yet, it counts as throughput.
-    const isJump = stage !== state.stage
-      || (rate !== null && step >= JUMP_MIN_STEP && step / dtSeconds > JUMP_RATE_MULTIPLE * rate);
-    if (isJump) {
-      // Credit the step with what the observed rate would have produced over
-      // the gap, and shift the earlier samples up by the rest.
-      const excess = Math.max(0, step - (rate ?? 0) * dtSeconds);
-      samples = samples.map((s) => ({ tMs: s.tMs, progress: s.progress + excess }));
-    }
-  }
-  samples.push({ tMs, progress });
-
-  const next: EtaState = { ...state, samples, advancedAtMs, stage };
-  const dropped: EtaStep = { state: { ...next, etaSeconds: null, etaAtMs: null }, etaSeconds: null };
+  const stageChanged = stage !== state.stage;
   const held = decayedEta(state, tMs);
-  // Carrying keeps the state's anchor (etaSeconds, etaAtMs) as it was, so the
-  // countdown is always measured from the last real estimate.
-  const carried: EtaStep = { state: next, etaSeconds: held !== null && held > 0 ? held : null };
 
-  if (progress < MIN_PROGRESS || progress >= 1) return dropped;
-
-  const first = samples[0];
-  if (progress <= first.progress) {
-    // Flat window: an opaque stage, or a stall. Count the held estimate down
-    // until it runs out or the flat stretch outlasts the ceiling.
-    const flatSeconds = (tMs - advancedAtMs) / 1000;
-    const ceiling = Math.max(STALE_SECONDS, FLAT_CEILING_FRACTION * (state.etaSeconds ?? 0));
-    return flatSeconds >= ceiling ? dropped : carried;
+  if (!last || progress > last.progress) {
+    let samples: ProgressSample[];
+    let settled = state.settled && !stageChanged;
+    if (!last) {
+      samples = [{ tMs, progress }];
+    } else {
+      const step = progress - last.progress;
+      const rate = windowRate(state.samples);
+      const sinceWriteSeconds = Math.max((tMs - last.tMs) / 1000, 1e-3);
+      // A stage change is always a re-tiling point (its forced boundary
+      // write), and so is the stage's first advance after it. A step inside a
+      // settled stage is one only when it is far above the observed rate; with
+      // no observed rate yet, it counts as throughput.
+      const isJump = stageChanged
+        || !state.settled
+        || (rate !== null && step / sinceWriteSeconds > JUMP_RATE_MULTIPLE * rate);
+      if (!stageChanged) settled = true;
+      // A jump, or the end of a stall, restarts the window here: neither the
+      // step nor the flat time before it is velocity. The held estimate
+      // carries until the fresh window is long enough to measure.
+      samples = isJump || state.stalled
+        ? [{ tMs, progress }]
+        : [...trimWindow(state.samples, tMs), { tMs, progress }];
+    }
+    const next: EtaState = { ...state, samples, advancedAtMs: tMs, stage, settled, stalled: false };
+    if (progress < MIN_PROGRESS || progress >= 1) {
+      return { state: { ...next, etaSeconds: null, etaAtMs: null }, etaSeconds: null };
+    }
+    const velocity = windowRate(samples); // fraction/sec
+    if (velocity === null) {
+      // Carrying keeps the anchor (etaSeconds, etaAtMs) as it was, so the
+      // countdown is always measured from the last real estimate.
+      return { state: next, etaSeconds: held !== null && held > 0 ? held : null };
+    }
+    const raw = (1 - progress) / velocity;
+    // A held estimate that has fully decayed says nothing; blending against
+    // its zero would cut the new estimate to a third.
+    const eta = held === null || held <= 0 ? raw : EMA_ALPHA * raw + (1 - EMA_ALPHA) * held;
+    return { state: { ...next, etaSeconds: eta, etaAtMs: tMs }, etaSeconds: eta };
   }
 
-  // Velocity up to the last advance, not up to now: polls between the
-  // worker's writes, and the start of an opaque stage, are not a slowdown.
-  // Counting them in would shrink the velocity poll by poll and inflate the
-  // estimate until the window went flat. Instead the time since the last
-  // advance counts down from the estimate as of then.
-  const movingSeconds = (advancedAtMs - first.tMs) / 1000;
-  if (movingSeconds < MIN_WINDOW_SECONDS) return carried;
-  const velocity = (progress - first.progress) / movingSeconds; // fraction/sec
-  const raw = Math.max(0, (1 - progress) / velocity - (tMs - advancedAtMs) / 1000);
-  const eta = held === null ? raw : EMA_ALPHA * raw + (1 - EMA_ALPHA) * held;
-  return { state: { ...next, etaSeconds: eta, etaAtMs: tMs }, etaSeconds: eta };
+  // No advance: between writes, an opaque stage, or a stall. Count the held
+  // estimate down until it runs out or the flat stretch outlasts the ceiling.
+  // A stage change with no step marks the next advance as a re-tiling point.
+  const next: EtaState = { ...state, stage, settled: state.settled && !stageChanged };
+  if (progress < MIN_PROGRESS || progress >= 1) {
+    return { state: { ...next, etaSeconds: null, etaAtMs: null }, etaSeconds: null };
+  }
+  const flatSeconds = (tMs - (state.advancedAtMs ?? tMs)) / 1000;
+  const ceiling = Math.max(STALE_SECONDS, FLAT_CEILING_FRACTION * (state.etaSeconds ?? 0));
+  if (flatSeconds >= ceiling) {
+    // Only giving up on a real estimate marks a stall: before the first
+    // estimate, a slow stage's gap between writes is just a gap.
+    const stalled = state.stalled || state.etaSeconds !== null;
+    return { state: { ...next, etaSeconds: null, etaAtMs: null, stalled }, etaSeconds: null };
+  }
+  return { state: next, etaSeconds: held !== null && held > 0 ? held : null };
 }
 
 export function formatEta(seconds: number): string {
