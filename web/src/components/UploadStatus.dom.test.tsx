@@ -166,6 +166,22 @@ function expectTokenTypeOnly(el: Element) {
   }
 }
 
+/**
+ * The failed row on DESIGN.md's tokens: `danger` text on a plain `surface`
+ * fill, with no Tailwind palette red anywhere in it and no border around the
+ * surface (Tokens; Borders: "a surface is a fill or nothing"). R11-M2.
+ */
+function expectTokenDangerRow(el: Element) {
+  const classes = el.className.split(/\s+/);
+  expect(classes).toContain("text-danger");
+  expect(classes).toContain("bg-surface");
+  expect(classes.filter((c) => /^border(-|$)/.test(c))).toEqual([]);
+  for (const node of [el, ...Array.from(el.querySelectorAll("*"))]) {
+    expect(node.getAttribute("class") ?? "").not.toMatch(/(^|[\s:])(bg|border|text|ring)-red-/);
+  }
+  expectTokenTypeOnly(el);
+}
+
 describe("UploadStatus", () => {
   it("renders nothing when no upload is active", async () => {
     await render();
@@ -222,7 +238,9 @@ describe("UploadStatus", () => {
     const live = strip!.querySelectorAll("[aria-live]");
     expect(live).toHaveLength(1);
     expect(live[0].textContent).toContain("Uploading");
-    expect(live[0].textContent).not.toMatch(/\d/);
+    // No percent in it. Checked by the sign, not by "no digits": a real title
+    // ("Club 16U · Saturday pool play") carries digits of its own (R12-N1).
+    expect(live[0].textContent).not.toContain("%");
     expectTokenTypeOnly(strip!);
     expect(strip!.textContent).toContain("Uploading…");
     // The same thin brand bar as UploadZone and the game page.
@@ -308,6 +326,7 @@ describe("UploadStatus", () => {
     // danger token, not red-400, which reads 2.5:1 on the light theme.
     expect(alert!.className).toContain("text-danger");
     expect(alert!.className).not.toContain("text-red-400");
+    expectTokenDangerRow(alert!);
     // A filename-derived title is one unbreakable word; without this it would
     // overflow the row and paint across Try again / Dismiss at phone width.
     expect(alert!.querySelector(".break-words")!.textContent).toContain("Varsity vs Lincoln");

@@ -66,7 +66,7 @@ export function UploadStatus() {
     return (
       <div
         role="alert"
-        className="mb-6 flex items-center gap-3 rounded-md border border-red-500/20 bg-red-500/5 px-4 py-3 text-danger"
+        className="mb-6 flex items-center gap-3 rounded-md bg-surface px-4 py-3 text-danger"
       >
         <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
         <div className="min-w-0 flex-1 break-words text-sm">

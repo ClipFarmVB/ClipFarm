@@ -354,7 +354,7 @@ export function UploadZone() {
 
       {/* Error */}
       {error && (
-        <div className="mt-3 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-danger">
+        <div className="mt-3 flex items-start gap-2 rounded-md bg-surface px-3 py-2.5 text-xs text-danger">
           <AlertCircle size={13} className="shrink-0 mt-0.5" />
           {error}
         </div>

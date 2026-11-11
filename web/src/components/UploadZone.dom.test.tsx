@@ -248,6 +248,14 @@ describe("UploadZone and the upload store (CF-70)", () => {
     // Pinned by class, as above: the per-theme danger token, not red-400.
     expect(host.querySelector(".text-danger")).not.toBeNull();
     expect(host.querySelector(".text-red-400")).toBeNull();
+    // On DESIGN.md's tokens, as UploadStatus's failed row is: a plain surface
+    // fill, no palette red, no border around it, no arbitrary px type (R11-M2).
+    const block = host.querySelector(".text-danger")!;
+    const classes = block.className.split(/\s+/);
+    expect(classes).toContain("bg-surface");
+    expect(classes.filter((c) => /^border(-|$)/.test(c))).toEqual([]);
+    expect(block.className).not.toMatch(/red-\d/);
+    expect(block.className).not.toMatch(/text-\[\d+px\]/);
     expect(mocks.push).not.toHaveBeenCalled();
   });
 

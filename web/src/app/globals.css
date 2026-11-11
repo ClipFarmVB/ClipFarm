@@ -57,11 +57,11 @@
  * `subtle` stays near 3:1 in both, as before: it is for decorative and
  * tertiary text only.
  *
- * `danger` is measured on the two tinted surfaces it sits on. As error text
- * on the tinted error block (bg-red-500/5 over bg), the lower of its two
- * surfaces (CF-70):
- *   light  danger #b91c1c on #faede8                5.65:1
- *   dark   danger #f87171 on #171011                6.77:1
+ * `danger` is measured on the surfaces it sits on. As error text on the
+ * error block, which is a plain `surface` fill until a `danger-dim` tint
+ * exists (CF-70 R11-M2, CF-577):
+ *   light  danger #b91c1c on surface #f3eee4         5.60:1
+ *   dark   danger #f87171 on surface #101616         6.61:1
  * As text on a 10% tint of itself over surface (the pressed "Not an action"
  * chip in the clip modal), the same way (CF-272 R13-M2):
  *   light  danger #b91c1c on #edd9d0                4.76:1   (on surface 5.60:1)
