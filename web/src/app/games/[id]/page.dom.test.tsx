@@ -459,6 +459,25 @@ describe("loading every clip, not the route's first page (CF-300)", () => {
     expect(olderPages).toEqual([1]);
     expect(renderedClipIds()).toEqual([]);
   });
+
+  it("sends no probe for a load that newer filters replaced while its last page was in flight", async () => {
+    await render();
+    queueFullPages(9);
+    const releaseLast = holdNextClips();
+    await choosePlayer("p1");
+    await flushPages();
+    getClips.mockResolvedValue([]);
+    await choosePlayer("p2");
+
+    await releaseLast(clipPage("last", 100));
+    await flushPages();
+
+    const olderPages = getClips.mock.calls
+      .map((c) => c[1] as Record<string, unknown>)
+      .filter((f) => f.player_id === "p1")
+      .map((f) => f.page);
+    expect(olderPages).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
 });
 
 /** Advances one poll period and lets the tick's request land. */
@@ -528,7 +547,13 @@ describe("the status poll (CF-300)", () => {
     expect(host.textContent).toContain("70%");
   });
 
-  it("says it cannot reach the server after three failed ticks in a row, and clears it on the next good one", async () => {
+  const TROUBLE = "Can't get an update right now.";
+
+  function troubleNote() {
+    return host.querySelector('[role="status"]');
+  }
+
+  it("says it cannot get an update after three failed ticks in a row, and clears it on the next good one", async () => {
     getGame
       .mockResolvedValueOnce(processingGame)
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))
@@ -536,18 +561,58 @@ describe("the status poll (CF-300)", () => {
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))
       .mockResolvedValueOnce(processingGame);
     await render();
+    // The live region is there, empty, before it has anything to say: some
+    // screen readers announce only changes inside a region already mounted.
+    const note = troubleNote();
+    expect(note).not.toBeNull();
+    expect(note!.textContent).toBe("");
 
     await tick();
     await tick();
-    expect(host.textContent).not.toContain("Can't reach ClipFarm");
+    expect(host.textContent).not.toContain(TROUBLE);
 
     await tick();
-    expect(host.textContent).toContain("Can't reach ClipFarm right now.");
+    expect(troubleNote()).toBe(note);
+    expect(note!.textContent).toContain(TROUBLE);
     expect(host.textContent).toContain("Tracking the ball");
 
     await tick();
     expect(getGame).toHaveBeenCalledTimes(5);
-    expect(host.textContent).not.toContain("Can't reach ClipFarm");
+    expect(troubleNote()).toBe(note);
+    expect(note!.textContent).toBe("");
+  });
+
+  // DESIGN.md: tokens only. `red-400` is about 2.1:1 on the light surface;
+  // `danger` is 5.60:1 light and 6.61:1 dark (globals.css).
+  it("colours the note with the danger token, not a palette colour", async () => {
+    getGame.mockResolvedValueOnce(processingGame).mockRejectedValue(new TypeError("Failed to fetch"));
+    await render();
+    await tick();
+    await tick();
+    await tick();
+
+    const note = troubleNote();
+    expect(note!.textContent).toContain(TROUBLE);
+    const classes = [...note!.classList];
+    expect(classes).toContain("text-danger");
+    expect(classes.filter((c) => /-(red|zinc|emerald|blue|amber|orange|yellow)-\d{2,3}$/.test(c))).toEqual([]);
+  });
+
+  // The count is of failures in a row: a server that alternates between
+  // failing and answering is not unreachable.
+  it("counts only failures in a row: a good tick between them starts the count again", async () => {
+    getGame
+      .mockResolvedValueOnce(processingGame)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(processingGame)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await render();
+
+    for (let i = 0; i < 4; i++) await tick();
+
+    expect(getGame).toHaveBeenCalledTimes(5);
+    expect(host.textContent).not.toContain(TROUBLE);
   });
 
   // Ticks do not wait for each other. One slower than the period can land

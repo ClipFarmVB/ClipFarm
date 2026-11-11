@@ -270,11 +270,12 @@ export default function GamePage() {
             loaded.push(c);
           }
           if (batch.length < CLIP_PAGE_SIZE) break;
-          if (page === CLIP_PAGE_LIMIT) {
+          if (page === CLIP_PAGE_LIMIT && !cancelled) {
             // A full last page may also be the last clip. One single-clip
             // probe at offset CLIP_PAGE_LIMIT * CLIP_PAGE_SIZE tells which,
             // and only a game this large pays for it. The probe only decides
-            // a warning, so its failure leaves the grid as loaded.
+            // a warning, so its failure leaves the grid as loaded. A load
+            // superseded while page 10 was in flight skips it.
             try {
               const probe = await getClips(id, {
                 ...settledFilters,
@@ -443,11 +444,12 @@ export default function GamePage() {
               </div>
             </div>
           )}
-          {pollTrouble && (
-            <p role="status" className="mt-4 text-[12px] text-red-400 max-w-xs">
-              Can&apos;t reach ClipFarm right now. Still trying; check your connection if this stays.
-            </p>
-          )}
+          {/* Mounted empty with the processing view, so a screen reader
+              announces the text when it arrives; some skip a live region
+              that is inserted with its content already in it. */}
+          <p role="status" className={cn("text-[12px] text-danger max-w-xs", pollTrouble && "mt-4")}>
+            {pollTrouble && "Can't get an update right now. Still trying; progress shows here again once ClipFarm answers."}
+          </p>
           <p className="mt-4 text-[12px] text-muted max-w-xs">
             Detecting actions and cutting clips. You can leave this page — we&apos;ll keep working.
           </p>
