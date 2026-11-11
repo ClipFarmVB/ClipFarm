@@ -159,6 +159,13 @@ function expectTitleOnlyTruncates(row: Element, message: string) {
   expect(parts.title!.contains(parts.message!)).toBe(false);
 }
 
+/** No arbitrary pixel type anywhere in `el`: DESIGN.md's floor is 12px, set by scale. */
+function expectTokenTypeOnly(el: Element) {
+  for (const node of [el, ...Array.from(el.querySelectorAll("*"))]) {
+    expect(node.getAttribute("class") ?? "").not.toMatch(/text-\[\d+px\]/);
+  }
+}
+
 describe("UploadStatus", () => {
   it("renders nothing when no upload is active", async () => {
     await render();
@@ -168,6 +175,18 @@ describe("UploadStatus", () => {
 
   it("renders nothing on /upload, where UploadZone shows the same upload", async () => {
     mocks.pathname = "/upload";
+    const { transfer, attempt } = await holdUploadAt(40);
+
+    await render();
+
+    expect(host.innerHTML).toBe("");
+    transfer.resolve([]);
+    await act(async () => { await attempt; });
+  });
+
+  it("renders nothing while the session is still resolving", async () => {
+    // A user object left over while auth refreshes must not flash the strip.
+    mocks.auth = { user: { id: "user-a" }, loading: true };
     const { transfer, attempt } = await holdUploadAt(40);
 
     await render();
@@ -193,10 +212,18 @@ describe("UploadStatus", () => {
 
     await render();
 
-    const strip = host.querySelector('[aria-live="polite"]');
+    const strip = host.firstElementChild;
     expect(strip).not.toBeNull();
     expect(strip!.textContent).toContain("Varsity vs Lincoln");
-    expect(strip!.textContent).toContain("40%");
+    // The number carries its noun (DESIGN.md, Voice).
+    expect(strip!.textContent).toContain("40% sent");
+    // Only the phase is live: the percent and ETA change all transfer long and
+    // would be read out over whatever page the user is on (R11-N1).
+    const live = strip!.querySelectorAll("[aria-live]");
+    expect(live).toHaveLength(1);
+    expect(live[0].textContent).toContain("Uploading");
+    expect(live[0].textContent).not.toMatch(/\d/);
+    expectTokenTypeOnly(strip!);
     expect(strip!.textContent).toContain("Uploading…");
     // The same thin brand bar as UploadZone and the game page.
     const bar = strip!.querySelector<HTMLElement>(".bg-brand");
@@ -243,6 +270,11 @@ describe("UploadStatus", () => {
     expect(status!.textContent).toContain("processing has started");
     expect(status!.querySelector('a[href="/games/g1"]')).not.toBeNull();
     expect(mocks.push).not.toHaveBeenCalled();
+    // The fixed brand tint, not an ad hoc alpha of the brand (DESIGN.md, Tints
+    // are fixed), and no type under the 12px floor.
+    expect(status!.className.split(/\s+/)).toContain("bg-brand-dim");
+    expect(status!.className).not.toMatch(/(bg|border)-brand\//);
+    expectTokenTypeOnly(status!);
     // A long title must not eat "processing has started": only it truncates.
     expectTitleOnlyTruncates(status!, " uploaded \u2014 processing has started.");
   });

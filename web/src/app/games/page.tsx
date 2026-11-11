@@ -147,12 +147,24 @@ function GamesContent() {
   // says so — take the row rather than leave the list contradicting it. The
   // new `queued` row then arms the poll.
   //
+  // Only on a transition into `done` seen from here, the guard UploadZone's
+  // redirect uses. A finished upload stays `done` until it is dismissed, so
+  // every Library visit until then mounts into it, and the mount load above
+  // already reads the cache the store wrote. Running here as well claimed a
+  // newer sequence than that load: on a cold cache it fired a second request
+  // whose failure covered the loaded list with the error card, and on a warm
+  // one it dropped the mount request's fresher answer (R11-M1).
+  //
   // Only the phase is read, so only the phase is subscribed to: a progress
   // publish every few hundred milliseconds would otherwise re-render every row
   // for the length of the upload (R8-N3).
   const uploadPhase = useSyncExternalStore(subscribeUpload, getUploadPhase, getServerUploadPhase);
+  const prevUploadPhase = useRef(uploadPhase);
   useEffect(() => {
+    const was = prevUploadPhase.current;
+    prevUploadPhase.current = uploadPhase;
     if (uploadPhase !== "done") return;
+    if (was !== "uploading" && was !== "finalizing") return;
     // Claimed for the warm branch too: the cache the store just wrote is the
     // newest answer there is, and a mount request still out must not replace
     // it when it settles.
@@ -162,10 +174,13 @@ function GamesContent() {
       show(seq, cached);
       return;
     }
-    // Cold cache: the row had nowhere to land, so ask for the list. A failure
-    // is reported the way the mount load's is — this fetch may be the first
-    // the page gets an answer to, and skeletons would otherwise stay up.
-    fetchGames().then((data) => show(seq, data)).catch((e: unknown) => fail(seq, e));
+    // Cold cache: the row had nowhere to land, so ask for the list, reusing a
+    // prefetch already out (the store's write dropped any older one, so what
+    // is in flight now postdates the upload). A failure is reported the way
+    // the mount load's is — this fetch may be the first the page gets an
+    // answer to, and skeletons would otherwise stay up.
+    const p = getInflightGames() ?? fetchGames();
+    p.then((data) => show(seq, data)).catch((e: unknown) => fail(seq, e));
   }, [uploadPhase, show, fail]);
 
   // Poll while any game is actively processing

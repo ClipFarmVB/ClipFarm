@@ -34,7 +34,7 @@ export function UploadStatus() {
     return (
       <div
         role="status"
-        className="mb-6 flex items-center gap-3 rounded-md border border-brand/30 bg-brand/10 px-4 py-3"
+        className="mb-6 flex items-center gap-3 rounded-md bg-brand-dim px-4 py-3"
       >
         <Check className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
         {/* The title is the only part that may be clipped: it sits alone in
@@ -86,12 +86,16 @@ export function UploadStatus() {
 
   // Uploading or finalizing. Same bar as UploadZone and the game page, so the
   // upload looks like the same thing wherever it is seen from.
+  //
+  // Only the phase is announced. The percent and the ETA change every few
+  // hundred milliseconds, and a live region around them read progress aloud
+  // over whatever page the user had moved on to (R11-N1).
   const progress = upload.progress ?? 0;
   return (
-    <div
-      aria-live="polite"
-      className="mb-6 rounded-md border border-border bg-surface px-4 py-3"
-    >
+    <div className="mb-6 rounded-md bg-surface px-4 py-3">
+      <span className="sr-only" aria-live="polite">
+        {upload.phase === "finalizing" ? "Finalizing" : "Uploading"} &ldquo;{upload.title}&rdquo;
+      </span>
       <div className="flex items-center gap-3">
         <Film className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
         {/* Same shape as the done row: the title truncates, the status and
@@ -103,7 +107,7 @@ export function UploadStatus() {
             {upload.statusText}
           </span>
         </div>
-        <span className="shrink-0 text-[11px] tabular-nums text-muted">{Math.round(progress)}%</span>
+        <span className="shrink-0 text-xs tabular-nums text-muted">{Math.round(progress)}% sent</span>
       </div>
       <div className="mt-2.5 h-0.5 overflow-hidden rounded-full bg-surface-high">
         <div
@@ -120,7 +124,7 @@ function DismissButton() {
     <button
       type="button"
       onClick={dismissUpload}
-      className="-my-1 min-h-8 shrink-0 rounded px-2 text-[12px] text-muted transition-colors hover:bg-surface-high hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand"
+      className="-my-1 min-h-8 shrink-0 rounded px-2 text-xs text-muted transition-colors hover:bg-surface-high hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand"
     >
       Dismiss
     </button>

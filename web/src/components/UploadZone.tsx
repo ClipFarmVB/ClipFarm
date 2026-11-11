@@ -366,7 +366,7 @@ export function UploadZone() {
       {upload.phase === "done" && upload.gameId && redirecting === null && (
         <div
           role="status"
-          className="mt-3 flex items-center gap-2 rounded-md border border-brand/30 bg-brand/10 px-3 py-2.5 text-[12px]"
+          className="mt-3 flex items-center gap-2 rounded-md bg-brand-dim px-3 py-2.5 text-xs"
         >
           <Check size={13} className="shrink-0 text-brand" aria-hidden="true" />
           {/* Title alone in the truncating span, message whole from `sm` up,
@@ -388,7 +388,7 @@ export function UploadZone() {
           <button
             type="button"
             onClick={dismissUpload}
-            className="-my-1 min-h-8 shrink-0 rounded px-2 text-[12px] text-muted transition-colors hover:bg-surface-high hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand"
+            className="-my-1 min-h-8 shrink-0 rounded px-2 text-xs text-muted transition-colors hover:bg-surface-high hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand"
           >
             Dismiss
           </button>

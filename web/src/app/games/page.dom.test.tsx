@@ -311,4 +311,91 @@ describe("Library while an upload finishes (CF-70)", () => {
     expect(host.textContent).toContain("2 games");
     expect(host.textContent).not.toContain("Network down");
   });
+
+  // A finished upload stays `done` until dismissed, so every Library visit
+  // until then mounts into it. The mount load already covers that; the `done`
+  // effect is for a landing seen from here (R11-M1).
+  async function finishBeforeMount() {
+    await startUpload(new File(["x"], "match.mp4", { type: "video/mp4" }), {
+      title: "uploaded",
+      condense: false,
+      duration: null,
+    });
+    expect(getUploadSnapshot().phase).toBe("done");
+  }
+
+  it("mounted after the upload finished on a cold cache, asks for the list once", async () => {
+    authUser = { id: "upload-e" };
+    await finishBeforeMount();
+    // The mount request answers; a second one, had it been made, fails.
+    fetchGames
+      .mockResolvedValueOnce([game("uploaded", "queued"), game("a-ready", "ready")])
+      .mockRejectedValue(new Error("Network down"));
+    await act(async () => { root.render(<GamesPage />); });
+
+    expect(fetchGames).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('a[href="/games/uploaded"]')).not.toBeNull();
+    expect(host.textContent).not.toContain("Network down");
+  });
+
+  it("mounted after the upload finished on a warm cache, keeps the mount request's answer", async () => {
+    authUser = { id: "upload-f" };
+    cached = [game("a-ready", "ready")];
+    await finishBeforeMount();
+    // The store prepended the row as `queued`; by now the api has it `ready`.
+    expect(cached![0]).toMatchObject({ id: "uploaded", status: "queued" });
+    fetchGames.mockResolvedValue([game("uploaded", "ready"), game("a-ready", "ready")]);
+    await act(async () => { root.render(<GamesPage />); });
+
+    expect(fetchGames).toHaveBeenCalledTimes(1);
+    expect(host.textContent).not.toContain("Queued");
+    expect(host.textContent).toContain("Ready");
+  });
+
+  it("on a cold cache, reuses a request already in flight when the upload lands", async () => {
+    authUser = { id: "upload-g" };
+    fetchGames.mockRejectedValueOnce(new Error("Network down"));
+    await act(async () => { root.render(<GamesPage />); });
+    expect(fetchGames).toHaveBeenCalledTimes(1);
+
+    // A prefetch started after the store's write is out when `done` lands.
+    let resolvePrefetch!: (g: Game[]) => void;
+    const prefetch = new Promise<Game[]>((r) => { resolvePrefetch = r; });
+    await act(async () => {
+      const attempt = startUpload(new File(["x"], "match.mp4", { type: "video/mp4" }), {
+        title: "uploaded",
+        condense: false,
+        duration: null,
+      });
+      inflight = prefetch;
+      await attempt;
+    });
+    expect(getUploadSnapshot().phase).toBe("done");
+    expect(fetchGames).toHaveBeenCalledTimes(1);
+
+    await act(async () => { resolvePrefetch([game("uploaded", "queued")]); });
+    expect(host.querySelector('a[href="/games/uploaded"]')).not.toBeNull();
+    expect(host.textContent).not.toContain("Network down");
+  });
+});
+
+describe("Library polling", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("a tick that succeeds after a failed mount load clears the error card", async () => {
+    // Rows in state from the cache, so the poll arms; the mount request then
+    // fails and the card covers them (R7-M1, R11-N3).
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    authUser = { id: "poll-a" };
+    cached = [game("a-queued", "queued")];
+    fetchGames.mockRejectedValueOnce(new Error("Network down"));
+    await act(async () => { root.render(<GamesPage />); });
+    expect(host.textContent).toContain("Network down");
+
+    fetchGames.mockResolvedValue([game("a-queued", "processing")]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+
+    expect(host.textContent).not.toContain("Network down");
+    expect(host.textContent).toContain("Processing");
+  });
 });
