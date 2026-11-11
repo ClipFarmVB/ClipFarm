@@ -118,7 +118,8 @@ const STALE_SECONDS = 45;
 // while Modal fails over to local CPU), not the gap before the next write.
 // A 1pp staircase is flat for about one gap, so it stays throughput. A window
 // of one write has no gap, so the gap the held estimate's rate implies for
-// the step stands in for it.
+// the step stands in for it, except in a window that began at a freeze: the
+// held rate there predates the freeze, so that first interval is not judged.
 const FREEZE_GAP_MULTIPLE = 3;
 
 // A fresh window's first estimate replaces the carried one outright when the

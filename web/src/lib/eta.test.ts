@@ -141,6 +141,39 @@ describe("stepEta", () => {
     }
   });
 
+  it.each([1, 2, 3, 4, 5])("does not take a jittered 1pp staircase's longer gaps for freezes (seed %s)", (seed) => {
+    // Writes 1pp per 33s, each gap +-30% from a fixed seed, from the stage's
+    // start. A gap a little over the window's mean is the next write coming
+    // late, not a freeze: the window keeps its history through every write.
+    let x = seed;
+    const random = () => {
+      // mulberry32: deterministic, so a failure reproduces.
+      x = (x + 0x6d2b79f5) | 0;
+      let r = Math.imul(x ^ (x >>> 15), 1 | x);
+      r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+    const run = new Run();
+    let written = 0.1;
+    run.poll({ tMs: 0, progress: written, stage: "tracking_ball" });
+    let nextWriteMs = 33_000 * (0.7 + 0.6 * random());
+    const restarts: number[] = [];
+    for (let writes = 0; writes < 40;) {
+      const tMs = run.tMs + POLL_MS;
+      const before = writes;
+      if (tMs >= nextWriteMs) {
+        written = Number((written + 0.01).toFixed(4));
+        nextWriteMs += 33_000 * (0.7 + 0.6 * random());
+        writes++;
+      }
+      run.poll({ tMs, progress: written });
+      // The stage's first advance restarts the window; from the second on,
+      // every write extends it.
+      if (writes > before && writes >= 2 && run.state.samples.length <= 1) restarts.push(writes);
+    }
+    expect(restarts).toEqual([]);
+  });
+
   it("keeps a short held estimate through the gap between writes near the end", () => {
     // About a minute left: half of it is under the gap between 1pp writes, so
     // the ceiling's floor is what keeps the number from flickering out.
@@ -260,11 +293,17 @@ describe("stepEta", () => {
     });
   });
 
-  it.each([40, 60, 100])("does not hold Modal's countdown past local's first write at 1pp per %ss", (localGap) => {
-    // The stage write, three Modal writes at 1pp per 10s, then Modal dies.
-    // Local restarts the stage 4-10x slower, under the monotonic clamp, so the
-    // window that ends the freeze holds Modal's gap; local's first interval is
-    // far longer than that, and is not a second freeze.
+  it.each([
+    [3, 40], [3, 60], [3, 100],
+    [2, 25], [2, 40], [2, 60], [2, 100],
+  ])("does not hold Modal's countdown past local's first write (%s Modal writes, then 1pp per %ss)", (modalWrites, localGap) => {
+    // The stage write, two or three Modal writes at 1pp per 10s, then Modal
+    // dies. Local restarts the stage 2.5-10x slower, under the monotonic
+    // clamp, so the window that ends the freeze holds Modal's gap; local's
+    // first interval is far longer than that, and is not a second freeze. Nor
+    // is a staircase's next write a freeze: with two Modal writes, a smaller
+    // multiple of the gap read the resume as one and showed ~3x the truth.
+    const modalSeconds = 10 * modalWrites;
     const run = warmedUp(0.03, 0.001, "detecting_court");
     const stageAt = run.tMs + POLL_MS;
     const start = Number((run.progress + 0.005).toFixed(4));
@@ -275,15 +314,15 @@ describe("stepEta", () => {
     for (let t = stageAt; resumedAt === null || t <= resumedAt + 600_000; t += POLL_MS) {
       const s = (t - stageAt) / 1000;
       const before = written;
-      let truth = start + local * Math.max(0, s - 30);
-      if (s <= 30) {
+      let truth = start + local * Math.max(0, s - modalSeconds);
+      if (s <= modalSeconds) {
         truth = start + 0.001 * s;
         if (s > 0 && s % 10 === 0) written = Number(truth.toFixed(4));
       } else {
         const shown = Number((start + Math.floor((truth - start) / 0.01 + 1e-9) * 0.01).toFixed(4));
         if (shown > written) written = shown;
       }
-      if (resumedAt === null && s > 30 && written > before) resumedAt = t;
+      if (resumedAt === null && s > modalSeconds && written > before) resumedAt = t;
       const eta = run.poll({ tMs: t, progress: written, stage: "tracking_ball" });
       if (resumedAt !== null) after.push([eta, (1 - truth) / local]);
     }
