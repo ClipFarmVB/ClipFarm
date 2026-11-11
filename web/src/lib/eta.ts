@@ -23,7 +23,9 @@
  * steps needs its previous write, not an arbitrary poll, as the anchor.
  * A flat stretch the polls watched for much longer than the window's own
  * gap between writes is a freeze, not a slow write, so the advance that
- * ends it restarts the window too.
+ * ends it restarts the window too. A window of one write has no gap yet, so
+ * the held estimate's rate stands in for it, or, when the window began at a
+ * freeze, the gap that freeze was judged by.
  *
  * `stepEta` is the whole estimator: a pure reducer the page calls once per
  * poll with the state it returned last time.
@@ -54,6 +56,15 @@ export interface EtaState {
   /** The previous poll. Polls since the last write that still saw it flat
    * are what tell a freeze from a long gap between polls. */
   polledAtMs: number | null;
+  /** The window restarted at the end of a freeze. The held estimate predates
+   * the freeze, so it does not judge the window's first interval: after a
+   * Modal-to-local fallback it holds Modal's speed. */
+  afterFreeze: boolean;
+  /** The mean gap between writes that the freeze was judged by, which judges
+   * the window's first interval instead; null when a one-write check (the
+   * held rate, or this gap) called the freeze, so the next is not judged at
+   * all: a stage slower than the yardstick would restart on every write. */
+  freezeGapSeconds: number | null;
 }
 
 export interface EtaPoll {
@@ -77,6 +88,8 @@ export const INITIAL_ETA_STATE: EtaState = Object.freeze({
   settled: false,
   stalled: false,
   polledAtMs: null,
+  afterFreeze: false,
+  freezeGapSeconds: null,
 });
 
 // Need at least this much observation before showing a number.
@@ -107,7 +120,9 @@ const STALE_SECONDS = 45;
 // A flat stretch the polls saw for more than this many times the window's
 // mean gap between writes is a freeze (the bar held at its high-water mark
 // while Modal fails over to local CPU), not the gap before the next write.
-// A 1pp staircase is flat for about one gap, so it stays throughput.
+// A 1pp staircase is flat for about one gap, so it stays throughput. A window
+// of one write has no gap, so the gap the held estimate's rate implies for
+// the step stands in for it.
 const FREEZE_GAP_MULTIPLE = 3;
 
 // A fresh window's first estimate replaces the carried one outright when the
@@ -142,6 +157,14 @@ function meanWriteGapSeconds(samples: readonly ProgressSample[]): number | null 
   return (samples[samples.length - 1].tMs - samples[0].tMs) / 1000 / (samples.length - 1);
 }
 
+/** Seconds the held estimate's rate gives `step` from the write `last`, or
+ * null with no held estimate to go on. */
+function heldGapSeconds(state: EtaState, last: ProgressSample, step: number): number | null {
+  const held = decayedEta(state, last.tMs);
+  if (held === null || held <= 0 || last.progress >= 1) return null;
+  return step * held / (1 - last.progress);
+}
+
 /** Drop writes older than the window, keeping the newest of them. */
 function trimWindow(samples: readonly ProgressSample[], tMs: number): ProgressSample[] {
   let start = 0;
@@ -164,6 +187,8 @@ export function stepEta(state: EtaState, poll: EtaPoll): EtaStep {
   if (!last || progress > last.progress) {
     let samples: ProgressSample[];
     let settled = state.settled && !stageChanged;
+    let afterFreeze = false;
+    let freezeGapSeconds: number | null = null;
     if (!last) {
       samples = [{ tMs, progress }];
     } else {
@@ -181,8 +206,15 @@ export function stepEta(state: EtaState, poll: EtaPoll): EtaStep {
       // Flat time the polls saw, from the last write to the previous poll. A
       // throttled tab's long poll gap saw none of it, so it stays throughput.
       const watchedFlatSeconds = ((state.polledAtMs ?? last.tMs) - last.tMs) / 1000;
+      // With one write there is no gap yet (after any restart). After a jump,
+      // the step at the held estimate's rate stands in; after a freeze, the
+      // gap that freeze was judged by.
       const gap = meanWriteGapSeconds(state.samples);
-      const isFreeze = gap !== null && watchedFlatSeconds > FREEZE_GAP_MULTIPLE * gap;
+      const yardstick = gap
+        ?? (state.afterFreeze ? state.freezeGapSeconds : heldGapSeconds(state, last, step));
+      const isFreeze = yardstick !== null && watchedFlatSeconds > FREEZE_GAP_MULTIPLE * yardstick;
+      afterFreeze = isFreeze && !isJump && !state.stalled;
+      freezeGapSeconds = afterFreeze ? gap : null;
       // A jump, or the end of a freeze or stall, restarts the window here:
       // neither the step nor the flat time before it is velocity. The held
       // estimate carries until the fresh window is long enough to measure.
@@ -191,7 +223,7 @@ export function stepEta(state: EtaState, poll: EtaPoll): EtaStep {
         : [...trimWindow(state.samples, tMs), { tMs, progress }];
     }
     const next: EtaState = {
-      ...state, samples, advancedAtMs: tMs, stage, settled, stalled: false, polledAtMs: tMs,
+      ...state, samples, advancedAtMs: tMs, stage, settled, stalled: false, polledAtMs: tMs, afterFreeze, freezeGapSeconds,
     };
     if (progress < MIN_PROGRESS || progress >= 1) {
       return { state: { ...next, etaSeconds: null, etaAtMs: null }, etaSeconds: null };

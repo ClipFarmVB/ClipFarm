@@ -260,6 +260,107 @@ describe("stepEta", () => {
     });
   });
 
+  it.each([100, 200])("does not count a %ss freeze right after a re-budget jump as velocity", (freezeSeconds) => {
+    // The jump restarts the window, so it holds one write when the bar
+    // freezes: there is no gap between writes yet to call the freeze by.
+    const run = warmedUp(0.3, 0.001, "condensing");
+    run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.1 }); // rebudget_final_stage
+    expect(run.state.samples).toHaveLength(1);
+    run.steady(freezeSeconds, 0);
+    expect(run.last()).not.toBeNull(); // under the ceiling: no stall marked
+    const after = run.steady(90, 0.001);
+    after.forEach((eta, i) => {
+      const remaining = (1 - (run.progress - 0.001 * 5 * (after.length - 1 - i))) / 0.001;
+      expect(eta).not.toBeNull();
+      // Never inflated. The floor is low because the held estimate counted
+      // down through the freeze while the truth did not.
+      expect(eta!).toBeLessThan(1.25 * remaining);
+      expect(eta!).toBeGreaterThan(0.3 * remaining);
+    });
+  });
+
+  it("does not count a freeze one write after a freeze restart as velocity", () => {
+    // The first freeze restarts the window; one write later it freezes again,
+    // so the window holds one write and is judged by the first freeze's gap.
+    const run = warmedUp(0.1, 0.001);
+    run.steady(120, 0);
+    run.steady(5, 0.001);
+    expect(run.state.samples).toHaveLength(1);
+    run.steady(100, 0);
+    const after = run.steady(90, 0.001);
+    after.forEach((eta, i) => {
+      const remaining = (1 - (run.progress - 0.001 * 5 * (after.length - 1 - i))) / 0.001;
+      expect(eta).not.toBeNull();
+      expect(eta!).toBeLessThan(1.25 * remaining);
+      expect(eta!).toBeGreaterThan(0.3 * remaining);
+    });
+  });
+
+  it("does not count Modal dying early in a stage as velocity", () => {
+    // The stage write, one Modal write (the stage's first advance, so the
+    // window restarts and holds one write), then Modal dies. Local restarts
+    // the stage at 1pp per 40s under the monotonic clamp, so the bar sits
+    // flat at Modal's high-water mark until local passes it.
+    const run = warmedUp(0.03, 0.001, "detecting_court");
+    const stageAt = run.tMs + POLL_MS;
+    const start = Number((run.progress + 0.005).toFixed(4));
+    const local = 0.01 / 40;
+    let written = start;
+    let resumedAt: number | null = null;
+    const after: [number | null, number][] = [];
+    for (let t = stageAt; resumedAt === null || t <= resumedAt + 90_000; t += POLL_MS) {
+      const s = (t - stageAt) / 1000;
+      const before = written;
+      if (s === 10) written = Number((start + 0.01).toFixed(4)); // Modal's one write
+      // Local starts over 20s in; its writes show once they pass the clamp.
+      const truth = s <= 20 ? start + 0.001 * s : start + local * (s - 20);
+      if (s > 20 && truth - written >= 0.01 - 1e-9) written = Number(truth.toFixed(4));
+      if (resumedAt === null && s > 20 && written > before) resumedAt = t;
+      const eta = run.poll({ tMs: t, progress: written, stage: "tracking_ball" });
+      if (resumedAt !== null) after.push([eta, (1 - truth) / local]);
+    }
+    expect(resumedAt! - stageAt).toBeGreaterThan(80_000); // flat for over 80s, under the ceiling
+    after.forEach(([eta, truth], i) => {
+      if (eta !== null) expect(eta).toBeLessThan(1.25 * truth);
+      // Once local's second write gives the fresh window a rate, it is local's.
+      if (i * 5 >= 40) {
+        expect(eta).not.toBeNull();
+        expect(eta!).toBeGreaterThan(0.8 * truth);
+      }
+    });
+  });
+
+  it("does not take a stage slower than the carried estimate for a freeze on every write", () => {
+    // A stage change into a stage writing 1pp per 100s, 10x slower than the
+    // carried estimate implies: each write's interval is long against it, but
+    // that is the stage's speed, and the number has to arrive at it.
+    const run = warmedUp(0.1, 0.001);
+    run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.005, stage: "scoring_highlights" });
+    const rate = 0.0001;
+    const from = run.progress;
+    const fromMs = run.tMs;
+    let written = from;
+    for (let s = 5; s <= 600; s += 5) {
+      const truth = from + rate * s;
+      if (truth - written >= 0.01 - 1e-9) written = Number(truth.toFixed(4));
+      run.poll({ tMs: fromMs + s * 1000, progress: written });
+    }
+    const truth = (1 - (from + rate * 600)) / rate;
+    expect(run.last()).not.toBeNull();
+    expect(run.last()!).toBeGreaterThan(0.8 * truth);
+    expect(run.last()!).toBeLessThan(1.25 * truth);
+  });
+
+  it("carries the held estimate until a fresh window spans 15s of writes", () => {
+    // A stage change restarts the window, and the stage's first advance a poll
+    // later restarts it again: the countdown shows until that write is 15s old.
+    const run = warmedUp(0.1, 0.001);
+    const held = run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.005, stage: "scoring_highlights" })!;
+    const after = run.steady(20, 0.004);
+    after.slice(0, 3).forEach((eta, i) => expect(eta).toBeCloseTo(held - 5 * (i + 1), 6));
+    expect(after[3]).not.toBeCloseTo(held - 20, 0);
+  });
+
   it("takes a fresh window's first estimate when it is far from the carried one", () => {
     // A stage change into a stage 20x faster (a cache hit): the carried
     // estimate is many times the truth, and the EMA would take ~45s to agree.
@@ -326,6 +427,8 @@ describe("stepEta", () => {
       settled: true,
       stalled: false,
       polledAtMs: 0,
+      afterFreeze: false,
+      freezeGapSeconds: null,
     };
     const { etaSeconds } = stepEta(state, { tMs: 60_000, progress: 0.56, stage: "condensing" });
     const raw = (1 - 0.56) / (0.06 / 60);
@@ -344,6 +447,8 @@ describe("stepEta", () => {
       settled: true,
       stalled: false,
       polledAtMs: 0,
+      afterFreeze: false,
+      freezeGapSeconds: null,
     };
     const { etaSeconds } = stepEta(state, { tMs: 60_000, progress: 0.56, stage: "condensing" });
     expect(etaSeconds).toBeCloseTo((1 - 0.56) / (0.09 / 90), 6);
