@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   clearMe: vi.fn(),
   fetchMe: vi.fn(() => Promise.resolve(null)),
   prefetchGames: vi.fn(),
+  resetUploadStore: vi.fn(),
   emit: null as null | ((event: string, session: unknown) => void),
   initialSession: null as unknown,
 }));
@@ -33,6 +34,7 @@ vi.mock("@/lib/gamesCache", () => ({
 }));
 
 vi.mock("@/lib/useMe", () => ({ clearMe: mocks.clearMe, fetchMe: mocks.fetchMe }));
+vi.mock("@/lib/uploadStore", () => ({ resetUploadStore: mocks.resetUploadStore }));
 
 vi.mock("@/lib/supabase", () => ({
   createClient: () => ({
@@ -131,6 +133,27 @@ describe("AuthProvider — clearing the games cache on an identity change (CF-29
     await emit("SIGNED_IN", sessionFor("user-b"));
 
     expect(mocks.clearMe).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets the upload in flight on the same identity change (CF-70)", async () => {
+    // The XHR cannot be aborted, so without this the outgoing user's upload
+    // keeps publishing progress to the incoming one — and completes the game
+    // under their session.
+    await mount(sessionFor("user-a"));
+    mocks.resetUploadStore.mockClear();
+
+    await emit("SIGNED_IN", sessionFor("user-b"));
+
+    expect(mocks.resetUploadStore).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reset the upload on a token refresh", async () => {
+    await mount(sessionFor("user-a"));
+    mocks.resetUploadStore.mockClear();
+
+    await emit("TOKEN_REFRESHED", sessionFor("user-a"));
+
+    expect(mocks.resetUploadStore).not.toHaveBeenCalled();
   });
 
   it("does not clear the profile cache on a token refresh", async () => {

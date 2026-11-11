@@ -106,9 +106,10 @@ export interface Game {
   // abandoned (tab closed) and the row is waiting for the api's sweep, which
   // removes it only once it is 24h old and only on that owner's next upload —
   // so it can persist indefinitely. The Library filters these out
-  // server-side, and the upload tab navigates to the game only after
-  // completeUpload returns it `queued`, so a client sees this status only by
-  // fetching the game by id (e.g. a typed URL). The game page does not poll it.
+  // server-side, and the upload store publishes the game — and links to it —
+  // only after completeUpload returns it `queued`, so a client sees this
+  // status only by fetching the game by id (e.g. a typed URL). The game page
+  // does not poll it.
   status: "uploading" | "queued" | "processing" | "ready" | "failed";
   progress: number;
   progress_stage: string | null;
