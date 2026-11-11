@@ -111,9 +111,19 @@ export async function startUpload(file: File, opts: StartUploadOptions): Promise
 
   const generation = _generation;
   const isCurrent = () => generation === _generation;
-  // Every write goes through here so a superseded attempt cannot publish.
+  // Latched by this attempt's own `done` / `failed`; past that it has nothing
+  // left to say. A multipart transfer rejects as soon as one part gives up,
+  // but its sibling parts run on — and retry — calling `onProgress` as they
+  // go, and nothing here can abort them. Without the latch those stragglers
+  // patched their byte ratio and ETA into the failed snapshot, into IDLE once
+  // dismissed, and into the retry the user had just started (R14-M1).
+  let settled = false;
+  // Every write goes through here so a superseded or settled attempt cannot
+  // publish.
   const publish = (patch: Partial<UploadSnapshot>) => {
-    if (isCurrent()) _publish({ ..._snapshot, ...patch });
+    if (!isCurrent() || settled) return;
+    if (patch.phase === "done" || patch.phase === "failed") settled = true;
+    _publish({ ..._snapshot, ...patch });
   };
 
   publish({

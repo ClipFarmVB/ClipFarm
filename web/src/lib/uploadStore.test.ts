@@ -201,6 +201,62 @@ describe("startUpload", () => {
 
     expect(getUploadSnapshot()).toMatchObject({ phase: "done", error: null });
   });
+
+  it("keeps a failed attempt's straggling parts out of the retry's bar (R14-M1)", async () => {
+    // One part gives up and the transfer rejects, but its sibling parts run
+    // on and keep calling the failed attempt's onProgress.
+    let stale!: (p: TransferProgress) => void;
+    mocks.uploadFileToR2.mockImplementationOnce(
+      async (_f: File, _t: UploadTicket, onProgress: (p: TransferProgress) => void) => {
+        stale = onProgress;
+        throw new Error("Network error during upload");
+      },
+    );
+    await startUpload(file(), opts);
+    expect(getUploadSnapshot().phase).toBe("failed");
+
+    // Try again: the retry is in flight with nothing sent yet.
+    const transfer = deferred<never[]>();
+    mocks.uploadFileToR2.mockReturnValueOnce(transfer.promise);
+    const retry = startUpload(file(), { ...opts, title: "B" });
+    await vi.waitFor(() => expect(mocks.uploadFileToR2).toHaveBeenCalledTimes(2));
+    const seen = record();
+
+    stale({ loaded: 90, total: 100 });
+
+    expect(seen).toEqual([]);
+    expect(getUploadSnapshot()).toMatchObject({
+      phase: "uploading",
+      title: "B",
+      progress: 0,
+      statusText: "Uploading…",
+    });
+
+    transfer.resolve([]);
+    await retry;
+    expect(getUploadSnapshot()).toMatchObject({ phase: "done", title: "B" });
+  });
+
+  it("keeps a settled attempt's stragglers off the failed snapshot and off idle", async () => {
+    let stale!: (p: TransferProgress) => void;
+    mocks.uploadFileToR2.mockImplementationOnce(
+      async (_f: File, _t: UploadTicket, onProgress: (p: TransferProgress) => void) => {
+        stale = onProgress;
+        throw new Error("boom");
+      },
+    );
+    await startUpload(file(), opts);
+    const failed = getUploadSnapshot();
+    const seen = record();
+
+    stale({ loaded: 90, total: 100 });
+    expect(getUploadSnapshot()).toBe(failed);
+
+    dismissUpload();
+    stale({ loaded: 95, total: 100 });
+    expect(seen.map((s) => s.phase)).toEqual(["idle"]);
+    expect(getUploadSnapshot()).toMatchObject({ phase: "idle", progress: null });
+  });
 });
 
 describe("resetUploadStore", () => {
@@ -268,6 +324,52 @@ describe("resetUploadStore", () => {
     transfer.resolve([]);
     await orphan;
     expect(getUploadSnapshot()).toMatchObject({ phase: "done", title: "Next user's game" });
+  });
+
+  it("keeps an orphan's progress, completion and failure out of the attempt that replaced it", async () => {
+    // Two orphans, both still moving when the new attempt starts: one will
+    // complete, one will fail. Neither may touch the new attempt's snapshot.
+    let staleProgress!: (p: TransferProgress) => void;
+    const completing = deferred<never[]>();
+    mocks.uploadFileToR2.mockImplementationOnce(
+      (_f: File, _t: UploadTicket, onProgress: (p: TransferProgress) => void) => {
+        staleProgress = onProgress;
+        return completing.promise;
+      },
+    );
+    const orphanDone = startUpload(file(), opts);
+    await vi.waitFor(() => expect(mocks.uploadFileToR2).toHaveBeenCalledTimes(1));
+    resetUploadStore();
+
+    const failing = deferred<never[]>();
+    mocks.uploadFileToR2.mockReturnValueOnce(failing.promise);
+    const orphanFailed = startUpload(file(), opts);
+    await vi.waitFor(() => expect(mocks.uploadFileToR2).toHaveBeenCalledTimes(2));
+    resetUploadStore();
+
+    const transfer = deferred<never[]>();
+    mocks.uploadFileToR2.mockReturnValueOnce(transfer.promise);
+    const current = startUpload(file(), { ...opts, title: "B" });
+    await vi.waitFor(() => expect(mocks.uploadFileToR2).toHaveBeenCalledTimes(3));
+    const seen = record();
+
+    staleProgress({ loaded: 90, total: 100 });
+    completing.resolve([]);
+    failing.reject(new Error("Network error during upload"));
+    await Promise.all([orphanDone, orphanFailed]);
+
+    expect(seen).toEqual([]);
+    expect(getUploadSnapshot()).toMatchObject({
+      phase: "uploading",
+      title: "B",
+      progress: 0,
+      error: null,
+    });
+    expect(mocks.completeUpload).not.toHaveBeenCalled();
+
+    transfer.resolve([]);
+    await current;
+    expect(getUploadSnapshot()).toMatchObject({ phase: "done", title: "B" });
   });
 });
 

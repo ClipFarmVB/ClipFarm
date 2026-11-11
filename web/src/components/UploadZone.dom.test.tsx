@@ -43,6 +43,12 @@ vi.mock("@/lib/api", () => ({
 // Mocked so no real XHR is attempted: jsdom's would fire and fail the run.
 vi.mock("@/lib/upload", () => ({ uploadFileToR2: mocks.uploadFileToR2 }));
 vi.mock("@/lib/gamesCache", () => ({ addGameToCache: vi.fn() }));
+// The real store, with startUpload wrapped so a case can count the calls the
+// form makes into it.
+vi.mock("@/lib/uploadStore", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/uploadStore")>();
+  return { ...real, startUpload: vi.fn(real.startUpload) };
+});
 
 import { UploadZone } from "@/components/UploadZone";
 import { getUploadSnapshot, resetUploadStore, startUpload } from "@/lib/uploadStore";
@@ -283,6 +289,27 @@ describe("UploadZone and the upload store (CF-70)", () => {
     expect(mocks.createUpload).toHaveBeenCalledTimes(1);
     expect(mocks.createUpload.mock.calls[0][0]).toMatchObject({ title: "match", filename: "match.mp4" });
     expect(mocks.push).toHaveBeenCalledWith("/games/g1");
+  });
+
+  it("a click that lands after the store moved, before the re-render, starts nothing", async () => {
+    // The live re-entry guard: this render still says idle, the store does
+    // not. Without the guard the form calls startUpload into an attempt in
+    // flight, which rejects unawaited.
+    await pickMp4();
+    const transfer = deferred<never[]>();
+    mocks.uploadFileToR2.mockReturnValue(transfer.promise);
+
+    let attempt!: Promise<void>;
+    await act(async () => {
+      attempt = startUpload(mp4(), opts);
+      uploadButton()!.click();
+    });
+
+    expect(startUpload).toHaveBeenCalledTimes(1);
+    expect(getUploadSnapshot().phase).toBe("uploading");
+
+    transfer.resolve([]);
+    await act(async () => { await attempt; });
   });
 
   it("picking a new file clears last time's outcome", async () => {
