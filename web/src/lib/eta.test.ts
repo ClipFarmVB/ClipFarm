@@ -185,10 +185,20 @@ describe("stepEta", () => {
     });
   });
 
-  it("does not count a stall as velocity once progress resumes", () => {
+  it.each([
+    ["mid-stage", false],
+    ["with a one-write window", true],
+  ])("does not count a stall as velocity once progress resumes (%s)", (_, afterStageChange) => {
     // Modal fails over to local CPU: the bar freezes at its high-water mark
-    // past the ceiling, then resumes at the old rate.
+    // past the ceiling, then resumes at the old rate. Right after a stage
+    // change the window holds one write, so it has no gap between writes to
+    // call the stall a freeze by: only the ceiling's verdict restarts it.
     const run = warmedUp(0.1, 0.001);
+    if (afterStageChange) {
+      run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.005, stage: "scoring_highlights" });
+      run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.005 });
+      expect(run.state.samples).toHaveLength(1);
+    }
     const flat = run.steady(run.state.etaSeconds! * 0.6, 0);
     expect(flat[flat.length - 1]).toBeNull();
     const resumed = run.steady(120, 0.001);
@@ -199,6 +209,70 @@ describe("stepEta", () => {
       expect(eta).toBeGreaterThan(0.8 * remaining);
     });
     expect(resumed[resumed.length - 1]).not.toBeNull();
+  });
+
+  it.each([60, 120, 240])("does not count a %ss freeze inside a stage, under the ceiling, as velocity", (freezeSeconds) => {
+    // The bar freezes mid-stage for less than the flat ceiling, so nothing
+    // marks a stall, then resumes at the old rate.
+    const run = warmedUp(0.1, 0.001);
+    expect(freezeSeconds).toBeLessThan(0.5 * run.state.etaSeconds!);
+    run.steady(freezeSeconds, 0);
+    const after = run.steady(90, 0.001);
+    after.forEach((eta, i) => {
+      const remaining = (1 - (run.progress - 0.001 * 5 * (after.length - 1 - i))) / 0.001;
+      expect(eta).not.toBeNull();
+      // Never inflated. The floor is lower because the held estimate counted
+      // down through the freeze, which the true remaining time did not.
+      expect(eta!).toBeLessThan(1.25 * remaining);
+      expect(eta!).toBeGreaterThan(0.6 * remaining);
+    });
+  });
+
+  it("does not count the Modal-to-local fallback's frozen bar as velocity", () => {
+    // Modal tracks at 1pp per 10s for 150s, then fails. Local restarts the
+    // stage at 1pp per 25s; the monotonic clamp holds the high-water mark
+    // until local passes it, then local's 1pp writes show through.
+    const run = new Run();
+    const modal = 0.01 / 10;
+    const local = 0.01 / 25;
+    let written = 0.05;
+    // The poll where the bar first moves again (local's first write past the
+    // clamp), then every poll for 90s from there.
+    let resumedAt: number | null = null;
+    const after: [number | null, number][] = [];
+    for (let t = 0; resumedAt === null || t <= resumedAt + 90; t += POLL_MS / 1000) {
+      const truth = t <= 150 ? 0.05 + modal * t : 0.05 + local * (t - 150);
+      const before = written;
+      if (truth - written >= 0.01 - 1e-9) written = Number(truth.toFixed(4));
+      if (resumedAt === null && t > 150 && written > before) resumedAt = t;
+      const eta = run.poll({ tMs: t * 1000, progress: written, stage: "tracking_ball" });
+      if (resumedAt !== null) after.push([eta, (1 - truth) / local]);
+    }
+    expect(after.length).toBe(19);
+    // ~1970s true at resume: no poll reads more than 1.25x that. Once local's
+    // second write (25s on) gives the fresh window a rate, the number is local's.
+    after.forEach(([eta, truth], i) => {
+      if (eta !== null) expect(eta).toBeLessThan(1.25 * truth);
+      if (i * 5 >= 25) {
+        expect(eta).not.toBeNull();
+        expect(eta!).toBeGreaterThan(0.8 * truth);
+      }
+    });
+  });
+
+  it("takes a fresh window's first estimate when it is far from the carried one", () => {
+    // A stage change into a stage 20x faster (a cache hit): the carried
+    // estimate is many times the truth, and the EMA would take ~45s to agree.
+    const run = warmedUp(0.1, 0.0005);
+    run.poll({ tMs: run.tMs + POLL_MS, progress: run.progress + 0.01, stage: "scoring_highlights" });
+    const after = run.steady(45, 0.01);
+    const firstNumber = after.findIndex((eta, i) => i >= 3 && eta !== null);
+    expect(firstNumber).toBeGreaterThan(0);
+    after.slice(firstNumber).forEach((eta, j) => {
+      const i = firstNumber + j;
+      const remaining = (1 - (run.progress - 0.01 * 5 * (after.length - 1 - i))) / 0.01;
+      expect(eta!).toBeLessThan(1.25 * remaining);
+    });
   });
 
   it("does not hide a stage boundary behind null", () => {
@@ -251,6 +325,7 @@ describe("stepEta", () => {
       stage: "condensing",
       settled: true,
       stalled: false,
+      polledAtMs: 0,
     };
     const { etaSeconds } = stepEta(state, { tMs: 60_000, progress: 0.56, stage: "condensing" });
     const raw = (1 - 0.56) / (0.06 / 60);
@@ -259,16 +334,19 @@ describe("stepEta", () => {
 
   it("does not blend a fresh estimate against a held one that has decayed to zero", () => {
     const state: EtaState = {
-      samples: [{ tMs: 0, progress: 0.5 }],
+      // Two writes, so the window already has a rate: the fresh-window
+      // reseed does not apply, and the zero check alone must catch it.
+      samples: [{ tMs: -30_000, progress: 0.47 }, { tMs: 0, progress: 0.5 }],
       etaSeconds: 30, // ran out 30s ago
       etaAtMs: 0,
       advancedAtMs: 0,
       stage: "condensing",
       settled: true,
       stalled: false,
+      polledAtMs: 0,
     };
     const { etaSeconds } = stepEta(state, { tMs: 60_000, progress: 0.56, stage: "condensing" });
-    expect(etaSeconds).toBeCloseTo((1 - 0.56) / (0.06 / 60), 6);
+    expect(etaSeconds).toBeCloseTo((1 - 0.56) / (0.09 / 90), 6);
   });
 
   it("starts over when progress goes backwards (a retry)", () => {
