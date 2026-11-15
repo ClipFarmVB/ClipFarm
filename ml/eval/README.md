@@ -575,8 +575,10 @@ Two learned rungs, both held out:
 | 4. test3 abstains or cuts ≤ 30s live | abstains · pass | 14.50s · 30s · +15.50s pass |
 
 **Clause 1's pass is selection-biased.** The folds scored are the ones of the
-context variant `train_deadtime.choose_variant` picked, and it picks by the
-highest summed held-out net over test2/4/5 — exactly what clause 1 tests. The
+context variant `train_deadtime.choose_variant` picked, and at the measured
+commit it picked by the highest summed held-out net over test2/4/5 — exactly
+what clause 1 tests (CF-604 changed the rule, not the bias: it still picks on
+those same folds). The
 coefficients, intercept and threshold of each fold never saw the held-out game;
 the choice of variant did. The trainer recorded two variants, and clause 1
 holds for the chosen one only:
@@ -589,9 +591,10 @@ holds for the chosen one only:
 The tool prints this table after the clauses, from each variant's fold record.
 Today's verdict does not depend on it, since clauses 2 and 3 fail either way,
 but a future pass on clause 1 is only as good as this table: if it holds for
-the chosen variant alone, it rests on the choice. Removing the bias needs the
-trainer to choose the variant inside each training fold (nested); it does not
-yet.
+the chosen variant alone, it rests on the choice. Since CF-604 the trainer
+makes every choice inside each training fold as well and applies the bar to
+that nested record itself — see [the nested protocol](#the-nested-protocol-cf-604)
+below. This tool still scores `"folds"`, the shipped selection's own folds.
 
 Per fixture, dead time removed then live play cut, net at 4:1:
 
@@ -671,8 +674,8 @@ probabilities become keep-windows, and the builder decodes by it
 Both share the pads and merge gap. By default the trainer runs both
 leave-one-game-out — each fold's transitions fitted on its training games only,
 each decoder choosing its own context variant — and writes the one
-`choose_decoder` returns: `hmm` only if its summed net over test2/test4/test5
-is higher **and** its summed live play cut there is not.
+`choose_decoder` returns: `hmm` only if its net is higher **and** its live play
+cut is not, both in the per-game terms of CF-604's objective (below).
 
 ```bash
 python -m ml.eval.train_deadtime --no-write            # both decoders' fold tables + the verdict
@@ -681,6 +684,93 @@ python -m ml.eval.train_deadtime --decoder threshold   # one decoder, written as
 
 At CF-396, `threshold` ships: net +463.3s / live cut 210.5s against `hmm`'s
 +341.3s / 148.5s. The HMM cuts less live play and less dead time with it.
+Those figures predate CF-604's objective (below), which reads the same folds
+differently.
+
+### The nested protocol (CF-604)
+
+The research plan's standard protocol
+(`docs/research/highlight-deadtime-plan.md` §4) for every dead-time experiment,
+in the trainer. Every run produces it; nothing extra to pass.
+
+**One objective for every choice** — threshold, context variant, decoder
+(`train_deadtime.objective`): net at 4:1 summed **per game, not per row**.
+Each game's net and live cut are divided by its duration before summing, so
+test1 — 54% of the training rows — counts as one game. test3 counts **only
+through the bar's abstain clause**: a candidate whose test3 cuts more than 30s
+of live play loses to one that does not, unless production's chain declines
+test3's track (it does: below the 1.0 usable samples/s floor `guarded`
+abstains), and test3's net never enters the sum. The decoder rule is CF-396's
+in these terms: `hmm` only if its per-game net is higher and its per-game live
+cut is not.
+
+**Nested leave-one-game-out.** `select` is the whole shipping procedure on a
+set of games: leave-one-game-out over them for every decoder and variant, the
+choices made on those folds, the threshold the median of the chosen folds'.
+The shipped weights are `select` on all five, fitted on all five; their
+`"folds"` are the chosen configuration's folds and stay selection-biased as a
+verdict, since they chose among themselves. The weights file's `"nested"` is
+the unbiased record: for each outer game, `select` runs on the other four
+only, the model it describes is fitted on them, and the outer game is scored
+— nothing about it reached any choice or fit. A nested fold's model is exactly
+what the trainer would ship if those four were all the games.
+
+Each nested fold carries, beside the seconds:
+
+| field | meaning |
+|---|---|
+| `variant`, `decoder`, `threshold` | what that fold's inner selection chose |
+| `rally.{learned,guarded}.recall_50` / `recall_100` | share of rallies with ≥ 50% / 100% of their seconds kept |
+| `rally.{…}.deleted` | rallies kept for 0s, by labelled length: `le_3s`, `3_8s`, `gt_8s` |
+| `rally.{…}.start_err_median_sec` / `end_err_median_sec` | signed median over rallies not deleted: start > 0 is a late start, end < 0 a clipped end. Also `…_abs_err_median_sec` |
+| `paired.learned_only_deleted` / `guarded_only_deleted` / `both_deleted` | whole-rally deletions by who made them |
+| `paired.mcnemar_p` | exact two-sided McNemar on the two discordant counts |
+| `paired.delta_net_sec` / `delta_live_cut_sec` | learned minus `guarded` on this game |
+
+A rally is one span of the fixture's labelled in-play union
+(`rally_match.py`); a keep-window's start and end are read only within the
+rally's territory (gap midpoint to gap midpoint), so a window merged across two
+rallies does not book one's start as the other's lead-in. `rally_match` is
+small on purpose so CF-593's matcher can replace it.
+
+`nested.paired` pools test2/4/5. **The McNemar p on the pooled discordant
+counts is the primary test.** Δnet and Δlive cut come with a 95% interval from
+a within-game block bootstrap over (rally + following gap) units — 2000 draws,
+seeded — which is **descriptive only**: resampling within each game ignores
+the variance between games, so at n = 3 games a claim that the model
+generalises to a new gym is a judgement call and must say so. `nested.bar` is
+the CF-389 bar (`validate_learned.apply_bar`) on the nested folds, for the
+gated rung (`guarded` in place of any game whose track the learned chain
+declines) and the ungated one. **A pass does not flip `"validated"`**; that is
+a person's call (CF-399).
+
+**Switch position.** `--contact-scale off|on|soft` loads, fits and scores at
+that side of the CF-174 switch, applied as `visualize_deadtime` applies it and
+restored afterwards; the default is the settings mirror (on), so a bare run is
+unchanged. The file records it as `"contact_scale"`. Production runs **off**:
+
+```bash
+python -m ml.eval.train_deadtime --no-write --contact-scale off   # production's position
+python -m ml.eval.train_deadtime --no-write --contact-scale on
+```
+
+Writing at `off` writes weights fitted on switch-off contacts; `validate_learned`
+always scores at `on`, so validate such a file from `"nested"`, not with it.
+
+**Label-jitter sensitivity.** `--jitter-draws N` reruns the nested record N
+times with every fixture endpoint moved by an independent uniform draw in ±1s
+(seeded by `--jitter-seed`, default 0), and reports how many draws flip the
+learned-vs-`guarded` ranking — on pooled Δnet, and on whole-rally deletions.
+A ranking that flips is not a result. Printed, not written; each draw is a
+full nested run, so N = 20 costs about 20 trainer runs.
+
+```bash
+python -m ml.eval.train_deadtime --no-write --jitter-draws 20
+```
+
+No numbers yet: the protocol landed without the ball caches (CF-604), so the
+reference rows — one per switch position, each with its bar verdict — are
+still to be produced.
 
 ## Files
 ```
@@ -699,6 +789,8 @@ deadtime_variants.py   the builder ladder: v0 = mode=rules, v5 = mode=guarded (C
 visualize_deadtime.py  score every variant on every fixture -> HTML (CF-187)
 train_deadtime.py      leave-one-game-out trainer for the in-play weights (CF-393)
 validate_learned.py    the learned builder held out, against the epic's bar (CF-395)
+rally_match.py         per-rally recall, whole-rally deletions, boundary error (CF-604)
+paired_stats.py        exact McNemar and the within-game block bootstrap (CF-604)
 fixtures/              one JSON per test case (ground truth)
                        {test_id}.json          highlights (CF-55)
                        {test_id}_deadtime.json ball-in-play spans (CF-98)
