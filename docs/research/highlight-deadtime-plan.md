@@ -4,8 +4,8 @@
 Written 2026-11-10 against `main` @ `196822d`. It answers one question: *what should we try
 next to make highlight detection and dead-time classification better, in what order, and
 how would we know it worked?* Every candidate below comes with a hypothesis, an experiment
-shaped for the existing `ml/eval` harness, a success metric and an effort estimate. Card
-numbers are left as `CF-??` because this PR creates no issues.
+shaped for the existing `ml/eval` harness, a success metric and an effort estimate. The
+cards it proposes are filed as CF-604 to CF-616 (§6).
 
 How this was produced: three agents mapped the code (`ml/pipeline/*`, `ml/eval/*`,
 `ml/modal_*.py`), the committed results (`ml/eval/results/*.jsonl`, the fold record in
@@ -604,27 +604,27 @@ other default, and sending user video to a third-party API.
 
 ## 6. Proposed board cards
 
-Titles follow the `CF-## · Description` style; numbers are left as `CF-??` because this PR
-creates no issues (next free id at the time of writing: CF-602). Items that belong on an
-existing card are listed second, as additions to that card rather than new cards.
+These cards were filed on 2026-11-15 as CF-604 to CF-616 (issues #663–#675), after the
+plan was written; the items that belong on an existing card were posted there as comments.
+The new cards carry no `overnight-ok` label — whether the loop may take them is a person's call.
 
 **New cards**
 
 | Proposed title | Plan item | Area | Depends on | Size |
 |---|---|---|---|---|
-| `CF-?? · Nested model selection, per-rally metrics and McNemar reporting in train_deadtime` | Q2 | eval, dead-time | caches | S |
-| `CF-?? · validate_learned accepts every decoder dead_time_ml can emit` | Q2 | eval, dead-time | — | S |
-| `CF-?? · Confirm guarded ∪ learned keep-windows held out at both switch positions` | Q1 | dead-time, eval | the nested-selection card | S |
-| `CF-?? · Score the static-site filter on the comparable three for guarded, v3 and learned` | Q4 | dead-time, ball-detection | caches | S |
-| `CF-?? · Explicit-duration Viterbi decoder with calibrated emissions` | Q8 | dead-time | the nested-selection card | S–M |
-| `CF-?? · Label-noise estimate: second labeller and ±1 s jitter on the dead-time fixtures` | L1 | eval | a second labeller (human) | S |
-| `CF-?? · Tagger-based cheer score and audio reliability flag on Modal` | M1 | audio, scoring | CF-595 | M |
-| `CF-?? · Per-second SigLIP 2 / PE-Core embeddings as a dead-time veto/boost (eval-only)` | M3 | dead-time | CF-595, the nested-selection card | M |
-| `CF-?? · Persist per-rally features, scores and gate decisions; record user clip actions` | M5 | scoring, api | privacy review, migration slot | M |
-| `CF-?? · Court polygon filter on cached ball positions (default off)` | M6 | ball-detection | a multi-court labelled fixture | M |
-| `CF-?? · One-click-per-rally labelling and boundary review page` | L1 | eval, web | CF-595 | L |
-| `CF-?? · Learned pairwise highlight ranker behind a default-off scorer setting` | L2 | scoring | persistence card, ≥ 5 highlight fixtures | M |
-| `CF-?? · Ball + pose keypoint spotter for serve and rally end (research)` | L3 | ball-detection, dead-time | CF-595, more labelled games | L |
+| [`CF-604 · Nested model selection, per-rally metrics and McNemar reporting in train_deadtime`](https://github.com/ClipFarmVB/ClipFarm/issues/663) (#663) | Q2 | eval, dead-time | caches | S |
+| [`CF-605 · validate_learned accepts every decoder dead_time_ml can emit`](https://github.com/ClipFarmVB/ClipFarm/issues/664) (#664) | Q2 | eval, dead-time | — | S |
+| [`CF-606 · Confirm guarded ∪ learned keep-windows held out at both switch positions`](https://github.com/ClipFarmVB/ClipFarm/issues/665) (#665) | Q1 | dead-time, eval | the nested-selection card | S |
+| [`CF-607 · Score the static-site filter on the comparable three for guarded, v3 and learned`](https://github.com/ClipFarmVB/ClipFarm/issues/666) (#666) | Q4 | dead-time, ball-detection | caches | S |
+| [`CF-608 · Explicit-duration Viterbi decoder with calibrated emissions`](https://github.com/ClipFarmVB/ClipFarm/issues/667) (#667) | Q8 | dead-time | the nested-selection card | S–M |
+| [`CF-609 · Label-noise estimate: second labeller and ±1 s jitter on the dead-time fixtures`](https://github.com/ClipFarmVB/ClipFarm/issues/668) (#668) | L1 | eval | a second labeller (human) | S |
+| [`CF-610 · Tagger-based cheer score and audio reliability flag on Modal`](https://github.com/ClipFarmVB/ClipFarm/issues/669) (#669) | M1 | audio, scoring | CF-595 | M |
+| [`CF-611 · Per-second SigLIP 2 / PE-Core embeddings as a dead-time veto/boost (eval-only)`](https://github.com/ClipFarmVB/ClipFarm/issues/670) (#670) | M3 | dead-time | CF-595, the nested-selection card | M |
+| [`CF-612 · Persist per-rally features, scores and gate decisions; record user clip actions`](https://github.com/ClipFarmVB/ClipFarm/issues/671) (#671) | M5 | scoring, api | privacy review, migration slot | M |
+| [`CF-613 · Court polygon filter on cached ball positions (default off)`](https://github.com/ClipFarmVB/ClipFarm/issues/672) (#672) | M6 | ball-detection | a multi-court labelled fixture | M |
+| [`CF-614 · One-click-per-rally labelling and boundary review page`](https://github.com/ClipFarmVB/ClipFarm/issues/673) (#673) | L1 | eval, web | CF-595 | L |
+| [`CF-615 · Learned pairwise highlight ranker behind a default-off scorer setting`](https://github.com/ClipFarmVB/ClipFarm/issues/674) (#674) | L2 | scoring | persistence card, ≥ 5 highlight fixtures | M |
+| [`CF-616 · Ball + pose keypoint spotter for serve and rally end (research)`](https://github.com/ClipFarmVB/ClipFarm/issues/675) (#675) | L3 | ball-detection, dead-time | CF-595, more labelled games | L |
 
 **Additions to existing cards**
 
