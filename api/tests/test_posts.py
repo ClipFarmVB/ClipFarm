@@ -47,6 +47,15 @@ class _Post:
         self.clip_id = None
 
 
+class _Author:
+    def __init__(self, username, generated):
+        self.id = AUTHOR
+        self.username = username
+        self.display_name = "Someone"
+        self.avatar_url = None
+        self.username_is_generated = generated
+
+
 # ── a post may never be wider than its clip ─────────────────────────────────
 
 
@@ -154,6 +163,43 @@ def _sql(stmt) -> str:
     return str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
 
+class _Result:
+    """What `execute()` hands back. `_findable_author` reads it with
+    `scalar_one_or_none`; the page query reads it with `all`, and an empty page
+    keeps `_serialize` — and so storage — out of the test."""
+
+    def __init__(self, author):
+        self._author = author
+
+    def scalar_one_or_none(self):
+        return self._author
+
+    def all(self):
+        return []
+
+
+class _CapturingSession:
+    """Records every statement `list_user_posts` asks it to execute.
+
+    Modelled on `test_public_player_name.py`'s `_FakeSession`, for the reason
+    that file gives: the rows a fake returns satisfy any assertion about
+    *results* whatever the route asked for, so the statements are the only
+    evidence of what was actually asked. Simpler than that one, though: it
+    answers every `execute` with the same `_Result` rather than queuing one
+    per call, because the handler makes exactly two and the test asserts on
+    that count. The author lookup resolves, so the handler reaches its page
+    query; that query is what the test below reads.
+    """
+
+    def __init__(self, author):
+        self._author = author
+        self.statements = []
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        return _Result(self._author)
+
+
 def test_post_visibility_is_applied_in_sql():
     """Review finding: applying `limit` in SQL and visibility in Python means
     the limit counts rows the viewer can't see. An author with 60 private posts
@@ -186,29 +232,76 @@ def test_the_post_query_owns_its_joins():
 def test_the_list_endpoint_does_not_filter_after_the_limit():
     """Pins the fix at the call site, not just in the helper.
 
-    Asserted on the compiled SQL rather than on the source. The previous version
-    checked `"continue" not in src`, which is brittle in both directions: it
-    passes for a list comprehension with an `if`, which reintroduces exactly the
-    post-LIMIT filtering it exists to prevent, and it would fail on an unrelated
-    `continue` somewhere else in the function.
+    Drives the real coroutine against a session that records what it executes,
+    and asserts on the compiled SQL of the page query the *router* built. The
+    two tests above cover the helper's own output; this one covers whether the
+    endpoint uses it. The previous version checked that `apply_post_visibility`
+    appeared in `list_user_posts`' source, which the router's own comment
+    satisfies — deleting the call, or swapping it for a same-named no-op, left
+    this file green (CF-405). A comment cannot put a predicate in the SQL.
 
-    What actually matters is that both gates reach the WHERE clause, so the
-    LIMIT counts only rows this viewer may see.
+    What actually matters is that both gates and the author scope reach a
+    WHERE clause ahead of the LIMIT, so the LIMIT counts only rows this viewer
+    may see. Their order in the text proves nothing on its own: the compiler
+    writes WHERE before LIMIT within one SELECT whatever the chaining order.
+    What can actually go wrong is a LIMIT *inside a subquery* — the author's
+    page picked first and gated afterwards, `posts.id IN (SELECT … LIMIT 7)`,
+    which is the post-limit filter wearing a select-ids-then-join shape. So
+    the guard is that the statement carries exactly one LIMIT and it is the
+    outer statement's own tail. Given that, everything from the first WHERE
+    to the ORDER BY (or to the LIMIT, if nothing is ordered) is every
+    predicate applied before paging, and that slice is where the gates are
+    looked for. The ORDER BY is cut off because a column named there is not a
+    predicate: a page sorted by `Post.visibility` with the post gate gone must
+    not pass for one that is gated on it.
+
+    The viewer is a stranger, so the two `posts.author_id` clauses are told
+    apart by the id each names. The helper's own-posts clause, and the clip
+    gate's owner clause, must carry the *stranger's*: that pins that the
+    router handed the helper the viewer, because a router that handed it the
+    author instead would write the author's id there too, and every private
+    post would be its own author's to anyone asking. The router's scope must
+    carry the *author's*, which the helper never writes for a viewer who is
+    not the author.
     """
-    import inspect
+    import asyncio
 
-    src = inspect.getsource(posts_router.list_user_posts)
-    assert "apply_post_visibility" in src
+    author = _Author("alice", False)
+    db = _CapturingSession(author)
+    page = asyncio.run(
+        posts_router.list_user_posts(db=db, username="alice", viewer_id=STRANGER, limit=7)
+    )
+    assert page == []
+    assert len(db.statements) == 2, "the author lookup, then the page query"
 
-    from sqlalchemy import select
-
-    from app.models.post import Post as PostModel
-
-    sql = _sql(access.apply_post_visibility(select(PostModel), STRANGER)).lower()
-    where_at = sql.index("where ")
-    where = sql[where_at:]
+    sql = _sql(db.statements[-1]).lower()
+    assert "join clips" in sql, "the gates read clips — a missing join fails open"
+    assert "join games" in sql, "and games"
+    assert sql.count("limit ") == 1, (
+        "exactly one LIMIT — none, or a second, means the page is sized somewhere else"
+    )
+    assert sql.rstrip().endswith("limit 7"), (
+        "the LIMIT must be the outer statement's own tail, sized to the page: one "
+        "inside a subquery is the page picked before the gates — the post-limit "
+        "filter by another route"
+    )
+    assert "where " in sql, "no WHERE clause at all — nothing is filtered"
+    # ORDER BY sits between the WHERE and the LIMIT, and a column named there
+    # is not a predicate, so the slice stops short of it.
+    where_end = sql.index(" order by ") if " order by " in sql else sql.index("limit ")
+    where = sql[sql.index("where ") : where_end]
     assert "posts.visibility" in where, "the post gate must be in the WHERE clause"
     assert "clips.visibility" in where, "and the clip gate too"
+    assert f"posts.author_id = '{STRANGER.hex}'" in where, (
+        "the helper must be handed the viewer, not the author: with the author as "
+        "viewer, the own-posts clause admits every row to a stranger"
+    )
+    assert f"games.owner_id = '{STRANGER.hex}'" in where, (
+        "and the clip gate's owner clause must name the viewer too"
+    )
+    assert f"posts.author_id = '{author.id.hex}'" in where, (
+        "the page must be scoped to the requested author in SQL"
+    )
 
 
 def test_a_public_post_over_a_private_clip_is_still_unreadable():
@@ -288,15 +381,6 @@ def test_the_profile_posts_route_does_not_lowercase_by_hand():
 
 
 # ── a generated handle must not ride out on a post ──────────────────────────
-
-
-class _Author:
-    def __init__(self, username, generated):
-        self.id = AUTHOR
-        self.username = username
-        self.display_name = "Someone"
-        self.avatar_url = None
-        self.username_is_generated = generated
 
 
 def test_a_generated_handle_is_withheld_from_the_post_author():

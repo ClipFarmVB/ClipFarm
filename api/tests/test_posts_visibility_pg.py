@@ -1,16 +1,18 @@
 """CF-109: the anonymous list path, executed against a real Postgres.
 
-**Why this exists.** Everything else covering `list_user_posts` asserts on a
-string: that `posts.visibility` appears in some compiled SQL, or that the
-router's source contains `apply_post_visibility`. `test_posts_endpoints.py`
-drives the other four handlers, but its `StubSession` has no `execute`, so the
-one endpoint whose whole job is a filtered query is the one never invoked.
+**Why this exists.** Everything else covering `list_user_posts` asserts on
+text: `test_posts.py` drives the coroutine against a recording stub and checks
+the compiled statement for the joins, both gates and the author scope ahead of
+its one LIMIT (CF-405), which pins what the router *sends*, not what the
+predicates *mean*. `test_posts_endpoints.py` drives the other four handlers,
+but its `StubSession` has no `execute`, so the one endpoint whose whole job is
+a filtered query is never run against real rows anywhere but here.
 
-The hole that leaves is not theoretical. Rewriting `_posts_predicate` to return
-`true()` passes the entire api suite, because a tautology still puts
-`posts.visibility` in the statement's text and still leaves the router's source
-unchanged. A test that survives the bug it names is worse than no test, because
-it reads like cover.
+The hole that leaves is not theoretical. Rewriting `_posts_predicate` to a
+tautology that still names the column — `Post.visibility == Post.visibility`
+— passes every test that runs without Postgres, because the text check finds
+`posts.visibility` in the WHERE clause and is satisfied. A test that survives
+the bug it names is worse than no test, because it reads like cover.
 
 So: a throwaway database, the real tables, real rows, and the actual coroutine.
 
