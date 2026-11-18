@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type Player, type ActionType, type ClipFilters } from "@/lib/api";
 import { ApiError } from "@/lib/apiError";
-import { estimateEtaSeconds, formatEta, pushSample, type ProgressSample } from "@/lib/eta";
+import { formatEta, INITIAL_ETA_STATE, stepEta, type EtaState } from "@/lib/eta";
 import { cn } from "@/lib/utils";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { DemoBadge, DemoBanner } from "@/components/DemoGame";
@@ -90,35 +90,24 @@ export default function GamePage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
   const [savingClipId, setSavingClipId] = useState<string | null>(null);
-  // ETA from recent progress velocity: refs hold the sample window and the
-  // EMA-smoothed seconds across polls; state holds the display string.
-  const etaSamplesRef = useRef<ProgressSample[]>([]);
-  const etaSecondsRef = useRef<number | null>(null);
-  const etaStageRef = useRef<string | null>(null);
+  // ETA from recent progress velocity: the ref holds the estimator's state
+  // across polls (`stepEta`, lib/eta.ts); state holds the display string.
+  const etaStateRef = useRef<EtaState>(INITIAL_ETA_STATE);
   const [etaText, setEtaText] = useState<string | null>(null);
 
   useEffect(() => {
     if (!game || game.status !== "processing") {
-      etaSamplesRef.current = [];
-      etaSecondsRef.current = null;
-      etaStageRef.current = null;
+      etaStateRef.current = INITIAL_ETA_STATE;
       setEtaText(null);
       return;
     }
-    const progress = game.progress ?? 0;
-    const prev = etaSamplesRef.current[etaSamplesRef.current.length - 1];
-    // A stage change or a backwards jump (a retry re-entering "processing"
-    // zeroes progress) invalidates the velocity window — the stale samples
-    // would read as a huge fake spike or a negative velocity. Start over.
-    if ((game.progress_stage ?? null) !== etaStageRef.current || (prev && progress < prev.progress)) {
-      etaSamplesRef.current = [];
-      etaSecondsRef.current = null;
-    }
-    etaStageRef.current = game.progress_stage ?? null;
-    etaSamplesRef.current = pushSample(etaSamplesRef.current, Date.now(), progress);
-    const eta = estimateEtaSeconds(etaSamplesRef.current, etaSecondsRef.current);
-    etaSecondsRef.current = eta;
-    setEtaText(eta === null ? null : formatEta(eta));
+    const { state, etaSeconds } = stepEta(etaStateRef.current, {
+      tMs: Date.now(),
+      progress: game.progress ?? 0,
+      stage: game.progress_stage ?? null,
+    });
+    etaStateRef.current = state;
+    setEtaText(etaSeconds === null ? null : formatEta(etaSeconds));
   }, [game]);
 
   const toggleSelect = useCallback((clipId: string) => {
