@@ -620,8 +620,9 @@ async def get_game(game_id: uuid.UUID, db: DB, viewer_id: ViewerId = None):
     model: the detail page polls it every five seconds while a game is
     processing, so an owner with a few tabs open is already at 12/min per tab.
     `GET /games/{id}/clips` is pinned to the same number, but its caller is
-    different: the page fetches it once the game is ready and when its
-    debounced filters settle, never on the poll.
+    different: the page loads it once the game is ready and when its
+    debounced filters settle, a request per 100 clips (CF-300), never on the
+    poll.
     """
     # Read path: visibility-scoped, not owner-only (CF-108). viewer_id is None
     # for a signed-out visitor, which access.py resolves to "public only".

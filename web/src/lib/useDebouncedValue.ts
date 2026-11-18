@@ -5,7 +5,8 @@
  * a drag, and each change used to refetch `GET /games/{id}/clips`, which the api
  * rate limits per caller at 60 a minute. One drag could spend that whole budget
  * and replace the page with a 429. Fed this instead of the raw filters, the
- * fetch runs once per settled change.
+ * fetch runs once per settled change (one load, which pages the route: one
+ * request per 100 clips, CF-300).
  *
  * The first value comes back immediately, so an initial load is not delayed.
  */

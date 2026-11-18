@@ -28,8 +28,22 @@ function playerLabel(p: Player): string {
 // How long the filters must be still before the clips are refetched. The
 // sliders change on every step of a drag, and GET /games/{id}/clips is rate
 // limited per caller (CF-186), so fetching per step could spend the whole
-// budget in one gesture.
+// budget in one gesture. Each settle costs one request per page of clips
+// (CLIP_PAGE_SIZE), not one in all.
 const CLIP_FILTER_DEBOUNCE_MS = 300;
+
+// The grid loads every clip the filters admit by paging the route (CF-300):
+// left to its default the route returns the first 50, and the page has no
+// paging control, so a longer game's later clips were unreachable. 100 is the
+// route's `page_size` maximum. The page cap bounds what one settle can spend
+// of the 60/min budget; past 1,000 clips the grid shows the first 1,000.
+const CLIP_PAGE_SIZE = 100;
+const CLIP_PAGE_LIMIT = 10;
+
+// Consecutive failed poll ticks before the processing view says it cannot
+// reach the server. One or two are a blip the next tick usually rides out; at
+// the 5s period this is 15s without an answer.
+const POLL_TROUBLE_AFTER = 3;
 
 function fmtDuration(seconds: number): string {
   const s = Math.round(seconds);
@@ -81,6 +95,9 @@ export default function GamePage() {
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
+  // The last POLL_TROUBLE_AFTER poll ticks failed. The poll keeps going, so
+  // this clears on the next tick that lands.
+  const [pollTrouble, setPollTrouble] = useState(false);
   const [activeClipIndex, setActiveClipIndex] = useState<number | null>(null);
   const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0, min_score: 0, sort: "time" });
   // What the clips fetch reads. The controls update `filters` at once so the
@@ -140,8 +157,15 @@ export default function GamePage() {
     if (!confirm(`Delete ${selectedIds.size} clip${selectedIds.size === 1 ? "" : "s"}? This cannot be undone.`)) return;
     setDeleting(true);
     try {
-      await deleteClips(Array.from(selectedIds));
+      const { deleted } = await deleteClips(Array.from(selectedIds));
       setClips((prev) => prev.filter((c) => !selectedIds.has(c.id)));
+      // The header's count comes from the game fetch, which a ready game
+      // never repeats; without this it kept the pre-delete number until a
+      // reload (CF-300). The api deletes the whole selection or refuses it,
+      // so `deleted` equals what was asked for.
+      setGame((g) => (g && g.clip_count != null
+        ? { ...g, clip_count: Math.max(0, g.clip_count - deleted) }
+        : g));
       exitSelectMode();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Delete failed");
@@ -152,52 +176,147 @@ export default function GamePage() {
 
   // Fetch game — poll if active
   useEffect(() => {
+    // Set by the cleanup. The first fetch can resolve after the page has gone
+    // (a fast navigation), and the interval it would then start is one the
+    // cleanup never saw, so it polled for the rest of the session (CF-300).
+    let disposed = false;
     let interval: ReturnType<typeof setInterval> | null = null;
+
+    function stopPolling() {
+      if (interval) clearInterval(interval);
+      interval = null;
+    }
+
+    // A 404 is a game that does not exist or is not visible to this viewer
+    // (`get_game`); anything else is a fault (CF-423).
+    function showFailure(e: unknown, fallback: string) {
+      if (e instanceof ApiError && e.status === 404) setNotFound(true);
+      else setError(e instanceof Error ? e.message : fallback);
+    }
 
     async function fetchGame() {
       try {
         const g = await getGame(id);
+        if (disposed) return;
         setGame(g);
         if (g.status === "processing" || g.status === "queued") {
+          let failedTicks = 0;
           interval = setInterval(async () => {
-            const updated = await getGame(id);
-            setGame(updated);
-            if (updated.status === "ready" || updated.status === "failed") {
-              if (interval) clearInterval(interval);
+            // Ticks do not wait for each other, so one can land after the
+            // poll has stopped (a slower tick behind the one that saw
+            // `ready`); a late answer then must not touch the page.
+            try {
+              const updated = await getGame(id);
+              if (disposed || interval === null) return;
+              failedTicks = 0;
+              setPollTrouble(false);
+              setGame(updated);
+              if (updated.status === "ready" || updated.status === "failed") stopPolling();
+            } catch (e) {
+              if (disposed || interval === null) return;
+              // A 404 is final: the game was deleted, say in another tab
+              // (CF-300). Anything else (a network blip, a 502 during a
+              // deploy, a 429) keeps the processing view and the poll, so
+              // the next tick can recover. CF-410 (#533) reads a 429's
+              // Retry-After here.
+              if (e instanceof ApiError && e.status === 404) {
+                stopPolling();
+                showFailure(e, "Failed to refresh game.");
+                return;
+              }
+              failedTicks += 1;
+              if (failedTicks >= POLL_TROUBLE_AFTER) setPollTrouble(true);
             }
           }, 5000);
         }
       } catch (e) {
-        // A 404 is a game that does not exist or is not visible to this
-        // viewer (`get_game`); anything else is a fault (CF-423).
-        if (e instanceof ApiError && e.status === 404) setNotFound(true);
-        else setError(e instanceof Error ? e.message : "Failed to load game.");
+        if (disposed) return;
+        showFailure(e, "Failed to load game.");
       }
     }
 
     fetchGame();
-    return () => { if (interval) clearInterval(interval); };
+    return () => {
+      disposed = true;
+      stopPolling();
+    };
   }, [id]);
 
-  // Fetch clips when game is ready
+  // Keyed on readiness, not on `game`: the poll and a delete both replace
+  // `game`, and neither changes which clips the filters admit.
+  const gameReady = game?.status === "ready";
+
+  // Fetch clips when game is ready, every page of them (CLIP_PAGE_SIZE).
   useEffect(() => {
-    if (!game || game.status !== "ready") return;
+    if (!gameReady) return;
+    // A newer load (the filters settled again) supersedes this one: it must
+    // neither set the grid nor clear `fetching` under the newer request, or a
+    // slow older response could replace the newer grid or flash the empty
+    // state.
+    let cancelled = false;
     setFetching(true);
-    getClips(id, settledFilters)
-      .then(setClips)
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load clips."))
-      .finally(() => {
-        setLoading(false);
-        setFetching(false);
-      });
-  }, [game, id, settledFilters]);
+    (async () => {
+      try {
+        const loaded: Clip[] = [];
+        const seen = new Set<string>();
+        for (let page = 1; page <= CLIP_PAGE_LIMIT; page++) {
+          if (cancelled) return;
+          const batch = await getClips(id, { ...settledFilters, page, page_size: CLIP_PAGE_SIZE });
+          // The route pages by offset over an order with no id tiebreak, so
+          // a clip can straddle two pages; keep its first appearance.
+          for (const c of batch) {
+            if (seen.has(c.id)) continue;
+            seen.add(c.id);
+            loaded.push(c);
+          }
+          if (batch.length < CLIP_PAGE_SIZE) break;
+          if (page === CLIP_PAGE_LIMIT && !cancelled) {
+            // A full last page may also be the last clip. One single-clip
+            // probe at offset CLIP_PAGE_LIMIT * CLIP_PAGE_SIZE tells which,
+            // and only a game this large pays for it. The probe only decides
+            // a warning, so its failure leaves the grid as loaded. A load
+            // superseded while page 10 was in flight skips it.
+            try {
+              const probe = await getClips(id, {
+                ...settledFilters,
+                page: CLIP_PAGE_LIMIT * CLIP_PAGE_SIZE + 1,
+                page_size: 1,
+              });
+              if (probe.length > 0 && !cancelled) {
+                console.warn(`Clip grid stopped at ${CLIP_PAGE_LIMIT} pages; later clips are not shown.`);
+              }
+            } catch (e) {
+              console.warn("Could not check for clips past the grid's page cap.", e);
+            }
+          }
+        }
+        if (!cancelled) setClips(loaded);
+      } catch (e) {
+        // A failure on any page fails the load, as one on the first page
+        // always has: a grid quietly short of clips is the defect this
+        // paging exists to fix.
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load clips.");
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+          setFetching(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      // A newer load sets this again in the same commit; with none (the
+      // game stopped being ready) the skeleton must not wait on a load that
+      // will never report.
+      setFetching(false);
+    };
+  }, [gameReady, id, settledFilters]);
 
   // Fetch the roster once the game is ready (CF-250). Separate from the clips
   // fetch on purpose: the roster does not change with the filters, so it is
   // not refetched on every slider step, and a roster that fails to load costs
   // the player filter and the tag action's dropdown, not the grid — the clips
   // stand on their own.
-  const gameReady = game?.status === "ready";
   useEffect(() => {
     if (!gameReady) return;
     getPlayers()
@@ -325,6 +444,12 @@ export default function GamePage() {
               </div>
             </div>
           )}
+          {/* Mounted empty with the processing view, so a screen reader
+              announces the text when it arrives; some skip a live region
+              that is inserted with its content already in it. */}
+          <p role="status" className={cn("text-[12px] text-danger max-w-xs", pollTrouble && "mt-4")}>
+            {pollTrouble && "Can't get an update right now. Still trying; progress shows here again once ClipFarm answers."}
+          </p>
           <p className="mt-4 text-[12px] text-muted max-w-xs">
             Detecting actions and cutting clips. You can leave this page — we&apos;ll keep working.
           </p>
