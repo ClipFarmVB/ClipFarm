@@ -163,7 +163,7 @@ function SignupForm() {
 export default function SignupPage() {
   return (
     <>
-      {/* Outside SignupForm's `.fade-up` roots: see MoltenBackdrop on `fixed`. */}
+      {/* Outside SignupForm's `.fade-up` roots: see MoltenBackdrop on where it mounts. */}
       <MoltenBackdrop />
       <SignupForm />
     </>

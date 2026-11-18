@@ -28,11 +28,18 @@ describe("MoltenBackdrop", () => {
 
     expect(layer.getAttribute("aria-hidden")).toBe("true");
     expect(layer.className).toContain("pointer-events-none");
-    expect(layer.className).toContain("fixed");
+    expect(layer.className).toContain("absolute");
     expect(layer.textContent).toBe("");
   });
 
-  it("draws the three panel colours in each corner group", () => {
+  it("scrolls with the page: fills its positioned parent rather than the viewport", () => {
+    const layer = host.querySelector("[data-testid=molten-backdrop]")!;
+
+    expect(layer.className).not.toContain("fixed");
+    expect(layer.className).toContain("inset-0");
+  });
+
+  it("draws the three panel colours in each corner group, white between the colours", () => {
     const groups = host.querySelectorAll("svg");
 
     expect(groups).toHaveLength(2);
@@ -41,5 +48,11 @@ describe("MoltenBackdrop", () => {
         expect(svg.querySelector(`.${colour}`)).not.toBeNull();
       }
     }
+    // Reading each sweep from the outside in: the colours alternate, and the
+    // bottom-left group is the top-right one with the colours swapped.
+    const order = (svg: SVGSVGElement) =>
+      Array.from(svg.querySelectorAll("path"), (p) => p.getAttribute("class"));
+    expect(order(groups[0])).toEqual(["molten-white", "molten-red", "molten-white", "molten-green"]);
+    expect(order(groups[1])).toEqual(["molten-white", "molten-green", "molten-white", "molten-red"]);
   });
 });

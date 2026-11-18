@@ -170,7 +170,7 @@ function LoginForm() {
 export default function LoginPage() {
   return (
     <>
-      {/* Outside LoginForm's `.fade-up` root: see MoltenBackdrop on `fixed`. */}
+      {/* Outside LoginForm's `.fade-up` root: see MoltenBackdrop on where it mounts. */}
       <MoltenBackdrop />
       <Suspense>
         <LoginForm />
