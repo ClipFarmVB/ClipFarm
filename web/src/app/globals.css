@@ -31,9 +31,11 @@
      because the light-theme teal is dark and the dark-theme teal is light. */
   --color-on-brand:      var(--cf-on-brand);
 
-  /* Destructive and discarding state (CF-272): text on its own tint. Per
-     theme for the same reason as on-brand — the one red that reads on cream
-     is too dark for the dark theme, and the reverse. */
+  /* Error text, and destructive or discarding state (CF-70, CF-272). Per
+     theme for the same reason as on-brand: the one red that reads on cream
+     (Tailwind's red-400 reads 2.5:1 there) is too dark for the dark theme,
+     and the reverse; the `dark:` variant is no help here because this
+     project toggles a class, not the OS preference. */
   --color-danger:        var(--cf-danger);
 }
 
@@ -55,8 +57,13 @@
  * `subtle` stays near 3:1 in both, as before: it is for decorative and
  * tertiary text only.
  *
- * `danger` as text on a 10% tint of itself over surface (the pressed
- * "Not an action" chip in the clip modal), the same way (CF-272 R13-M2):
+ * `danger` is measured on the surfaces it sits on. As error text on the
+ * error block, which is a plain `surface` fill until a `danger-dim` tint
+ * exists (CF-70 R11-M2, CF-577):
+ *   light  danger #b91c1c on surface #f3eee4         5.60:1
+ *   dark   danger #f87171 on surface #101616         6.61:1
+ * As text on a 10% tint of itself over surface (the pressed "Not an action"
+ * chip in the clip modal), the same way (CF-272 R13-M2):
  *   light  danger #b91c1c on #edd9d0                4.76:1   (on surface 5.60:1)
  *   dark   danger #f87171 on #271f1f                5.83:1   (on surface 6.61:1)
  * The `red-400`/`red-500` palette values still used elsewhere are 2.1:1 in
