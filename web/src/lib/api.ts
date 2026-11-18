@@ -1,4 +1,4 @@
-import { ApiError, apiErrorMessage } from "@/lib/apiError";
+import { ApiError, apiErrorMessage, parseRetryAfter } from "@/lib/apiError";
 
 export { ApiError };
 import { createClient } from "@/lib/supabase";
@@ -43,10 +43,33 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
  * missing resource from a server fault. The message is unchanged; the status
  * is additive, and `ApiError` is still an `Error` for every caller that only
  * reads `.message`.
+ *
+ * **It carries `Retry-After` too (CF-410)**, parsed into
+ * `retryAfterSeconds`, so a poll can wait out a 429 instead of hammering the
+ * route; and a 429 that has it says how long to wait (`waitPhrase`).
  */
 async function throwApiError(res: Response): Promise<never> {
   const text = await res.text();
-  throw new ApiError(apiErrorMessage(text, errorFallback(res.status, text)), res.status);
+  const retryAfter = parseRetryAfter(res.headers?.get("Retry-After"));
+  const message = res.status === 429 && retryAfter !== null
+    ? `Too many requests. Try again in ${waitPhrase(retryAfter)}.`
+    : apiErrorMessage(text, errorFallback(res.status, text));
+  throw new ApiError(message, res.status, retryAfter);
+}
+
+/**
+ * How long a throttled caller should wait, as a person reads it (CF-410).
+ *
+ * The limiter's own sentence is "Too many requests. Try again shortly.", and
+ * the number that would make it useful arrives in `Retry-After` beside it, so
+ * a 429 that carries the header gets the sentence with the number in. It
+ * replaces the server's line rather than appending to it, since "shortly"
+ * followed by "in 42 seconds" says the same thing twice. Our limiter sends at
+ * most about a minute; the minutes branch is for a proxy that sends more.
+ */
+function waitPhrase(seconds: number): string {
+  if (seconds >= 120) return `${Math.ceil(seconds / 60)} minutes`;
+  return seconds === 1 ? "1 second" : `${seconds} seconds`;
 }
 
 const _MAX_FALLBACK_BODY = 200;

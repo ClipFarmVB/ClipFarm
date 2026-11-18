@@ -7,15 +7,45 @@
  * does not exist" (404) from "the server broke" (5xx) without matching on the
  * server's prose, which changes whenever someone rewords a `detail`.
  *
+ * `retryAfterSeconds` is the response's `Retry-After`, parsed (CF-410): the
+ * rate limiter (CF-186) sends it on a 429 so a caller can wait that long
+ * instead of retrying blind. `null` when the header was absent or unreadable,
+ * which is every response but the limiter's.
+ *
  * Lives here rather than in `api.ts` so a component can `instanceof` it
  * without importing the client (and so a test that mocks `@/lib/api` still has
  * the real class). `api.ts` re-exports it.
  */
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterSeconds: number | null = null,
+  ) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/**
+ * Read a `Retry-After` header as whole seconds from `now`, or `null`.
+ *
+ * The header takes two forms (RFC 9110 §10.2.3): a non-negative integer of
+ * seconds, which is what our limiter sends, and an HTTP-date, which only a
+ * proxy in front of the API would. A date already past reads as 0. Anything
+ * else — absent, negative, a decimal, garbage — is `null`, so a caller falls
+ * back to its own wait rather than trusting a number nobody meant.
+ */
+export function parseRetryAfter(value: string | null | undefined, now: number = Date.now()): number | null {
+  if (value == null) return null;
+  const v = value.trim();
+  if (/^\d+$/.test(v)) return Number(v);
+  // Date.parse accepts bare numbers and other loose shapes; an HTTP-date
+  // always names a weekday or month in letters, so require one.
+  if (!/[A-Za-z]/.test(v)) return null;
+  const at = Date.parse(v);
+  if (Number.isNaN(at)) return null;
+  return Math.max(0, Math.ceil((at - now) / 1000));
 }
 
 /**

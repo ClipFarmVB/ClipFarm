@@ -638,6 +638,104 @@ describe("the status poll (CF-300)", () => {
   });
 });
 
+describe("a throttled poll (CF-410)", () => {
+  const TROUBLE = "Can't get an update right now.";
+
+  /** Advances `ms` and lets any tick that fired land. */
+  async function advance(ms: number) {
+    await act(async () => {
+      vi.advanceTimersByTime(ms);
+    });
+  }
+
+  it("sends nothing for the Retry-After it was given, says so at once, then resumes", async () => {
+    getGame
+      .mockResolvedValueOnce(processingGame)
+      .mockRejectedValueOnce(new ApiError("Too many requests. Try again in 30 seconds.", 429, 30))
+      .mockResolvedValue({ ...processingGame, progress: 0.7 });
+    await render();
+
+    await tick();
+    expect(getGame).toHaveBeenCalledTimes(2);
+    // One refused tick is enough: the limiter has said the poll is the problem.
+    expect(host.textContent).toContain(TROUBLE);
+    expect(host.textContent).toContain("Tracking the ball");
+
+    // Five ticks fire inside the 30 s; none of them sends.
+    await advance(POLL_MS * 5);
+    expect(getGame).toHaveBeenCalledTimes(2);
+
+    // The tick at 30 s past the 429 is the first one allowed out.
+    await advance(POLL_MS);
+    expect(getGame).toHaveBeenCalledTimes(3);
+    expect(host.textContent).toContain("70%");
+    expect(host.textContent).not.toContain(TROUBLE);
+  });
+
+  it("waits a minute when the 429 carries no Retry-After", async () => {
+    getGame
+      .mockResolvedValueOnce(processingGame)
+      .mockRejectedValueOnce(new ApiError("Too many requests. Try again shortly.", 429))
+      .mockResolvedValue(processingGame);
+    await render();
+
+    await tick();
+    expect(getGame).toHaveBeenCalledTimes(2);
+
+    await advance(POLL_MS * 11);
+    expect(getGame).toHaveBeenCalledTimes(2);
+
+    await advance(POLL_MS);
+    expect(getGame).toHaveBeenCalledTimes(3);
+  });
+
+  it("sends nothing more once the page is gone mid-back-off", async () => {
+    getGame
+      .mockResolvedValueOnce(processingGame)
+      .mockRejectedValueOnce(new ApiError("Too many requests. Try again in 10 seconds.", 429, 10))
+      .mockResolvedValue(processingGame);
+    await render();
+    await tick();
+
+    act(() => root.unmount());
+    await advance(POLL_MS * 6);
+
+    expect(getGame).toHaveBeenCalledTimes(2);
+    // afterEach unmounts again; give it a fresh root so that is a no-op.
+    root = createRoot(host);
+  });
+
+  it("does not let a tick sent before the 429 end the back-off when it answers late", async () => {
+    let resolveSlow!: (g: Game) => void;
+    getGame
+      .mockResolvedValueOnce(processingGame)
+      .mockReturnValueOnce(new Promise<Game>((r) => { resolveSlow = r; }))
+      .mockRejectedValueOnce(new ApiError("Too many requests. Try again in 30 seconds.", 429, 30))
+      .mockResolvedValue(processingGame);
+    await render();
+
+    await tick(); // the slow one, still out
+    await tick(); // refused
+    expect(getGame).toHaveBeenCalledTimes(3);
+
+    await act(async () => { resolveSlow({ ...processingGame, progress: 0.5 }); });
+    expect(host.textContent).toContain("50%");
+
+    await advance(POLL_MS * 5);
+    expect(getGame).toHaveBeenCalledTimes(3);
+    expect(host.textContent).toContain(TROUBLE);
+  });
+
+  it("shows how long to wait when the first load is throttled", async () => {
+    // The message is built in api.ts from Retry-After (apiErrorFallback.test.ts);
+    // the page shows it as it comes.
+    getGame.mockRejectedValueOnce(new ApiError("Too many requests. Try again in 42 seconds.", 429, 42));
+    await render();
+
+    expect(host.textContent).toContain("Too many requests. Try again in 42 seconds.");
+  });
+});
+
 describe("a superseded filter load (CF-300)", () => {
   it("keeps the newer result when the older one lands last", async () => {
     await render();
