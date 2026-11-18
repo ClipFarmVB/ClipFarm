@@ -45,6 +45,14 @@ const CLIP_PAGE_LIMIT = 10;
 // the 5s period this is 15s without an answer.
 const POLL_TROUBLE_AFTER = 3;
 
+// How long a throttled poll waits before its next request (CF-410), in
+// seconds: the 429's Retry-After, or a minute when it sent none, which is the
+// limiter's window. Clamped so a stray header can neither turn the back-off
+// into no back-off nor park the poll for good.
+const THROTTLE_DEFAULT_S = 60;
+const THROTTLE_MIN_S = 5;
+const THROTTLE_MAX_S = 120;
+
 function fmtDuration(seconds: number): string {
   const s = Math.round(seconds);
   const h = Math.floor(s / 3600);
@@ -201,15 +209,28 @@ export default function GamePage() {
         setGame(g);
         if (g.status === "processing" || g.status === "queued") {
           let failedTicks = 0;
+          // While throttled, ticks keep firing but send nothing until this
+          // time (ms). A deadline the interval checks, not a timer that
+          // re-arms the poll: a tick already in flight when the 429 lands
+          // would otherwise be a second, unguarded poll.
+          let resumeAt = 0;
+          // When the back-off was set. A tick sent before it that answers
+          // late does not end a back-off it predates.
+          let throttledAt = 0;
           interval = setInterval(async () => {
+            const sentAt = Date.now();
+            if (sentAt < resumeAt) return;
             // Ticks do not wait for each other, so one can land after the
             // poll has stopped (a slower tick behind the one that saw
             // `ready`); a late answer then must not touch the page.
             try {
               const updated = await getGame(id);
               if (disposed || interval === null) return;
-              failedTicks = 0;
-              setPollTrouble(false);
+              if (sentAt >= throttledAt) {
+                failedTicks = 0;
+                resumeAt = 0;
+                setPollTrouble(false);
+              }
               setGame(updated);
               if (updated.status === "ready" || updated.status === "failed") stopPolling();
             } catch (e) {
@@ -217,11 +238,24 @@ export default function GamePage() {
               // A 404 is final: the game was deleted, say in another tab
               // (CF-300). Anything else (a network blip, a 502 during a
               // deploy, a 429) keeps the processing view and the poll, so
-              // the next tick can recover. CF-410 (#533) reads a 429's
-              // Retry-After here.
+              // the next tick can recover.
               if (e instanceof ApiError && e.status === 404) {
                 stopPolling();
                 showFailure(e, "Failed to refresh game.");
+                return;
+              }
+              // A 429 says the poll itself is the problem: send nothing for
+              // as long as the limiter asked (CF-410), and say so now rather
+              // than after more refused ticks.
+              if (e instanceof ApiError && e.status === 429) {
+                const wait = Math.min(
+                  THROTTLE_MAX_S,
+                  Math.max(THROTTLE_MIN_S, e.retryAfterSeconds ?? THROTTLE_DEFAULT_S),
+                );
+                throttledAt = Date.now();
+                resumeAt = throttledAt + wait * 1000;
+                failedTicks = Math.max(failedTicks + 1, POLL_TROUBLE_AFTER);
+                setPollTrouble(true);
                 return;
               }
               failedTicks += 1;

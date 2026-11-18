@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApiError, apiErrorMessage } from "./apiError";
+import { ApiError, apiErrorMessage, parseRetryAfter } from "./apiError";
 
 const FALLBACK = "Upload failed: 500";
 
@@ -86,5 +86,42 @@ describe("ApiError (CF-423)", () => {
     expect(err.message).toBe("Profile not found");
     expect(err.status).toBe(404);
     expect(err.name).toBe("ApiError");
+  });
+
+  it("carries no Retry-After unless given one, so two-argument call sites are unchanged (CF-410)", () => {
+    expect(new ApiError("Profile not found", 404).retryAfterSeconds).toBeNull();
+    expect(new ApiError("Too many requests.", 429, 42).retryAfterSeconds).toBe(42);
+  });
+});
+
+describe("parseRetryAfter (CF-410)", () => {
+  const NOW = Date.parse("2026-11-18T12:00:00Z");
+
+  it("reads whole seconds, which is what the rate limiter sends", () => {
+    expect(parseRetryAfter("42", NOW)).toBe(42);
+    expect(parseRetryAfter(" 7 ", NOW)).toBe(7);
+    expect(parseRetryAfter("0", NOW)).toBe(0);
+  });
+
+  it("reads an HTTP-date as the seconds until it, rounded up", () => {
+    expect(parseRetryAfter("Wed, 18 Nov 2026 12:00:30 GMT", NOW)).toBe(30);
+    expect(parseRetryAfter("Wed, 18 Nov 2026 12:00:30 GMT", NOW + 500)).toBe(30);
+  });
+
+  it("reads a date already past as no wait at all", () => {
+    expect(parseRetryAfter("Wed, 18 Nov 2026 11:59:00 GMT", NOW)).toBe(0);
+  });
+
+  it("returns null for an absent header", () => {
+    expect(parseRetryAfter(null, NOW)).toBeNull();
+    expect(parseRetryAfter(undefined, NOW)).toBeNull();
+    expect(parseRetryAfter("", NOW)).toBeNull();
+  });
+
+  it("returns null for anything that is neither form", () => {
+    expect(parseRetryAfter("soon", NOW)).toBeNull();
+    expect(parseRetryAfter("-5", NOW)).toBeNull();
+    expect(parseRetryAfter("1.5", NOW)).toBeNull();
+    expect(parseRetryAfter("42s", NOW)).toBeNull();
   });
 });
