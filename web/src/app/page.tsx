@@ -44,6 +44,7 @@ const HEADLINE = [
 
 // ─── C: Hero card stack ───────────────────────────────────────────
 interface HeroClip extends MockClip {
+  /** Offsets and width as percentages of the stack, so the fan scales with it. */
   pos: CSSProperties;
   /** One of the `.float-*` classes in globals.css. */
   floatClass: string;
@@ -54,21 +55,21 @@ const HERO_CLIPS: HeroClip[] = [
     action: "serve", confidence: 79, time: "02:11", duration: "0:08",
     thumbFrom: "from-sky-950",
     dotClass: "bg-sky-400", confClass: "text-amber-500",
-    pos: { position: "absolute", top: 48, left: 32, zIndex: 10 },
+    pos: { position: "absolute", top: "18%", left: "13%", width: "84%", zIndex: 10 },
     floatClass: "float-c",
   },
   {
     action: "dig", confidence: 87, time: "08:45", duration: "0:05",
     thumbFrom: "from-emerald-950",
     dotClass: "bg-emerald-400", confClass: "text-amber-500",
-    pos: { position: "absolute", top: 24, left: 16, zIndex: 20 },
+    pos: { position: "absolute", top: "9%", left: "6.5%", width: "84%", zIndex: 20 },
     floatClass: "float-b",
   },
   {
     action: "spike", confidence: 94, time: "14:23", duration: "0:06",
     thumbFrom: "from-red-950",
     dotClass: "bg-red-400", confClass: "text-emerald-500",
-    pos: { position: "absolute", top: 0, left: 0, zIndex: 30 },
+    pos: { position: "absolute", top: 0, left: 0, width: "84%", zIndex: 30 },
     floatClass: "float-a",
   },
 ];
@@ -122,11 +123,21 @@ const STEPS = [
   },
 ];
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+// Every section opens with a real, visible heading (CF-681). The small
+// uppercase eyebrow stays above it as the section's running label; the h2 is
+// what carries the hierarchy and what `aria-labelledby` points at.
+function SectionHeading({
+  id, eyebrow, children,
+}: { id: string; eyebrow: string; children: React.ReactNode }) {
   return (
-    <p className="mb-6 text-[11px] font-semibold uppercase tracking-widest text-subtle">
-      {children}
-    </p>
+    <div className="mb-10">
+      <p className="mb-3 text-ms-xs font-semibold uppercase tracking-widest text-subtle">
+        {eyebrow}
+      </p>
+      <h2 id={id} className="text-ms-xl font-semibold tracking-tight text-foreground sm:text-ms-2xl">
+        {children}
+      </h2>
+    </div>
   );
 }
 
@@ -145,7 +156,7 @@ export default function HomePage() {
               className="flex items-center gap-2 px-6 py-2.5 whitespace-nowrap border-r border-border/40"
             >
               <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${item.dot}`} />
-              <span className="text-[11px] font-medium text-subtle">{item.label}</span>
+              <span className="text-ms-xs font-medium text-subtle">{item.label}</span>
             </div>
           ))}
         </div>
@@ -162,13 +173,17 @@ export default function HomePage() {
           and a second texture on top of it was noise — and the opaque fade cut
           a hard edge across the backdrop's panels. */}
       <div className="relative -mx-4 sm:-mx-6 lg:-mx-8">
-        <div className="relative px-4 py-14 sm:px-6 sm:py-18 lg:px-8">
-          <div className="grid grid-cols-1 gap-12 lg:grid-cols-[1fr_auto] lg:items-center lg:gap-20">
+        <div className="relative px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+          {/* Two columns from lg: the text takes the larger share and the card
+              stack the rest, so the visual scales with the layout and weighs
+              about as much as the headline block instead of sitting at a
+              fixed 250px. */}
+          <div className="grid grid-cols-1 gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)] lg:items-center lg:gap-16">
 
             {/* Left: eyebrow + headline (B) + subtitle + CTA */}
-            <div className="max-w-[500px]">
+            <div className="max-w-[560px]">
               <p
-                className="landing-fade mb-5 flex items-center gap-2.5 text-[11px] font-semibold uppercase tracking-widest text-brand"
+                className="landing-fade mb-6 flex items-center gap-2.5 text-ms-xs font-semibold uppercase tracking-widest text-brand"
                 style={{ animationDelay: "0.1s" }}
               >
                 <LogoMark className="h-6 w-6" />
@@ -176,7 +191,7 @@ export default function HomePage() {
               </p>
 
               {/* B: Word-by-word reveal */}
-              <h1 className="text-[36px] sm:text-[48px] font-semibold tracking-tight text-foreground leading-[1.12]">
+              <h1 className="text-ms-3xl font-semibold tracking-tight text-foreground sm:text-ms-4xl">
                 {HEADLINE.map((word, i) => (
                   <span
                     key={i}
@@ -194,28 +209,32 @@ export default function HomePage() {
               </h1>
 
               <p
-                className="landing-fade mt-5 text-[14px] text-muted leading-[1.75] max-w-[400px]"
+                className="landing-fade mt-6 max-w-[46ch] text-ms-lg text-muted"
                 style={{ animationDelay: "0.75s" }}
               >
                 Upload a full game and get back a filterable feed of its best rallies —
                 the spikes, serves, digs, sets, and blocks worth keeping, each in its own clip.
               </p>
 
-              <div className="landing-fade mt-8" style={{ animationDelay: "0.9s" }}>
+              <div className="landing-fade mt-10" style={{ animationDelay: "0.9s" }}>
                 <LandingCtas />
               </div>
             </div>
 
-            {/* Right: C — mock clip card stack */}
+            {/* Right: C — mock clip card stack. A 4:3 box that fills its column
+                (capped so the cards stay card-sized on a wide screen); the
+                cards are placed and sized in percentages of it, and their
+                text is in em, so the whole fan scales together. `text-ms-lg`
+                is the cards' base size here, a step up from the sample grid. */}
             <div
-              className="landing-fade relative hidden lg:block shrink-0"
-              style={{ width: 250, height: 260, animationDelay: "0.4s" }}
+              className="landing-fade relative hidden aspect-[4/3] w-full max-w-[440px] justify-self-end text-ms-lg lg:block"
+              style={{ animationDelay: "0.4s" }}
               aria-hidden
             >
               {HERO_CLIPS.map(({ pos, floatClass, ...clip }) => (
                 <div key={clip.action} style={pos}>
                   <div className={floatClass}>
-                    <MockClipCard {...clip} />
+                    <MockClipCard {...clip} className="w-full" />
                   </div>
                 </div>
               ))}
@@ -226,26 +245,30 @@ export default function HomePage() {
       </div>
 
       {/* ── Demo video ──────────────────────────────────────────── */}
-      <section className="py-12" aria-labelledby="landing-demo">
-        <h2 id="landing-demo" className="sr-only">Demo video</h2>
-        <SectionLabel>See it run</SectionLabel>
+      <section className="py-16" aria-labelledby="landing-demo">
+        <SectionHeading id="landing-demo" eyebrow="See it run">
+          A full game in, a highlight reel out
+        </SectionHeading>
         <DemoVideo />
       </section>
 
       <div className="h-px bg-border" />
 
       {/* ── How it works ────────────────────────────────────────── */}
-      <section className="py-12" aria-labelledby="landing-how">
-        <h2 id="landing-how" className="sr-only">How it works</h2>
-        <SectionLabel>How it works</SectionLabel>
-        <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-4 stagger">
+      <section className="py-16" aria-labelledby="landing-how">
+        <SectionHeading id="landing-how" eyebrow="How it works">
+          Four steps, three of them automatic
+        </SectionHeading>
+        {/* Two columns, not four: at body size a four-up row gives under 30
+            characters a line. Each step's copy is capped at a readable measure. */}
+        <div className="grid grid-cols-1 gap-x-12 gap-y-10 sm:grid-cols-2 stagger">
           {STEPS.map(({ step, title, body }) => (
-            <div key={step}>
-              <p className="mb-3 text-[11px] font-semibold tabular-nums text-brand">
+            <div key={step} className="max-w-[52ch]">
+              <p className="mb-3 text-ms-xs font-semibold tabular-nums text-brand">
                 {step}
               </p>
-              <h3 className="text-[13px] font-semibold text-foreground">{title}</h3>
-              <p className="mt-1.5 text-[13px] text-muted leading-relaxed">{body}</p>
+              <h3 className="text-ms-lg font-semibold text-foreground">{title}</h3>
+              <p className="mt-2 text-ms-base text-muted">{body}</p>
             </div>
           ))}
         </div>
@@ -254,9 +277,10 @@ export default function HomePage() {
       <div className="h-px bg-border" />
 
       {/* ── Sample output ───────────────────────────────────────── */}
-      <section className="py-12" aria-labelledby="landing-sample">
-        <h2 id="landing-sample" className="sr-only">What you get</h2>
-        <SectionLabel>What you get</SectionLabel>
+      <section className="py-16" aria-labelledby="landing-sample">
+        <SectionHeading id="landing-sample" eyebrow="What you get">
+          Every play, cut and labelled
+        </SectionHeading>
         <SampleOutput
           clips={SAMPLE_CLIPS}
           label="Example clips, for illustration — not from a real game."
@@ -265,19 +289,19 @@ export default function HomePage() {
 
       {/* ── Closing sign-up band ────────────────────────────────── */}
       <section
-        className="mb-4 rounded-xl border border-border bg-surface px-6 py-10 sm:px-10"
+        className="mb-4 rounded-xl border border-border bg-surface px-6 py-12 sm:px-10"
         aria-labelledby="landing-cta"
       >
         <h2
           id="landing-cta"
-          className="text-[22px] sm:text-[26px] font-semibold tracking-tight text-foreground"
+          className="text-ms-xl font-semibold tracking-tight text-foreground sm:text-ms-2xl"
         >
           Turn your next game into highlights.
         </h2>
-        <p className="mt-2 max-w-[440px] text-[14px] text-muted leading-relaxed">
+        <p className="mt-3 max-w-[46ch] text-ms-base text-muted">
           Create an account, upload a game, and come back to its clips.
         </p>
-        <div className="mt-6">
+        <div className="mt-8">
           <LandingCtas />
         </div>
       </section>

@@ -17,7 +17,7 @@ export function SampleOutput({ clips, label }: { clips: MockClip[]; label: strin
           <MockClipCard key={`${clip.action}-${clip.time}`} {...clip} className="w-full" />
         ))}
       </div>
-      <p className="mt-3 text-[11px] text-foreground">{label}</p>
+      <p className="mt-4 text-ms-xs text-foreground">{label}</p>
     </div>
   );
 }

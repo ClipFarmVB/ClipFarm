@@ -41,7 +41,7 @@ export function DemoVideo() {
                 <path d="M8 5v14l11-7z" />
               </svg>
             </div>
-            <p className="text-[12px] font-medium text-muted">Demo video</p>
+            <p className="text-ms-xs font-medium text-muted">Demo video</p>
           </div>
         </div>
       )}
