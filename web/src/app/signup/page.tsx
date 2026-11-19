@@ -5,9 +5,10 @@ import Link from "next/link";
 import { AlertCircle, CheckCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { LogoMark } from "@/components/LogoMark";
+import { MoltenBackdrop } from "@/components/MoltenBackdrop";
 import { createClient } from "@/lib/supabase";
 
-export default function SignupPage() {
+function SignupForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -156,5 +157,15 @@ export default function SignupPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function SignupPage() {
+  return (
+    <>
+      {/* Outside SignupForm's `.fade-up` roots: see MoltenBackdrop on where it mounts. */}
+      <MoltenBackdrop />
+      <SignupForm />
+    </>
   );
 }

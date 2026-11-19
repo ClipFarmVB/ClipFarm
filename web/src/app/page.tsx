@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import type { Metadata } from "next";
 import { LogoMark } from "@/components/LogoMark";
+import { MoltenBackdrop } from "@/components/MoltenBackdrop";
 import { DemoVideo } from "@/components/landing/DemoVideo";
 import { MockClipCard, type MockClip } from "@/components/landing/MockClipCard";
 import { SampleOutput } from "@/components/landing/SampleOutput";
@@ -133,6 +134,8 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 export default function HomePage() {
   return (
     <div>
+      <MoltenBackdrop />
+
       {/* ── A: Scrolling ticker ─────────────────────────────────── */}
       <div className="-mx-4 overflow-hidden border-b border-border/40 sm:-mx-6 lg:-mx-8" aria-hidden>
         <div className="ticker">
@@ -148,24 +151,17 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* ── Hero: B + C + E ─────────────────────────────────────── */}
+      {/* ── Hero: B + C ─────────────────────────────────────────── */}
       {/* No overflow-hidden here — it would clip the card stack shadows, and
           nothing needs clipping: the negative margins below exactly cancel the
           page container's gutters at every breakpoint, so the bleed reaches the
           viewport edge and stops. (An earlier comment here credited a page-root
           `overflow-x-hidden`; there has never been one.) */}
+      {/* E used to be a drifting dot grid here, with a fade to the page colour
+          under it. The match-ball backdrop (CF-679) now textures the whole page,
+          and a second texture on top of it was noise — and the opaque fade cut
+          a hard edge across the backdrop's panels. */}
       <div className="relative -mx-4 sm:-mx-6 lg:-mx-8">
-        {/* E: Dot grid — drifts diagonally */}
-        <div className="dot-grid absolute inset-0 pointer-events-none" />
-        {/* Fade only at the very bottom so the grid stays visible */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            background:
-              "linear-gradient(to bottom, transparent 55%, var(--cf-bg) 100%)",
-          }}
-        />
-
         <div className="relative px-4 py-14 sm:px-6 sm:py-18 lg:px-8">
           <div className="grid grid-cols-1 gap-12 lg:grid-cols-[1fr_auto] lg:items-center lg:gap-20">
 

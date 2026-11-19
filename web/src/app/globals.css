@@ -92,6 +92,13 @@
   --cf-dot:           rgba(60, 50, 30, 0.12);
   --cf-scrollbar:     #d9d1c2;
   --cf-scrollbar-hover: #c2b8a5;
+
+  /* Match-ball panel tints and honeycomb (CF-679). See MoltenBackdrop. On
+     cream the red and green are a blush and a mint; the "white" panel is the
+     one place the page goes brighter than its own background. */
+  --cf-ball-red:      rgba(214, 36, 70, 0.15);
+  --cf-ball-green:    rgba(14, 140, 78, 0.15);
+  --cf-ball-white:    rgba(255, 255, 255, 0.72);
 }
 
 /* ── Dark mode — deep teal-black / bright logo teal ─────────────────── */
@@ -116,6 +123,12 @@
   --cf-dot:           rgba(255, 255, 255, 0.16);
   --cf-scrollbar:     #26302f;
   --cf-scrollbar-hover: #36423f;
+
+  /* On near-black the same panels read as wine and forest, and "white" is a
+     lift of a few percent — enough to separate the bands, not a grey slab. */
+  --cf-ball-red:      rgba(214, 36, 70, 0.18);
+  --cf-ball-green:    rgba(14, 140, 78, 0.18);
+  --cf-ball-white:    rgba(255, 255, 255, 0.045);
 }
 
 body {
@@ -317,6 +330,32 @@ input[type="range"]::-webkit-slider-thumb:hover {
   );
   background-size: 24px 24px;
   animation: grid-drift 6s linear infinite;
+}
+
+/* ── Match-ball backdrop (CF-679) ───────────────────────────────────── */
+/* Panel fills for MoltenBackdrop's SVG paths; the colours are theme tokens
+   so the one component serves both themes. */
+.molten-red   { fill: var(--cf-ball-red); }
+.molten-green { fill: var(--cf-ball-green); }
+.molten-white { fill: var(--cf-ball-white); }
+
+/* The honeycomb. A 16x27 tile holds one pointy-top hexagon (side 9, width
+   rounded from 15.6 to 16 so the tile lands on whole pixels and never seams)
+   plus the stem to the next row, drawn twice: a light stroke offset a pixel
+   down and a dark stroke on top, which is what makes it read as embossed
+   rather than printed. A tiny inline SVG instead of a raster, so it costs
+   nothing to download and the compositor tiles it.
+
+   A `url()` cannot read a custom property, so the stroke colours are baked
+   into a per-theme image here rather than being tokens: light strokes are
+   white at 50% / 7.5% (light / dark theme), shadow strokes are the warm
+   near-black at 8.5% on cream and black at 45% on the dark surface. */
+.molten-hex {
+  background-size: 16px 27px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='27' viewBox='0 0 16 27'%3E%3Cpath d='M8 1L16 5.5V14.5L8 19L0 14.5V5.5ZM8 19V28' fill='none' stroke='rgba(255,255,255,0.5)' stroke-width='1'/%3E%3Cpath d='M8 0L16 4.5V13.5L8 18L0 13.5V4.5ZM8 18V27' fill='none' stroke='rgba(60,50,30,0.085)' stroke-width='1'/%3E%3C/svg%3E");
+}
+.dark .molten-hex {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='27' viewBox='0 0 16 27'%3E%3Cpath d='M8 1L16 5.5V14.5L8 19L0 14.5V5.5ZM8 19V28' fill='none' stroke='rgba(255,255,255,0.075)' stroke-width='1'/%3E%3Cpath d='M8 0L16 4.5V13.5L8 18L0 13.5V4.5ZM8 18V27' fill='none' stroke='rgba(0,0,0,0.45)' stroke-width='1'/%3E%3C/svg%3E");
 }
 
 /* ── Landing page motion (CF-219) ───────────────────────────────────── */
