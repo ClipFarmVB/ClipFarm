@@ -39,20 +39,24 @@ describe("MoltenBackdrop", () => {
     expect(layer.className).toContain("inset-0");
   });
 
-  it("draws the three panel colours in each corner group, white between the colours", () => {
-    const groups = host.querySelectorAll("svg");
+  it("stacks one face per screen and alternates them, red hook first", () => {
+    const faces = host.querySelectorAll("svg");
 
-    expect(groups).toHaveLength(2);
-    for (const svg of groups) {
+    expect(faces.length).toBeGreaterThanOrEqual(2);
+    const hooks = Array.from(faces, (svg) =>
+      Array.from(svg.querySelectorAll("path"), (p) => p.getAttribute("class")),
+    );
+    for (const [i, classes] of hooks.entries()) {
+      // Every face has all three colours, and a face is screen-tall and
+      // stretched to the screen rather than letterboxed.
       for (const colour of ["molten-red", "molten-white", "molten-green"]) {
-        expect(svg.querySelector(`.${colour}`)).not.toBeNull();
+        expect(classes).toContain(colour);
       }
+      expect(faces[i].getAttribute("preserveAspectRatio")).toBe("none");
+      expect(faces[i].getAttribute("class")).toContain("h-screen");
+      // The second path is the top seam triangle, the colour of the top hook:
+      // red on even faces, green on odd ones.
+      expect(classes[1]).toBe(i % 2 === 0 ? "molten-red" : "molten-green");
     }
-    // Reading each sweep from the outside in: the colours alternate, and the
-    // bottom-left group is the top-right one with the colours swapped.
-    const order = (svg: SVGSVGElement) =>
-      Array.from(svg.querySelectorAll("path"), (p) => p.getAttribute("class"));
-    expect(order(groups[0])).toEqual(["molten-white", "molten-red", "molten-white", "molten-green"]);
-    expect(order(groups[1])).toEqual(["molten-white", "molten-green", "molten-white", "molten-red"]);
   });
 });
