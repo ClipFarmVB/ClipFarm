@@ -14,15 +14,16 @@ game.
 
 **Held out is not quite clean: the context variant was chosen on the held-out
 games.** The folds scored are those of the context variant the trainer picked
-(`train_deadtime.choose_variant`), and it picks the variant with the highest
-summed held-out net over test2/4/5 — the very quantity clause 1 tests. So the
-coefficients, intercept and threshold never saw the held-out game, but the
-choice of variant did, and clause 1 on the chosen variant is selection-biased.
-On the committed record the chosen variant (`none`, +463.27s) passes clause 1
-and the other (`lags_1_3_5`, +434.77s) would fail it. `clause_1_by_variant`
-reports clause 1 for every recorded variant so the report shows this; removing
-the bias needs the trainer to choose the variant inside each training fold
-(nested), which it does not yet do.
+(`train_deadtime.choose_variant`), and it picks on those same held-out folds —
+at the committed record's commit by the highest summed held-out net over
+test2/4/5, the very quantity clause 1 tests. So the coefficients, intercept and
+threshold never saw the held-out game, but the choice of variant did, and
+clause 1 on the chosen variant is selection-biased. On the committed record the
+chosen variant (`none`, +463.27s) passes clause 1 and the other (`lags_1_3_5`,
++434.77s) would fail it. `clause_1_by_variant` reports clause 1 for every
+recorded variant so the report shows this. Since CF-604 the trainer also
+writes a nested record (`"nested"`), every choice made inside each training
+fold, with the bar applied to it; this module still scores `"folds"`.
 
 Two learned rungs, both held out:
 
@@ -210,10 +211,10 @@ def clause_1_by_variant(weights: Mapping) -> list[VariantClause1]:
     Clause 1 for every context variant the trainer recorded, from each
     variant's own fold record (ungated, which on COMPARABLE equals gated).
 
-    The selection caveat this makes visible: the trainer picks the variant by
-    the highest summed held-out net over COMPARABLE (`train_deadtime.
-    choose_variant`) — the quantity clause 1 tests — so the chosen variant's
-    clause 1 has seen the games it is judged on. A clause 1 pass that holds
+    The selection caveat this makes visible: the trainer picks the variant on
+    these same held-out folds (`train_deadtime.choose_variant`) — by net, the
+    quantity clause 1 tests — so the chosen variant's clause 1 has seen the
+    games it is judged on. A clause 1 pass that holds
     for the chosen variant only is a product of that choice.
 
     The chosen variant is the one whose `context` matches the shipped file's.
@@ -379,8 +380,8 @@ def print_report(results: Sequence[GameResult], weights: dict) -> bool:
     variants = clause_1_by_variant(weights)
     if variants:
         print("\nclause 1 per recorded context variant (CF-393 fold record, ungated). The "
-              "trainer chose the\nscored variant by this same summed held-out net, so the "
-              "headline clause 1 is selection-biased:")
+              "trainer chose the\nscored variant on these same held-out folds, so the "
+              "headline clause 1 is selection-biased\n(the trainer's \"nested\" record is not):")
         for v in variants:
             c = v.clause
             print(f"  {'pass' if c.passed else 'FAIL'}  {v.variant:14s} value {c.value:8.2f}"
