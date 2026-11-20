@@ -554,6 +554,12 @@ python -m ml.eval.validate_learned --dump-windows DIR # also {test}_{learned|lea
 
 It exits 1 when the bar fails for the gated rung and 0 when it passes.
 
+Any decoder `dead_time_ml` dispatches can be validated (CF-605): the accepted
+list is `dead_time_ml.DECODERS` itself. A `"decoder": "hmm"` file is rebuilt
+with each fold's own transitions — fitted on that fold's training games — never
+the shipped record, which saw the held-out game; a hmm fold without them is
+refused.
+
 Two learned rungs, both held out:
 
 - **gated** — production's chain: below `min_track_rate` usable speed
