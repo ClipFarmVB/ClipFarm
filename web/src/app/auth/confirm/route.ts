@@ -1,7 +1,10 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
-import { AUTH_ERROR_PARAM, type AuthErrorCode } from "@/lib/api";
+// From the package, not `@/lib/api`: this route sends no request, and the
+// binding would pull the browser Supabase client into a server route and
+// configure the client here as a side effect.
+import { AUTH_ERROR_PARAM, type AuthErrorCode } from "@clipfarm/api-client";
 
 /**
  * Email confirmation, verified server-side.

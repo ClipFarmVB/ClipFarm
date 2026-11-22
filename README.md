@@ -206,6 +206,7 @@ pip install -r api/requirements-dev.txt  # runtime deps + test-only deps
 
 npm run test --workspace=web             # vitest, ~1s
 npm run test:watch --workspace=web       # same suite, watch mode
+npm run test --workspace=@clipfarm/api-client  # the shared client's suite (CF-314)
 python -m pytest ml/tests/               # ml eval metrics + dead-time
 cd api && python -m pytest tests/        # api (CI and the hook run this too,
                                          # once requirements-dev is installed;

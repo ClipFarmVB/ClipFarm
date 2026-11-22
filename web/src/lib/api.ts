@@ -12,7 +12,9 @@
  * configuration happens when this module is first evaluated, and a caller that
  * bypasses it can reach a request before anything has been bound. That is why
  * `gamesCache`, `eta` and the auth/api error helpers are re-exported from here
- * too, rather than left as separate `@/lib/*` modules.
+ * too, rather than left as separate `@/lib/*` modules. The one exception is
+ * server code that sends no request (`app/auth/confirm/route.ts`), which takes
+ * its constants from the package so it does not load the browser session.
  */
 import { configureApiClient } from "@clipfarm/api-client";
 import { createClient } from "@/lib/supabase";

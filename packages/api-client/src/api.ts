@@ -102,7 +102,7 @@ export function deleteGame(id: string): Promise<void> {
 // ─── Uploads ─────────────────────────────────────────────────────────────────
 // The video goes browser → R2 directly (CF-163). The api only issues a ticket
 // of presigned URLs and confirms the object afterwards; it never sees the
-// bytes. The transfer itself lives in ./upload.
+// bytes. The transfer itself lives in the consumer (web/src/lib/upload.ts).
 
 /** Server-owned limits. The client renders and validates against these rather
  *  than its own constants, so the advertised cap is always the enforced one. */
@@ -250,7 +250,7 @@ export function getClipShareUrl(clipId: string): Promise<{ url: string }> {
  * Note the browser does the naming from that header, not from an <a download>
  * attribute: download is ignored for cross-origin URLs, and R2 is a different
  * origin. So the caller points the browser at this URL and lets the header do
- * the work — through lib/download.ts, which explains why that is a hidden frame
+ * the work — through web/src/lib/download.ts, which explains why that is a hidden frame
  * rather than window.location.
  */
 export function getClipDownloadUrl(clipId: string): Promise<{ url: string }> {

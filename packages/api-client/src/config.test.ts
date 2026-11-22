@@ -19,10 +19,14 @@
  *   - Letting a rejecting `getToken` fail the request. A locked keychain or an
  *     unreadable token store should produce a signed-out request, which is what
  *     the web client did before this package existed.
+ *
+ * The `baseUrl` block pins the other injected value: that it is what a request
+ * is sent to. `uploadAvatar` is checked on its own because it builds its URL
+ * outside `request()`.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getGames } from "./api";
+import { getGames, uploadAvatar } from "./api";
 import { configureApiClient } from "./config";
 
 type FetchMock = ReturnType<typeof stubFetch>;
@@ -126,5 +130,31 @@ describe("getToken", () => {
     // Not `Bearer null`: signed out has to look signed out to the api, which
     // rejects a malformed bearer differently from an absent one.
     expect(headersOf(fetchMock, 0)).not.toHaveProperty("Authorization");
+  });
+});
+
+describe("baseUrl", () => {
+  // Distinct from every default in the codebase, so a URL built from anything
+  // other than the injected value cannot match by accident.
+  const baseUrl = "http://api.test";
+
+  it("prefixes the path of a request made through request()", async () => {
+    const fetchMock = stubFetch();
+    configureApiClient({ baseUrl, getToken: () => null });
+
+    await getGames();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://api.test/games");
+  });
+
+  it("prefixes uploadAvatar's path, which is built outside request()", async () => {
+    const fetchMock = stubFetch();
+    configureApiClient({ baseUrl, getToken: () => null });
+
+    await uploadAvatar(new File(["x"], "avatar.png", { type: "image/png" }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://api.test/users/me/avatar");
   });
 });
