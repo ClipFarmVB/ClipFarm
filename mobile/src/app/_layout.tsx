@@ -36,11 +36,14 @@ export default function RootLayout() {
  * Inside `(tabs)` or `(auth)` a new file inherits that group's guard and needs
  * nothing; anywhere else it needs its own entry.
  *
- * `routes.test.ts` holds the epic's screens to the block they belong in, not
- * merely to being mentioned somewhere in this file: a misspelled `name` guards
- * a route that does not exist and leaves the real one open, and a screen moved
- * out of its `Stack.Protected` block is reachable signed out. Both red there.
- * It cannot hold a screen nobody added — that is what the exception above is.
+ * `routes.test.ts` holds that. It walks `src/app/` and fails on any route file
+ * that no block here covers, listed in its epic table or not, so a screen
+ * nobody added to the table still reds; only `index`, `+not-found` and the
+ * layouts are exempt. It also holds the epic's screens to the block they
+ * belong in, not merely to being mentioned somewhere in this file: a
+ * misspelled `name` guards a route that does not exist and leaves the real one
+ * open, and a screen moved out of its `Stack.Protected` block is reachable
+ * signed out. Both red there.
  *
  * `Stack.Protected` rather than a redirect in an effect: a guard is evaluated
  * before the screen mounts, so a signed-out cold start never flashes the

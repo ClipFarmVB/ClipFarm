@@ -8,7 +8,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { AppState } from "react-native";
-import type { Session, User } from "@supabase/supabase-js";
+import type { Session, SupabaseClient, User } from "@supabase/supabase-js";
 
 import { getSupabaseClient } from "./supabase";
 
@@ -50,6 +50,25 @@ function startAutoRefreshOnForeground(): () => void {
   apply(AppState.currentState);
   const subscription = AppState.addEventListener("change", apply);
   return () => subscription.remove();
+}
+
+/**
+ * Sign out, and make sure this device ends up signed out.
+ *
+ * The default global scope revokes the refresh token server-side, and when that
+ * call fails for any reason but 401/403/404 — no signal in the gym — supabase-js
+ * returns the error and *keeps* the local session. Clearing this device is what
+ * the user asked for, so fall back to that. The cost is a refresh token the
+ * server never heard was revoked, which no longer exists anywhere on this
+ * device. Exported for its test; screens call `useSession().signOut`.
+ */
+export async function signOutThisDevice(
+  auth: Pick<SupabaseClient["auth"], "signOut">
+): Promise<void> {
+  const { error } = await auth.signOut();
+  if (!error) return;
+  const { error: localError } = await auth.signOut({ scope: "local" });
+  if (localError) throw localError;
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -109,8 +128,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       async signOut() {
         // CF-343 additionally unregisters the push token here, before the
         // token that authorises the call is thrown away.
-        const { error } = await getSupabaseClient().auth.signOut();
-        if (error) throw error;
+        await signOutThisDevice(getSupabaseClient().auth);
       },
     }),
     [session, isRestoring]

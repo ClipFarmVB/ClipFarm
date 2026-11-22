@@ -10,6 +10,9 @@ function fakeStore() {
   const writes: string[] = [];
   /** Writes to allow before failing, as a locked keychain or an OS kill would. */
   let failAfter = Infinity;
+  /** The same for deletes: an interrupted sign-out. */
+  let deletes = 0;
+  let failDeletesAfter = Infinity;
   const store: SecureStoreLike = {
     async getItemAsync(key) {
       return values.get(key) ?? null;
@@ -20,6 +23,8 @@ function fakeStore() {
       values.set(key, value);
     },
     async deleteItemAsync(key) {
+      if (deletes >= failDeletesAfter) throw new Error("keychain unavailable");
+      deletes++;
       values.delete(key);
     },
   };
@@ -30,9 +35,13 @@ function fakeStore() {
     failAfterWrites(n: number) {
       failAfter = writes.length + n;
     },
+    failAfterDeletes(n: number) {
+      failDeletesAfter = deletes + n;
+    },
     /** Let writes through again — the keychain comes back, as it does. */
     stopFailing() {
       failAfter = Infinity;
+      failDeletesAfter = Infinity;
     },
   };
 }
@@ -207,6 +216,41 @@ describe("createChunkedSecureStorage", () => {
 
     expect(values.size).toBe(0);
     expect(await storage.getItem("k")).toBeNull();
+  });
+
+  it("leaves no orphaned chunks when a removal is interrupted and retried", async () => {
+    // Sign-out dies partway through its sweep. The pointer used to go first,
+    // taking the only record of how far to sweep with it, so neither a retry
+    // nor the next sign-in's smaller value ever reached the chunks left behind.
+    const { store, values, failAfterDeletes, stopFailing } = fakeStore();
+    const storage = createChunkedSecureStorage(store);
+
+    await storage.setItem("k", "x".repeat(CHUNK_SIZE * 5));
+    failAfterDeletes(1);
+    await expect(storage.removeItem("k")).rejects.toThrow("keychain unavailable");
+
+    // Already signed out as far as a reader is concerned.
+    expect(await storage.getItem("k")).toBeNull();
+
+    stopFailing();
+    await storage.removeItem("k");
+    expect([...values.keys()]).toEqual([]);
+  });
+
+  it("sweeps an interrupted removal's leftovers on the next write", async () => {
+    // The same interruption, then a sign-in with a shorter session before any
+    // retry: the write keeps the larger bound, so its sweep reaches them.
+    const { store, values, failAfterDeletes, stopFailing } = fakeStore();
+    const storage = createChunkedSecureStorage(store);
+
+    await storage.setItem("k", "x".repeat(CHUNK_SIZE * 5));
+    failAfterDeletes(1);
+    await expect(storage.removeItem("k")).rejects.toThrow("keychain unavailable");
+    stopFailing();
+
+    await storage.setItem("k", "small");
+    await storage.removeItem("k");
+    expect([...values.keys()]).toEqual([]);
   });
 
   it("reads a missing key as no session rather than throwing", async () => {

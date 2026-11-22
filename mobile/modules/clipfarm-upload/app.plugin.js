@@ -4,7 +4,7 @@
  * It is a no-op today, and it exists anyway: it is what keeps `ios/` and
  * `android/` out of git. Everything the native halves need from the generated
  * projects — the iOS background-modes entitlement (CF-323), the Android
- * `dataSync` foreground-service type and its permissions (CF-324) — is
+ * `dataSync` foreground-service type and its permissions (CF-324) — will be
  * expressed here and re-applied by `expo prebuild`, so neither ticket has to
  * hand-edit a generated project and commit it to make its change stick.
  *

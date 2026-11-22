@@ -31,10 +31,14 @@ function required(name: string, value: string | undefined): string {
  * Android blocks as cleartext anyway — so the app looked network-broken when
  * the real fault was a missing EAS environment variable. Failing here names
  * the variable instead. See the EAS section of mobile/README.md.
+ *
+ * `||` rather than `??` in development, so an empty `EXPO_PUBLIC_API_URL=`
+ * defaults like an unset one — the same rule `required()` applies — instead of
+ * sending every request to a relative path.
  */
 export const API_URL = (): string =>
   __DEV__
-    ? (process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:8000")
+    ? (process.env.EXPO_PUBLIC_API_URL || "http://localhost:8000")
     : required("EXPO_PUBLIC_API_URL", process.env.EXPO_PUBLIC_API_URL);
 
 export const SUPABASE_URL = (): string =>

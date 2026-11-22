@@ -116,14 +116,26 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   const { baseUrl, getToken } = getApiClientConfig();
   // A token that cannot be read sends the request out unauthenticated rather
   // than failing it — what the web client does today, and what #418 keeps.
-  const token = await Promise.resolve(getToken()).catch(() => null);
+  // Called inside the chain, not before it, so a `getToken` that throws
+  // synchronously is caught the same way as one that rejects.
+  const token = await Promise.resolve()
+    .then(() => getToken())
+    .catch(() => null);
 
   // Built through `Headers` rather than spread into an object literal. A
   // `Headers` instance has no own enumerable properties, so `...init.headers`
   // spreads it to nothing: the caller's headers type-check and then vanish.
   // `Headers` takes all three forms `HeadersInit` allows.
+  //
+  // JSON is the default only for a JSON-shaped body — a string, or none. A
+  // `FormData` (an avatar upload) needs the multipart boundary that fetch adds
+  // itself when no Content-Type is set; a JSON one in its place gets a 422.
   const headers = new Headers(init?.headers);
-  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const body = init?.body;
+  const isJsonBody = body === undefined || body === null || typeof body === "string";
+  if (isJsonBody && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
   const res = await fetch(`${baseUrl}${path}`, { ...init, headers });

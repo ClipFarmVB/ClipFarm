@@ -185,12 +185,25 @@ export function createChunkedSecureStorage(store: SecureStoreLike): SupabaseStor
 
     async removeItem(key) {
       const pointer = await readPointer(key);
-      // Pointer first: from here on the value is gone as far as any reader is
-      // concerned, whether or not the sweep below finishes.
+      // Chunks first, pointer last. The pointer is the only record of
+      // `highWater`, so deleting it first and then failing partway through the
+      // sweep (keychain locked, app killed mid sign-out) lost the bound for
+      // good: the next write saw no pointer, used its own smaller bound, and
+      // nothing ever swept the rest. Kept until the sweep is done, it lets a
+      // retried `removeItem` — or the next `setItem`, which keeps the larger
+      // bound — finish the job.
+      //
+      // The live generation goes first, from chunk 0. That first delete is what
+      // signs the user out — `getItem` reads a missing chunk as no value — so a
+      // sweep that dies after it cannot bring the session back on next launch,
+      // as one that died inside the retired generation with the live chunks
+      // still whole would.
+      if (pointer !== null) {
+        const retired = pointer.generation === 0 ? 1 : 0;
+        await deleteChunks(key, pointer.generation, 0, pointer.highWater);
+        await deleteChunks(key, retired, 0, pointer.highWater);
+      }
       await store.deleteItemAsync(key);
-      if (pointer === null) return;
-      await deleteChunks(key, 0, 0, pointer.highWater);
-      await deleteChunks(key, 1, 0, pointer.highWater);
     },
   };
 }

@@ -20,12 +20,13 @@ export default function TabsLayout() {
         name="games"
         options={{
           title: "Library",
-          // The only route into /settings, and so the only route to sign out.
-          // It cannot hang off the profile tab: that tab is social-gated, and
-          // with `EXPO_PUBLIC_SOCIAL_ENABLED=false` — the documented default —
-          // the bar is Library and Collections only, which would leave a signed
-          // -in device with no way back out. Plain text on purpose; CF-316
-          // brings the icon.
+          // The only route into /settings, whose Sign out button is the only
+          // place the app calls `signOut`. It cannot hang off the profile tab:
+          // that tab is social-gated, and with `EXPO_PUBLIC_SOCIAL_ENABLED=false`
+          // — the documented default — the bar is Library and Collections only,
+          // which would leave a signed-in device with no way back out.
+          // `settingsScreen.test.tsx` holds the button to calling it. Plain
+          // text on purpose; CF-316 brings the icon.
           headerRight: () => (
             <Link href="/settings" style={{ paddingHorizontal: 16 }}>
               <Text>Settings</Text>

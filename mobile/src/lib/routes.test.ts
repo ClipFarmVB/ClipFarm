@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -38,14 +38,9 @@ const EPIC_SCREENS: [ticket: string, file: string, declaredAs: string][] = [
 // root would otherwise fail every case below with "missing", which reads as a
 // deleted screen rather than a misconfigured runner.
 const appDir = join(process.cwd(), "src", "app");
-const libDir = join(process.cwd(), "src", "lib");
 
 function rootLayout(): string {
   return readFileSync(join(appDir, "_layout.tsx"), "utf8");
-}
-
-function apiBinding(): string {
-  return readFileSync(join(libDir, "api.ts"), "utf8");
 }
 
 /**
@@ -94,21 +89,69 @@ describe("epic routes", () => {
     }
   );
 
-  it("binds the api client", () => {
-    // `src/lib/api.ts` is the only caller of `configureApiClient`, and it does
-    // it as an import side effect. That gives the binding two halves and
-    // losing either leaves `config` null and the first request throwing: the
-    // layout stops importing the module, or the module stops configuring
-    // anything. So both are held here — and the second one is not implied by
-    // the first, because dropping the call leaves eslint, tsc and this suite
-    // green (`noUnusedLocals` is off, so its orphaned imports raise nothing).
-    //
-    // Static checks because the module reaches supabase-js and
-    // expo-secure-store, which do not load under this runner. Reading api.ts
-    // rather than only the layout is also what keeps holding through the
-    // CF-314 (#418) swap, where ./apiClient becomes the package and the call
-    // is the thing most likely to be reshaped.
+  it("imports the api binding", () => {
+    // `src/lib/api.ts` configures the client as an import side effect, so the
+    // layout's import is half the binding: without it nothing loads the module
+    // and the first request throws. The other half — that importing it really
+    // configures the client with the base URL and the session's token — is
+    // behaviour, and `api.test.ts` holds it by the request it sends.
     expect(rootLayout()).toMatch(/import\s+"@\/lib\/api"/);
-    expect(apiBinding()).toMatch(/configureApiClient\(/);
+  });
+
+  it("declares every route file under src/app inside a guard", () => {
+    // expo-router registers any file under `src/app/`, declared or not, and an
+    // undeclared one lands outside both `Stack.Protected` blocks: reachable
+    // signed out. So every route file is required to be covered by a block —
+    // a group's files by the group's own declaration, anything else by its
+    // own — and the table above is not consulted, so a file nobody listed
+    // there is caught as well.
+    const declared = new Set([...namesGuardedBy("!session"), ...namesGuardedBy("!!session")]);
+    const undeclared = routeFiles()
+      .map((file) => [file, requiredDeclaration(file)] as const)
+      .filter(([, name]) => name !== null && !declared.has(name))
+      .map(([file]) => file);
+    expect(
+      undeclared,
+      "route files with no Stack.Protected declaration in src/app/_layout.tsx, " +
+        "so reachable while signed out"
+    ).toEqual([]);
+  });
+
+  it("finds the route files it checks", () => {
+    // Guards the walk above against passing vacuously on an empty directory.
+    expect(routeFiles()).toContain(join("settings", "index.tsx"));
   });
 });
+
+/**
+ * Files at the top of `src/app/` that are allowed to sit outside both guards,
+ * because each one is meant for whoever arrives: the entry redirect, the 404,
+ * and the layouts themselves (which are not routes).
+ */
+const UNGUARDED = new Set(["index.tsx", "+not-found.tsx"]);
+
+/** Every source file under `src/app/`, relative to it. */
+function routeFiles(dir = appDir): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return routeFiles(path);
+    return /\.[jt]sx?$/.test(entry.name) ? [relative(appDir, path)] : [];
+  });
+}
+
+/**
+ * The `name` that must appear inside a `Stack.Protected` block for this file
+ * to be guarded, or null when it needs none.
+ *
+ * A file inside a group, `(tabs)/feed.tsx`, inherits whatever guard the group
+ * is declared under, so the group is what must be declared. Anything else is
+ * declared by its own route name, the path without its extension.
+ */
+function requiredDeclaration(file: string): string | null {
+  const segments = file.split(sep);
+  const base = segments[segments.length - 1];
+  if (/^_layout\.[jt]sx?$/.test(base)) return null;
+  if (segments.length === 1 && UNGUARDED.has(base)) return null;
+  if (/^\(.+\)$/.test(segments[0])) return segments[0];
+  return segments.join("/").replace(/\.[jt]sx?$/, "");
+}

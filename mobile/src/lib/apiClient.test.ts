@@ -80,6 +80,49 @@ describe("errorMessage", () => {
     expect(seen).not.toContain("authorization");
   });
 
+  it("sends the request unauthenticated when getToken throws synchronously", async () => {
+    // The same rule as a rejection. Called outside the promise chain, a sync
+    // throw used to fail the request instead.
+    const seen: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        new Headers(init?.headers).forEach((_v, key) => seen.push(key));
+        return new Response(null, { status: 204 });
+      })
+    );
+
+    configureApiClient({
+      baseUrl: "https://api.example",
+      getToken: () => {
+        throw new Error("keychain locked");
+      },
+    });
+
+    await expect(apiRequest("/games")).resolves.toBeUndefined();
+    expect(seen).not.toContain("authorization");
+  });
+
+  it("leaves a FormData body's Content-Type to fetch", async () => {
+    // fetch adds `multipart/form-data; boundary=…` itself, but only when no
+    // Content-Type is set. The JSON default in its place drops the boundary.
+    let contentType: string | null = "unset";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        contentType = new Headers(init?.headers).get("content-type");
+        return new Response(null, { status: 204 });
+      })
+    );
+
+    configureApiClient({ baseUrl: "https://api.example", getToken: () => null });
+    const form = new FormData();
+    form.append("file", "x");
+    await apiRequest("/users/me/avatar", { method: "POST", body: form });
+
+    expect(contentType).toBeNull();
+  });
+
   it("falls back on JSON with nothing usable in detail", () => {
     expect(errorMessage(JSON.stringify({ detail: [] }), "API error 422")).toBe("API error 422");
     expect(errorMessage(JSON.stringify({ detail: "   " }), "API error 400")).toBe("API error 400");
