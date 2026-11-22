@@ -5,23 +5,15 @@ from urllib.parse import urlparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import NullPool
 
 from app.config import settings
 from app.models.game import Game, GameStatus
 from app.models.clip import Clip, ActionType
 from app.models.upload_event import UploadEvent
 
-# Sync engine (Celery workers don't run in an asyncio loop).
-#
-# NullPool, not the default QueuePool (CF-65b): with the prefork pool, a pooled
-# connection created before the fork would be shared by every child — two
-# processes interleaving on one socket. NullPool opens per checkout and closes on
-# return, so nothing is ever inherited, and idle connections don't accumulate
-# against Supabase's pooler cap as concurrency rises. The cost is a connect per
-# session, which is irrelevant next to a multi-minute processing job.
+# Sync engine (Celery workers don't run in an asyncio loop)
 _sync_url = settings.database_url.replace("+asyncpg", "")
-_engine = create_engine(_sync_url, poolclass=NullPool, pool_pre_ping=True)
+_engine = create_engine(_sync_url, pool_pre_ping=True)
 
 
 # games.error_message was a bounded column and nothing on the write path
@@ -173,8 +165,10 @@ def sync_set_original_duration(game_id: uuid.UUID, original_duration: float):
 def sync_settle_upload_charge(game_id: uuid.UUID, actual_seconds: float):
     """Correct this game's quota charge to the probed duration (CF-91).
 
-    At accept time the api charges what the client declared, or the full
-    per-video maximum when it declared nothing. This is the correction that
+    At accept time the api charges what the client declared, or — when it
+    declared nothing, or less than the file's size physically allows — an
+    estimate derived from the size, capped at the per-video maximum (see
+    `app.services.quota.charge_for`). This is the correction that
     makes the conservative default fair to honest clients — and that stops an
     under-declared duration from sticking as the charge.
     """

@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -90,13 +91,21 @@ celery_app.conf.update(
 # inherit whatever is stored here.
 _effective_concurrency: int | None = None
 
+# The pid of the process that booted the worker. Celery 5.4's solo pool sends
+# worker_process_init too (celery/concurrency/solo.py), in this same process, so
+# the post-fork hook compares against it to tell a forked child from solo.
+# Captured at import and again in celeryd_init, which runs in the worker process
+# before any fork; a prefork child inherits the value and has a different pid.
+_worker_pid: int = os.getpid()
+
 
 @celeryd_init.connect
 def _init_worker_monitoring(options=None, **_kwargs):
     """Initialize Sentry when a worker boots. Using the signal (not module
     import) keeps the worker's CeleryIntegration out of the api process, which
     imports celery_app only to enqueue tasks."""
-    global _effective_concurrency
+    global _effective_concurrency, _worker_pid
+    _worker_pid = os.getpid()
     if options:
         _effective_concurrency = options.get("concurrency") or None
     init_sentry("worker")
@@ -141,9 +150,13 @@ def _init_pool_child(**_kwargs):
     """Re-establish per-process state inside each forked prefork child (CF-65b).
 
     Fires once per child at startup — and again for a replacement child after
-    `worker_max_tasks_per_child` recycling. Never fires under `--pool=solo`,
-    where no fork happens and the parent's own state is already correct.
+    `worker_max_tasks_per_child` recycling. Celery 5.4's solo pool also sends
+    this signal, once, in the worker process itself. Nothing was forked there and
+    `celeryd_init` already initialised Sentry, so the hook returns without doing
+    anything: under solo the worker runs exactly what it ran before CF-65b.
     """
+    if os.getpid() == _worker_pid:
+        return  # solo pool: not a forked child
     reset_after_fork(
         # Prefer the value the pool actually forked with; fall back to the
         # setting when the signal carried no options (e.g. an embedded worker).

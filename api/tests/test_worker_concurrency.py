@@ -90,17 +90,19 @@ def test_pool_settings_refuse_values_celery_would_misread(var, value, monkeypatc
         Settings(_env_file=None)
 
 
-def test_sync_engine_uses_nullpool():
-    """A pooled connection created pre-fork would be shared by every child."""
+def test_sync_engine_keeps_mains_connection_pool():
+    """The sync engine's pool is the production connection pattern against
+    Supabase, which a person owns. CF-65b leaves it as main has it: fork safety
+    comes from the lazy import plus `_reset_db_pool`'s dispose(close=False)."""
     # Engine construction resolves the DBAPI, and importing _sync_db pulls in
     # app.database, which builds the *async* engine — so both drivers must exist.
     pytest.importorskip("psycopg2")
     pytest.importorskip("asyncpg")
-    from sqlalchemy.pool import NullPool
+    from sqlalchemy.pool import QueuePool
 
     from app.workers import _sync_db
 
-    assert isinstance(_sync_db._engine.pool, NullPool)
+    assert isinstance(_sync_db._engine.pool, QueuePool)
 
 
 def test_reset_engine_drops_a_built_engine(monkeypatch):
@@ -141,6 +143,8 @@ def test_worker_process_init_runs_the_post_fork_hook(monkeypatch):
 
     from app.workers import celery_app as ca
 
+    # As a forked child sees it: the worker's pid is its parent's, not its own.
+    monkeypatch.setattr(ca, "_worker_pid", os.getpid() + 1)
     calls = []
     monkeypatch.setattr(ca, "reset_after_fork", lambda **kw: calls.append(kw))
 
@@ -302,6 +306,7 @@ def test_thread_capping_follows_a_cli_concurrency_override(thread_env):
     from app.workers import celery_app as ca
 
     thread_env.setattr(ca, "_effective_concurrency", 4)
+    thread_env.setattr(ca, "_worker_pid", os.getpid() + 1)  # a forked child
     captured = {}
     thread_env.setattr(
         ca, "reset_after_fork", lambda **kw: captured.update(kw)
@@ -315,10 +320,59 @@ def test_celeryd_init_captures_the_cli_concurrency(thread_env):
     from app.workers import celery_app as ca
 
     thread_env.setattr(ca, "_effective_concurrency", None)
+    thread_env.setattr(ca, "_worker_pid", -1)
     thread_env.setattr(ca, "init_sentry", lambda *_a, **_k: None)
 
     ca._init_worker_monitoring(options={"concurrency": 6})
     assert ca._effective_concurrency == 6
+    assert ca._worker_pid == os.getpid(), "celeryd_init must record the worker pid"
+
+
+def test_the_solo_pool_does_not_run_the_post_fork_resets(monkeypatch):
+    """Celery 5.4's solo TaskPool sends worker_process_init in the worker
+    process itself. Running the hook there would initialise Sentry a second
+    time and apply child-only resets to the one production process."""
+    from celery.concurrency.solo import TaskPool
+
+    from app.workers import celery_app as ca
+
+    monkeypatch.setattr(ca, "_worker_pid", -1)  # restored after the test
+    monkeypatch.setattr(ca, "_effective_concurrency", None)
+    monkeypatch.setattr(ca, "init_sentry", lambda *_a, **_k: None)
+    calls = []
+    monkeypatch.setattr(ca, "reset_after_fork", lambda **kw: calls.append(kw))
+
+    ca._init_worker_monitoring(options={"concurrency": 1})  # celeryd_init
+    TaskPool()
+
+    assert calls == [], "the post-fork hook ran under --pool=solo"
+
+
+def test_a_forked_child_runs_the_post_fork_resets(monkeypatch):
+    """The other side of the solo guard: a real fork must still run the hook."""
+    from celery.signals import worker_process_init
+
+    from app.workers import celery_app as ca
+
+    read_end, write_end = os.pipe()
+    monkeypatch.setattr(ca, "_worker_pid", -1)  # restored after the test
+    monkeypatch.setattr(ca, "_effective_concurrency", None)
+    monkeypatch.setattr(ca, "init_sentry", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        ca, "reset_after_fork", lambda **kw: os.write(write_end, b"ran")
+    )
+    ca._init_worker_monitoring(options={"concurrency": 2})  # in the parent
+
+    pid = os.fork()
+    if pid == 0:  # child: never return into pytest
+        try:
+            worker_process_init.send(sender=None)
+        finally:
+            os._exit(0)
+    os.close(write_end)
+    os.waitpid(pid, 0)
+    with os.fdopen(read_end, "rb") as f:
+        assert f.read() == b"ran", "the post-fork hook did not run in a forked child"
 
 
 # ── CPU budget: affinity and cgroup quota, not the host's core count ─────────
@@ -359,6 +413,22 @@ def test_cpus_follow_a_v1_quota(cgroup):
     cgroup["quota"].write_text("300000\n")
     cgroup["period"].write_text("100000\n")
     assert forksafe._available_cpus() == 3
+
+
+def test_a_v1_unlimited_quota_falls_back_to_affinity(cgroup):
+    """v1 spells "no limit" as -1, which must not round down to a 1-CPU cap."""
+    from app.workers import forksafe
+
+    cgroup["quota"].write_text("-1\n")
+    cgroup["period"].write_text("100000\n")
+    assert forksafe._available_cpus() == 16
+
+
+def test_a_fractional_quota_above_one_cpu_rounds_up(cgroup):
+    from app.workers import forksafe
+
+    cgroup["v2"].write_text("150000 100000\n")  # 1.5 CPUs
+    assert forksafe._available_cpus() == 2
 
 
 def test_an_unlimited_quota_falls_back_to_affinity(cgroup, monkeypatch):
@@ -433,8 +503,9 @@ def _compose_worker(name):
 
 
 def test_dev_compose_actually_forks():
-    """Solo ignores CELERY_WORKER_CONCURRENCY and never fires
-    worker_process_init, so a solo dev stack exercises none of forksafe."""
+    """Solo ignores CELERY_WORKER_CONCURRENCY and forks nothing, so the
+    post-fork hook returns early and a solo dev stack exercises none of
+    forksafe."""
     worker = _compose_worker("docker-compose.yml")
     assert "--pool=prefork" in worker["command"]
     assert int(worker["environment"]["CELERY_WORKER_CONCURRENCY"]) > 1
@@ -444,5 +515,14 @@ def test_vps_overlay_keeps_the_solo_pool():
     """The VPS layers docker-compose.prod.yml over the dev file, so the dev
     worker's prefork setting must not reach it by inheritance."""
     worker = _compose_worker("docker-compose.prod.yml")
+    assert "--pool=solo" in worker["command"]
+    assert worker["environment"]["CELERY_WORKER_CONCURRENCY"] == "1"
+
+
+def test_repro_overlay_keeps_the_solo_pool():
+    """docker-compose.repro.yml (CF-241) must die the way production did. Under
+    the base file's prefork pool an OOM kills one child and its game is requeued
+    at once, so the repro would loop instead of failing."""
+    worker = _compose_worker("docker-compose.repro.yml")
     assert "--pool=solo" in worker["command"]
     assert worker["environment"]["CELERY_WORKER_CONCURRENCY"] == "1"

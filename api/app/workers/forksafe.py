@@ -23,7 +23,10 @@ every child. Three kinds of inherited state would be unsafe to share:
   N-fold. This is the one reset that does real work on every fork.
 
 `reset_after_fork()` runs in each child via Celery's `worker_process_init`
-signal. That signal never fires under `--pool=solo`, where no fork happens.
+signal. Celery 5.4's solo pool sends that signal too, once, in the worker
+process itself (celery/concurrency/solo.py), where nothing was forked. The
+receiver in `celery_app.py` therefore returns early when it runs in the process
+that booted the worker, so under solo none of this runs.
 """
 import logging
 import math
@@ -34,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 # cgroup files that bound the CPU a container may use. v2 first (Render and
 # current Docker), then v1. Module-level so tests can point them elsewhere.
+# Only the cgroup root is read, which is this container's own cgroup when it has
+# a private cgroup namespace (Docker 20.10+ on v2 by default). Without one, the
+# quota sits under the path in /proc/self/cgroup and this falls back to affinity.
 _CGROUP_V2_CPU_MAX = "/sys/fs/cgroup/cpu.max"
 _CGROUP_V1_QUOTA = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"
 _CGROUP_V1_PERIOD = "/sys/fs/cgroup/cpu/cpu.cfs_period_us"
@@ -95,9 +101,11 @@ def _reset_db_pool() -> None:
     `_sync_db` is imported lazily inside task bodies, so in a fresh child it is
     normally not imported at all and there is nothing to do — importing it here
     would only pull in `app.database` and the models to dispose an engine that
-    was never used. It also uses NullPool, so even when imported nothing is
-    pooled. dispose(close=False) detaches without closing the parent's sockets:
-    closing them would take the connection out from under the parent too.
+    was never used. When it is imported, its engine keeps the default
+    QueuePool, so the parent may hold pooled connections: dispose(close=False)
+    drops the child's references to them without closing the parent's sockets,
+    and the child opens its own on first use. Closing them would take the
+    connections out from under the parent too.
     """
     module = sys.modules.get("app.workers._sync_db")
     if module is None:
