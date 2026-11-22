@@ -43,7 +43,8 @@ function respondWith(init: { status: number; body: string | null; length?: strin
 
 beforeEach(() => {
   // The client is inert until a host binds it (CF-314), so every call throws
-  // without this. Neither value reaches anything here — fetch is stubbed.
+  // without this. fetch is stubbed, so `baseUrl` only shows up in the URL the
+  // last two tests assert.
   configureApiClient({ baseUrl: "http://api.test", getToken: () => null });
 });
 
@@ -82,5 +83,23 @@ describe("getUserPosts", () => {
     const posts = await getUserPosts("alice");
 
     expect(posts.map((p) => p.id)).toEqual(["p1", "p2"]);
+  });
+
+  it("asks for the author's posts, capped at the limit passed", async () => {
+    respondWith({ status: 200, body: "[]" });
+
+    await getUserPosts("alice", 12);
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://api.test/posts?username=alice&limit=12");
+  });
+
+  it("defaults the limit to 50", async () => {
+    respondWith({ status: 200, body: "[]" });
+
+    await getUserPosts("alice");
+
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("http://api.test/posts?username=alice&limit=50");
   });
 });

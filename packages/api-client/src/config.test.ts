@@ -66,7 +66,7 @@ describe("an unconfigured client", () => {
   // together, so the pair stays consistent; order between tests stops
   // mattering either way.
 
-  it("throws a named error naming the call that fixes it", async () => {
+  it("throws an error naming the call that fixes it", async () => {
     vi.resetModules();
     const { getApiClientConfig } = await import("./config");
 
