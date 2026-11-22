@@ -37,7 +37,10 @@ import { getGames, type Game } from "@clipfarm/api-client";
 
 `web/src/lib/api.ts` is the web binding — it configures the client from
 `NEXT_PUBLIC_API_URL` and the Supabase browser session and re-exports the
-package, so app code there imports `@/lib/api` as it always has.
+package, so app code there imports `@/lib/api` as it always has. The one
+exception is `app/auth/confirm/route.ts`, a server route that sends no request:
+it takes its auth constants from the package directly, so it does not load the
+browser session.
 
 ## Shape of the package
 

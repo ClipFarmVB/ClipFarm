@@ -21,8 +21,8 @@
  *     the web client did before this package existed.
  *
  * The `baseUrl` block pins the other injected value: that it is what a request
- * is sent to. `uploadAvatar` is checked on its own because it builds its URL
- * outside `request()`.
+ * is sent to. `uploadAvatar` is checked on its own, URL and headers both,
+ * because it builds them outside `request()`.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -44,7 +44,7 @@ function stubFetch() {
   return fetchMock;
 }
 
-/** The headers `request()` assembled for the nth call — a plain object. */
+/** The headers the nth `fetch` call was given — a plain object. */
 function headersOf(fetchMock: FetchMock, call: number): Record<string, string> {
   const init = fetchMock.mock.calls[call][1] as RequestInit;
   return init.headers as Record<string, string>;
@@ -156,5 +156,33 @@ describe("baseUrl", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe("http://api.test/users/me/avatar");
+  });
+});
+
+describe("uploadAvatar's headers", () => {
+  // Built by hand rather than by `request()`, so neither the `getToken` block
+  // above nor any `request()` test covers them. Both cases match what the web
+  // client sent at the CF-314 merge base.
+  const avatar = () => new File(["x"], "avatar.png", { type: "image/png" });
+
+  it("carries the bearer from getToken", async () => {
+    const fetchMock = stubFetch();
+    configureApiClient({ baseUrl: "http://api.test", getToken: () => "tok" });
+
+    await uploadAvatar(avatar());
+
+    expect(headersOf(fetchMock, 0).Authorization).toBe("Bearer tok");
+    // No Content-Type: the browser has to set the multipart boundary itself.
+    expect(headersOf(fetchMock, 0)).not.toHaveProperty("Content-Type");
+  });
+
+  it("sends no Authorization header when getToken returns null", async () => {
+    const fetchMock = stubFetch();
+    configureApiClient({ baseUrl: "http://api.test", getToken: () => null });
+
+    await uploadAvatar(avatar());
+
+    expect(headersOf(fetchMock, 0)).not.toHaveProperty("Authorization");
+    expect(headersOf(fetchMock, 0)).not.toHaveProperty("Content-Type");
   });
 });

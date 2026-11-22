@@ -87,7 +87,13 @@ function domSurface(): Map<string, string[]> {
     const sf = program.getSourceFile(file);
     if (!sf) throw new Error(`not in the program: ${file}`);
     const visit = (node: ts.Node): void => {
-      if (ts.isIdentifier(node)) {
+      // A member reached as `params["set"](...)` is a string literal, not an
+      // identifier, and is the same call at runtime — so resolve that too.
+      const isElementKey =
+        ts.isStringLiteralLike(node) &&
+        ts.isElementAccessExpression(node.parent) &&
+        node.parent.argumentExpression === node;
+      if (ts.isIdentifier(node) || isElementKey) {
         let symbol = checker.getSymbolAtLocation(node);
         if (symbol && symbol.flags & ts.SymbolFlags.Alias) {
           symbol = checker.getAliasedSymbol(symbol);
