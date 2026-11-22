@@ -144,6 +144,21 @@ async def follow_user(handle: str, user_id: UserId, db: DB):
         # Also a CHECK in the database — this is the friendly message.
         raise HTTPException(status_code=400, detail="You cannot follow yourself")
 
+    # A caller whose handle was never chosen cannot follow anyone yet. Every
+    # list that would show the edge — the target's requests, their followers —
+    # drops generated handles (`_findable`), because publishing one is the
+    # email-derived oracle `profiles.by_handle` refuses to be. So such a request
+    # reached a target who could never see it, accept it or reject it, and sat
+    # pending forever; promoted or accepted, it held `followers`-tier access
+    # while missing from the owner's own list. Refusing the write is the end
+    # that leaks nothing: showing the requester instead would hand the target
+    # exactly the handle the profile route hides. Picking a handle clears it.
+    caller = await db.get(User, user_id)
+    if caller is not None and caller.username_is_generated:
+        raise HTTPException(
+            status_code=409, detail="Choose a handle before following anyone"
+        )
+
     existing = await _edge(db, user_id, target_id)
     if existing is not None:
         # A pending request against an account that has since gone public would
@@ -309,7 +324,9 @@ def _findable(stmt):
     enforced; the edge lists are that neighbour.
 
     Applied to the requests list too, so a generated-handle requester can't
-    surface the same way through `/users/me/follow-requests`.
+    surface the same way through `/users/me/follow-requests`. `follow_user` now
+    refuses such a caller, so no new edge lands here unseen; the filter stays as
+    the render-side half of that rule, for any edge written another way.
     """
     return stmt.where(User.username_is_generated.is_(False))
 
@@ -562,4 +579,38 @@ async def reject_follow_request(request_id: uuid.UUID, user_id: UserId, db: DB):
             request_id,
         )
         await _adjust_counts(db, follower_id, followee_id, -1)
+    await db.commit()
+
+
+@router.delete("/users/me/followers/{handle}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_follower(handle: str, user_id: UserId, db: DB):
+    """Remove someone from your followers — the owner's side of unfollow.
+
+    Without it only the follower could delete an accepted edge: `reject` takes
+    pending rows only, so an Accept tapped by mistake, or a follower the owner
+    later wants gone, kept `followers`-tier access to their footage for as long
+    as the *follower* chose. Revocation belongs to the person whose content it
+    is.
+
+    Same shape as `reject`: the row is deleted rather than marked, so the person
+    removed may ask again (a private account sees a fresh request), and the
+    delete is unguarded on status with RETURNING deciding the counters, so it
+    also clears a request that is still pending. Idempotent like `unfollow` —
+    removing someone who does not follow you is 204, so a retry cannot fail.
+    """
+    follower = await profiles.by_handle(handle, db)
+    follower_id = follower.id
+
+    removed = (
+        await db.execute(
+            delete(Follow)
+            .where(Follow.follower_id == follower_id, Follow.followee_id == user_id)
+            .returning(Follow.status)
+        )
+    ).scalar_one_or_none()
+    if removed is None:
+        return
+    # `==` for the reason `reject` gives: a RETURNING value, not an ORM member.
+    if removed == FollowStatus.accepted:
+        await _adjust_counts(db, follower_id, user_id, -1)
     await db.commit()

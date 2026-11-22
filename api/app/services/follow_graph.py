@@ -49,10 +49,12 @@ async def resolve_follow(
     can change, so for a private or public object the query cannot affect the
     outcome and is not issued.
 
-    Variadic because a post is gated on two levels — its own and its clip's
-    effective one — and the author of a post is always the owner of the game
-    behind it (`create_post` enforces that). One lookup answers both; asking
-    twice was two round trips for one fact.
+    Variadic because one edge is often spent on more than one level: a clip
+    read asks about the clip's effective tier and its game's, and a post read
+    asks about the post's tier and its clip's. For a post that holds only when
+    the author is the game's owner, which `create_post` enforces and the schema
+    does not — so `posts._load_for_read` passes both levels in one call when the
+    two principals coincide and resolves each edge separately when they differ.
     """
     if viewer_id is None or owner_id is None or viewer_id == owner_id:
         return False

@@ -61,20 +61,26 @@ def test_exists_clause_is_scoped_to_both_ends_of_the_edge():
     assert "games.owner_id" in sql, "the owner end must correlate to the game"
 
 
-def test_followers_tier_matches_between_python_and_sql():
-    """The two halves of the rule must agree.
+def test_each_half_admits_the_followers_tier_on_the_edge():
+    """Each half, separately, admits `followers` only through the edge.
 
-    Python: `can_view_game(..., viewer_follows_owner=True)`.
-    SQL: the EXISTS clause in the same query.
-    A change to one without the other is the drift the CF-108 seam existed to
-    prevent — this is its replacement guard.
+    Python: `can_view_game` honours `viewer_follows_owner` either way.
+    SQL: the filter `list_clips` actually runs (`apply_clip_visibility`; no
+    router calls `visible_games_filter`) names the tier and gates it on the
+    accepted-edge EXISTS.
+
+    This is shape, not agreement — it cannot tell whether the two answer the
+    same for a given row. That is asserted over real rows in
+    `test_follows_pg.py::test_the_python_and_sql_halves_agree_on_a_real_edge`,
+    and the routers' wiring of the Python half in `test_follow_gates.py`.
     """
     game = _Game(Visibility.followers)
     assert access.can_view_game(VIEWER, game, viewer_follows_owner=True) is True
     assert access.can_view_game(VIEWER, game, viewer_follows_owner=False) is False
 
-    sql = _sql(select(Game).where(access.visible_games_filter(VIEWER))).lower()
+    sql = _sql(access.apply_clip_visibility(select(Clip), VIEWER)).lower()
     assert "'followers'" in sql, "SQL must admit the same tier Python does"
+    assert "exists" in sql and "'accepted'" in sql, "and only through the edge"
 
 
 def test_anonymous_never_gets_a_follow_subquery():
@@ -448,7 +454,7 @@ def test_the_python_half_filters_on_accepted_too():
     they go through the SQL half — the two halves disagreeing, in the direction
     that grants access, with nothing red anywhere.
 
-    `test_followers_tier_matches_between_python_and_sql` doesn't reach it: it
+    `test_each_half_admits_the_followers_tier_on_the_edge` doesn't reach it: it
     asserts can_view_game honours the boolean and that 'followers' appears in
     the SQL, both true no matter how the edge was resolved. The resolution lives
     here, in a module that test never touches.

@@ -246,31 +246,53 @@ def test_a_private_account_holds_the_edge_pending_and_counts_nothing(people):
 def test_the_python_and_sql_halves_agree_on_a_real_edge(people):
     """The seam CF-108 left, closed over rows.
 
-    `is_accepted_follower` is the single-object half; a pending edge must answer
-    False on it, an accepted edge True. Everything else asserts this against
-    generated SQL text.
+    The single-object half (`is_accepted_follower`, what `get_game` and the
+    clip and post reads spend) and the list half (`apply_clip_visibility`'s
+    EXISTS, what `list_clips` runs) are asked about the same `followers`-tier
+    clip, once while the edge is pending and once accepted, and must give the
+    same answer both times. An earlier version of this test called only the
+    first half.
     """
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
+
+    from app.models.clip import ActionType, Clip
+    from app.models.game import Game
+    from app.models.visibility import Visibility
     from app.routers import follows as r
-    from app.services import follow_graph
+    from app.services import access, follow_graph
 
     async_url, ids = people
 
-    _run(async_url, lambda db: r.follow_user("privatetarget", ids["viewer"], db))
-    assert (
-        _run(
-            async_url,
-            lambda db: follow_graph.is_accepted_follower(db, ids["viewer"], ids["priv"]),
+    sync = create_engine(async_url.replace("postgresql+asyncpg://", "postgresql://"))
+    with Session(sync) as s:
+        game = Game(owner_id=ids["priv"], title="Final", visibility=Visibility.followers)
+        s.add(game)
+        s.flush()
+        clip = Clip(
+            game_id=game.id, action_type=ActionType.spike, start_time=1.0,
+            end_time=2.0, clip_url="s3://bucket/c.mp4",
         )
-        is False
-    ), "a pending request must not resolve the followers tier"
+        s.add(clip)
+        s.commit()
+        clip_id = clip.id
+    sync.dispose()
+
+    async def both_halves(db):
+        python = await follow_graph.is_accepted_follower(db, ids["viewer"], ids["priv"])
+        listed = (
+            await db.execute(access.apply_clip_visibility(select(Clip.id), ids["viewer"]))
+        ).scalars().all()
+        return python, clip_id in listed
+
+    _run(async_url, lambda db: r.follow_user("privatetarget", ids["viewer"], db))
+    assert _run(async_url, both_halves) == (False, False), (
+        "a pending request must resolve the followers tier on neither half"
+    )
 
     _set_status(async_url, ids["viewer"], ids["priv"], "accepted")
-    assert (
-        _run(
-            async_url,
-            lambda db: follow_graph.is_accepted_follower(db, ids["viewer"], ids["priv"]),
-        )
-        is True
+    assert _run(async_url, both_halves) == (True, True), (
+        "an accepted edge must resolve it on both"
     )
 
 
@@ -514,16 +536,13 @@ def test_a_generated_handle_never_appears_in_an_edge_list(people):
 
     async_url, ids = people
 
-    # The edge is written directly here, standing in for the legacy case — a
-    # backfill account that followed before CF-107 and is already sitting in
-    # the table. An earlier version of this comment said the endpoint was
-    # unreachable for such an account; it is not. `follow_user` resolves only
-    # the *target* by handle and takes the caller off the bearer token, so a
-    # generated-handle account can `POST /users/publictarget/follow` today and
-    # succeed. The live path therefore produces the same row this inserts,
-    # which is what makes the render-side filter below load-bearing rather
-    # than historical — and is why CF-116's count/list divergence is reachable
-    # by current writes, not only by old ones.
+    # The edge is written directly here, because the live path no longer
+    # produces it: `follow_user` refuses a caller whose handle is generated
+    # (409, `test_a_generated_handle_caller_is_refused_and_writes_nothing`).
+    # Before that it resolved only the *target* by handle and took the caller
+    # off the bearer token, so such an account could follow and land exactly
+    # this row. The render-side filter below is the other half of that rule,
+    # for an edge written any other way.
     from sqlalchemy import create_engine
 
     sync = create_engine(async_url.replace("postgresql+asyncpg://", "postgresql://"))
@@ -623,3 +642,99 @@ def test_the_cursor_round_trips_through_a_real_page(people):
         "a cursor on created_at alone would return the same tied row again"
     )
     assert second.next_cursor is None, "two rows, two pages"
+
+
+# ── acceptance criteria the curl table used to carry (R1-M2) ──────────────────
+
+
+def test_the_database_refuses_a_self_follow(people):
+    """Self-follow is rejected at the DB level, not only by the router's 400.
+
+    Raw SQL, so no code path can stand in for the constraint. The fixture
+    builds from the models; `test_follow_gates.py` checks migration 017 creates
+    the same CHECK.
+    """
+    import sqlalchemy.exc
+    from sqlalchemy import create_engine
+
+    async_url, ids = people
+
+    sync = create_engine(async_url.replace("postgresql+asyncpg://", "postgresql://"))
+    try:
+        with pytest.raises(sqlalchemy.exc.IntegrityError, match="ck_follow_not_self"):
+            with sync.begin() as c:
+                c.execute(
+                    text(
+                        "INSERT INTO follows (id, follower_id, followee_id, status)"
+                        " VALUES (:i, :a, :a, 'accepted')"
+                    ),
+                    {"i": uuid.uuid4(), "a": ids["viewer"]},
+                )
+    finally:
+        sync.dispose()
+
+
+def test_unfollowing_twice_succeeds_both_times(people):
+    """The second DELETE finds no edge and must answer state, not 404 — and must
+    not decrement again."""
+    from app.routers import follows as r
+
+    async_url, ids = people
+
+    _run(async_url, lambda db: r.follow_user("publictarget", ids["viewer"], db))
+    for _ in range(2):
+        state = _run(async_url, lambda db: r.unfollow_user("publictarget", ids["viewer"], db))
+        assert state.status is None and state.following is False
+    assert _counts(async_url, ids["pub"])[0] == 0
+    assert _counts(async_url, ids["viewer"])[1] == 0
+
+
+# ── the owner's side (R1-M3, R1-M4) ───────────────────────────────────────────
+
+
+def test_the_owner_can_remove_an_accepted_follower(people):
+    """Accept by mistake, then take it back: the edge goes, both counters move,
+    the tier closes, and a second removal is a no-op."""
+    from app.routers import follows as r
+    from app.services import follow_graph
+
+    async_url, ids = people
+
+    _run(async_url, lambda db: r.follow_user("privatetarget", ids["viewer"], db))
+    page = _run(async_url, lambda db: r.list_follow_requests(ids["priv"], db))
+    _run(async_url, lambda db: r.accept_follow_request(page.items[0].id, ids["priv"], db))
+    assert _counts(async_url, ids["priv"])[0] == 1
+
+    for _ in range(2):
+        _run(async_url, lambda db: r.remove_follower("viewer", ids["priv"], db))
+    assert _edge_status(async_url, ids["viewer"], ids["priv"]) is None
+    assert _counts(async_url, ids["priv"])[0] == 0
+    assert _counts(async_url, ids["viewer"])[1] == 0
+    assert _run(
+        async_url,
+        lambda db: follow_graph.is_accepted_follower(db, ids["viewer"], ids["priv"]),
+    ) is False
+
+
+def test_removing_a_pending_requester_counts_nothing(people):
+    from app.routers import follows as r
+
+    async_url, ids = people
+
+    _run(async_url, lambda db: r.follow_user("privatetarget", ids["viewer"], db))
+    _run(async_url, lambda db: r.remove_follower("viewer", ids["priv"], db))
+    assert _edge_status(async_url, ids["viewer"], ids["priv"]) is None
+    assert _counts(async_url, ids["priv"])[0] == 0
+
+
+def test_a_generated_handle_caller_is_refused_and_writes_nothing(people):
+    """The request would reach a target whose lists drop generated handles, so
+    it could never be seen, accepted or rejected."""
+    from app.routers import follows as r
+
+    async_url, ids = people
+
+    with pytest.raises(HTTPException) as exc:
+        _run(async_url, lambda db: r.follow_user("privatetarget", ids["generated"], db))
+    assert exc.value.status_code == 409
+    assert _edge_status(async_url, ids["generated"], ids["priv"]) is None
