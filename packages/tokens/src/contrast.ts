@@ -46,8 +46,12 @@ export function parseColor(value: string): { rgb: Rgb; alpha: number } {
  * meaningless until you say what is behind it.
  */
 export function compositeOver(color: string, backdrop: string): Rgb {
+  return flatten(color, parseColor(backdrop).rgb);
+}
+
+/** `compositeOver`, onto a backdrop that is already an opaque triple. */
+function flatten(color: string, base: Rgb): Rgb {
   const { rgb, alpha } = parseColor(color);
-  const base = parseColor(backdrop).rgb;
   return rgb.map((c, i) => c * alpha + base[i] * (1 - alpha)) as unknown as Rgb;
 }
 
@@ -61,17 +65,19 @@ export function relativeLuminance(rgb: Rgb): number {
 }
 
 /**
- * Contrast ratio between two colours, each composited onto `backdrop` first
- * so translucent tokens measure as they render. 1 to 21; AA wants 4.5 for
- * normal text, 3 for large text and non-text.
+ * Contrast ratio between two colours as they render: `background` composited
+ * onto `backdrop`, then `foreground` composited onto that result — text on a
+ * translucent fill sits on the fill, not on whatever is behind it. 1 to 21; AA
+ * wants 4.5 for normal text, 3 for large text and non-text.
  */
 export function contrastRatio(
   foreground: string,
   background: string,
   backdrop = background,
 ): number {
-  const fg = relativeLuminance(compositeOver(foreground, backdrop));
-  const bg = relativeLuminance(compositeOver(background, backdrop));
+  const under = compositeOver(background, backdrop);
+  const fg = relativeLuminance(flatten(foreground, under));
+  const bg = relativeLuminance(under);
   const [hi, lo] = fg >= bg ? [fg, bg] : [bg, fg];
   return (hi + 0.05) / (lo + 0.05);
 }
