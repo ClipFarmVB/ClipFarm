@@ -221,14 +221,17 @@ export interface ClipFilters {
 }
 
 export function getClips(gameId: string, filters: ClipFilters = {}): Promise<Clip[]> {
+  // `append`, not `set`: each key is written at most once, so the two are the
+  // same here, and React Native's URLSearchParams implements `append` but
+  // throws on `set`. platformSurface.test.ts holds the package to that.
   const params = new URLSearchParams();
-  if (filters.action_type?.length) params.set("action_type", filters.action_type.join(","));
-  if (filters.player_id) params.set("player_id", filters.player_id);
-  if (filters.min_confidence != null) params.set("min_confidence", String(filters.min_confidence));
-  if (filters.min_score != null && filters.min_score > 0) params.set("min_score", String(filters.min_score));
-  if (filters.sort) params.set("sort", filters.sort);
-  if (filters.page) params.set("page", String(filters.page));
-  if (filters.page_size) params.set("page_size", String(filters.page_size));
+  if (filters.action_type?.length) params.append("action_type", filters.action_type.join(","));
+  if (filters.player_id) params.append("player_id", filters.player_id);
+  if (filters.min_confidence != null) params.append("min_confidence", String(filters.min_confidence));
+  if (filters.min_score != null && filters.min_score > 0) params.append("min_score", String(filters.min_score));
+  if (filters.sort) params.append("sort", filters.sort);
+  if (filters.page) params.append("page", String(filters.page));
+  if (filters.page_size) params.append("page_size", String(filters.page_size));
   const qs = params.toString();
   return request<Clip[]>(`/games/${gameId}/clips${qs ? `?${qs}` : ""}`);
 }

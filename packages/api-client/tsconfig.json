@@ -1,12 +1,13 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    // DOM is here for *types* only — `fetch`, `Response`, `RequestInit`,
-    // `Headers`, `FormData`, `File`. Those exist on React Native too (Expo's
-    // tsconfig.base pulls in the same lib), and nothing in this package touches
-    // `window`, `document` or any other DOM API. Adding a runtime DOM
-    // dependency is what the package must not do; borrowing the type names for
-    // web-standard globals is fine.
+    // DOM is here because it is where TypeScript declares the web-standard
+    // globals the package calls at runtime — `fetch`, `URLSearchParams`,
+    // `FormData` — and the types it borrows (`Response`, `RequestInit`, `File`).
+    // React Native implements only part of that lib, so the lib is not the
+    // contract: `src/platformSurface.test.ts` pins the exact names, methods
+    // included, and fails on anything else. Nothing here touches `window`,
+    // `document` or `localStorage`.
     "lib": ["ES2022", "DOM"],
     // Empty on purpose, and the thing that makes `npm run typecheck` mean
     // anything. With `types` unset, tsc auto-includes every `@types/*` package

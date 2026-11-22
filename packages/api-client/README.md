@@ -4,9 +4,10 @@ The ClipFarm api client — every request the product makes to `api/`, plus the
 pure helpers that go with it (error-message formatting, auth error codes, the
 progress ETA estimator, and the games cache).
 
-Shared because the Expo app makes the same calls as the web app (CF-313). It is
-platform-agnostic: no `next/*`, no `@supabase/ssr`, no `process.env`, no DOM
-API. `fetch` is the only web-standard global it uses, and React Native has it.
+Shared so the planned Expo app can make the same calls as the web app (CF-313).
+It imports no `next/*`, no `@supabase/ssr` and no `process.env`, and touches no
+`window`, `document` or storage. It does call three web-standard globals, listed
+exactly under [What it needs from the host](#what-it-needs-from-the-host).
 
 ## Using it
 
@@ -47,11 +48,33 @@ add an ordering dependency (and a chance of a stale artifact) in exchange for
 nothing either one can use. `npm run typecheck` is what proves it compiles,
 `npm run lint` lints it, and `npm test` runs its suite — all three are CI steps.
 
-`tsconfig.json` includes the `DOM` lib for the *types* of `fetch`, `Response`,
-`FormData` and `File`. That is a type-level borrow of web-standard names, not a
-runtime dependency on a browser; Expo's `tsconfig.base` includes the same lib.
+## What it needs from the host
 
-It also sets `"types": []`, which is what makes the typecheck mean anything: left
+`tsconfig.json` includes the `DOM` lib, because that is where TypeScript
+declares `fetch` and friends. React Native implements only part of that lib, so
+the lib is not the contract. This is — every `lib.dom` name the package uses:
+
+| Name | Used for | At runtime? |
+|---|---|---|
+| `fetch` | every request | yes |
+| `Response` `.ok` `.status` `.headers`, `.json()` `.text()`; `Headers.get` | reading what `fetch` returns | yes, on the object `fetch` returns |
+| `RequestInit` `.headers` | the options passed to `fetch` | type, plus the one field read |
+| `URLSearchParams` — constructor, `.append`, `.toString` | query strings (`getClips`, `getUserPosts`) | yes |
+| `FormData` — constructor, `.append` | the avatar upload | yes |
+| `File` | the avatar upload's parameter type | type only |
+
+React Native provides all of these. Its bundled `URLSearchParams` implements
+little beyond `append` and `toString` — `set`, `get`, `has`, `delete` and
+`sort` throw "not implemented" — which is why `getClips` appends. That is from
+RN's polyfill, not from a run against an Expo app (none exists yet); CF-315
+should confirm it on the RN version it lands on.
+
+`src/platformSurface.test.ts` holds the package to this table: it asks the type
+checker which `lib.dom` declarations the source resolves to and fails if the
+set differs from its list, in either direction. Adding a name means adding it
+there, which is the moment to check React Native has it, and then here.
+
+The tsconfig also sets `"types": []`, which is what makes the typecheck mean anything: left
 unset, tsc auto-includes whatever `@types/*` the installer hoisted to the repo
 root — `node`, `react`, `react-dom` from `web` — and the package would compile
 against ambient `process`, `Buffer` and `setImmediate` that no React Native
