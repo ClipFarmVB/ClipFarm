@@ -30,7 +30,7 @@
   --color-brand-light:   var(--cf-brand-light);
   --color-brand-dim:     var(--cf-brand-dim);
   /* Text and icons drawn on a brand fill (the primary button). Per theme,
-     because the light-theme teal is dark and the dark-theme teal is light. */
+     because the light-theme brand is dark and the dark-theme brand is light. */
   --color-on-brand:      var(--cf-on-brand);
 }
 
@@ -53,8 +53,9 @@
  *          muted #7f8c8a on bg                5.53:1
  *          subtle #56625f on bg               3.04:1
  *
- * `subtle` is the only one under AA by design: it is for decorative and
- * tertiary text, never for anything a reader has to make out.
+ * Under AA (4.5:1) in either theme: `subtle`.
+ * `subtle` is meant for decorative and tertiary text, never for anything
+ * a reader has to make out.
  */
 
 /* ── Light mode (default) — cream / warm neutrals / logo teal ────────── */

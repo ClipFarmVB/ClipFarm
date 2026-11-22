@@ -3,10 +3,11 @@
  *
  * Every value here comes out of `web/src/app/globals.css` — this is the
  * palette the web app ships, not a new one. The logo teal and the cream
- * neutrals are CF-573's; the contrast figures below them are CF-568's, both
- * measured on web before this package existed. `themeCss()` (see `css.ts`)
- * regenerates that stylesheet from this file, so web keeps rendering exactly
- * what it did and mobile gets the same numbers without a second copy.
+ * neutrals are CF-573's, and the pairings worth measuring are CF-568's.
+ * The figures themselves are not written here: `themeCss()` (see `css.ts`)
+ * regenerates that stylesheet from this file and computes them from these
+ * values as it does, so web keeps rendering exactly what it did and mobile
+ * gets the same numbers without a second copy.
  */
 
 /** The two themes the app ships. Mirrors `Theme` in web's ThemeContext. */
@@ -54,9 +55,9 @@ export interface ThemeColors {
    *
    * Per theme, because the two brands sit on opposite sides of the contrast
    * line: the light theme's teal is dark, so the label is white; the dark
-   * theme's teal is bright, so the label is near-black. Both clear AA
-   * comfortably (5.83:1 and 8.77:1) — `themeCss()` emits the full set of
-   * figures CF-568 measured, and they travel with the stylesheet.
+   * theme's teal is bright, so the label is near-black. Both clear AA;
+   * `themeCss()` computes the ratios from these values and emits them with
+   * the stylesheet, so no figure is written down here to go stale.
    */
   onBrand: string;
 

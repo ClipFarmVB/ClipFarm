@@ -81,7 +81,8 @@ That is a better answer than the one this package originally had. The label is
 `#ffffff` on the light theme's dark teal (5.83:1) and `#0b0f0f` on the dark
 theme's bright teal (8.77:1); both clear AA, where the old near-black-on-blue
 measured 3.78:1 and did not. The figures travel with the stylesheet —
-`themeCss()` emits CF-568's full table above the values.
+`themeCss()` computes the table for CF-568's pairings from the token values
+each time it runs and emits it above them.
 
 ## Adding a token
 

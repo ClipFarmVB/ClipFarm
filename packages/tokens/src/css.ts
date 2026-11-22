@@ -18,7 +18,7 @@ import {
   lightColors,
   type ThemeColors,
 } from "./colors";
-import { contrastLabel } from "./contrast";
+import { contrastLabel, contrastRatio } from "./contrast";
 import { fontFamilyStack } from "./typography";
 
 /**
@@ -73,7 +73,7 @@ const TAILWIND_UTILITY: Partial<Record<keyof ThemeColors, string>> = {
 const TOKEN_NOTE: Partial<Record<keyof ThemeColors, readonly string[]>> = {
   onBrand: [
     "  /* Text and icons drawn on a brand fill (the primary button). Per theme,",
-    "     because the light-theme teal is dark and the dark-theme teal is light. */",
+    "     because the light-theme brand is dark and the dark-theme brand is light. */",
   ],
 };
 
@@ -93,16 +93,8 @@ const TOKEN_NOTE: Partial<Record<keyof ThemeColors, readonly string[]>> = {
  */
 function rationale(): string {
   /** `label` is prose; the ratio is computed from the two colours. */
-  const rows = (c: ThemeColors): ReadonlyArray<readonly [string, string]> => [
-    [`on-brand ${c.onBrand} on brand ${c.brand}`, contrastLabel(c.onBrand, c.brand)],
-    [
-      `on-brand on brand-light ${c.brandLight}`,
-      contrastLabel(c.onBrand, c.brandLight),
-    ],
-    [`brand as text on bg ${c.background}`, contrastLabel(c.brand, c.background)],
-    [`muted ${c.muted} on bg`, contrastLabel(c.muted, c.background)],
-    [`subtle ${c.subtle} on bg`, contrastLabel(c.subtle, c.background)],
-  ];
+  const rows = (c: ThemeColors): ReadonlyArray<readonly [string, string]> =>
+    pairings(c).map(([label, fg, bg]) => [label, contrastLabel(fg, bg)] as const);
 
   const themes = [
     ["light", lightColors],
@@ -120,6 +112,20 @@ function rationale(): string {
     ),
   );
 
+  // Which tokens fall under AA, from the same pairings the table prints, so
+  // the sentence cannot outlive the figures it summarises.
+  const underAa = themes
+    .flatMap(([, c]) =>
+      pairings(c)
+        .filter(([, fg, bg]) => contrastRatio(fg, bg) < 4.5)
+        .map(([, , , token]) => `\`${token}\``),
+    )
+    .filter((token, i, all) => all.indexOf(token) === i);
+  const underAaLine =
+    underAa.length === 0
+      ? " * Every pairing above clears AA (4.5:1)."
+      : ` * Under AA (4.5:1) in either theme: ${underAa.join(", ")}.`;
+
   return [
     "/*",
     " * Both themes take their accent from the logo (CF-573): a line-art mark on",
@@ -131,10 +137,28 @@ function rationale(): string {
     " * this file was generated (the pairings are CF-568's):",
     ...lines,
     " *",
-    " * `subtle` is the only one under AA by design: it is for decorative and",
-    " * tertiary text, never for anything a reader has to make out.",
+    underAaLine,
+    " * `subtle` is meant for decorative and tertiary text, never for anything",
+    " * a reader has to make out.",
     " */",
   ].join("\n");
+}
+
+/**
+ * The pairings the rationale table measures: label, foreground, background,
+ * and the token the row is about. The table and the under-AA sentence both
+ * read this, so they cannot disagree.
+ */
+function pairings(
+  c: ThemeColors,
+): ReadonlyArray<readonly [string, string, string, string]> {
+  return [
+    [`on-brand ${c.onBrand} on brand ${c.brand}`, c.onBrand, c.brand, "onBrand"],
+    [`on-brand on brand-light ${c.brandLight}`, c.onBrand, c.brandLight, "onBrand"],
+    [`brand as text on bg ${c.background}`, c.brand, c.background, "brand"],
+    [`muted ${c.muted} on bg`, c.muted, c.background, "muted"],
+    [`subtle ${c.subtle} on bg`, c.subtle, c.background, "subtle"],
+  ];
 }
 
 /** Emission order, and the comment each run of tokens sits under. */
