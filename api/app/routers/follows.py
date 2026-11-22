@@ -582,8 +582,8 @@ async def reject_follow_request(request_id: uuid.UUID, user_id: UserId, db: DB):
     await db.commit()
 
 
-@router.delete("/users/me/followers/{handle}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_follower(handle: str, user_id: UserId, db: DB):
+@router.delete("/users/me/followers/{follower_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_follower(follower_id: uuid.UUID, user_id: UserId, db: DB):
     """Remove someone from your followers — the owner's side of unfollow.
 
     Without it only the follower could delete an accepted edge: `reject` takes
@@ -592,15 +592,26 @@ async def remove_follower(handle: str, user_id: UserId, db: DB):
     as the *follower* chose. Revocation belongs to the person whose content it
     is.
 
+    **Keyed on the follower's user id, not their handle.** Every new account
+    starts with `username` NULL (auth.py provisions `User(id, email)`), and such
+    an account can follow and be accepted by request id — so a handle-keyed
+    removal could resolve neither it nor a generated handle `by_handle` refuses
+    by design, and the owner was left unable to revoke the commonest kind of
+    follower (review of #191, R2-M1). `ProfileOut.id` is on every row the owner
+    sees, in the followers list and the requests list alike, the same way
+    `/follow-requests/{request_id}` keys on an id the requests list returns.
+
+    The id is not an oracle: the delete is scoped to `followee_id == caller`,
+    and an id that matches no edge — unknown, or simply not a follower — answers
+    the same 204, so the response says nothing about any account but the
+    caller's own audience.
+
     Same shape as `reject`: the row is deleted rather than marked, so the person
     removed may ask again (a private account sees a fresh request), and the
     delete is unguarded on status with RETURNING deciding the counters, so it
     also clears a request that is still pending. Idempotent like `unfollow` —
     removing someone who does not follow you is 204, so a retry cannot fail.
     """
-    follower = await profiles.by_handle(handle, db)
-    follower_id = follower.id
-
     removed = (
         await db.execute(
             delete(Follow)

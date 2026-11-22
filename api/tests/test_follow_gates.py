@@ -176,13 +176,61 @@ def test_the_clip_read_gate_follows_the_edge(viewer, expected):
     assert _served(clips_router._get_viewable_clip(clip.id, viewer, db)) is expected
 
 
-def test_share_and_download_read_through_the_gate():
-    """The two read routes take their clip from `_get_viewable_clip` — the gate
-    the test above drives — rather than a bare `db.get`."""
-    import inspect
+@pytest.mark.parametrize("viewer, expected", VIEWERS)
+def test_share_clip_reads_through_the_gate(viewer, expected, monkeypatch):
+    """The route itself, not only the helper: a `followers` clip is presigned
+    for the accepted follower and 404s for everyone else."""
+    monkeypatch.setattr(
+        clips_router.storage, "presign_from_stored_url", lambda url, **kw: url
+    )
+    game = _game(Visibility.followers)
+    clip = _clip(game)
+    clip.clip_url = "https://example.invalid/clip.mp4"
+    db = _Session((Game, game), (Clip, clip))
+    assert _served(clips_router.share_clip(clip.id, db, viewer)) is expected
 
-    for route in (clips_router.share_clip, clips_router.download_clip):
-        assert "_get_viewable_clip(" in inspect.getsource(route), route.__name__
+
+@pytest.mark.parametrize("viewer, identified", VIEWERS)
+def test_download_names_a_public_clip_in_a_followers_game_only_for_a_follower(
+    viewer, identified, monkeypatch
+):
+    """`download_clip`'s second gate (R1-M1, remainder). A public clip inside a
+    `followers` game is readable by any signed-in caller — the clip's own tier
+    is public — but the game's title and the tagged player's name ride in the
+    presigned URL's Content-Disposition, so `can_identify` asks the *game's*
+    tier, and only an accepted follower clears it. Handing it
+    `user_id is not None` instead gave every signed-in stranger both strings;
+    this is the test that goes red when that happens."""
+    from app.models.clip import ActionType
+    from app.models.player import Player
+
+    minted = []
+
+    def _presign(url, *, expires_in, download_filename=None):
+        minted.append(download_filename)
+        return url
+
+    monkeypatch.setattr(clips_router.storage, "presign_from_stored_url", _presign)
+
+    game = _game(Visibility.followers)
+    game.title = "Regional Final"
+    player = _Obj(name="Jordan Avery")
+    clip = _clip(game, Visibility.public)
+    clip.clip_url = "https://example.invalid/clip.mp4"
+    clip.player_id = player.id
+    clip.labels = ["spike"]
+    clip.action_type = ActionType.spike
+    clip.confidence = 0.9
+    clip.start_time = 252.0
+    db = _Session((Game, game), (Clip, clip), (Player, player))
+
+    asyncio.run(clips_router.download_clip(clip.id, db, viewer))
+
+    (filename,) = minted
+    assert "spike" in filename and "00-04-12" in filename, filename
+    assert ("Regional Final" in filename) is identified, filename
+    assert ("Jordan Avery" in filename) is identified, filename
+    assert db.follow_lookups == 1, "the game's tier must be what is asked about"
 
 
 @pytest.mark.parametrize("viewer, expected", VIEWERS)
@@ -352,12 +400,23 @@ class _RemoveSession:
         self.commits += 1
 
 
+def _no_handle_lookup(monkeypatch):
+    """`by_handle` as it answers for a follower who has no findable handle:
+    404 for a NULL username (every new account) and a generated one alike."""
+
+    async def _by_handle(handle, db):
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    monkeypatch.setattr(follows_router.profiles, "by_handle", _by_handle)
+
+
 @pytest.mark.parametrize(
     "returned, moves_counters",
     [(FollowStatus.accepted, True), (FollowStatus.pending, False), (None, False)],
 )
 def test_remove_follower_deletes_the_edge_to_me(monkeypatch, returned, moves_counters):
-    follower = _target(monkeypatch)
+    _no_handle_lookup(monkeypatch)
+    follower_id = uuid.uuid4()
     me = uuid.uuid4()
     adjusted = []
 
@@ -367,19 +426,84 @@ def test_remove_follower_deletes_the_edge_to_me(monkeypatch, returned, moves_cou
     monkeypatch.setattr(follows_router, "_adjust_counts", _adjust)
     db = _RemoveSession(returned)
 
-    asyncio.run(follows_router.remove_follower("someone", me, db))
+    asyncio.run(follows_router.remove_follower(follower_id, me, db))
 
     delete_stmt = db.statements[0]
     assert delete_stmt.is_delete
     params = set(delete_stmt.compile().params.values())
-    assert {follower.id, me} <= params, "must be scoped to that follower and me"
-    assert adjusted == ([(follower.id, me, -1)] if moves_counters else [])
+    assert {follower_id, me} <= params, "must be scoped to that follower and me"
+    assert adjusted == ([(follower_id, me, -1)] if moves_counters else [])
     assert db.commits == (0 if returned is None else 1)
 
 
-def test_remove_follower_is_routed():
-    paths = {
-        (route.path, tuple(sorted(route.methods)))
+class _EdgeTableSession:
+    """Runs remove_follower's DELETE against an in-memory edge table, reading
+    the bound parameters — so an unscoped or wrongly-keyed delete removes the
+    wrong row here as it would in Postgres."""
+
+    def __init__(self, users, edges):
+        self.users = {u.id: u for u in users}
+        self.edges = dict(edges)       # (follower_id, followee_id) -> status
+        self.commits = 0
+
+    async def get(self, model, pk):
+        return self.users.get(pk)
+
+    async def execute(self, stmt):
+        if not stmt.is_delete:
+            return _ScalarResult(None)   # the counter UPDATEs
+        params = stmt.compile().params
+        followers = {v for k, v in params.items() if k.startswith("follower_id")}
+        followees = {v for k, v in params.items() if k.startswith("followee_id")}
+        hit = next(
+            (key for key in self.edges if key[0] in followers and key[1] in followees),
+            None,
+        )
+        return _ScalarResult(self.edges.pop(hit) if hit else None)
+
+    async def commit(self):
+        self.commits += 1
+
+
+@pytest.mark.parametrize("edge_status", [FollowStatus.accepted, FollowStatus.pending])
+def test_the_owner_can_remove_a_follower_who_has_no_handle(monkeypatch, edge_status):
+    """R2-M1. New accounts start with `username` NULL, can follow, and are
+    accepted by request id — and `by_handle` cannot resolve them. The owner
+    removes them by the `ProfileOut.id` their lists already show, and only the
+    edge to the owner goes."""
+    _no_handle_lookup(monkeypatch)
+    adjusted = []
+
+    async def _adjust(db, follower_id, followee_id, delta):
+        adjusted.append((follower_id, followee_id, delta))
+
+    monkeypatch.setattr(follows_router, "_adjust_counts", _adjust)
+    me, someone_else = uuid.uuid4(), uuid.uuid4()
+    nameless = _Obj(username=None, username_is_generated=False)
+    db = _EdgeTableSession(
+        [nameless],
+        {(nameless.id, me): edge_status, (nameless.id, someone_else): FollowStatus.accepted},
+    )
+
+    asyncio.run(follows_router.remove_follower(nameless.id, me, db))
+
+    assert (nameless.id, me) not in db.edges
+    assert db.edges == {(nameless.id, someone_else): FollowStatus.accepted}, (
+        "only the edge to the caller may go"
+    )
+    assert adjusted == ([(nameless.id, me, -1)] if edge_status is FollowStatus.accepted else [])
+    assert db.commits == 1
+
+    # And again: idempotent, nothing moves.
+    asyncio.run(follows_router.remove_follower(nameless.id, me, db))
+    assert db.commits == 1 and len(adjusted) == (1 if edge_status is FollowStatus.accepted else 0)
+
+
+def test_remove_follower_is_routed_on_the_user_id():
+    routes = {
+        (route.path, tuple(sorted(route.methods))): route
         for route in follows_router.router.routes
     }
-    assert ("/users/me/followers/{handle}", ("DELETE",)) in paths
+    route = routes[("/users/me/followers/{follower_id}", ("DELETE",))]
+    (param,) = route.dependant.path_params
+    assert param.name == "follower_id" and param.type_ is uuid.UUID

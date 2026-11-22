@@ -706,7 +706,7 @@ def test_the_owner_can_remove_an_accepted_follower(people):
     assert _counts(async_url, ids["priv"])[0] == 1
 
     for _ in range(2):
-        _run(async_url, lambda db: r.remove_follower("viewer", ids["priv"], db))
+        _run(async_url, lambda db: r.remove_follower(ids["viewer"], ids["priv"], db))
     assert _edge_status(async_url, ids["viewer"], ids["priv"]) is None
     assert _counts(async_url, ids["priv"])[0] == 0
     assert _counts(async_url, ids["viewer"])[1] == 0
@@ -722,9 +722,47 @@ def test_removing_a_pending_requester_counts_nothing(people):
     async_url, ids = people
 
     _run(async_url, lambda db: r.follow_user("privatetarget", ids["viewer"], db))
-    _run(async_url, lambda db: r.remove_follower("viewer", ids["priv"], db))
+    _run(async_url, lambda db: r.remove_follower(ids["viewer"], ids["priv"], db))
     assert _edge_status(async_url, ids["viewer"], ids["priv"]) is None
     assert _counts(async_url, ids["priv"])[0] == 0
+
+
+def test_the_owner_can_remove_a_follower_who_never_chose_a_handle(people):
+    """R2-M1. A new account has `username` NULL (auth.py provisions
+    `User(id, email)`), passes the generated-handle 409, and shows in the
+    owner's requests list with `username: null`. Accepted there by request id,
+    it must also be removable — by the `ProfileOut.id` the list returned."""
+    from sqlalchemy import create_engine
+
+    from app.routers import follows as r
+    from app.services import follow_graph
+
+    async_url, ids = people
+    nameless = uuid.uuid4()
+    sync = create_engine(async_url.replace("postgresql+asyncpg://", "postgresql://"))
+    with sync.begin() as c:
+        c.execute(
+            text("INSERT INTO users (id, email) VALUES (:i, :e)"),
+            {"i": nameless, "e": f"{uuid.uuid4().hex}@test.local"},
+        )
+    sync.dispose()
+
+    _run(async_url, lambda db: r.follow_user("privatetarget", nameless, db))
+    page = _run(async_url, lambda db: r.list_follow_requests(ids["priv"], db))
+    (item,) = page.items
+    assert item.requester.username is None and item.requester.id == nameless
+    _run(async_url, lambda db: r.accept_follow_request(item.id, ids["priv"], db))
+    assert _counts(async_url, ids["priv"])[0] == 1
+
+    for _ in range(2):
+        _run(async_url, lambda db: r.remove_follower(item.requester.id, ids["priv"], db))
+    assert _edge_status(async_url, nameless, ids["priv"]) is None
+    assert _counts(async_url, ids["priv"])[0] == 0
+    assert _counts(async_url, nameless)[1] == 0
+    assert _run(
+        async_url,
+        lambda db: follow_graph.is_accepted_follower(db, nameless, ids["priv"]),
+    ) is False
 
 
 def test_a_generated_handle_caller_is_refused_and_writes_nothing(people):
