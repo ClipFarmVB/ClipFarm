@@ -8,13 +8,12 @@ that redelivery can land on a *second* worker while the first is still running.
 This lock makes concurrent double-processing impossible; the idempotent clip
 refresh (CF-37) separately handles sequential re-runs.
 
-**Fork safety (CF-65b).** `_engine` is built lazily and cached per process, and
-a prefork child inherits whatever the parent had already built. Sharing a
-SQLAlchemy engine across a fork means two processes writing to one socket, and
-here that socket is the one *holding the advisory lock* — so a child could
-release, or appear to hold, the parent's lock. `reset_engine()` is called from
-the `worker_process_init` hook so each child builds its own; it disposes without
-closing, because closing would take the parent's live connection down with it.
+**Fork safety (CF-65b).** A prefork child inherits nothing from this module
+today: see the NOTE at the end of this docstring. `reset_engine()` exists as a
+backstop for the day something in the worker parent builds `_engine` before the
+fork — the `worker_process_init` hook calls it (via `forksafe`) only when this
+module is already imported, and on every current path it finds `_engine` still
+None and does nothing.
 
 **Why Postgres and not Redis.** The original lock was `SET NX EX` with a TTL
 deliberately longer than the broker visibility timeout — correct against a
@@ -191,9 +190,10 @@ def _lock_url() -> str:
 def reset_engine() -> None:
     """Drop this process's cached engine, so the next acquire builds a fresh one.
 
-    Called from the post-fork hook (see `forksafe.reset_after_fork`). `dispose`
-    with `close=False` detaches the inherited connections instead of closing
-    them: the parent is still using its own, and closing here would break it.
+    A backstop, called from the post-fork hook (see `forksafe.reset_after_fork`).
+    The parent never builds `_engine` today, so in a child this is a no-op; it
+    only matters if that ever changes. `dispose(close=False)` detaches rather
+    than closes, so a parent that did hold connections would keep them.
     """
     global _engine
     if _engine is not None:
@@ -239,11 +239,13 @@ def _get_engine() -> Engine:
         # of which timeout covers which failure.
         #
         # Capacity: one of these exists per *in-flight job*, held for the whole
-        # job, on top of the sync pool in _sync_db. The worker pool is `solo`,
-        # so that is one connection per worker process today — but session-mode
-        # connections are the scarce class on Supabase, so re-check this against
-        # max concurrent games before raising worker count or moving to prefork
-        # (CF-65b).
+        # job, on top of the sync engine in _sync_db. With the prefork pool
+        # (CF-65b) that is one lock connection per *child* with a job in flight,
+        # so up to CELERY_WORKER_CONCURRENCY per worker process, plus whatever
+        # _sync_db holds open in each child at the same moment. Session-mode
+        # connections are the scarce class on Supabase: that budget (lock + sync
+        # connections × N × worker replicas) has not been measured against the
+        # project's cap yet, so do that before raising N above 1 in production.
         _engine = create_engine(
             _lock_url(),
             poolclass=NullPool,

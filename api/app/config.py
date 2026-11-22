@@ -924,21 +924,27 @@ class Settings(BaseSettings):
     # not the call sites.
     roboflow_api_key: str = ""
 
-    # Worker concurrency (CF-65b). The prefork pool runs N games in parallel in
-    # N forked child processes. Size N by MEMORY, not cores: each child loads its
-    # own pose model and decodes its own video, so peak RSS is roughly N × a
-    # single job. Default 1 — identical throughput to the old solo pool — so
-    # nothing changes until someone has measured real headroom on the target box
-    # and raised CELERY_WORKER_CONCURRENCY deliberately.
-    celery_worker_concurrency: int = 1
-    # Recycle a child after this many tasks. The pipeline holds large numpy/cv2
-    # buffers and ultralytics caches; recycling returns that memory to the OS and
-    # bounds slow growth over long uptimes. 0 disables recycling.
-    celery_max_tasks_per_child: int = 8
-    # Cap the BLAS/OpenCV thread pools inside each child. Left alone, torch and
-    # cv2 each size their pools to the whole machine, so N children oversubscribe
-    # the CPU N-fold and run slower than serial. 0 = auto (cpu_count // N).
-    celery_child_thread_limit: int = 0
+    # Worker concurrency (CF-65b). At N > 1 the worker runs the prefork pool:
+    # N games in parallel in N forked child processes. At N = 1 the start
+    # scripts keep `--pool=solo` (scripts/render-start-worker.sh), because
+    # prefork at one child is not the solo pool — it recycles children, keeps a
+    # resident parent, and requeues a game straight away when its child is
+    # OOM-killed. Size N by MEMORY, not cores: each child decodes its own video
+    # and runs its own ffmpeg, so peak RSS is roughly N × a single job (pose runs
+    # on Modal since CF-164, so no model is loaded per child). ge=1: Celery
+    # reads 0 as "one child per CPU", which on a memory-sized box is the worst
+    # value it could pick.
+    celery_worker_concurrency: int = Field(default=1, ge=1)
+    # Recycle a prefork child after this many tasks. The pipeline holds large
+    # numpy/cv2 buffers; recycling returns that memory to the OS and bounds slow
+    # growth over long uptimes. 0 disables recycling. The solo pool ignores it.
+    celery_max_tasks_per_child: int = Field(default=8, ge=0)
+    # Cap the BLAS/OpenCV thread pools inside each prefork child. Left alone,
+    # each library sizes its pool to the whole machine, so N children
+    # oversubscribe the CPU N-fold and run slower than serial. 0 = auto: the
+    # CPUs this process may use (affinity and cgroup quota, not the host's core
+    # count) divided by N.
+    celery_child_thread_limit: int = Field(default=0, ge=0)
 
     # Modal
     modal_token_id: str = ""

@@ -69,8 +69,8 @@ celery_app.conf.update(
     # ── CF-65b: vertical concurrency ──────────────────────────────────────────
     # N forked children process N games in parallel. Set here rather than only
     # as a CLI flag so it's env-tunable per environment (a CLI --concurrency
-    # still overrides). Default 1 keeps the previous solo-pool throughput until
-    # a box's memory headroom has actually been measured — see config.py.
+    # still overrides). Default 1, at which the start scripts keep the solo pool
+    # and this setting is ignored — see config.py for why N = 1 stays solo.
     #
     # Safe only because CF-65a made concurrent processing of the *same* game
     # impossible (per-game lock); this ticket makes concurrent processing of

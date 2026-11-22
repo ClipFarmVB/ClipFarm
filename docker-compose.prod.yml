@@ -99,6 +99,12 @@ services:
       # Same production config check as the api above (CF-172) — the worker
       # reads the same credentials and fails just as quietly without them.
       ENVIRONMENT: production
+      # The base file runs two prefork children so the dev stack exercises the
+      # fork path (CF-65b). This box keeps the solo pool it ran before, at one
+      # game at a time: raising it is a sizing decision for this box, not a side
+      # effect of the dev setting. Literal, for the same reason as FFMPEG_THREADS.
+      CELERY_WORKER_CONCURRENCY: "1"
+    command: celery -A app.workers.celery_app worker --loglevel=info --pool=solo
     # No POSE_* block here any more. It used to pin the light config
     # (yolov8n-pose @ 640, every 8th frame) because pose was the one model still
     # running locally and this box is CPU-only by design. CF-164 moved pose to

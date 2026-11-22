@@ -5,32 +5,89 @@ api/requirements-dev.txt — test_dev_dependencies.py fails the suite otherwise
 (CF-276), which is what stops a guard from skipping itself into a green run.
 """
 import os
+import subprocess
+import sys
+import types
+from pathlib import Path
 
 import pytest
 
 pytest.importorskip("celery")
 pytest.importorskip("sqlalchemy")
 
+_API_DIR = Path(__file__).resolve().parent.parent
+
 
 def test_pool_settings_are_wired():
-    from app.workers.celery_app import celery_app
-    from app.config import settings
+    """Non-default values, so a hard-coded conf that happens to equal the
+    default cannot pass. conf is built at import time, hence the subprocess."""
+    env = {
+        **os.environ,
+        "CELERY_WORKER_CONCURRENCY": "3",
+        "CELERY_MAX_TASKS_PER_CHILD": "5",
+    }
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from app.workers.celery_app import celery_app as a; "
+            "print(a.conf.worker_concurrency, a.conf.worker_max_tasks_per_child)",
+        ],
+        cwd=_API_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout.split()[-2:] == ["3", "5"]
 
-    conf = celery_app.conf
-    assert conf.worker_concurrency == settings.celery_worker_concurrency
-    # 0 disables recycling; anything else must reach Celery as a positive int.
-    if settings.celery_max_tasks_per_child:
-        assert conf.worker_max_tasks_per_child == settings.celery_max_tasks_per_child
-    else:
-        assert conf.worker_max_tasks_per_child is None
+
+def test_recycling_zero_reaches_celery_as_none():
+    """0 disables recycling; Celery spells that None, not 0."""
+    env = {**os.environ, "CELERY_MAX_TASKS_PER_CHILD": "0"}
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from app.workers.celery_app import celery_app as a; "
+            "print(a.conf.worker_max_tasks_per_child)",
+        ],
+        cwd=_API_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout.split()[-1] == "None"
 
 
 def test_default_concurrency_is_conservative():
-    """Default must match the old solo-pool throughput, so merging this PR
-    changes no deployed behaviour until someone raises it deliberately."""
-    from app.config import settings
+    """The declared default, not the live settings — those read the
+    environment, and the compose worker sets CELERY_WORKER_CONCURRENCY=2."""
+    from app.config import Settings
 
-    assert settings.celery_worker_concurrency == 1
+    assert Settings.model_fields["celery_worker_concurrency"].default == 1
+
+
+@pytest.mark.parametrize(
+    "var, value",
+    [
+        ("CELERY_WORKER_CONCURRENCY", "0"),
+        ("CELERY_WORKER_CONCURRENCY", "-1"),
+        ("CELERY_MAX_TASKS_PER_CHILD", "-1"),
+        ("CELERY_CHILD_THREAD_LIMIT", "-1"),
+    ],
+)
+def test_pool_settings_refuse_values_celery_would_misread(var, value, monkeypatch):
+    """CELERY_WORKER_CONCURRENCY=0 makes Celery fork one child per CPU, with
+    thread capping skipped — the most children on a box sized by memory."""
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv(var, value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_sync_engine_uses_nullpool():
@@ -46,15 +103,10 @@ def test_sync_engine_uses_nullpool():
     assert isinstance(_sync_db._engine.pool, NullPool)
 
 
-def test_lock_engine_is_rebuilt_after_a_fork(monkeypatch):
-    """The lock engine must not be reused across a fork.
-
-    Since CF-184 the per-game lock is a *session-scoped Postgres advisory lock*,
-    held by one connection. A prefork child inheriting the parent's engine would
-    share that socket — so a child could release, or appear to hold, the parent's
-    lock. This is sharper than the Redis TTL lock this test originally covered,
-    where sharing a client only risked interleaved bytes.
-    """
+def test_reset_engine_drops_a_built_engine(monkeypatch):
+    """Backstop only: the parent never builds `_engine` today (the NOTE in
+    locks.py), so no child inherits one. If that changes, the child must drop
+    it, and detach rather than close so the parent's connections survive."""
     from app.workers import locks
 
     disposed = {}
@@ -68,14 +120,11 @@ def test_lock_engine_is_rebuilt_after_a_fork(monkeypatch):
     locks.reset_engine()
 
     assert locks._engine is None, "the inherited engine must be dropped"
-    assert disposed == {"close": False}, (
-        "dispose(close=False): closing would take the parent's live lock "
-        "connection down with it"
-    )
+    assert disposed == {"close": False}
 
 
 def test_reset_engine_is_a_noop_when_nothing_was_built(monkeypatch):
-    """Solo pool, or a child that has not acquired yet — nothing to dispose."""
+    """Every real path today — nothing to dispose."""
     from app.workers import locks
 
     monkeypatch.setattr(locks, "_engine", None)
@@ -83,17 +132,126 @@ def test_reset_engine_is_a_noop_when_nothing_was_built(monkeypatch):
     assert locks._engine is None
 
 
-def test_the_post_fork_hook_resets_the_lock_engine(monkeypatch):
-    """The wiring, not just the reset: forksafe must actually call it."""
-    from app.workers import forksafe, locks
+# ── reset_after_fork wiring ──────────────────────────────────────────────────
+
+
+def test_worker_process_init_runs_the_post_fork_hook(monkeypatch):
+    """The receiver must actually be connected, not just defined."""
+    from celery.signals import worker_process_init
+
+    from app.workers import celery_app as ca
+
+    calls = []
+    monkeypatch.setattr(ca, "reset_after_fork", lambda **kw: calls.append(kw))
+
+    worker_process_init.send(sender=None)
+
+    assert len(calls) == 1, "worker_process_init must reach _init_pool_child"
+
+
+def test_reset_after_fork_runs_every_reset(monkeypatch):
+    from app.workers import forksafe
+
+    calls = []
+    for name in ("_reset_db_pool", "_reset_lock_engine", "_reset_storage_client"):
+        monkeypatch.setattr(forksafe, name, lambda name=name: calls.append(name))
+    monkeypatch.setattr(
+        forksafe,
+        "_limit_native_threads",
+        lambda c, t: calls.append(("_limit_native_threads", c, t)),
+    )
+
+    forksafe.reset_after_fork(
+        concurrency=3, thread_limit=2, init_monitoring=lambda: calls.append("monitoring")
+    )
+
+    assert calls == [
+        "_reset_db_pool",
+        "_reset_lock_engine",
+        "_reset_storage_client",
+        ("_limit_native_threads", 3, 2),
+        "monitoring",
+    ]
+
+
+def test_a_monitoring_failure_does_not_stop_the_child(monkeypatch):
+    """Reporting must never break processing."""
+    from app.workers import forksafe
+
+    for name in ("_reset_db_pool", "_reset_lock_engine", "_reset_storage_client"):
+        monkeypatch.setattr(forksafe, name, lambda: None)
+    monkeypatch.setattr(forksafe, "_limit_native_threads", lambda c, t: None)
+
+    def _boom():
+        raise RuntimeError("sentry down")
+
+    forksafe.reset_after_fork(concurrency=1, thread_limit=0, init_monitoring=_boom)
+
+
+def _fake_module(monkeypatch, name, **attrs):
+    module = types.ModuleType(name)
+    for key, value in attrs.items():
+        setattr(module, key, value)
+    monkeypatch.setitem(sys.modules, name, module)
+    return module
+
+
+def test_db_reset_detaches_an_imported_sync_engine(monkeypatch):
+    from app.workers import forksafe
+
+    disposed = []
+    engine = types.SimpleNamespace(dispose=lambda close=True: disposed.append(close))
+    _fake_module(monkeypatch, "app.workers._sync_db", _engine=engine)
+
+    forksafe._reset_db_pool()
+
+    assert disposed == [False]
+
+
+def test_lock_reset_calls_reset_engine_when_imported(monkeypatch):
+    from app.workers import forksafe
 
     called = []
-    monkeypatch.setattr(locks, "reset_engine", lambda: called.append(True))
+    _fake_module(
+        monkeypatch, "app.workers.locks", reset_engine=lambda: called.append(True)
+    )
 
     forksafe._reset_lock_engine()
 
     assert called == [True]
 
+
+def test_storage_reset_clears_the_cached_client_when_imported(monkeypatch):
+    from app.workers import forksafe
+
+    cleared = []
+    client = types.SimpleNamespace(cache_clear=lambda: cleared.append(True))
+    _fake_module(monkeypatch, "app.services.storage", _client=client)
+
+    forksafe._reset_storage_client()
+
+    assert cleared == [True]
+
+
+@pytest.mark.parametrize(
+    "module", ["app.workers._sync_db", "app.workers.locks", "app.services.storage"]
+)
+def test_resets_do_not_import_what_the_parent_never_imported(module, monkeypatch):
+    """The resets exist for state the parent built. A module that was never
+    imported built nothing, and importing it in every child at startup (again
+    on every recycle) would only front-load its imports."""
+    from app.workers import forksafe
+
+    monkeypatch.delitem(sys.modules, module, raising=False)
+
+    forksafe._reset_db_pool()
+    forksafe._reset_lock_engine()
+    forksafe._reset_storage_client()
+
+    assert module not in sys.modules
+
+
+# ── native thread capping ────────────────────────────────────────────────────
 
 _THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
 
@@ -115,7 +273,7 @@ def thread_env(monkeypatch):
 def test_thread_limit_divides_cpus_across_children(thread_env):
     from app.workers import forksafe
 
-    thread_env.setattr(forksafe.os, "cpu_count", lambda: 8)
+    thread_env.setattr(forksafe, "_available_cpus", lambda: 8)
 
     forksafe._limit_native_threads(concurrency=4, explicit_limit=0)
     for var in _THREAD_VARS:
@@ -123,7 +281,7 @@ def test_thread_limit_divides_cpus_across_children(thread_env):
 
 
 def test_thread_limit_is_a_noop_at_concurrency_one(thread_env):
-    """Solo/1-way keeps today's behaviour — the libraries use the whole box."""
+    """1-way keeps today's behaviour — the libraries use the whole box."""
     from app.workers import forksafe
 
     forksafe._limit_native_threads(concurrency=1, explicit_limit=0)
@@ -133,7 +291,7 @@ def test_thread_limit_is_a_noop_at_concurrency_one(thread_env):
 def test_explicit_thread_limit_wins(thread_env):
     from app.workers import forksafe
 
-    thread_env.setattr(forksafe.os, "cpu_count", lambda: 8)
+    thread_env.setattr(forksafe, "_available_cpus", lambda: 8)
     forksafe._limit_native_threads(concurrency=4, explicit_limit=3)
     assert os.environ["OMP_NUM_THREADS"] == "3"
 
@@ -161,3 +319,130 @@ def test_celeryd_init_captures_the_cli_concurrency(thread_env):
 
     ca._init_worker_monitoring(options={"concurrency": 6})
     assert ca._effective_concurrency == 6
+
+
+# ── CPU budget: affinity and cgroup quota, not the host's core count ─────────
+
+
+@pytest.fixture
+def cgroup(tmp_path, monkeypatch):
+    """Point forksafe's cgroup paths at files the test writes."""
+    from app.workers import forksafe
+
+    paths = {
+        "v2": tmp_path / "cpu.max",
+        "quota": tmp_path / "cpu.cfs_quota_us",
+        "period": tmp_path / "cpu.cfs_period_us",
+    }
+    monkeypatch.setattr(forksafe, "_CGROUP_V2_CPU_MAX", str(paths["v2"]))
+    monkeypatch.setattr(forksafe, "_CGROUP_V1_QUOTA", str(paths["quota"]))
+    monkeypatch.setattr(forksafe, "_CGROUP_V1_PERIOD", str(paths["period"]))
+    monkeypatch.setattr(forksafe.os, "sched_getaffinity", lambda _pid: set(range(16)), raising=False)
+    monkeypatch.setattr(forksafe.os, "cpu_count", lambda: 16)
+    return paths
+
+
+def test_cpus_follow_a_v2_quota(cgroup):
+    """The render.yaml trap: 16 visible cores, a fractional-CPU quota."""
+    from app.workers import forksafe
+
+    cgroup["v2"].write_text("50000 100000\n")
+    assert forksafe._available_cpus() == 1
+
+    cgroup["v2"].write_text("200000 100000\n")
+    assert forksafe._available_cpus() == 2
+
+
+def test_cpus_follow_a_v1_quota(cgroup):
+    from app.workers import forksafe
+
+    cgroup["quota"].write_text("300000\n")
+    cgroup["period"].write_text("100000\n")
+    assert forksafe._available_cpus() == 3
+
+
+def test_an_unlimited_quota_falls_back_to_affinity(cgroup, monkeypatch):
+    from app.workers import forksafe
+
+    cgroup["v2"].write_text("max 100000\n")
+    monkeypatch.setattr(forksafe.os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3})
+    assert forksafe._available_cpus() == 4
+
+
+def test_no_cgroup_files_and_no_affinity_falls_back_to_cpu_count(cgroup, monkeypatch):
+    from app.workers import forksafe
+
+    monkeypatch.delattr(forksafe.os, "sched_getaffinity")
+    assert forksafe._available_cpus() == 16
+
+
+def test_auto_thread_cap_uses_the_quota_not_the_host(cgroup, thread_env):
+    from app.workers import forksafe
+
+    cgroup["v2"].write_text("100000 100000\n")  # 1 CPU on a 16-core host
+    forksafe._limit_native_threads(concurrency=2, explicit_limit=0)
+    assert os.environ["OMP_NUM_THREADS"] == "1"
+
+
+# ── which pool each start path runs ──────────────────────────────────────────
+
+_REPO_ROOT = _API_DIR.parent
+
+
+@pytest.mark.parametrize(
+    "value, pool",
+    [(None, "solo"), ("1", "solo"), ("2", "prefork"), ("8", "prefork"), ("abc", "solo")],
+)
+def test_render_start_keeps_solo_until_concurrency_is_raised(value, pool, tmp_path):
+    """Prefork at one child is not the solo pool (OOM-kill requeue with no
+    attempt cap, child recycling, a resident parent), so N = 1 stays solo."""
+    stub = tmp_path / "celery"
+    stub.write_text('#!/bin/sh\necho "$@"\n')
+    stub.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k != "CELERY_WORKER_CONCURRENCY"}
+    env["PATH"] = f"{tmp_path}{os.pathsep}{env.get('PATH', '')}"
+    if value is not None:
+        env["CELERY_WORKER_CONCURRENCY"] = value
+
+    out = subprocess.run(
+        ["sh", str(_REPO_ROOT / "scripts" / "render-start-worker.sh")],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout.split()[-1] == f"--pool={pool}"
+
+
+def _compose_worker(name):
+    yaml = pytest.importorskip("yaml")
+
+    class _Loader(yaml.SafeLoader):
+        pass
+
+    def _passthrough(loader, _suffix, node):
+        if isinstance(node, yaml.SequenceNode):
+            return loader.construct_sequence(node, deep=True)
+        if isinstance(node, yaml.MappingNode):
+            return loader.construct_mapping(node, deep=True)
+        return loader.construct_scalar(node)
+
+    _Loader.add_multi_constructor("!", _passthrough)
+    with open(_REPO_ROOT / name) as f:
+        return yaml.load(f, Loader=_Loader)["services"]["worker"]
+
+
+def test_dev_compose_actually_forks():
+    """Solo ignores CELERY_WORKER_CONCURRENCY and never fires
+    worker_process_init, so a solo dev stack exercises none of forksafe."""
+    worker = _compose_worker("docker-compose.yml")
+    assert "--pool=prefork" in worker["command"]
+    assert int(worker["environment"]["CELERY_WORKER_CONCURRENCY"]) > 1
+
+
+def test_vps_overlay_keeps_the_solo_pool():
+    """The VPS layers docker-compose.prod.yml over the dev file, so the dev
+    worker's prefork setting must not reach it by inheritance."""
+    worker = _compose_worker("docker-compose.prod.yml")
+    assert "--pool=solo" in worker["command"]
+    assert worker["environment"]["CELERY_WORKER_CONCURRENCY"] == "1"
