@@ -112,10 +112,11 @@ services:
     # does not reproduce CF-224 — that box was half this size.
     #
     # Three honest limits. `api` and `web` are still unconstrained (out of scope
-    # per CF-241), so this is parity for one of three services. `--pool=solo`
-    # means the cost lands on every local game. And the fast overlay that hands
-    # that cost back has exactly the discoverability problem the cap was chosen
-    # to avoid: you have to know it exists. The cap is the default because being
+    # per CF-241), so this is parity for one of three services. Every local
+    # game runs under the cap (shared by both prefork children, CF-65b), so the
+    # cost lands on all of them. And the fast overlay that hands that cost back
+    # has exactly the discoverability problem the cap was chosen to avoid: you
+    # have to know it exists. The cap is the default because being
     # wrong about speed is recoverable and being wrong about fit is not — not
     # because the trade is free.
     #
@@ -202,6 +203,16 @@ services:
       # refinement no-ops and clips keep their ball-trajectory labels. To do
       # real pose work locally, run the worker outside Docker against
       # ml/requirements.txt — every local path is still in the code.
+      # Two games in parallel on the prefork pool (CF-65b), so the forked-child
+      # path (app/workers/forksafe.py) runs somewhere before production. Both
+      # children share the mem_limit/cpus caps above — the production-sized box
+      # — so two heavy games at once can OOM here where one would fit. Each
+      # child decodes its own video: this is bounded by RAM, not cores. An OOM
+      # here kills one child, not the container, and task_reject_on_worker_lost
+      # requeues its game at once with nothing counting attempts, so a game that
+      # OOMs every time loops until you stop it. To watch a game die the way
+      # production does, use docker-compose.repro.yml, which runs solo.
+      CELERY_WORKER_CONCURRENCY: "2"
     depends_on:
       redis:
         condition: service_healthy
@@ -211,7 +222,11 @@ services:
         condition: service_started
     # No model_cache volume since CF-164 (see x-worker-image above): nothing in
     # this image downloads weights, and the top-level volume it referenced is gone.
-    command: celery -A app.workers.celery_app worker --loglevel=info --pool=solo
+    # prefork, not solo: solo ignores CELERY_WORKER_CONCURRENCY and runs the
+    # one worker process, so nothing is forked and the post-fork hook returns
+    # early. Production stays solo at N = 1; see
+    # scripts/render-start-worker.sh for why the two pools differ even then.
+    command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork
 
   # The eval harness and the tuning scripts, deliberately *un*constrained.
   #

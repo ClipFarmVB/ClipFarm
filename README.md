@@ -476,8 +476,10 @@ the backend on a VPS — an alternative, not the production path.
 - **Jersey OCR (`ocr.py`) is not wired in** — every clip's `player_id` is currently null.
 - **`inference` must stay pinned** (`==1.3.3`): an unpinned resolver backtracks to a
   version predating RF-DETR support and the ball model silently fails to load.
-- **Celery worker runs `--pool=solo`**: one job at a time; a hung transfer blocks the queue
-  (mitigated by boto3 socket timeouts). Not horizontally scaled yet.
+- **The production worker runs `--pool=solo`**: one job at a time; a hung transfer blocks the
+  queue (mitigated by boto3 socket timeouts). Not horizontally scaled yet. Setting
+  `CELERY_WORKER_CONCURRENCY` above 1 switches it to the prefork pool (CF-65b); the dev
+  compose runs 2 children so that path is exercised locally.
 
 ---
 

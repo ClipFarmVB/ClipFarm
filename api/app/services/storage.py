@@ -75,14 +75,13 @@ def _client():
 
     **Not fork-safe, and that matters for CF-65b.** botocore clients are
     thread-safe but not fork-safe: a client built before a fork is inherited by
-    every child, and its connection pool is then shared across processes. That
-    is harmless today only because both celery entry points pin `--pool=solo`
-    (`scripts/render-start-worker.sh`, `docker-compose.yml`) — and that script's
-    own comment says prefork concurrency is CF-65b. Whoever makes that switch
-    has to construct the client *after* the fork (a `worker_process_init` hook
-    calling `_client.cache_clear()` is the usual shape), because the symptom
-    otherwise is intermittent connection errors that will not look like this
-    cache.
+    every child, and its connection pool is then shared across processes. The
+    prefork pool (CF-65b) avoids that two ways: the worker parent never calls
+    this before forking (it is only used inside tasks), and the
+    `worker_process_init` hook calls `_client.cache_clear()` in each child
+    whenever this module is already imported (`forksafe._reset_storage_client`).
+    Keep both, because the symptom otherwise is intermittent connection errors
+    that will not look like this cache.
 
     It also freezes `settings.r2_*` at first call, process-wide. A test that
     patches those after anything else has presigned signs against the old

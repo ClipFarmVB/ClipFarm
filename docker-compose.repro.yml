@@ -14,6 +14,11 @@
 #   - 512m / 0.5 CPU is the box that failed. `memswap_limit` matches so there is
 #     no swap; Render had none, and 512 MB of swap is enough to turn this run
 #     green while production still dies.
+#   - --pool=solo at CELERY_WORKER_CONCURRENCY=1 is the pool production ran.
+#     The base file runs two prefork children (CF-65b). Under prefork a resident
+#     parent shares the 512m, and an OOM kills one child, whose game is requeued
+#     at once instead of the container dying, so the run loops instead of
+#     failing the way production did.
 #   - FFMPEG_THREADS=4 is deliberately *un*balanced against half a CPU, and is
 #     the opposite of the base file's "raise threads with CPUs" advice. CF-224
 #     measured the ceiling: 1 thread peaks at 407 MB and survives, 2 at 468 MB,
@@ -43,3 +48,5 @@ services:
     # docker-compose.fast.yml.
     environment:
       FFMPEG_THREADS: "4"
+      CELERY_WORKER_CONCURRENCY: "1"
+    command: celery -A app.workers.celery_app worker --loglevel=info --pool=solo
