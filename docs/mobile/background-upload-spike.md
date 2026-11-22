@@ -422,7 +422,9 @@ stops mattering. Test I-8 settles it.
 A failed part re-sends the whole part `[repo]` — that is the stated reason
 multipart exists here (`config.py`). Wasted transfer time per failure, at a
 representative 5 Mbps cellular uplink `[arithmetic]`, is 168 s for a 100 MiB
-part against 54 s for a 32 MiB part. The real per-part failure rate on a phone
+part against 54 s for a 32 MiB part. 5 Mbps is this document's typical-case
+filmer uplink; §6.5's A-10 deliberately probes a slower tail (~2 Mbps), where
+both figures are 2.5× larger and the ~3× ratio is unchanged. The real per-part failure rate on a phone
 walking out of a gym is `[TO MEASURE]` and is the whole reason test A-4/I-4
 exist.
 
@@ -464,10 +466,14 @@ exist.
 - **The 6 h `dataSync` cap binds on Android** for cap-sized files. It does not
   change the best part size, but it changes whether 8 GB is achievable at all on
   one FGS budget, which is a `max_upload_bytes` conversation, not a part-size
-  one. **Test A-10** is the one that settles it: A-7 forces the cap on a
-  throttled link to check `onTimeout()` handling, and A-9 is pinned above the
-  cap on purpose, so neither produces a cap-sized unattended result at a rate a
-  filmer would actually have.
+  one. It can only bind on a slow link: 8 GiB in 6 h of service time needs
+  3.18 Mbps `[arithmetic]`, so at §5.2's typical 5 Mbps (3.82 h) the cap is
+  **not** expected to bind, and the question is how many filmers sit in the
+  1.59–3.18 Mbps band where the cap binds but the 12 h TTL does not.
+  **Test A-10** is the one that settles what happens there: A-7 forces the cap
+  on a throttled link to check `onTimeout()` handling, and A-9 is pinned above
+  the cap on purpose, so neither produces a cap-sized unattended result on a
+  slow-tail link.
 
 Do **not** change the setting until the device test is run.
 
@@ -609,7 +615,7 @@ backgrounded. The ticket is explicit about this and it is the whole point.
 | **A-7** | `dataSync` 6 h cap | D3, F-8GB on a deliberately throttled link so the FGS runs >6 h | `onTimeout()` fires; the service stops cleanly with no `RemoteServiceException`; the upload resumes on next foreground |
 | **A-8** | scoped storage | upload straight from the system picker's `content://` URI, **once from local device storage and once from a cloud-backed provider** (Google Photos or Drive) | ranged reads work with no full copy to app storage. **Record peak scratch for each provider.** A provider that hands back a non-seekable descriptor forces a staged copy, which makes §4.1's zero-scratch claim false and extends §5.1's disk cost to Android |
 | **A-9** | 8 GB overnight | D3, F-8GB, locked, on battery, overnight, **on a link fast enough that 8 GiB transfers in under 6 h of service time** (≥ ~3.5 Mbps sustained) and with the app never foregrounded | completes inside the 12 h TTL. **If the transfer needs more than 6 h of `dataSync` time it cannot pass this criterion** — the Android 15 cap (§4.3) stops the service first, and that result is A-7, not a TTL failure. Record the link rate and the service time so the two are distinguishable |
-| **A-10** | **8 GB overnight at a representative rate** | D3, F-8GB, locked, on battery, overnight, app never foregrounded, **on an ordinary cellular uplink of ~2 Mbps** — fast enough for the 12 h TTL (needs 1.59 Mbps, §1.2) but ~9.5 h of transfer time, so the 6 h cap is the binding constraint `[arithmetic]` | **this row is an input to the `max_upload_bytes` decision, not a platform pass/fail.** Record whether the service reached its 6 h budget, and what wall-clock that took: 6 h of `dataSync` time is not 6 h of wall-clock once Doze, maintenance windows and the OEM manager intervene, and that ratio is the number §5.3's fourth flip condition needs. A cap-induced stop here is A-7's mechanism under realistic conditions, so record how many bytes landed before `onTimeout()` and whether the remainder resumed on next foreground. **Not** a FAIL against the 12 h TTL (§6.6) |
+| **A-10** | **8 GB overnight on a slow-tail link** | D3, F-8GB, locked, on battery, overnight, app never foregrounded, **on a cellular uplink of ~2 Mbps** (throttled, or a measured link held inside 1.59–3.18 Mbps) — a deliberate slow-tail probe, not the typical case: at §5.2's representative 5 Mbps the cap is not expected to bind (§5.3). ~2 Mbps is fast enough for the 12 h TTL (needs 1.59 Mbps, §3.2) but ~9.5 h of transfer time, so the 6 h cap is the binding constraint `[arithmetic]` | **this row is an input to the `max_upload_bytes` decision, not a platform pass/fail.** Record whether the service reached its 6 h budget, and what wall-clock that took: 6 h of `dataSync` time is not 6 h of wall-clock once Doze, maintenance windows and the OEM manager intervene, and that ratio is the number §5.3's fourth flip condition needs. A cap-induced stop here is A-7's mechanism under realistic conditions, so record how many bytes landed before `onTimeout()` and whether the remainder resumed on next foreground. **Not** a FAIL against the 12 h TTL (§6.6) |
 
 ### 6.6 Pass / fail thresholds
 
@@ -630,7 +636,7 @@ separately from a platform failure — it is our bug, not Apple's or Google's.
 Likewise, an Android run that stops because the 6 h `dataSync` budget ran out
 (§4.3) is **not** a FAIL against the 12 h TTL and must not be recorded as one.
 It is the documented cap doing what §4.3 says, and the result belongs with A-7
-(mechanism) or A-10 (whether it binds at a rate a filmer would have). Record the
+(mechanism) or A-10 (whether it binds on a slow-tail link). Record the
 service time alongside the wall-clock so the two causes stay distinguishable.
 
 ---
@@ -674,7 +680,7 @@ part size today, so answering the part-size question also answers whether we
 need a per-client one. Record the decision here.
 
 **Does 8 GB survive one Android FGS budget?** `[TO MEASURE]` — A-10. If 6 h of
-`dataSync` time does not cover a cap-sized file at an ordinary rate, that is the
+`dataSync` time does not cover a cap-sized file on a slow-tail link, that is the
 `max_upload_bytes` input §5.3's fourth flip condition asks for, and the answer
 is a product decision (lower the cap, or require a foreground visit), not a
 part-size one.
@@ -788,8 +794,8 @@ the iOS TTL fix needs. One ticket serves both.
   (§4.1). Test A-8. `[TO MEASURE]`
 - Whether the file-only constraint on iOS background uploads still holds as
   documented (§3.1). `[TO MEASURE]`
-- Whether 6 h of `dataSync` budget covers a cap-sized file at an ordinary
-  cellular rate, i.e. how much wall-clock those 6 h of service time take once
+- Whether 6 h of `dataSync` budget covers a cap-sized file on a slow-tail
+  (~2 Mbps) cellular link, i.e. how much wall-clock those 6 h of service time take once
   Doze and the OEM manager are in play. Test A-10; it is the `max_upload_bytes`
   input, not a part-size one. `[TO MEASURE]`
 
