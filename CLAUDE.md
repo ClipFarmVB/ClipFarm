@@ -26,9 +26,8 @@ changes that break rally boundaries.
   `mobile`), or the kind of change (`fix`, `docs`, `ci`, `chore`). **That list is
   what is in use, not a closed set**, so a new epic adds to it; prefer one of those
   over coining a category. Three spellings in the history not to copy: `dead-time`
-  (it is `deadtime`), `misc` (say what the work is), and `feat` — the leftover
-  case, since every branch that is not a fix, doc or chore is a feature, so it
-  sorts nothing.
+  (it is `deadtime`), `misc` (say what the work is), and `feat`, which would fit
+  most of the list above and so separates nothing from anything.
 - **PR title:** `type(scope): CF-## description` for new work. Most recent PRs
   follow it, but not all — some older ones open with the card id instead
   (`CF-65a · …`), and the scope is sometimes omitted (`docs: …`). Match the
