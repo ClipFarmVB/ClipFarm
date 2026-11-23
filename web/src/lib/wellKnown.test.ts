@@ -107,6 +107,15 @@ describe("buildAppleAssociation", () => {
       expect(buildAppleAssociation(env)).toBeNull();
     }
   );
+
+  it.each([
+    "app.clipfarm.mobile",
+    "ABCDE12345.app.clipfarm.mobile,FGHIJ67890.app.clipfarm.mobile",
+    "ABCDE1234.app.clipfarm.mobile",
+    "ABCDE12345.",
+  ])("returns null for the malformed app ID %j, as the fingerprints do", (appId) => {
+    expect(buildAppleAssociation({ IOS_APP_ID: appId })).toBeNull();
+  });
 });
 
 describe("buildAssetLinks", () => {

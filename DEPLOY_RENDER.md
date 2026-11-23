@@ -342,6 +342,11 @@ Three things to get right, each of which fails silently rather than loudly:
   iOS re-reads it only on install and on app update, so publishing a bad value
   once keeps deciding link behaviour long after it is fixed. That is why the
   routes 404 on missing configuration instead of serving a placeholder.
+- **Android's intent filters must exclude `/auth/*`, `/login` and `/signup`.**
+  `assetlinks.json` cannot scope paths — it grants the app the whole domain —
+  so the exclusions the Apple file carries have to live in the app's manifest
+  (CF-326). A verified filter with no path restriction opens the app on a
+  signup confirmation link and spends its single-use token there.
 
 Both are read per request, so changing one is a **restart**, not a rebuild —
 unlike the `NEXT_PUBLIC_*` variables above, which are inlined at build time.

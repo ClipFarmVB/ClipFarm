@@ -10,8 +10,9 @@ import { buildAppleAssociation } from "@/lib/wellKnown";
  * deployment configuration rather than source — see DEPLOY_RENDER.md.
  *
  * Apple's fetcher does not follow redirects, so this must answer 200 directly.
- * Nothing in the app redirects it today — `next.config.ts` sets no `redirects`,
- * `rewrites` or `trailingSlash`, and the Supabase middleware only redirects
+ * Nothing in the app redirects it today — `next.config.ts` sets no `redirects`
+ * or `trailingSlash`, its one rewrite is Sentry's `/monitoring` tunnel, and the
+ * Supabase middleware only redirects
  * PROTECTED_PREFIXES — but see `src/middleware.ts` for why `.well-known` is
  * kept out of the matcher anyway. At the edge it is a live concern: the `www`
  * to apex redirect in DEPLOY_RENDER.md §4 means this has to be fetched from the

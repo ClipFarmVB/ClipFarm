@@ -227,7 +227,7 @@ the most common Android failure and which costs days to chase.
 
 **Consequences.** Both paths 404 in production until someone sets the three
 variables, and `DEPLOY_RENDER.md` §6 is now where that is written down — the
-ticket's two validator acceptance boxes cannot be ticked until then. These are
+ticket's remaining acceptance boxes cannot be ticked until then. These are
 also the first server-only (non-`NEXT_PUBLIC_`) environment variables read from
 `web/src`, so the prefix convention there is no longer universal. The Apple
 allowlist is a small contract with CF-326, which may extend it.

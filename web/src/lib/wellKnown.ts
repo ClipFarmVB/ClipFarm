@@ -56,7 +56,11 @@ const ANDROID_SHA256_CERT_FINGERPRINTS = "ANDROID_SHA256_CERT_FINGERPRINTS";
  *
  * Android does no path filtering in this file at all — `assetlinks.json` grants
  * the app the whole domain, and the app's own intent filters decide which paths
- * it opens. So this list is genuinely iOS-only, not a shared contract.
+ * it opens. The *mechanism* here is iOS-only; the *requirement* is not. The
+ * Android intent filters (CF-326) must keep `/auth/*`, `/login` and `/signup`
+ * out for the same single-use-token reason — an `autoVerify` filter with a host
+ * and no path restriction opens the app with no chooser and spends the
+ * confirmation token in an app with no handler for it.
  */
 export const APPLE_COMPONENTS: readonly AppleComponent[] = [
   { "/": "/auth/*", exclude: true, comment: "Web must handle email confirmation" },
@@ -87,6 +91,13 @@ export interface AssetLink {
     sha256_cert_fingerprints: string[];
   };
 }
+
+/**
+ * `<TeamID>.<bundleIdentifier>`: a 10-character Team ID, a dot, then the bundle
+ * id. Catches the two realistic mistakes — the bare bundle id with no Team ID,
+ * and two app IDs comma-separated like the Android fingerprints beside it.
+ */
+const APPLE_APP_ID = /^[A-Z0-9]{10}\.[A-Za-z0-9.-]+$/;
 
 /** 32 colon-separated hex bytes, which is the only shape either tool emits. */
 const FINGERPRINT = /^[0-9A-F]{2}(:[0-9A-F]{2}){31}$/;
@@ -122,7 +133,9 @@ export function parseFingerprints(raw: string | undefined): string[] | null {
  */
 export function buildAppleAssociation(env: Env): AppleAssociation | null {
   const appId = env[IOS_APP_ID]?.trim();
-  if (!appId) return null;
+  // Validated as strictly as the fingerprints, and for a stronger reason: this
+  // is the file Apple's CDN caches, so a malformed value is the sticky failure.
+  if (!appId || !APPLE_APP_ID.test(appId)) return null;
   return {
     applinks: {
       apps: [],
