@@ -6,22 +6,44 @@ import Link from "next/link";
 import { AlertCircle, ArrowLeft, CheckSquare, Download, Scissors, Square, Trash2, X } from "lucide-react";
 import { ClipCardSkeleton } from "@/components/ui/Skeleton";
 import { ClipCard } from "@/components/ClipCard";
-import { ClipModal } from "@/components/ClipModal";
+import { ClipModal, mergeClipFields } from "@/components/ClipModal";
 import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { getGame, getClips, getPlayers, deleteClips, type Game, type Clip, type Player, type ActionType, type ClipFilters } from "@/lib/api";
+import { ApiError } from "@/lib/apiError";
 import { estimateEtaSeconds, formatEta, pushSample, type ProgressSample } from "@/lib/eta";
 import { cn } from "@/lib/utils";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { DemoBadge, DemoBanner } from "@/components/DemoGame";
 
 const ACTION_TYPES: ActionType[] = ["spike", "serve", "dig", "set", "block"];
+
+// `#7 Alice`, or `Alice` for a player with no jersey number — the same form
+// ClipCard's tag dropdown uses, so a player reads the same in both places.
+function playerLabel(p: Player): string {
+  return `${p.jersey_number != null ? `#${p.jersey_number} ` : ""}${p.name}`;
+}
 
 // How long the filters must be still before the clips are refetched. The
 // sliders change on every step of a drag, and GET /games/{id}/clips is rate
 // limited per caller (CF-186), so fetching per step could spend the whole
-// budget in one gesture.
+// budget in one gesture. Each settle costs one request per page of clips
+// (CLIP_PAGE_SIZE), not one in all.
 const CLIP_FILTER_DEBOUNCE_MS = 300;
+
+// The grid loads every clip the filters admit by paging the route (CF-300):
+// left to its default the route returns the first 50, and the page has no
+// paging control, so a longer game's later clips were unreachable. 100 is the
+// route's `page_size` maximum. The page cap bounds what one settle can spend
+// of the 60/min budget; past 1,000 clips the grid shows the first 1,000.
+const CLIP_PAGE_SIZE = 100;
+const CLIP_PAGE_LIMIT = 10;
+
+// Consecutive failed poll ticks before the processing view says it cannot
+// reach the server. One or two are a blip the next tick usually rides out; at
+// the 5s period this is 15s without an answer.
+const POLL_TROUBLE_AFTER = 3;
 
 function fmtDuration(seconds: number): string {
   const s = Math.round(seconds);
@@ -34,8 +56,14 @@ function fmtDuration(seconds: number): string {
 }
 
 const STATUS_STYLES: Record<Game["status"], string> = {
-  // Reachable only by the tab performing the upload — the api hands back an
-  // `uploading` game while its video is still transferring to R2.
+  // Not expected here: UploadZone navigates to this page only after
+  // completeUpload resolves, by which point the game is `queued`. Reachable
+  // only by a typed URL: mid-transfer, or for an abandoned upload (a tab
+  // closed mid-transfer), whose row stays `uploading` until the api's sweep
+  // removes it — 24h old at the earliest, and only on that owner's next
+  // upload, so possibly never. The entry keeps this map total over
+  // Game["status"]; the page does not poll an `uploading` game, so such a
+  // visit shows a static header for as long as the row lasts.
   uploading:  "text-zinc-500 bg-zinc-500/8 border-zinc-500/20",
   queued:     "text-zinc-500 bg-zinc-500/8 border-zinc-500/20",
   processing: "text-blue-400 bg-blue-500/8 border-blue-500/20",
@@ -61,7 +89,15 @@ export default function GamePage() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
+  // A clips request is in flight. Distinct from `loading`, which covers the
+  // first fetch only: a refetch keeps the grid it has, so this flag is what
+  // stops the empty state describing a result that has not landed yet.
+  const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
+  // The last POLL_TROUBLE_AFTER poll ticks failed. The poll keeps going, so
+  // this clears on the next tick that lands.
+  const [pollTrouble, setPollTrouble] = useState(false);
   const [activeClipIndex, setActiveClipIndex] = useState<number | null>(null);
   const [filters, setFilters] = useState<ClipFilters>({ min_confidence: 0, min_score: 0, sort: "time" });
   // What the clips fetch reads. The controls update `filters` at once so the
@@ -121,8 +157,15 @@ export default function GamePage() {
     if (!confirm(`Delete ${selectedIds.size} clip${selectedIds.size === 1 ? "" : "s"}? This cannot be undone.`)) return;
     setDeleting(true);
     try {
-      await deleteClips(Array.from(selectedIds));
+      const { deleted } = await deleteClips(Array.from(selectedIds));
       setClips((prev) => prev.filter((c) => !selectedIds.has(c.id)));
+      // The header's count comes from the game fetch, which a ready game
+      // never repeats; without this it kept the pre-delete number until a
+      // reload (CF-300). The api deletes the whole selection or refuses it,
+      // so `deleted` equals what was asked for.
+      setGame((g) => (g && g.clip_count != null
+        ? { ...g, clip_count: Math.max(0, g.clip_count - deleted) }
+        : g));
       exitSelectMode();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Delete failed");
@@ -133,38 +176,166 @@ export default function GamePage() {
 
   // Fetch game — poll if active
   useEffect(() => {
+    // Set by the cleanup. The first fetch can resolve after the page has gone
+    // (a fast navigation), and the interval it would then start is one the
+    // cleanup never saw, so it polled for the rest of the session (CF-300).
+    let disposed = false;
     let interval: ReturnType<typeof setInterval> | null = null;
+
+    function stopPolling() {
+      if (interval) clearInterval(interval);
+      interval = null;
+    }
+
+    // A 404 is a game that does not exist or is not visible to this viewer
+    // (`get_game`); anything else is a fault (CF-423).
+    function showFailure(e: unknown, fallback: string) {
+      if (e instanceof ApiError && e.status === 404) setNotFound(true);
+      else setError(e instanceof Error ? e.message : fallback);
+    }
 
     async function fetchGame() {
       try {
         const g = await getGame(id);
+        if (disposed) return;
         setGame(g);
         if (g.status === "processing" || g.status === "queued") {
+          let failedTicks = 0;
           interval = setInterval(async () => {
-            const updated = await getGame(id);
-            setGame(updated);
-            if (updated.status === "ready" || updated.status === "failed") {
-              if (interval) clearInterval(interval);
+            // Ticks do not wait for each other, so one can land after the
+            // poll has stopped (a slower tick behind the one that saw
+            // `ready`); a late answer then must not touch the page.
+            try {
+              const updated = await getGame(id);
+              if (disposed || interval === null) return;
+              failedTicks = 0;
+              setPollTrouble(false);
+              setGame(updated);
+              if (updated.status === "ready" || updated.status === "failed") stopPolling();
+            } catch (e) {
+              if (disposed || interval === null) return;
+              // A 404 is final: the game was deleted, say in another tab
+              // (CF-300). Anything else (a network blip, a 502 during a
+              // deploy, a 429) keeps the processing view and the poll, so
+              // the next tick can recover. CF-410 (#533) reads a 429's
+              // Retry-After here.
+              if (e instanceof ApiError && e.status === 404) {
+                stopPolling();
+                showFailure(e, "Failed to refresh game.");
+                return;
+              }
+              failedTicks += 1;
+              if (failedTicks >= POLL_TROUBLE_AFTER) setPollTrouble(true);
             }
           }, 5000);
         }
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load game.");
+        if (disposed) return;
+        showFailure(e, "Failed to load game.");
       }
     }
 
     fetchGame();
-    return () => { if (interval) clearInterval(interval); };
+    return () => {
+      disposed = true;
+      stopPolling();
+    };
   }, [id]);
 
-  // Fetch clips when game is ready
+  // Keyed on readiness, not on `game`: the poll and a delete both replace
+  // `game`, and neither changes which clips the filters admit.
+  const gameReady = game?.status === "ready";
+
+  // Fetch clips when game is ready, every page of them (CLIP_PAGE_SIZE).
   useEffect(() => {
-    if (!game || game.status !== "ready") return;
-    Promise.all([getClips(id, settledFilters), getPlayers()])
-      .then(([c, p]) => { setClips(c); setPlayers(p); })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [game, id, settledFilters]);
+    if (!gameReady) return;
+    // A newer load (the filters settled again) supersedes this one: it must
+    // neither set the grid nor clear `fetching` under the newer request, or a
+    // slow older response could replace the newer grid or flash the empty
+    // state.
+    let cancelled = false;
+    setFetching(true);
+    (async () => {
+      try {
+        const loaded: Clip[] = [];
+        const seen = new Set<string>();
+        for (let page = 1; page <= CLIP_PAGE_LIMIT; page++) {
+          if (cancelled) return;
+          const batch = await getClips(id, { ...settledFilters, page, page_size: CLIP_PAGE_SIZE });
+          // The route pages by offset over an order with no id tiebreak, so
+          // a clip can straddle two pages; keep its first appearance.
+          for (const c of batch) {
+            if (seen.has(c.id)) continue;
+            seen.add(c.id);
+            loaded.push(c);
+          }
+          if (batch.length < CLIP_PAGE_SIZE) break;
+          if (page === CLIP_PAGE_LIMIT && !cancelled) {
+            // A full last page may also be the last clip. One single-clip
+            // probe at offset CLIP_PAGE_LIMIT * CLIP_PAGE_SIZE tells which,
+            // and only a game this large pays for it. The probe only decides
+            // a warning, so its failure leaves the grid as loaded. A load
+            // superseded while page 10 was in flight skips it.
+            try {
+              const probe = await getClips(id, {
+                ...settledFilters,
+                page: CLIP_PAGE_LIMIT * CLIP_PAGE_SIZE + 1,
+                page_size: 1,
+              });
+              if (probe.length > 0 && !cancelled) {
+                console.warn(`Clip grid stopped at ${CLIP_PAGE_LIMIT} pages; later clips are not shown.`);
+              }
+            } catch (e) {
+              console.warn("Could not check for clips past the grid's page cap.", e);
+            }
+          }
+        }
+        if (!cancelled) setClips(loaded);
+      } catch (e) {
+        // A failure on any page fails the load, as one on the first page
+        // always has: a grid quietly short of clips is the defect this
+        // paging exists to fix.
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load clips.");
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+          setFetching(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      // A newer load sets this again in the same commit; with none (the
+      // game stopped being ready) the skeleton must not wait on a load that
+      // will never report.
+      setFetching(false);
+    };
+  }, [gameReady, id, settledFilters]);
+
+  // Fetch the roster once the game is ready (CF-250). Separate from the clips
+  // fetch on purpose: the roster does not change with the filters, so it is
+  // not refetched on every slider step, and a roster that fails to load costs
+  // the player filter and the tag action's dropdown, not the grid — the clips
+  // stand on their own.
+  useEffect(() => {
+    if (!gameReady) return;
+    getPlayers()
+      .then(setPlayers)
+      .catch((e) => {
+        console.warn("Roster failed to load; the player filter and tag dropdown are off.", e);
+        setPlayers([]);
+      });
+  }, [id, gameReady]);
+
+  // Whether anything besides the player filter narrows the grid, for the
+  // empty state's copy. Any non-empty `action_type` list counts: the API
+  // applies it as given, and even all five badges exclude `unknown`-typed
+  // clips (the `removed` ones), which can carry a player tag too.
+  const otherFiltersNarrow = Boolean(
+    settledFilters.action_type?.length ||
+    settledFilters.min_confidence ||
+    settledFilters.min_score
+  );
 
   const toggleActionFilter = useCallback((action: ActionType) => {
     setFilters((f) => {
@@ -177,6 +348,21 @@ export default function GamePage() {
       };
     });
   }, []);
+
+  if (notFound) {
+    return (
+      <div className="fade-up flex flex-col items-center justify-center rounded-lg border border-dashed border-border py-20 text-center">
+        <Scissors size={28} className="text-subtle mb-3" />
+        <h1 className="text-[13px] font-medium text-foreground">Game not found</h1>
+        <p className="mt-1 text-[12px] text-muted">
+          It may have been deleted, or the link is wrong.
+        </p>
+        <Link href="/games" className="mt-4">
+          <Button variant="secondary" size="sm">Back to library</Button>
+        </Link>
+      </div>
+    );
+  }
 
   if (error) {
     return (
@@ -214,9 +400,12 @@ export default function GamePage() {
         </Link>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-[18px] font-semibold text-foreground tracking-tight truncate">
-              {game.title}
-            </h1>
+            <div className="flex min-w-0 items-center gap-2">
+              <h1 className="text-[18px] font-semibold text-foreground tracking-tight truncate">
+                {game.title}
+              </h1>
+              {game.is_sample && <DemoBadge />}
+            </div>
             <p className="mt-0.5 text-[12px] text-muted">
               {game.clip_count ?? clips.length} clip{(game.clip_count ?? clips.length) !== 1 ? "s" : ""}
             </p>
@@ -229,6 +418,8 @@ export default function GamePage() {
           </span>
         </div>
       </div>
+
+      {game.is_sample && <DemoBanner credit={game.sample_credit} />}
 
       {/* Processing state */}
       {(game.status === "queued" || game.status === "processing") && (
@@ -253,6 +444,12 @@ export default function GamePage() {
               </div>
             </div>
           )}
+          {/* Mounted empty with the processing view, so a screen reader
+              announces the text when it arrives; some skip a live region
+              that is inserted with its content already in it. */}
+          <p role="status" className={cn("text-[12px] text-danger max-w-xs", pollTrouble && "mt-4")}>
+            {pollTrouble && "Can't get an update right now. Still trying; progress shows here again once ClipFarm answers."}
+          </p>
           <p className="mt-4 text-[12px] text-muted max-w-xs">
             Detecting actions and cutting clips. You can leave this page — we&apos;ll keep working.
           </p>
@@ -333,6 +530,32 @@ export default function GamePage() {
             })}
 
             <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-2 sm:ml-auto sm:w-auto sm:flex-nowrap">
+              {/* Player filter (CF-250). Only once there is a roster to pick
+                  from: with no players the control could offer nothing but
+                  its own clear option. "All players" is that explicit clear —
+                  most clips are untagged, and a filter you cannot leave is
+                  worse than none. */}
+              {players.length > 0 && (
+                <select
+                  aria-label="Filter by player"
+                  value={filters.player_id ?? ""}
+                  onChange={(e) =>
+                    setFilters((f) => ({ ...f, player_id: e.target.value || undefined }))
+                  }
+                  className={cn(
+                    "max-w-[10rem] truncate rounded-md border bg-surface px-2.5 py-2 text-[11px] font-medium transition-all duration-150 sm:py-1",
+                    filters.player_id
+                      ? "border-brand/30 bg-brand/5 text-brand"
+                      : "border-border text-muted hover:border-border-strong hover:text-foreground"
+                  )}
+                >
+                  <option value="">All players</option>
+                  {players.map((p) => (
+                    <option key={p.id} value={p.id}>{playerLabel(p)}</option>
+                  ))}
+                </select>
+              )}
+
               {/* Sort toggle: chronological vs highlight score */}
               <button
                 onClick={() =>
@@ -442,18 +665,41 @@ export default function GamePage() {
             </div>
           )}
 
-          {/* Loading clips skeletons */}
-          {loading && (
+          {/* Loading clips skeletons: the first fetch, and a refetch with no
+              grid to keep on screen (the empty state's "Show all players",
+              or one empty player to another). */}
+          {(loading || (fetching && clips.length === 0)) && (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 stagger">
               {[...Array(8)].map((_, i) => <ClipCardSkeleton key={i} />)}
             </div>
           )}
 
-          {/* Empty filtered state */}
-          {!loading && clips.length === 0 && (
-            <p className="py-16 text-center text-[13px] text-muted">
-              No clips match your filters.
-            </p>
+          {/* Empty filtered state. Reads the settled filters, which are what
+              the empty result answers to; the control shows the live ones.
+              Never while a fetch is pending: `clips` would still be the old
+              `[]` and the line would describe a result that is not in yet. */}
+          {!loading && !fetching && clips.length === 0 && (
+            settledFilters.player_id ? (
+              <div className="flex flex-col items-center py-16 text-center">
+                <p className="text-[13px] text-muted">
+                  No clips tagged{" "}
+                  <span className="font-medium text-foreground">
+                    {players.find((p) => p.id === settledFilters.player_id)?.name ?? "this player"}
+                  </span>
+                  {otherFiltersNarrow ? " match your other filters." : " in this game."}
+                </p>
+                <button
+                  onClick={() => setFilters((f) => ({ ...f, player_id: undefined }))}
+                  className="mt-3 rounded-md border border-border px-2.5 py-2 text-[11px] font-medium text-muted hover:border-border-strong hover:text-foreground transition-all duration-150 sm:py-1"
+                >
+                  Show all players
+                </button>
+              </div>
+            ) : (
+              <p className="py-16 text-center text-[13px] text-muted">
+                No clips match your filters.
+              </p>
+            )
           )}
 
           {/* Clip grid */}
@@ -463,11 +709,7 @@ export default function GamePage() {
                 <ClipCard
                   key={clip.id}
                   clip={clip}
-                  players={players}
                   onPlay={() => setActiveClipIndex(i)}
-                  onUpdate={(updated) =>
-                    setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
-                  }
                   selected={selectedIds.has(clip.id)}
                   onToggleSelect={selectMode ? toggleSelect : undefined}
                   onSave={selectMode ? undefined : (id) => setSavingClipId(id)}
@@ -493,9 +735,15 @@ export default function GamePage() {
           onClose={() => setActiveClipIndex(null)}
           onPrev={activeClipIndex > 0 ? () => setActiveClipIndex((i) => i! - 1) : undefined}
           onNext={activeClipIndex < clips.length - 1 ? () => setActiveClipIndex((i) => i! + 1) : undefined}
-          onUpdate={(updated) =>
-            setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
-          }
+          // Merged onto the row as it is when the write lands, by id: a write
+          // can settle after another on the same clip, or after ← →.
+          onUpdate={(id, fields) => setClips((prev) => mergeClipFields(prev, id, fields))}
+          // The roster turns on the modal's edit bar — Label, Trim and the
+          // player tag, which used to sit on the card (CF-272).
+          players={players}
+          // How long the source is, so a trim past its end is expected to
+          // come back cut short at it (CF-272).
+          sourceDuration={game?.original_duration}
           // Every game reachable here is the viewer's own. `GET /games/{id}` is
           // visibility-scoped rather than owner-only, but no write path exists
           // for a game's visibility — `test_visibility_write_paths_are_declared`

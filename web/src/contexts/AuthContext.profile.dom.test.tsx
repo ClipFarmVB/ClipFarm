@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/api", () => ({ getMe: mocks.getMe }));
 vi.mock("@/lib/gamesCache", () => ({ clearGamesCache: vi.fn(), prefetchGames: vi.fn() }));
+vi.mock("@/lib/uploadStore", () => ({ resetUploadStore: vi.fn() }));
 vi.mock("@/lib/supabase", () => ({
   createClient: () => ({
     auth: {

@@ -10,10 +10,16 @@ detected contacts to 2 is not shortened — it is discarded whole. Production sa
 #476 asks for one number before the fix is chosen: **how many segments land in
 the 2-contact band under scaling**, because that is the population the gate is
 deleting. This prints that, both switch positions side by side, off the same
-dump ``tune_contacts`` uses.
+dump ``tune_contacts`` uses — and a third column between them: the switch on
+with CF-376's soft scale (``find_contacts(soft_scale=True)``, the gate scale
+raised to ``CONTACT_SOFT_SCALE_EXPONENT``, or to ``--exponent``).
 
   docker compose --env-file .env.docker run --rm --no-deps eval \\
       python -m ml.eval.contact_cliff test2
+  ...  python -m ml.eval.contact_cliff test2 --exponent 0.75
+
+A fixture with no ``_ball_track.json`` dump (test1) is read from its R2 ball
+cache instead; see ``tune_contacts.load_track``.
 
 The fixture id selects the dump, and the useful ones are the **1080p** fixtures
 (test2/test4). test1 is 360p, where ``_scale_for`` returns exactly 1.0 and the
@@ -76,7 +82,7 @@ import argparse
 import logging
 from collections import Counter
 
-from ml.eval.tune_contacts import load
+from ml.eval.tune_contacts import gate_scale, load_track
 from ml.pipeline import ball as B
 
 # The band the count gate deletes, and the band one lost contact away from it.
@@ -91,8 +97,9 @@ class Ladder:
     """One switch position's attrition, contacts through to rallies."""
 
     def __init__(self, contacts: list[dict], frame_height: int, duration: float,
-                 *, normalize: bool):
+                 *, normalize: bool, soft_scale: bool = False):
         self.normalize = normalize
+        self.soft_scale = soft_scale
         self.contacts = contacts
         # The same segmentation contacts_to_rallies runs below — it calls
         # this function, which is why the extraction exists. If that ever
@@ -105,7 +112,8 @@ class Ladder:
         self.rallies = B.contacts_to_rallies(self.contacts, duration, frame_height)
 
     @classmethod
-    def from_track(cls, track, frame_height: int, duration: float, *, normalize: bool):
+    def from_track(cls, track, frame_height: int, duration: float, *, normalize: bool,
+                   soft_scale: bool = False):
         """Run the detector at one switch position, then measure it.
 
         The split exists so the accounting below can be tested against
@@ -115,10 +123,12 @@ class Ladder:
         rather than find_contacts.
         """
         return cls(
-            B.find_contacts(track, frame_height=frame_height, normalize=normalize),
+            B.find_contacts(track, frame_height=frame_height, normalize=normalize,
+                            soft_scale=soft_scale),
             frame_height,
             duration,
             normalize=normalize,
+            soft_scale=soft_scale,
         )
 
     @property
@@ -175,38 +185,111 @@ def _delta(on: int, off: int) -> str:
     return f"{d:+d}" if d else "  ."
 
 
-def report(on: Ladder, off: Ladder, frame_height: int, scale: float) -> str:
+def _channels(lost: int, gainer: Ladder, off: Ladder, what: str) -> list[str]:
+    """The by-channel sentence for `gainer` against the switch-off run."""
+    out: list[str] = []
+    plural = "rally" if abs(lost) == 1 else "rallies"
+    # Three channels, not two. A rally can also be lost before either gate,
+    # by losing every contact it had — the segment then never forms, and
+    # attributing the whole loss to the gates would hide it.
+    never_formed = len(off.segments) - len(gainer.segments)
+    by_count = gainer.deleted_by_count - off.deleted_by_count
+    by_dur = gainer.deleted_by_duration - off.deleted_by_duration
+    out.append(
+        f"{what} costs {lost} {plural} on this fixture, net by channel: "
+        f"{never_formed} whose segment never formed, {by_count} to the count "
+        f"gate, {by_dur} to the duration gate."
+    )
+    if min(never_formed, by_count, by_dur) < 0:
+        # Say so rather than printing a negative count with no explanation.
+        # These are differences between the two runs, not tallies of
+        # individual rallies, so a channel can run backwards: scaling that
+        # splits one segment into two *adds* a segment while sending both
+        # halves to the count gate, and the segments channel then reads
+        # negative while the count channel absorbs the loss. The three
+        # still sum to the total, which is what the assert below holds.
+        out.append(
+            "    (A channel reads negative when scaling moved rallies out "
+            "of it rather than into it — a split segment, most often. "
+            "These are net movements between the two runs.)"
+        )
+    assert never_formed + by_count + by_dur == lost, (
+        "the three channels must account for every lost rally"
+    )
+    out.append(
+        f"{gainer.at_risk} of the {len(gainer.rallies)} surviving rallies sit at exactly "
+        f"{AT_RISK} contacts, so they are one detection away from the same fate."
+    )
+    return out
+
+
+def _verdict(gainer: Ladder, off: Ladder, what: str) -> list[str]:
+    """One column's bottom line against the switch-off column."""
+    lost = len(off.rallies) - len(gainer.rallies)
+    plural = "rally" if abs(lost) == 1 else "rallies"
+    if lost > 0:
+        return _channels(lost, gainer, off, what)
+    if lost < 0:
+        return [f"{what} GAINS {-lost} {plural} on this fixture."]
+    return [f"{what} costs no rallies on this fixture."]
+
+
+def report(on: Ladder, off: Ladder, frame_height: int, scale: float,
+           soft: Ladder | None = None, soft_scale: float | None = None) -> str:
+    """The ladder, switch on against switch off.
+
+    With `soft` (CF-376) a third column sits between them — the switch on with
+    the soft flag — and `soft_scale` is the gate scale it ran at. Both scaled
+    columns are compared against OFF, the run with no scaling at all.
+    """
     out: list[str] = []
     out.append(
         f"fixture frame_height={frame_height} -> CF-174 threshold scale {scale:.2f}"
     )
-    if scale == 1.0:
+    if soft is not None and soft_scale is not None:
+        # The header's scale is the full one; the soft column gates on less.
         out.append(
-            "  NOTE: scale is exactly 1.0, so the two columns below are the same run.\n"
+            f"  ON + SOFT gates at scale {soft_scale:.2f} "
+            f"(CF-376; its action labels still use {scale:.2f})"
+        )
+    if scale == 1.0:
+        ncols = "two" if soft is None else "three"
+        out.append(
+            f"  NOTE: scale is exactly 1.0, so the {ncols} columns below are the same run.\n"
             "  This fixture cannot show the cliff (CF-375, #475)."
         )
     out.append("")
-    out.append("%-34s %10s %10s %8s" % ("", "scale ON", "scale OFF", "delta"))
-    for (label, a), (_, b) in zip(on.rows(), off.rows()):
-        out.append("%-34s %10d %10d %8s" % (label, a, b, _delta(a, b)))
+    if soft is None:
+        out.append("%-34s %10s %10s %8s" % ("", "scale ON", "scale OFF", "delta"))
+        for (label, a), (_, b) in zip(on.rows(), off.rows()):
+            out.append("%-34s %10d %10d %8s" % (label, a, b, _delta(a, b)))
+    else:
+        out.append("%-34s %10s %10s %10s %8s %8s" % (
+            "", "scale ON", "ON + SOFT", "scale OFF", "on-off", "soft-off"))
+        for (label, a), (_, s), (_, b) in zip(on.rows(), soft.rows(), off.rows()):
+            out.append("%-34s %10d %10d %10d %8s %8s" % (
+                label, a, s, b, _delta(a, b), _delta(s, b)))
 
     out.append("")
     out.append("contacts-per-segment histogram (before either gate)")
-    widest = max([*on.sizes, *off.sizes], default=0)
+    soft_sizes: Counter[int] = soft.sizes if soft is not None else Counter()
+    widest = max([*on.sizes, *off.sizes, *soft_sizes], default=0)
     for n in range(1, widest + 1):
-        a, b = on.sizes[n], off.sizes[n]
-        if not (a or b):
+        a, b, s = on.sizes[n], off.sizes[n], soft_sizes[n]
+        if not (a or b or s):
             continue
         mark = ""
         if n in DELETED_BAND:
             mark = "  <- deleted by MIN_RALLY_CONTACTS"
         elif n == AT_RISK:
             mark = "  <- one contact from deletion"
-        out.append("%-34s %10d %10d %8s%s" % (f"  {n} contact(s)", a, b, _delta(a, b), mark))
+        if soft is None:
+            out.append("%-34s %10d %10d %8s%s" % (f"  {n} contact(s)", a, b, _delta(a, b), mark))
+        else:
+            out.append("%-34s %10d %10d %10d %8s %8s%s" % (
+                f"  {n} contact(s)", a, s, b, _delta(a, b), _delta(s, b), mark))
 
     out.append("")
-    lost = len(off.rallies) - len(on.rallies)
-    plural = "rally" if abs(lost) == 1 else "rallies"
     if scale == 1.0:
         # The conclusion is the quotable line, and at a scale of 1.0 the two
         # columns are the same run — so stating a cost of zero here reads as
@@ -215,44 +298,13 @@ def report(on: Ladder, off: Ladder, frame_height: int, scale: float) -> str:
         # bottom sees only this.
         out.append(
             "No conclusion available from this fixture: at a scale of 1.00 the "
-            "two columns are the same run. Use a 1080p fixture (CF-375, #475)."
+            "columns are the same run. Use a 1080p fixture (CF-375, #475)."
         )
-    elif lost > 0:
-        # Three channels, not two. A rally can also be lost before either gate,
-        # by losing every contact it had — the segment then never forms, and
-        # attributing the whole loss to the gates would hide it.
-        never_formed = len(off.segments) - len(on.segments)
-        by_count = on.deleted_by_count - off.deleted_by_count
-        by_dur = on.deleted_by_duration - off.deleted_by_duration
-        out.append(
-            f"Scaling costs {lost} {plural} on this fixture, net by channel: "
-            f"{never_formed} whose segment never formed, {by_count} to the count "
-            f"gate, {by_dur} to the duration gate."
-        )
-        if min(never_formed, by_count, by_dur) < 0:
-            # Say so rather than printing a negative count with no explanation.
-            # These are differences between the two runs, not tallies of
-            # individual rallies, so a channel can run backwards: scaling that
-            # splits one segment into two *adds* a segment while sending both
-            # halves to the count gate, and the segments channel then reads
-            # negative while the count channel absorbs the loss. The three
-            # still sum to the total, which is what the assert below holds.
-            out.append(
-                "    (A channel reads negative when scaling moved rallies out "
-                "of it rather than into it — a split segment, most often. "
-                "These are net movements between the two runs.)"
-            )
-        assert never_formed + by_count + by_dur == lost, (
-            "the three channels must account for every lost rally"
-        )
-        out.append(
-            f"{on.at_risk} of the {len(on.rallies)} surviving rallies sit at exactly "
-            f"{AT_RISK} contacts, so they are one detection away from the same fate."
-        )
-    elif lost < 0:
-        out.append(f"Scaling GAINS {-lost} {plural} on this fixture.")
-    else:
-        out.append("Scaling costs no rallies on this fixture.")
+        return "\n".join(out)
+    out.extend(_verdict(on, off, "Scaling"))
+    if soft is not None:
+        out.append("")
+        out.extend(_verdict(soft, off, "Soft scaling"))
     return "\n".join(out)
 
 
@@ -262,21 +314,34 @@ def main(argv: list[str] | None = None) -> None:
     summary = ((__doc__ or "").splitlines() or [""])[1:2]
     ap = argparse.ArgumentParser(description=summary[0] if summary else None)
     ap.add_argument("test_id", nargs="?", default="test2",
-                    help="fixture id whose ball-track dump to read (default test2, 1080p)")
+                    help="fixture id whose ball-track dump (or ball cache) to read "
+                         "(default test2, 1080p)")
+    ap.add_argument("--exponent", type=float, default=None,
+                    help="soft-scale exponent for the ON + SOFT column (default "
+                         f"ball.CONTACT_SOFT_SCALE_EXPONENT, {B.CONTACT_SOFT_SCALE_EXPONENT:g})")
     args = ap.parse_args(argv)
 
     # find_contacts logs _scale_for's multi-line 1080p warning on every call, and
-    # this tool calls it twice; tune_contacts silences the same noise for the
-    # same reason.
+    # this tool calls it three times; tune_contacts silences the same noise for
+    # the same reason.
     logging.disable(logging.INFO)
-    track, _positions, frame_h, fx = load(args.test_id)
+    track, _positions, frame_h, fx = load_track(args.test_id)
     # log=False for the label: find_contacts has already warned about this
     # frame height, and a second copy in the header is noise, not a second
     # opinion.
     scale = B._scale_for(frame_h, log=False, normalize=True)
     on = Ladder.from_track(track, frame_h, fx.duration, normalize=True)
     off = Ladder.from_track(track, frame_h, fx.duration, normalize=False)
-    print(report(on, off, frame_h, scale))
+    saved = B.CONTACT_SOFT_SCALE_EXPONENT
+    if args.exponent is not None:
+        B.CONTACT_SOFT_SCALE_EXPONENT = args.exponent
+    try:
+        soft = Ladder.from_track(track, frame_h, fx.duration, normalize=True,
+                                 soft_scale=True)
+        soft_scale = gate_scale(frame_h, normalize=True, soft_scale=True)
+    finally:
+        B.CONTACT_SOFT_SCALE_EXPONENT = saved
+    print(report(on, off, frame_h, scale, soft=soft, soft_scale=soft_scale))
 
 
 if __name__ == "__main__":

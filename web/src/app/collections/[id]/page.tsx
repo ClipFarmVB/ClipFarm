@@ -4,9 +4,10 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, ArrowLeft, FolderOpen, X } from "lucide-react";
+import { Button } from "@/components/ui/Button";
 import { ClipCardSkeleton } from "@/components/ui/Skeleton";
 import { ClipCard } from "@/components/ClipCard";
-import { ClipModal } from "@/components/ClipModal";
+import { ClipModal, mergeClipFields } from "@/components/ClipModal";
 import { CollectionPickerModal } from "@/components/CollectionPickerModal";
 import {
   getCollections,
@@ -17,6 +18,7 @@ import {
   type Clip,
   type Player,
 } from "@/lib/api";
+import { ApiError } from "@/lib/apiError";
 import { cn } from "@/lib/utils";
 import { RequireAuth } from "@/components/RequireAuth";
 
@@ -27,6 +29,7 @@ function CollectionContent() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [activeClipIndex, setActiveClipIndex] = useState<number | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [savingClipId, setSavingClipId] = useState<string | null>(null);
@@ -42,7 +45,13 @@ function CollectionContent() {
         setClips(clps);
         setPlayers(plrs);
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        // `getCollectionClips` 404s a collection that does not exist or is not
+        // the caller's (`_get_owned_collection`), and only that is "not
+        // found" (CF-423). Anything else is a fault, shown as one.
+        if (e instanceof ApiError && e.status === 404) setNotFound(true);
+        else setError(e instanceof Error ? e.message : "Couldn't load this collection.");
+      })
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -58,6 +67,21 @@ function CollectionContent() {
       setRemovingId(null);
     }
   }, [id]);
+
+  if (notFound) {
+    return (
+      <div className="fade-up flex flex-col items-center justify-center rounded-lg border border-dashed border-border py-20 text-center">
+        <FolderOpen size={28} className="text-subtle mb-3" />
+        <h1 className="text-[13px] font-medium text-foreground">Collection not found</h1>
+        <p className="mt-1 text-[12px] text-muted">
+          It may have been deleted, or the link is wrong.
+        </p>
+        <Link href="/collections" className="mt-4">
+          <Button variant="secondary" size="sm">Back to collections</Button>
+        </Link>
+      </div>
+    );
+  }
 
   if (error) {
     return (
@@ -116,18 +140,14 @@ function CollectionContent() {
             <div key={clip.id} className="group relative">
               <ClipCard
                 clip={clip}
-                players={players}
                 onPlay={() => setActiveClipIndex(i)}
-                onUpdate={(updated) =>
-                  setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
-                }
                 onSave={(clipId) => setSavingClipId(clipId)}
               />
               {/* Remove from collection. This button is positioned against
                   the wrapper, which is the whole card — not the thumbnail — so
-                  a `bottom-*` offset lands on the footer, over the Label/Save
-                  row and over the trim panel's Start controls when it is open.
-                  Only the top edge of the wrapper coincides with the thumbnail.
+                  a `bottom-*` offset lands on the footer, over the
+                  Download/Save row. Only the top edge of the wrapper coincides
+                  with the thumbnail.
                   Top-right is free there: the badges sit top-left, the duration
                   is bottom-right *inside* the thumbnail, and the selection
                   checkbox that would otherwise own this corner is never
@@ -164,9 +184,13 @@ function CollectionContent() {
           onClose={() => setActiveClipIndex(null)}
           onPrev={activeClipIndex > 0 ? () => setActiveClipIndex((i) => i! - 1) : undefined}
           onNext={activeClipIndex < clips.length - 1 ? () => setActiveClipIndex((i) => i! + 1) : undefined}
-          onUpdate={(updated) =>
-            setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
-          }
+          // Merged onto the row as it is when the write lands, by id: a write
+          // can settle after another on the same clip, or after ← →.
+          onUpdate={(id, fields) => setClips((prev) => mergeClipFields(prev, id, fields))}
+          // The edit bar (CF-272), as the card offered it here before. Known
+          // gap, unchanged by the move: a collection can hold another owner's
+          // clip, whose edit the api refuses with 404.
+          players={players}
         />
       )}
     </div>

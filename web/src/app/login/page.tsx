@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { LogoMark } from "@/components/LogoMark";
 import { createClient } from "@/lib/supabase";
 import { safeNextPath } from "@/lib/redirect";
 import { AUTH_ERROR_PARAM, authErrorMessage } from "@/lib/authError";
@@ -43,10 +44,40 @@ function LoginForm() {
 
   async function handleGoogleLogin() {
     const supabase = createClient();
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: `${window.location.origin}/auth/callback` },
-    });
+    setError(null);
+    // Two failure paths, and only one of them is a return value.
+    //
+    // The `{ error }` below is the API's shape rather than a path this call
+    // reaches: in auth-js 2.100.0 `signInWithOAuth` forwards to
+    // `_handleProviderSignIn`, whose single exit is
+    // `{ data: { provider, url }, error: null }` — there is no other return and
+    // no try/catch. A misconfigured provider does not surface here at all; it
+    // comes back on the callback URL, which is what AUTH_ERROR_PARAM and the
+    // `linkError` above are for. The arm is kept because the SDK's own type
+    // permits a non-null error and a future version may use it, not because it
+    // fires today.
+    //
+    // What does reach us is a throw: `_getUrlForProvider` awaits the PKCE code
+    // challenge — storage access, `crypto.subtle` — and catches nothing, so a
+    // failure there rejects out through both frames. This is an un-awaited
+    // `onClick`, so that rejection had nowhere to go: no UI, and an unhandled
+    // rejection in the console (CF-304). The catch is the half that was
+    // actually missing.
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
+      });
+      if (error) setError(error.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Please try again.");
+    }
+    // `nextPath` is deliberately NOT threaded here. `/auth/callback` hardcodes
+    // its destination and documents why — a caller-supplied one is an
+    // open-redirect surface, and Supabase glob-matches `redirectTo` in full
+    // against its allowlist, so a query string can be rejected by a dashboard
+    // setting no PR controls. Sending `next` without changing the callback
+    // would be a no-op that reads like a fix. Carded instead.
   }
 
   return (
@@ -54,6 +85,7 @@ function LoginForm() {
       <div className="w-full max-w-[340px]">
         {/* Heading */}
         <div className="mb-7">
+          <LogoMark className="mb-5 h-12 w-12" />
           <h1 className="text-[18px] font-semibold text-foreground">Welcome back</h1>
           <p className="mt-1 text-[13px] text-muted">Log in to your ClipFarm account</p>
         </div>
@@ -93,7 +125,10 @@ function LoginForm() {
           </div>
 
           {(error ?? linkError) && (
-            <div className="flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400">
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-[12px] text-red-400"
+            >
               <AlertCircle size={13} className="shrink-0 mt-0.5" />
               {error ?? linkError}
             </div>

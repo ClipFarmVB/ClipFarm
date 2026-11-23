@@ -137,7 +137,7 @@ def head_object(key: str) -> dict | None:
     The size is what makes this more than an existence check: a presigned PUT
     cannot enforce Content-Length (S3 and R2 ignore it as a query parameter),
     so the only place a client's *declared* size can be checked against the
-    bytes it actually wrote is here, after the fact — see confirm_upload.
+    bytes it actually wrote is here, after the fact — see complete_upload.
     """
     try:
         resp = _client().head_object(Bucket=settings.r2_bucket_name, Key=key)
@@ -159,7 +159,7 @@ def head_bytes(key: str, count: int) -> bytes | None:
 
     A probe, never raises — same contract as head_object, and for the same
     reason: the caller is better placed to decide what a missing answer means
-    than this function is. confirm_upload treats None as "allow", which is the
+    than this function is. complete_upload treats None as "allow", which is the
     opposite of what it does with a None from head_object; see the reasoning
     there.
 
@@ -192,7 +192,7 @@ def presign_put(key: str, content_type: str, expires_in: int) -> str:
     That binds the header, not the bytes (CF-244). A client can declare
     video/mp4, send the matching header so the signature verifies, and upload
     anything at all. This is a control over what the object is *labelled*, not
-    over what it contains — confirm_upload sniffs the stored bytes for that.
+    over what it contains — complete_upload sniffs the stored bytes for that.
     """
     return _client().generate_presigned_url(
         "put_object",

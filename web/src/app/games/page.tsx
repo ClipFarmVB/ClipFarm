@@ -1,13 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
-import { AlertCircle, ArrowRight, Pencil, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/Button";
 import { GameRowSkeleton } from "@/components/ui/Skeleton";
+import { OnboardingPanel } from "@/components/OnboardingPanel";
+import { useAuth } from "@/contexts/AuthContext";
 import { deleteGame, renameGame, type Game } from "@/lib/api";
+import { GameTitle, deleteAction } from "@/components/DemoGame";
 import { fetchGames, getCachedGames, getInflightGames, updateGamesCache } from "@/lib/gamesCache";
+import { sampleGameIdOf } from "@/lib/onboarding";
+import { getUploadSnapshot, subscribeUpload, type UploadPhase } from "@/lib/uploadStore";
 import { cn } from "@/lib/utils";
 
 // `uploading` is filtered out by the api's list endpoint — a game whose video
@@ -29,7 +34,12 @@ const STATUS_LABEL: Record<Game["status"], string> = {
   failed:     "Failed",
 };
 
+const getUploadPhase = (): UploadPhase => getUploadSnapshot().phase;
+// Idle on the server, as the store's own hook answers.
+const getServerUploadPhase = (): UploadPhase => "idle";
+
 function GamesContent() {
+  const { user } = useAuth();
   // Initialise from cache for an instant render — no spinner if data is ready.
   const [games, setGames] = useState<Game[]>(() => getCachedGames() ?? []);
   const [loading, setLoading] = useState(() => getCachedGames() === null);
@@ -59,13 +69,19 @@ function GamesContent() {
         updateGamesCache(next);
         return next;
       });
-    } catch {
-      // silently revert — title stays as original in state since we didn't optimistically update
+    } catch (e) {
+      // The comment said "silently revert" and then admitted in the same
+      // breath that there is nothing to revert. So the rename simply failed
+      // and said nothing (CF-304's class, one file over). `alert`, matching
+      // `handleDelete` below.
+      alert(e instanceof Error ? e.message : "Could not rename the game.");
     }
   }
 
-  async function handleDelete(gameId: string, title: string) {
-    if (!confirm(`Delete "${title}" and all its clips? This cannot be undone.`)) return;
+  async function handleDelete(game: Game) {
+    // The demo game (CF-565) is "removed", with its own confirm: see deleteAction.
+    if (!confirm(deleteAction(game).confirm)) return;
+    const gameId = game.id;
     setDeleting(gameId);
     try {
       await deleteGame(gameId);
@@ -81,6 +97,29 @@ function GamesContent() {
     }
   }
 
+  // Three loaders write the list: the mount load, the upload's `done` effect
+  // and the poll. Each claims a sequence number when it starts and drops its
+  // own answer if a later loader has started since (R8-M1): otherwise a slow
+  // mount request rejecting after the upload's list was on screen hid that
+  // list behind the error card, the mirror order left the card over a list in
+  // state, and two requests in flight settled in whichever order the network
+  // chose. However the list arrives, it is also the recovery a failed load was
+  // waiting for: `loading` and `error` both hide the rows, so left set they
+  // kept the error card up with the game in state behind it, under a strip
+  // saying it uploaded (R7-M1).
+  const loadSeq = useRef(0);
+  const show = useCallback((seq: number, data: Game[]) => {
+    if (seq !== loadSeq.current) return;
+    setGames(data);
+    setError(null);
+    setLoading(false);
+  }, []);
+  const fail = useCallback((seq: number, e: unknown) => {
+    if (seq !== loadSeq.current) return;
+    setError(e instanceof Error ? e.message : "Couldn't load your games.");
+    setLoading(false);
+  }, []);
+
   useEffect(() => {
     const cached = getCachedGames();
     const hasActive = (list: Game[]) =>
@@ -94,28 +133,67 @@ function GamesContent() {
     // (e.g. upload success) landing while the request is in flight — an
     // unconditional updateGamesCache here would stamp the pre-upload list
     // fresh and hide the new game again (CF-63).
+    const seq = ++loadSeq.current;
     const p = getInflightGames() ?? fetchGames();
-    p.then((data) => {
-      setGames(data);
-      setLoading(false);
-    }).catch((e: Error) => {
-      setError(e.message);
-      setLoading(false);
-    });
+    p.then((data) => show(seq, data)).catch((e: unknown) => fail(seq, e));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // An upload finishing while this page is open (CF-70). The store writes the
+  // new game into the cache before it publishes `done`, but nothing above
+  // reads the cache again: the effect above ran on mount, and the poll below
+  // only arms on a row already in the list. With the redirect gone this is the
+  // page the user is most likely on when the upload lands, under a strip that
+  // says so — take the row rather than leave the list contradicting it. The
+  // new `queued` row then arms the poll.
+  //
+  // Only on a transition into `done` seen from here, the guard UploadZone's
+  // redirect uses. A finished upload stays `done` until it is dismissed, so
+  // every Library visit until then mounts into it, and the mount load above
+  // already reads the cache the store wrote. Running here as well claimed a
+  // newer sequence than that load: on a cold cache it fired a second request
+  // whose failure covered the loaded list with the error card, and on a warm
+  // one it dropped the mount request's fresher answer (R11-M1).
+  //
+  // Only the phase is read, so only the phase is subscribed to: a progress
+  // publish every few hundred milliseconds would otherwise re-render every row
+  // for the length of the upload (R8-N3).
+  const uploadPhase = useSyncExternalStore(subscribeUpload, getUploadPhase, getServerUploadPhase);
+  const prevUploadPhase = useRef(uploadPhase);
+  useEffect(() => {
+    const was = prevUploadPhase.current;
+    prevUploadPhase.current = uploadPhase;
+    if (uploadPhase !== "done") return;
+    if (was !== "uploading" && was !== "finalizing") return;
+    // Claimed for the warm branch too: the cache the store just wrote is the
+    // newest answer there is, and a mount request still out must not replace
+    // it when it settles.
+    const seq = ++loadSeq.current;
+    const cached = getCachedGames();
+    if (cached) {
+      show(seq, cached);
+      return;
+    }
+    // Cold cache: the row had nowhere to land, so ask for the list, reusing a
+    // prefetch already out (the store's write dropped any older one, so what
+    // is in flight now postdates the upload). A failure is reported the way
+    // the mount load's is — this fetch may be the first the page gets an
+    // answer to, and skeletons would otherwise stay up.
+    const p = getInflightGames() ?? fetchGames();
+    p.then((data) => show(seq, data)).catch((e: unknown) => fail(seq, e));
+  }, [uploadPhase, show, fail]);
 
   // Poll while any game is actively processing
   useEffect(() => {
     const hasActive = games.some((g) => g.status === "processing" || g.status === "queued");
     if (!hasActive) return;
     const interval = setInterval(() => {
-      fetchGames().then((data) => {
-        setGames(data);
-      }).catch(() => {});
+      // A tick that fails keeps what is shown; the next one asks again.
+      const seq = ++loadSeq.current;
+      fetchGames().then((data) => show(seq, data)).catch(() => {});
     }, 10_000);
     return () => clearInterval(interval);
-  }, [games]);
+  }, [games, show]);
 
   return (
     <div className="fade-up">
@@ -123,7 +201,9 @@ function GamesContent() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-[18px] font-semibold text-foreground tracking-tight">Library</h1>
-          {!loading && (
+          {/* `!error` for the same reason the empty state has it: a failed
+              load must not say "No games yet" (CF-304). */}
+          {!loading && !error && (
             <p className="mt-0.5 text-[12px] text-muted">
               {games.length === 0
                 ? "No games yet"
@@ -138,6 +218,16 @@ function GamesContent() {
           </Button>
         </Link>
       </div>
+
+      {/* The demo game copied in at signup (#220), linked as the worked
+          example and kept out of the user's progress. */}
+      <OnboardingPanel
+        games={games}
+        loading={loading}
+        error={error}
+        userId={user?.id}
+        sampleGameId={sampleGameIdOf(games)}
+      />
 
       {/* Error */}
       {error && (
@@ -218,10 +308,11 @@ function GamesContent() {
                    rare destructive-feeling thing and opening needed the 32px
                    arrow — the wrong way round for the primary action. Rename
                    now has its own button, as it already does on Collections. */
-                <Link href={`/games/${game.id}`} className="min-w-0 w-full">
-                  <span className="block truncate text-[13px] font-medium text-foreground group-hover:text-brand transition-colors">
-                    {game.title}
-                  </span>
+                <Link href={`/games/${game.id}`} className="flex min-w-0 w-full items-center gap-2">
+                  <GameTitle
+                    game={game}
+                    className="text-[13px] font-medium text-foreground group-hover:text-brand transition-colors"
+                  />
                 </Link>
               )}
 
@@ -255,13 +346,13 @@ function GamesContent() {
                     <Pencil size={11} />
                   </button>
                   <button
-                    onClick={() => handleDelete(game.id, game.title)}
+                    onClick={() => handleDelete(game)}
                     disabled={deleting === game.id}
                     className="hover-reveal opacity-0 group-hover:opacity-100 flex items-center justify-center h-8 w-8 rounded text-subtle hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-30 sm:h-6 sm:w-6"
-                    title="Delete game"
-                    aria-label="Delete game"
+                    title={deleteAction(game).label}
+                    aria-label={deleteAction(game).label}
                   >
-                    <Trash2 size={12} />
+                    {deleteAction(game).isDemo ? <X size={12} /> : <Trash2 size={12} />}
                   </button>
                   <Link
                     href={`/games/${game.id}`}
@@ -281,9 +372,21 @@ function GamesContent() {
 }
 
 export default function GamesPage() {
+  const { user } = useAuth();
+  // Keyed on the user so an identity change (e.g. another tab signing in as
+  // someone else) remounts the Library instead of keeping the previous
+  // user's list in state. AuthContext has already cleared the module cache by
+  // then, so the remount starts loading. Without this the onboarding panel
+  // judged the old list against the new user and wrote their `done`.
+  //
+  // Signing out also clears the cache, but AuthContext starts no prefetch for
+  // a null user and nothing redirects until the next navigation. So with no
+  // user the Library renders nothing rather than mounting into an
+  // unauthenticated `fetchGames()` whose 401 would fill the page with an error
+  // card. The sidebar already offers "Sign in" in that state.
   return (
     <RequireAuth>
-      <GamesContent />
+      {user && <GamesContent key={user.id} />}
     </RequireAuth>
   );
 }

@@ -838,3 +838,105 @@ class TestThePublicEntryPointsForwardTheSwitch:
             f"{entry} stopped passing a real frame height, which also disables "
             "action classification"
         )
+
+
+class TestWithTheSoftFlagOn:
+    """
+    CF-376's soft flag, against the invariants this file pins for the full
+    scale. Every case above runs with the flag off (its default) and stays as
+    it was; these say which of those claims survive the flag and which it
+    moves on purpose.
+
+    Forcing the flag on across the cases above fails exactly two of them,
+    test_off_reproduces_mains_contacts_at_1080p and
+    test_on_is_the_default_everywhere: both assert that 0.4 fh/s at 1080p is
+    rejected, and that is the sample the flag exists to admit (432 px/s, over
+    the softened 416 floor). test_an_empty_return_names_the_gates_that_rejected_everything
+    still passes, by a margin worth knowing: 0.3 fh/s at 1440p against a
+    softened floor of 0.333.
+    """
+
+    @staticmethod
+    def soft_scale(height):
+        return _scale_for(height, log=False) ** ball.CONTACT_SOFT_SCALE_EXPONENT
+
+    def test_the_floor_no_longer_holds_at_0667(self):
+        """What the flag does to the band table: the floor in frame-heights/s
+        falls as resolution rises, and the ceiling does not move."""
+        floors = {
+            h: ball.CONTACT_HIT_SPEED_PXPS * self.soft_scale(h) / h
+            for h in (360, 720, 1080, 1440)
+        }
+        at_360 = ball.CONTACT_HIT_SPEED_PXPS / 360
+        assert floors[360] == pytest.approx(at_360)
+        assert floors[1080] == pytest.approx(
+            at_360 * 3.0 ** (ball.CONTACT_SOFT_SCALE_EXPONENT - 1))
+        assert floors[360] > floors[720] > floors[1080] > floors[1440]
+
+    def test_every_band_is_at_least_as_wide_as_the_full_scales(self):
+        for h in range(360, 2161, 60):
+            assert self.soft_scale(h) <= _scale_for(h, log=False)
+
+    def test_the_cap_still_holds_against_the_larger_floor(self, monkeypatch):
+        """The invariant of test_the_cap_is_taken_against_the_larger_of_the_two_scaled_floors,
+        on the softened scale. The clamp is decided on the full one."""
+        monkeypatch.setattr(ball, "CONTACT_RESIDUAL_MIN_PXPS", 480.0)
+        for height in range(360, 2161, 60):
+            full = _scale_for(height, log=False)
+            if full == 1.0:
+                continue
+            soft = full ** ball.CONTACT_SOFT_SCALE_EXPONENT
+            for name in ("CONTACT_HIT_SPEED_PXPS", "CONTACT_RESIDUAL_MIN_PXPS"):
+                assert getattr(ball, name) * soft < SEG_MAX_SPEED_PXPS
+
+    def test_the_clamp_revert_is_shared(self):
+        """Past the clamp both scales are 1.0, so flag on and off agree there."""
+        for h in (int(CLAMP_HEIGHT) + 1, 2160, 2880):
+            assert self.soft_scale(h) == 1.0
+            track = rally_track(h, 0.3)
+            assert find_contacts(track, frame_height=h, soft_scale=True) == (
+                find_contacts(track, frame_height=h))
+
+    def test_soft_admits_what_full_rejects_and_labels_it_on_the_full_scale(self):
+        track = rally_track(1080, 0.4)
+        assert find_contacts(track, frame_height=1080) == []
+        soft = find_contacts(track, frame_height=1080, soft_scale=True)
+        assert len(soft) == 1
+        assert (soft[0]["action"], soft[0]["action_confidence"]) == (
+            classify_contact_action(track.positions, 8, 1080, normalize=True))
+
+    def test_switch_off_overrides_the_flag(self):
+        """The probe sits between the unscaled floor and the softened one, so
+        softening with the switch off would drop it."""
+        track = rally_track(1080, 0.3)
+        assert ball.CONTACT_HIT_SPEED_PXPS < 0.3 * 1080 < (
+            ball.CONTACT_HIT_SPEED_PXPS * self.soft_scale(1080))
+        off = find_contacts(track, frame_height=1080, normalize=False)
+        assert len(off) == 1, "the probe must clear the unscaled gate"
+        assert find_contacts(track, frame_height=1080, soft_scale=True) == []
+        assert find_contacts(track, frame_height=1080, normalize=False, soft_scale=True) == off
+
+    @pytest.mark.parametrize("entry", ["detect_contacts", "detect_rallies"])
+    @pytest.mark.parametrize("soft_scale", [True, False])
+    def test_the_entry_points_forward_soft_scale(self, monkeypatch, entry, soft_scale):
+        seen = {}
+
+        def fake_find_contacts(tracker, frame_height=0, **kw):
+            seen["soft_scale"] = kw.get("soft_scale", "NOT PASSED")
+            return []
+
+        monkeypatch.setattr(ball, "find_contacts", fake_find_contacts)
+        monkeypatch.setattr(ball, "track_ball", lambda *a, **k: TrackedBall(positions=[]))
+        monkeypatch.setattr(ball, "_read_frame_height", lambda *a, **k: 1080)
+        monkeypatch.setattr(ball, "contacts_to_rallies", lambda *a, **k: [])
+        fake_cv2 = types.SimpleNamespace(
+            CAP_PROP_FPS=5, CAP_PROP_FRAME_COUNT=7, CAP_PROP_FRAME_HEIGHT=4,
+            VideoCapture=lambda *_: types.SimpleNamespace(
+                get=lambda prop: {5: 30.0, 7: 900.0, 4: 1080.0}[prop],
+                release=lambda: None,
+            ),
+        )
+        monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+
+        getattr(ball, entry)("video.mp4", api_key="k", soft_scale=soft_scale)
+        assert seen["soft_scale"] is soft_scale

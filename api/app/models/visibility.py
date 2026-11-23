@@ -39,6 +39,8 @@ class Visibility(str, enum.Enum):
 # `api/tests/test_visibility_write_paths_are_declared.py`: the same scan over
 # `app/`, narrowed to the two functions CF-109b made legitimate, so "nothing
 # writes a game's visibility" is still checked rather than merely stated.
+# The defaults that scan cannot see (a column default is not a write) are
+# pinned by `api/tests/test_visibility_defaults.py` (CF-413).
 #
 # What that leaves unverified: the ORM enum round-trip, the SQL filters against
 # real rows, and the anonymous HTTP paths. The 44-case matrix in

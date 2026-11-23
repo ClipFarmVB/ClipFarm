@@ -41,7 +41,7 @@ function ProfileSettingsContent() {
         setBio(data.bio ?? "");
         setIsPrivate(data.is_private);
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => setError(e instanceof Error ? e.message : "Couldn't load your profile."))
       .finally(() => setLoading(false));
   }, []);
 

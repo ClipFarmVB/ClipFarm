@@ -8,6 +8,10 @@ which made that misreporting reachable rather than theoretical.
 
 Stdlib-only, like the rest of ml/tests: cv2, numpy and ultralytics are stubbed,
 so this exercises the loop's bookkeeping without a decoder or a GPU.
+
+The same fixture pins the per-window progress callback (CF-255): it is the
+pipeline's only view of how far refinement has got, and it sits inside the
+loop that this file already drives.
 """
 import sys
 import types
@@ -114,3 +118,36 @@ def test_a_video_that_never_decodes_is_not_a_stream_error(detect, monkeypatch):
 
     out = detect.classify_within_windows("http://signed/v.mp4", list(WINDOWS))
     assert [w["action"] for w in out] == ["spike", "dig", "set"]
+
+
+# ── CF-255: per-window progress ──────────────────────────────────────────────
+
+def test_progress_reports_the_fraction_of_windows_finished(detect, monkeypatch):
+    """One call per window, after it, with the fraction done — so the last
+    call is exactly 1.0 and the bar reaches the end of the stage's span."""
+    monkeypatch.setattr(detect._cv2, "VideoCapture", lambda p: FakeCapture(frames=10**6))
+    seen = []
+
+    detect.classify_within_windows("http://signed/v.mp4", list(WINDOWS), on_progress=seen.append)
+
+    assert seen == [1 / 3, 2 / 3, 1.0]
+
+
+def test_a_raising_progress_callback_does_not_abort_refinement(detect, monkeypatch, caplog):
+    """Reporting must never break processing: a callback that fails (a dead DB
+    connection, say) costs the progress signal, not the labels."""
+    import logging
+
+    monkeypatch.setattr(detect._cv2, "VideoCapture", lambda p: FakeCapture(frames=10**6))
+    calls = []
+
+    def broken(fraction):
+        calls.append(fraction)
+        raise RuntimeError("progress write failed")
+
+    with caplog.at_level(logging.WARNING):
+        out = detect.classify_within_windows("http://signed/v.mp4", list(WINDOWS), on_progress=broken)
+
+    assert len(out) == len(WINDOWS)
+    assert calls == [1 / 3, 2 / 3, 1.0], "every window still reports; one failure does not stop the next"
+    assert "Pose progress callback failed" in caplog.text

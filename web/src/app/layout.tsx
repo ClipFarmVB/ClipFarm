@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { ClaimHandleBanner } from "@/components/ClaimHandleBanner";
 import { Sidebar } from "@/components/Sidebar";
+import { UploadStatus } from "@/components/UploadStatus";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { SOCIAL_ENABLED } from "@/lib/features";
@@ -49,6 +50,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 {/* Mounted on every page, so gating it here is also what keeps
                     /users/me from being requested at all when social is off. */}
                 {SOCIAL_ENABLED && <ClaimHandleBanner />}
+                {/* The upload in flight, on every page but /upload (CF-70).
+                    Renders nothing when there is none. */}
+                <UploadStatus />
                 {children}
               </div>
             </main>

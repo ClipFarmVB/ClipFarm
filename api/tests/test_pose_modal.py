@@ -81,7 +81,7 @@ def test_refine_uses_modal_when_configured(monkeypatch, fake_detect):
     monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: True)
     monkeypatch.setattr(
         tasks, "_classify_windows_modal",
-        lambda r2_key, windows: [dict(w, action="gpu") for w in windows],
+        lambda r2_key, windows, on_progress=None: [dict(w, action="gpu") for w in windows],
     )
 
     out = tasks._refine_with_pose(Path("game.mp4"), "raw/x.mp4", WINDOWS)
@@ -95,7 +95,7 @@ def test_refine_falls_back_to_local_when_modal_fails(monkeypatch, fake_detect):
     ball tracking (`_track_ball_cached`)."""
     from app.workers import tasks
 
-    def boom(r2_key, windows):
+    def boom(r2_key, windows, on_progress=None):
         raise RuntimeError("modal down")
 
     monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: True)
@@ -108,6 +108,9 @@ def test_refine_falls_back_to_local_when_modal_fails(monkeypatch, fake_detect):
 
 
 def test_refine_passes_configured_pose_settings_to_local(monkeypatch, fake_detect):
+    """Exact equality on purpose: with no callback passed, the three quality
+    knobs are the whole of the local call (CF-255 adds `on_progress` only when
+    a caller sets it — see the test after this one)."""
     from app.config import settings
     from app.workers import tasks
 
@@ -123,13 +126,75 @@ def test_refine_passes_configured_pose_settings_to_local(monkeypatch, fake_detec
     }
 
 
+# ── CF-255: per-rally progress reaches whichever branch runs ────────────────
+
+def test_refine_threads_the_progress_callback_to_the_local_path(monkeypatch, fake_detect):
+    from app.config import settings
+    from app.workers import tasks
+
+    monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: False)
+
+    def on_progress(fraction):
+        pass
+
+    tasks._refine_with_pose(Path("game.mp4"), "", WINDOWS, on_progress=on_progress)
+
+    _, _, _, kwargs = fake_detect.calls[0]
+    assert kwargs == {
+        "model_name": settings.pose_model,
+        "imgsz": settings.pose_imgsz,
+        "skip_frames": settings.pose_skip_frames,
+        "on_progress": on_progress,
+    }
+
+
+def test_refine_threads_the_progress_callback_to_modal(monkeypatch, fake_detect):
+    from app.workers import tasks
+
+    seen = {}
+
+    def classify(r2_key, windows, on_progress=None):
+        seen["on_progress"] = on_progress
+        return windows
+
+    monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: True)
+    monkeypatch.setattr(tasks, "_classify_windows_modal", classify)
+
+    def on_progress(fraction):
+        pass
+
+    tasks._refine_with_pose(Path("game.mp4"), "raw/x.mp4", WINDOWS, on_progress=on_progress)
+
+    assert seen["on_progress"] is on_progress
+
+
 # ── Pose-first fallback scan ─────────────────────────────────────────────────
 
-def _fake_modal(monkeypatch, remote_fn):
+class _NotFound(Exception):
+    """Stands in for `modal.exception.NotFoundError`."""
+
+
+def _fake_modal(monkeypatch, remote_fn, remote_gen=None, looked_up=None):
+    """A `modal` module with one deployed function behind every name.
+
+    `remote_gen` defaults to a generator that raises NotFound before its first
+    event — the state of a deployment that predates `classify_windows_stream`
+    (CF-255) — so callers written against `.remote` keep exercising the
+    blocking path. `looked_up`, if given, collects the names asked of
+    `Function.from_name` in order.
+    """
+    def not_deployed(*args):
+        raise _NotFound("no such function")
+        yield  # never reached; it makes this a generator, like the real remote_gen
+
+    def from_name(app, fn):
+        if looked_up is not None:
+            looked_up.append(fn)
+        return types.SimpleNamespace(remote=remote_fn, remote_gen=remote_gen or not_deployed)
+
     modal_sdk = types.ModuleType("modal")
-    modal_sdk.Function = types.SimpleNamespace(
-        from_name=lambda app, fn: types.SimpleNamespace(remote=remote_fn)
-    )
+    modal_sdk.Function = types.SimpleNamespace(from_name=from_name)
+    modal_sdk.exception = types.SimpleNamespace(NotFoundError=_NotFound)
     monkeypatch.setitem(sys.modules, "modal", modal_sdk)
     monkeypatch.setattr(
         "app.services.storage.presign_url", lambda key, expires_in: "https://signed"
@@ -299,7 +364,8 @@ def test_missing_pose_runtime_is_a_permanent_error(monkeypatch, fake_detect):
 
 # ── The cross-process boundary ───────────────────────────────────────────────
 
-def test_numpy_scalars_never_reach_the_modal_boundary(monkeypatch):
+@pytest.mark.parametrize("wire", ["stream", "blocking"])
+def test_numpy_scalars_never_reach_the_modal_boundary(monkeypatch, wire):
     """A numpy-2 pickle names `numpy._core`, which a numpy-1.x image cannot
     import, so a version split fails at *deserialization* on the far side — and
     the caller sees only "Modal failed", then silently skips pose because there
@@ -310,6 +376,10 @@ def test_numpy_scalars_never_reach_the_modal_boundary(monkeypatch):
     and faster ones take the plain 0.88.
 
     Pins keep the two images aligned; this keeps the payload plain regardless.
+
+    Both wires: the streaming call (CF-255) and the blocking one it falls back
+    to. They share one argument tuple, but a copy that rebuilt it per call
+    would ship a green numpy payload on one of them.
     """
     np = pytest.importorskip("numpy")
     from app.workers import tasks
@@ -320,7 +390,11 @@ def test_numpy_scalars_never_reach_the_modal_boundary(monkeypatch):
         sent["windows"] = windows
         return windows
 
-    _fake_modal(monkeypatch, remote)
+    def remote_gen(url, windows, model, imgsz, skip):
+        sent["windows"] = windows
+        yield {"windows": windows}
+
+    _fake_modal(monkeypatch, remote, remote_gen=remote_gen if wire == "stream" else None)
 
     windows = [{
         "start": np.float64(1.0),
@@ -363,12 +437,131 @@ def test_json_safe_leaves_ordinary_payloads_untouched():
 
 
 
+# ── CF-255: the GPU call streams per-rally progress ──────────────────────────
+
+def _never_remote(*args):
+    raise AssertionError("the blocking call must not run when the stream served")
+
+
+def test_refinement_prefers_the_stream_and_relays_its_progress(monkeypatch):
+    """Refinement is 12-16% of the bar on a Modal run and used to sit frozen
+    for its whole duration; the stream is what moves it."""
+    from app.workers import tasks
+
+    def remote_gen(url, windows, model, imgsz, skip):
+        yield {"progress": 0.5}
+        yield {"progress": 1.0}
+        yield {"windows": [dict(w, action="gpu") for w in windows]}
+
+    looked_up = []
+    _fake_modal(monkeypatch, _never_remote, remote_gen=remote_gen, looked_up=looked_up)
+    seen = []
+
+    out = tasks._classify_windows_modal("raw/x.mp4", WINDOWS, on_progress=seen.append)
+
+    assert seen == [0.5, 1.0]
+    assert [w["action"] for w in out] == ["gpu"]
+    assert looked_up == ["classify_windows_stream"]
+
+
+def test_refinement_falls_back_to_the_blocking_call_when_the_stream_is_not_deployed(
+    monkeypatch,
+):
+    """`from_name` is lazy, so a missing deploy surfaces on the first pull. A
+    worker ahead of the Modal deploy must still refine — on the function that
+    is there — rather than fall through to local CPU, which in the deployed
+    image means no pose at all."""
+    from app.workers import tasks
+
+    looked_up = []
+    _fake_modal(
+        monkeypatch,
+        lambda url, windows, model, imgsz, skip: [dict(w, action="blocking") for w in windows],
+        looked_up=looked_up,
+    )
+    seen = []
+
+    out = tasks._classify_windows_modal("raw/x.mp4", WINDOWS, on_progress=seen.append)
+
+    assert [w["action"] for w in out] == ["blocking"]
+    assert seen == [], "the blocking call has no progress to report"
+    assert looked_up == ["classify_windows_stream", "classify_windows_remote"]
+
+
+def test_a_not_found_after_the_first_event_is_a_failure_not_a_missing_deploy(monkeypatch):
+    """Once the stream has produced events the function plainly exists; a
+    NotFound then is a mid-run fault. Re-running the whole GPU job on the
+    blocking function would double the T4 bill and hide the fault."""
+    from app.workers import tasks
+
+    def remote_gen(url, windows, model, imgsz, skip):
+        yield {"progress": 0.5}
+        raise _NotFound("gone mid-run")
+
+    _fake_modal(monkeypatch, _never_remote, remote_gen=remote_gen)
+
+    with pytest.raises(_NotFound):
+        tasks._classify_windows_modal("raw/x.mp4", WINDOWS, on_progress=lambda f: None)
+
+
+def test_a_raising_progress_callback_does_not_fail_refinement(monkeypatch, caplog):
+    """Reporting must never break processing."""
+    import logging
+
+    from app.workers import tasks
+
+    def remote_gen(url, windows, model, imgsz, skip):
+        yield {"progress": 0.5}
+        yield {"windows": [dict(w, action="gpu") for w in windows]}
+
+    _fake_modal(monkeypatch, _never_remote, remote_gen=remote_gen)
+
+    def broken(fraction):
+        raise RuntimeError("db write failed")
+
+    with caplog.at_level(logging.WARNING):
+        out = tasks._classify_windows_modal("raw/x.mp4", WINDOWS, on_progress=broken)
+
+    assert [w["action"] for w in out] == ["gpu"]
+    assert "Progress callback failed" in caplog.text
+
+
+def test_a_stream_that_ends_without_windows_is_an_error(monkeypatch):
+    """Progress events alone are not a result; the caller's except clause
+    turns this into the local fallback rather than persisting nothing."""
+    from app.workers import tasks
+
+    def remote_gen(url, windows, model, imgsz, skip):
+        yield {"progress": 1.0}
+
+    _fake_modal(monkeypatch, _never_remote, remote_gen=remote_gen)
+
+    with pytest.raises(RuntimeError, match="without a windows event"):
+        tasks._classify_windows_modal("raw/x.mp4", WINDOWS)
+
+
+def test_the_stream_is_used_even_when_nobody_listens(monkeypatch):
+    """No callback is not a reason to take the blocking path: the two functions
+    do the same work, and one code path is easier to keep honest than two."""
+    from app.workers import tasks
+
+    def remote_gen(url, windows, model, imgsz, skip):
+        yield {"progress": 1.0}
+        yield {"windows": [dict(w, action="gpu") for w in windows]}
+
+    _fake_modal(monkeypatch, _never_remote, remote_gen=remote_gen)
+
+    out = tasks._classify_windows_modal("raw/x.mp4", WINDOWS)
+
+    assert [w["action"] for w in out] == ["gpu"]
+
+
 def test_refine_skips_modal_entirely_when_no_rallies_survived(monkeypatch, fake_detect):
     """An empty window list must not cold-start a T4 and pull the whole video
     (up to 2 GB) only to hand back []."""
     from app.workers import tasks
 
-    def unexpected(r2_key, windows):
+    def unexpected(r2_key, windows, on_progress=None):
         raise AssertionError("Modal must not be called for zero windows")
 
     monkeypatch.setattr(tasks, "_will_attempt_modal", lambda key: True)
@@ -459,6 +652,72 @@ def test_refinement_falls_back_to_a_download_when_the_url_cannot_be_seeked(
     assert pulled["url"] == url
     _, video_path, _, _ = fake_detect.calls[0]
     assert video_path == pulled["dest"], "must decode the copy it just pulled down"
+
+
+def _progress_reporting_detect(fake_detect, monkeypatch):
+    """Make the stand-in `classify_within_windows` drive its callback the way
+    the real one does: once per window, with the fraction finished."""
+    def classify_within_windows(video_path, windows, **kwargs):
+        fake_detect.calls.append(("classify", video_path, windows, kwargs))
+        report = kwargs.get("on_progress")
+        for i in range(len(windows)):
+            if report is not None:
+                report((i + 1) / len(windows))
+        return [dict(w, action="local") for w in windows]
+
+    monkeypatch.setattr(fake_detect, "classify_within_windows", classify_within_windows)
+
+
+def test_the_stream_yields_a_progress_event_per_window_then_the_windows(
+    monkeypatch, modal_pose, fake_detect
+):
+    """The event shape the worker reads: {"progress": f} while running, then
+    one {"windows": [...]} — the same contract as `track_ball_stream`."""
+    _progress_reporting_detect(fake_detect, monkeypatch)
+    monkeypatch.setattr(modal_pose, "_streamable", lambda url: True)
+
+    three = [dict(WINDOWS[0], start=s) for s in (1.0, 10.0, 20.0)]
+    url = "https://r2.example/raw/x.mp4?sig=abc"
+    events = list(modal_pose.classify_windows_stream(url, three, "yolov8s-pose.pt", 1280, 4))
+
+    assert events[:-1] == [{"progress": 1 / 3}, {"progress": 2 / 3}, {"progress": 1.0}]
+    assert [w["action"] for w in events[-1]["windows"]] == ["local"] * 3
+    _, video_path, _, _ = fake_detect.calls[0]
+    assert video_path == url, "the stream reads the source in place like the blocking call"
+
+
+def test_the_stream_downloads_when_the_url_cannot_be_seeked(monkeypatch, modal_pose, fake_detect):
+    """Same degradation as the blocking call; the two share one body so it
+    cannot drift, and this pins that the stream actually goes through it."""
+    _progress_reporting_detect(fake_detect, monkeypatch)
+    monkeypatch.setattr(modal_pose, "_streamable", lambda url: False)
+    pulled = {}
+    monkeypatch.setattr(
+        modal_pose, "_download", lambda url, dest: pulled.update(url=url, dest=dest)
+    )
+
+    url = "https://r2.example/raw/x.mp4?sig=abc"
+    events = list(modal_pose.classify_windows_stream(url, WINDOWS, "yolov8s-pose.pt", 1280, 4))
+
+    assert pulled["url"] == url
+    _, video_path, _, _ = fake_detect.calls[0]
+    assert video_path == pulled["dest"]
+    assert events[-1]["windows"]
+
+
+def test_a_failure_inside_the_stream_reaches_the_caller(monkeypatch, modal_pose, fake_detect):
+    """The refinement runs on a thread; its exception has to cross back into
+    the generator, or the worker would see a stream that just ends — and
+    `_classify_windows_modal` treats that as an error with less to say."""
+    def broken(video_path, windows, **kwargs):
+        raise RuntimeError("decoder died")
+
+    monkeypatch.setattr(fake_detect, "classify_within_windows", broken)
+    monkeypatch.setattr(modal_pose, "_streamable", lambda url: True)
+
+    gen = modal_pose.classify_windows_stream("https://r2.example/x.mp4", WINDOWS, "m", 640, 4)
+    with pytest.raises(RuntimeError, match="decoder died"):
+        list(gen)
 
 
 def test_the_full_scan_still_downloads(monkeypatch, modal_pose, fake_detect):

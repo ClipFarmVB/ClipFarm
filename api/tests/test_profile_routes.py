@@ -29,6 +29,7 @@ from fastapi import HTTPException  # noqa: E402
 
 from app.routers import profiles  # noqa: E402
 from app.services import storage  # noqa: E402
+from app.services.quota import QuotaStatus, UploadLimits, check_upload_allowed  # noqa: E402
 from app.schemas.profile import MeOut, ProfileOut, ProfileUpdate  # noqa: E402
 
 
@@ -235,7 +236,7 @@ def test_avatar_rejects_an_unsupported_content_type():
     session = _FakeSession(user)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(profiles.upload_avatar(user.id, session, _Upload()))
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 415
 
 
 def test_avatar_accepts_every_declared_type():
@@ -403,7 +404,7 @@ def test_a_non_image_declared_as_png_is_rejected(monkeypatch):
                 _upload(b"<svg xmlns=\'http://www.w3.org/2000/svg\'><script/></svg>", "image/png"),
             )
         )
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 415
 
 
 @pytest.mark.parametrize(
@@ -427,7 +428,7 @@ def test_bytes_that_are_not_one_of_the_three_are_rejected(payload, monkeypatch):
         asyncio.run(
             profiles.upload_avatar(user.id, _FakeSession(user), _upload(payload, "image/png"))
         )
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 415
 
 
 def test_a_png_named_dot_jpg_is_accepted_and_stored_as_png(monkeypatch):
@@ -459,7 +460,7 @@ def test_a_declared_type_that_is_present_and_disallowed_is_rejected_before_any_r
     user = _FakeUser()
     with pytest.raises(HTTPException) as exc:
         asyncio.run(profiles.upload_avatar(user.id, _FakeSession(user), _Upload()))
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 415
 
 
 @pytest.mark.parametrize("declared", [None, "", "application/octet-stream"])
@@ -476,7 +477,7 @@ def test_a_client_that_declares_nothing_usable_lets_the_bytes_decide(declared, m
 @pytest.mark.parametrize("declared", [None, "", "application/octet-stream"])
 def test_declaring_nothing_usable_does_not_widen_what_is_accepted(declared, monkeypatch):
     """The carve-out lets the bytes decide; it does not let them off. Anything
-    the sniffer does not recognise is still a 4xx."""
+    the sniffer does not recognise is still a 415."""
     monkeypatch.setattr(storage, "r2_configured", lambda: True)
     user = _FakeUser()
     with pytest.raises(HTTPException) as exc:
@@ -485,7 +486,39 @@ def test_declaring_nothing_usable_does_not_widen_what_is_accepted(declared, monk
                 user.id, _FakeSession(user), _upload(b"<!doctype html><html></html>", declared)
             )
         )
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 415
+
+
+def test_the_avatar_and_video_paths_reject_an_unsupported_type_alike():
+    """CF-264: the two upload paths once disagreed — 400 here, 415 on the video
+    path — and nothing but reading both routers side by side would notice.
+    Pinning the avatar status to the one `check_upload_allowed` returns for a
+    disallowed declared type means neither can move without this failing. The
+    detail still names the allowlist; that text is what the web displays."""
+    limits = UploadLimits(
+        max_upload_bytes=2 * 1024 ** 3,
+        max_duration_seconds=4 * 3600,
+        allowed_content_types=("video/mp4", "video/quicktime"),
+        window_hours=24.0,
+        max_games_per_window=5,
+        max_minutes_per_window=360.0,
+    )
+    status = QuotaStatus(
+        limits=limits,
+        games_used=0,
+        minutes_used=0.0,
+        window_started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    video = check_upload_allowed(
+        status, content_type="application/zip", size_bytes=None, duration_seconds=None
+    )
+    assert video is not None
+    video_status, _ = video
+
+    avatar = profiles._bad_avatar_type("Unsupported image type.")
+    assert avatar.status_code == 415
+    assert avatar.status_code == video_status
+    assert avatar.detail == "Unsupported image type. Allowed: image/jpeg, image/png, image/webp"
 
 
 @pytest.mark.parametrize(

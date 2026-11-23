@@ -103,7 +103,12 @@ local CPU pose. Each level catches and falls through.
   than falling back. `guarded` is the default — it rejects
   contacts fired over a near-stationary ball, opens windows on sustained motion
   so a rally the contact detector never sees isn't cut outright, and pads
-  tighter.
+  tighter. A third mode, `learned` (CF-394, off), scores each second with a
+  logistic in-play model from committed weights and sits one link further up
+  the same chain: any exception — unvalidated weights, a contract mismatch, a
+  track too sparse to judge, its own import — falls back to `guarded`. It lives
+  in its own module (`dead_time_ml.py`), imported inside that fallback, so it
+  cannot take the other two down with it.
 - **Abstaining beats guessing.** When the ball track is too sparse to judge (below
   ~1 usable speed sample/s, measured on fixture test3 at 0.57/s), every builder
   buys dead time by cutting real play. `guarded` detects that and declines: it
@@ -157,7 +162,7 @@ separate motion pass.
   100 MiB threshold keeps out of reach, but so a dropped connection retries one part
   instead of the whole file. XHR (not fetch) on the frontend for upload progress.
 - **Auth:** Supabase issues JWTs; the API verifies them (JWKS), never handles
-  passwords. Next.js middleware guards routes server-side.
+  passwords. The Next.js proxy (formerly middleware) guards routes server-side.
 - **Migrations:** Alembic. The api container's start command applies them automatically
   *only against a local database* (`scripts/auto_migrate.py`, CF-189); a shared or
   production target is migrated deliberately instead — Render's `preDeployCommand`, or

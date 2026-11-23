@@ -234,10 +234,15 @@ def main(argv: list[str] | None = None) -> None:
     )
     ap.add_argument("test_id", nargs="?", default="test4",
                     help="fixture id whose ball-track dump to read (default test4)")
+    ap.add_argument("--static-site-filter", choices=("off", "on"), default=None,
+                    help="report on the track with CF-229's static-site filter off or on "
+                         "(default: the tune_contacts settings mirror)")
     args = ap.parse_args(argv)
 
     logging.disable(logging.INFO)
-    track, _positions, frame_h, _fx = load(args.test_id)
+    site = None if args.static_site_filter is None else args.static_site_filter == "on"
+    track, _positions, frame_h, _fx = (
+        load(args.test_id) if site is None else load(args.test_id, static_site_filter=site))
     print(report(track, frame_h, sample_every=_dump_sample_every(args.test_id)))
 
 
