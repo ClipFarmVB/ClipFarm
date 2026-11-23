@@ -57,12 +57,16 @@ def _mobile_scale_filter(short_side: int = MOBILE_SHORT_SIDE) -> str:
     * `min()` makes an upscale unrepresentable rather than merely unlikely, so
       a source smaller than the bound can never be blown up by a bad branch.
 
-    `-2` on the free axis keeps the aspect ratio and rounds to an even number,
-    which `yuv420p` requires — an odd dimension fails the encode outright.
+    Both axes come out even, which `yuv420p` requires — an odd dimension fails
+    the encode outright. `-2` on the free axis keeps the aspect ratio and rounds
+    that one; the clamped axis is rounded down explicitly with
+    `trunc(min(..)/2)*2`, because `min()` alone passes an odd value straight
+    through — an odd `short_side`, or a source below the bound with an odd short
+    side (640x481) reaching here on the probe's fail-open path.
     """
     return (
-        f"scale='if(gt(iw,ih),-2,min({short_side},iw))'"
-        f":'if(gt(iw,ih),min({short_side},ih),-2)'"
+        f"scale='if(gt(iw,ih),-2,trunc(min({short_side},iw)/2)*2)'"
+        f":'if(gt(iw,ih),trunc(min({short_side},ih)/2)*2,-2)'"
     )
 
 
@@ -86,8 +90,12 @@ def _needs_mobile_rendition(
     there is no downscale left, so the only lever is the higher crf — which
     still halves the bytes, but costs +75% of the cutting time to do it and
     spends visible quality on the smallest clip we serve. Ten times the saving
-    for half the cost is worth an encode; two times the saving for three times
-    the cost is not.
+    for a third of the cost is worth an encode; two times the saving for three
+    times the cost is not.
+
+    Expects a real measurement. `_probe_dimensions` turns a non-positive
+    dimension into None, which the caller treats as unknown and fails open on;
+    the guard here is only for a direct caller that skipped the probe.
     """
     if width <= 0 or height <= 0:
         return False
@@ -95,12 +103,26 @@ def _needs_mobile_rendition(
 
 
 def _probe_dimensions(ffmpeg, video_path: str) -> tuple[int, int] | None:
-    """Dimensions of the first video stream, or None if they can't be read."""
+    """Dimensions of the first video stream, or None if they can't be read.
+
+    A probe that succeeds but reports a zero or negative dimension is a broken
+    read, not a small video, so it is None too — the caller's fail-open branch,
+    with a log that says the probe was unusable. Returned as-is it would read as
+    "already under the bound" and silently skip the rendition for the whole
+    game, logged as a deliberate decision.
+    """
     try:
         probe = ffmpeg.probe(str(video_path))
         for stream in probe.get("streams", []):
             if stream.get("codec_type") == "video":
-                return int(stream["width"]), int(stream["height"])
+                width, height = int(stream["width"]), int(stream["height"])
+                if width <= 0 or height <= 0:
+                    logger.warning(
+                        "Probe of %s reported %dx%d — treating dimensions as unknown",
+                        video_path, width, height,
+                    )
+                    return None
+                return width, height
     except Exception:
         logger.warning("Could not probe dimensions of %s", video_path, exc_info=True)
     return None
@@ -132,7 +154,10 @@ def _encode_mobile_rendition(
                 vcodec="libx264",
                 preset="fast",
                 crf=MOBILE_CRF,
-                acodec="aac",
+                # The input is the clip this module just wrote with AAC audio,
+                # and only video is filtered: copying skips a second lossy
+                # generation and the CPU, for the same bytes.
+                acodec="copy",
                 movflags="+faststart",
                 pix_fmt="yuv420p",
                 threads=threads,

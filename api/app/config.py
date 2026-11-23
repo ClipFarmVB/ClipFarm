@@ -712,11 +712,14 @@ class Settings(BaseSettings):
     # matters — see ml/pipeline/clip.py MOBILE_SHORT_SIDE.
     #
     # Raising it is safe; lowering it does not shrink renditions already
-    # encoded, since each clip is transcoded once and never revisited. ge=2
-    # because libx264 with yuv420p needs even, non-zero dimensions, and a 0
-    # here would make every rendition encode fail inside the pipeline's
-    # swallowing except — a silent loss of the feature rather than a boot error.
-    mobile_short_side: int = Field(default=720, ge=2)
+    # encoded, since each clip is transcoded once and never revisited. ge=2 and
+    # multiple_of=2 because libx264 with yuv420p needs even, non-zero
+    # dimensions, and a 0 or an odd value here would make every rendition encode
+    # fail inside the pipeline's swallowing except — a silent loss of the
+    # feature rather than a boot error. (The scale filter also rounds the
+    # clamped axis to even, so this is belt-and-braces for a misconfiguration
+    # that would otherwise only show up as a smaller-than-asked rendition.)
+    mobile_short_side: int = Field(default=720, ge=2, multiple_of=2)
 
     # Pose refinement (classify_within_windows). Production defaults; the
     # Docker dev stack overrides these to lighter values for CPU speed.

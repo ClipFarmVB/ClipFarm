@@ -463,7 +463,16 @@ def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start:
             mobile_url = None
             if mobile_path:
                 mobile_url = s3.upload_file(mobile_path, mobile_key, "video/mp4")
-            else:
+
+            # The column is written before any stale rendition is purged, never
+            # after. A failure between the two (the DB write included) retries
+            # and can exhaust its retries; done this way round the worst state
+            # left behind is "column NULL, orphan object under clips-mobile/" —
+            # recoverable by hand — rather than a column pointing at a deleted
+            # object, which slice 2 would presign as a dead key on every play.
+            sync_update_clip_url(cid, clip_url, thumb_url, mobile_url=mobile_url)
+
+            if not mobile_path:
                 # No new rendition, so nothing overwrote the one from the
                 # previous cut — and its key is deterministic, so it is still
                 # there holding the old boundaries. Drop it: mobile clients fall
@@ -477,7 +486,6 @@ def recut_clip_task(self, clip_id: str, game_id: str, raw_video_url: str, start:
                         exc_info=True,
                     )
 
-            sync_update_clip_url(cid, clip_url, thumb_url, mobile_url=mobile_url)
             logger.info("Recut complete for clip %s", clip_id)
     except Exception as exc:
         logger.exception("Recut failed for clip %s", clip_id)

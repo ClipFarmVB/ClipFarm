@@ -57,9 +57,11 @@ def test_the_bound_is_on_the_short_side_so_rotation_cannot_change_the_answer():
 
 @pytest.mark.parametrize("width,height", [(0, 1080), (1920, 0), (-1, -1)])
 def test_nonsense_dimensions_ask_for_nothing(width, height):
-    """A probe that returns 0 or a negative is not a small video, it is a
-    broken read — and `min()` would call it "already small enough" and skip.
-    Skipping is the safe direction only for a real measurement."""
+    """The direct-call guard only. A probe that returns 0 or a negative is not a
+    small video, it is a broken read, so `_probe_dimensions` turns it into None
+    before it gets here and generate_clips fails open on it — see
+    `test_a_probe_reporting_nonsense_dimensions_fails_open`. Skipping is the safe
+    direction only for a real measurement."""
     assert clip_mod._needs_mobile_rendition(width, height, 720) is False
 
 
@@ -78,6 +80,15 @@ def test_the_scale_filter_cannot_upscale():
     bitrate to add no detail."""
     f = clip_mod._mobile_scale_filter(720)
     assert f.count("min(") == 2
+
+
+def test_the_clamped_axis_is_rounded_to_even():
+    """`min(721,ih)` on a 1080p source is 721, and libx264 with yuv420p rejects
+    an odd dimension — so the clamped axis is rounded down explicitly. `-2` only
+    covers the free axis."""
+    f = clip_mod._mobile_scale_filter(721)
+    assert "trunc(min(721,iw)/2)*2" in f
+    assert "trunc(min(721,ih)/2)*2" in f
 
 
 def test_the_free_axis_is_minus_two_so_aspect_survives_and_stays_even():
@@ -124,16 +135,28 @@ def test_an_unreadable_probe_is_none_rather_than_a_raise(payload):
     assert clip_mod._probe_dimensions(_Probe(payload), "game.mp4") is None
 
 
+@pytest.mark.parametrize("width,height", [(0, 1080), (1920, 0), (-1, -1)])
+def test_a_probe_reporting_nonsense_dimensions_is_none(width, height):
+    """A successful probe with a non-positive dimension is a broken read, and
+    must land on the same "unknown" branch as a failed one."""
+    fake = _Probe({"streams": [{"codec_type": "video", "width": width, "height": height}]})
+    assert clip_mod._probe_dimensions(fake, "game.mp4") is None
+
+
 # ── Behaviour in generate_clips ──────────────────────────────────────────────
 
 class _Stream:
-    def __init__(self, calls, fail_on):
+    def __init__(self, calls, fail_on, input_path=None):
         self._calls = calls
         self._fail_on = fail_on
+        self._input_path = input_path
         self._out: dict = {}
 
     def output(self, *args, **kwargs):
         self._calls["output"].append(kwargs)
+        # Which file each output was encoded from — the positional path that
+        # `calls["input"]` (kwargs only) cannot show.
+        self._calls["encodes"].append((self._input_path, kwargs))
         self._out = kwargs
         return self
 
@@ -148,13 +171,13 @@ class _Stream:
 
 class _FakeFFmpeg:
     def __init__(self, width=1920, height=1080, fail_on=None):
-        self.calls: dict = {"input": [], "output": []}
+        self.calls: dict = {"input": [], "output": [], "encodes": []}
         self._dims = (width, height)
         self._fail_on = fail_on
 
     def input(self, *args, **kwargs):
         self.calls["input"].append(kwargs)
-        return _Stream(self.calls, self._fail_on)
+        return _Stream(self.calls, self._fail_on, args[0] if args else None)
 
     def probe(self, path):
         return {
@@ -217,6 +240,20 @@ def test_unknown_dimensions_fail_open(monkeypatch, tmp_path):
     assert results[0]["mobile_path"] is not None
 
 
+def test_a_probe_reporting_nonsense_dimensions_fails_open(monkeypatch, tmp_path, caplog):
+    """A probe that *succeeds* with width 0 must not read as "already small
+    enough": that skips the rendition for every clip in the game and logs it as
+    a deliberate decision. It is an unknown, and unknowns fail open."""
+    fake = _install(monkeypatch, _FakeFFmpeg(0, 1080))
+
+    with caplog.at_level("INFO", logger="ml.pipeline.clip"):
+        results = clip_mod.generate_clips(str(tmp_path / "g.mp4"), DETECTIONS, tmp_path)
+
+    assert len(_scaled_outputs(fake)) == 1
+    assert results[0]["mobile_path"] is not None
+    assert "at or under" not in caplog.text
+
+
 def test_a_failed_rendition_still_yields_the_clip(monkeypatch, tmp_path):
     """The rendition is an optimisation. Losing it costs a phone some
     bandwidth; losing the clip costs the user the play."""
@@ -234,15 +271,28 @@ def test_the_rendition_is_encoded_from_the_clip_not_the_source(monkeypatch, tmp_
     which is what lets CF-239's conditional `-c copy` land without touching it —
     and avoids seeking a multi-GB source a second time."""
     fake = _install(monkeypatch, _FakeFFmpeg(1920, 1080))
+    video_path = str(tmp_path / "g.mp4")
 
-    results = clip_mod.generate_clips(str(tmp_path / "g.mp4"), DETECTIONS, tmp_path)
+    results = clip_mod.generate_clips(video_path, DETECTIONS, tmp_path)
 
-    clip_path = str(results[0]["clip_path"])
+    scaled = [(src, out) for src, out in fake.calls["encodes"] if "vf" in out]
+    assert len(scaled) == 1
+    src, out = scaled[0]
     # The scaled output's input is the clip file, not the game file.
-    scaled_input = fake.calls["input"][-1]
-    assert scaled_input is not None
-    assert clip_path.endswith(".mp4")
+    assert src == str(results[0]["clip_path"])
+    assert src != video_path
+    assert out is _scaled_outputs(fake)[0]
     assert str(results[0]["mobile_path"]).endswith(".mobile.mp4")
+
+
+def test_the_rendition_copies_the_clips_audio(monkeypatch, tmp_path):
+    """The input is the clip, already AAC, and only video is filtered — so a
+    re-encode would be a second lossy generation for no byte saving."""
+    fake = _install(monkeypatch, _FakeFFmpeg(1920, 1080))
+
+    clip_mod.generate_clips(str(tmp_path / "g.mp4"), DETECTIONS, tmp_path)
+
+    assert _scaled_outputs(fake)[0]["acodec"] == "copy"
 
 
 def test_the_rendition_is_browser_and_phone_safe(monkeypatch, tmp_path):

@@ -15,28 +15,35 @@ source resolution; only clips cut after this deploy get one. Re-encoding the
 back catalogue is a separate, expensive job (it means pulling every clip out of
 R2), and it is not what this card asked for.
 
-**Numbered 022 while revising 016, and the gap is on purpose.** `main` is at
-016. 017-020 are claimed by the CF-109 social stack (`017_follow_graph.py` and
-`018_visibility_index_shape.py` for CF-110 (#191), `019_posts_feed_cursor_index`
-for CF-111 (#192), `020_post_engagement.py` for CF-113 (#477)) and 021 by
-`021_device_tokens.py` (CF-318, #488) — all on branches that have not merged.
+**Numbered 022, parented on 023 — and the number is not the order.** The
+chain is linear and its order is the `down_revision` links, not the filename
+prefixes. `main`'s head is `023_sample_game.py` (revision "023", down_revision
+"016"), so this revises 023. 017-021 are claimed by branches that have not
+merged (the CF-109 social stack and `021_device_tokens.py`, CF-318, #488); when
+this file was written they were expected to land first, and they have not.
 
-This follows exactly what 021 did: reserve a number past the unmerged stack, but
-parent onto main's real head, because `api/tests/test_migration_chain.py`
-requires every `down_revision` to resolve to a file that is actually present and
-`PENDING_UPSTREAM` is itself asserted empty. Pointing this at "021" would fail
-`test_every_down_revision_resolves` and `test_there_is_exactly_one_head` on this
-branch, with no green configuration available.
+The rule, rather than a merge order to hope for: **at merge, `down_revision`
+must be whatever revision is then the head of `main`'s chain** — read it from
+`api/alembic/versions/` on `main` (the one id no other file names as its
+`down_revision`), and change only that line; leave the filename and the id
+alone. Never parent two files on the same revision:
+`test_the_chain_is_a_single_line` and `test_there_is_exactly_one_head` fail on
+that, and `alembic upgrade head` raises `MultipleHeads` and exits 255 with
+nothing applied.
 
-So this file expects to be rebased, not renumbered. **When #488 merges, change
-`down_revision` to "021" and leave the filename and the id alone**; if the
-social stack merges first, re-parent onto whatever is then at the tip. If this
-and 021 both land unrebased, `test_the_chain_is_a_single_line` fires and names
-016 as the parent of two — which is the accurate complaint, and the point of
-parenting onto a real revision rather than a hoped-for one.
+This branch predates 023, so until `main` is merged back in, 023 is declared in
+`PENDING_UPSTREAM` in `api/tests/test_migration_chain.py` and
+`test_the_chain_is_not_currently_bootable_if_anything_is_pending` is red on
+purpose: this branch's chain cannot resolve on its own and it must not merge as
+it stands. The merge-back brings `023_sample_game.py` in; delete the entry in
+the same commit (`test_pending_upstream_entries_are_still_pending` fails until
+you do).
+
+Applying this to the shared Supabase database is a deliberate, separate
+`alembic upgrade head` by a person (CLAUDE.md, Migrations).
 
 Revision ID: 022
-Revises: 016
+Revises: 023
 Create Date: 2026-09-12
 """
 from typing import Sequence, Union
@@ -45,7 +52,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "022"
-down_revision: Union[str, None] = "016"
+down_revision: Union[str, None] = "023"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

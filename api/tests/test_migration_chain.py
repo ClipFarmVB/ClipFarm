@@ -220,6 +220,11 @@ PENDING_UPSTREAM: dict[str, tuple[str, str]] = {
     # order that keeps the three guards below honest — dropping it earlier
     # un-gates a chain that still cannot resolve, and later leaves 014 looking
     # like the parent of both the real 015 and this dict's synthetic one.
+    #
+    # "023" (CF-321): 022_clip_mobile_rendition.py is parented on main's head,
+    # 023_sample_game.py, which this branch predates. Remove the entry in the
+    # commit that merges main back in and brings the file.
+    "023": ("016", "already on main as 023_sample_game.py — merge main back in"),
 }
 
 

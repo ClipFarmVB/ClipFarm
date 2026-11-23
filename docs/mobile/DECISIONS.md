@@ -285,8 +285,10 @@ after the decoder has applied it.
 
 **Chosen.** The third, with `min()` guards so an upscale is unrepresentable
 rather than merely unlikely, and `-2` on the free axis so the aspect ratio
-survives and the result is always even — `yuv420p` rejects odd dimensions
-outright, and that failure arrives as a dead encode rather than a bad picture.
+survives and that axis comes out even, with the clamped axis rounded down to
+even explicitly (`trunc(min(..)/2)*2`) since `min()` alone passes an odd value
+through — `yuv420p` rejects odd dimensions outright, and that failure arrives
+as a dead encode rather than a bad picture.
 
 The skip is a separate call and worth stating on its own, because measuring it
 changed what I believed. I expected a same-resolution rendition to save nothing;
@@ -294,7 +296,7 @@ it halves the bytes (crf 26 against the clip's 23). What makes the skip right is
 not that the saving is zero but that the *ratio* collapses — the measurements on
 #371 put the downscaled cases at 1.3% of clip size for +12% cutting time (4K)
 and 9.3% for +25% (1080p), against 50% for +75% when there is no downscale left
-to do. Ten times the saving for half the cost is worth an encode; two times the
+to do. Ten times the saving for a third of the cost is worth an encode; two times the
 saving for three times the cost is not, especially when the quality it spends
 comes off the smallest clip we serve. If that trade ever looks wrong, it is one
 comparison in one function, not a structural change.
