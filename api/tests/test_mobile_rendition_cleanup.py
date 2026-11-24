@@ -216,14 +216,22 @@ def _drive_process_game(monkeypatch, tmp_path, *, exists):
 
     `exists` answers `sync_game_exists` call by call: the first is the probe
     above the task's `try`, the second the "deleted during processing" check
-    after the uploads. Returns what the worker uploaded, deleted and saved, and
-    the kwargs `generate_clips` was called with.
+    after the uploads. Returns what the worker uploaded, deleted and saved, the
+    kwargs `generate_clips` was called with, and how many times the task reached
+    the retention sweep at the end of its success path.
+
+    The sweep is stubbed: unstubbed it opens `settings.database_url` (which
+    `.env` may point at Supabase), clears `raw_video_url` on expired games and
+    lists the real `raw/` prefix. Counting its calls also proves the success
+    path ran to its end rather than returning early.
     """
     from app.config import settings
     from app.services import storage
     from app.workers import _sync_db, locks, tasks
 
-    record: dict = {"uploads": {}, "deleted": [], "saved": [], "gen_kwargs": None}
+    record: dict = {
+        "uploads": {}, "deleted": [], "saved": [], "gen_kwargs": None, "sweeps": 0,
+    }
 
     fake_cv2 = types.ModuleType("cv2")
     fake_cv2.CAP_PROP_FPS = 5  # type: ignore[attr-defined]
@@ -304,6 +312,10 @@ def _drive_process_game(monkeypatch, tmp_path, *, exists):
     monkeypatch.setattr(storage, "delete_file", record["deleted"].append)
 
     monkeypatch.delenv("ROBOFLOW_API_KEY", raising=False)
+    def _sweep():
+        record["sweeps"] += 1
+
+    monkeypatch.setattr(tasks, "_sweep_expired_raw_uploads", _sweep)
     monkeypatch.setattr(tasks, "_will_attempt_modal", lambda *_a, **_k: False)
     monkeypatch.setattr(tasks, "_pose_first_fallback", lambda *_a, **_k: [])
     monkeypatch.setattr(tasks, "_refine_with_pose", lambda _v, _k, dets, *_a, **_kw: dets)
@@ -344,6 +356,8 @@ def test_a_processed_clip_uploads_and_records_its_phone_rendition(monkeypatch, t
     assert row["mobile_url"] == f"https://example.invalid/{mobile_key}", row
     assert row["clip_url"] == f"https://example.invalid/{clip_key}", row
     assert rec["deleted"] == [], rec["deleted"]
+    # The success path ran to its last step, the (stubbed) retention sweep.
+    assert rec["sweeps"] == 1, rec["sweeps"]
 
 
 def test_a_game_deleted_during_processing_purges_its_phone_renditions(monkeypatch, tmp_path):
@@ -361,6 +375,8 @@ def test_a_game_deleted_during_processing_purges_its_phone_renditions(monkeypatc
     assert set(rec["deleted"]) == set(rec["uploads"]), (rec["deleted"], rec["uploads"])
     cid = uuid.UUID(Path(mobile_keys[0]).stem)
     assert mobile_keys[0] == storage.mobile_clip_key(gid, cid)
+    # The discard path returns before the sweep, which runs on success only.
+    assert rec["sweeps"] == 0, rec["sweeps"]
 
 
 def test_saving_a_clip_row_persists_its_phone_rendition(monkeypatch):
