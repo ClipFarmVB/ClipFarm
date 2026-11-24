@@ -274,18 +274,29 @@ fixture videos; "$" means it needs paid compute a person must approve.
   | **Sum** | **180.1 / +458.4** | **102.3 / +547.5** |
 
   Whole rallies deleted fall from 26 to 16. Against guarded this would pass bar clauses
-  1–3. Mixing guarded at switch *off* with the same learned folds gives +538.6 s / 81.7 s,
+  1–3, but clauses 2 and 3 hold by construction: the union cuts a second only where guarded
+  also cuts it, so its live cut and whole-rally deletions can only match or fall below
+  guarded's. Only clause 1 (net) is evidence. Mixing guarded at switch *off* with the same learned folds gives +538.6 s / 81.7 s,
   against guarded-off's +533 / 132.9 — indicative only, because the learned folds were
   fitted at *on*.
 - *Caveats.* Inherits CF-395's variant-selection bias; three games; the learned side used
   the same contacts at switch on. This is arithmetic on stored spans, not a builder run.
 - *Experiment to confirm.* Under the standard protocol after Q2: refit learned at both
   switch positions, dump held-out windows, combine, record with `harness --windows-json`.
+  `validate_learned` cannot write those dumps today: it forces the switch *on* and the
+  static-site filter *off*, and tags every dump `on/off` (`validate_learned.py:412-422`),
+  which `harness --windows-json` refuses at any other position
+  (`refuse_contact_scale_mismatch`). Adding `--contact-scale` and `--static-site-filter`
+  arguments to `validate_learned`, with matching dump tags, is part of Q2's scope.
   Add a second arm, "learned with guarded veto" (never cut inside a guarded contact or
   anchor window), and compare both against v3 (Q3) and `rules`. Guarded's `Abstained`
   verdict must win over any learned window (test3).
-- *Metric.* Pre-registered: McNemar on whole-rally deletions vs guarded significant at
-  0.05, summed live cut below guarded's at both switch positions, net ≥ guarded's.
+- *Metric.* Pre-registered: net ≥ guarded's, summed, at both switch positions. Live cut
+  below guarded's and fewer whole-rally deletions than guarded hold by construction for the
+  union (its cut set is a subset of guarded's; McNemar against guarded has no union-only
+  discordant rallies), so they are reported, not tested. The criterion that carries the
+  confirmation is still to be chosen before the run: dead time kept per game against
+  guarded, or McNemar on whole-rally deletions against learned or v3.
 - *If it holds.* A default-off `condense_mode="union"` card; flipping it is a person's call
   (CF-399).
 - *Invariant risk:* low — keep-window semantics unchanged.
@@ -299,7 +310,9 @@ fixture videos; "$" means it needs paid compute a person must approve.
   into an inner LOGO loop with the inner objective defined in the protocol; refit at
   switch off and on; add the per-rally metrics and McNemar table to the fold record;
   update `validate_learned.KNOWN_DECODERS` and `fold_weights` so the HMM decoder (and L-
-  series decoders) can be validated. Re-run the bar.
+  series decoders) can be validated; give `validate_learned` `--contact-scale` and
+  `--static-site-filter` arguments in place of its hard-coded `on`/`off`, with dump tags
+  to match, so Q1 and Q4 can take held-out windows at any position. Re-run the bar.
 - *Metric:* the CF-389 bar on unbiased folds at both switch positions.
 - *Invariant risk:* none in production; eval only.
 
@@ -311,7 +324,9 @@ fixture videos; "$" means it needs paid compute a person must approve.
   the board.
 - *Experiment:* `visualize_deadtime` at switch off and on with Q2's per-rally report;
   include Q1's union as a third column.
-- *Metric:* as Q1. *Risk:* v3 was designed on test2/test4 (TUNED_ON), so test5 carries
+- *Metric:* McNemar on whole-rally deletions vs guarded significant at 0.05, summed live
+  cut below guarded's at both switch positions, net ≥ guarded's. Unlike for Q1's union,
+  these can fail for v3, whose cut set is not a subset of guarded's. *Risk:* v3 was designed on test2/test4 (TUNED_ON), so test5 carries
   the verdict.
 
 **Q4 · Static-site filter as a dead-time candidate** — S, cached
@@ -320,9 +335,9 @@ fixture videos; "$" means it needs paid compute a person must approve.
   (PR #616, default off) drops static share there from 56.3% to 7.7%, runs after the cache
   (no re-track), and on test1 already cut rules live cut 176 → 136 s and guarded 126 →
   117 s. It has not been scored on the comparable three for guarded, v3 and learned.
-- *Experiment:* `visualize_deadtime --static-site-filter` × switch off/on for guarded and
-  v3; learned refitted with the filter on (Q2's trainer). Highlight side: pre-gate rally
-  recall on test1 and, once CF-593 lands, on test2–5 — the contact set is shared.
+- *Experiment:* `visualize_deadtime --static-site-filter on` × `--contact-scale off|on`
+  for guarded and v3; learned refitted with the filter on (Q2's trainer). Highlight side:
+  pre-gate rally recall on test1 and, once CF-593 lands, on test2–5 — the contact set is shared.
 - *Metric:* test4 whole-rally deletions and live cut down without regressing test2/test5;
   contacts per human rally closer to the label count.
 - *Invariant risk:* low (flag exists, post-cache). Changes both paths — score both.
@@ -332,10 +347,11 @@ fixture videos; "$" means it needs paid compute a person must approve.
 - *Hypothesis:* the sanctioned way past the 3-contact cliff (H3) is not lowering the count
   but scaling the contact thresholds softly; the soft scale exists (PR #613, exponent 0.5,
   default off) and only lacks labels to pick the exponent.
-- *Experiment:* sweep the exponent (`tune_contacts --loo --exponents`) on test2–5 once the
+- *Experiment:* sweep the exponent (`tune_contacts <id> --exponents`, run once per fixture;
+  `--exponents` does not combine with `--loo`, which rejects it) on test2–5 once the
   CF-593 matcher is in; score rally recall and all three condense builders, because the
   contact set feeds both paths. Note CF-416 (#547): the tuner scores `rules`, so read the
-  `--loo` guarded columns.
+  guarded columns.
 - *Metric:* rally recall at 1080p up, condense live cut not up; test1 bit-identical.
 
 **Q6 · Highlight baseline re-measure, cached half** — S, cached, existing card CF-97 (#97)
