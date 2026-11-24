@@ -14,8 +14,8 @@ changed where the epic (CF-389) says to:
   mean/std, and the rule is recorded in the weights file (`dead_time_ml.SCALING`,
   which `load_weights` and `predict_in_play` check against the code).
 - **Two context variants** — the windowed aggregates alone, and those plus
-  lagged copies at ±1/±3/±5s. The one with the higher summed held-out net over
-  the comparable fixtures ships; both are reported.
+  lagged copies at ±1/±3/±5s. The one with the better selection objective
+  (below) over its leave-one-game-out folds ships; both are reported.
 - **Two decoders** (CF-396) — smooth-and-threshold, and a two-state HMM
   decoded by Viterbi over the raw probabilities, its transitions fitted per
   fold on the training games' labels (`dead_time_ml.fit_transitions`). Each
@@ -23,9 +23,35 @@ changed where the epic (CF-389) says to:
   rule between them and the weights record the winner as `"decoder"`.
 
 Kept from the branch: the numpy `fit_logistic`, leave-one-game-out validation,
-a threshold picked on the training games only (summed net over every training
-game at `LIVE_CUT_COST`), and shipped weights fit on all games at the median of
-the per-fold thresholds.
+a threshold picked on the training games only, and shipped weights fit on all
+games at the median of the per-fold thresholds.
+
+**One selection objective for every choice (CF-604)** — threshold, context
+variant, decoder: `objective`. It sums net (at `LIVE_CUT_COST`) over the games
+it is given **per game, not per row** — each game's net divided by its
+duration, so test1's hour of 360p footage (54% of the rows) weighs what any
+other game weighs — and counts test3 only through the bar's abstain clause
+(`validate_learned` clause 4): a candidate whose test3 cuts more than
+`TEST3_LIVE_CAP_SEC` of live play without abstaining loses to one that does
+not, and test3's net never enters the sum.
+
+**Nested leave-one-game-out (CF-604).** `select` is the whole shipping
+procedure — leave-one-game-out over the games it is given, every choice made
+on those folds, threshold the median of the chosen folds' — and `train` runs it
+on all five games to make the shipped weights. Those folds (`"folds"`) are
+therefore selection-biased as a verdict: the variant and decoder were chosen on
+the same held-out scores. The unbiased verdict is `"nested"`: for each outer
+game, `select` runs on the other four alone, the model it describes is fitted
+on them, and only then is the outer game scored. That record carries per-rally
+metrics (`rally_match`), the paired comparison against `guarded` (McNemar on
+whole-rally deletions; a within-game block bootstrap of Δnet / Δlive,
+descriptive — `paired_stats`) and the CF-389 bar applied to its folds.
+`validate_learned` reads `"folds"`, unchanged in shape.
+
+**The contact-scale position** (CF-174) is `--contact-scale`, applied as
+`visualize_deadtime` applies it and recorded in the file as `"contact_scale"`;
+the model is refitted at the position it is scored at. The default is the
+settings mirror, as before.
 
 **The weights are written with `"validated": false`, always.** Committing them
 is not enabling them: the builder that reads this file
@@ -52,21 +78,29 @@ Usage:
   python -m ml.eval.train_deadtime --decoder threshold   # one decoder only, written as is
   python -m ml.eval.train_deadtime --no-write   # report only
   python -m ml.eval.train_deadtime --ablation   # also the feature-subset AUC table
+  python -m ml.eval.train_deadtime --no-write --contact-scale off   # production's position
+  python -m ml.eval.train_deadtime --no-write --jitter-draws 20     # label-jitter sensitivity
 """
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from ml.eval import deadtime_variants as dv
+from ml.eval import paired_stats as ps
+from ml.eval import rally_match as rm
+from ml.eval import visualize_deadtime as vd
 from ml.eval.metrics import DeadTimeSignals, evaluate_deadtime, union
+from ml.eval.validate_learned import TEST3, TEST3_LIVE_CAP_SEC, apply_bar, scores_from_folds
 from ml.eval.visualize_deadtime import COMPARABLE, LIVE_CUT_COST, TEST_IDS, net_seconds
+from ml.pipeline.dead_time import Abstained, track_is_usable
 from ml.pipeline.dead_time_ml import (
     CONTEXT_LAGS,
     DECODERS,
@@ -120,6 +154,14 @@ class TrainGame:
     features: np.ndarray        # raw compute_features output, one row per second
     y: np.ndarray               # 1.0 where the second's centre is in-play
     guarded: DeadTimeSignals    # the shipping builder on this game
+    guarded_windows: list[Interval]   # its keep-windows, for the per-rally scores
+    # Production's learned chain declines this track (empty, or below the
+    # builder's default min_track_rate) and falls back to `guarded`.
+    declines: bool = False
+    # No usable speed sample at all (which includes an empty track): even
+    # ungated, `validate_learned.learned_windows` declines it to `guarded`
+    # rather than score the builder's cut-everything windows. Implies `declines`.
+    no_speed_samples: bool = False
 
 
 def labels(human_keep: list[Interval], n: int) -> np.ndarray:
@@ -134,6 +176,7 @@ def labels(human_keep: list[Interval], n: int) -> np.ndarray:
 def prepare(game: dv.Game) -> TrainGame:
     features = compute_features(game.positions, game.contacts, game.duration,
                                 game.frame_height)
+    guarded = dv.v5_guarded(game)
     return TrainGame(
         test_id=game.test_id,
         source_video_md5=game.raw["source_video_md5"],
@@ -141,8 +184,60 @@ def prepare(game: dv.Game) -> TrainGame:
         human_keep=list(game.human_keep),
         features=features,
         y=labels(game.human_keep, features.shape[0]),
-        guarded=evaluate_deadtime(game.human_keep, dv.v5_guarded(game), game.duration),
+        guarded=evaluate_deadtime(game.human_keep, guarded, game.duration),
+        guarded_windows=guarded,
+        # The test `active_windows_learned` raises TrackTooSparseError on, at
+        # its default floor.
+        declines=not game.positions or not track_is_usable(game.speed_samples, game.duration),
+        no_speed_samples=not game.positions or len(game.speed_samples[0]) == 0,
     )
+
+
+# ── the selection objective (CF-604) ───────────────────────────────────────
+# Games that count only through bar clause 4 — abstain, or cut at most
+# TEST3_LIVE_CAP_SEC of live play. Their net never enters the sum: test3 is a
+# track the tracker cannot follow, and the bar judges it on that clause alone.
+ABSTAIN_ONLY: tuple[str, ...] = (TEST3,)
+
+
+@dataclass(frozen=True)
+class Objective:
+    """One candidate's standing over a set of games."""
+    clause_4: bool      # every ABSTAIN_ONLY game present abstains or stays under the cap
+    net: float          # sum over the other games of net_sec / duration
+    live: float         # sum over the same games of live_cut_sec / duration
+
+    @property
+    def key(self) -> tuple[bool, float]:
+        """What a choice maximises: the abstain clause first, then net."""
+        return self.clause_4, self.net
+
+
+def objective(rows: Iterable[tuple[TrainGame, float, float]]) -> Objective:
+    """
+    The selection objective over (game, net_sec, live_cut_sec) rows.
+
+    Weighted per game, not per row: each game's seconds are divided by its
+    duration, so the sum is net seconds per second of footage, added up game by
+    game — test1's 54% of the rows counts as one game. An ABSTAIN_ONLY game
+    counts through clause 4 alone: it passes when production's chain declines
+    the track (`TrainGame.declines`, so `guarded` abstains there) or when it
+    cuts at most TEST3_LIVE_CAP_SEC.
+    """
+    ok, net, live = True, 0.0, 0.0
+    for game, net_sec, live_sec in rows:
+        if game.test_id in ABSTAIN_ONLY:
+            ok = ok and (game.declines or live_sec <= TEST3_LIVE_CAP_SEC)
+            continue
+        net += net_sec / game.duration
+        live += live_sec / game.duration
+    return Objective(ok, net, live)
+
+
+def fold_objective(folds: Sequence[dict], games: Sequence[TrainGame]) -> Objective:
+    """`objective` over a fold record's held-out rows."""
+    by_id = {g.test_id: g for g in games}
+    return objective((by_id[f["held_out"]], f["net_sec"], f["live_cut_sec"]) for f in folds)
 
 
 # ── model ──────────────────────────────────────────────────────────────────
@@ -196,18 +291,21 @@ def score(game: TrainGame, raw: np.ndarray, threshold: float) -> DeadTimeSignals
 
 
 def pick_threshold(games: Sequence[TrainGame], model: dict) -> float:
-    """The THRESHOLDS entry with the highest summed net over `games`.
+    """The THRESHOLDS entry with the best `objective` over `games`.
 
-    Summed over every game passed — the training games, test1 and test3
-    included — because a threshold has to work on whatever it is given. Ties go
-    to the lower threshold (strict >), as on the branch.
+    Over every game passed — the training games — by the same objective the
+    variant and the decoder are chosen on (CF-604; it was raw summed seconds,
+    which let test1 set the threshold). Ties go to the lower threshold
+    (strict >), as on the branch.
     """
     raw = [probabilities(g, model) for g in games]
-    best_thr, best_u = THRESHOLDS[0], -np.inf
+    best_thr: float = THRESHOLDS[0]
+    best: tuple[bool, float] | None = None
     for thr in THRESHOLDS:
-        u = sum(net_seconds(score(g, p, thr)) for g, p in zip(games, raw))
-        if u > best_u:
-            best_u, best_thr = u, thr
+        sigs = [score(g, p, thr) for g, p in zip(games, raw)]
+        u = objective((g, net_seconds(s), s.live_removed_sec) for g, s in zip(games, sigs)).key
+        if best is None or u > best:
+            best, best_thr = u, thr
     return best_thr
 
 
@@ -290,26 +388,296 @@ def comparable_live_cut(folds: Sequence[dict]) -> float:
     return float(sum(f["live_cut_sec"] for f in folds if f["held_out"] in COMPARABLE))
 
 
-def choose_decoder(threshold_folds: Sequence[dict], hmm_folds: Sequence[dict]) -> str:
+def choose_decoder(threshold_folds: Sequence[dict], hmm_folds: Sequence[dict],
+                   games: Sequence[TrainGame]) -> str:
     """
-    CF-396's shipping rule, on each decoder's own shipped-variant folds: "hmm"
-    only if its summed held-out net over COMPARABLE is strictly higher than
-    threshold's AND its summed live play cut over COMPARABLE is not higher.
-    Anything else — a tie on net included — keeps "threshold".
+    CF-396's shipping rule, on each decoder's own chosen-variant folds and in
+    `objective`'s terms: "hmm" only if its per-game net is strictly higher than
+    threshold's AND its per-game live play cut is not higher. Anything else — a
+    tie on net included — keeps "threshold". A decoder failing the abstain
+    clause loses to one passing it, whatever the seconds say.
     """
-    net_up = comparable_net(hmm_folds) > comparable_net(threshold_folds)
-    live_not_up = comparable_live_cut(hmm_folds) <= comparable_live_cut(threshold_folds)
-    return "hmm" if net_up and live_not_up else "threshold"
+    t, h = fold_objective(threshold_folds, games), fold_objective(hmm_folds, games)
+    if t.clause_4 != h.clause_4:
+        return "hmm" if h.clause_4 else "threshold"
+    return "hmm" if h.net > t.net and h.live <= t.live else "threshold"
 
 
-def choose_variant(variant_folds: dict[str, list[dict]]) -> str:
-    """Highest summed held-out net over COMPARABLE; the first listed wins a tie."""
-    best, best_net = "", -np.inf
+def choose_variant(variant_folds: dict[str, list[dict]], games: Sequence[TrainGame]) -> str:
+    """Best `objective` over each variant's held-out folds; the first listed
+    wins a tie."""
+    best, best_key = "", None
     for name, folds in variant_folds.items():
-        net = comparable_net(folds)
-        if net > best_net:
-            best, best_net = name, net
+        key = fold_objective(folds, games).key
+        if best_key is None or key > best_key:
+            best, best_key = name, key
     return best
+
+
+@dataclass
+class Selection:
+    """What the shipping procedure chose on one set of games, and its folds."""
+    decoder: str
+    variant: str
+    threshold: float                            # median of the chosen folds'
+    variants: dict[str, str]                    # decoder -> the variant it chose
+    folds: dict[str, dict[str, list[dict]]]     # decoder -> variant -> LOO folds
+
+    @property
+    def chosen_folds(self) -> list[dict]:
+        return self.folds[self.decoder][self.variant]
+
+
+def select(games: Sequence[TrainGame], decoders: Sequence[str]) -> Selection:
+    """
+    The shipping procedure on `games` and nothing else: leave-one-game-out
+    over them for every (decoder, variant), each decoder choosing its variant,
+    `choose_decoder` between the two when both run, and the threshold the
+    median of the chosen folds' thresholds.
+
+    `train` calls it on all five games; `nested_fold` on the four an outer game
+    leaves, which is what keeps that game out of every choice.
+    """
+    decoders = tuple(decoders)
+    if decoders != DECODERS and not (len(decoders) == 1 and decoders[0] in DECODERS):
+        raise ValueError(f"unknown decoder {decoders!r}, expected one of {list(DECODERS)}"
+                         " or all of them")
+    folds = {d: {name: loo(games, lags, d) for name, lags in VARIANTS.items()}
+             for d in decoders}
+    variants = {d: choose_variant(folds[d], games) for d in decoders}
+    if len(decoders) == 1:
+        decoder = decoders[0]
+    else:
+        decoder = choose_decoder(folds["threshold"][variants["threshold"]],
+                                 folds["hmm"][variants["hmm"]], games)
+    chosen = folds[decoder][variants[decoder]]
+    threshold = round(float(np.median([f["threshold"] for f in chosen])), 2)
+    return Selection(decoder, variants[decoder], threshold, variants, folds)
+
+
+# ── nested leave-one-game-out (CF-604) ─────────────────────────────────────
+
+def decode(game: TrainGame, raw: np.ndarray, decoder: str, threshold: float,
+           transitions: dict | None) -> list[Interval]:
+    """Held-out windows through `decode_windows`, the builder's dispatch."""
+    model: dict = {"decoder": decoder, "threshold": threshold}
+    if decoder == "hmm":
+        model["hmm"] = transitions
+    return decode_windows(raw, model, game.duration)
+
+
+def _rounded(d: dict) -> dict:
+    return {k: _rounded(v) if isinstance(v, dict)
+            else _r(v) if isinstance(v, float) else v for k, v in d.items()}
+
+
+def rally_record(game: TrainGame, windows: list[Interval]) -> tuple[dict, dict, np.ndarray]:
+    """
+    (rally, paired, unit deltas) for `windows` on `game`, against `guarded`.
+
+    rally: `rally_match.summarize` for each side. paired: whole-rally deletions
+    split by who made them, the exact McNemar p on the discordant ones, and the
+    game's Δnet / Δlive cut (learned minus guarded). The unit deltas — Δnet and
+    Δlive per (rally + following gap) — are what the block bootstrap resamples;
+    they sum to the game's Δ and are not written.
+    """
+    learned = rm.match_rallies(game.human_keep, windows, game.duration)
+    guarded = rm.match_rallies(game.human_keep, game.guarded_windows, game.duration)
+    pairs = list(zip(learned, guarded))
+    b = sum(lm.deleted and not gm.deleted for lm, gm in pairs)
+    c = sum(gm.deleted and not lm.deleted for lm, gm in pairs)
+    spans = rm.units(game.human_keep, game.duration)
+    deltas = (ps.unit_scores(game.human_keep, windows, spans)
+              - ps.unit_scores(game.human_keep, game.guarded_windows, spans))
+    paired = {
+        "learned_only_deleted": b,
+        "guarded_only_deleted": c,
+        "both_deleted": sum(lm.deleted and gm.deleted for lm, gm in pairs),
+        "mcnemar_p": _r(ps.mcnemar_exact(b, c)),
+        "delta_net_sec": _r(float(deltas[:, 0].sum())),
+        "delta_live_cut_sec": _r(float(deltas[:, 1].sum())),
+    }
+    rally = {"learned": _rounded(rm.summarize(learned)),
+             "guarded": _rounded(rm.summarize(guarded))}
+    return rally, paired, deltas
+
+
+def nested_fold(held: TrainGame, train: Sequence[TrainGame],
+                decoders: Sequence[str]) -> tuple[dict, np.ndarray]:
+    """
+    One outer game, scored by the model `select` makes from `train` alone.
+
+    Every choice — variant, decoder, threshold — and every fit — coefficients,
+    hmm transitions — sees `train` only; `held` is scored and nothing else.
+    The model is the one `train` would ship if `train` were all the games.
+    Returns the fold record and its unit deltas (`rally_record`).
+    """
+    sel = select(train, decoders)
+    model = fit_on(train, VARIANTS[sel.variant])
+    raw = probabilities(held, model)
+    transitions = fit_transitions([g.y for g in train]) if sel.decoder == "hmm" else None
+    windows = decode(held, raw, sel.decoder, sel.threshold, transitions)
+    sig = evaluate_deadtime(held.human_keep, windows, held.duration)
+    g = held.guarded
+    rally, paired, deltas = rally_record(held, windows)
+    fold: dict = {"held_out": held.test_id, "variant": sel.variant, "decoder": sel.decoder,
+                  "threshold": sel.threshold}
+    if transitions is not None:
+        fold["hmm"] = transitions
+    fold |= {
+        "dead_removed_pct": _r(sig.dead_removed_pct or 0.0),
+        "live_cut_sec": _r(sig.live_removed_sec),
+        "net_sec": _r(net_seconds(sig)),
+        "auc": _r(auc(raw, held.y)),
+        "guarded_dead_removed_pct": _r(g.dead_removed_pct or 0.0),
+        "guarded_live_cut_sec": _r(g.live_removed_sec),
+        "guarded_net_sec": _r(net_seconds(g)),
+        "rally": rally,
+        "paired": paired,
+        "coef": [_r(c) for c in model["coef"]],
+        "intercept": _r(model["intercept"]),
+    }
+    return fold, deltas
+
+
+def _verdict(clauses: Sequence) -> dict:
+    return {
+        "passed": all(c.passed for c in clauses),
+        "clauses": [{"name": c.name, "value": _r(c.value), "limit": _r(c.limit),
+                     "margin": _r(c.margin), "passed": c.passed} for c in clauses],
+    }
+
+
+def nested_bar(folds: Sequence[dict], games: Sequence[TrainGame]) -> dict | None:
+    """
+    The CF-389 bar (`validate_learned.apply_bar`) on the nested folds, for both
+    rungs. The folds score the builder with no track floor. The ungated rung is
+    them with `guarded` in place of any game with no usable speed sample
+    (`TrainGame.no_speed_samples`), as `validate_learned.learned_windows`
+    declines those even ungated; the gated rung puts `guarded` — production's
+    fallback — in place of every game the learned chain declines. None when the
+    folds do not cover the games the bar names.
+    """
+    learned, guarded = scores_from_folds(folds)
+    if not (set(COMPARABLE) | {TEST3}) <= set(learned):
+        return None
+    by_id = {g.test_id: g for g in games}
+    guarded = {t: dataclasses.replace(s, abstained=isinstance(by_id[t].guarded_windows,
+                                                               Abstained))
+               for t, s in guarded.items()}
+    gated = {t: guarded[t] if by_id[t].declines else s for t, s in learned.items()}
+    ungated = {t: guarded[t] if by_id[t].no_speed_samples else s for t, s in learned.items()}
+    return {"gated": _verdict(apply_bar(gated, guarded)),
+            "ungated": _verdict(apply_bar(ungated, guarded))}
+
+
+def nested(games: Sequence[TrainGame], decoders: Sequence[str], *,
+           draws: int = ps.BOOTSTRAP_DRAWS, seed: int = ps.BOOTSTRAP_SEED) -> dict:
+    """
+    The unbiased held-out record: `nested_fold` for every game, the paired
+    comparison pooled over COMPARABLE, and the bar on the nested folds.
+
+    The pooled McNemar adds the comparable games' discordant counts; its p is
+    the primary test. The bootstrap interval is descriptive: it resamples units
+    within each game and so ignores the variance between games. `draws=0`
+    leaves the intervals out.
+    """
+    results = [nested_fold(h, [g for g in games if g is not h], decoders) for h in games]
+    folds = [f for f, _ in results]
+    comp = [(f, d) for f, d in results if f["held_out"] in COMPARABLE]
+    b = sum(f["paired"]["learned_only_deleted"] for f, _ in comp)
+    c = sum(f["paired"]["guarded_only_deleted"] for f, _ in comp)
+    pooled: dict = {
+        "games": [f["held_out"] for f, _ in comp],
+        "learned_only_deleted": b,
+        "guarded_only_deleted": c,
+        "both_deleted": sum(f["paired"]["both_deleted"] for f, _ in comp),
+        "mcnemar_p": _r(ps.mcnemar_exact(b, c)),
+        "delta_net_sec": _r(sum(float(d[:, 0].sum()) for _, d in comp)),
+        "delta_live_cut_sec": _r(sum(float(d[:, 1].sum()) for _, d in comp)),
+    }
+    if draws > 0 and comp:
+        boot = ps.block_bootstrap([d for _, d in comp], draws, seed)
+        pooled |= {
+            "delta_net_ci95": [_r(x) for x in ps.percentile_interval(boot[:, 0])],
+            "delta_live_cut_ci95": [_r(x) for x in ps.percentile_interval(boot[:, 1])],
+            "bootstrap": {"draws": draws, "seed": seed,
+                          "unit": "rally + following gap, resampled within each game",
+                          "descriptive": True},
+        }
+    return {
+        "decoders": list(decoders),
+        "objective": f"per-game net_sec / duration at {LIVE_CUT_COST:.0f}:1; "
+                     f"{'+'.join(ABSTAIN_ONLY)} through bar clause 4 only",
+        "folds": folds,
+        "paired": pooled,
+        "bar": nested_bar(folds, games),
+    }
+
+
+# ── label-jitter sensitivity (CF-604) ──────────────────────────────────────
+
+JITTER_SEC = 1.0
+
+
+def jitter_keep(keep: Sequence[Interval], duration: float, rng: np.random.Generator,
+                amount: float = JITTER_SEC) -> list[Interval]:
+    """Every endpoint moved by its own uniform draw in ±`amount`, clamped to
+    the video; a span the draws empty is dropped."""
+    out = []
+    for s, e in keep:
+        js = min(max(s + rng.uniform(-amount, amount), 0.0), duration)
+        je = min(max(e + rng.uniform(-amount, amount), 0.0), duration)
+        if je > js:
+            out.append((float(js), float(je)))
+    return sorted(out)
+
+
+def relabel(game: TrainGame, keep: list[Interval]) -> TrainGame:
+    """`game` under other labels: y and guarded's score follow them; the
+    features and guarded's windows, which never read the labels, do not."""
+    return dataclasses.replace(
+        game, human_keep=keep, y=labels(keep, game.features.shape[0]),
+        guarded=evaluate_deadtime(keep, game.guarded_windows, game.duration))
+
+
+def _sign(x: float) -> int:
+    return (x > 0) - (x < 0)
+
+
+def ranking(record: dict) -> dict:
+    """Learned vs guarded from a `nested` record, pooled over COMPARABLE, as a
+    sign each: +1 learned ahead, 0 tied, -1 behind. On net that is the sign of
+    Δnet; on whole-rally deletions, of guarded-only minus learned-only (fewer
+    learned-only deletions is ahead). A sign, not "ahead or not", so a move
+    from a tie to behind counts as a flip."""
+    p = record["paired"]
+    return {"delta_net_sec": p["delta_net_sec"],
+            "net_sign": _sign(p["delta_net_sec"]),
+            "deletion_sign": _sign(p["guarded_only_deleted"] - p["learned_only_deleted"])}
+
+
+def sensitivity(games: Sequence[TrainGame], decoders: Sequence[str], baseline: dict,
+                draws: int, seed: int = 0) -> dict:
+    """
+    `nested` rerun `draws` times on labels jittered by `jitter_keep` (seeded),
+    and how often the learned-vs-guarded ranking differs from `baseline`'s, the
+    unjittered record: a draw flips a side when its sign (ahead / tied /
+    behind, `ranking`) differs from the baseline's. A ranking that flips under ±1s of labelling noise is not
+    a result. Printed, not written.
+    """
+    rng = np.random.default_rng(seed)
+    base = ranking(baseline)
+    runs = []
+    for _ in range(draws):
+        jittered = [relabel(g, jitter_keep(g.human_keep, g.duration, rng)) for g in games]
+        runs.append(ranking(nested(jittered, decoders, draws=0)))
+    return {
+        "draws": draws, "seed": seed, "jitter_sec": JITTER_SEC, "baseline": base,
+        "net_flips": sum(r["net_sign"] != base["net_sign"] for r in runs),
+        "deletion_flips": sum(r["deletion_sign"] != base["deletion_sign"] for r in runs),
+        "runs": runs,
+    }
 
 
 def ablation(games: Sequence[TrainGame], lags: Sequence[int]) -> dict[str, dict[str, float | None]]:
@@ -335,25 +703,30 @@ def git_commit() -> str:
     return out or "unknown"
 
 
-def train(games: Sequence[TrainGame], commit: str,
-          decoder: str = "threshold") -> tuple[dict, dict]:
-    """LOO both variants under `decoder`, pick one, fit it on everything.
-    Returns (weights, report).
+def train(games: Sequence[TrainGame], commit: str, decoder: str = "threshold",
+          contact_scale: str | None = None) -> tuple[dict, dict]:
+    """`select` on every game, fit its choice on everything, and run the
+    nested record beside it. Returns (weights, report).
 
-    Each decoder picks its own context variant: the choice is made on that
-    decoder's folds. Under "hmm" the weights also carry the transitions fitted
-    on every game's labels, beside the threshold (the median fold threshold,
-    as under "threshold").
+    `decoder` is one of DECODERS, run alone, or "auto": both, and
+    `choose_decoder` between them — in the shipped selection and in every
+    nested one alike. Each decoder picks its own context variant. Under "hmm"
+    the weights also carry the transitions fitted on every game's labels,
+    beside the threshold (the median fold threshold, as under "threshold").
+
+    `contact_scale` is recorded, not applied: the games were loaded at it
+    (`main` applies it before `load_game`). None records the settings mirror's
+    current position, which is what the games were loaded at unless a caller
+    moved it.
 
     Pure: no I/O, so two calls on the same games give the same weights.
     """
-    if decoder not in DECODERS:
+    if decoder != "auto" and decoder not in DECODERS:
         raise ValueError(f"unknown decoder {decoder!r}, expected one of {list(DECODERS)}")
-    variant_folds = {name: loo(games, lags, decoder) for name, lags in VARIANTS.items()}
-    chosen = choose_variant(variant_folds)
-    lags = VARIANTS[chosen]
-    folds = variant_folds[chosen]
-    threshold = float(np.median([f["threshold"] for f in folds]))
+    decoders = DECODERS if decoder == "auto" else (decoder,)
+    sel = select(games, decoders)
+    chosen, lags = sel.variant, VARIANTS[sel.variant]
+    variant_folds = sel.folds[sel.decoder]
     model = fit_on(games, lags)
 
     weights: dict = {
@@ -363,16 +736,19 @@ def train(games: Sequence[TrainGame], commit: str,
         "context": context_rule(list(lags)),
         "coef": [_r(c) for c in model["coef"]],
         "intercept": _r(model["intercept"]),
-        "threshold": round(threshold, 2),
-        "decoder": decoder,
+        "threshold": sel.threshold,
+        "decoder": sel.decoder,
     }
-    if decoder == "hmm":
+    if sel.decoder == "hmm":
         weights["hmm"] = fit_transitions([g.y for g in games])
+    record = nested(games, decoders)
     weights |= {
         "trained_on": [{"test_id": g.test_id, "source_video_md5": g.source_video_md5}
                        for g in games],
         "git_commit": commit,
-        "folds": folds,
+        # The shipped selection's own folds: what `validate_learned` reads.
+        # Selection-biased as a verdict — see `"nested"` for the unbiased one.
+        "folds": sel.chosen_folds,
         "context_variants": {
             name: {
                 "context": context_rule(list(VARIANTS[name])),
@@ -381,11 +757,15 @@ def train(games: Sequence[TrainGame], commit: str,
             }
             for name, vf in variant_folds.items()
         },
+        "contact_scale": contact_scale or vd.mirror_position(),
+        "nested": record,
         # Always false from the trainer. CF-395 applies the epic's bar and is
         # the only thing that may flip it; committing weights is not enabling.
+        # A nested bar pass does not flip it either (CF-399).
         "validated": False,
     }
-    report = {"chosen": chosen, "variant_folds": variant_folds, "model": model}
+    report = {"chosen": chosen, "variant_folds": variant_folds, "model": model,
+              "selection": sel, "nested": record}
     return weights, report
 
 
@@ -431,6 +811,84 @@ def print_folds(name: str, folds: Sequence[dict], decoder: str = "threshold") ->
             print(f"  {f['held_out']:8s} transitions from the other four: {f['hmm']}")
 
 
+def _del(d: dict) -> str:
+    return "/".join(str(d[name]) for name, _ in rm.LENGTH_BUCKETS)
+
+
+def _err(v: float | None) -> str:
+    return "  n/a" if v is None else f"{v:+5.1f}"
+
+
+def print_nested(record: dict, contact_scale: str) -> None:
+    folds = record["folds"]
+    print(f"\nnested leave-one-game-out (CF-604), contact scale {contact_scale}: every"
+          " choice made on the\nother four games alone; the outer game only scores."
+          f" Objective: {record['objective']}.")
+    print(f"  {'fixture':8s} {'variant':10s} {'decoder':9s} {'thr':>4s}  {'dead%':>6s}"
+          f" {'live s':>7s} {'net s':>8s}  | guarded {'dead%':>6s} {'live s':>7s} {'net s':>8s}")
+    for f in folds:
+        # Every game counts in every nested choice (through `objective`); the
+        # mark says where it stops counting.
+        mark = ("" if f["held_out"] in COMPARABLE else
+                "  (bar clause 4 only, not pooled)" if f["held_out"] == TEST3 else
+                "  (not in bar/pooled)")
+        print(f"  {f['held_out']:8s} {f['variant']:10s} {f['decoder']:9s} {f['threshold']:4.2f}"
+              f"  {_pct(f['dead_removed_pct'])} {f['live_cut_sec']:7.1f} {f['net_sec']:+8.1f}"
+              f"  |         {_pct(f['guarded_dead_removed_pct'])}"
+              f" {f['guarded_live_cut_sec']:7.1f} {f['guarded_net_sec']:+8.1f}{mark}")
+    print("\n  per rally, learned | guarded: recall at >=50% kept, at 100% kept; whole"
+          " rallies deleted\n  <=3s/3-8s/>8s; median start and end error (s, + = late"
+          " start / kept tail)")
+    for f in folds:
+        cells = []
+        for side in ("learned", "guarded"):
+            r = f["rally"][side]
+            cells.append(f"{_pct(r['recall_50'])} {_pct(r['recall_100'])} {_del(r['deleted']):>8s}"
+                         f" {_err(r['start_err_median_sec'])} {_err(r['end_err_median_sec'])}")
+        p = f["paired"]
+        print(f"  {f['held_out']:8s} n={f['rally']['learned']['rallies']:<3d} {cells[0]} | {cells[1]}"
+              f"   deleted by learned only {p['learned_only_deleted']}, guarded only"
+              f" {p['guarded_only_deleted']}, McNemar p {p['mcnemar_p']:.3f}")
+    p = record["paired"]
+    print(f"\n  paired vs guarded over {'+'.join(p['games'])}: whole rallies deleted by learned"
+          f" only {p['learned_only_deleted']}, by guarded only {p['guarded_only_deleted']}"
+          f" (both {p['both_deleted']}); exact McNemar p = {p['mcnemar_p']:.4f} (primary)")
+    ci = ""
+    if "delta_net_ci95" in p:
+        ci = (f"; within-game block bootstrap 95% [{p['delta_net_ci95'][0]:+.1f},"
+              f" {p['delta_net_ci95'][1]:+.1f}]s net, [{p['delta_live_cut_ci95'][0]:+.1f},"
+              f" {p['delta_live_cut_ci95'][1]:+.1f}]s live (descriptive: ignores"
+              " between-game variance)")
+    print(f"  Δnet {p['delta_net_sec']:+.1f}s, Δlive cut {p['delta_live_cut_sec']:+.1f}s{ci}")
+    if record["bar"] is None:
+        print("  bar: n/a (the folds do not cover the games the bar names)")
+        return
+    for rung in ("gated", "ungated"):
+        v = record["bar"][rung]
+        print(f"\n  CF-389 bar on the nested folds, learned {rung}: "
+              f"{'PASS' if v['passed'] else 'FAIL'}")
+        for c in v["clauses"]:
+            print(f"    {'pass' if c['passed'] else 'FAIL'}  {c['name']:44s} value"
+                  f" {c['value']:8.2f}  limit {c['limit']:8.2f}  margin {c['margin']:+8.2f}")
+
+
+_STANDING = {1: "ahead of", 0: "tied with", -1: "behind"}
+
+
+def print_sensitivity(s: dict) -> None:
+    b = s["baseline"]
+    print(f"\nlabel jitter (every endpoint ±{s['jitter_sec']:.0f}s uniform, {s['draws']} draws,"
+          f" seed {s['seed']}): unjittered learned is "
+          f"{_STANDING[b['net_sign']]} guarded on net"
+          f" (Δ {b['delta_net_sec']:+.1f}s) and "
+          f"{_STANDING[b['deletion_sign']]} it on whole-rally"
+          " deletions")
+    print(f"  ranking flips: net {s['net_flips']}/{s['draws']},"
+          f" deletions {s['deletion_flips']}/{s['draws']}"
+          + ("" if s["net_flips"] or s["deletion_flips"] else " - stable"))
+    print("  Δnet per draw: " + ", ".join(f"{r['delta_net_sec']:+.1f}" for r in s["runs"]))
+
+
 def print_ablation(table: dict[str, dict[str, float | None]]) -> None:
     print("\nablation - held-out AUC per fixture, shipped context variant")
     ids = list(next(iter(table.values())).keys())
@@ -455,46 +913,73 @@ def main(argv: Sequence[str] | None = None) -> None:
                     help="how probabilities become windows (CF-396). 'auto' (default) runs"
                          " both leave-one-game-out and writes the one choose_decoder"
                          " picks; naming one runs and writes only that one")
+    ap.add_argument("--contact-scale", choices=vd.CONTACT_SCALE_POSITIONS,
+                    default=vd.mirror_position(),
+                    help="side of the CF-174 switch to load, fit and score at: off"
+                         " (production), on, or on with CF-376's soft flag (default: the"
+                         " settings mirror, currently %(default)s). Recorded in the file")
+    ap.add_argument("--jitter-draws", type=int, default=0, metavar="N",
+                    help="also rerun the nested record N times with every label endpoint"
+                         " jittered by up to ±1s, and report whether learned-vs-guarded"
+                         " flips (printed, not written; each draw is a full nested run)")
+    ap.add_argument("--jitter-seed", type=int, default=0,
+                    help="seed for --jitter-draws (default %(default)s)")
     args = ap.parse_args(argv)
 
+    # The position is for this run only, restored on the way out as
+    # visualize_deadtime.main restores it: load_game reads it at call time.
+    saved = (dv.NORMALIZE, dv.SOFT_SCALE)
+    try:
+        vd.apply_contact_scale(args.contact_scale)
+        _run(args)
+    finally:
+        dv.NORMALIZE, dv.SOFT_SCALE = saved
+
+
+def _run(args: argparse.Namespace) -> None:
     games = [prepare(dv.load_game(t)) for t in TEST_IDS]
+    print(f"contact scale {args.contact_scale}")
     for g in games:
         print(f"{g.test_id}: {g.duration:.0f}s, {int(g.y.sum())}s in-play "
-              f"({g.y.mean():.0%}), md5 {g.source_video_md5}")
+              f"({g.y.mean():.0%}), md5 {g.source_video_md5}"
+              + (", learned chain declines the track" if g.declines else ""))
 
-    commit = git_commit()
-    decoders = DECODERS if args.decoder == "auto" else (args.decoder,)
-    results = {d: train(games, commit, d) for d in decoders}
-    for decoder, (weights, report) in results.items():
-        for name, folds in report["variant_folds"].items():
+    weights, report = train(games, git_commit(), args.decoder, args.contact_scale)
+    sel: Selection = report["selection"]
+    for decoder, variant_folds in sel.folds.items():
+        for name, folds in variant_folds.items():
             print_folds(name, folds, decoder)
-        print(f"\n[{decoder}] shipped variant: {report['chosen']!r} "
-              f"(comparable net: " + ", ".join(
-                  f"{n} {comparable_net(f):+.1f}s" for n, f in report["variant_folds"].items())
-              + f"); threshold {weights['threshold']:.2f} = median of "
-              f"{[f['threshold'] for f in weights['folds']]}"
-              + (f"; transitions {weights['hmm']}" if "hmm" in weights else ""))
-
+        print(f"\n[{decoder}] chosen variant: {sel.variants[decoder]!r} (objective, per-game"
+              " net/s: " + ", ".join(
+                  f"{n} {fold_objective(f, games).net:+.4f}" for n, f in variant_folds.items())
+              + "; comparable net: " + ", ".join(
+                  f"{n} {comparable_net(f):+.1f}s" for n, f in variant_folds.items()) + ")")
+    print(f"\nshipped: decoder {sel.decoder!r}, variant {sel.variant!r}, threshold"
+          f" {weights['threshold']:.2f} = median of {[f['threshold'] for f in weights['folds']]}"
+          + (f"; transitions {weights['hmm']}" if "hmm" in weights else ""))
     if args.decoder == "auto":
-        thr_folds, hmm_folds = results["threshold"][0]["folds"], results["hmm"][0]["folds"]
-        shipped = choose_decoder(thr_folds, hmm_folds)
-        print(f"\ndecoder: {shipped!r} - comparable net threshold "
-              f"{comparable_net(thr_folds):+.1f}s vs hmm {comparable_net(hmm_folds):+.1f}s;"
-              f" comparable live cut threshold {comparable_live_cut(thr_folds):.1f}s vs hmm"
-              f" {comparable_live_cut(hmm_folds):.1f}s (hmm ships only if net rises and"
-              f" live cut does not)")
-    else:
-        shipped = args.decoder
-    weights = results[shipped][0]
+        t = fold_objective(sel.folds["threshold"][sel.variants["threshold"]], games)
+        h = fold_objective(sel.folds["hmm"][sel.variants["hmm"]], games)
+        print(f"decoder: {sel.decoder!r} - per-game net threshold {t.net:+.4f} vs hmm"
+              f" {h.net:+.4f}; per-game live cut threshold {t.live:.4f} vs hmm {h.live:.4f}"
+              " (hmm ships only if net rises and live cut does not)")
+    print("The folds above chose among themselves, so they are selection-biased as a verdict;"
+          " the nested record below is not.")
+    print_nested(report["nested"], args.contact_scale)
+
+    if args.jitter_draws > 0:
+        decoders = DECODERS if args.decoder == "auto" else (args.decoder,)
+        print_sensitivity(sensitivity(games, decoders, report["nested"], args.jitter_draws,
+                                      args.jitter_seed))
 
     if args.ablation:
-        print_ablation(ablation(games, VARIANTS[results[shipped][1]["chosen"]]))
+        print_ablation(ablation(games, VARIANTS[report["chosen"]]))
 
     if args.no_write:
         print("\n--no-write: weights file untouched")
         return
     write(weights)
-    print(f"\nweights ({shipped}) -> {WEIGHTS_PATH} "
+    print(f"\nweights ({sel.decoder}, contact scale {args.contact_scale}) -> {WEIGHTS_PATH} "
           "(validated=false; flipping it is CF-395's call)")
 
 
