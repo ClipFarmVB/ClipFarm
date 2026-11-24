@@ -1,0 +1,1 @@
+{ "mcpServers": { "skein": { "type": "http", "url": "https://clipfarm.skeinai.ca/mcp", "headers": { "Authorization": "Bearer ${SKEIN_SECRET}" } } } }

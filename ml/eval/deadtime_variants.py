@@ -7,6 +7,11 @@ The two endpoints of this ladder ship: `v0` is `condense_mode="rules"` and `v5` 
 well here and drifts from what production runs would be worse than no comparison
 at all. `v1`-`v4` stay prototypes: each is one step of the ladder, kept so the
 next change can be judged against the rungs rather than only against the ends.
+`v6` is `condense_mode="learned"` (CF-394), scored in-sample on weights that
+are not yet validated — see its docstring before reading its row. `v7` is the
+same builder without its sparse-track gate (D-0034), also in-sample, and
+reachable from the eval ladder only. The held-out numbers for both are
+`ml/eval/validate_learned.py` (CF-395).
 
 Each builder takes a Game and returns keep-windows, so they are directly
 comparable. The diagnosis they respond to (measured on test2 + test4):
@@ -19,13 +24,21 @@ comparable. The diagnosis they respond to (measured on test2 + test4):
 """
 from __future__ import annotations
 
+import functools
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from ml.eval.harness import load_deadtime_fixture
-from ml.eval.tune_contacts import BRIDGE, COND, NORMALIZE
+from ml.eval.tune_contacts import (
+    BRIDGE,
+    COND,
+    NORMALIZE,
+    SOFT_SCALE,
+    STATIC_SITE_FILTER,
+    apply_static_site_filter,
+)
 from ml.pipeline.ball import BallPosition, TrackedBall, find_contacts
 from ml.pipeline.dead_time import (
     Interval,
@@ -37,6 +50,12 @@ from ml.pipeline.dead_time import (
     motion_anchor_windows,
     speed_gate_contacts,
     speed_samples,
+)
+from ml.pipeline import dead_time_ml
+from ml.pipeline.dead_time_ml import (
+    TrackTooSparseError,
+    active_windows_learned,
+    load_weights,
 )
 
 BALL_CACHE_DIR = Path(__file__).resolve().parent / "ball_caches"
@@ -55,7 +74,7 @@ class Game:
     video_file: str
     duration: float
     frame_height: int
-    positions: list[dict]       # {"time", "x", "y"} ball-track samples
+    positions: list[dict]       # {"time", "x", "y", "confidence"} ball-track samples
     contacts: list[dict]        # find_contacts() output
     human_keep: list[Interval]
     raw: dict
@@ -75,13 +94,22 @@ def load_game(test_id: str) -> Game:
         raise SystemExit(f"{test_id}: ball cache {cache} missing (see ml/eval/README.md)")
     positions = json.loads(cache.read_text())["positions"]
     tracker = TrackedBall(positions=[BallPosition(**p) for p in positions])
+    # CF-229: this module's own binding of the mirror, as NORMALIZE is, so
+    # visualize_deadtime --static-site-filter can flip it for one run.
+    tracker, dicts = apply_static_site_filter(
+        tracker,
+        [{"time": p["time"], "x": p["x"], "y": p["y"], "confidence": p["confidence"]}
+         for p in positions],
+        frame_h, enabled=STATIC_SITE_FILTER,
+    )
     return Game(
         test_id=test_id,
         video_file=fx.raw.get("source_video_file", f"{test_id}.mp4"),
         duration=fx.duration,
         frame_height=frame_h,
-        positions=[{"time": p["time"], "x": p["x"], "y": p["y"]} for p in positions],
-        contacts=find_contacts(tracker, frame_height=frame_h, normalize=NORMALIZE),
+        positions=dicts,
+        contacts=find_contacts(tracker, frame_height=frame_h, normalize=NORMALIZE,
+                               soft_scale=SOFT_SCALE),
         human_keep=sorted(fx.keep),
         raw=fx.raw,
     )
@@ -190,6 +218,63 @@ def v5_guarded(game: Game) -> list[Interval]:
     )
 
 
+@functools.lru_cache(maxsize=4)
+def _learned_weights(path: Path) -> dict:
+    """The weights file at `path`, read once per run. Keyed on the path, so a
+    caller that points `dead_time_ml.WEIGHTS_PATH` elsewhere reads that file
+    rather than a cached copy of the old one."""
+    return load_weights(path, warn_unvalidated=False)
+
+
+def v6_learned(game: Game) -> list[Interval]:
+    """
+    condense_mode="learned" (CF-394) on the committed weights — **in-sample**.
+
+    The weights were fitted on all five fixtures (their `"trained_on"`), so this
+    row scores the model on the games it learned from and says nothing about
+    unseen footage. The held-out numbers are the trainer's leave-one-game-out
+    folds, scored through this same builder and held to the epic's validation
+    bar by `python -m ml.eval.validate_learned` (CF-395).
+
+    `allow_unvalidated=True` is what lets an unvalidated file be scored at all;
+    production never passes it. On a track too sparse for the learned builder
+    to judge this returns `v5_guarded`, which is what production's fallback
+    chain ships for that game.
+    """
+    return _learned(game)
+
+
+def v7_learned_ungated(game: Game) -> list[Interval]:
+    """
+    `v6` without the sparse-track gate (`min_track_rate=0.0`) — **in-sample**,
+    and **eval only** (D-0034): production keeps the gate, and no setting
+    reaches this rung.
+
+    It exists so the gate's cost can be read on the ladder. On the five
+    fixtures it differs from `v6` on test3 alone, the one game below the
+    gate. A track with no usable speed sample — empty, a single point, or points
+    further apart than `MAX_SAMPLE_SPACING` — still falls back to `v5_guarded`:
+    with nothing to score, gate or not, the builder would cut everything. Its
+    held-out counterpart is `validate_learned`'s ungated rung.
+    """
+    # min_track_rate=0.0 leaves the builder declining an empty position list
+    # only; the no-usable-sample case is declined here, as its floor would.
+    if len(game.speed_samples[0]) == 0:
+        return v5_guarded(game)
+    return _learned(game, min_track_rate=0.0)
+
+
+def _learned(game: Game, **kwargs) -> list[Interval]:
+    weights = _learned_weights(dead_time_ml.WEIGHTS_PATH)
+    try:
+        return active_windows_learned(
+            game.contacts, game.positions, game.duration, game.frame_height,
+            weights=weights, allow_unvalidated=True, **kwargs,
+        )
+    except TrackTooSparseError:
+        return v5_guarded(game)
+
+
 Builder = Callable[[Game], list[Interval]]
 
 VARIANTS: dict[str, tuple[str, Builder]] = {
@@ -199,4 +284,6 @@ VARIANTS: dict[str, tuple[str, Builder]] = {
     "v3": ("v2 + motion anchor  [harm-first]", v3_anchored),
     "v4": ("v3 + stricter gate, tight pads  [aggressive]", v4_tight_pads),
     "v5": ("mode=guarded — SHIPPING DEFAULT", v5_guarded),
+    "v6": ("mode=learned — IN-SAMPLE, unvalidated weights", v6_learned),
+    "v7": ("v6, no sparse-track gate — IN-SAMPLE, eval only", v7_learned_ungated),
 }

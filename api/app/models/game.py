@@ -3,6 +3,7 @@ import enum
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Float, String, Text, DateTime, ForeignKey, Enum as SAEnum
+from sqlalchemy import false as sa_false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -72,6 +73,17 @@ class Game(Base):
     condensed_video_url: Mapped[str | None] = mapped_column(String(2048))
     original_duration: Mapped[float | None] = mapped_column(Float)
     condensed_duration: Mapped[float | None] = mapped_column(Float)
+    # A copy of the configured example game, made at signup (CF-220,
+    # services/sample_game.py). Its clips reference the source game's R2
+    # objects rather than owning them, so the delete paths must not remove
+    # those objects, and the footage is not the owner's to publish.
+    is_sample: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=sa_false(), nullable=False
+    )
+    # Credit for the footage a copy plays, frozen from SAMPLE_GAME_CREDIT when
+    # the copy is made so it stays with that footage if the setting later
+    # names another source. Null on every game that is not a copy.
+    sample_credit: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

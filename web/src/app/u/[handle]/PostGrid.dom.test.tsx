@@ -91,6 +91,29 @@ describe("PostGrid viewer scoping", () => {
     expect(host.querySelectorAll("img").length).toBe(1);
   });
 
+  it("closes the player when the grid reloads for a different viewer", async () => {
+    // The player holds the whole Post. Left open across a sign-out, the
+    // spinner unmounted it and the refetch mounted it again — autoplaying the
+    // private post to a session that could no longer request it.
+    const priv = post("p-private", "private");
+    priv.playback.clip_url = "https://x.test/private.mp4";
+    getUserPosts.mockResolvedValueOnce([post("p-public", "public"), priv]);
+    await render(true);
+    await click(playButtons()[1]);
+    expect(dialog()?.querySelector("video")?.getAttribute("src")).toBe(
+      "https://x.test/private.mp4",
+    );
+
+    viewer = null;
+    getUserPosts.mockResolvedValueOnce([post("p-public", "public")]);
+    await render(false);
+
+    // The grid did reload for the new viewer, so the check below is not
+    // passing because nothing happened.
+    expect(host.querySelectorAll("img").length).toBe(1);
+    expect(dialog()).toBeNull();
+  });
+
   it("does not re-request when nothing about the viewer changed", async () => {
     getUserPosts.mockResolvedValue([post("p-public", "public")]);
     await render(true);
@@ -104,5 +127,212 @@ describe("PostGrid viewer scoping", () => {
     await render(true);
 
     expect(getUserPosts).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── CF-109b item 2 (#398): a post can be watched from here ───────────────────
+//
+// The grid rendered thumbnails and no player, on the argument that playback is
+// CF-112's feed. True, and it left a published clip watchable nowhere — the
+// profile is the only surface that shows posts, and there is no feed yet
+// (CF-111, #141, is open), so this hit the author as much as anyone.
+
+function tiles(): HTMLElement[] {
+  return [...host.querySelectorAll("[data-comment-id], .group")] as HTMLElement[];
+}
+function playButtons(): HTMLButtonElement[] {
+  return [...host.querySelectorAll("button")].filter((b) =>
+    (b.getAttribute("aria-label") ?? "").startsWith("Play"),
+  ) as HTMLButtonElement[];
+}
+function dialog(): HTMLElement | null {
+  return document.querySelector('[role="dialog"]');
+}
+async function click(el: Element) {
+  await act(async () => {
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
+describe("playing a post from the grid", () => {
+  it("gives every tile one keyboard-reachable play control", async () => {
+    getUserPosts.mockResolvedValue([post("p1", "private"), post("p2", "public")]);
+    await render(true);
+
+    // A button, not an onClick on the tile: a grid of watchable things should
+    // have one play control per thing. (This renders your own profile, where
+    // Remove is a second tab stop on each tile.)
+    expect(playButtons()).toHaveLength(2);
+    expect(tiles().length).toBeGreaterThan(0);
+  });
+
+  it("opens a player on the post that was clicked, not the first one", async () => {
+    // Two posts with different URLs, and the SECOND clicked. With one post the
+    // test's own name is untestable: `setPlaying(posts[0])` passes.
+    const second = post("p2", "public");
+    second.playback.clip_url = "https://x.test/second.mp4";
+    getUserPosts.mockResolvedValue([post("p1", "public"), second]);
+    await render(false);
+    expect(dialog()).toBeNull();
+
+    await click(playButtons()[1]);
+
+    const video = dialog()?.querySelector("video");
+    expect(video).not.toBeNull();
+    expect(video?.getAttribute("src")).toBe("https://x.test/second.mp4");
+    expect(video?.hasAttribute("autoplay")).toBe(true);
+  });
+
+  it("names the post in the play control rather than labelling them all alike", async () => {
+    // Fifty tiles announcing "Play this post" are fifty identical controls.
+    // A prefix match on "Play" cannot see this: both versions produce it.
+    const captioned = post("p1", "public");
+    captioned.caption = "match point" as never;
+    getUserPosts.mockResolvedValue([captioned]);
+    await render(false);
+
+    expect(playButtons()[0].getAttribute("aria-label")).toContain("match point");
+  });
+
+  it("says the visibility tier in words that fit any viewer", async () => {
+    // The badge is `pointer-events-none` so the play target underneath stays
+    // clickable, which also means the browser never renders its `title` — and
+    // a `title` on a bare span was never a reliable accessible name anyway.
+    //
+    // It renders on every viewer's grid, so the words cannot be the author's:
+    // "Visible to your followers" read to a visitor names the visitor's own
+    // followers. Asserted for a visitor first, because that is where the
+    // author-worded version was wrong.
+    getUserPosts.mockResolvedValue([post("p1", "followers")]);
+    await render(false);
+    expect(host.textContent).toContain("Visible to followers");
+    expect(host.textContent).not.toContain("your followers");
+
+    await render(true);
+    expect(host.textContent).toContain("Visible to followers");
+  });
+
+  it("traps the keyboard in the player and closes on Escape", async () => {
+    // The player sits over a grid full of focusable tiles. Deleting the focus
+    // trap entirely left the suite green.
+    getUserPosts.mockResolvedValue([post("p1", "public")]);
+    await render(false);
+    await click(playButtons()[0]);
+
+    expect(dialog()?.contains(document.activeElement)).toBe(true);
+
+    await act(async () => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(dialog()).toBeNull();
+  });
+
+  it("stays open on the Escape that leaves the video's fullscreen", async () => {
+    // Leaving fullscreen fires Escape at the page as well as at the browser, so
+    // without the guard one press would exit fullscreen AND close the player.
+    // jsdom has no fullscreen, so `fullscreenElement` is stubbed on the
+    // document for this one press and removed again.
+    getUserPosts.mockResolvedValue([post("p1", "public")]);
+    await render(false);
+    await click(playButtons()[0]);
+    const video = dialog()?.querySelector("video");
+    expect(video).not.toBeNull();
+
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => video,
+    });
+    try {
+      await act(async () => {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+        );
+      });
+      expect(dialog()).not.toBeNull();
+    } finally {
+      delete (document as unknown as Record<string, unknown>).fullscreenElement;
+    }
+  });
+
+  it("closes again", async () => {
+    getUserPosts.mockResolvedValue([post("p1", "public")]);
+    await render(false);
+    await click(playButtons()[0]);
+
+    const close = [...(dialog()?.querySelectorAll("button") ?? [])].find(
+      (b) => b.getAttribute("aria-label") === "Close",
+    )!;
+    await click(close);
+
+    expect(dialog()).toBeNull();
+  });
+
+  it("stacks the delete control above the full-frame play target", async () => {
+    // The play affordance covers the whole frame, so the owner's Remove button
+    // has to sit above it or it is unclickable — "delete is broken", and only
+    // on the author's own profile, which is the one place it matters.
+    //
+    // Asserted on the z-index classes rather than by clicking, and the
+    // distinction is the point: jsdom does no layout, so `dispatchEvent` on the
+    // Remove button reaches its handler whatever is painted over it. A click
+    // test here would pass against a version where the control is genuinely
+    // buried. This compares the two orders, which is the part jsdom can see.
+    // A captioned post, so the caption assertion below actually runs — the
+    // shared fixture has `caption: null`, and a guarded assertion on an
+    // element that never renders is not an assertion.
+    const captioned = post("p1", "private");
+    captioned.caption = "nice dig" as never;
+    getUserPosts.mockResolvedValue([captioned]);
+    await render(true);
+
+    const z = (el: Element | null | undefined) => {
+      const hit = (el?.className ?? "").toString().match(/(?:^|\s)z-(\d+)/);
+      return hit ? Number(hit[1]) : 0;
+    };
+    const play = playButtons()[0];
+    const remove = [...host.querySelectorAll("button")].find(
+      (b) => b.getAttribute("aria-label") === "Remove this post",
+    );
+    expect(remove).toBeDefined();
+    expect(z(remove)).toBeGreaterThan(z(play));
+    // Visible wherever touch is possible. `group-hover` compiles inside
+    // `@media (hover: hover)`, which describes the primary input only, so a
+    // touch laptop or a 2-in-1 matches it and never shows the control to a
+    // finger. jsdom evaluates no media queries, so the classes are what can be
+    // pinned here.
+    expect(remove!.className).toContain("any-pointer-coarse:opacity-100");
+    expect(remove!.className).toContain("[@media(hover:none)]:opacity-100");
+
+    // The caption is painted over the frame too and must not eat the tap.
+    const caption = [...host.querySelectorAll("p")].find((el) =>
+      (el.textContent ?? "").includes("nice dig"),
+    );
+    expect(caption).toBeDefined();
+    expect(caption!.className).toContain("pointer-events-none");
+
+    // Same for the tier badge. Smaller consequence — a dead corner rather than
+    // a dead strip — but the same class of bug, and free to pin here.
+    // The badge is the span wrapping the sr-only tier text — it no longer
+    // carries a `title`, because `pointer-events-none` means a browser would
+    // never render one.
+    const badge = [...host.querySelectorAll("span")].find((el) =>
+      el.querySelector("span.sr-only"),
+    );
+    expect(badge).toBeDefined();
+    expect(badge!.className).toContain("pointer-events-none");
+  });
+
+  it("says so rather than showing an empty frame when there is no clip URL", async () => {
+    const broken = post("p1", "public");
+    broken.playback.clip_url = "";
+    getUserPosts.mockResolvedValue([broken]);
+    await render(false);
+
+    await click(playButtons()[0]);
+
+    expect(dialog()?.querySelector("video")).toBeNull();
+    expect(dialog()?.textContent).toContain("isn't available to play");
   });
 });

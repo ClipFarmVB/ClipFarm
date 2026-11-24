@@ -279,25 +279,71 @@ is stale and act on the inference; the operator owns this section, and a run
 that second-guesses it is guessing.
 
 The one case that still stops the run is an unreadable block, not an old one:
-if the block is missing, or either value is one you do not recognise, stop and
+if the block is missing, or any value is one you do not recognise, stop and
 ask — see below.
 
 ```
 mode: build            # or: review-only
 review scope: own      # or: all
+wip limit: 6           # a whole number, 1 to 6
 ```
 
-**If this block is missing, or either value is one you do not recognise, stop
-and ask** — do not assume. The defaults named here are `build` and `own`, and
+**If this block is missing, or any value is one you do not recognise, stop
+and ask** — do not assume. The defaults named here are `build`, `own` and `6`, and
 they are what an operator who wrote the block intended; an operator who deleted
 it, or typed something else, has not told you anything. This section is the one
 a human rewrites each run, so a missing block is as likely to mean "half-edited"
 as "left at defaults", and the two differ by whether the run reviews other
 people's work.
 
+**`wip limit` is the most work in flight at once** (CF-563) — see [the WIP
+limit and areas](RULES.md#the-wip-limit-and-areas) for what it counts. One
+thing overrides it downward and nothing overrides it upward: a [capability
+check](#first-establish-what-you-can-actually-do) that finds no worktree
+isolation runs the whole night at 1. In `review-only` the limit applies to PR
+cycles alone. Like `review scope`, it is not
+overridable from the starting instruction — a higher limit multiplies what the
+night spends and how many PRs can collide, which is the operator's call and is
+written here.
+
+**Six is where it is set, and what to lower it from is measured.** Areas are
+exact files, so what can still collide is an implementer's edit outside its
+plan, or a ticket turned away because its area was held — and [the
+report](REPORTING.md#reporting-1) lists both, every night. Lower it from those
+lists, not from a feeling that six is a lot.
+
 See [Mode](#mode). The mode decides whether ticket work happens at all; *which*
 tickets is governed by [Choosing work](#choosing-work) under Standing policy,
 not by the block below.
+
+**An operator can pass the mode with the run instead of editing this block.** A
+mode given in the starting instruction — `Mode: review-only` in the `/loop`
+prompt, which is what `.claude/skills/overnight/SKILL.md` sends — **overrides
+the block for that run**, and nothing is edited, committed or merged. The block
+remains the default, and is what a run that was passed nothing operates under.
+
+The point is that changing the mode used to cost a PR against this file. A mode
+is a property of one night, this file is shared state, and the two were coupled
+only by where the value happened to live.
+
+**Mode is the only value that may arrive that way.** `review scope` is
+deliberately not overridable from the prompt: `all` means reviewing other
+people's PRs unattended, which [Scope](#scope-whose-prs-get-reviewed) says takes
+a human setting it for that run, and a word typed into a starting instruction is
+not that. Mode is safe to pass precisely because it cannot widen who the run
+acts on — it only decides whether step 3 is reached.
+
+**Say which source the mode came from** — the passed instruction or this block —
+in the log on the first iteration and in the report, beside the mode itself.
+That is the same requirement as echoing the values and exists for the same
+reason: otherwise a run whose mode did not come from this file is invisible
+afterwards, and a later reader finds a block that disagrees with what happened
+and no way to tell which was wrong.
+
+A passed mode is subject to the same stop rule as a written one: **a value you
+do not recognise stops the run and asks**, whichever way it arrived. A passed
+mode that *contradicts* the block is not a conflict to stop on — the pass wins,
+per the paragraph above — but say both in the report.
 
 ### Scope for tonight
 
@@ -338,8 +384,34 @@ It is the selection gate. **Do not take an issue that does not carry it**,
 however appealing it looks; if you think one deserves it, argue for it in the
 report instead of taking it.
 
-Work highest priority first (`P0` > `P1` > `P2` > unlabelled). One ticket per
-iteration. If a ticket turns out to need a decision after all, say so in the
+**Nor one carrying `hold` or `in-progress`.** `hold` is a human parking it;
+`in-progress` is a live claim — this run's, a person's, or an earlier run's
+[too recent to release](RULES.md#stale-claims). See [Claims](RULES.md#claims).
+
+**Nor one an open PR already closes** (CF-562). Its work is in that PR, whatever
+labels the issue carries, and the issue stays open until the PR merges. Read
+GitHub's own parse of the closing keywords, not the PR bodies:
+
+```
+gh pr list --state open --limit 100 --json closingIssuesReferences \
+  --jq '.[].closingIssuesReferences[].number' | sort -un
+```
+
+**Nor one this run has already released without a PR.** It was dropped for a
+reason its `released:` comment gives, and nothing about the reason changes by
+the next lap; selecting it again only spends another planner on the same
+answer. The log's `released:` lines are the list.
+
+**Except a ticket released because its area was held** (CF-563): that reason
+does change. It is eligible again once none of the files its last plan listed
+— still in the log — is held; check that against [the
+areas](RULES.md#the-wip-limit-and-areas) before spending a planner on it. The
+holder being released is not the test: a ticket is released when its PR opens,
+and the PR then holds the same files.
+
+Work highest priority first (`P0` > `P1` > `P2` > unlabelled), taking tickets
+while [the WIP limit](RULES.md#the-wip-limit-and-areas) has room — each one
+goes through [Working a ticket](TICKETS.md#working-a-ticket). If a ticket turns out to need a decision after all, say so in the
 log, drop it, and move on — do not guess.
 
 If nothing carries the label, or everything that does is done, **stop the loop**.
@@ -360,17 +432,150 @@ night's ticket list.
 Before relying on any capability, check it, and record the result in the log in
 one block. The first run discovered three gaps separately, mid-work.
 
+- **The API credential and its ceiling** — the first thing to check, because
+  every other check and every lap spends it, and a run that discovers the
+  ceiling by hitting it has already wasted the night. Log the identity and the
+  budget:
+
+  ```
+  gh api user --jq .login
+  gh api -i repos/ClipFarmVB/ClipFarm 2>&1 \
+    | grep -i '^x-\(ratelimit-\(limit\|remaining\|resource\)\|oauth-scopes\)'
+  ```
+
+  **Read the headers, not `gh api rate_limit`.** That endpoint has been observed
+  reporting `used: 0` while the headers on the very same requests moved — in a
+  cloud session (five requests, headers `13` → `14987` remaining) and on an
+  ordinary 5000-limit token locally (three requests, headers `118` → `120`
+  used). Two environments, two credential types, same disagreement, so do not
+  reach for it in either and do not treat its silence as headroom. A run that
+  logs its figure has recorded a number that cannot go down.
+
+  **`X-OAuth-Scopes` identifies the credential; the ceiling does not.** Empty
+  means an App installation token — what a cloud session's egress proxy injects
+  — and a populated list means a user token (PAT or `gh auth login`). The number
+  is corroboration at best: an App on a small org gets 5000 and an Enterprise
+  Cloud user token gets 15000, so reading the tier backwards from the limit is
+  wrong in both directions. Limits are per credential, so concurrent runs on one
+  divide it — another reason [not to start a second run while one is
+  live](#what-it-may-push-to-and-what-follows-from-that).
+
+  **What this check does not cover, stated because it is easy to over-read.**
+  `X-RateLimit-Resource` says which bucket the number describes, and for every
+  command in this brief it is `core`. GraphQL has its own budget, and secondary
+  limits (concurrency, points per minute) are reported by neither the headers
+  nor `rate_limit`. So a healthy `core` reading is not a healthy API: a run can
+  log 14000 remaining and still be refused on the next GraphQL call. Log the
+  resource next to the numbers so the reading cannot later be mistaken for a
+  statement about the whole API, and treat a GraphQL rate-limit refusal as its
+  own fact — it is the third cause under **Projects v2**, the next check in this
+  list, and the report bullet that check feeds.
 - **Projects v2** — `gh project item-list 1 --owner ClipFarmVB --format json`.
-  Needs the `project` token scope, which is often absent. This does **not** gate
-  any work, and it does **not** stop cards reaching the board — see below. It
-  only affects *editing* the board: without it you cannot remove the report
-  issue or change a field. Note that, and carry on.
+  Two different things stop this, and they want different answers in the report.
+
+  **In a cloud session it cannot work at all.** Projects v2 is GraphQL-only, and
+  GraphQL is refused outright there — *"GitHub GraphQL is not available from
+  Claude Code sessions; use the REST API"*, returned by the proxy rather than by
+  GitHub, so no credential and no scope changes it. Locally it is the `project`
+  token scope, which is often absent.
+
+  **And a third cause that looks like neither: GraphQL refused as
+  rate-limited.** GraphQL's budget is separate from `core`, so this happens
+  while every number the check above logged still reads healthy. Read the error
+  rather than inferring from the numbers — a run that assumes the scope is
+  missing reports the wrong remedy to the wrong person, and the numbers in its
+  own report appear to contradict it.
+
+  None of the three gates any work, and none stops cards reaching the board —
+  see below. They only affect *editing* the board: without it you cannot remove
+  the report issue or change a field. Note which of the three you hit, and carry
+  on. Nothing in selection reads the board: work comes from the `overnight-ok`
+  label and the open-PR list, both REST.
 - **`gh` itself** — `gh --version`. Every command here is written in `gh` and
   some environments have none of it. That is an expected case, not a blocker:
   see [What a non-`gh` tool must provide](REVIEW.md#what-a-non-gh-tool-must-provide),
   and name the tool you used in the report.
 - **Docker** — `docker info`. If absent, the local stack and the eval harness
   cannot run at all.
+- **The claim labels** (CF-562) — `in-progress` and `hold` must exist before
+  anything is claimed:
+
+  ```
+  gh api --paginate repos/ClipFarmVB/ClipFarm/labels --jq '.[].name' | grep -xE 'in-progress|hold'
+  ```
+
+  Two lines back means both exist. Both commands are REST, so they work where
+  GraphQL is refused — see **Projects v2** below. A missing one is created, not worked around —
+  `gh issue edit --add-label` against a label that does not exist fails, and a
+  claim that lands as a comment with no label is invisible to every query that
+  reads labels:
+
+  ```
+  gh api -X POST repos/ClipFarmVB/ClipFarm/labels -f name=in-progress -f color=fef2c0 \
+    -f description="Claimed by the overnight loop; see docs/overnight/RULES.md#claims"
+  gh api -X POST repos/ClipFarmVB/ClipFarm/labels -f name=hold -f color=cccccc \
+    -f description="A human parked this; the overnight loop leaves it alone"
+  ```
+- **Subagents, and whether they get their own worktree** (CF-561). Dispatch one
+  throwaway background subagent with worktree isolation. Have it run these and
+  report each output verbatim, plus whether anything prompted for permission:
+
+  ```
+  git rev-parse --show-toplevel
+  git rev-parse --path-format=absolute --git-common-dir
+  git remote get-url origin
+  gh api user --jq .login
+  git push --dry-run origin HEAD:refs/heads/overnight-probe
+  ```
+
+  Run the middle two here as well, and compare. Three distinct gaps, and they
+  want different answers.
+
+  **A permission prompt stalls an unattended run on the first one.** Subagents do
+  not reliably inherit this session's permission mode, so a run that never
+  checked discovers this when a lap hangs with nobody watching. Stop and name the
+  commands that prompted.
+
+  **No worktree means no parallelism.** The toplevel matching this session's is
+  the tell. Run one subagent at a time, log it, and say so in the report —
+  [dispatching](RULES.md#dispatching-subagents) explains why the degraded mode is
+  correct rather than a workaround. Do not raise the count on the assumption that
+  isolation is probably working; two subagents in one checkout fail silently, so
+  there is nothing to notice afterwards.
+
+  **A worktree of the wrong repository is worse than none, and a differing path
+  does not rule it out.** The harness makes worktrees of the repository the
+  *session* was started in, which need not be this one. Found on 2026-09-27: a
+  session started in an older checkout of this project handed its subagents
+  worktrees of `Ollienel777/ClipFarm` while the work was in `ClipFarmVB/ClipFarm`.
+  The paths differed, so a check on the path alone passed. Each subagent would
+  then have reviewed or built against another codebase and reported nothing
+  odd, because from inside it everything is consistent. **The subagent's
+  `--git-common-dir` must equal this session's, and so must its origin** — a
+  linked worktree of this repository reports this repository's `.git` as its
+  common directory, and nothing else does. If either differs, stop: the fix is
+  starting the run from this repository's root, which
+  [dispatching](RULES.md#dispatching-subagents) already requires, and nothing
+  inside the run can repair it.
+
+  **Implementers and fixers push from subagents** (CF-563), so their push has to
+  work there too. The dry-run above contacts the remote with the subagent's
+  credentials and creates nothing — checked on 2026-09-27: no ref appeared. A
+  prompt or a refusal on it stalls every implementer at its last step; stop and
+  name it.
+
+  **Planners spawn subagents of their own**, for the cross-check, so have the
+  probe spawn one child with worktree isolation and report the child's
+  `--git-common-dir`. Checked on 2026-09-27: it works, and the child's worktree
+  lands beside the parent's rather than inside it.
+
+  **Log `git config core.hooksPath` here too.** Relative `.hooks` is right. An
+  absolute path makes every worktree's commit run this checkout's copy of the
+  hook, which by its own comment then skips the api tests in a worktree whose
+  tree it does not recognise — so an implementer's commit hook can pass having
+  run less than it appears to. The gate each implementer runs explicitly is what
+  counts; name an absolute path in the report so the operator can fix it, and do
+  not change it from here.
 - **`gh` against this repo** — `gh api repos/ClipFarmVB/ClipFarm --jq .full_name`.
   Every command in this document is written for `gh`, and each was verified
   against this repo in the exact form given. A cloud runner may have no `gh`

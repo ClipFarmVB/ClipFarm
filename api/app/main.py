@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Response
@@ -10,13 +11,61 @@ from app.config import settings
 from app.database import AsyncSessionLocal
 from app.observability import init_sentry
 from app.routers import games, clips, players, collections, corrections, profiles, posts
+from app.services import ratelimit
 
 logger = logging.getLogger(__name__)
 
 # Wire error monitoring before the app is built so startup errors are captured.
 init_sentry("api")
 
-app = FastAPI(title="ClipFarm API", version="0.1.0")
+# One Redis client for the process, held for the rate limiter (CF-186).
+# redis-py connects lazily, so building it here cannot fail at boot with Redis
+# down — the limiter's own fail-open path covers that.
+#
+# The api had no lifespan at all before this. `_check_redis` below deliberately
+# keeps opening its own client rather than sharing this one: its teardown
+# guarantees are about a client it owns, and a health check that reports on a
+# connection it did not open is a different check than the one that was
+# hardened.
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Guarded for the reason _check_redis binds its client outside the try:
+    # `from_url` validates the scheme EAGERLY, so a malformed REDIS_URL raises
+    # here. Before this lifespan existed the api booted fine with one and
+    # /healthz reported redis down; letting it out would turn that into a
+    # crash loop, which is a worse outage than an unthrottled read surface and
+    # is not a trade this card gets to make. The limiter keeps its in-process
+    # backend instead, and /health goes on saying why.
+    client = None
+    try:
+        # The socket bounds are not tuning: redis-py defaults both to None, and
+        # an unbounded client turns a HANGING redis into a request that blocks
+        # on the kernel's TCP retry bound. The limiter's fail-open branch only
+        # catches a raise, so without these there is nothing to catch. They
+        # bound one operation each; `ratelimit.REQUEST_BUDGET_SECONDS` bounds
+        # the whole call, and that comment says why both exist.
+        client = aioredis.from_url(
+            settings.redis_url,
+            socket_timeout=ratelimit.REDIS_SOCKET_TIMEOUT_SECONDS,
+            socket_connect_timeout=ratelimit.REDIS_SOCKET_TIMEOUT_SECONDS,
+        )
+        ratelimit.set_backend(ratelimit.RedisBackend(client))
+    except Exception:
+        logger.exception("rate limit: could not build the redis client")
+    try:
+        yield
+    finally:
+        # Back to the in-process backend, so a limiter call after shutdown
+        # counts locally rather than reaching a closed connection.
+        ratelimit.set_backend(ratelimit.MemoryBackend())
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                logger.exception("rate limit: redis client teardown failed")
+
+
+app = FastAPI(title="ClipFarm API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,23 +73,43 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
+    # Retry-After is not a CORS-safelisted response header: without this the
+    # browser receives the 429 and the app cannot read how long to wait.
+    expose_headers=["Retry-After"],
 )
 
-app.include_router(games.router)
-app.include_router(clips.router)
-app.include_router(players.router)
-app.include_router(collections.router)
-app.include_router(corrections.router)
-# Behind SOCIAL_ENABLED (CF-107): with the flag off the profile routes are not
-# registered at all, so /users/* 404s rather than existing-but-empty. Nothing
-# else in the app depends on them.
-#
-# Posts (CF-109) share the gate: a post is only reachable through a profile or
-# the feed, so leaving /posts/* routed while the rest of the social surface is
-# hidden would expose the one endpoint that serves other people's footage.
-if settings.social_enabled:
-    app.include_router(profiles.router)
-    app.include_router(posts.router)
+
+def mount_routers(target: FastAPI) -> None:
+    """Attach every router to ``target``, in the order and under the flag the
+    served app uses.
+
+    A function rather than module-level statements so a test can assemble the
+    same route table on a fresh ``FastAPI()``: ``test_ratelimit_wiring.py``
+    asserts the rate-limit wiring on the app as served rather than on the
+    router objects, and needs the social routers mounted under a flag that
+    defaults off. ``app`` is still built at import below -- Docker and compose
+    run ``uvicorn app.main:app``, and the health routes and ``_check_redis``
+    are called directly by tests -- so this is not an app factory.
+    """
+    target.include_router(games.router)
+    target.include_router(clips.router)
+    target.include_router(players.router)
+    target.include_router(collections.router)
+    target.include_router(corrections.router)
+    # Behind SOCIAL_ENABLED (CF-107): with the flag off the profile routes are
+    # not registered at all, so /users/* 404s rather than existing-but-empty.
+    # Nothing else in the app depends on them.
+    #
+    # Posts (CF-109) share the gate: a post is only reachable through a profile
+    # or the feed, so leaving /posts/* routed while the rest of the social
+    # surface is hidden would expose the one endpoint that serves other
+    # people's footage.
+    if settings.social_enabled:
+        target.include_router(profiles.router)
+        target.include_router(posts.router)
+
+
+mount_routers(app)
 
 
 async def _check_db() -> bool:
