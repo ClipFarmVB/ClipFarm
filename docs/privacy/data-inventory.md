@@ -72,6 +72,44 @@ Also user-typed and not tabulated above, because the table is scoped to `users`:
 to the reader to notice, since a scope boundary the document does not state
 reads as completeness.
 
+`device_tokens` (CF-318) is the one row here that is personal data without
+anyone typing it. A push token is issued by Apple or Google per app install and
+is a **device identifier**: it does not name a person, but it reaches one, and
+it is stable enough across sessions to link activity to a handset. Whether it
+is also a credential depends on the delivery provider, which is still open
+(`docs/mobile/DECISIONS.md`, CF-318 delivery entry). Delivered directly through
+APNs/FCM, holding a token does not let anyone send a notification, which needs
+our signing key, so the exposure is being *reached*, not impersonated. Delivered
+through Expo's Push Service at its default settings, a valid
+`ExponentPushToken[…]` is reportedly enough on its own to send to that handset
+through Expo's public push API, unless the project turns on Expo's access-token
+enforcement ("Enhanced Security for Push Notifications") — so under Expo
+defaults the token *is* a send capability, and a leaked one lets its holder
+push to the handset. (Expo's behaviour here is from its push documentation as
+recalled in review, not re-read for this document: unverified.)
+Two consequences worth stating rather than leaving to be inferred: the row is
+unique on the token rather than on `(user, token)`, so a device that changes
+hands moves to its new owner instead of accumulating owners; and the table
+cascades on account delete, so it is one of the rows erasure actually removes.
+
+Those two interact, and a policy written from the second sentence alone would
+over-promise. The cascade keys on `owner_id`, and a re-owned row no longer
+carries the previous owner's id: after a handover it holds the new owner's id,
+the same handset's token, and the *first* owner's `created_at`, which is
+deliberately left out of the upsert's `SET` clause so a re-registration keeps
+its first-seen date. Deleting the earlier account reaches none of that — the
+device identifier that named their handset and the timestamp of their
+registration both outlive their erasure, under somebody else's id. So the
+promise this table supports is that erasure removes every token the account
+*currently* owns, not every token it ever registered. One row per device is
+still the right shape; this is the price of it, and no test guards this
+paragraph — `test_personal_data_inventory.py` reads `Base.metadata` and asserts
+the foreign key is `CASCADE`, which it is.
+
+What the cascade does not do is reach the vendor — a token deleted here stays
+valid at APNs or FCM until the OS reissues it, so erasure ends *our* ability to
+reach the device, not the device's registration.
+
 Nothing in this document should be read as suggesting the account columns are
 the sensitive part; they are the easy part.
 
@@ -133,6 +171,7 @@ likely to miss:
 | `posts` | `CASCADE` | Removed with the account |
 | `corrections` | `CASCADE` | Removed with the account |
 | `upload_events` | `CASCADE` | Removed with the account |
+| `device_tokens` | `CASCADE` | Removed with the account |
 
 Any user who has uploaded a game, made a team, or built a collection — that is,
 every real user — cannot be deleted without those rows being dealt with first.
