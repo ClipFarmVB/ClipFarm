@@ -554,11 +554,23 @@ python -m ml.eval.validate_learned --dump-windows DIR # also {test}_{learned|lea
 
 It exits 1 when the bar fails for the gated rung and 0 when it passes.
 
-Any decoder `dead_time_ml` dispatches can be validated (CF-605): the accepted
-list is `dead_time_ml.DECODERS` itself. A `"decoder": "hmm"` file is rebuilt
-with each fold's own transitions — fitted on that fold's training games — never
-the shipped record, which saw the held-out game; a hmm fold without them is
-refused.
+Both decoders `dead_time_ml` dispatches, `threshold` and `hmm`, can be
+validated (CF-605). The accepted list is `dead_time_ml.DECODERS` itself, but a
+decoder also needs an entry in `validate_learned._FOLD_RECORD` naming the fold
+key that holds its per-fold fit: a decoder with fitted parameters cannot be
+rebuilt from the shipped file's, which saw the held-out game. A decoder that
+ships in `DECODERS` without an entry fails a test and is refused by the tool
+until someone adds one. A `"decoder": "hmm"` file is rebuilt with each fold's
+own transitions — fitted on that fold's training games — never the shipped
+record; a hmm fold without them is refused.
+
+**An hmm verdict carries a decoder-selection bias.** Under `--decoder auto` the
+trainer ships hmm only when `choose_decoder` finds its summed held-out net over
+the comparable three above threshold's — clause 1's own quantity, on the same
+folds this tool scores. That is on top of the context-variant bias the report
+already shows. The losing decoder's folds are not recorded, so the report can
+only state this one (it prints a line under hmm); removing it is CF-604's
+nested selection.
 
 Two learned rungs, both held out:
 

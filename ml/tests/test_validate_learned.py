@@ -192,6 +192,22 @@ def test_the_report_prints_every_variants_clause_1(committed, capsys):
     assert "selection-biased" in out
     assert "lags_1_3_5" in out and "-23.58" in out
     assert "clause 1 does not hold for every variant" in out
+    assert "decoder threshold" in out
+    assert "chosen over threshold" not in out
+
+
+def test_an_hmm_report_names_the_decoder_and_its_selection_bias(committed, capsys):
+    """R1-M2: an hmm file's decoder was chosen on the same held-out net clause 1
+    tests, and the report says so."""
+    w = dict(committed, decoder="hmm", hmm=dict(_TRANSITIONS))
+    g = _guarded()
+    learned = _learned()
+    results = [vl.GameResult(t, 1.0, g[t], learned[t], learned[t], learned[t], {})
+               for t in vl.TEST_IDS]
+    vl.print_report(results, w)
+    out = capsys.readouterr().out
+    assert "decoder hmm," in out
+    assert "decoder hmm was chosen over threshold on this same summed held-out net" in out
 
 
 def test_the_chosen_variant_is_the_one_whose_context_the_file_carries():
@@ -276,11 +292,24 @@ def test_fold_weights_take_the_folds_model_and_keep_the_preparation():
 _TRANSITIONS = {"p_stay_play": 0.9, "p_stay_dead": 0.95, "prior_play": 0.3}
 
 
-def test_known_decoders_are_dead_time_mls_own_list():
-    """CF-605: the accepted decoders are read from the builder's dispatch, not
-    restated, so a decoder that ships there is validatable here at once."""
-    assert vl.KNOWN_DECODERS is dead_time_ml.DECODERS
-    assert "hmm" in vl.KNOWN_DECODERS
+def test_every_dispatched_decoder_says_how_its_folds_are_rebuilt():
+    """CF-605: the accepted decoders are the builder's dispatch list, and each
+    one has a fold-record entry. A decoder that ships in `dead_time_ml.DECODERS`
+    without one fails here: rebuilding its folds with the shipped parameters
+    would leak the held-out game, so someone has to say which fold key holds
+    its per-fold fit before it is validatable."""
+    assert set(vl._FOLD_RECORD) == set(dead_time_ml.DECODERS)
+    assert vl.KNOWN_DECODERS == dead_time_ml.DECODERS
+    assert vl._FOLD_RECORD["hmm"] == "hmm"
+
+
+def test_fold_weights_refuse_a_dispatched_decoder_with_no_fold_record(monkeypatch):
+    """R1-M1: a decoder dead_time_ml dispatches but this module cannot rebuild
+    per fold is refused, not rebuilt with the shipped (leaking) parameters."""
+    monkeypatch.setattr(vl, "KNOWN_DECODERS", ("threshold", "hmm", "hysteresis"))
+    w = _weights(decoder="hysteresis", hysteresis={"enter": 0.62, "exit": 0.41})
+    with pytest.raises(ValueError, match="cannot rebuild per fold"):
+        fold_weights(w, _fold())
 
 
 def test_fold_weights_rebuild_a_hmm_model_with_the_folds_own_transitions():
@@ -296,19 +325,22 @@ def test_fold_weights_rebuild_a_hmm_model_with_the_folds_own_transitions():
 
 def test_fold_weights_refuse_a_hmm_fold_without_transitions():
     """Borrowing the shipped transitions would leak the held-out labels."""
-    with pytest.raises(ValueError, match="no hmm transitions"):
+    with pytest.raises(ValueError, match="carries no 'hmm' record"):
         fold_weights(_weights(decoder="hmm", hmm=dict(_TRANSITIONS)), _fold())
 
 
-def test_fold_weights_refuse_a_hmm_fold_whose_transitions_are_malformed():
-    with pytest.raises(ValueError, match="hmm"):
-        fold_weights(_weights(decoder="hmm"), _fold(hmm={"stay_in": 0.9}))
+@pytest.mark.parametrize("bad", [{"stay_in": 0.9}, None, 5, "abc"])
+def test_fold_weights_refuse_a_hmm_fold_whose_transitions_are_malformed(bad):
+    """check_decoder refuses it by name, whatever its type (R1-N1, R1-N2)."""
+    with pytest.raises(ValueError, match=r"fold 't' use decoder 'hmm'.*expected keys"):
+        fold_weights(_weights(decoder="hmm"), _fold(hmm=bad))
 
 
 def test_threshold_models_ignore_a_folds_hmm_record():
     """A threshold file (or one with no "decoder" key) rebuilds as before; a
-    fold's hmm record is readable but not carried into the rebuilt dict."""
-    for w in (_weights(decoder="threshold"), _weights()):
+    fold's hmm record is readable but not carried into the rebuilt dict, nor is
+    a weights-level one (R1-N4)."""
+    for w in (_weights(decoder="threshold"), _weights(hmm=dict(_TRANSITIONS))):
         fw = fold_weights(w, _fold(hmm=dict(_TRANSITIONS)))
         assert fw["threshold"] == 0.7 and "hmm" not in fw
 

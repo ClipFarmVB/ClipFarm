@@ -5,12 +5,12 @@ The shipped weights (`ml/pipeline/deadtime_ml_weights.json`) were fitted on all
 five fixtures, so scoring them on those fixtures — the ladder's `v6` — is
 in-sample and cannot judge them. The held-out models are the trainer's
 leave-one-game-out folds (CF-393), which the weights file already carries under
-`"folds"`: each fold's coefficients, intercept and threshold came from the other
-four games only. This module rebuilds a weights dict per fold from that record
-(it does not refit), runs it through the production builder
-(`dead_time_ml.active_windows_learned`) on the one game the fold held out, and
-scores the result beside `guarded` (`deadtime_variants.v5_guarded`) on the same
-game.
+`"folds"`: each fold's coefficients, intercept and threshold — and, under the
+hmm decoder, its transitions — came from the other four games only. This
+module rebuilds a weights dict per fold from that record (it does not refit),
+runs it through the production builder (`dead_time_ml.active_windows_learned`)
+on the one game the fold held out, and scores the result beside `guarded`
+(`deadtime_variants.v5_guarded`) on the same game.
 
 **Held out is not quite clean: the context variant was chosen on the held-out
 games.** The folds scored are those of the context variant the trainer picked
@@ -23,6 +23,16 @@ and the other (`lags_1_3_5`, +434.77s) would fail it. `clause_1_by_variant`
 reports clause 1 for every recorded variant so the report shows this; removing
 the bias needs the trainer to choose the variant inside each training fold
 (nested), which it does not yet do.
+
+**An hmm verdict carries a second selection bias: the decoder was chosen on the
+same held-out games.** Under `--decoder auto` the trainer writes
+`"decoder": "hmm"` only when `train_deadtime.choose_decoder` finds hmm's summed
+held-out net over COMPARABLE strictly above threshold's — again clause 1's own
+quantity, on the folds this module then scores. So a clause 1 pass on an hmm
+file has seen the judged games twice: once through the variant, once through
+the decoder. The losing decoder's folds are not recorded, so unlike the variant
+this bias cannot be shown beside the verdict; the report states it instead.
+Removing it is CF-604's nested selection, not this module's.
 
 Two learned rungs, both held out:
 
@@ -96,21 +106,29 @@ TEST3 = "test3"
 GATED = "learned"
 UNGATED = "learned-ungated"
 
+# How each decoder's fold is rebuilt: the fold-record key that holds the
+# decoder's own fitted parameters, which replaces the weights-level record of
+# the same name, or None when the coefficients, intercept and threshold are the
+# whole model. "hmm" is CF-396's per-fold transitions, fitted on that fold's
+# training games only. A decoder with fitted parameters cannot borrow the
+# shipped file's — those saw the held-out game — so a decoder that ships in
+# `dead_time_ml.DECODERS` is not validatable here until it has an entry
+# (`test_every_dispatched_decoder_says_how_its_folds_are_rebuilt` fails until
+# then, and `fold_weights` refuses it).
+_FOLD_RECORD: dict[str, str | None] = {"threshold": None, "hmm": "hmm"}
 # What a fold record may carry. Anything else is a field this module does not
 # know how to apply, and scoring past it would report a model the file does not
-# describe. "hmm" is CF-396's per-fold transitions, fitted on that fold's
-# training games only; `fold_weights` carries it into an hmm model and drops it
-# from a threshold one.
+# describe.
 _FOLD_KEYS = frozenset({
     "held_out", "threshold", "dead_removed_pct", "live_cut_sec", "net_sec", "auc",
     "guarded_dead_removed_pct", "guarded_live_cut_sec", "guarded_net_sec",
-    "coef", "intercept", "hmm",
-})
+    "coef", "intercept",
+}) | {r for r in _FOLD_RECORD.values() if r is not None}
 # The decoders the production builder applies: exactly `dead_time_ml`'s own
-# dispatch list, read from it rather than restated, so a decoder that ships
-# there is validatable here the moment it does (CF-605). `active_windows_learned`
-# decodes through `decode_windows`, which dispatches on the weights' "decoder";
-# a missing key is the threshold path.
+# dispatch list, read from it rather than restated (CF-605).
+# `active_windows_learned` decodes through `decode_windows`, which dispatches on
+# the weights' "decoder"; a missing key is the threshold path. Dispatched is
+# necessary, not sufficient: the decoder also needs a `_FOLD_RECORD` entry.
 KNOWN_DECODERS = dead_time_ml.DECODERS
 
 
@@ -181,7 +199,8 @@ def apply_bar(learned: Mapping[str, Score], guarded: Mapping[str, Score]) -> lis
 def scores_from_folds(folds: Sequence[dict]) -> tuple[dict[str, Score], dict[str, Score]]:
     """(learned, guarded) per game from the trainer's fold record.
 
-    The trainer scores each fold through `windows_from_probability` with no
+    The trainer scores each fold through its decoder (`decode_windows`:
+    `windows_from_probability` under threshold, Viterbi under hmm) with no
     track-rate gate, so its learned figures are the **ungated** rung. Neither
     side is marked abstained: the record keeps no windows, and test3's guarded
     row (0% removed, 0s cut) is its abstain.
@@ -236,13 +255,15 @@ def fold_weights(weights: dict, fold: dict) -> dict:
     (the trainer records the chosen variant's folds). `validated` is forced
     false: a fold model is never a shipping model.
 
-    Refuses a fold this code does not know how to apply, and a decoder
-    `dead_time_ml` does not dispatch. Under "hmm" the fold's own transitions
-    replace the shipped file's: those were fitted on every game, the held-out
-    one included, so decoding a held-out game with them would leak its labels
-    into its own score. A hmm fold without transitions is refused for the same
-    reason rather than borrowing the shipped record. Under "threshold" a fold's
-    `hmm` record, if any, is not carried over: nothing decodes with it.
+    Refuses a fold this code does not know how to apply, a decoder
+    `dead_time_ml` does not dispatch, and a dispatched decoder with no
+    `_FOLD_RECORD` entry. A decoder's own record (under "hmm", the transitions)
+    is the fold's, replacing the shipped file's: those were fitted on every
+    game, the held-out one included, so decoding a held-out game with them
+    would leak its labels into its own score. A fold without its decoder's
+    record is refused for the same reason rather than borrowing the shipped
+    one. Other decoders' records, in the fold or the shipped file, are not
+    carried over: nothing decodes with them.
     """
     where = f"fold {fold.get('held_out')!r}"
     unknown = set(fold) - _FOLD_KEYS
@@ -252,19 +273,27 @@ def fold_weights(weights: dict, fold: dict) -> dict:
     if decoder not in KNOWN_DECODERS:
         raise ValueError(f"weights use decoder {decoder!r}; this module knows "
                          f"{KNOWN_DECODERS}")
+    if decoder not in _FOLD_RECORD:
+        raise ValueError(f"weights use decoder {decoder!r}, which dead_time_ml "
+                         "dispatches but this module cannot rebuild per fold; add "
+                         "it to _FOLD_RECORD")
     if "threshold" not in fold:
         raise ValueError(f"{where} carries no threshold")
-    if decoder == "hmm" and "hmm" not in fold:
-        raise ValueError(f"{where} carries no hmm transitions, which a hmm model "
-                         "needs fitted on its own training games")
+    record = _FOLD_RECORD[decoder]
+    if record is not None and record not in fold:
+        raise ValueError(f"{where} carries no {record!r} record, which a {decoder} "
+                         "model needs fitted on its own training games")
     out = copy.deepcopy(weights)
     out["coef"] = list(fold["coef"])
     out["intercept"] = fold["intercept"]
     out["threshold"] = fold["threshold"]
-    if decoder == "hmm":
-        out["hmm"] = dict(fold["hmm"])
-    else:
-        out.pop("hmm", None)
+    for other in _FOLD_RECORD.values():
+        if other is not None:
+            out.pop(other, None)
+    if record is not None:
+        # Copied as is, not coerced: a malformed record is check_decoder's to
+        # refuse, by name, below.
+        out[record] = copy.deepcopy(fold[record])
     out["validated"] = False
     out.pop("folds", None)
     out.pop("context_variants", None)
@@ -345,8 +374,9 @@ def print_report(results: Sequence[GameResult], weights: dict) -> bool:
     """Print the table and both rungs' clauses. Returns whether the gated rung
     — the one `"validated"` describes — passes."""
     folds = {f["held_out"]: f for f in weights["folds"]}
-    print(f"Held out (CF-393 folds), contact scale {vd.mirror_position()}, static-site "
-          f"filter {'on' if dv.STATIC_SITE_FILTER else 'off'}; net at "
+    decoder = dead_time_ml.decoder_of(weights)
+    print(f"Held out (CF-393 folds), decoder {decoder}, contact scale "
+          f"{vd.mirror_position()}, static-site filter {'on' if dv.STATIC_SITE_FILTER else 'off'}; net at "
           f"{vd.LIVE_CUT_COST:.0f}:1 live cut. Each cell: dead removed, live cut, net.\n")
     head = f"{'':>8s}{'dead':>8s} {'live':>6s} {'net':>8s}"
     print(f"{'fixture':8s} {'usable/s':>8s}  {'guarded':^24s}|{'learned gated':^24s}|"
@@ -395,6 +425,12 @@ def print_report(results: Sequence[GameResult], weights: dict) -> bool:
                   f"{'  (chosen, scored above)' if v.chosen else ''}")
         if not all(v.clause.passed for v in variants):
             print("  -> clause 1 does not hold for every variant; a pass rests on the choice.")
+    if decoder == "hmm":
+        # The trainer's decoder choice is the same kind of selection, and its
+        # losing folds are not recorded, so it can only be stated (CF-604).
+        print("\ndecoder hmm was chosen over threshold on this same summed held-out net "
+              "(train_deadtime.choose_decoder),\nso clause 1 is also biased by the "
+              "decoder choice; the losing decoder's folds are not recorded.")
     print(f"\n\"validated\" in the weights file is {weights.get('validated')!r}; the bar "
           f"{'passes' if verdicts['gated'] else 'fails'} for the gated rung. This tool "
           "never writes the file.")
