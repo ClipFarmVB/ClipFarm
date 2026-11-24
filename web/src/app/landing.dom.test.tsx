@@ -56,10 +56,20 @@ describe("landing page", () => {
     expect(host.querySelector('a[href="/login"]')).not.toBeNull();
   });
 
-  it("has the demo video, how-it-works and sample-output slots", () => {
+  it("has the demo video, how-it-works and sample-output slots, each under a visible heading", () => {
     expect(headings()).toEqual(
-      expect.arrayContaining(["Demo video", "How it works", "What you get"]),
+      expect.arrayContaining([
+        "A full game in, a highlight reel out",
+        "Four steps, two of them automatic",
+        "Every play, cut and labelled",
+      ]),
     );
+    // CF-681: the section headings are real headings, not screen-reader-only
+    // labels, so each section opens with more than an 11px eyebrow.
+    for (const h2 of host.querySelectorAll("h2")) {
+      expect(h2.className).not.toContain("sr-only");
+      expect(h2.closest(".sr-only")).toBeNull();
+    }
     expect(host.querySelector("[data-testid=demo-video-placeholder]")).not.toBeNull();
   });
 
