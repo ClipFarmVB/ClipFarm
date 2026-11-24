@@ -83,6 +83,9 @@ describe("facesToCover", () => {
     expect(facesToCover(2114, 375)).toBe(6);
     expect(facesToCover(2130, 600)).toBe(4);
     expect(facesToCover(100, 900)).toBe(1);
+    // A remainder under half a face still needs a whole face, or the foot
+    // of the page goes bare: rounding to nearest would give 1 here.
+    expect(facesToCover(1000, 900)).toBe(2);
   });
 
   it("falls back to the initial count before there is anything to measure", () => {
