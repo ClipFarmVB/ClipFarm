@@ -678,7 +678,10 @@ async def delete_game(game_id: uuid.UUID, user_id: UserId, db: DB):
     # The source of the example game: every copy plays its objects (CF-220).
     sample_game.assert_not_source(game.id)
 
-    # Collect all R2 keys to delete (clips + thumbnails + raw video)
+    # Collect all R2 keys to delete (clips + thumbnails + phone renditions +
+    # raw video). The retention sweep only ever lists the `raw/` prefix, so a
+    # clip object this loop misses is orphaned in R2 permanently — nothing else
+    # comes back for it.
     clips_result = await db.execute(select(Clip).where(Clip.game_id == game_id))
     clips = clips_result.scalars().all()
 
@@ -688,7 +691,7 @@ async def delete_game(game_id: uuid.UUID, user_id: UserId, db: DB):
     # Deleting it is how the owner dismisses the example: rows only.
     if not sample_game.is_sample(game):
         for clip in clips:
-            for url in (clip.clip_url, clip.thumbnail_url):
+            for url in (clip.clip_url, clip.thumbnail_url, clip.mobile_url):
                 if url:
                     r2_keys.append(urlparse(url).path.lstrip("/"))
         for url in (game.raw_video_url, game.condensed_video_url):

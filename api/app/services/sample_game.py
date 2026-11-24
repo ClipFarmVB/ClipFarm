@@ -6,9 +6,9 @@ takes an upload and a processing run to show. When `SAMPLE_GAME_ID` names a
 copy of that game's rows, marked `is_sample`.
 
 **Rows are copied; media is not.** Each copied clip stores the same
-`clip_url` / `thumbnail_url` strings as its source, so every copy plays the one
-set of R2 objects. That is what makes a per-signup copy cheap, and it is also
-why the copies need guards the owner's own games do not:
+`clip_url` / `thumbnail_url` / `mobile_url` strings as its source, so every
+copy plays the one set of R2 objects. That is what makes a per-signup copy
+cheap, and it is also why the copies need guards the owner's own games do not:
 
 * the delete paths must not remove those objects (routers/games.py,
   routers/clips.py) — removing the demo is removing rows only;
@@ -38,6 +38,19 @@ why the copies need guards the owner's own games do not:
 * `upload_id`, and no `upload_events` row — nothing was uploaded, so nothing
   is charged against the quota.
 * `visibility` — never passed, so the copy is private like any new game.
+
+`mobile_url`, the phone rendition (CF-321), *is* copied, like the clip it was
+transcoded from: the delete paths already skip a copy's keys, so sharing it is
+as safe as sharing `clip_url`, and leaving it NULL would have the demo — the
+first game every account sees — stream full-size clips on phones. One case
+differs from `clip_url`: a re-cut of the source whose rendition fails *deletes*
+`clips-mobile/{source}/{clip}.mp4` rather than overwriting it
+(`recut_clip_task`), so the copies are left holding a dead key, not a stale
+one. That needs a re-cut, which the source refuses while the setting names it
+(`assert_not_source`), so it can only happen after `SAMPLE_GAME_ID` moves on.
+The column's contract (models/clip.py) promises a `clip_url` fallback only for
+NULL, so a client serving `mobile_url` to old copies should also fall back
+when the key fails to load.
 
 Called only from `auth._ensure_user_exists`, inside a savepoint, on the
 request that actually created the user row. It raises freely; the caller
@@ -216,6 +229,7 @@ async def copy_sample_game(db: AsyncSession, user_id: uuid.UUID) -> Game | None:
                 end_time=clip.end_time,
                 clip_url=clip.clip_url,
                 thumbnail_url=clip.thumbnail_url,
+                mobile_url=clip.mobile_url,
                 labels=list(clip.labels or []),
             )
         )

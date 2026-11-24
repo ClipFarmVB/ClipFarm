@@ -62,7 +62,7 @@ Celery worker  ──  process_game_task()  (api/app/workers/tasks.py)
     ├─ 4. Audio confidence weighting               (ml/pipeline/audio.py)
     │
     └─ 5. Cut clips → upload → persist             (ml/pipeline/clip.py, _sync_db.py)
-          └─ FFmpeg per clip → R2: clips/, thumbs/ → Clip rows in Postgres
+          └─ FFmpeg per clip → R2: clips/, thumbs/, clips-mobile/ → Clip rows in Postgres
 ```
 
 If `ROBOFLOW_API_KEY` is unset or ball tracking fails entirely, the pipeline falls back

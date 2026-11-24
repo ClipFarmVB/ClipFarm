@@ -45,7 +45,17 @@ class _FakeFFmpeg:
         return _Stream(self.calls)
 
     def probe(self, path):
-        return {"format": {"duration": "12.0"}}
+        # `streams` is here because clip.py probes the source's dimensions to
+        # decide whether a phone rendition is worth making (CF-321). A probe
+        # reply without it is not a shape ffmpeg produces, and leaving it out
+        # would exercise only the unknown-dimensions fallback.
+        return {
+            "format": {"duration": "12.0"},
+            "streams": [
+                {"codec_type": "audio"},
+                {"codec_type": "video", "width": 1920, "height": 1080},
+            ],
+        }
 
 
 @pytest.fixture
@@ -64,8 +74,10 @@ def test_generate_clips_bounds_threads(fake_ffmpeg, tmp_path):
 
     clip_mod.generate_clips(str(tmp_path / "game.mp4"), detections, tmp_path, threads=2)
 
-    # Clip cut + thumbnail, each an input and an output.
-    assert _thread_values(fake_ffmpeg) == [2, 2, 2, 2]
+    # Clip cut + thumbnail + phone rendition, each an input and an output. The
+    # rendition is a third x264 encode and needs the bound for exactly the
+    # reason the other two do.
+    assert _thread_values(fake_ffmpeg) == [2, 2, 2, 2, 2, 2]
 
 
 def test_generate_condensed_video_bounds_threads(fake_ffmpeg, tmp_path):
@@ -83,7 +95,8 @@ def test_generate_condensed_video_bounds_threads(fake_ffmpeg, tmp_path):
 def test_recut_single_bounds_threads(fake_ffmpeg, tmp_path):
     clip_mod.recut_single(str(tmp_path / "game.mp4"), 10.0, 32.0, tmp_path, threads=2)
 
-    assert _thread_values(fake_ffmpeg) == [2, 2, 2, 2]
+    # Clip cut + thumbnail + phone rendition, each an input and an output.
+    assert _thread_values(fake_ffmpeg) == [2, 2, 2, 2, 2, 2]
 
 
 def test_default_is_bounded_when_caller_passes_nothing(fake_ffmpeg, tmp_path):
