@@ -6,6 +6,7 @@ import Link from "next/link";
 import { AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { LogoMark } from "@/components/LogoMark";
+import { MoltenBackdrop } from "@/components/MoltenBackdrop";
 import { createClient } from "@/lib/supabase";
 import { safeNextPath } from "@/lib/redirect";
 import { AUTH_ERROR_PARAM, authErrorMessage } from "@/lib/authError";
@@ -168,8 +169,12 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <Suspense>
-      <LoginForm />
-    </Suspense>
+    <>
+      {/* Outside LoginForm's `.fade-up` root: see MoltenBackdrop on where it mounts. */}
+      <MoltenBackdrop />
+      <Suspense>
+        <LoginForm />
+      </Suspense>
+    </>
   );
 }

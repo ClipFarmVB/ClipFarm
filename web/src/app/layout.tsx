@@ -44,8 +44,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <AuthProvider>
             <Sidebar />
             {/* pt on mobile clears the fixed top bar Sidebar renders there;
-                from lg the sidebar is a permanent column again. */}
-            <main className="min-h-screen pt-[52px] lg:ml-[220px] lg:pt-0">
+                from lg the sidebar is a permanent column again. `relative` so
+                a page backdrop (MoltenBackdrop) can fill the whole document. */}
+            <main className="relative min-h-screen pt-[52px] lg:ml-[220px] lg:pt-0">
               <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
                 {/* Mounted on every page, so gating it here is also what keeps
                     /users/me from being requested at all when social is off. */}
