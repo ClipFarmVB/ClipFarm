@@ -60,7 +60,7 @@ describe("landing page", () => {
     expect(headings()).toEqual(
       expect.arrayContaining([
         "A full game in, a highlight reel out",
-        "Four steps, three of them automatic",
+        "Four steps, two of them automatic",
         "Every play, cut and labelled",
       ]),
     );
@@ -68,6 +68,7 @@ describe("landing page", () => {
     // labels, so each section opens with more than an 11px eyebrow.
     for (const h2 of host.querySelectorAll("h2")) {
       expect(h2.className).not.toContain("sr-only");
+      expect(h2.closest(".sr-only")).toBeNull();
     }
     expect(host.querySelector("[data-testid=demo-video-placeholder]")).not.toBeNull();
   });

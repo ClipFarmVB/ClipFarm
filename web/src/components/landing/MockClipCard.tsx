@@ -7,8 +7,9 @@
  *
  * Text and the play glyph are sized in `em`, so a card inherits its scale from
  * wherever it sits: the sample grid leaves it at the body size and the hero
- * stack sets a step larger (CF-681). At the body size the micro text lands on
- * the scale's 2xs step and the confidence on xs.
+ * stack sets a step larger (CF-681). The micro text is 0.64em but floored at
+ * 12px (DESIGN.md: nothing below 12px), so in the sample grid it is 12px and
+ * in the hero 12.8px; the confidence is 0.8em.
  */
 export interface MockClip {
   action: string;
@@ -34,7 +35,7 @@ export function MockClipCard({
         {/* Action badge */}
         <div className="absolute top-2 left-2 flex items-center gap-1.5 rounded bg-black/50 backdrop-blur-sm px-2 py-0.5">
           <span className={`h-1 w-1 rounded-full shrink-0 ${dotClass}`} />
-          <span className="text-[0.64em] font-semibold uppercase tracking-widest text-white/70">
+          <span className="text-[max(0.75rem,0.64em)] font-semibold uppercase tracking-widest text-white/70">
             {action}
           </span>
         </div>
@@ -45,7 +46,7 @@ export function MockClipCard({
           </svg>
         </div>
         {/* Duration */}
-        <div className="absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[0.64em] font-medium text-white/75 tabular-nums">
+        <div className="absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[max(0.75rem,0.64em)] font-medium text-white/75 tabular-nums">
           {duration}
         </div>
       </div>
@@ -54,7 +55,7 @@ export function MockClipCard({
         <span className={`text-[0.8em] font-semibold tabular-nums ${confClass}`}>
           {confidence}%
         </span>
-        <span className="text-[0.64em] text-subtle tabular-nums">{time}</span>
+        <span className="text-[max(0.75rem,0.64em)] text-subtle tabular-nums">{time}</span>
       </div>
     </div>
   );

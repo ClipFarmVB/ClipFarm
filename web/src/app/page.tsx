@@ -257,7 +257,7 @@ export default function HomePage() {
       {/* ── How it works ────────────────────────────────────────── */}
       <section className="py-16" aria-labelledby="landing-how">
         <SectionHeading id="landing-how" eyebrow="How it works">
-          Four steps, three of them automatic
+          Four steps, two of them automatic
         </SectionHeading>
         {/* Two columns, not four: at body size a four-up row gives under 30
             characters a line. Each step's copy is capped at a readable measure. */}

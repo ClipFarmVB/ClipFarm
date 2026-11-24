@@ -4,12 +4,16 @@
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 
   /*
-   * Type scale (CF-681): one modular scale, 16px base, ratio 1.25 (a major
-   * third), so every size on a page is a step of the same ladder and the gap
-   * between levels is always visible. Line height tightens as size grows.
-   * Use these (`text-ms-*`) rather than ad-hoc `text-[Npx]` values.
+   * Landing-page type scale (CF-681): one modular scale, 16px base, ratio
+   * 1.25 (a major third), so every size on the landing page is a step of the
+   * same ladder. Line height tightens as size grows.
    *
-   *   2xs  10.24px  micro text inside clip cards
+   * Scoped to the landing page (`app/page.tsx`, `components/landing/`) only.
+   * The app's type scale is DESIGN.md's named roles (`--text-<role>`, CF-577),
+   * with nothing below 12px; do not use `text-ms-*` outside the landing page.
+   * Note `cn()`/`twMerge` does not read `text-ms-*` as a font size, so do not
+   * merge these with `text-*` colour classes through it.
+   *
    *   xs   12.8px   eyebrows, labels, captions
    *   base 16px     body
    *   lg   20px     h3, lead paragraph
@@ -18,8 +22,6 @@
    *   3xl  39px     h1 on phones
    *   4xl  48.8px   h1
    */
-  --text-ms-2xs: 0.64rem;
-  --text-ms-2xs--line-height: 1.4;
   --text-ms-xs: 0.8rem;
   --text-ms-xs--line-height: 1.5;
   --text-ms-base: 1rem;
@@ -33,7 +35,7 @@
   --text-ms-3xl: 2.441rem;
   --text-ms-3xl--line-height: 1.12;
   --text-ms-4xl: 3.052rem;
-  --text-ms-4xl--line-height: 1.08;
+  --text-ms-4xl--line-height: 1.12;
 
   /*
    * All color tokens reference CSS custom-properties so they can be
