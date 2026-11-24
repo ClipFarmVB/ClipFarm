@@ -11,9 +11,14 @@ asserted.
 
 *Unregistering is scoped and silent.* `delete` filters on the caller's id as
 well as the token, and returns 204 whether or not anything matched. Both halves
-matter: without the owner filter anyone could unregister anyone's device, and
-without the unconditional 204 the route answers "is this token registered?" for
-whoever asks. A test that only checked the happy path would catch neither.
+matter: without the owner filter one call could remove any account's row and a
+stray client could delete another account's registration, and without the
+unconditional 204 the route answers "is this token registered?" for whoever
+asks. A test that only checked the happy path would catch neither. The filter
+is not protection against a token holder, though: under instant re-own,
+registering the token first makes the caller its owner, so two calls take or
+remove the row (see the open re-own question in the CF-318 entry of
+docs/mobile/DECISIONS.md).
 
 *The owner comes from the token, never the body.* There is no `owner_id` field
 in the request schemas, and this pins that the router reads the authenticated
@@ -150,10 +155,13 @@ def test_register_commits():
 
 
 def test_unregister_is_scoped_to_the_caller():
-    """Without the owner_id predicate, anyone holding a token could silence
-    somebody else's phone. A token is not treated as a secret here (whether it
-    is a send credential depends on the delivery provider; see
-    docs/mobile/DECISIONS.md), so holding one must not be enough to remove it."""
+    """Without the owner_id predicate, one call with a token would remove
+    somebody else's registration, and a stray client could delete another
+    account's row. The filter stops exactly that. It does not stop a token
+    holder: under instant re-own, registering the token first makes the caller
+    its owner, after which this delete removes the row, so two calls take or
+    remove it. Whether to close that path (staleness-gated re-own) is the open
+    re-own question in the CF-318 entry of docs/mobile/DECISIONS.md."""
     db, _ = _unregister(DeviceTokenUnregister(token=TOKEN))
     sql = _sql(db.executed[0]).lower()
     assert "delete from device_tokens" in sql

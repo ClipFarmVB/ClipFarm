@@ -96,7 +96,7 @@ choice is made. Direct APNs + FCM has no such condition.
 
 **Worth knowing.** Whether a push token is a credential depends on the
 provider: delivered directly through APNs/FCM it is not — sending needs our
-signing key — but under Expo's defaults it is (see the condition above). It is
+signing key — but under Expo's defaults it reportedly is (see the condition above). It is
 not a stable id either way — it is
 a routing address the OS reissues at will (reinstall, restore from backup,
 sometimes an OS update), which is why the client is expected to re-register on
