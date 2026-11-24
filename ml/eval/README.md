@@ -747,8 +747,10 @@ a person's call (CF-399).
 
 **Switch position.** `--contact-scale off|on|soft` loads, fits and scores at
 that side of the CF-174 switch, applied as `visualize_deadtime` applies it and
-restored afterwards; the default is the settings mirror (on), so a bare run is
-unchanged. The file records it as `"contact_scale"`. Production runs **off**:
+restored afterwards; the default is the settings mirror (on), so a bare run
+keeps the position it had before CF-604 (its `"folds"`, threshold, variant and
+decoder can still move, since the per-game objective now picks them). The file
+records it as `"contact_scale"`. Production runs **off**:
 
 ```bash
 python -m ml.eval.train_deadtime --no-write --contact-scale off   # production's position
@@ -763,7 +765,9 @@ anything else, so validate such a file from `"nested"`, not with it.
 times with every fixture endpoint moved by an independent uniform draw in ±1s
 (seeded by `--jitter-seed`, default 0), and reports how many draws flip the
 learned-vs-`guarded` ranking — on pooled Δnet, and on whole-rally deletions.
-A ranking that flips is not a result. Printed, not written; each draw is a
+Each side is read as a sign (learned ahead, tied, or behind), and a draw whose
+sign differs from the unjittered run's is a flip, so a tie that turns into
+learned behind counts. A ranking that flips is not a result. Printed, not written; each draw is a
 full nested run, so N = 20 costs about 20 trainer runs.
 
 ```bash

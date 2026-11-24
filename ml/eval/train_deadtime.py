@@ -641,15 +641,20 @@ def relabel(game: TrainGame, keep: list[Interval]) -> TrainGame:
         guarded=evaluate_deadtime(keep, game.guarded_windows, game.duration))
 
 
+def _sign(x: float) -> int:
+    return (x > 0) - (x < 0)
+
+
 def ranking(record: dict) -> dict:
-    """Learned vs guarded from a `nested` record, pooled over COMPARABLE: ahead
-    on net (Δnet > 0), and ahead on whole-rally deletions (fewer learned-only
-    than guarded-only)."""
+    """Learned vs guarded from a `nested` record, pooled over COMPARABLE, as a
+    sign each: +1 learned ahead, 0 tied, -1 behind. On net that is the sign of
+    Δnet; on whole-rally deletions, of guarded-only minus learned-only (fewer
+    learned-only deletions is ahead). A sign, not "ahead or not", so a move
+    from a tie to behind counts as a flip."""
     p = record["paired"]
     return {"delta_net_sec": p["delta_net_sec"],
-            "learned_ahead_on_net": p["delta_net_sec"] > 0,
-            "learned_ahead_on_deletions":
-                p["learned_only_deleted"] < p["guarded_only_deleted"]}
+            "net_sign": _sign(p["delta_net_sec"]),
+            "deletion_sign": _sign(p["guarded_only_deleted"] - p["learned_only_deleted"])}
 
 
 def sensitivity(games: Sequence[TrainGame], decoders: Sequence[str], baseline: dict,
@@ -657,7 +662,8 @@ def sensitivity(games: Sequence[TrainGame], decoders: Sequence[str], baseline: d
     """
     `nested` rerun `draws` times on labels jittered by `jitter_keep` (seeded),
     and how often the learned-vs-guarded ranking differs from `baseline`'s, the
-    unjittered record. A ranking that flips under ±1s of labelling noise is not
+    unjittered record: a draw flips a side when its sign (ahead / tied /
+    behind, `ranking`) differs from the baseline's. A ranking that flips under ±1s of labelling noise is not
     a result. Printed, not written.
     """
     rng = np.random.default_rng(seed)
@@ -668,10 +674,8 @@ def sensitivity(games: Sequence[TrainGame], decoders: Sequence[str], baseline: d
         runs.append(ranking(nested(jittered, decoders, draws=0)))
     return {
         "draws": draws, "seed": seed, "jitter_sec": JITTER_SEC, "baseline": base,
-        "net_flips": sum(r["learned_ahead_on_net"] != base["learned_ahead_on_net"]
-                         for r in runs),
-        "deletion_flips": sum(r["learned_ahead_on_deletions"]
-                              != base["learned_ahead_on_deletions"] for r in runs),
+        "net_flips": sum(r["net_sign"] != base["net_sign"] for r in runs),
+        "deletion_flips": sum(r["deletion_sign"] != base["deletion_sign"] for r in runs),
         "runs": runs,
     }
 
@@ -868,13 +872,16 @@ def print_nested(record: dict, contact_scale: str) -> None:
                   f" {c['value']:8.2f}  limit {c['limit']:8.2f}  margin {c['margin']:+8.2f}")
 
 
+_STANDING = {1: "ahead of", 0: "tied with", -1: "behind"}
+
+
 def print_sensitivity(s: dict) -> None:
     b = s["baseline"]
     print(f"\nlabel jitter (every endpoint ±{s['jitter_sec']:.0f}s uniform, {s['draws']} draws,"
           f" seed {s['seed']}): unjittered learned is "
-          f"{'ahead of' if b['learned_ahead_on_net'] else 'not ahead of'} guarded on net"
+          f"{_STANDING[b['net_sign']]} guarded on net"
           f" (Δ {b['delta_net_sec']:+.1f}s) and "
-          f"{'ahead' if b['learned_ahead_on_deletions'] else 'not ahead'} on whole-rally"
+          f"{_STANDING[b['deletion_sign']]} it on whole-rally"
           " deletions")
     print(f"  ranking flips: net {s['net_flips']}/{s['draws']},"
           f" deletions {s['deletion_flips']}/{s['draws']}"

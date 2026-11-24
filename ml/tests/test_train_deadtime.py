@@ -801,3 +801,21 @@ def test_sensitivity_counts_the_draws_that_flip_the_ranking(games, monkeypatch):
     s = TD.sensitivity(games, ("threshold",), baseline, draws=4, seed=7)
     assert s["net_flips"] == 2 and s["deletion_flips"] == 2
     assert [r["delta_net_sec"] for r in s["runs"]] == [5.0, -3.0, 1.0, -0.5]
+
+
+def test_sensitivity_counts_a_tie_that_turns_into_behind_as_a_flip(games, monkeypatch, capsys):
+    # A tied baseline (0 learned-only, 0 guarded-only deletions; Δnet 0) and
+    # draws where learned falls behind on both: every draw has flipped.
+    def stub(gs, decoders, draws=0):
+        return {"paired": {"delta_net_sec": -2.0, "learned_only_deleted": 4,
+                           "guarded_only_deleted": 0}}
+
+    monkeypatch.setattr(TD, "nested", stub)
+    baseline = {"paired": {"delta_net_sec": 0.0, "learned_only_deleted": 0,
+                           "guarded_only_deleted": 0}}
+    s = TD.sensitivity(games, ("threshold",), baseline, draws=3, seed=0)
+    assert s["baseline"]["net_sign"] == 0 and s["baseline"]["deletion_sign"] == 0
+    assert s["net_flips"] == 3 and s["deletion_flips"] == 3
+    TD.print_sensitivity(s)
+    out = capsys.readouterr().out
+    assert "tied with guarded on net" in out and "stable" not in out
