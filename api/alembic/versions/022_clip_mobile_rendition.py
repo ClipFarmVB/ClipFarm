@@ -31,14 +31,6 @@ alone. Never parent two files on the same revision:
 that, and `alembic upgrade head` raises `MultipleHeads` and exits 255 with
 nothing applied.
 
-This branch predates 023, so until `main` is merged back in, 023 is declared in
-`PENDING_UPSTREAM` in `api/tests/test_migration_chain.py` and
-`test_the_chain_is_not_currently_bootable_if_anything_is_pending` is red on
-purpose: this branch's chain cannot resolve on its own and it must not merge as
-it stands. The merge-back brings `023_sample_game.py` in; delete the entry in
-the same commit (`test_pending_upstream_entries_are_still_pending` fails until
-you do).
-
 Applying this to the shared Supabase database is a deliberate, separate
 `alembic upgrade head` by a person (CLAUDE.md, Migrations).
 

@@ -92,6 +92,7 @@ def _clip(game: Game) -> Clip:
         end_time=18.0,
         clip_url="https://r2.test/clips/source-game/c1.mp4",
         thumbnail_url="https://r2.test/clips/source-game/c1.jpg",
+        mobile_url="https://r2.test/clips-mobile/source-game/c1.mp4",
         labels=["spike"],
         visibility=None,
         created_at=NOW,
@@ -190,7 +191,8 @@ def test_deleting_an_ordinary_game_still_removes_its_objects(deleted_keys):
     asyncio.run(games_router.delete_game(game.id, OWNER, db))
 
     assert sorted(deleted_keys) == sorted([
-        "clips/source-game/c1.mp4", "clips/source-game/c1.jpg", "raw/abc.mp4",
+        "clips/source-game/c1.mp4", "clips/source-game/c1.jpg",
+        "clips-mobile/source-game/c1.mp4", "raw/abc.mp4",
     ])
 
 
@@ -213,7 +215,9 @@ def test_deleting_ordinary_clips_still_removes_their_objects(deleted_keys):
         clips_router.delete_clips(ClipDeleteRequest(clip_ids=[clip.id]), db, OWNER)
     )
 
-    assert sorted(deleted_keys) == ["clips/source-game/c1.jpg", "clips/source-game/c1.mp4"]
+    assert sorted(deleted_keys) == [
+        "clips-mobile/source-game/c1.mp4", "clips/source-game/c1.jpg", "clips/source-game/c1.mp4",
+    ]
 
 
 # ── the footage is not the owner's to publish ───────────────────────────────
@@ -613,6 +617,9 @@ def test_the_copy_takes_the_fields_the_plan_names(monkeypatch):
     assert copied.player_id is None
     assert copied.visibility is None
     assert (copied.clip_url, copied.thumbnail_url) == (clip.clip_url, clip.thumbnail_url)
+    assert copied.mobile_url == clip.mobile_url, (
+        "the phone rendition is shared like the clip, or the demo streams full-size on phones"
+    )
     assert (copied.start_time, copied.end_time, copied.labels) == (10.0, 18.0, ["spike"])
     assert (copied.action_type, copied.confidence, copied.highlight_score) == (
         ActionType.spike, 0.8, 0.7
