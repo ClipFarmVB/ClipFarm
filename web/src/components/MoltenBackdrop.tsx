@@ -1,3 +1,7 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+
 // The site background for the public pages (CF-679): an evocation of the
 // standard indoor match ball — the big interlocking red, white and green
 // panels with a fine honeycomb texture embossed over them.
@@ -47,22 +51,61 @@
 // The layer scrolls with the page. It is `absolute inset-0` inside the root
 // layout's `<main>`, which is `relative` and `min-h-screen`, so the layer is
 // exactly as tall as the document and `overflow-hidden` crops the column of
-// faces to it. From `lg` the sidebar is a permanent 220px column and `<main>`
-// starts past it, so the layer does too. Nothing in the layer animates. Mount
+// faces to it. The number of faces comes from the page, not a constant: the
+// layer measures its own height against a face's and renders enough to cover
+// it, again whenever either changes (content loading, a resize, rotating a
+// phone). A fixed count ran out on short screens, where the landing is many
+// screens tall (812x375 needs six), and the panels stopped on a hard edge.
+// Before the first measurement it renders `INITIAL_FACES`. From `lg` the
+// sidebar is a permanent 220px column and `<main>` starts past it, so the
+// layer does too. Nothing in the layer animates. Mount
 // it as a direct child of the page, outside any `.fade-up` root, so the only
 // positioned ancestor is `<main>`.
 
-/** Enough faces for the tallest public page; the layer crops the rest. */
-const FACES = 4;
+/** Faces drawn before the layer has been measured (and on the server). */
+export const INITIAL_FACES = 4;
+
+/** How many screen-tall faces cover a layer this tall; the layer crops the rest. */
+export function facesToCover(layerHeight: number, faceHeight: number): number {
+  if (!(layerHeight > 0) || !(faceHeight > 0)) return INITIAL_FACES;
+  return Math.max(1, Math.ceil(layerHeight / faceHeight));
+}
 
 export function MoltenBackdrop() {
+  const layerRef = useRef<HTMLDivElement>(null);
+  const [faces, setFaces] = useState(INITIAL_FACES);
+
+  useEffect(() => {
+    const layer = layerRef.current;
+    if (!layer) return;
+    const measure = () => {
+      const face = layer.querySelector("svg");
+      setFaces(
+        facesToCover(
+          layer.getBoundingClientRect().height,
+          face?.getBoundingClientRect().height ?? 0,
+        ),
+      );
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(layer);
+    return () => {
+      window.removeEventListener("resize", measure);
+      observer?.disconnect();
+    };
+  }, []);
+
   return (
     <div
+      ref={layerRef}
       aria-hidden
       data-testid="molten-backdrop"
       className="pointer-events-none absolute inset-0 -z-10 overflow-hidden"
     >
-      {Array.from({ length: FACES }, (_, i) => (
+      {Array.from({ length: faces }, (_, i) => (
         <Face key={i} turned={i % 2 === 1} />
       ))}
       <div className="molten-hex absolute inset-0" />

@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MoltenBackdrop } from "./MoltenBackdrop";
+import { facesToCover, INITIAL_FACES, MoltenBackdrop } from "./MoltenBackdrop";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -20,6 +20,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  vi.restoreAllMocks();
 });
 
 describe("MoltenBackdrop", () => {
@@ -58,5 +59,34 @@ describe("MoltenBackdrop", () => {
       // red on even faces, green on odd ones.
       expect(classes[1]).toBe(i % 2 === 0 ? "molten-red" : "molten-green");
     }
+  });
+
+  it("draws enough faces to cover the page however short the screen", () => {
+    // jsdom has no layout, so give the layer and each face real heights:
+    // the landing on a phone held sideways, 2114px of page on a 375px screen.
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      const height = this.tagName.toLowerCase() === "svg" ? 375 : 2114;
+      return { height } as DOMRect;
+    });
+    act(() => window.dispatchEvent(new Event("resize")));
+
+    // ceil(2114 / 375) = 6 faces, 2250px, so nothing below them is bare.
+    expect(host.querySelectorAll("svg").length).toBe(6);
+  });
+});
+
+describe("facesToCover", () => {
+  it("covers the layer with whole faces, at least one", () => {
+    expect(facesToCover(900, 900)).toBe(1);
+    expect(facesToCover(2114, 375)).toBe(6);
+    expect(facesToCover(2130, 600)).toBe(4);
+    expect(facesToCover(100, 900)).toBe(1);
+  });
+
+  it("falls back to the initial count before there is anything to measure", () => {
+    expect(facesToCover(0, 0)).toBe(INITIAL_FACES);
+    expect(facesToCover(2114, 0)).toBe(INITIAL_FACES);
   });
 });
