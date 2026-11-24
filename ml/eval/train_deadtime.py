@@ -158,6 +158,10 @@ class TrainGame:
     # Production's learned chain declines this track (empty, or below the
     # builder's default min_track_rate) and falls back to `guarded`.
     declines: bool = False
+    # No usable speed sample at all (which includes an empty track): even
+    # ungated, `validate_learned.learned_windows` declines it to `guarded`
+    # rather than score the builder's cut-everything windows. Implies `declines`.
+    no_speed_samples: bool = False
 
 
 def labels(human_keep: list[Interval], n: int) -> np.ndarray:
@@ -185,6 +189,7 @@ def prepare(game: dv.Game) -> TrainGame:
         # The test `active_windows_learned` raises TrackTooSparseError on, at
         # its default floor.
         declines=not game.positions or not track_is_usable(game.speed_samples, game.duration),
+        no_speed_samples=not game.positions or len(game.speed_samples[0]) == 0,
     )
 
 
@@ -546,8 +551,10 @@ def _verdict(clauses: Sequence) -> dict:
 def nested_bar(folds: Sequence[dict], games: Sequence[TrainGame]) -> dict | None:
     """
     The CF-389 bar (`validate_learned.apply_bar`) on the nested folds, for both
-    rungs. The folds score the builder with no track floor, so as they stand
-    they are the ungated rung; the gated rung puts `guarded` — production's
+    rungs. The folds score the builder with no track floor. The ungated rung is
+    them with `guarded` in place of any game with no usable speed sample
+    (`TrainGame.no_speed_samples`), as `validate_learned.learned_windows`
+    declines those even ungated; the gated rung puts `guarded` — production's
     fallback — in place of every game the learned chain declines. None when the
     folds do not cover the games the bar names.
     """
@@ -559,8 +566,9 @@ def nested_bar(folds: Sequence[dict], games: Sequence[TrainGame]) -> dict | None
                                                                Abstained))
                for t, s in guarded.items()}
     gated = {t: guarded[t] if by_id[t].declines else s for t, s in learned.items()}
+    ungated = {t: guarded[t] if by_id[t].no_speed_samples else s for t, s in learned.items()}
     return {"gated": _verdict(apply_bar(gated, guarded)),
-            "ungated": _verdict(apply_bar(learned, guarded))}
+            "ungated": _verdict(apply_bar(ungated, guarded))}
 
 
 def nested(games: Sequence[TrainGame], decoders: Sequence[str], *,
@@ -815,7 +823,11 @@ def print_nested(record: dict, contact_scale: str) -> None:
     print(f"  {'fixture':8s} {'variant':10s} {'decoder':9s} {'thr':>4s}  {'dead%':>6s}"
           f" {'live s':>7s} {'net s':>8s}  | guarded {'dead%':>6s} {'live s':>7s} {'net s':>8s}")
     for f in folds:
-        mark = "" if f["held_out"] in COMPARABLE else "  (excluded)"
+        # Every game counts in every nested choice (through `objective`); the
+        # mark says where it stops counting.
+        mark = ("" if f["held_out"] in COMPARABLE else
+                "  (bar clause 4 only, not pooled)" if f["held_out"] == TEST3 else
+                "  (not in bar/pooled)")
         print(f"  {f['held_out']:8s} {f['variant']:10s} {f['decoder']:9s} {f['threshold']:4.2f}"
               f"  {_pct(f['dead_removed_pct'])} {f['live_cut_sec']:7.1f} {f['net_sec']:+8.1f}"
               f"  |         {_pct(f['guarded_dead_removed_pct'])}"

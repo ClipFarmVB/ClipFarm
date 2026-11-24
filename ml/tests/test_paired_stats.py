@@ -67,3 +67,9 @@ def test_the_bootstrap_resamples_within_each_game_and_is_seeded():
 def test_the_percentile_interval_is_central():
     lo, hi = ps.percentile_interval(np.arange(101, dtype=float))
     assert (lo, hi) == pytest.approx((2.5, 97.5))
+
+
+def test_mcnemar_does_not_overflow_on_many_discordant_pairs():
+    """R1-N2: past ~1023 pairs a float 2.0 ** n overflowed."""
+    assert ps.mcnemar_exact(600, 600) == 1.0
+    assert 0.0 <= ps.mcnemar_exact(500, 700) < 1e-6

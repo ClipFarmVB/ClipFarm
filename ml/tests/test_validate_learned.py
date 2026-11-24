@@ -228,6 +228,27 @@ def test_main_exits_non_zero_when_the_bar_fails(monkeypatch):
         assert vl.main([]) == status
 
 
+def test_main_refuses_weights_fitted_at_another_contact_scale(monkeypatch, capsys):
+    """R1-M1: this tool scores at contact scale on; a file the trainer fitted
+    at off is refused (exit 2) before anything is scored, and the switch is
+    restored on the way out."""
+    def no_run():
+        raise AssertionError("scored a file fitted at another position")
+    monkeypatch.setattr(vl, "run", no_run)
+    saved = (dv.NORMALIZE, dv.SOFT_SCALE, dv.STATIC_SITE_FILTER)
+    for recorded in ("off", "soft"):
+        monkeypatch.setattr(vl, "load_weights", lambda *a, r=recorded, **k: {"contact_scale": r})
+        assert vl.main([]) == 2
+        assert f"'{recorded}'" in capsys.readouterr().err
+    assert (dv.NORMALIZE, dv.SOFT_SCALE, dv.STATIC_SITE_FILTER) == saved
+    # Recorded on, or not recorded (a file from before the field), is scored.
+    monkeypatch.setattr(vl, "run", lambda: [])
+    monkeypatch.setattr(vl, "print_report", lambda r, w: True)
+    for w in ({"contact_scale": "on"}, {}):
+        monkeypatch.setattr(vl, "load_weights", lambda *a, w=w, **k: w)
+        assert vl.main([]) == 0
+
+
 def test_every_fold_rebuilds_into_weights_the_builder_accepts(committed):
     for fold in committed["folds"]:
         fw = fold_weights(committed, fold)

@@ -213,9 +213,10 @@ def clause_1_by_variant(weights: Mapping) -> list[VariantClause1]:
 
     The selection caveat this makes visible: the trainer picks the variant on
     these same held-out folds (`train_deadtime.choose_variant`) — by net, the
-    quantity clause 1 tests — so the chosen variant's clause 1 has seen the
-    games it is judged on. A clause 1 pass that holds
-    for the chosen variant only is a product of that choice.
+    quantity clause 1 tests, at the committed record's commit; since CF-604 by
+    `train_deadtime.objective` instead — so the chosen variant's clause 1 has
+    seen the games it is judged on. A clause 1 pass that holds for the chosen
+    variant only is a product of that choice.
 
     The chosen variant is the one whose `context` matches the shipped file's.
     Empty when the file records no variants.
@@ -395,9 +396,17 @@ def print_report(results: Sequence[GameResult], weights: dict) -> bool:
     return verdicts["gated"]
 
 
+# The CF-174 switch position this tool scores at. A weights file recording any
+# other `"contact_scale"` is refused (exit 2); one recording none predates the
+# field and was fitted at on.
+SCORED_CONTACT_SCALE = "on"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Exit status 0 when the bar passes for the gated rung, 1 when it fails, so a
-    script can gate on it. The report prints either way."""
+    script can gate on it. The report prints either way. Exit 2, with no report,
+    when the weights file was fitted at a switch position other than
+    SCORED_CONTACT_SCALE."""
     ap = argparse.ArgumentParser(description="CF-395: score the learned builder held out "
                                              "and apply the epic's validation bar")
     ap.add_argument("--dump-windows", type=Path, metavar="DIR",
@@ -410,10 +419,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     saved = (dv.NORMALIZE, dv.SOFT_SCALE, dv.STATIC_SITE_FILTER)
     previous = logging.root.manager.disable
     try:
-        vd.apply_contact_scale("on")
+        vd.apply_contact_scale(SCORED_CONTACT_SCALE)
         dv.STATIC_SITE_FILTER = False
         logging.disable(logging.INFO)
         weights = load_weights(dead_time_ml.WEIGHTS_PATH, warn_unvalidated=False)
+        fitted_at = weights.get("contact_scale", SCORED_CONTACT_SCALE)
+        if fitted_at != SCORED_CONTACT_SCALE:
+            print(f"refusing: the weights file records \"contact_scale\": {fitted_at!r}, "
+                  f"but this tool scores at {SCORED_CONTACT_SCALE!r}; its verdict would "
+                  "judge coefficients on features they were not fitted on. Validate such a "
+                  "file from its \"nested\" record instead.", file=sys.stderr)
+            return 2
         results = run()
         passed = print_report(results, weights)
         if args.dump_windows:

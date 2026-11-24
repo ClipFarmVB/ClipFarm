@@ -131,7 +131,8 @@ def summarize(matches: list[RallyMatch]) -> dict:
             deleted[bucket(m.length)] += 1
     return {
         "rallies": n,
-        "recall_50": sum(m.kept_frac >= 0.5 for m in matches) / n if n else None,
+        "recall_50": (sum(m.kept_sec >= 0.5 * m.length - EPS for m in matches) / n
+                      if n else None),
         "recall_100": sum(m.kept_whole for m in matches) / n if n else None,
         "deleted": deleted,
         "start_err_median_sec": _median(starts),

@@ -28,6 +28,7 @@ IDS = ("test1", "test2", "test3", "test4", "test5")
 
 
 def synthetic_game(test_id: str, n: int, seed: int, *, declines: bool = False,
+                   no_speed_samples: bool = False,
                    guarded_windows: list | None = None) -> TD.TrainGame:
     """`n` seconds alternating 10s dead / 8s play, with two columns that know it.
     `guarded` keeps everything unless told otherwise."""
@@ -48,6 +49,7 @@ def synthetic_game(test_id: str, n: int, seed: int, *, declines: bool = False,
         guarded=evaluate_deadtime(keep, gw, float(n)),
         guarded_windows=gw,
         declines=declines,
+        no_speed_samples=no_speed_samples,
     )
 
 
@@ -683,6 +685,39 @@ def test_the_gated_bar_puts_guarded_in_place_of_a_declined_game():
     assert c4["gated"]["passed"] is True and c4["gated"]["value"] == 0.0
     assert bar["gated"]["passed"] is True
     assert TD.nested_bar(folds[:4], gs) is None
+
+
+def test_the_ungated_bar_declines_a_track_with_no_speed_sample_like_validate_learned():
+    """R1-M2: validate_learned.learned_windows(gated=False) scores `guarded`
+    on a track with no usable speed sample; the nested ungated rung matches.
+    test3 here has none and its fold cuts 40s, over the cap: substituted, both
+    rungs pass clause 4. A test3 with samples (below) still fails ungated."""
+    def bar_for(no_samples: bool) -> dict:
+        gs = [synthetic_game(t, 100, i, declines=t == "test3",
+                             no_speed_samples=no_samples and t == "test3",
+                             guarded_windows=Abstained([(0.0, 100.0)]) if t == "test3" else None)
+              for i, t in enumerate(IDS)]
+        folds = [{"held_out": t, "dead_removed_pct": 0.5,
+                  "live_cut_sec": 40.0 if t == "test3" else 1.0, "net_sec": 10.0,
+                  "guarded_dead_removed_pct": 0.0, "guarded_live_cut_sec": 0.0,
+                  "guarded_net_sec": 0.0} for t in IDS]
+        return TD.nested_bar(folds, gs)
+    c4 = bar_for(True)["ungated"]["clauses"][-1]
+    assert c4["passed"] is True and c4["value"] == 0.0
+    assert bar_for(False)["ungated"]["clauses"][-1]["passed"] is False
+
+
+def test_prepare_records_no_speed_samples_as_validate_learned_reads_them():
+    """R1-M2: the flag is validate_learned's own test, len(speed_samples[0]) == 0,
+    and it implies `declines`."""
+    keep = [(1.0, 2.0)]
+    raw = {"source_video_md5": "0" * 32}
+    point = {"time": 5.0, "x": 10.0, "y": 10.0, "confidence": 1.0}
+    one_point = dv.Game("t", "t.mp4", 10.0, 360, [point], [], keep, raw)
+    assert len(one_point.speed_samples[0]) == 0
+    g = TD.prepare(one_point)
+    assert g.no_speed_samples and g.declines
+    assert TD.prepare(dv.Game("t", "t.mp4", 10.0, 360, [], [], keep, raw)).no_speed_samples
 
 
 def test_the_plain_folds_stay_readable_by_validate_learned(games, fast_fit):

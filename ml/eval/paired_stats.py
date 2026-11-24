@@ -19,6 +19,7 @@ numpy and the standard library only: CI has numpy 1.26.4 and nothing else.
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from collections.abc import Sequence
 
 import numpy as np
@@ -44,8 +45,9 @@ def mcnemar_exact(b: int, c: int) -> float:
     if n == 0:
         return 1.0
     k = min(b, c)
-    tail = sum(math.comb(n, i) for i in range(k + 1)) / 2.0 ** n
-    return min(1.0, 2.0 * tail)
+    # Exact rational arithmetic: a float 2.0 ** n overflows past n ~ 1023.
+    tail = Fraction(sum(math.comb(n, i) for i in range(k + 1)), 2 ** n)
+    return float(min(Fraction(1), 2 * tail))
 
 
 def unit_scores(human_keep: list[Interval], windows: list[Interval],

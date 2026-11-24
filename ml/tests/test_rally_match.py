@@ -80,3 +80,14 @@ def test_units_tile_the_video_one_per_rally():
 def test_no_rallies_summarizes_to_none_not_zero():
     s = rm.summarize([])
     assert s["rallies"] == 0 and s["recall_50"] is None and s["recall_100"] is None
+
+
+def test_a_rally_kept_exactly_half_counts_at_50_whatever_its_placement():
+    """R1-N1: recall_50 allows EPS like deleted / kept_whole, so float error
+    in the kept seconds cannot drop an exactly-half rally below the line."""
+    length = 3.3
+    for i in range(1, 201):
+        s = i / 10.0
+        rally = [(s, s + length)]
+        m = rm.match_rallies(rally, [(s, s + length / 2)], 250.0)
+        assert rm.summarize(m)["recall_50"] == 1.0, s

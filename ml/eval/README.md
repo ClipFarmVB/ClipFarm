@@ -741,7 +741,8 @@ the variance between games, so at n = 3 games a claim that the model
 generalises to a new gym is a judgement call and must say so. `nested.bar` is
 the CF-389 bar (`validate_learned.apply_bar`) on the nested folds, for the
 gated rung (`guarded` in place of any game whose track the learned chain
-declines) and the ungated one. **A pass does not flip `"validated"`**; that is
+declines) and the ungated one (`guarded` in place of any game with no usable
+speed sample, as `validate_learned`'s ungated rung declines those too). **A pass does not flip `"validated"`**; that is
 a person's call (CF-399).
 
 **Switch position.** `--contact-scale off|on|soft` loads, fits and scores at
@@ -755,7 +756,8 @@ python -m ml.eval.train_deadtime --no-write --contact-scale on
 ```
 
 Writing at `off` writes weights fitted on switch-off contacts; `validate_learned`
-always scores at `on`, so validate such a file from `"nested"`, not with it.
+always scores at `on` and refuses (exit 2) a file whose `"contact_scale"` is
+anything else, so validate such a file from `"nested"`, not with it.
 
 **Label-jitter sensitivity.** `--jitter-draws N` reruns the nested record N
 times with every fixture endpoint moved by an independent uniform draw in ±1s
