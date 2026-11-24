@@ -38,16 +38,6 @@ renumbering to 024 would move an id other files already name by hand
 (`app/models/device_token.py`), for a directory listing that the social stack's
 own rebase is about to reorder again regardless.
 
-One consequence to expect rather than be surprised by: until `main` is merged
-into this branch, 023 is not in `versions/` here, so
-`test_every_down_revision_resolves` names it as a parent that is not present
-and `test_there_is_exactly_one_head` counts 016 as a second head. That is the
-declared state of a branch whose base has moved, and deliberately not a
-PENDING_UPSTREAM entry: 023 is merged, not waiting on an open PR, so the
-dependency is the base merge rather than a merge *order*, and nothing has to be
-remembered and deleted afterwards. Both checks go green the moment the merge
-brings the file in.
-
 Revision ID: 021
 Revises: 023
 Create Date: 2026-09-10

@@ -83,7 +83,21 @@ which is an argument for deciding it now rather than after launch. Reversing
 the other way is nearly free. The registry table itself is unaffected either
 way, by design.
 
-**Worth knowing.** A push token is not a credential and not a stable id — it is
+**Condition on choosing Expo.** If Expo is chosen, the project's access-token
+enforcement ("Enhanced Security for Push Notifications") has to be turned on
+before anything sends, and the access token held as a server secret. At Expo's
+defaults a valid `ExponentPushToken[…]` is reportedly enough by itself to send
+to that handset through Expo's public push API, which would make every token in
+`device_tokens` a send capability and would let anyone holding one push to the
+handset without the re-own route at all. This is from Expo's push
+documentation as recalled in review; `docs.expo.dev` could not be fetched to
+quote it, so it is unverified and should be checked against the page when the
+choice is made. Direct APNs + FCM has no such condition.
+
+**Worth knowing.** Whether a push token is a credential depends on the
+provider: delivered directly through APNs/FCM it is not — sending needs our
+signing key — but under Expo's defaults it is (see the condition above). It is
+not a stable id either way — it is
 a routing address the OS reissues at will (reinstall, restore from backup,
 sometimes an OS update), which is why the client is expected to re-register on
 every launch and why the server treats an unrecognised token as a prune rather

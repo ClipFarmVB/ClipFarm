@@ -75,9 +75,18 @@ reads as completeness.
 `device_tokens` (CF-318) is the one row here that is personal data without
 anyone typing it. A push token is issued by Apple or Google per app install and
 is a **device identifier**: it does not name a person, but it reaches one, and
-it is stable enough across sessions to link activity to a handset. It is not a
-credential — holding it does not let anyone send a notification, which needs our
-signing key — so the exposure it carries is being *reached*, not impersonated.
+it is stable enough across sessions to link activity to a handset. Whether it
+is also a credential depends on the delivery provider, which is still open
+(`docs/mobile/DECISIONS.md`, CF-318 delivery entry). Delivered directly through
+APNs/FCM, holding a token does not let anyone send a notification, which needs
+our signing key, so the exposure is being *reached*, not impersonated. Delivered
+through Expo's Push Service at its default settings, a valid
+`ExponentPushToken[…]` is reportedly enough on its own to send to that handset
+through Expo's public push API, unless the project turns on Expo's access-token
+enforcement ("Enhanced Security for Push Notifications") — so under Expo
+defaults the token *is* a send capability, and a leaked one lets its holder
+push to the handset. (Expo's behaviour here is from its push documentation as
+recalled in review, not re-read for this document: unverified.)
 Two consequences worth stating rather than leaving to be inferred: the row is
 unique on the token rather than on `(user, token)`, so a device that changes
 hands moves to its new owner instead of accumulating owners; and the table

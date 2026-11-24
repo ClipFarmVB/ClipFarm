@@ -150,8 +150,10 @@ def test_register_commits():
 
 
 def test_unregister_is_scoped_to_the_caller():
-    """Without the owner_id predicate, anyone holding a token — it is not a
-    secret — could silence somebody else's phone."""
+    """Without the owner_id predicate, anyone holding a token could silence
+    somebody else's phone. A token is not treated as a secret here (whether it
+    is a send credential depends on the delivery provider; see
+    docs/mobile/DECISIONS.md), so holding one must not be enough to remove it."""
     db, _ = _unregister(DeviceTokenUnregister(token=TOKEN))
     sql = _sql(db.executed[0]).lower()
     assert "delete from device_tokens" in sql

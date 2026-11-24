@@ -255,6 +255,8 @@ def test_the_social_routers_are_not_served_with_the_flag_off(monkeypatch):
     served = {r.path for r in probe.routes if hasattr(r, "dependant")}
     social = {p for p in served if p.startswith("/users") or p.startswith("/posts")}
     assert not social, f"social routes served with the flag off: {sorted(social)}"
+    # CF-318: push registration is core, not social -- it must survive the flag.
+    assert "/devices/tokens" in served, "device registration is gated by the social flag"
 
 
 def test_every_router_module_is_mounted(served_app):
