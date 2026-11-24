@@ -20,6 +20,7 @@ from ml.eval import deadtime_variants as dv  # noqa: E402
 from ml.eval import validate_learned as vl  # noqa: E402
 from ml.eval.validate_learned import Score, apply_bar, fold_weights, scores_from_folds  # noqa: E402
 from ml.pipeline import dead_time as dt  # noqa: E402
+from ml.pipeline import dead_time_ml  # noqa: E402
 from ml.pipeline.dead_time_ml import (  # noqa: E402
     FEATURE_NAMES,
     FEATURE_VERSION,
@@ -191,6 +192,22 @@ def test_the_report_prints_every_variants_clause_1(committed, capsys):
     assert "selection-biased" in out
     assert "lags_1_3_5" in out and "-23.58" in out
     assert "clause 1 does not hold for every variant" in out
+    assert "decoder threshold" in out
+    assert "chosen over threshold" not in out
+
+
+def test_an_hmm_report_names_the_decoder_and_its_selection_bias(committed, capsys):
+    """R1-M2: an hmm file's decoder was chosen on the same held-out net clause 1
+    tests, and the report says so."""
+    w = dict(committed, decoder="hmm", hmm=dict(_TRANSITIONS))
+    g = _guarded()
+    learned = _learned()
+    results = [vl.GameResult(t, 1.0, g[t], learned[t], learned[t], learned[t], {})
+               for t in vl.TEST_IDS]
+    vl.print_report(results, w)
+    out = capsys.readouterr().out
+    assert "decoder hmm," in out
+    assert "decoder hmm was chosen over threshold on this same summed held-out net" in out
 
 
 def test_the_chosen_variant_is_the_one_whose_context_the_file_carries():
@@ -272,23 +289,86 @@ def test_fold_weights_take_the_folds_model_and_keep_the_preparation():
     assert w["coef"][0] == 0.0 and w["validated"] is True     # input untouched
 
 
-def test_fold_weights_refuse_the_hmm_decoder_until_the_builder_dispatches():
-    """R5-M1: `dead_time_ml` has no decoder dispatch, so a `"decoder": "hmm"`
-    file (the shape open PR #633 writes) would be decoded by threshold at the
-    shipped threshold and scored as a model it does not describe. It is refused,
-    naming #633; `"threshold"` and an absent key still rebuild. A fold's `hmm`
-    record is readable but not carried into the rebuilt dict."""
-    assert vl.KNOWN_DECODERS == ("threshold",)
-    with pytest.raises(ValueError, match=r"decoder 'hmm'.*#633"):
-        fold_weights(_weights(decoder="hmm"), _fold(hmm={"stay_in": 0.9}))
-    for w in (_weights(decoder="threshold"), _weights()):
-        fw = fold_weights(w, _fold(hmm={"stay_in": 0.9}))
+_TRANSITIONS = {"p_stay_play": 0.9, "p_stay_dead": 0.95, "prior_play": 0.3}
+
+
+def test_every_dispatched_decoder_says_how_its_folds_are_rebuilt():
+    """CF-605: the accepted decoders are the builder's dispatch list, and each
+    one has a fold-record entry. A decoder that ships in `dead_time_ml.DECODERS`
+    without one fails here: rebuilding its folds with the shipped parameters
+    would leak the held-out game, so someone has to say which fold key holds
+    its per-fold fit before it is validatable."""
+    assert set(vl._FOLD_RECORD) == set(dead_time_ml.DECODERS)
+    assert vl.KNOWN_DECODERS == dead_time_ml.DECODERS
+    assert vl._FOLD_RECORD["hmm"] == "hmm"
+
+
+def test_fold_weights_refuse_a_dispatched_decoder_with_no_fold_record(monkeypatch):
+    """R1-M1: a decoder dead_time_ml dispatches but this module cannot rebuild
+    per fold is refused, not rebuilt with the shipped (leaking) parameters."""
+    monkeypatch.setattr(vl, "KNOWN_DECODERS", ("threshold", "hmm", "hysteresis"))
+    w = _weights(decoder="hysteresis", hysteresis={"enter": 0.62, "exit": 0.41})
+    with pytest.raises(ValueError, match="cannot rebuild per fold"):
+        fold_weights(w, _fold())
+
+
+def test_fold_weights_rebuild_a_hmm_model_with_the_folds_own_transitions():
+    """The shipped record was fitted on every game, the held-out one included;
+    a fold is decoded with the transitions fitted on its training games only."""
+    shipped = {"p_stay_play": 0.8, "p_stay_dead": 0.85, "prior_play": 0.4}
+    w = _weights(decoder="hmm", hmm=dict(shipped))
+    fw = fold_weights(w, _fold(hmm=dict(_TRANSITIONS)))
+    assert fw["decoder"] == "hmm" and fw["hmm"] == _TRANSITIONS
+    assert fw["threshold"] == 0.7 and fw["validated"] is False
+    assert w["hmm"] == shipped                                 # input untouched
+
+
+def test_fold_weights_refuse_a_hmm_fold_without_transitions():
+    """Borrowing the shipped transitions would leak the held-out labels."""
+    with pytest.raises(ValueError, match="carries no 'hmm' record"):
+        fold_weights(_weights(decoder="hmm", hmm=dict(_TRANSITIONS)), _fold())
+
+
+@pytest.mark.parametrize("bad", [{"stay_in": 0.9}, None, 5, "abc"])
+def test_fold_weights_refuse_a_hmm_fold_whose_transitions_are_malformed(bad):
+    """check_decoder refuses it by name, whatever its type (R1-N1, R1-N2)."""
+    with pytest.raises(ValueError, match=r"fold 't' use decoder 'hmm'.*expected keys"):
+        fold_weights(_weights(decoder="hmm"), _fold(hmm=bad))
+
+
+def test_threshold_models_ignore_a_folds_hmm_record():
+    """A threshold file (or one with no "decoder" key) rebuilds as before; a
+    fold's hmm record is readable but not carried into the rebuilt dict, nor is
+    a weights-level one (R1-N4)."""
+    for w in (_weights(decoder="threshold"), _weights(hmm=dict(_TRANSITIONS))):
+        fw = fold_weights(w, _fold(hmm=dict(_TRANSITIONS)))
         assert fw["threshold"] == 0.7 and "hmm" not in fw
+
+
+def test_a_rebuilt_hmm_fold_is_decoded_by_viterbi_end_to_end():
+    """The rebuilt dict runs through the production builder and is decoded by
+    the decoder it names: same windows as decoding its raw probabilities with
+    those transitions directly, and not the threshold decoder's. The fold's
+    transitions are sticky in dead time so the two decoders disagree on this
+    track — with milder ones they coincide and the test could not tell."""
+    fold_hmm = {"p_stay_play": 0.6, "p_stay_dead": 0.995, "prior_play": 0.2}
+    game = _game(_track())
+    w = _weights(decoder="hmm", hmm=dict(_TRANSITIONS), validated=False)
+    fw = fold_weights(w, _fold(coef=w["coef"], intercept=w["intercept"], threshold=0.5,
+                                hmm=dict(fold_hmm)))
+    got = vl.learned_windows(game, fw, gated=True)
+    raw = dead_time_ml.predict_in_play(
+        dead_time_ml.compute_features(game.positions, [], DURATION, H), fw, smooth=False)
+    assert got == dead_time_ml.decode_windows(raw, fw, DURATION)
+    assert got == dead_time_ml.viterbi_windows(raw, DURATION, **fold_hmm)
+    assert got != dead_time_ml.decode_windows(raw, {"decoder": "threshold", "threshold": 0.5},
+                                              DURATION)
+    assert got != dead_time_ml.viterbi_windows(raw, DURATION, **_TRANSITIONS)  # not shipped's
 
 
 @pytest.mark.parametrize("weights, fold, match", [
     (_weights(), _fold(extra=1), "unknown keys"),
-    (_weights(decoder="beam"), _fold(), "decoder"),
+    (_weights(decoder="beam"), _fold(), "decoder 'beam'"),
     (_weights(), {k: v for k, v in _fold().items() if k != "threshold"}, "no threshold"),
 ])
 def test_fold_weights_refuse_what_they_cannot_apply(weights, fold, match):
